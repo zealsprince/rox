@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/rox"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[workspace.dependencies]
+# GPUI is pre-1.0 with frequent breaking changes; pinned exactly per ADR 1.
+# Upgrades are a budgeted task, bump this deliberately.
+gpui = "=0.2.2"

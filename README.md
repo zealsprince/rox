@@ -16,18 +16,22 @@ stack is stranded on Windows, and nothing on Linux or Mac covers all three legs:
 tagging is shallow, Strawberry isn't composable, Quod Libet isn't something you'd theme.
 rox goes after that gap.
 
+## Run it
+
+With Nix:
+
+```sh
+nix develop
+cargo run
+```
+
+The dev shell carries the Rust toolchain and the Linux libraries GPUI loads at runtime.
+If you use direnv, `direnv allow` gets you the same shell on cd. The first build
+compiles the whole GPUI tree and takes a few minutes.
+
+Without Nix you need stable Rust and GPUI's system libraries from your distro (Wayland,
+X11, Vulkan, xkbcommon, fontconfig, alsa); every Rust dependency comes from crates.io.
+
 ## Docs
 
-| Section | Contents |
-|---------|----------|
-| [Product](docs/01-product/) | The problem, who it's for, the experience, scope |
-| [Architecture](docs/02-architecture/) | The four domains, contracts, non-functional model, ADRs |
-| [Implementation](docs/03-implementation/) | Per-domain schemas, formats, and sequences, written as they become real |
-| [Research](docs/0R-research/) | Explorations that need a prototype before a decision |
-| [Open Questions](docs/OPEN-QUESTIONS.md) | What's still undecided |
-
-The [docs index](docs/README.md) lists every page with a one-line description.
-
-## Status
-
-Design phase. The spec is ahead of the code.
+Check out the [docs index](docs/README.md) which lists the altitude spec for how `rox` is built.

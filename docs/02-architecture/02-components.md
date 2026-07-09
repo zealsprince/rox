@@ -1,0 +1,130 @@
+# Components and contracts
+
+Per-component responsibility, boundary, and contract, within the domain split laid out
+in the [overview](01-overview.md).
+
+## Playback engine
+
+Responsibility: turn a queue of tracks into sample-accurate audio, and expose a live PCM
+tap. Owns decode (Symphonia), output (cpal), the gapless queue, volume/ReplayGain, and
+the tap ring.
+
+Boundary: the real-time output callback is the hard line. It only reads from a
+pre-allocated ring buffer and writes to the device. No allocation, no lock, no logging,
+no database. Everything else in the engine lives on a normal decode thread behind that
+line.
+
+Formats: MP3 and FLAC decode through Symphonia with no C dependency (FLAC on by default,
+MP3 pure-Rust behind a feature flag). The contract is format-agnostic, so adding formats
+later is additive; Opus is the first place a C dependency would enter.
+
+Contract to the UI:
+- In: `play`, `pause`, `seek(pos)`, `next`, `prev`, `enqueue(track)`, `set_volume`,
+  `set_output_device`. Commands cross a channel, they don't call into the RT thread.
+- Out: playback state (current track, position, playing/paused, device), emitted as the
+  UI's shared entity updates so views re-render on the next frame.
+- Out: the PCM tap, a second SPSC ring the visualizer drains. Lossy by design, a slow UI
+  drops stale samples rather than back-pressuring audio.
+
+## Library service
+
+Responsibility: hold the catalog, keep it fast, keep it current. SQLite is the durable
+source of truth and the write path. A full in-memory projection is the read path that
+makes browse, sort, and filter instant.
+
+Boundary: the UI never touches SQLite. It queries the in-memory projection for browsing
+and sends scan/search requests. The projection and the database are kept in sync by the
+library service, not by callers.
+
+Contract to the UI:
+- In: `browse(filter, sort)`, `search(query)`, `rescan(paths)`, `watch(on/off)`.
+- Out: query results against the in-memory projection (rows, album groupings), and change
+  events (`tracks_added`, `tracks_changed`, `tracks_removed`) so open views refresh.
+
+Contract to the metadata writer: after a successful tag write, the writer sends a reindex
+request for those paths, and the library re-reads them and emits change events. A tag edit
+and the browse view converge without a full rescan.
+
+## Metadata writer
+
+Responsibility: read and write tags across the format matrix, safely, in bulk. Wraps
+lofty with an atomic-write layer, because lofty rewrites files in place and a crash
+mid-write can leave a file unrecoverable. Day-one formats both write through lofty:
+ID3v2 for MP3, Vorbis comments for FLAC.
+
+Boundary: this is the only component that writes audio files. Every write goes through
+copy, verify, atomic rename. Reads are isolated per file so a malformed file that panics
+lofty's parser takes down one worker, not the batch.
+
+Contract:
+- In: `read(path)`, `commit(path, changes)`, `commit_batch(edits)`.
+- Out: per-file success or failure, never a partial corrupt file. On success, a reindex
+  request to the library service.
+- Custom and arbitrary tag fields go through lofty's format-specific tag types (ID3v2
+  TXXX, MP4 freeform atoms, Vorbis keys), not the generic key abstraction, which has no
+  slot for unknown keys and can drop them.
+
+## Artwork service
+
+Responsibility: feed the album-art grid without stalling the scroll. Generates 256px
+thumbnails once, caches them, and hands the UI decoded textures.
+
+Boundary: two bounded pools, not one thread per tile. A worker pool loads and resizes
+thumbnails from a dedicated SQLite thumbnail DB; a bounded LRU of decoded textures sits in
+front, sized to the viewport plus a margin, not the whole library.
+
+Contract:
+- In: `thumbnail(key, size)` where key is content-addressed (path + mtime + size).
+- Out: a texture handle, or a placeholder plus a pending load. Off-screen requests cancel.
+
+## Visualizer subsystem
+
+Responsibility: the spectrum analyzer, the waveform seekbar, and the generative visual.
+Consumes the playback PCM tap, owns the FFT analysis and the per-track waveform cache.
+
+Boundary: analysis runs off the UI thread; rendering happens in a GPUI paint callback.
+The generative visual is a CPU simulation, because GPUI exposes no custom GPU shader (see
+[ADR 8](decisions/08-adr-visualizer-rendering.md)), so its cost lives on a worker thread
+and its output is drawn with GPUI primitives or blitted as an image.
+
+Contract:
+- In: the PCM tap ring, plus the current track for waveform precompute.
+- Out: analysis frames (spectrum bands, recent samples) the UI draws, and a cached
+  min/max peak waveform per track (a few KB, keyed on path + mtime).
+
+## UI shell and panel system
+
+Responsibility: the composable window. The dock, panels, split/resize,
+duplicate-with-config, pop-out into OS windows, layout persistence, and theming.
+
+Boundary: panels are views over shared entities. A duplicated panel is a second view with
+its own config over the same underlying state. A popped-out panel is a second OS window
+whose views point at the same entities as the main window, so playback and library state
+stay shared without any cross-window messaging.
+
+Contract:
+- Layouts and themes serialize to disk as shareable artifacts. A layout is an arrangement
+  of panels and their configs; a theme is a token set (colors, fonts, spacing, accent).
+  Neither carries executable behavior.
+
+## Network enrichment boundary
+
+Scrobbling, tag lookup / auto-tagging, and lyrics all reach the network to enrich a local
+library. They share one architectural rule: rox works fully offline, and the network only
+adds. This is a distinct domain, isolated from playback and library, so a slow or dead
+network never blocks the UI, the audio path, or a browse query.
+
+- **Offline-first.** Every enrichment feature degrades to nothing when there's no network.
+  Playback, browse, search, and manual tagging never depend on it.
+- **Off the hot paths.** Enrichment runs on its own workers behind channels. It never touches
+  the real-time audio callback, and it reaches the library and metadata writer through their
+  existing contracts (a scrobble reads playback state, an auto-tag result goes through the same
+  atomic tag-write path as a manual edit).
+- **The pieces exist.** Last.fm scrobbling is a straightforward HTTP client. Auto-tagging is
+  `rusty-chromaprint` (pure-Rust fingerprint) plus `musicbrainz_rs`, with a hand-rolled AcoustID
+  call. Lyrics is a fetch-or-read-local panel. None of this is load-bearing for the core, so it
+  stays a thin, well-isolated domain rather than growing into the system.
+
+These are later work, so this section fixes the boundary and the offline-first rule, not the
+detail. The point is that enrichment can't be allowed to leak into the domains that must stay
+fast and must work offline.

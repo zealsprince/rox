@@ -6,12 +6,12 @@ and make them concrete. Nothing here gets to move a boundary; when a contract do
 survive implementation, that goes back up to architecture, it doesn't get quietly
 redesigned here.
 
-None are written yet. An implementation doc gets written when its detail is real,
-prototyped or built, not speculated ahead of the code. The planned set, one per domain:
+An implementation doc gets written when its detail is real, prototyped or built, not
+speculated ahead of the code. The set, one per domain:
 
-- `01-playback.md` - decode thread and RT callback wiring, ring buffer sizing, the
-  gapless boundary swap and LAME delay/padding trimming, device switching, where
-  ReplayGain is applied in the sample path
+- [01-playback.md](01-playback.md) - decode thread and RT callback wiring, ring buffer
+  sizing, the gapless boundary swap and LAME delay/padding trimming, the flush protocol,
+  the position clock, device switching, where ReplayGain is applied in the sample path
 - `02-library.md` - the SQLite schema, the in-memory projection layout and interning,
   the scanner pipeline, and the sync sequence between SQLite, projection, and
   filesystem events

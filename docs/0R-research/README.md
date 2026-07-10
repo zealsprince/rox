@@ -3,7 +3,7 @@
 Explorations with no commitment attached. Each entry needs a standalone prototype and a
 writeup before any decision leans on it.
 
-Nothing here yet. First planned entry: the generative visualizer from
-[ADR 8](../02-architecture/decisions/08-adr-visualizer-rendering.md) - a curl-noise flow field on a
-worker thread, polylines versus per-frame image blit, and whether it holds a frame
-budget on real hardware.
+- [01 - Generative visualizer](01-generative-visualizer.md) - the curl-noise flow
+  field from [ADR 8](../02-architecture/decisions/08-adr-visualizer-rendering.md),
+  prototyped in `crates/rox-viz-proto`. Both render paths hold the frame budget;
+  the per-frame image blit wins on UI-thread cost and on the look.

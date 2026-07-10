@@ -1,6 +1,8 @@
 # ADR 8: Visualizers render CPU-side, forced by GPUI
 
-**Status:** Decided, prototype pending
+**Status:** Decided, validated by the
+[visualizer prototype](../../0R-research/01-generative-visualizer.md): the generative
+visual draws as a per-frame image blit, polylines stay for spectrum and waveform
 
 Decision: draw the spectrum and waveform with GPUI primitives in a `canvas()` paint
 callback, and run the generative visual as a CPU simulation, drawn either as GPUI polylines

@@ -1,5 +1,5 @@
 //! First light: prove GPUI renders on this machine and that opening a second
-//! OS window works, since Wayland pop-out is open question 2 in the spec.
+//! OS window works, since Wayland pop-out is open question 1 in the spec.
 
 use gpui::{
     div, prelude::*, px, rgb, size, App, Application, Bounds, Context, MouseButton, SharedString,

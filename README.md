@@ -29,6 +29,10 @@ The dev shell carries the Rust toolchain and the Linux libraries GPUI loads at r
 If you use direnv, `direnv allow` gets you the same shell on cd. The first build
 compiles the whole GPUI tree and takes a few minutes.
 
+On a Mac you also need Xcode installed, nix or not: GPUI compiles Metal shaders at
+build time and nix can't ship Apple's Metal toolchain. On Xcode 26 that toolchain is
+a separate one-time download: `xcodebuild -downloadComponent MetalToolchain`.
+
 Without Nix you need stable Rust and GPUI's system libraries from your distro (Wayland,
 X11, Vulkan, xkbcommon, fontconfig, alsa); every Rust dependency comes from crates.io.
 

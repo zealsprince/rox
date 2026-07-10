@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/rox", "crates/rox-viz-proto"]
+default-members = ["crates/rox"]
 
 [workspace.package]
 version = "0.1.0"

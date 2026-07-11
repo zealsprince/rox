@@ -1,16 +1,9 @@
-//! Playback spike for the implementation doc 01-playback: Symphonia decode on
-//! a worker thread, a pre-allocated SPSC ring, a cpal callback that never
-//! allocates or locks, gapless decoder swap at track boundaries, and a lossy
-//! PCM tap standing in for the visualizer.
+//! Standalone stdin-driven runner. The same engine plays behind a GPUI
+//! window in the rox app; this binary keeps the CLI spike working.
 //!
-//! Usage: rox-playback-proto <file> [file...]
+//! Usage: rox-prototype-playback <file> [file...]
 //! Commands on stdin: p pause/resume, s <secs> seek, n next, b prev,
 //! v <0..2> volume, q quit. With stdin closed it plays the queue and exits.
-
-mod engine;
-mod output;
-mod resample;
-mod shared;
 
 use std::io::BufRead;
 use std::sync::atomic::Ordering;
@@ -18,8 +11,9 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use engine::Cmd;
-use shared::Shared;
+use rox_prototype_playback::engine::{self, Cmd};
+use rox_prototype_playback::output;
+use rox_prototype_playback::shared::Shared;
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -50,7 +44,7 @@ fn main() {
 
     let queue: Vec<std::path::PathBuf> = std::mem::take(&mut args).into_iter().map(Into::into).collect();
     if queue.is_empty() {
-        eprintln!("usage: rox-playback-proto [--count] <file> [file...]");
+        eprintln!("usage: rox-prototype-playback [--count] <file> [file...]");
         std::process::exit(2);
     }
 

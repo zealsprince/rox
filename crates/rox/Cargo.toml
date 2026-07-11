@@ -6,3 +6,5 @@ license.workspace = true
 
 [dependencies]
 gpui = { workspace = true }
+rox-prototype-viz = { path = "../rox-prototype-viz" }
+rox-prototype-playback = { path = "../rox-prototype-playback" }

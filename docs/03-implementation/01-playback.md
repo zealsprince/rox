@@ -161,8 +161,8 @@ lands on the same rebuild path.
 
 ## Reference
 
-The engine's reference implementation is `crates/rox-playback-proto`: `output.rs`
+The engine's reference implementation is `crates/rox-prototype-playback`: `output.rs`
 (stream + callback), `engine.rs` (decode thread, gapless, seek, `--count`),
 `resample.rs`, `shared.rs` (atomics, segments).
-`cargo run -p rox-playback-proto -- <files>` plays with stdin commands;
+`cargo run -p rox-prototype-playback -- <files>` plays with stdin commands;
 `--count <files>` runs the silent gapless verification.

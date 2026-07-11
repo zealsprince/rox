@@ -1,25 +1,16 @@
-//! Research prototype for ADR 8: can a curl-noise flow field driven by
-//! spectrum bands hit the reference look inside a sane frame budget with
-//! CPU-side rendering, and does it draw better as GPUI polylines or as a
-//! per-frame image blit?
-//!
-//! Left click toggles the render mode, right click cycles the particle
-//! count. The HUD reports sim and paint cost. Run with --release, the sim
-//! and the rasterizer are an order of magnitude off in debug.
+//! The prototype's GPUI view. Left click toggles the render mode, right
+//! click cycles the particle count. The HUD reports sim and paint cost.
 
-mod noise;
-mod sim;
-
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    canvas, div, point, prelude::*, px, rgb, rgba, size, App, Application, Bounds, Context,
-    Corners, MouseButton, PathBuilder, Pixels, RenderImage, SharedString, TitlebarOptions, Window,
-    WindowBounds, WindowOptions,
+    canvas, div, point, prelude::*, px, rgb, rgba, Bounds, Context, Corners, MouseButton,
+    PathBuilder, Pixels, RenderImage, SharedString, Window,
 };
 
-use sim::{Mode, Payload, Shared, SimFrame};
+use crate::sim::{self, Mode, Payload, Shared, SimFrame};
 
 const BUCKET_COLORS: [u32; 5] = [0x1f8a4d40, 0x2bd97a66, 0x3dff9c99, 0x8fffc4cc, 0xd8ffe9ff];
 
@@ -38,7 +29,7 @@ struct FrameCache {
     showing: Option<Mode>,
 }
 
-struct VizProto {
+pub struct VizProto {
     shared: Arc<Shared>,
     stats: Arc<Mutex<Stats>>,
     cache: Arc<Mutex<FrameCache>>,
@@ -76,7 +67,6 @@ const AUTO_COMBO_SECS: f32 = 4.0;
 
 impl AutoCycle {
     fn apply(&mut self, combo: usize, shared: &Shared) {
-        use std::sync::atomic::Ordering;
         let (mode, count) = AUTO_COMBOS[combo];
         shared
             .mode
@@ -123,7 +113,7 @@ impl AutoCycle {
 }
 
 impl VizProto {
-    fn new(shared: Arc<Shared>) -> Self {
+    pub fn new(shared: Arc<Shared>) -> Self {
         let auto = std::env::var("ROX_VIZ_AUTOCYCLE").is_ok().then(|| {
             let mut auto = AutoCycle {
                 combo: 0,
@@ -145,6 +135,12 @@ impl VizProto {
             fps_since: Instant::now(),
             auto,
         }
+    }
+}
+
+impl Drop for VizProto {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -220,10 +216,7 @@ impl Render for VizProto {
                 Mode::Lines => "polylines",
                 Mode::Blit => "image blit",
             };
-            let count = self
-                .shared
-                .particle_count
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let count = self.shared.particle_count.load(Ordering::Relaxed);
             [
                 format!("mode: {mode} (left click to toggle)"),
                 format!("particles: {count} (right click to cycle)"),
@@ -304,24 +297,4 @@ impl Render for VizProto {
                 }),
             )
     }
-}
-
-fn main() {
-    let shared = Arc::new(Shared::new());
-    sim::spawn(shared.clone());
-
-    Application::new().run(move |cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("rox viz proto")),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        cx.open_window(options, |_, cx| cx.new(|_| VizProto::new(shared)))
-            .expect("failed to open the window");
-        cx.activate(true);
-    });
 }

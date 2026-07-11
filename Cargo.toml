@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rox", "crates/rox-viz-proto", "crates/rox-playback-proto"]
+members = ["crates/rox", "crates/rox-prototype-viz", "crates/rox-prototype-playback"]
 default-members = ["crates/rox"]
 
 [workspace.package]

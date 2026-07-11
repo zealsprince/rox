@@ -2,7 +2,7 @@
 //! visualizer will have: the sim never touches the UI, it publishes frames
 //! into a latest-wins slot and a slow consumer just sees fewer of them.
 
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,8 @@ pub struct Shared {
     pub mode: AtomicU8,
     pub particle_count: AtomicU32,
     pub latest: Mutex<Option<SimFrame>>,
+    /// Set by the UI when the view drops; the sim thread exits.
+    pub stop: AtomicBool,
 }
 
 impl Shared {
@@ -34,6 +36,7 @@ impl Shared {
             mode: AtomicU8::new(0),
             particle_count: AtomicU32::new(PARTICLE_STEPS[2]),
             latest: Mutex::new(None),
+            stop: AtomicBool::new(false),
         }
     }
 
@@ -134,7 +137,7 @@ fn run(shared: Arc<Shared>) {
     let mut t = 0.0f32;
     let mut z = 0.0f32;
 
-    loop {
+    while !shared.stop.load(Ordering::Relaxed) {
         let tick_start = Instant::now();
 
         let want = shared.particle_count.load(Ordering::Relaxed) as usize;

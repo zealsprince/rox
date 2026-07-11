@@ -1,5 +1,5 @@
 [package]
-name = "rox-viz-proto"
+name = "rox-prototype-viz"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

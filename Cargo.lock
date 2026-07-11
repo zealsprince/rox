@@ -4605,10 +4605,12 @@ name = "rox"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "rox-prototype-playback",
+ "rox-prototype-viz",
 ]
 
 [[package]]
-name = "rox-playback-proto"
+name = "rox-prototype-playback"
 version = "0.1.0"
 dependencies = [
  "cpal",
@@ -4617,7 +4619,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rox-viz-proto"
+name = "rox-prototype-viz"
 version = "0.1.0"
 dependencies = [
  "gpui",

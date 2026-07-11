@@ -1,7 +1,7 @@
 //! The rox app shell. First light proved GPUI renders on this machine; the
 //! shell now hosts the research prototypes behind a menubar so plain
-//! `cargo run` reaches everything without --package. New Window keeps the
-//! Wayland pop-out check (open question 1 in the spec) one click away.
+//! `cargo run` reaches everything without --package. New Window stays in the
+//! menubar so multi-window on Wayland keeps getting exercised.
 
 mod playback;
 mod workspace;

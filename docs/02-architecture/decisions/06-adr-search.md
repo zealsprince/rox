@@ -14,3 +14,8 @@ hold in RAM and costs nothing to build. FTS5 ships with the SQLite we already ha
 no native fuzzy matching. tantivy is the only one with real edit-distance fuzzy, at the
 highest integration cost (schema, writer, commit/reload cycle) and a scale advantage that's
 irrelevant here. We don't pay for fuzzy until a user needs it.
+
+Measured at scale in [research 02](../../0R-research/02-library-scale.md): substring over
+the projection is 31 ms worst case at 10M tracks, so the escalation to FTS5 or tantivy is
+about ranking and fuzzy matching, not latency, until a library approaches ~50M tracks and
+in-memory scans stop fitting.

@@ -1,0 +1,14 @@
+[package]
+name = "rox-prototype-library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Durable store per ADR 5: bundled SQLite, WAL.
+rusqlite = { version = "0.34", features = ["bundled"] }
+# Parallel projection load, sort-index builds, and search scans.
+rayon = "1.10"
+# SIMD substring search for the title arena scan.
+memchr = "2.7"

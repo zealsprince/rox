@@ -18,3 +18,8 @@ tag edit, and filesystem event has to update SQLite and the projection consisten
 a full rebuild. That sync is the most complex part of the library service, and the
 [non-functional model](../03-non-functional.md) treats it as the main
 library risk.
+
+Measured at scale in [research 02](../../0R-research/02-library-scale.md): the projection
+costs ~70 MB per million tracks and holds the browse budget at 10M, provided it's built
+columnar and interned rather than as a vector of row structs. Cold open past a few million
+tracks wants a projection snapshot or sharded readers rather than one serial scan.

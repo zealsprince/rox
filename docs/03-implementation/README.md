@@ -13,8 +13,9 @@ speculated ahead of the code. The set, one per domain:
   sizing, the gapless boundary swap and LAME delay/padding trimming, the flush protocol,
   the position clock, device switching, where ReplayGain is applied in the sample path
 - `02-library.md` - the SQLite schema, the in-memory projection layout and interning,
-  the scanner pipeline, and the sync sequence between SQLite, projection, and
-  filesystem events
+  the scanner pipeline, the sync sequence between SQLite, projection, and filesystem
+  events, and the cold-open path (view snapshot, projection snapshot and its
+  generation check, sharded rebuild)
 - `03-metadata.md` - the copy-verify-rename sequence step by step, per-format tag field
   mapping (ID3v2 / Vorbis), batch semantics and failure shapes
 - `04-artwork.md` - thumbnail DB schema and content-addressed keying, worker pool and

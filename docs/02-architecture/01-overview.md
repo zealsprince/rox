@@ -6,8 +6,8 @@ consumes the [product spec](../01-product/) and hands contracts down to
 sequence the build.
 
 Status: draft. Grounded in a research pass over GPUI, the Rust audio stack, tagging,
-library indexing, and visualizers (late 2025 / early 2026). Version-sensitive claims
-were true at research time and need re-checking before anyone pins a `Cargo.lock`.
+library indexing, and visualizers. Version-sensitive claims were true at research time
+and need re-checking before anyone pins a `Cargo.lock`.
 
 ## Constraints inherited from product
 
@@ -21,9 +21,14 @@ The requirements this structure has to honor, from [scope](../01-product/03-scop
   pop out into real OS windows.
 - Themes as tokens, layouts as shareable artifacts, no scripting layer.
 - Visualizers as a first-class surface.
-- Local audio source, files on disk, but network enrichment (scrobbling, tag lookup,
-  lyrics) is allowed and rox must work fully offline. Built on GPUI.
-- Playback and tagging target MP3 and FLAC on day one, broader formats later.
+- Local-first and fully offline: playback, browse, search, and tag editing never depend
+  on the network. Enrichment (scrobbling, tag lookup, lyrics) is allowed on top. Built
+  on GPUI.
+- Streaming sources are extensions, so track identity is source-qualified and playback
+  keeps a command-in, state-out seam a second source engine can sit behind. See
+  [source extensibility](#source-extensibility).
+- Broad-format local playback and tagging, with MP3 and FLAC as the core formats and
+  contracts that stay format-agnostic.
 
 ## System overview
 
@@ -71,6 +76,28 @@ The four domains:
 Each component's responsibility, boundary, and contract is in
 [Components](02-components.md). The cross-cutting performance, failure, platform, and
 cost model is in [Non-functional model](03-non-functional.md).
+
+## Source extensibility
+
+Product delivers streaming sources (Spotify, YouTube / YouTube Music, Tidal) through
+extensions rather than core code ([scope](../01-product/03-scope.md)). The structure
+above already has the seams that matter, so honoring the constraint costs two calls,
+not a redesign:
+
+- **Track identity is source-qualified.** The library keys tracks by (source, id), and
+  local files are the first source. This is the part that's cheap in the initial schema
+  and a painful migration to retrofit, and it's what keeps a unified multi-source
+  library possible.
+- **Playback is already a contract.** Commands in, state out, PCM tap out. A source
+  that can hand rox decodable audio (Tidal streams, yt-dlp, librespot's decoded
+  samples) feeds the existing engine and gets everything: gapless, ReplayGain,
+  visualizers. A source that can't gets remote control, with local output capture as a
+  fallback tap so visualizers still work when the audio plays on this machine. The
+  visualizer subsystem drains the same ring either way and never knows the difference.
+
+The extension host mechanism (WASM in the style of Zed, or a subprocess model) is
+undecided and tracked in [open questions](../OPEN-QUESTIONS.md). No ADR until a
+prototype; nothing in the core blocks on it beyond the two calls above.
 
 ## Decisions (ADRs)
 

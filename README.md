@@ -39,3 +39,9 @@ X11, Vulkan, xkbcommon, fontconfig, alsa); every Rust dependency comes from crat
 ## Docs
 
 Check out the [docs index](docs/README.md) which lists the altitude spec for how `rox` is built.
+
+## AI
+
+rox is written with AI tools because I'm building it for myself and I can only deliberately work on so
+many projects at the same time. If you want to contribute high quality hand written code and take
+over the development of rox instead of me using AI tools; be my guest.

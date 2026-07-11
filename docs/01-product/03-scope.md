@@ -1,7 +1,7 @@
 # Scope
 
-What's core, what's peripheral, what's out on purpose, and the requirements handed down
-to architecture.
+What's core, what's peripheral, what's delivered through extensions, what's out on
+purpose, and the requirements handed down to architecture.
 
 ## What's core versus peripheral
 
@@ -27,19 +27,49 @@ Peripheral, edges that can exist without being the point:
   sits behind the tagging and browsing experience.
 - DSP / audio effect chain. Foobar has it, most people never touch it.
 
-Out of scope, deliberately, not by oversight:
+## Sources as extensions
 
-- **Streaming service integration** (Spotify, Tidal, Apple Music). rox is about a library
-  you own and control. Reaching into a streaming catalog is a different product with
-  different constraints, and chasing it dilutes the thing that makes rox worth building.
+The local library is the core, but it's one source among several. rox grows an
+extension system whose first job is playback sources:
+Spotify, YouTube / YouTube Music, Tidal, each showing up as its own library view backed
+by a community-maintained extension, think VSCode extensions by proxy. This is what
+gives rox a life beyond people who keep a large local collection.
+
+Extensions are the vehicle rather than core code for a practical reason: the viable
+integration paths for these services (librespot for Spotify, yt-dlp for YouTube) are
+unofficial and break whenever the service changes something. A community extension
+updates on its own release cycle, and rox itself is never the thing that's broken.
+
+Sources aren't equal, and the product shows the difference instead of papering over it:
+
+- **Full.** The source hands rox decodable audio (Tidal's API, yt-dlp streams,
+  librespot's decoded samples). It plays through rox's engine, so gapless, ReplayGain,
+  and visualizers all work.
+- **Tapped.** rox remote-controls playback elsewhere but captures the local audio
+  output, so visualizers work while engine features don't. Only possible when the audio
+  actually plays on this machine.
+- **Remote.** Browse and control only.
+
+A unified library, one view merging local and streaming catalogs with matching across
+them, is an ambition rather than a promise. What the core owes it is not closing the
+door: track identity that isn't welded to file paths.
+
+The extension surface stays narrow: a source is a library provider plus a playback
+provider. It is not a scripting layer for the UI.
+
+## Out of scope
+
+Deliberately, not by oversight:
+
 - **Mobile.** This is a desktop composition tool. The panel model doesn't translate to a
   phone and pretending otherwise wastes effort.
 - **Cloud library sync.** Your library is local files. Syncing them across machines is a
   storage problem someone else already solves.
 - **CD ripping.** Adjacent, well-served elsewhere, not part of the core loop.
-- **A plugin or scripting SDK.** Foobar's component ecosystem was its deepest magic and
-  its biggest maintenance burden. rox is built-in composition and token theming, no
-  third-party extension layer. This is the largest thing left out, and it's on purpose.
+- **Scripted theming or UI extensions.** Foobar's component ecosystem was its deepest
+  magic and its biggest maintenance burden, and the fragility lived in scripted panels.
+  Extensions add sources, not behavior inside the UI: themes stay tokens, layouts stay
+  declarative artifacts.
 
 ## Constraints handed to architecture
 
@@ -51,11 +81,17 @@ Requirements product owns, structure is the architect's call:
 - **Fast on a huge library.** Tens of thousands of tracks with no felt lag on scan,
   browse, search, or tag edit. This is a product requirement, caching and indexing are
   the architect's to design.
-- **Local audio, network enrichment allowed.** rox plays a library you own, files on
-  disk. No streaming services, no YouTube or yt-dlp source, no network catalog as a
-  playback source. Reaching the network to enrich that local library is fine and wanted:
-  Last.fm scrobbling, tag lookup, lyrics. rox has to work fully offline, the network only
-  adds to a library that stands on its own.
+- **Local-first, offline always.** The core is a library you own, files on disk, and
+  rox works fully offline: playback, browse, search, and tag editing never depend on the
+  network. Enriching that library over the network (Last.fm scrobbling, tag lookup,
+  lyrics) is fine and wanted. Streaming sources are extensions and purely additive; the
+  offline core doesn't grow dependencies on them.
+- **Don't paint sources into a corner.** Streaming isn't core, but two things are cheap
+  in the initial design and brutal to retrofit. Track identity is source-qualified, with
+  local files as the first source rather than the assumption baked into every key. And
+  playback keeps a clean command-in, state-out seam so a second source engine can sit
+  behind the same contract. How extensions are hosted is an open question and doesn't
+  constrain the core.
 - **Themes are tokens, layouts are shareable, nothing is scripted.** A theme is colors,
   fonts, spacing, and accent. A layout is a saved arrangement of panels and their configs.
   Both are artifacts a person can hand to someone else and have work. No scripting layer,

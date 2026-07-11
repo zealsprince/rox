@@ -55,3 +55,9 @@ rox is the player Andrew switches to and stops missing NekoRoX. A large library 
 fast and browses without lag, the tagging is good enough to trust with a real collection,
 and the window looks like something worth keeping open. If it clears that bar for him,
 it's ready to share. Building it in that order keeps the scope honest.
+
+Past that bar sits a longer life: sources as extensions. The same panels, visualizers,
+and playback surface working against a Spotify, YouTube Music, or Tidal library view,
+each maintained by the community rather than by rox itself. That's what keeps rox from
+being only a tool for people with large local collections, and none of it displaces the
+local core that earns the switch. [Scope](03-scope.md) carries the detail.

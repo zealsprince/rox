@@ -15,8 +15,8 @@ no database. Everything else in the engine lives on a normal decode thread behin
 line.
 
 Formats: MP3 and FLAC decode through Symphonia with no C dependency (FLAC on by default,
-MP3 pure-Rust behind a feature flag). The contract is format-agnostic, so adding formats
-later is additive; Opus is the first place a C dependency would enter.
+MP3 pure-Rust behind a feature flag). The contract is format-agnostic, so adding a format
+is additive; Opus is the first place a C dependency would enter.
 
 Contract to the UI:
 - In: `play`, `pause`, `seek(pos)`, `next`, `prev`, `enqueue(track)`, `set_volume`,
@@ -30,7 +30,10 @@ Contract to the UI:
 
 Responsibility: hold the catalog, keep it fast, keep it current. SQLite is the durable
 source of truth and the write path. A full in-memory projection is the read path that
-makes browse, sort, and filter instant.
+makes browse, sort, and filter instant. Track identity is source-qualified, (source, id)
+with local files as the first source, so source extensions extend the catalog
+instead of forcing a migration (see
+[source extensibility](01-overview.md#source-extensibility)).
 
 Boundary: the UI never touches SQLite. It queries the in-memory projection for browsing
 and sends scan/search requests. The projection and the database are kept in sync by the
@@ -49,7 +52,7 @@ and the browse view converge without a full rescan.
 
 Responsibility: read and write tags across the format matrix, safely, in bulk. Wraps
 lofty with an atomic-write layer, because lofty rewrites files in place and a crash
-mid-write can leave a file unrecoverable. Day-one formats both write through lofty:
+mid-write can leave a file unrecoverable. The core formats both write through lofty:
 ID3v2 for MP3, Vorbis comments for FLAC.
 
 Boundary: this is the only component that writes audio files. Every write goes through
@@ -125,6 +128,6 @@ network never blocks the UI, the audio path, or a browse query.
   call. Lyrics is a fetch-or-read-local panel. None of this is load-bearing for the core, so it
   stays a thin, well-isolated domain rather than growing into the system.
 
-These are later work, so this section fixes the boundary and the offline-first rule, not the
+These are peripheral, so this section fixes the boundary and the offline-first rule, not the
 detail. The point is that enrichment can't be allowed to leak into the domains that must stay
 fast and must work offline.

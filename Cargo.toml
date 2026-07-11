@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/rox",
+    "crates/rox-playback",
+    "crates/rox-library",
     "crates/rox-prototype-viz",
     "crates/rox-prototype-playback",
     "crates/rox-prototype-library",

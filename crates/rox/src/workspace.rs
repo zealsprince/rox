@@ -1,16 +1,21 @@
-//! The main window: an in-window menubar over a placeholder content area.
-//! GPUI only surfaces `set_menus` in the macOS system bar, so the bar is
-//! drawn in-window to behave the same on every platform.
+//! The main window: an in-window menubar over the library panel, with the
+//! player bar along the bottom. GPUI only surfaces `set_menus` in the macOS
+//! system bar, so the bar is drawn in-window to behave the same on every
+//! platform. Clicking a library row emits a play request that gets routed to
+//! the player here.
 
-use gpui::{deferred, div, prelude::*, px, rgb, Context, MouseButton, Window};
+use gpui::{deferred, div, prelude::*, px, rgb, Context, Entity, MouseButton, Window};
+
+use crate::library::{LibraryEvent, LibraryPanel};
+use crate::player::Player;
 
 const MENU_BAR_H: f32 = 30.0;
 
 #[derive(Clone, Copy)]
 enum MenuAction {
     NewWindow,
+    OpenFolder,
     OpenViz,
-    OpenPlayback,
 }
 
 struct MenuItem {
@@ -32,34 +37,49 @@ const MENUS: &[Menu] = &[
         }],
     },
     Menu {
+        label: "Library",
+        items: &[MenuItem {
+            label: "Open Folder...",
+            action: MenuAction::OpenFolder,
+        }],
+    },
+    Menu {
         label: "Prototypes",
-        items: &[
-            MenuItem {
-                label: "Visualizer",
-                action: MenuAction::OpenViz,
-            },
-            MenuItem {
-                label: "Playback",
-                action: MenuAction::OpenPlayback,
-            },
-        ],
+        items: &[MenuItem {
+            label: "Visualizer",
+            action: MenuAction::OpenViz,
+        }],
     },
 ];
 
 pub struct Workspace {
     open_menu: Option<usize>,
+    library: Entity<LibraryPanel>,
+    player: Entity<Player>,
 }
 
 impl Workspace {
-    pub fn new() -> Self {
-        Workspace { open_menu: None }
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let library = cx.new(LibraryPanel::new);
+        let player = cx.new(|_| Player::new());
+        cx.subscribe(&library, |this: &mut Workspace, _, event, cx| {
+            let LibraryEvent::Play(queue) = event;
+            let queue = queue.clone();
+            this.player.update(cx, |player, cx| player.play(queue, cx));
+        })
+        .detach();
+        Workspace {
+            open_menu: None,
+            library,
+            player,
+        }
     }
 
     fn run(&mut self, action: MenuAction, cx: &mut Context<Self>) {
         match action {
             MenuAction::NewWindow => crate::open_workspace(cx),
+            MenuAction::OpenFolder => self.library.update(cx, |library, cx| library.browse(cx)),
             MenuAction::OpenViz => rox_prototype_viz::open_window(cx),
-            MenuAction::OpenPlayback => crate::playback::open_window(cx),
         }
     }
 
@@ -156,20 +176,7 @@ impl Render for Workspace {
                             .map(|(i, menu)| self.menu_button(i, menu, cx)),
                     ),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap_2()
-                    .child(div().text_xl().child("rox"))
-                    .child(
-                        div()
-                            .text_color(rgb(0x808080))
-                            .child("If Foobar2000 was made this year."),
-                    ),
-            )
+            .child(self.library.clone())
+            .child(self.player.clone())
     }
 }

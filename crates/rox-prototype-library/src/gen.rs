@@ -4,7 +4,7 @@
 //! construction and album names unique per artist, which makes every path
 //! unique without a synthetic suffix.
 
-use crate::TrackRow;
+use rox_library::TrackRow;
 
 const WORDS: &[&str] = &[
     "amber", "arc", "ash", "atlas", "aurora", "autumn", "birch", "blue", "bone", "border",
@@ -123,7 +123,7 @@ pub fn generate(seed: u64, total: u64, mut sink: impl FnMut(TrackRow)) {
                     title,
                     artist: artist.clone(),
                     album: album.clone(),
-                    genre,
+                    genre: genre.to_string(),
                     year,
                     track_no,
                     duration_ms,

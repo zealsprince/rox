@@ -1,10 +1,8 @@
-//! Playback spike for the implementation doc 01-playback: Symphonia decode on
-//! a worker thread, a pre-allocated SPSC ring, a cpal callback that never
+//! The playback engine per the components contract: Symphonia decode on a
+//! worker thread, a pre-allocated SPSC ring, a cpal callback that never
 //! allocates or locks, gapless decoder swap at track boundaries, and a lossy
-//! PCM tap standing in for the visualizer.
-//!
-//! The crate's binary drives it from stdin; the rox app embeds the same
-//! engine behind a GPUI window.
+//! PCM tap for the visualizer. Grown out of the playback spike, which still
+//! drives this same engine from stdin in rox-prototype-playback.
 
 pub mod engine;
 pub mod output;

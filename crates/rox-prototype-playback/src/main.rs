@@ -11,9 +11,9 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rox_prototype_playback::engine::{self, Cmd};
-use rox_prototype_playback::output;
-use rox_prototype_playback::shared::Shared;
+use rox_playback::engine::{self, Cmd};
+use rox_playback::output;
+use rox_playback::shared::Shared;
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();

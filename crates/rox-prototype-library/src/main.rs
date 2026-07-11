@@ -8,9 +8,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use rox_prototype_library::gen::Rng;
-use rox_prototype_library::projection::Projection;
-use rox_prototype_library::store;
+use rox_library::projection::Projection;
+use rox_library::store;
+use rox_prototype_library::gen::{self, Rng};
 
 const SEED: u64 = 0x0520;
 
@@ -54,7 +54,7 @@ fn main() {
             store::init_schema(&conn).expect("init schema");
         }
         let t = Instant::now();
-        store::populate(&mut conn, SEED, tracks).expect("populate");
+        populate(&mut conn, SEED, tracks).expect("populate");
         report("populate (generate + insert)", t.elapsed(), None);
     } else {
         println!("reusing existing database");
@@ -135,9 +135,38 @@ fn main() {
     // Contrast: the same substring search pushed down to SQLite.
     if !skip_like {
         let t = Instant::now();
-        let n = store::like_search(&conn, "moon").expect("like search");
+        let n = like_search(&conn, "moon").expect("like search");
         report("sqlite LIKE \"%moon%\" (contrast)", t.elapsed(), Some(n as usize));
     }
+}
+
+/// Generate and insert `total` synthetic tracks in 50k-row transactions.
+fn populate(conn: &mut rusqlite::Connection, seed: u64, total: u64) -> rusqlite::Result<()> {
+    const BATCH: usize = 50_000;
+    let mut batch = Vec::with_capacity(BATCH);
+    let mut pending = Ok(());
+    gen::generate(seed, total, |row| {
+        batch.push(row);
+        if batch.len() == BATCH && pending.is_ok() {
+            pending = store::insert_batch(conn, &batch);
+            batch.clear();
+        }
+    });
+    pending?;
+    store::insert_batch(conn, &batch)
+}
+
+/// The naive alternative the projection replaces: substring search pushed down
+/// to SQLite. Timed for contrast.
+fn like_search(conn: &rusqlite::Connection, needle: &str) -> rusqlite::Result<u64> {
+    let pattern = format!("%{needle}%");
+    conn.query_row(
+        "SELECT COUNT(*) FROM tracks
+         WHERE title LIKE ?1 OR artist LIKE ?1 OR album LIKE ?1",
+        [&pattern],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n as u64)
 }
 
 fn report(label: &str, elapsed: std::time::Duration, hits: Option<usize>) {

@@ -1,9 +1,10 @@
-//! The rox app shell. First light proved GPUI renders on this machine; the
-//! shell now hosts the research prototypes behind a menubar so plain
-//! `cargo run` reaches everything without --package. New Window stays in the
-//! menubar so multi-window on Wayland keeps getting exercised.
+//! The rox app shell: the library panel over the promoted library service,
+//! the player bar over the promoted playback engine, and a menubar that still
+//! reaches the remaining research prototypes. New Window stays in the menubar
+//! so multi-window on Wayland keeps getting exercised.
 
-mod playback;
+mod library;
+mod player;
 mod workspace;
 
 use gpui::{
@@ -14,7 +15,7 @@ use gpui::{
 use workspace::Workspace;
 
 pub fn open_workspace(cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(960.), px(600.)), cx);
+    let bounds = Bounds::centered(None, size(px(1100.), px(700.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
@@ -23,7 +24,7 @@ pub fn open_workspace(cx: &mut App) {
         }),
         ..Default::default()
     };
-    cx.open_window(options, |_, cx| cx.new(|_| Workspace::new()))
+    cx.open_window(options, |_, cx| cx.new(Workspace::new))
         .expect("failed to open the main window");
 }
 

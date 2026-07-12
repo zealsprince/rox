@@ -445,8 +445,8 @@ impl Panel for LibraryPanel {
         "library"
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("library")
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel::tab_title("library", &cx.entity(), self.tab_panel.clone())
     }
 
     /// The panel's controls share the title bar row instead of stacking a
@@ -484,9 +484,12 @@ impl Panel for LibraryPanel {
         &mut self,
         tab_panel: WeakEntity<TabPanel>,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
-        self.tab_panel = Some(tab_panel);
+        self.tab_panel = Some(tab_panel.clone());
+        self.state
+            .tab_hosts
+            .update(cx, |hosts, cx| hosts.report(tab_panel, cx));
     }
 
     fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {

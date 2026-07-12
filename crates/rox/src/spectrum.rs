@@ -10,8 +10,7 @@ use std::time::Instant;
 
 use gpui::{
     canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba, size,
-    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, SharedString, Subscription,
-    WeakEntity, Window,
+    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, Subscription, WeakEntity, Window,
 };
 use gpui_component::button::Button;
 use gpui_component::dock::{Panel, PanelEvent, TabPanel};
@@ -259,8 +258,8 @@ impl Panel for SpectrumPanel {
         "spectrum"
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("spectrum")
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel::tab_title("spectrum", &cx.entity(), self.tab_panel.clone())
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
@@ -271,9 +270,12 @@ impl Panel for SpectrumPanel {
         &mut self,
         tab_panel: WeakEntity<TabPanel>,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
-        self.tab_panel = Some(tab_panel);
+        self.tab_panel = Some(tab_panel.clone());
+        self.state
+            .tab_hosts
+            .update(cx, |hosts, cx| hosts.report(tab_panel, cx));
     }
 
     fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {

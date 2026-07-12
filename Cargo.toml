@@ -16,6 +16,14 @@ version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 
+# Our crates stay unoptimized for fast dev iteration, but dependencies build
+# with full optimization: unoptimized Symphonia decodes an order of magnitude
+# slower than optimized, which turned waveform peak generation into a ten
+# second stall under `cargo run`. Deps only rebuild when they change, so this
+# is a one-time compile cost.
+[profile.dev.package."*"]
+opt-level = 3
+
 [workspace.dependencies]
 # GPUI is pre-1.0 with frequent breaking changes; pinned exactly per ADR 1.
 # Upgrades are a budgeted task, bump this deliberately.

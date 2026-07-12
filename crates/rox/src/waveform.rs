@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use gpui::{
     canvas, div, fill, point, prelude::*, px, rgb, rgba, size, App, Bounds, Context, EventEmitter,
-    FocusHandle, Focusable, MouseButton, Pixels, SharedString, Subscription, WeakEntity, Window,
+    FocusHandle, Focusable, MouseButton, Pixels, Subscription, WeakEntity, Window,
 };
 use gpui_component::button::Button;
 use gpui_component::dock::{Panel, PanelEvent, TabPanel};
@@ -230,8 +230,8 @@ impl Panel for WaveformPanel {
         "waveform"
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("waveform")
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        panel::tab_title("waveform", &cx.entity(), self.tab_panel.clone())
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
@@ -242,9 +242,12 @@ impl Panel for WaveformPanel {
         &mut self,
         tab_panel: WeakEntity<TabPanel>,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
-        self.tab_panel = Some(tab_panel);
+        self.tab_panel = Some(tab_panel.clone());
+        self.state
+            .tab_hosts
+            .update(cx, |hosts, cx| hosts.report(tab_panel, cx));
     }
 
     fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {

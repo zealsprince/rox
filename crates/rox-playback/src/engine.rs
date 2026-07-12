@@ -258,6 +258,82 @@ pub fn count_frames(path: &PathBuf) -> Result<(u64, Option<u64>), String> {
     Ok((decoded, info.num_frames))
 }
 
+/// Decode a whole file through the same path playback uses and reduce it to
+/// at most `bins` (min, max) mono sample pairs spanning the track, the data
+/// behind a waveform strip. Pairs are normalized so the loudest bin hits 1,
+/// with a gentle perceptual curve so quiet passages stay visible. No audio
+/// device involved; run it on a background thread, a long track is a full
+/// decode.
+pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<(f32, f32)>, String> {
+    // Probe once for the source rate, then open for real with the device
+    // rate equal to it, so the resampler is a passthrough.
+    let (probe, info) = Source::open(path, 48000)?;
+    drop(probe);
+    let (mut src, info) = Source::open(path, info.sample_rate)?;
+
+    // Coarse pass: one pair per fixed block of frames, so memory stays a few
+    // thousand pairs whatever the track length, then fold down to `bins`.
+    const BLOCK_FRAMES: usize = 2048;
+    let mut coarse: Vec<(f32, f32)> = Vec::new();
+    let mut lo = f32::MAX;
+    let mut hi = f32::MIN;
+    let mut in_block = 0usize;
+    let mut chunk = Vec::new();
+    loop {
+        chunk.clear();
+        if !src.next_chunk(info.sample_rate, &mut chunk) {
+            break;
+        }
+        for frame in chunk.chunks_exact(2) {
+            let s = (frame[0] + frame[1]) * 0.5;
+            lo = lo.min(s);
+            hi = hi.max(s);
+            in_block += 1;
+            if in_block == BLOCK_FRAMES {
+                coarse.push((lo, hi));
+                lo = f32::MAX;
+                hi = f32::MIN;
+                in_block = 0;
+            }
+        }
+    }
+    if in_block > 0 {
+        coarse.push((lo, hi));
+    }
+    if coarse.is_empty() {
+        return Err("no decodable audio".into());
+    }
+
+    // Fold the coarse pairs into the requested resolution, keeping each
+    // bucket's extremes so transients survive the downsample.
+    let mut peaks: Vec<(f32, f32)> = if coarse.len() <= bins.max(1) {
+        coarse
+    } else {
+        let per = coarse.len() as f64 / bins as f64;
+        (0..bins)
+            .map(|i| {
+                let from = (i as f64 * per) as usize;
+                let to = (((i + 1) as f64 * per) as usize).clamp(from + 1, coarse.len());
+                coarse[from..to].iter().fold(
+                    (f32::MAX, f32::MIN),
+                    |(lo, hi), &(bl, bh)| (lo.min(bl), hi.max(bh)),
+                )
+            })
+            .collect()
+    };
+
+    let loudest = peaks
+        .iter()
+        .fold(0.0f32, |m, &(lo, hi)| m.max(lo.abs()).max(hi.abs()));
+    if loudest > 0.0 {
+        for (lo, hi) in peaks.iter_mut() {
+            *lo = (lo.abs() / loudest).powf(0.7).copysign(*lo);
+            *hi = (hi.abs() / loudest).powf(0.7).copysign(*hi);
+        }
+    }
+    Ok(peaks)
+}
+
 impl Source {
     fn open(path: &PathBuf, device_rate: u32) -> Result<(Source, TrackInfo), String> {
         let file = std::fs::File::open(path).map_err(|e| e.to_string())?;

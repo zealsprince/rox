@@ -1,16 +1,24 @@
-//! The rox app shell: the library panel over the promoted library service,
-//! the player bar over the promoted playback engine, and a menubar that still
-//! reaches the remaining research prototypes. New Window stays in the menubar
-//! so multi-window on Wayland keeps getting exercised.
+//! The rox app shell: the workspace's dock hosts the library panel over the
+//! promoted library service and the audio views (spectrum, waveform) fed
+//! from the player's PCM tap, with the player bar over the promoted
+//! playback engine fixed under the dock. Panels duplicate with
+//! their own config and pop out into OS windows over the same shared
+//! entities. New Window stays in the menubar so multi-window on Wayland
+//! keeps getting exercised.
 
 mod library;
+mod panel;
 mod player;
+mod spectrum;
+mod waveform;
 mod workspace;
 
 use gpui::{
     px, size, App, AppContext, Application, Bounds, SharedString, TitlebarOptions, WindowBounds,
     WindowOptions,
 };
+use gpui_component::{Root, Theme, ThemeMode};
+use gpui_component_assets::Assets;
 
 use workspace::Workspace;
 
@@ -24,12 +32,21 @@ pub fn open_workspace(cx: &mut App) {
         }),
         ..Default::default()
     };
-    cx.open_window(options, |_, cx| cx.new(Workspace::new))
-        .expect("failed to open the main window");
+    cx.open_window(options, |window, cx| {
+        let workspace = cx.new(|cx| Workspace::new(window, cx));
+        // gpui-component windows layer sheets, dialogs, and dock drag
+        // overlays through a Root at the top of the window.
+        cx.new(|cx| Root::new(workspace, window, cx))
+    })
+    .expect("failed to open the main window");
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    Application::new().with_assets(Assets).run(|cx: &mut App| {
+        gpui_component::init(cx);
+        // The widget baseline follows the app's existing dark palette;
+        // themes as shareable token sets come later.
+        Theme::change(ThemeMode::Dark, None, cx);
         open_workspace(cx);
         cx.activate(true);
     });

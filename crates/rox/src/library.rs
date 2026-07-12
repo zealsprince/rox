@@ -1,30 +1,41 @@
-//! The library panel: the projection-backed track list with substring search,
-//! and the scan entry point. Owns the app's library database; the list only
-//! ever reads the in-memory projection, per the library service boundary.
-//! Clicking a track emits a play request the workspace routes to the player.
+//! The library: a shared catalog entity over the promoted library service,
+//! and the dockable panel that browses it. The catalog owns the app's library
+//! database and only ever hands out the in-memory projection, per the library
+//! service boundary. Panels are views over the shared catalog with their own
+//! search config, so a duplicated panel filters independently. Clicking a
+//! track queues it straight on the shared player.
 
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, relative, rgb, uniform_list, Context, EventEmitter, FocusHandle,
-    KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Window,
+    div, prelude::*, px, relative, rgb, App, Context, Div, EventEmitter, FocusHandle, Focusable,
+    KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Subscription, WeakEntity, Window,
 };
+use gpui_component::button::Button;
+use gpui_component::dock::{Panel, PanelEvent, TabPanel};
+use gpui_component::IconName;
 
 use rox_library::projection::Projection;
 use rox_library::rusqlite::Connection;
 use rox_library::scanner::{self, ScanSummary};
 use rox_library::store;
 
+use crate::panel::{self, AppState};
+
 /// Play from a clicked row: at most this many tracks are queued behind it.
 const QUEUE_CAP: usize = 1000;
 
+/// The catalog changed: a scan finished or the projection reloaded. Panels
+/// subscribe and refresh their views.
 pub enum LibraryEvent {
-    Play(Vec<PathBuf>),
+    Updated,
 }
 
-pub struct LibraryPanel {
+/// The shared catalog entity. Owns the database and the projection; every
+/// library panel reads it, none of them own it.
+pub struct Library {
     db_path: PathBuf,
     /// UI-side connection for id -> path lookups; scans and projection loads
     /// open their own connections on the background executor.
@@ -32,18 +43,14 @@ pub struct LibraryPanel {
     projection: Option<Arc<Projection>>,
     /// The canonical browse order: artist, album, track number.
     order: Arc<Vec<u32>>,
-    /// Rows currently displayed: the canonical order, or search hits.
-    view: Arc<Vec<u32>>,
-    query: String,
-    search_focus: FocusHandle,
     /// Set while a scan or projection load runs in the background.
     busy: Option<SharedString>,
     status: SharedString,
 }
 
-impl EventEmitter<LibraryEvent> for LibraryPanel {}
+impl EventEmitter<LibraryEvent> for Library {}
 
-impl LibraryPanel {
+impl Library {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let dir = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -57,14 +64,11 @@ impl LibraryPanel {
             Err(e) => (None, SharedString::from(format!("library db: {e}"))),
         };
 
-        let mut this = LibraryPanel {
+        let mut this = Library {
             db_path,
             conn,
             projection: None,
             order: Arc::new(Vec::new()),
-            view: Arc::new(Vec::new()),
-            query: String::new(),
-            search_focus: cx.focus_handle(),
             busy: None,
             status,
         };
@@ -72,6 +76,29 @@ impl LibraryPanel {
             this.reload(None, cx);
         }
         this
+    }
+
+    pub fn projection(&self) -> Option<&Arc<Projection>> {
+        self.projection.as_ref()
+    }
+
+    pub fn order(&self) -> Arc<Vec<u32>> {
+        self.order.clone()
+    }
+
+    /// What the toolbar shows: the running operation, or the last status.
+    pub fn line(&self) -> SharedString {
+        self.busy.clone().unwrap_or_else(|| self.status.clone())
+    }
+
+    /// Resolve database ids to playable paths on the UI-side connection.
+    pub fn paths_for(&self, ids: &[i64]) -> Result<Vec<PathBuf>, String> {
+        let Some(conn) = &self.conn else {
+            return Ok(Vec::new());
+        };
+        store::paths_for(conn, ids)
+            .map(|paths| paths.into_iter().map(Into::into).collect())
+            .map_err(|e| e.to_string())
     }
 
     /// Load the projection off the UI thread, optionally scanning `root`
@@ -95,28 +122,17 @@ impl LibraryPanel {
                         this.status = status_line(projection.len(), summary.as_ref()).into();
                         this.projection = Some(Arc::new(projection));
                         this.order = Arc::new(order);
-                        this.refresh_view();
                     }
                     Err(e) => this.status = format!("library: {e}").into(),
                 }
+                cx.emit(LibraryEvent::Updated);
                 cx.notify();
             })
             .ok();
         })
         .detach();
+        cx.emit(LibraryEvent::Updated);
         cx.notify();
-    }
-
-    fn refresh_view(&mut self) {
-        let Some(projection) = &self.projection else {
-            self.view = Arc::new(Vec::new());
-            return;
-        };
-        self.view = if self.query.is_empty() {
-            self.order.clone()
-        } else {
-            Arc::new(projection.search(&self.query))
-        };
     }
 
     pub fn browse(&mut self, cx: &mut Context<Self>) {
@@ -135,24 +151,98 @@ impl LibraryPanel {
         })
         .detach();
     }
+}
+
+/// One browse view over the shared catalog: its own search query and row
+/// order, duplicable and poppable like any panel.
+pub struct LibraryPanel {
+    state: AppState,
+    /// Rows currently displayed: the canonical order, or search hits.
+    view: Arc<Vec<u32>>,
+    query: String,
+    search_focus: FocusHandle,
+    /// A panel-local error (a failed play), shown until the catalog updates.
+    error: Option<SharedString>,
+    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    tab_panel: Option<WeakEntity<TabPanel>>,
+    _library_changed: Subscription,
+}
+
+impl LibraryPanel {
+    pub fn new(state: AppState, query: String, cx: &mut Context<Self>) -> Self {
+        let _library_changed = cx.subscribe(
+            &state.library,
+            |this: &mut LibraryPanel, _, _: &LibraryEvent, cx| {
+                this.error = None;
+                this.refresh_view(cx);
+                cx.notify();
+                this.refresh_title_bar(cx);
+            },
+        );
+        let mut this = LibraryPanel {
+            state,
+            view: Arc::new(Vec::new()),
+            query,
+            search_focus: cx.focus_handle(),
+            error: None,
+            tab_panel: None,
+            _library_changed,
+        };
+        this.refresh_view(cx);
+        this
+    }
+
+    fn refresh_view(&mut self, cx: &App) {
+        let library = self.state.library.read(cx);
+        let Some(projection) = library.projection() else {
+            self.view = Arc::new(Vec::new());
+            return;
+        };
+        self.view = if self.query.is_empty() {
+            library.order()
+        } else {
+            Arc::new(projection.search(&self.query))
+        };
+    }
+
+    fn browse(&mut self, cx: &mut Context<Self>) {
+        self.state
+            .library
+            .update(cx, |library, cx| library.browse(cx));
+    }
+
+    /// While docked, the panel's controls live in the tab panel's title bar,
+    /// which only repaints when the tab panel itself is notified. Call this
+    /// after any change the title bar shows: query, focus, status, error.
+    fn refresh_title_bar(&self, cx: &mut App) {
+        if let Some(tabs) = self.tab_panel.as_ref().and_then(|tabs| tabs.upgrade()) {
+            tabs.update(cx, |_, cx| cx.notify());
+        }
+    }
 
     /// Queue the clicked row and what follows it in the current view order.
     fn play_from(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let (Some(projection), Some(conn)) = (&self.projection, &self.conn) else {
-            return;
+        let result = {
+            let library = self.state.library.read(cx);
+            let Some(projection) = library.projection() else {
+                return;
+            };
+            let end = (ix + QUEUE_CAP).min(self.view.len());
+            let ids: Vec<i64> = self.view[ix..end]
+                .iter()
+                .map(|&row| projection.db_id[row as usize])
+                .collect();
+            library.paths_for(&ids)
         };
-        let end = (ix + QUEUE_CAP).min(self.view.len());
-        let ids: Vec<i64> = self.view[ix..end]
-            .iter()
-            .map(|&row| projection.db_id[row as usize])
-            .collect();
-        match store::paths_for(conn, &ids) {
-            Ok(paths) => cx.emit(LibraryEvent::Play(
-                paths.into_iter().map(Into::into).collect(),
-            )),
+        match result {
+            Ok(paths) => self
+                .state
+                .player
+                .update(cx, |player, cx| player.play(paths, cx)),
             Err(e) => {
-                self.status = format!("library: {e}").into();
+                self.error = Some(format!("library: {e}").into());
                 cx.notify();
+                self.refresh_title_bar(cx);
             }
         }
     }
@@ -175,17 +265,71 @@ impl LibraryPanel {
                 self.query.push_str(text);
             }
         }
-        self.refresh_view();
+        self.refresh_view(cx);
         cx.notify();
+        self.refresh_title_bar(cx);
     }
 
-    fn toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn open_folder_button(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .px_2()
+            .h(px(22.))
+            .flex()
+            .items_center()
+            .flex_none()
+            .rounded_md()
+            .bg(rgb(0x2a2a2a))
+            .hover(|d| d.bg(rgb(0x3a3a3a)))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.browse(cx)),
+            )
+            .child("open folder")
+    }
+
+    fn search_box(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let focused = self.search_focus.is_focused(window);
         let search_text: SharedString = if self.query.is_empty() {
             "search".into()
         } else {
             self.query.clone().into()
         };
+        div()
+            .px_2()
+            .h(px(22.))
+            .flex()
+            .items_center()
+            .rounded_md()
+            .bg(rgb(0x141414))
+            .border_1()
+            .border_color(if focused { rgb(0x4a6a55) } else { rgb(0x333333) })
+            .when(self.query.is_empty(), |d| d.text_color(rgb(0x808080)))
+            .track_focus(&self.search_focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.focus(&this.search_focus);
+                    cx.notify();
+                    this.refresh_title_bar(cx);
+                }),
+            )
+            .on_key_down(cx.listener(|this, event, _, cx| {
+                this.on_search_key(event, cx);
+            }))
+            .child(search_text)
+    }
+
+    fn status_line(&self, cx: &Context<Self>) -> SharedString {
+        self.error
+            .clone()
+            .unwrap_or_else(|| self.state.library.read(cx).line())
+    }
+
+    /// The popped-out window has no title bar to host the controls, so it
+    /// keeps them as a toolbar row above the list.
+    fn toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let line = self.status_line(cx);
         div()
             .flex_none()
             .h(px(36.))
@@ -197,57 +341,17 @@ impl LibraryPanel {
             .bg(rgb(0x1f1f1f))
             .border_b_1()
             .border_color(rgb(0x333333))
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(rgb(0x2a2a2a))
-                    .hover(|d| d.bg(rgb(0x3a3a3a)))
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.browse(cx)),
-                    )
-                    .child("open folder"),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(rgb(0x141414))
-                    .border_1()
-                    .border_color(if focused { rgb(0x4a6a55) } else { rgb(0x333333) })
-                    .when(self.query.is_empty(), |d| d.text_color(rgb(0x808080)))
-                    .track_focus(&self.search_focus)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            window.focus(&this.search_focus);
-                            cx.notify();
-                        }),
-                    )
-                    .on_key_down(cx.listener(|this, event, _, cx| {
-                        this.on_search_key(event, cx);
-                    }))
-                    .child(search_text),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(rgb(0x808080))
-                    .child(self.busy.clone().unwrap_or_else(|| self.status.clone())),
-            )
+            .child(self.open_folder_button(cx))
+            .child(self.search_box(window, cx).flex_1())
+            .child(div().flex_none().text_color(rgb(0x808080)).child(line))
     }
 
     fn track_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        uniform_list(
+        gpui::uniform_list(
             "tracks",
             self.view.len(),
             cx.processor(|this, range: Range<usize>, _, cx| {
-                let Some(projection) = this.projection.clone() else {
+                let Some(projection) = this.state.library.read(cx).projection().cloned() else {
                     return Vec::new();
                 };
                 let view = this.view.clone();
@@ -328,21 +432,122 @@ impl LibraryPanel {
     }
 }
 
+impl EventEmitter<PanelEvent> for LibraryPanel {}
+
+impl Focusable for LibraryPanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.search_focus.clone()
+    }
+}
+
+impl Panel for LibraryPanel {
+    fn panel_name(&self) -> &'static str {
+        "library"
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("library")
+    }
+
+    /// The panel's controls share the title bar row instead of stacking a
+    /// second toolbar row under it. Kept compact: the title row is 30px.
+    fn title_suffix(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let line = self.status_line(cx);
+        Some(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .flex_none()
+                .gap_2()
+                .child(self.open_folder_button(cx))
+                .child(self.search_box(window, cx).w(px(180.)))
+                .child(
+                    div()
+                        .max_w(px(240.))
+                        .truncate()
+                        .text_color(rgb(0x808080))
+                        .child(line),
+                ),
+        )
+    }
+
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn on_added_to(
+        &mut self,
+        tab_panel: WeakEntity<TabPanel>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.tab_panel = Some(tab_panel);
+    }
+
+    fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.tab_panel = None;
+    }
+
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Button>> {
+        // Duplicate: a second view with its own copy of the config, over the
+        // same catalog and player.
+        let weak = cx.entity().downgrade();
+        let duplicate = Button::new("duplicate")
+            .icon(IconName::Copy)
+            .tooltip("duplicate this panel")
+            .on_click(move |_, window, cx| {
+                let Some(this) = weak.upgrade() else { return };
+                let (state, query, tabs) = {
+                    let panel = this.read(cx);
+                    (
+                        panel.state.clone(),
+                        panel.query.clone(),
+                        panel.tab_panel.clone(),
+                    )
+                };
+                let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+                    return;
+                };
+                let dup = cx.new(|cx| LibraryPanel::new(state, query, cx));
+                tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+            });
+        let popout = panel::popout_button(&cx.entity(), "library", self.tab_panel.clone());
+        Some(vec![duplicate, popout])
+    }
+}
+
 impl Render for LibraryPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let busy = self.state.library.read(cx).busy.is_some();
         let empty = self.view.is_empty();
-        let body = if empty && self.busy.is_none() && self.query.is_empty() {
+        let body = if empty && !busy && self.query.is_empty() {
             self.empty_state(cx).into_any_element()
         } else {
             self.track_list(cx).into_any_element()
         };
+        // The root must size itself: the dock's tab panel lays the panel view
+        // out as a root element (cached, absolute), where flex_1 has no flex
+        // parent to grow in and the height would collapse to the content.
         div()
-            .flex_1()
-            .min_h_0()
+            .size_full()
             .flex()
             .flex_col()
             .bg(rgb(0x181818))
-            .child(self.toolbar(window, cx))
+            // Docked, the controls sit in the tab panel's title bar via
+            // title_suffix; popped out there is no title bar, so render the
+            // toolbar row here.
+            .when(self.tab_panel.is_none(), |d| {
+                d.child(self.toolbar(window, cx))
+            })
             .child(div().flex_1().min_h_0().child(body))
     }
 }

@@ -6,8 +6,10 @@ license.workspace = true
 
 [dependencies]
 gpui = { workspace = true }
+gpui-component = { workspace = true }
+gpui-component-assets = { workspace = true }
 rox-library = { path = "../rox-library" }
 rox-playback = { path = "../rox-playback" }
-rox-prototype-viz = { path = "../rox-prototype-viz" }
+rox-viz = { path = "../rox-viz" }
 # Platform data dir for the library database.
 dirs = "5"

@@ -1,21 +1,23 @@
-//! The player bar at the bottom of the workspace: one running engine session
-//! behind the playback contract (commands in over a channel, state out through
-//! shared atomics), plus the tap meter that keeps the PCM tap exercised until
-//! the visualizer consumes it for real.
+//! The player bar, a fixed row at the bottom of the workspace: one running
+//! engine session behind the playback contract (commands in over a channel,
+//! state out through shared atomics). The PCM tap gets drained here every
+//! frame; the peak drives the level meter and the samples move on to the
+//! audio views' shared feed. That per-frame drain is why the bar lives
+//! outside the dock as exactly one view: it must keep rendering no matter
+//! what the panels do.
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 
-use gpui::{
-    div, prelude::*, px, relative, rgb, Context, MouseButton, SharedString, Window,
-};
+use gpui::{div, prelude::*, px, relative, rgb, Context, MouseButton, SharedString, Window};
 
 use rox_playback::cpal::Stream;
 use rox_playback::engine::{self, Cmd};
 use rox_playback::output;
 use rox_playback::rtrb::Consumer;
 use rox_playback::shared::Shared;
+use rox_viz::AudioFeed;
 
 /// One running engine: decode thread, output stream, and the UI's side of
 /// the PCM tap. Dropping it sends Quit and tears the stream down.
@@ -25,7 +27,9 @@ struct Session {
     tap: Consumer<f32>,
     _stream: Stream,
     device_rate: u32,
-    queue_len: usize,
+    /// The queued paths, kept so the views can resolve the playing track
+    /// back to its file.
+    queue: Vec<PathBuf>,
     meter: f32,
 }
 
@@ -34,9 +38,9 @@ impl Session {
         let shared = Arc::new(Shared::new(queue.len()));
         let out = output::open(shared.clone())?;
         let device_rate = out.sample_rate;
-        let queue_len = queue.len();
         let (tx, rx) = mpsc::channel::<Cmd>();
-        let engine = engine::Engine::new(queue, shared.clone(), out.producer, device_rate, rx);
+        let engine =
+            engine::Engine::new(queue.clone(), shared.clone(), out.producer, device_rate, rx);
         std::thread::Builder::new()
             .name("decode".into())
             .spawn(move || engine.run())
@@ -47,10 +51,20 @@ impl Session {
             tap: out.tap,
             _stream: out.stream,
             device_rate,
-            queue_len,
+            queue,
             meter: 0.0,
         })
     }
+}
+
+/// A snapshot of the playing track for the audio views: which file and
+/// where the position clock sits. Whether audio is actually moving is what
+/// the tap says, so the views read that from the feed instead.
+#[derive(Clone)]
+pub struct NowPlaying {
+    pub path: PathBuf,
+    pub position_secs: f64,
+    pub duration_secs: Option<f64>,
 }
 
 impl Drop for Session {
@@ -62,11 +76,49 @@ impl Drop for Session {
 pub struct Player {
     session: Option<Session>,
     error: Option<SharedString>,
+    /// Outlives sessions: the audio views hold clones and keep reading
+    /// while queues come and go.
+    feed: Arc<AudioFeed>,
 }
 
 impl Player {
-    pub fn new() -> Self {
-        Player { session: None, error: None }
+    pub fn new(_cx: &mut Context<Self>) -> Self {
+        Player {
+            session: None,
+            error: None,
+            feed: Arc::new(AudioFeed::new()),
+        }
+    }
+
+    /// The audio feed the audio views read from.
+    pub fn feed(&self) -> Arc<AudioFeed> {
+        self.feed.clone()
+    }
+
+    /// Where playback currently sits, resolved off the shared position
+    /// clock. None while no session is running or before the first track
+    /// opens.
+    pub fn now_playing(&self) -> Option<NowPlaying> {
+        let session = self.session.as_ref()?;
+        let (track, secs) = session.shared.position(session.device_rate)?;
+        let path = session.queue.get(track)?.clone();
+        let duration_secs = {
+            let tracks = session.shared.tracks.lock().unwrap();
+            tracks
+                .get(track)
+                .and_then(|t| t.as_ref())
+                .and_then(|t| t.duration_secs)
+        };
+        Some(NowPlaying {
+            path,
+            position_secs: secs,
+            duration_secs,
+        })
+    }
+
+    /// Absolute seek within the playing track, for the waveform strip.
+    pub fn seek_to(&self, secs: f64) {
+        self.send(Cmd::Seek(secs.max(0.0)));
     }
 
     /// Replace whatever is playing with a fresh queue; the old session quits
@@ -78,6 +130,7 @@ impl Player {
         self.session = None;
         match Session::start(queue) {
             Ok(session) => {
+                self.feed.set_sample_rate(session.device_rate);
                 self.session = Some(session);
                 self.error = None;
             }
@@ -135,19 +188,20 @@ impl Player {
 
         let session = self.session.as_mut().expect("session bar without session");
 
-        // Drain the tap like a visualizer would: take what's there, never
-        // wait for more.
+        // Drain the tap: take what's there, never wait for more. The peak
+        // drives the meter, the samples go on to the audio views' feed.
         let mut peak = 0.0f32;
-        let mut drained = false;
+        let mut drained: Vec<f32> = Vec::new();
         while let Ok(s) = session.tap.pop() {
             peak = peak.max(s.abs());
-            drained = true;
+            drained.push(s);
         }
-        session.meter = if drained {
-            peak.max(session.meter * 0.85)
-        } else {
+        session.meter = if drained.is_empty() {
             session.meter * 0.85
+        } else {
+            peak.max(session.meter * 0.85)
         };
+        self.feed.push(&drained);
 
         let playing = session.shared.playing.load(Ordering::Relaxed);
         let ended = session.shared.ended.load(Ordering::Relaxed);
@@ -166,7 +220,7 @@ impl Player {
                 format!(
                     "[{}/{}] {}  {} / {}{}",
                     track + 1,
-                    session.queue_len,
+                    session.queue.len(),
                     name,
                     fmt_time(secs),
                     dur,
@@ -231,9 +285,9 @@ impl Render for Player {
                 .into_any_element()
         };
 
+        // Fills whatever height the workspace's bar slot gives it.
         div()
-            .flex_none()
-            .h(px(46.))
+            .size_full()
             .px_3()
             .flex()
             .items_center()

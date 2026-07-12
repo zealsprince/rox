@@ -4,6 +4,7 @@ members = [
     "crates/rox",
     "crates/rox-playback",
     "crates/rox-library",
+    "crates/rox-viz",
     "crates/rox-prototype-viz",
     "crates/rox-prototype-playback",
     "crates/rox-prototype-library",
@@ -19,3 +20,8 @@ license = "AGPL-3.0-only"
 # GPUI is pre-1.0 with frequent breaking changes; pinned exactly per ADR 1.
 # Upgrades are a budgeted task, bump this deliberately.
 gpui = "=0.2.2"
+# The dock and widget baseline per ADR 7. Also pre-1.0 and tracking GPUI's
+# churn, so pinned exactly and bumped together with gpui above. The assets
+# crate bundles the icon SVGs the widgets reference.
+gpui-component = "=0.5.1"
+gpui-component-assets = "=0.5.1"

@@ -1,21 +1,36 @@
-//! The main window: an in-window menubar over the library panel, with the
-//! player bar along the bottom. GPUI only surfaces `set_menus` in the macOS
+//! The main window: an in-window menubar over the dock area, with the player
+//! bar as a fixed row under it. GPUI only surfaces `set_menus` in the macOS
 //! system bar, so the bar is drawn in-window to behave the same on every
-//! platform. Clicking a library row emits a play request that gets routed to
-//! the player here.
+//! platform. The dock, tabs, splits, and resize come from gpui-component per
+//! ADR 7; duplicate and pop-out live on the panels themselves. The player
+//! stays outside the dock: its render pass drains the PCM tap that feeds
+//! every audio view, so it has to keep rendering even while a panel is
+//! zoomed, and a dock would stack a title row over it and clamp it to the
+//! dock's 100px minimum height.
 
-use gpui::{deferred, div, prelude::*, px, rgb, Context, Entity, MouseButton, Window};
+use std::sync::Arc;
 
-use crate::library::{LibraryEvent, LibraryPanel};
+use gpui::{
+    deferred, div, prelude::*, px, rgb, Context, Entity, MouseButton, Subscription, Window,
+};
+use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelEvent, PanelView};
+
+use crate::library::{Library, LibraryPanel};
+use crate::panel::AppState;
 use crate::player::Player;
+use crate::spectrum::SpectrumPanel;
+use crate::waveform::WaveformPanel;
 
 const MENU_BAR_H: f32 = 30.0;
+const PLAYER_BAR_H: f32 = 46.0;
 
 #[derive(Clone, Copy)]
 enum MenuAction {
     NewWindow,
     OpenFolder,
-    OpenViz,
+    OpenLibrary,
+    OpenSpectrum,
+    OpenWaveform,
 }
 
 struct MenuItem {
@@ -44,42 +59,116 @@ const MENUS: &[Menu] = &[
         }],
     },
     Menu {
-        label: "Prototypes",
-        items: &[MenuItem {
-            label: "Visualizer",
-            action: MenuAction::OpenViz,
-        }],
+        label: "View",
+        items: &[
+            MenuItem {
+                label: "Library",
+                action: MenuAction::OpenLibrary,
+            },
+            MenuItem {
+                label: "Spectrum",
+                action: MenuAction::OpenSpectrum,
+            },
+            MenuItem {
+                label: "Waveform",
+                action: MenuAction::OpenWaveform,
+            },
+        ],
     },
 ];
 
 pub struct Workspace {
     open_menu: Option<usize>,
-    library: Entity<LibraryPanel>,
-    player: Entity<Player>,
+    state: AppState,
+    dock: Entity<DockArea>,
+    /// A panel is zoomed: the player bar collapses so the dock takes the
+    /// whole area under the menu bar.
+    zoomed: bool,
+    _zoom_relay: Subscription,
 }
 
 impl Workspace {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let library = cx.new(LibraryPanel::new);
-        let player = cx.new(|_| Player::new());
-        cx.subscribe(&library, |this: &mut Workspace, _, event, cx| {
-            let LibraryEvent::Play(queue) = event;
-            let queue = queue.clone();
-            this.player.update(cx, |player, cx| player.play(queue, cx));
-        })
-        .detach();
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let state = AppState {
+            library: cx.new(Library::new),
+            player: cx.new(Player::new),
+        };
+
+        let dock = cx.new(|cx| DockArea::new("rox", None, window, cx));
+        let weak_dock = dock.downgrade();
+
+        let library_panel = cx.new(|cx| LibraryPanel::new(state.clone(), String::new(), cx));
+        let center: Vec<Arc<dyn PanelView>> = vec![Arc::new(library_panel)];
+        let center = DockItem::tabs(center, &weak_dock, window, cx);
+
+        // gpui-component only wires zoom for tab panels inside splits, docks,
+        // and tiles; a bare tabs item at the center emits its zoom events
+        // into the void. Handle them here: the center already spans the dock
+        // area, so zoom means giving it the player bar's row too.
+        let center_tabs = match &center {
+            DockItem::Tabs { view, .. } => view.clone(),
+            _ => unreachable!("the center is built as tabs right above"),
+        };
+        let _zoom_relay = cx.subscribe_in(
+            &center_tabs,
+            window,
+            |this: &mut Workspace, _, event: &PanelEvent, _, cx| match event {
+                PanelEvent::ZoomIn => {
+                    this.zoomed = true;
+                    cx.notify();
+                }
+                PanelEvent::ZoomOut => {
+                    this.zoomed = false;
+                    cx.notify();
+                }
+                PanelEvent::LayoutChanged => {}
+            },
+        );
+
+        dock.update(cx, |dock, cx| {
+            dock.set_center(center, window, cx);
+            dock.set_toggle_button_visible(false, cx);
+        });
+
         Workspace {
             open_menu: None,
-            library,
-            player,
+            state,
+            dock,
+            zoomed: false,
+            _zoom_relay,
         }
     }
 
-    fn run(&mut self, action: MenuAction, cx: &mut Context<Self>) {
+    fn add_center(
+        &mut self,
+        panel: Arc<dyn PanelView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dock.update(cx, |dock, cx| {
+            dock.add_panel(panel, DockPlacement::Center, None, window, cx)
+        });
+    }
+
+    fn run(&mut self, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             MenuAction::NewWindow => crate::open_workspace(cx),
-            MenuAction::OpenFolder => self.library.update(cx, |library, cx| library.browse(cx)),
-            MenuAction::OpenViz => rox_prototype_viz::open_window(cx),
+            MenuAction::OpenFolder => self
+                .state
+                .library
+                .update(cx, |library, cx| library.browse(cx)),
+            MenuAction::OpenLibrary => {
+                let panel = cx.new(|cx| LibraryPanel::new(self.state.clone(), String::new(), cx));
+                self.add_center(Arc::new(panel), window, cx);
+            }
+            MenuAction::OpenSpectrum => {
+                let panel = cx.new(|cx| SpectrumPanel::new(self.state.clone(), cx));
+                self.add_center(Arc::new(panel), window, cx);
+            }
+            MenuAction::OpenWaveform => {
+                let panel = cx.new(|cx| WaveformPanel::new(self.state.clone(), cx));
+                self.add_center(Arc::new(panel), window, cx);
+            }
         }
     }
 
@@ -140,10 +229,10 @@ impl Workspace {
                     .hover(|d| d.bg(rgb(0x3a3a3a)))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
+                        cx.listener(move |this, _, window, cx| {
                             this.open_menu = None;
                             cx.notify();
-                            this.run(action, cx);
+                            this.run(action, window, cx);
                         }),
                     )
                     .child(item.label)
@@ -176,7 +265,16 @@ impl Render for Workspace {
                             .map(|(i, menu)| self.menu_button(i, menu, cx)),
                     ),
             )
-            .child(self.library.clone())
-            .child(self.player.clone())
+            .child(div().flex_1().min_h_0().child(self.dock.clone()))
+            .child(
+                // Zoomed, the bar collapses to zero height instead of
+                // leaving the tree: the player's render pass must keep
+                // running to drain the PCM tap for the audio views.
+                div()
+                    .flex_none()
+                    .h(px(if self.zoomed { 0. } else { PLAYER_BAR_H }))
+                    .overflow_hidden()
+                    .child(self.state.player.clone()),
+            )
     }
 }

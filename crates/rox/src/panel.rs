@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, rgb, size, AnyView, App, Bounds, Context, Entity, EventEmitter,
-    MouseButton, SharedString, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, relative, rgb, size, AnyView, App, Bounds, Context, Entity, MouseButton,
+    SharedString, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::button::Button;
 use gpui_component::dock::{Panel, TabPanel};
@@ -30,27 +30,20 @@ pub struct AppState {
 /// Every tab panel that has hosted one of our panels, reported from each
 /// panel's `on_added_to`. Dragging a tab into a split makes the dock create
 /// tab panels on its own and nothing announces them to the workspace, so
-/// this registry is how it finds them: to relay their zoom events and to
-/// pick a live tab panel for View-menu additions.
+/// this registry is how it finds them, to pick a live tab panel for
+/// View-menu additions.
 #[derive(Default)]
 pub struct TabHosts {
     hosts: Vec<WeakEntity<TabPanel>>,
 }
 
-/// A tab panel not seen before started hosting one of our panels.
-pub struct TabHostAdded(pub WeakEntity<TabPanel>);
-
-impl EventEmitter<TabHostAdded> for TabHosts {}
-
 impl TabHosts {
-    /// Record a hosting tab panel; first sightings are announced with
-    /// [`TabHostAdded`].
-    pub fn report(&mut self, tabs: WeakEntity<TabPanel>, cx: &mut Context<Self>) {
+    /// Record a hosting tab panel.
+    pub fn report(&mut self, tabs: WeakEntity<TabPanel>) {
         if self.hosts.iter().any(|t| t.entity_id() == tabs.entity_id()) {
             return;
         }
-        self.hosts.push(tabs.clone());
-        cx.emit(TabHostAdded(tabs));
+        self.hosts.push(tabs);
     }
 
     /// The newest recorded tab panel that is still alive and showing panels.
@@ -60,6 +53,44 @@ impl TabHosts {
             tabs.read(cx).visible(cx).then_some(tabs)
         })
     }
+}
+
+/// The compact clickable control chip the player bar introduced, shared
+/// with the transport panels so the button style never forks.
+pub fn control<V: 'static>(
+    label: impl Into<SharedString>,
+    on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
+    cx: &mut Context<V>,
+) -> impl IntoElement {
+    div()
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .bg(rgb(0x2a2a2a))
+        .hover(|d| d.bg(rgb(0x3a3a3a)))
+        .cursor_pointer()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| on_click(this, cx)),
+        )
+        .child(label.into())
+}
+
+/// The level meter strip: level as the filled share of a fixed track.
+pub fn meter(level: f32) -> impl IntoElement {
+    div()
+        .w(px(60.))
+        .h(px(6.))
+        .flex_none()
+        .rounded_sm()
+        .bg(rgb(0x2a2a2a))
+        .child(
+            div()
+                .h_full()
+                .rounded_sm()
+                .bg(rgb(0x3dff9c))
+                .w(relative(level)),
+        )
 }
 
 /// A panel's tab title with middle-click close. gpui only fires click

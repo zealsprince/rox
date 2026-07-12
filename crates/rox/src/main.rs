@@ -1,16 +1,17 @@
 //! The rox app shell: the workspace's dock hosts the library panel over the
-//! promoted library service and the audio views (spectrum, waveform) fed
-//! from the player's PCM tap, with the player bar over the promoted
-//! playback engine fixed under the dock. Panels duplicate with
-//! their own config and pop out into OS windows over the same shared
-//! entities. New Window stays in the menubar so multi-window on Wayland
-//! keeps getting exercised.
+//! promoted library service, the audio views (spectrum, waveform) fed from
+//! the player's PCM tap, and the transport panels (playback controls, seek
+//! strip, volume) over the promoted playback engine in the bottom dock.
+//! Panels duplicate with their own config and pop out into OS windows over
+//! the same shared entities. New Window stays in the menubar so
+//! multi-window on Wayland keeps getting exercised.
 
 mod library;
 mod panel;
 mod player;
 mod settings;
 mod spectrum;
+mod transport;
 mod waveform;
 mod workspace;
 

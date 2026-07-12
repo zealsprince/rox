@@ -1,19 +1,17 @@
-//! The player bar, a fixed row at the bottom of the workspace: one running
-//! engine session behind the playback contract (commands in over a channel,
-//! state out through shared atomics). The PCM tap is drained by a headless
-//! pump task on a timer, not by any render pass, so the audio views' feed
-//! keeps flowing no matter which windows are drawing - popped-out panels,
-//! a zoomed dock, a minimized main window. The bar itself is plain UI over
-//! the session state.
+//! The playback service entity: one running engine session behind the
+//! playback contract (commands in over a channel, state out through shared
+//! atomics). The PCM tap is drained by a headless pump task on a timer, not
+//! by any render pass, so the audio views' feed keeps flowing no matter
+//! which windows are drawing - popped-out panels, a zoomed dock, a
+//! minimized main window. The player renders nothing itself; the transport
+//! panels are the UI over this state.
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use gpui::{
-    div, prelude::*, px, relative, rgb, Context, MouseButton, SharedString, Task, Window,
-};
+use gpui::{Context, SharedString, Task};
 
 use rox_playback::cpal::Stream;
 use rox_playback::engine::{self, Cmd, LoopMode};
@@ -217,6 +215,39 @@ impl Player {
         self.send(Cmd::TogglePause);
     }
 
+    /// Skip to the next queued track.
+    pub fn next(&self) {
+        self.send(Cmd::Next);
+    }
+
+    /// Skip to the previous queued track.
+    pub fn prev(&self) {
+        self.send(Cmd::Prev);
+    }
+
+    /// Whether audio is moving right now, false while paused or idle.
+    pub fn is_playing(&self) -> bool {
+        self.session
+            .as_ref()
+            .map(|s| s.shared.playing.load(Ordering::Relaxed))
+            .unwrap_or(false)
+    }
+
+    /// The smoothed output level the meter shows, zero while idle.
+    pub fn meter(&self) -> f32 {
+        self.session.as_ref().map(|s| s.meter).unwrap_or(0.0)
+    }
+
+    /// The persisted volume, the engine's clamp range (0 to 2).
+    pub fn volume(&self) -> f32 {
+        self.settings.volume
+    }
+
+    /// The persisted loop mode.
+    pub fn loop_mode(&self) -> LoopMode {
+        self.settings.loop_mode()
+    }
+
     /// Relative seek within the playing track.
     pub fn seek_by(&self, delta: f64) {
         if let Some(session) = &self.session {
@@ -226,7 +257,8 @@ impl Player {
         }
     }
 
-    fn nudge_volume(&mut self, delta: f32) {
+    /// Step the volume and persist it; the panels and the bar share this.
+    pub fn nudge_volume(&mut self, delta: f32) {
         // Same clamp range the engine applies, so the persisted value and
         // the audible one never drift apart.
         self.settings.volume = (self.settings.volume + delta).clamp(0.0, 2.0);
@@ -234,7 +266,8 @@ impl Player {
         self.settings.save();
     }
 
-    fn cycle_loop(&mut self) {
+    /// Step off -> all -> one -> off and persist the pick.
+    pub fn cycle_loop(&mut self) {
         let mode = match self.settings.loop_mode() {
             LoopMode::Off => LoopMode::All,
             LoopMode::All => LoopMode::One,
@@ -245,40 +278,13 @@ impl Player {
         self.settings.save();
     }
 
-    fn control(
-        &self,
-        label: impl Into<SharedString>,
-        on_click: impl Fn(&mut Player, &mut Context<Player>) + 'static,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        div()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(rgb(0x2a2a2a))
-            .hover(|d| d.bg(rgb(0x3a3a3a)))
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| on_click(this, cx)),
-            )
-            .child(label.into())
-    }
-
-    fn session_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let session = self.session.as_ref().expect("session bar without session");
-
-        let playing = session.shared.playing.load(Ordering::Relaxed);
+    /// The transport panel's status line: queue position, track name, and
+    /// clock, or "opening..." before the first track resolves. None while
+    /// no session is running.
+    pub fn status_line(&self) -> Option<SharedString> {
+        let session = self.session.as_ref()?;
         let ended = session.shared.ended.load(Ordering::Relaxed);
-        let volume = (self.settings.volume * 100.0).round() as u32;
-        let meter = session.meter.min(1.0);
-        let loop_label = match self.settings.loop_mode() {
-            LoopMode::Off => "loop: off",
-            LoopMode::All => "loop: all",
-            LoopMode::One => "loop: one",
-        };
-
-        let status: SharedString = match session.shared.position(session.device_rate) {
+        Some(match session.shared.position(session.device_rate) {
             Some((track, secs)) => {
                 let tracks = session.shared.tracks.lock().unwrap();
                 let info = tracks.get(track).and_then(|t| t.as_ref());
@@ -299,73 +305,12 @@ impl Player {
                 .into()
             }
             None => "opening...".into(),
-        };
-
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .size_full()
-            .child(self.control("prev", |this, _| this.send(Cmd::Prev), cx))
-            .child(self.control(
-                if playing { "pause" } else { "play" },
-                |this, _| this.toggle_pause(),
-                cx,
-            ))
-            .child(self.control("next", |this, _| this.send(Cmd::Next), cx))
-            .child(self.control("-10s", |this, _| this.seek_by(-10.0), cx))
-            .child(self.control("+10s", |this, _| this.seek_by(10.0), cx))
-            .child(self.control(loop_label, |this, _| this.cycle_loop(), cx))
-            .child(div().flex_1().min_w_0().truncate().child(status))
-            .child(
-                div()
-                    .w(px(60.))
-                    .h(px(6.))
-                    .flex_none()
-                    .rounded_sm()
-                    .bg(rgb(0x2a2a2a))
-                    .child(
-                        div()
-                            .h_full()
-                            .rounded_sm()
-                            .bg(rgb(0x3dff9c))
-                            .w(relative(meter)),
-                    ),
-            )
-            .child(self.control("vol -", |this, _| this.nudge_volume(-0.1), cx))
-            .child(div().w(px(40.)).flex_none().text_center().child(format!("{volume}%")))
-            .child(self.control("vol +", |this, _| this.nudge_volume(0.1), cx))
+        })
     }
-}
 
-impl Render for Player {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = if self.session.is_some() {
-            self.session_bar(cx).into_any_element()
-        } else {
-            div()
-                .flex()
-                .items_center()
-                .text_color(rgb(0x808080))
-                .child(
-                    self.error
-                        .clone()
-                        .unwrap_or_else(|| "nothing playing".into()),
-                )
-                .into_any_element()
-        };
-
-        // Fills whatever height the workspace's bar slot gives it.
-        div()
-            .size_full()
-            .px_3()
-            .flex()
-            .items_center()
-            .bg(rgb(0x1f1f1f))
-            .border_t_1()
-            .border_color(rgb(0x333333))
-            .child(body)
+    /// The last session-start failure, shown while nothing plays.
+    pub fn error(&self) -> Option<SharedString> {
+        self.error.clone()
     }
 }
 

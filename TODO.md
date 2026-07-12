@@ -2,9 +2,6 @@
 
 ## Panels
 
-- New panels dock to the bottom by default instead of joining the center tabs.
-  `DockArea::add_panel` already takes `DockPlacement::Bottom`; note docks clamp
-  panels to a 100px minimum height, which suits the audio views fine.
 - Per-panel settings menu over a generic panel data system (styling,
   configuration). Design the schema together with layout persistence below:
   gpui-component restores layouts through a `PanelRegistry` that deserializes
@@ -17,11 +14,6 @@
   middle-click close only hits the title label rather than the whole tab, and
   a private zoomed flag makes the zoom menu label lag one click after popping
   out a zoomed panel.
-- Break the transport bar into composable panels: playback controls, volume,
-  and a seek strip (the waveform minus peaks - the position and seek plumbing
-  already exists on `Player`). Together these unlock real layout construction.
-  The old blocker is gone: the PCM tap pump now runs as a headless timer task
-  on `Player`, so no control has to stay rendered for the feed to flow.
 - Icons for buttons and menus. gpui-component-assets is already bundled with
   the widget icon set; check its `IconName` coverage before drawing our own.
 - Bring the generative visualizer back once it is a real GPU shader, zero CPU

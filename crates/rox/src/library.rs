@@ -505,7 +505,7 @@ impl Panel for LibraryPanel {
         self.tab_panel = Some(tab_panel.clone());
         self.state
             .tab_hosts
-            .update(cx, |hosts, cx| hosts.report(tab_panel, cx));
+            .update(cx, |hosts, _| hosts.report(tab_panel));
     }
 
     fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {

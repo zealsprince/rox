@@ -3,10 +3,10 @@
 //! system bar, so the bar is drawn in-window to behave the same on every
 //! platform. The dock, tabs, splits, and resize come from gpui-component per
 //! ADR 7; duplicate and pop-out live on the panels themselves. The player
-//! stays outside the dock: its render pass drains the PCM tap that feeds
-//! every audio view, so it has to keep rendering even while a panel is
-//! zoomed, and a dock would stack a title row over it and clamp it to the
-//! dock's 100px minimum height.
+//! stays outside the dock because a dock would stack a title row over it
+//! and clamp it to the dock's 100px minimum height; the PCM tap that feeds
+//! the audio views is drained by the player's own pump task, so nothing
+//! here has to keep rendering for playback's sake.
 
 use std::sync::Arc;
 
@@ -375,15 +375,13 @@ impl Render for Workspace {
                     ),
             )
             .child(div().flex_1().min_h_0().child(self.dock.clone()))
-            .child(
-                // Zoomed, the bar collapses to zero height instead of
-                // leaving the tree: the player's render pass must keep
-                // running to drain the PCM tap for the audio views.
-                div()
-                    .flex_none()
-                    .h(px(if self.zoomed { 0. } else { PLAYER_BAR_H }))
-                    .overflow_hidden()
-                    .child(self.state.player.clone()),
-            )
+            .when(!self.zoomed, |this| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .h(px(PLAYER_BAR_H))
+                        .child(self.state.player.clone()),
+                )
+            })
     }
 }

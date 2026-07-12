@@ -1,16 +1,19 @@
 //! The player bar, a fixed row at the bottom of the workspace: one running
 //! engine session behind the playback contract (commands in over a channel,
-//! state out through shared atomics). The PCM tap gets drained here every
-//! frame; the peak drives the level meter and the samples move on to the
-//! audio views' shared feed. That per-frame drain is why the bar lives
-//! outside the dock as exactly one view: it must keep rendering no matter
-//! what the panels do.
+//! state out through shared atomics). The PCM tap is drained by a headless
+//! pump task on a timer, not by any render pass, so the audio views' feed
+//! keeps flowing no matter which windows are drawing - popped-out panels,
+//! a zoomed dock, a minimized main window. The bar itself is plain UI over
+//! the session state.
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
-use gpui::{div, prelude::*, px, relative, rgb, Context, MouseButton, SharedString, Window};
+use gpui::{
+    div, prelude::*, px, relative, rgb, Context, MouseButton, SharedString, Task, Window,
+};
 
 use rox_playback::cpal::Stream;
 use rox_playback::engine::{self, Cmd, LoopMode};
@@ -20,6 +23,11 @@ use rox_playback::shared::Shared;
 use rox_viz::AudioFeed;
 
 use crate::settings::Settings;
+
+/// Pump cadence, roughly one video frame. The tap ring holds 16,384 samples
+/// (about 170 ms at 48 kHz stereo), so a tick has an order of magnitude of
+/// headroom before the callback's pushes start getting dropped.
+const PUMP_INTERVAL: Duration = Duration::from_millis(16);
 
 /// One running engine: decode thread, output stream, and the UI's side of
 /// the PCM tap. Dropping it sends Quit and tears the stream down.
@@ -89,6 +97,10 @@ pub struct Player {
     /// Persisted playback state; its volume and loop mode are the source of
     /// truth, sessions are seeded from them.
     settings: Settings,
+    /// The headless frame driver: drains the tap into the feed on a timer
+    /// while a session runs. Replaced (and the old one cancelled) whenever a
+    /// new session starts.
+    pump: Option<Task<()>>,
 }
 
 impl Player {
@@ -98,6 +110,7 @@ impl Player {
             error: None,
             feed: Arc::new(AudioFeed::new()),
             settings: Settings::load(),
+            pump: None,
         }
     }
 
@@ -144,10 +157,53 @@ impl Player {
                 self.feed.set_sample_rate(session.device_rate);
                 self.session = Some(session);
                 self.error = None;
+                self.start_pump(cx);
             }
             Err(e) => self.error = Some(format!("audio output: {e}").into()),
         }
         cx.notify();
+    }
+
+    /// Run the tap drain on a timer instead of a render pass. The tick also
+    /// notifies the player, which is what repaints the bar's clock, meter,
+    /// and play state while a session runs.
+    fn start_pump(&mut self, cx: &mut Context<Self>) {
+        self.pump = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(PUMP_INTERVAL).await;
+                let alive = this.update(cx, |this, cx| {
+                    if this.session.is_none() {
+                        return false;
+                    }
+                    this.drain_tap();
+                    cx.notify();
+                    true
+                });
+                if !matches!(alive, Ok(true)) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Take whatever the tap holds, never wait for more. The peak drives
+    /// the level meter, the samples move on to the audio views' feed.
+    fn drain_tap(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let mut peak = 0.0f32;
+        let mut drained: Vec<f32> = Vec::new();
+        while let Ok(s) = session.tap.pop() {
+            peak = peak.max(s.abs());
+            drained.push(s);
+        }
+        session.meter = if drained.is_empty() {
+            session.meter * 0.85
+        } else {
+            peak.max(session.meter * 0.85)
+        };
+        self.feed.push(&drained);
     }
 
     fn send(&self, cmd: Cmd) {
@@ -209,27 +265,8 @@ impl Player {
             .child(label.into())
     }
 
-    fn session_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Repaint continuously while a session runs: the clock and the tap
-        // meter update every frame.
-        window.request_animation_frame();
-
-        let session = self.session.as_mut().expect("session bar without session");
-
-        // Drain the tap: take what's there, never wait for more. The peak
-        // drives the meter, the samples go on to the audio views' feed.
-        let mut peak = 0.0f32;
-        let mut drained: Vec<f32> = Vec::new();
-        while let Ok(s) = session.tap.pop() {
-            peak = peak.max(s.abs());
-            drained.push(s);
-        }
-        session.meter = if drained.is_empty() {
-            session.meter * 0.85
-        } else {
-            peak.max(session.meter * 0.85)
-        };
-        self.feed.push(&drained);
+    fn session_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let session = self.session.as_ref().expect("session bar without session");
 
         let playing = session.shared.playing.load(Ordering::Relaxed);
         let ended = session.shared.ended.load(Ordering::Relaxed);
@@ -303,9 +340,9 @@ impl Player {
 }
 
 impl Render for Player {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = if self.session.is_some() {
-            self.session_bar(window, cx).into_any_element()
+            self.session_bar(cx).into_any_element()
         } else {
             div()
                 .flex()

@@ -19,3 +19,10 @@ Measured at scale in [research 02](../../0R-research/02-library-scale.md): subst
 the projection is 31 ms worst case at 10M tracks, so the escalation to FTS5 or tantivy is
 about ranking and fuzzy matching, not latency, until a library approaches ~50M tracks and
 in-memory scans stop fitting.
+
+**Amended 2026-07-12:** shipped without the debounce. Search runs per keystroke,
+synchronously on the UI thread, because the measurement above makes a debounce pointless:
+a query costs a fraction of a frame at any realistic library size, so delaying it only
+adds typing-to-results lag. The debounce was insurance written before the numbers landed.
+It comes back if search escalates to FTS5 or tantivy, where a query stops being
+sub-frame, or if search ever moves off the UI thread.

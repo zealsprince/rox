@@ -20,11 +20,8 @@
 - Break the transport bar into composable panels: playback controls, volume,
   and a seek strip (the waveform minus peaks - the position and seek plumbing
   already exists on `Player`). Together these unlock real layout construction.
-  The constraint to design around: the transport bar's render pass is the
-  single pump draining the PCM tap into the `AudioFeed`, and that works
-  because the bar renders unconditionally. Once controls become closable
-  panels, the pump has to move to something that always renders - the
-  workspace root, or a headless frame driver.
+  The old blocker is gone: the PCM tap pump now runs as a headless timer task
+  on `Player`, so no control has to stay rendered for the feed to flow.
 - Icons for buttons and menus. gpui-component-assets is already bundled with
   the widget icon set; check its `IconName` coverage before drawing our own.
 - Bring the generative visualizer back once it is a real GPU shader, zero CPU
@@ -65,10 +62,11 @@
 - Restore-from-ended: with loop off, once the queue finishes the engine
   drops its source, and switching loop mode on afterwards doesn't restart
   playback until next/prev.
+- Closing the application should store the last played file. We should make
+  sure to properly store the track ID in the library from last run.
 
 ## Docs
 
-- Contract drift to resolve one way or the other: ADR 6 says search sits
-  behind a debounce but the code searches per keystroke, the components doc
-  says the UI never touches SQLite but `LibraryPanel` holds a connection for
+- Contract drift to resolve one way or the other: the components doc says
+  the UI never touches SQLite but `LibraryPanel` holds a connection for
   id-to-path resolution, and the `browse`/`watch` API exists only on paper.

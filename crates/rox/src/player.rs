@@ -13,11 +13,13 @@ use std::sync::{mpsc, Arc};
 use gpui::{div, prelude::*, px, relative, rgb, Context, MouseButton, SharedString, Window};
 
 use rox_playback::cpal::Stream;
-use rox_playback::engine::{self, Cmd};
+use rox_playback::engine::{self, Cmd, LoopMode};
 use rox_playback::output;
 use rox_playback::rtrb::Consumer;
 use rox_playback::shared::Shared;
 use rox_viz::AudioFeed;
+
+use crate::settings::Settings;
 
 /// One running engine: decode thread, output stream, and the UI's side of
 /// the PCM tap. Dropping it sends Quit and tears the stream down.
@@ -34,11 +36,16 @@ struct Session {
 }
 
 impl Session {
-    fn start(queue: Vec<PathBuf>) -> Result<Session, String> {
+    fn start(queue: Vec<PathBuf>, volume: f32, loop_mode: LoopMode) -> Result<Session, String> {
         let shared = Arc::new(Shared::new(queue.len()));
+        // Seed the session with the persisted playback state: volume lands
+        // in the shared atomics before the stream opens, the loop mode
+        // queues on the channel so the engine picks it up first thing.
+        shared.volume_bits.store(volume.to_bits(), Ordering::Relaxed);
         let out = output::open(shared.clone())?;
         let device_rate = out.sample_rate;
         let (tx, rx) = mpsc::channel::<Cmd>();
+        let _ = tx.send(Cmd::SetLoop(loop_mode));
         let engine =
             engine::Engine::new(queue.clone(), shared.clone(), out.producer, device_rate, rx);
         std::thread::Builder::new()
@@ -79,6 +86,9 @@ pub struct Player {
     /// Outlives sessions: the audio views hold clones and keep reading
     /// while queues come and go.
     feed: Arc<AudioFeed>,
+    /// Persisted playback state; its volume and loop mode are the source of
+    /// truth, sessions are seeded from them.
+    settings: Settings,
 }
 
 impl Player {
@@ -87,6 +97,7 @@ impl Player {
             session: None,
             error: None,
             feed: Arc::new(AudioFeed::new()),
+            settings: Settings::load(),
         }
     }
 
@@ -128,7 +139,7 @@ impl Player {
             return;
         }
         self.session = None;
-        match Session::start(queue) {
+        match Session::start(queue, self.settings.volume, self.settings.loop_mode()) {
             Ok(session) => {
                 self.feed.set_sample_rate(session.device_rate);
                 self.session = Some(session);
@@ -145,7 +156,13 @@ impl Player {
         }
     }
 
-    fn seek_by(&self, delta: f64) {
+    /// Play/pause, for the bar and the keyboard shortcut alike.
+    pub fn toggle_pause(&self) {
+        self.send(Cmd::TogglePause);
+    }
+
+    /// Relative seek within the playing track.
+    pub fn seek_by(&self, delta: f64) {
         if let Some(session) = &self.session {
             if let Some((_, secs)) = session.shared.position(session.device_rate) {
                 let _ = session.tx.send(Cmd::Seek((secs + delta).max(0.0)));
@@ -153,12 +170,23 @@ impl Player {
         }
     }
 
-    fn nudge_volume(&self, delta: f32) {
-        if let Some(session) = &self.session {
-            let _ = session
-                .tx
-                .send(Cmd::Volume(session.shared.volume() + delta));
-        }
+    fn nudge_volume(&mut self, delta: f32) {
+        // Same clamp range the engine applies, so the persisted value and
+        // the audible one never drift apart.
+        self.settings.volume = (self.settings.volume + delta).clamp(0.0, 2.0);
+        self.send(Cmd::Volume(self.settings.volume));
+        self.settings.save();
+    }
+
+    fn cycle_loop(&mut self) {
+        let mode = match self.settings.loop_mode() {
+            LoopMode::Off => LoopMode::All,
+            LoopMode::All => LoopMode::One,
+            LoopMode::One => LoopMode::Off,
+        };
+        self.settings.set_loop_mode(mode);
+        self.send(Cmd::SetLoop(mode));
+        self.settings.save();
     }
 
     fn control(
@@ -205,8 +233,13 @@ impl Player {
 
         let playing = session.shared.playing.load(Ordering::Relaxed);
         let ended = session.shared.ended.load(Ordering::Relaxed);
-        let volume = (session.shared.volume() * 100.0).round() as u32;
+        let volume = (self.settings.volume * 100.0).round() as u32;
         let meter = session.meter.min(1.0);
+        let loop_label = match self.settings.loop_mode() {
+            LoopMode::Off => "loop: off",
+            LoopMode::All => "loop: all",
+            LoopMode::One => "loop: one",
+        };
 
         let status: SharedString = match session.shared.position(session.device_rate) {
             Some((track, secs)) => {
@@ -240,12 +273,13 @@ impl Player {
             .child(self.control("prev", |this, _| this.send(Cmd::Prev), cx))
             .child(self.control(
                 if playing { "pause" } else { "play" },
-                |this, _| this.send(Cmd::TogglePause),
+                |this, _| this.toggle_pause(),
                 cx,
             ))
             .child(self.control("next", |this, _| this.send(Cmd::Next), cx))
             .child(self.control("-10s", |this, _| this.seek_by(-10.0), cx))
             .child(self.control("+10s", |this, _| this.seek_by(10.0), cx))
+            .child(self.control(loop_label, |this, _| this.cycle_loop(), cx))
             .child(div().flex_1().min_w_0().truncate().child(status))
             .child(
                 div()

@@ -13,3 +13,6 @@ rox-playback = { path = "../rox-playback" }
 rox-viz = { path = "../rox-viz" }
 # Platform data dir for the library database.
 dirs = "5"
+# The settings file; both already in the tree through gpui.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

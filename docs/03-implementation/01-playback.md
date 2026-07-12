@@ -20,7 +20,7 @@ output callback owns nothing.
  ────────────────────               ─────────────                     ──────────────────
  Cmd over mpsc channel  ──────────▶ Symphonia decode                  pop stereo frames
  (play/pause/seek/next/             stereo fold + resample            apply volume
-  prev/volume/quit)                 push f32 frames ────sample ring──▶ write device format
+  prev/volume/loop/quit)            push f32 frames ────sample ring──▶ write device format
                                                                        count frames played
  read atomics + segments ◀───────── shared state (Arc) ◀──────────────
  drain PCM tap ◀────────────────────────────────────────tap ring────── push post-volume copy

@@ -52,11 +52,7 @@ impl EventEmitter<LibraryEvent> for Library {}
 
 impl Library {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rox");
-        let _ = std::fs::create_dir_all(&dir);
-        let db_path = dir.join("library.db");
+        let db_path = crate::settings::data_dir().join("library.db");
         let (conn, status) = match store::open(&db_path)
             .and_then(|conn| store::init_schema(&conn).map(|_| conn))
         {
@@ -160,6 +156,11 @@ pub struct LibraryPanel {
     /// Rows currently displayed: the canonical order, or search hits.
     view: Arc<Vec<u32>>,
     query: String,
+    /// The panel's own focus, what the dock focuses on tab activation. Kept
+    /// apart from the search focus so activating the tab does not put every
+    /// keystroke in the query, and so the playback key bindings (scoped out
+    /// of SearchInput) stay live.
+    focus: FocusHandle,
     search_focus: FocusHandle,
     /// A panel-local error (a failed play), shown until the catalog updates.
     error: Option<SharedString>,
@@ -183,6 +184,7 @@ impl LibraryPanel {
             state,
             view: Arc::new(Vec::new()),
             query,
+            focus: cx.focus_handle(),
             search_focus: cx.focus_handle(),
             error: None,
             tab_panel: None,
@@ -247,13 +249,21 @@ impl LibraryPanel {
         }
     }
 
-    fn on_search_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn on_search_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         match keystroke.key.as_str() {
             "backspace" => {
                 self.query.pop();
             }
-            "escape" => self.query.clear(),
+            // First escape clears the query, a second one leaves the search
+            // box, which hands the playback keys back to the workspace.
+            "escape" => {
+                if self.query.is_empty() {
+                    window.focus(&self.focus);
+                } else {
+                    self.query.clear();
+                }
+            }
             _ => {
                 if keystroke.modifiers.control
                     || keystroke.modifiers.platform
@@ -306,6 +316,9 @@ impl LibraryPanel {
             .border_color(if focused { rgb(0x4a6a55) } else { rgb(0x333333) })
             .when(self.query.is_empty(), |d| d.text_color(rgb(0x808080)))
             .track_focus(&self.search_focus)
+            // Scopes the workspace's playback key bindings out while the
+            // box is focused, so space and arrows type instead.
+            .key_context("SearchInput")
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -314,8 +327,8 @@ impl LibraryPanel {
                     this.refresh_title_bar(cx);
                 }),
             )
-            .on_key_down(cx.listener(|this, event, _, cx| {
-                this.on_search_key(event, cx);
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                this.on_search_key(event, window, cx);
             }))
             .child(search_text)
     }
@@ -370,7 +383,10 @@ impl LibraryPanel {
                             .when(ix % 2 == 1, |d| d.bg(rgb(0x202020)))
                             .hover(|d| d.bg(rgb(0x2e2e2e)))
                             .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            // Focus moves to the panel: queueing a track is
+                            // done with the search box, space should pause.
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                window.focus(&this.focus);
                                 this.play_from(ix, cx)
                             }))
                             .child(
@@ -436,7 +452,7 @@ impl EventEmitter<PanelEvent> for LibraryPanel {}
 
 impl Focusable for LibraryPanel {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.search_focus.clone()
+        self.focus.clone()
     }
 }
 

@@ -20,7 +20,8 @@ is additive; Opus is the first place a C dependency would enter.
 
 Contract to the UI:
 - In: `play`, `pause`, `seek(pos)`, `next`, `prev`, `enqueue(track)`, `set_volume`,
-  `set_output_device`. Commands cross a channel, they don't call into the RT thread.
+  `set_loop`, `set_output_device`. Commands cross a channel, they don't call into the
+  RT thread.
 - Out: playback state (current track, position, playing/paused, device), emitted as the
   UI's shared entity updates so views re-render on the next frame.
 - Out: the PCM tap, a second SPSC ring the visualizer drains. Lossy by design, a slow UI

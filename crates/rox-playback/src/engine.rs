@@ -36,7 +36,21 @@ pub enum Cmd {
     Next,
     Prev,
     Volume(f32),
+    SetLoop(LoopMode),
     Quit,
+}
+
+/// What happens when a track or the queue runs out. Lives on the decode
+/// thread only; the RT callback never looks at it.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum LoopMode {
+    /// Play the queue through once and stop.
+    #[default]
+    Off,
+    /// Wrap from the last track back to the first; Next and Prev wrap too.
+    All,
+    /// Repeat the current track at EOF. Skips still move through the queue.
+    One,
 }
 
 /// One open file: reader, decoder, and the per-track conversion state.
@@ -59,6 +73,7 @@ pub struct Engine {
     producer: Producer<f32>,
     device_rate: u32,
     rx: Receiver<Cmd>,
+    loop_mode: LoopMode,
     /// Frames pushed on the frames_consumed clock; resynced after each flush.
     pushed_playable: u64,
     /// Decoded, converted samples waiting for ring space.
@@ -81,6 +96,7 @@ impl Engine {
             producer,
             device_rate,
             rx,
+            loop_mode: LoopMode::default(),
             pushed_playable: 0,
             pending: Vec::new(),
             pending_pos: 0,
@@ -108,11 +124,19 @@ impl Engine {
                     Cmd::Next => {
                         if self.idx + 1 < self.queue.len() {
                             flush_to = Some(FlushAction::Track(self.idx + 1));
+                        } else if self.loop_mode == LoopMode::All && !self.queue.is_empty() {
+                            flush_to = Some(FlushAction::Track(0));
                         }
                     }
                     Cmd::Prev => {
-                        flush_to = Some(FlushAction::Track(self.idx.saturating_sub(1)));
+                        let target = if self.idx == 0 && self.loop_mode == LoopMode::All {
+                            self.queue.len().saturating_sub(1)
+                        } else {
+                            self.idx.saturating_sub(1)
+                        };
+                        flush_to = Some(FlushAction::Track(target));
                     }
+                    Cmd::SetLoop(mode) => self.loop_mode = mode,
                     Cmd::Quit => return,
                 }
             }
@@ -157,9 +181,14 @@ impl Engine {
                     if !src.next_chunk(device_rate, &mut self.pending) {
                         // EOF: swap the decoder under the live stream. No
                         // flush, no stream teardown; this IS the gapless
-                        // boundary.
-                        source = if self.idx + 1 < self.queue.len() {
+                        // boundary. Loop modes pick the next open: One
+                        // reopens the same track, All wraps the queue.
+                        source = if self.loop_mode == LoopMode::One {
+                            self.open_current(self.idx)
+                        } else if self.idx + 1 < self.queue.len() {
                             self.open_current(self.idx + 1)
+                        } else if self.loop_mode == LoopMode::All && !self.queue.is_empty() {
+                            self.open_current(0)
                         } else {
                             None
                         };

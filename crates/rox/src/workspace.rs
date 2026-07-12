@@ -11,7 +11,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    deferred, div, prelude::*, px, rgb, Axis, Context, Entity, MouseButton, Subscription, Window,
+    actions, deferred, div, prelude::*, px, rgb, App, Axis, Context, Entity, FocusHandle,
+    KeyBinding, MouseButton, Subscription, Window,
 };
 use gpui_component::dock::{
     DockArea, DockItem, Panel as _, PanelEvent, PanelView, StackPanel, TabPanel,
@@ -25,6 +26,23 @@ use crate::waveform::WaveformPanel;
 
 const MENU_BAR_H: f32 = 30.0;
 const PLAYER_BAR_H: f32 = 46.0;
+
+actions!(rox, [TogglePlayback, SeekBackward, SeekForward]);
+
+/// Bindings match key contexts along the focus path, so this scope holds
+/// anywhere inside a workspace window except while the library search box
+/// is focused: there space and arrows keep typing into the query. Bindings
+/// win over key listeners, the exclusion is what hands the keys back.
+const PLAYBACK_KEY_SCOPE: Option<&str> = Some("Workspace && !SearchInput");
+
+/// App-level key bindings; call once at startup.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("space", TogglePlayback, PLAYBACK_KEY_SCOPE),
+        KeyBinding::new("left", SeekBackward, PLAYBACK_KEY_SCOPE),
+        KeyBinding::new("right", SeekForward, PLAYBACK_KEY_SCOPE),
+    ]);
+}
 
 #[derive(Clone, Copy)]
 enum MenuAction {
@@ -82,6 +100,10 @@ const MENUS: &[Menu] = &[
 pub struct Workspace {
     open_menu: Option<usize>,
     state: AppState,
+    /// Fallback focus so the key bindings keep a dispatch path under the
+    /// Workspace context even before a panel takes focus. The dock focuses
+    /// the active panel on activation and takes over from there.
+    focus: FocusHandle,
     dock: Entity<DockArea>,
     /// The stack the center tabs sit in; the parent that makes tab dragging
     /// and splitting possible at all.
@@ -105,6 +127,8 @@ impl Workspace {
             player: cx.new(Player::new),
             tab_hosts: cx.new(|_| TabHosts::default()),
         };
+        let focus = cx.focus_handle();
+        window.focus(&focus);
 
         let dock = cx.new(|cx| DockArea::new("rox", None, window, cx));
         let weak_dock = dock.downgrade();
@@ -166,6 +190,7 @@ impl Workspace {
         Workspace {
             open_menu: None,
             state,
+            focus,
             dock,
             stack,
             center_tabs,
@@ -319,6 +344,17 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .size_full()
+            .track_focus(&self.focus)
+            .key_context("Workspace")
+            .on_action(cx.listener(|this, _: &TogglePlayback, _, cx| {
+                this.state.player.update(cx, |player, _| player.toggle_pause());
+            }))
+            .on_action(cx.listener(|this, _: &SeekBackward, _, cx| {
+                this.state.player.update(cx, |player, _| player.seek_by(-5.0));
+            }))
+            .on_action(cx.listener(|this, _: &SeekForward, _, cx| {
+                this.state.player.update(cx, |player, _| player.seek_by(5.0));
+            }))
             .bg(rgb(0x1c1c1c))
             .text_color(rgb(0xe0e0e0))
             .text_sm()

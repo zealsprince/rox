@@ -9,6 +9,7 @@
 mod library;
 mod panel;
 mod player;
+mod settings;
 mod spectrum;
 mod waveform;
 mod workspace;
@@ -44,6 +45,7 @@ pub fn open_workspace(cx: &mut App) {
 fn main() {
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         gpui_component::init(cx);
+        workspace::init(cx);
         // The widget baseline follows the app's existing dark palette;
         // themes as shareable token sets come later.
         Theme::change(ThemeMode::Dark, None, cx);

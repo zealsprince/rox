@@ -5074,6 +5074,8 @@ dependencies = [
  "rox-library",
  "rox-playback",
  "rox-viz",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

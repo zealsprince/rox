@@ -34,9 +34,9 @@
 ## Persistence
 
 - Save window and panel layout, restore on open. `DockArea::dump()/load()`
-  plus the panel registry; window bounds belong to the same pass.
-- Persist playback state: volume, loop mode. One config-dir story next to the
-  library DB (`dirs` is already a dependency).
+  plus the panel registry; window bounds belong to the same pass. The
+  settings file (`settings.rs`, next to the library DB) is where the layout
+  should land.
 - Waveform peak cache on disk keyed by file identity, with a generating
   animation while peaks compute so the panel never sits blank. The
   implementation doc set already reserves a waveform cache file format.
@@ -55,9 +55,16 @@
 
 ## Playback
 
-- Keyboard shortcuts and media keys: space for play/pause, seek arrows, and
-  platform media keys if gpui exposes them (check what 0.2.2 offers before
-  designing around it).
+- Media keys: gpui 0.2.2 offers nothing - the Linux backend maps no XF86
+  audio keysyms and there is no macOS media-key hook. Needs upstream gpui
+  work or platform integration (MPRIS on Linux).
+- Keyboard shortcuts don't reach popped-out panel windows: the bindings are
+  scoped to the Workspace key context and the action handlers live on the
+  workspace root, and a popout hosts neither. Fixing it means giving the
+  popout host the app state and the same context plus handlers.
+- Restore-from-ended: with loop off, once the queue finishes the engine
+  drops its source, and switching loop mode on afterwards doesn't restart
+  playback until next/prev.
 
 ## Docs
 

@@ -1,0 +1,19 @@
+# Vendored from gpui-component 0.5.1 (src/dock), Apache-2.0, per the escape
+# hatch ADR 7 reserved. Everything non-dock still comes from the upstream
+# crate; this exists so we can change dock behavior directly. When bumping
+# gpui-component, re-diff this crate against upstream's src/dock.
+[package]
+name = "rox-dock"
+version.workspace = true
+# Upstream builds on edition 2024, keep the vendored code on it.
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+smallvec = "1"
+itertools = "0.13"

@@ -18,3 +18,14 @@ a separate mechanism regardless of which dock we pick (GPUI multi-window with sh
 entities), so we build that ourselves either way. The call: take the acceleration, own the
 two panel behaviors that are core to the product, and be ready to vendor the dock if we
 outgrow it.
+
+**Amendment: the escape hatch is exercised.** The dock behaviors we need next
+(suppressing the tab bar for single-panel groups, whole-tab middle-click close, clearing
+the stale zoom flag) have no upstream hooks, so the dock is vendored as `rox-dock`:
+gpui-component 0.5.1's `dock` module plus the three modules it reaches into with
+pub(crate) coupling (`resizable`, `tab`, `history`), under their Apache-2.0 license.
+Everything else, widgets and theme included, still comes from the upstream crate, which
+stays pinned per ADR 1. The alternative was a full fork via `[patch.crates-io]`; vendoring
+one leaf module keeps custody scoped to the code we actually change. The new cost lands on
+gpui-component bumps: re-diff `rox-dock` against upstream's `src/dock` as part of that
+budgeted task.

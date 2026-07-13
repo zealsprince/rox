@@ -13,7 +13,7 @@ use gpui::{
     actions, deferred, div, prelude::*, px, rgb, App, Axis, Context, Entity, FocusHandle,
     KeyBinding, MouseButton, WeakEntity, Window,
 };
-use gpui_component::dock::{DockArea, DockItem, Panel as _, PanelView, StackPanel, TabPanel};
+use rox_dock::{DockArea, DockItem, Panel as _, PanelView, StackPanel, TabPanel};
 
 use crate::library::{Library, LibraryPanel};
 use crate::panel::{AppState, TabHosts};

@@ -12,7 +12,7 @@ use gpui::{
     SharedString, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::button::Button;
-use gpui_component::dock::{Panel, TabPanel};
+use rox_dock::{Panel, TabPanel};
 use gpui_component::{IconName, Root};
 
 use crate::library::Library;

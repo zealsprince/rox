@@ -8,6 +8,7 @@ license.workspace = true
 gpui = { workspace = true }
 gpui-component = { workspace = true }
 gpui-component-assets = { workspace = true }
+rox-dock = { path = "../rox-dock" }
 rox-library = { path = "../rox-library" }
 rox-playback = { path = "../rox-playback" }
 rox-viz = { path = "../rox-viz" }

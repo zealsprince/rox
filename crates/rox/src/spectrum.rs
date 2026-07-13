@@ -13,7 +13,7 @@ use gpui::{
     App, Bounds, Context, EventEmitter, FocusHandle, Focusable, Subscription, WeakEntity, Window,
 };
 use gpui_component::button::Button;
-use gpui_component::dock::{Panel, PanelEvent, TabPanel};
+use rox_dock::{Panel, PanelEvent, TabPanel};
 
 use rox_viz::analysis::{log_bands, Analyzer, FFT_SIZE};
 use rox_viz::AudioFeed;

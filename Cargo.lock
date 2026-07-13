@@ -5071,11 +5071,25 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui-component-assets",
+ "rox-dock",
  "rox-library",
  "rox-playback",
  "rox-viz",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rox-dock"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "gpui-component",
+ "itertools 0.13.0",
+ "serde",
+ "serde_json",
+ "smallvec",
 ]
 
 [[package]]

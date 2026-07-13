@@ -8,12 +8,12 @@
   each panel's state, so one serializable config per panel type serves both.
 - Show tabs only when a group holds two or more panels; a single panel gets a
   right-click context menu (pop-out, duplicate, close) instead of header
-  buttons. gpui-component has no hook to suppress the tab bar, so this is the
-  item that decides vendoring the dock (the escape hatch ADR 7 reserved)
-  versus patching upstream. Two papercuts land in the same decision:
-  middle-click close only hits the title label rather than the whole tab, and
-  a private zoomed flag makes the zoom menu label lag one click after popping
-  out a zoomed panel.
+  buttons. The dock is vendored now (rox-dock, ADR 7 amendment), so this
+  lands directly in our TabPanel render path. Two papercuts live in the same
+  code: middle-click close only hits the title label rather than the whole
+  tab (our workaround in panel.rs, should move into the vendored tab element
+  and cover the whole tab), and the private zoomed flag makes the zoom menu
+  label lag one click after popping out a zoomed panel.
 - Icons for buttons and menus. gpui-component-assets is already bundled with
   the widget icon set; check its `IconName` coverage before drawing our own.
 - Bring the generative visualizer back once it is a real GPU shader, zero CPU

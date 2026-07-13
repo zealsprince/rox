@@ -35,17 +35,21 @@ struct TabState {
     active_panel: Option<Arc<dyn PanelView>>,
 }
 
-/// A panel move riding the middle mouse button: the hand-rolled twin of the
-/// left-button drag, which gpui reserves for that button. The source
-/// TabPanel starts it past the drag threshold, the DockArea tracks the
-/// pointer and hosts the chip, and the TabPanel under the release finishes
-/// it through the same drop path as the built-in drag.
+/// A panel move riding the middle mouse button, or Alt+Left where gpui's
+/// built-in drag isn't listening: the hand-rolled twin of that built-in
+/// left-button drag. The source TabPanel starts it past the drag threshold,
+/// the DockArea tracks the pointer and hosts the chip, and the TabPanel
+/// under the release finishes it through the same drop path as the
+/// built-in drag.
 pub(crate) struct MiddleDrag {
     pub(crate) panel: Arc<dyn PanelView>,
     pub(crate) source: WeakEntity<TabPanel>,
     /// The chip riding the pointer, prebuilt at drag start.
     pub(crate) chip: Entity<DragPanel>,
     pub(crate) position: Point<Pixels>,
+    /// The button carrying the drag; only its release ends it. Middle, or
+    /// Left when Alt was held at the press.
+    pub(crate) button: MouseButton,
 }
 
 /// Movement below this is a middle click, past it a middle drag. Same value
@@ -107,11 +111,12 @@ pub struct TabPanel {
     /// The open right-click menu: its anchor position, the menu, and the
     /// dismiss subscription that clears it.
     context_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
-    /// Where a middle button went down and on which panel - a tab arms its
-    /// own panel, the body arms the active one. Becomes a [`MiddleDrag`]
-    /// once the pointer moves past the threshold; released in place on a
-    /// tab, it stays a middle-click close.
-    pending_middle_drag: Option<(Point<Pixels>, Arc<dyn PanelView>)>,
+    /// Where an arming button (middle, or left with Alt held) went down and
+    /// on which panel - a tab arms its own panel, the body arms the active
+    /// one. Becomes a [`MiddleDrag`] once the pointer moves past the
+    /// threshold; released in place on a tab, a middle press stays a
+    /// middle-click close.
+    pending_middle_drag: Option<(Point<Pixels>, Arc<dyn PanelView>, MouseButton)>,
     /// The panel body's bounds, recorded at paint: mouse listeners don't
     /// carry element bounds the way DragMoveEvent does, and the middle-drag
     /// placement math needs them.
@@ -831,11 +836,35 @@ impl TabPanel {
                                 cx.listener({
                                     let panel = panel.clone();
                                     move |this, event: &MouseDownEvent, _, _| {
-                                        this.pending_middle_drag =
-                                            Some((event.position, panel.clone()));
+                                        this.pending_middle_drag = Some((
+                                            event.position,
+                                            panel.clone(),
+                                            MouseButton::Middle,
+                                        ));
                                     }
                                 }),
                             )
+                            // Alt+Left arms the same move, but only when the
+                            // built-in drag above isn't riding the left
+                            // button; two drags off one press would fight.
+                            .when(!state.draggable, |this| {
+                                this.on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener({
+                                        let panel = panel.clone();
+                                        move |this, event: &MouseDownEvent, _, _| {
+                                            if !event.modifiers.alt {
+                                                return;
+                                            }
+                                            this.pending_middle_drag = Some((
+                                                event.position,
+                                                panel.clone(),
+                                                MouseButton::Left,
+                                            ));
+                                        }
+                                    }),
+                                )
+                            })
                         }),
                 )
                 .children(title_suffix)
@@ -900,21 +929,53 @@ impl TabPanel {
                             cx.listener({
                                 let panel = panel.clone();
                                 move |this, event: &MouseDownEvent, _, _| {
-                                    this.pending_middle_drag =
-                                        Some((event.position, panel.clone()));
+                                    this.pending_middle_drag = Some((
+                                        event.position,
+                                        panel.clone(),
+                                        MouseButton::Middle,
+                                    ));
                                 }
                             }),
                         )
+                        // Alt+Left arms the same move, but only when the
+                        // built-in drag below isn't riding the left button
+                        // (a collapsed dock's tabs, or a tab that can't
+                        // drag); two drags off one press would fight.
+                        .when(self.collapsed || !state.draggable, |this| {
+                            this.on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener({
+                                    let panel = panel.clone();
+                                    move |this, event: &MouseDownEvent, _, _| {
+                                        if !event.modifiers.alt {
+                                            return;
+                                        }
+                                        this.pending_middle_drag = Some((
+                                            event.position,
+                                            panel.clone(),
+                                            MouseButton::Left,
+                                        ));
+                                    }
+                                }),
+                            )
+                        })
                         .on_mouse_up(
                             MouseButton::Middle,
                             cx.listener({
                                 let panel = panel.clone();
                                 move |this, _: &MouseUpEvent, window, cx| {
                                     // Still armed means no drag started.
-                                    let Some((_, pending)) = this.pending_middle_drag.take()
+                                    let Some((_, pending, button)) =
+                                        this.pending_middle_drag.take()
                                     else {
                                         return;
                                     };
+                                    // Only a middle press closes; a stray
+                                    // middle release over an Alt+Left arm
+                                    // just disarms.
+                                    if button != MouseButton::Middle {
+                                        return;
+                                    }
                                     if pending.view() != panel.view() {
                                         return;
                                     }
@@ -1106,29 +1167,35 @@ impl TabPanel {
                     MouseButton::Middle,
                     cx.listener(|this, event: &MouseDownEvent, _, cx| {
                         if let Some(panel) = this.active_panel(cx) {
-                            this.pending_middle_drag = Some((event.position, panel));
+                            this.pending_middle_drag =
+                                Some((event.position, panel, MouseButton::Middle));
                         }
                     }),
                 )
+                // Alt+Left arms the same move, and it is the rearrange
+                // gesture on the body, so claim the press in the capture
+                // phase: panel content must not react to a grab (an
+                // empty-state's click-to-open, say), and without the down
+                // event no click fires on the release either.
+                .capture_any_mouse_down(cx.listener(
+                    |this, event: &MouseDownEvent, _, cx| {
+                        if event.button != MouseButton::Left || !event.modifiers.alt {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        if let Some(panel) = this.active_panel(cx) {
+                            this.pending_middle_drag =
+                                Some((event.position, panel, MouseButton::Left));
+                        }
+                    },
+                ))
             })
             .when(state.droppable, |this| {
                 this.on_drag_move(cx.listener(Self::on_panel_drag_move))
-                    // A middle release over this panel lands the drag here.
-                    .on_mouse_up(
-                        MouseButton::Middle,
-                        cx.listener(|this, event: &MouseUpEvent, window, cx| {
-                            this.pending_middle_drag = None;
-                            let Some(dock) = this.dock_area.upgrade() else {
-                                return;
-                            };
-                            let Some(drag) = dock.update(cx, |dock, _| dock.middle_drag.take())
-                            else {
-                                return;
-                            };
-                            cx.stop_propagation();
-                            this.on_middle_drop(drag, event.position, window, cx);
-                        }),
-                    )
+                    // A release of the drag's own button over this panel
+                    // lands the drag here.
+                    .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_move_release))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_move_release))
                     .child(
                         div()
                             .invisible()
@@ -1203,7 +1270,31 @@ impl TabPanel {
         cx.notify()
     }
 
-    /// Complete a middle-button drag released over this panel: the same
+    /// A release over the panel body: if a hand-rolled drag is riding the
+    /// released button, take it from the dock and land it here.
+    fn on_move_release(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_middle_drag = None;
+        let Some(dock) = self.dock_area.upgrade() else {
+            return;
+        };
+        let Some(drag) = dock.update(cx, |dock, _| {
+            if dock.middle_drag.as_ref().map(|drag| drag.button) != Some(event.button) {
+                return None;
+            }
+            dock.middle_drag.take()
+        }) else {
+            return;
+        };
+        cx.stop_propagation();
+        self.on_middle_drop(drag, event.position, window, cx);
+    }
+
+    /// Complete a hand-rolled drag released over this panel: the same
     /// placement math and drop path as the built-in drag.
     fn on_middle_drop(
         &mut self,
@@ -1495,14 +1586,15 @@ impl Render for TabPanel {
             .size_full()
             .overflow_hidden()
             .bg(cx.theme().background)
-            // An armed middle press (on a tab or the body) becomes a panel
-            // move once the pointer travels past the threshold. Lives on the
-            // root so a fast pull off a small tab still catches.
+            // An armed press (middle or Alt+Left, on a tab or the body)
+            // becomes a panel move once the pointer travels past the
+            // threshold. Lives on the root so a fast pull off a small tab
+            // still catches.
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                let Some((start, _)) = this.pending_middle_drag.as_ref() else {
+                let Some((start, _, button)) = this.pending_middle_drag.as_ref() else {
                     return;
                 };
-                if event.pressed_button != Some(MouseButton::Middle) {
+                if event.pressed_button != Some(*button) {
                     this.pending_middle_drag = None;
                     return;
                 }
@@ -1520,7 +1612,7 @@ impl Render for TabPanel {
                 let Some(dock) = this.dock_area.upgrade() else {
                     return;
                 };
-                let Some((_, panel)) = this.pending_middle_drag.take() else {
+                let Some((_, panel, button)) = this.pending_middle_drag.take() else {
                     return;
                 };
                 let tabs = cx.entity();
@@ -1530,14 +1622,21 @@ impl Render for TabPanel {
                     source: tabs.downgrade(),
                     chip,
                     position: event.position,
+                    button,
                 };
                 dock.update(cx, |dock, _| dock.middle_drag = Some(drag));
                 window.refresh();
             }))
-            // Any unclaimed middle release disarms; runs after the tab and
-            // body handlers since bubble goes children first.
+            // Any unclaimed release of an arming button disarms; runs after
+            // the tab and body handlers since bubble goes children first.
             .on_mouse_up(
                 MouseButton::Middle,
+                cx.listener(|this, _: &MouseUpEvent, _, _| {
+                    this.pending_middle_drag = None;
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _, _| {
                     this.pending_middle_drag = None;
                 }),

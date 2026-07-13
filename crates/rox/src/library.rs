@@ -473,8 +473,9 @@ impl LibraryPanel {
         self.refresh_title_bar(cx);
     }
 
-    fn open_folder_button(&self, cx: &mut Context<Self>) -> Div {
+    fn open_folder_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         div()
+            .id("open-folder")
             .px_2()
             .h(px(22.))
             .flex()
@@ -484,10 +485,7 @@ impl LibraryPanel {
             .bg(palette::bg_control())
             .hover(|d| d.bg(palette::bg_control_hover()))
             .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.browse(cx)),
-            )
+            .on_click(cx.listener(|this, _, _, cx| this.browse(cx)))
             .child("open folder")
     }
 
@@ -569,6 +567,7 @@ impl LibraryPanel {
 
     fn empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .id("library-empty")
             .size_full()
             .flex()
             .flex_col()
@@ -576,10 +575,7 @@ impl LibraryPanel {
             .justify_center()
             .gap_2()
             .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.browse(cx)),
-            )
+            .on_click(cx.listener(|this, _, _, cx| this.browse(cx)))
             .child(div().text_lg().child("open a music folder"))
             .child(
                 div()

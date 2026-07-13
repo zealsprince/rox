@@ -81,14 +81,14 @@ pub struct DockArea {
     /// The panel style, default is [`PanelStyle::Default`](PanelStyle::Default).
     pub(crate) panel_style: PanelStyle,
 
-    /// A panel move riding the middle mouse button, see
+    /// A panel move riding the middle mouse button or Alt+Left, see
     /// [`MiddleDrag`](tab_panel::MiddleDrag). Lives here because it spans
     /// tab panels: the source starts it, any panel can receive it.
     pub(crate) middle_drag: Option<MiddleDrag>,
 
-    /// What to do with a middle drag released outside the window; the app
-    /// hooks this to pop the panel out into its own OS window. The panel
-    /// arrives already detached from its group.
+    /// What to do with a panel-move drag released outside the window; the
+    /// app hooks this to pop the panel out into its own OS window. The
+    /// panel arrives already detached from its group.
     middle_drag_out: Option<Box<dyn Fn(Arc<dyn PanelView>, Point<Pixels>, &mut Window, &mut App)>>,
 
     _subscriptions: Vec<Subscription>,
@@ -573,8 +573,9 @@ impl DockArea {
         self.bounds
     }
 
-    /// Set what happens to a middle drag released outside the window. The
-    /// panel arrives already detached from its group.
+    /// Set what happens to a panel-move drag (middle or Alt+Left) released
+    /// outside the window. The panel arrives already detached from its
+    /// group.
     pub fn on_middle_drag_out(
         &mut self,
         handler: impl Fn(Arc<dyn PanelView>, Point<Pixels>, &mut Window, &mut App) + 'static,
@@ -632,6 +633,70 @@ impl DockArea {
             Placement::Bottom => stack.add_panel(new_tabs, None, weak_dock, window, cx),
             _ => {}
         });
+    }
+
+    /// A release of the drag's own button no tab panel claimed as a drop:
+    /// cancel the drag. The other button's releases pass through untouched.
+    fn on_unclaimed_release(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        if self.middle_drag.as_ref().map(|drag| drag.button) != Some(event.button) {
+            return;
+        }
+        self.middle_drag = None;
+        window.refresh();
+    }
+
+    /// A release of the drag's own button in a root edge band docks the
+    /// panel there.
+    fn on_overlay_release(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.middle_drag.as_ref().map(|drag| drag.button) != Some(event.button) {
+            return;
+        }
+        let Some(placement) = self.edge_placement(event.position) else {
+            return;
+        };
+        let Some(drag) = self.middle_drag.take() else {
+            return;
+        };
+        cx.stop_propagation();
+        self.dock_at_root(drag, placement, window, cx);
+        window.refresh();
+    }
+
+    /// A release of the drag's own button outside the window hands the
+    /// panel to the pop-out hook.
+    fn on_overlay_release_out(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.middle_drag.as_ref().map(|drag| drag.button) != Some(event.button) {
+            return;
+        }
+        let Some(drag) = self.middle_drag.take() else {
+            return;
+        };
+        window.refresh();
+        let Some(handler) = self.middle_drag_out.as_ref() else {
+            return;
+        };
+        let Some(source) = drag.source.upgrade() else {
+            return;
+        };
+        source.update(cx, |tabs, cx| {
+            tabs.remove_panel(drag.panel.clone(), window, cx);
+        });
+        handler(drag.panel, event.position, window, cx);
     }
 
     /// Return the items of the dock area.
@@ -1181,16 +1246,10 @@ impl Render for DockArea {
                 .absolute()
                 .size_full(),
             )
-            // A middle release no tab panel claimed as a drop cancels the
-            // drag. Runs after their handlers: bubble goes children first.
-            .on_mouse_up(
-                MouseButton::Middle,
-                cx.listener(|this, _, window, _| {
-                    if this.middle_drag.take().is_some() {
-                        window.refresh();
-                    }
-                }),
-            )
+            // A release no tab panel claimed as a drop cancels the drag.
+            // Runs after their handlers: bubble goes children first.
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_unclaimed_release))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_unclaimed_release))
             // The middle-drag layer: a window-sized overlay tracks the
             // pointer everywhere (menu bar included), claims releases in
             // the root edge bands, hands releases outside the window to
@@ -1256,7 +1315,7 @@ impl Render for DockArea {
                                                             return;
                                                         };
                                                         if event.pressed_button
-                                                            == Some(MouseButton::Middle)
+                                                            == Some(drag.button)
                                                         {
                                                             drag.position = event.position;
                                                         } else {
@@ -1275,37 +1334,19 @@ impl Render for DockArea {
                                 })
                                 .on_mouse_up(
                                     MouseButton::Middle,
-                                    cx.listener(|this, event: &MouseUpEvent, window, cx| {
-                                        let Some(placement) = this.edge_placement(event.position)
-                                        else {
-                                            return;
-                                        };
-                                        let Some(drag) = this.middle_drag.take() else {
-                                            return;
-                                        };
-                                        cx.stop_propagation();
-                                        this.dock_at_root(drag, placement, window, cx);
-                                        window.refresh();
-                                    }),
+                                    cx.listener(Self::on_overlay_release),
+                                )
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(Self::on_overlay_release),
                                 )
                                 .on_mouse_up_out(
                                     MouseButton::Middle,
-                                    cx.listener(|this, event: &MouseUpEvent, window, cx| {
-                                        let Some(drag) = this.middle_drag.take() else {
-                                            return;
-                                        };
-                                        window.refresh();
-                                        let Some(handler) = this.middle_drag_out.as_ref() else {
-                                            return;
-                                        };
-                                        let Some(source) = drag.source.upgrade() else {
-                                            return;
-                                        };
-                                        source.update(cx, |tabs, cx| {
-                                            tabs.remove_panel(drag.panel.clone(), window, cx);
-                                        });
-                                        handler(drag.panel, event.position, window, cx);
-                                    }),
+                                    cx.listener(Self::on_overlay_release_out),
+                                )
+                                .on_mouse_up_out(
+                                    MouseButton::Left,
+                                    cx.listener(Self::on_overlay_release_out),
                                 )
                                 // The full-width preview strip for a root
                                 // edge dock.

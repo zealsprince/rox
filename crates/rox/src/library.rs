@@ -13,9 +13,8 @@ use gpui::{
     div, prelude::*, px, relative, rgb, App, Context, Div, EventEmitter, FocusHandle, Focusable,
     KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Subscription, WeakEntity, Window,
 };
-use gpui_component::button::Button;
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
-use gpui_component::IconName;
 
 use rox_library::projection::Projection;
 use rox_library::rusqlite::Connection;
@@ -166,6 +165,9 @@ pub struct LibraryPanel {
     error: Option<SharedString>,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
+    /// Watches the hosting tab panel: whether this panel is solo decides
+    /// where the toolbar renders, so membership changes must re-render.
+    _tabs_changed: Option<Subscription>,
     _library_changed: Subscription,
 }
 
@@ -188,6 +190,7 @@ impl LibraryPanel {
             search_focus: cx.focus_handle(),
             error: None,
             tab_panel: None,
+            _tabs_changed: None,
             _library_changed,
         };
         this.refresh_view(cx);
@@ -461,8 +464,8 @@ impl Panel for LibraryPanel {
         "library"
     }
 
-    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        panel::tab_title("library", &cx.entity(), self.tab_panel.clone())
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("library")
     }
 
     /// The panel's controls share the title bar row instead of stacking a
@@ -503,6 +506,9 @@ impl Panel for LibraryPanel {
         cx: &mut Context<Self>,
     ) {
         self.tab_panel = Some(tab_panel.clone());
+        self._tabs_changed = tab_panel
+            .upgrade()
+            .map(|tabs| cx.observe(&tabs, |_, _, cx| cx.notify()));
         self.state
             .tab_hosts
             .update(cx, |hosts, _| hosts.report(tab_panel));
@@ -510,37 +516,36 @@ impl Panel for LibraryPanel {
 
     fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
         self.tab_panel = None;
+        self._tabs_changed = None;
     }
 
-    fn toolbar_buttons(
+    fn dropdown_menu(
         &mut self,
+        menu: PopupMenu,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<Vec<Button>> {
+    ) -> PopupMenu {
         // Duplicate: a second view with its own copy of the config, over the
-        // same catalog and player.
+        // same catalog and player. Hand-rolled rather than through
+        // `panel::duplicate_item` because the copy takes the query along.
         let weak = cx.entity().downgrade();
-        let duplicate = Button::new("duplicate")
-            .icon(IconName::Copy)
-            .tooltip("duplicate this panel")
-            .on_click(move |_, window, cx| {
-                let Some(this) = weak.upgrade() else { return };
-                let (state, query, tabs) = {
-                    let panel = this.read(cx);
-                    (
-                        panel.state.clone(),
-                        panel.query.clone(),
-                        panel.tab_panel.clone(),
-                    )
-                };
-                let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                    return;
-                };
-                let dup = cx.new(|cx| LibraryPanel::new(state, query, cx));
-                tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-            });
-        let popout = panel::popout_button(&cx.entity(), "library", self.tab_panel.clone());
-        Some(vec![duplicate, popout])
+        let menu = menu.item(PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
+            let Some(this) = weak.upgrade() else { return };
+            let (state, query, tabs) = {
+                let panel = this.read(cx);
+                (
+                    panel.state.clone(),
+                    panel.query.clone(),
+                    panel.tab_panel.clone(),
+                )
+            };
+            let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+                return;
+            };
+            let dup = cx.new(|cx| LibraryPanel::new(state, query, cx));
+            tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+        }));
+        panel::popout_item(menu, &cx.entity(), self.tab_panel.clone(), self.state.clone())
     }
 }
 
@@ -553,6 +558,14 @@ impl Render for LibraryPanel {
         } else {
             self.track_list(cx).into_any_element()
         };
+        // The controls live in the tab bar via title_suffix while the panel
+        // shares a group; solo or popped out there is no header at all, so
+        // the toolbar renders in the body instead.
+        let headerless = self
+            .tab_panel
+            .as_ref()
+            .and_then(|tabs| tabs.upgrade())
+            .map_or(true, |tabs| tabs.read(cx).panels_count() < 2);
         // The root must size itself: the dock's tab panel lays the panel view
         // out as a root element (cached, absolute), where flex_1 has no flex
         // parent to grow in and the height would collapse to the content.
@@ -561,12 +574,7 @@ impl Render for LibraryPanel {
             .flex()
             .flex_col()
             .bg(rgb(0x181818))
-            // Docked, the controls sit in the tab panel's title bar via
-            // title_suffix; popped out there is no title bar, so render the
-            // toolbar row here.
-            .when(self.tab_panel.is_none(), |d| {
-                d.child(self.toolbar(window, cx))
-            })
+            .when(headerless, |d| d.child(self.toolbar(window, cx)))
             .child(div().flex_1().min_h_0().child(body))
     }
 }

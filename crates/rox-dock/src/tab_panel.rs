@@ -1,10 +1,14 @@
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext, Context, Corner, DismissEvent, Div, DragMoveEvent, Empty, Entity,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement,
-    Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement, StyleRefinement,
-    Styled, WeakEntity, Window, div, prelude::FluentBuilder, px, relative, rems,
+    App, AppContext, Bounds, Context, Corner, DismissEvent, Div, DragMoveEvent, Empty, Entity,
+    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+    ScrollHandle, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Subscription,
+    WeakEntity, Window, anchored, canvas, deferred, div, prelude::FluentBuilder, px, relative,
+    rems,
 };
 use crate::PanelInfo;
 use crate::tab::{Tab, TabBar};
@@ -12,7 +16,7 @@ use gpui_component::{
     ActiveTheme, AxisExt, IconName, Placement, Selectable, Sizable,
     button::{Button, ButtonVariants as _},
     h_flex,
-    menu::{DropdownMenu, PopupMenu},
+    menu::{DropdownMenu, PopupMenu, PopupMenuItem},
     v_flex,
 };
 
@@ -29,6 +33,23 @@ struct TabState {
     droppable: bool,
     active_panel: Option<Arc<dyn PanelView>>,
 }
+
+/// A panel move riding the middle mouse button: the hand-rolled twin of the
+/// left-button drag, which gpui reserves for that button. The source
+/// TabPanel starts it past the drag threshold, the DockArea tracks the
+/// pointer and hosts the chip, and the TabPanel under the release finishes
+/// it through the same drop path as the built-in drag.
+pub(crate) struct MiddleDrag {
+    pub(crate) panel: Arc<dyn PanelView>,
+    pub(crate) source: WeakEntity<TabPanel>,
+    /// The chip riding the pointer, prebuilt at drag start.
+    pub(crate) chip: Entity<DragPanel>,
+    pub(crate) position: Point<Pixels>,
+}
+
+/// Movement below this is a middle click, past it a middle drag. Same value
+/// as gpui's private DRAG_THRESHOLD.
+const MIDDLE_DRAG_THRESHOLD: f64 = 2.;
 
 #[derive(Clone)]
 pub(crate) struct DragPanel {
@@ -82,6 +103,18 @@ pub struct TabPanel {
     will_split_placement: Option<Placement>,
     /// Is TabPanel used in Tiles.
     in_tiles: bool,
+    /// The open right-click menu: its anchor position, the menu, and the
+    /// dismiss subscription that clears it.
+    context_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
+    /// Where a middle button went down and on which panel - a tab arms its
+    /// own panel, the body arms the active one. Becomes a [`MiddleDrag`]
+    /// once the pointer moves past the threshold; released in place on a
+    /// tab, it stays a middle-click close.
+    pending_middle_drag: Option<(Point<Pixels>, Arc<dyn PanelView>)>,
+    /// The panel body's bounds, recorded at paint: mouse listeners don't
+    /// carry element bounds the way DragMoveEvent does, and the middle-drag
+    /// placement math needs them.
+    content_bounds: Rc<Cell<Bounds<Pixels>>>,
 }
 
 impl Panel for TabPanel {
@@ -96,18 +129,8 @@ impl Panel for TabPanel {
     }
 
     fn closable(&self, cx: &App) -> bool {
-        if !self.closable {
-            return false;
-        }
-
-        // 1. When is the final panel in the dock, it will not able to close.
-        // 2. When is in the Tiles, it will always able to close (by active panel state).
-        if !self.draggable(cx) && !self.in_tiles {
-            return false;
-        }
-
         self.active_panel(cx)
-            .map(|panel| panel.closable(cx))
+            .map(|panel| self.can_close_panel(&panel, cx))
             .unwrap_or(false)
     }
 
@@ -175,6 +198,9 @@ impl TabPanel {
             collapsed: false,
             closable: true,
             in_tiles: false,
+            context_menu: None,
+            pending_middle_drag: None,
+            content_bounds: Rc::new(Cell::new(Bounds::default())),
         }
     }
 
@@ -320,6 +346,26 @@ impl TabPanel {
         cx.notify();
     }
 
+    /// Whether a specific panel in this group may close: the same guards as
+    /// [`Panel::closable`], but for any panel rather than the active one.
+    ///
+    /// Deliberately looser than upstream, which also refused the last panel
+    /// of a section: the workspace recovers an empty center through the
+    /// View menu, so being last is no reason to stay.
+    fn can_close_panel(&self, panel: &Arc<dyn PanelView>, cx: &App) -> bool {
+        if !self.closable {
+            return false;
+        }
+
+        // Locked groups (zoomed, or detached from any stack) keep their
+        // panels - except in Tiles, where panels always may close.
+        if self.is_locked(cx) && !self.in_tiles {
+            return false;
+        }
+
+        panel.closable(cx)
+    }
+
     /// Remove a panel from the tab panel
     pub fn remove_panel(
         &mut self,
@@ -329,8 +375,14 @@ impl TabPanel {
     ) {
         self.detach_panel(panel, window, cx);
         self.remove_self_if_empty(window, cx);
+        // The ZoomOut below unzooms the group, so the flag has to follow or
+        // the zoom menu label lags one click behind after a pop-out.
+        self.zoomed = false;
         cx.emit(PanelEvent::ZoomOut);
         cx.emit(PanelEvent::LayoutChanged);
+        // Wake observers - remaining panels watch the group to know when
+        // they become solo.
+        cx.notify();
     }
 
     fn detach_panel(
@@ -403,6 +455,16 @@ impl TabPanel {
         self.panels.len() <= 1
     }
 
+    /// Number of panels in the group. A panel can use this (with an observe
+    /// on its hosting tab panel) to tell whether it is alone in its group -
+    /// the dock draws no header then, so solo panels host their own
+    /// controls. Deliberately the raw count, no visibility filter: checking
+    /// visibility reads every panel entity, and a panel asking from inside
+    /// its own render would deadlock on itself.
+    pub fn panels_count(&self) -> usize {
+        self.panels.len()
+    }
+
     /// Return all visible panels
     fn visible_panels<'a>(&'a self, cx: &'a App) -> impl Iterator<Item = Arc<dyn PanelView>> + 'a {
         self.panels.iter().filter_map(|panel| {
@@ -426,6 +488,65 @@ impl TabPanel {
     /// E.g. if the tab panel is locked, it is not droppable.
     fn droppable(&self, cx: &App) -> bool {
         !self.is_locked(cx)
+    }
+
+    /// Open the right-click menu for a panel: the panel's own dropdown items,
+    /// then zoom and close, all acting on that panel rather than the active
+    /// one. One menu per tab panel; opening replaces any open one.
+    fn open_panel_menu(
+        &mut self,
+        panel: Arc<dyn PanelView>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity().clone();
+        let zoomed = self.zoomed;
+        let zoomable = self.zoomable(cx).map_or(false, |v| v.menu_visible());
+        let closable = self.can_close_panel(&panel, cx);
+        // Hands focus back to the panel when the menu dismisses.
+        let focus_handle = self.focus_handle(cx);
+
+        let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
+            panel
+                .dropdown_menu(menu.action_context(focus_handle), window, cx)
+                .separator()
+                .item(
+                    PopupMenuItem::new(if zoomed { "Zoom Out" } else { "Zoom In" })
+                        .disabled(!zoomable)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.on_action_toggle_zoom(&ToggleZoom, window, cx)
+                                });
+                            }
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new("Close")
+                        .disabled(!closable)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    if this.can_close_panel(&panel, cx) {
+                                        this.remove_panel(panel.clone(), window, cx);
+                                    }
+                                });
+                            }
+                        }),
+                )
+        });
+
+        menu.focus_handle(cx).focus(window);
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.context_menu = None;
+            cx.notify();
+        });
+        self.context_menu = Some((position, menu, subscription));
+        cx.notify();
     }
 
     fn render_toolbar(
@@ -623,6 +744,15 @@ impl TabPanel {
                 return div().into_any_element();
             }
 
+            // A lone panel gets no tab chrome at all: its management lives
+            // in the right-click menu, and panels host their own controls
+            // when solo (see `panels_count`). Only dock toggle buttons
+            // still force a bar.
+            if !has_extend_dock_button && right_dock_button.is_none() {
+                return div().into_any_element();
+            }
+
+            let title_suffix = panel.title_suffix(window, cx);
             let title_style = panel.title_style(cx);
 
             return h_flex()
@@ -667,17 +797,38 @@ impl TabPanel {
                                     cx.new(|_| drag.clone())
                                 },
                             )
+                        })
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener({
+                                let panel = panel.clone();
+                                move |this, event: &MouseDownEvent, window, cx| {
+                                    this.open_panel_menu(
+                                        panel.clone(),
+                                        event.position,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }),
+                        )
+                        // The solo title reads as the panel's tab, so it
+                        // arms a middle-button move like one.
+                        .when(state.droppable, |this| {
+                            this.on_mouse_down(
+                                MouseButton::Middle,
+                                cx.listener({
+                                    let panel = panel.clone();
+                                    move |this, event: &MouseDownEvent, _, _| {
+                                        this.pending_middle_drag =
+                                            Some((event.position, panel.clone()));
+                                    }
+                                }),
+                            )
                         }),
                 )
-                .children(panel.title_suffix(window, cx))
-                .child(
-                    h_flex()
-                        .flex_shrink_0()
-                        .ml_1()
-                        .gap_1()
-                        .child(self.render_toolbar(&state, window, cx))
-                        .children(right_dock_button),
-                )
+                .children(title_suffix)
+                .children(right_dock_button)
                 .into_any_element();
         }
 
@@ -730,6 +881,52 @@ impl TabPanel {
                             }
                         })
                         .selected(active)
+                        // Middle button, anywhere on the tab: a click closes
+                        // it, dragging past the threshold moves the panel
+                        // (the root's mouse-move handler takes it from here).
+                        .on_mouse_down(
+                            MouseButton::Middle,
+                            cx.listener({
+                                let panel = panel.clone();
+                                move |this, event: &MouseDownEvent, _, _| {
+                                    this.pending_middle_drag =
+                                        Some((event.position, panel.clone()));
+                                }
+                            }),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Middle,
+                            cx.listener({
+                                let panel = panel.clone();
+                                move |this, _: &MouseUpEvent, window, cx| {
+                                    // Still armed means no drag started.
+                                    let Some((_, pending)) = this.pending_middle_drag.take()
+                                    else {
+                                        return;
+                                    };
+                                    if pending.view() != panel.view() {
+                                        return;
+                                    }
+                                    if this.can_close_panel(&panel, cx) {
+                                        this.remove_panel(panel.clone(), window, cx);
+                                    }
+                                }
+                            }),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener({
+                                let panel = panel.clone();
+                                move |this, event: &MouseDownEvent, window, cx| {
+                                    this.open_panel_menu(
+                                        panel.clone(),
+                                        event.position,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }),
+                        )
                         .on_click(cx.listener({
                             let is_collapsed = self.collapsed;
                             let dock_area = self.dock_area.clone();
@@ -837,10 +1034,45 @@ impl TabPanel {
 
         let is_render_in_tabs = self.panels.len() > 1 && self.inner_padding(cx);
 
+        // A middle drag in flight with the pointer over this panel: the
+        // placement its release would use, for the same split preview the
+        // built-in drag gets. The root edge bands outrank the group, so
+        // no preview here while one of them claims the pointer.
+        let middle_target = self.dock_area.upgrade().and_then(|dock| {
+            let dock = dock.read(cx);
+            let drag = dock.middle_drag.as_ref()?;
+            if dock.edge_placement(drag.position).is_some() {
+                return None;
+            }
+            let bounds = self.content_bounds.get();
+            bounds
+                .contains(&drag.position)
+                .then(|| Self::placement_for(drag.position, bounds))
+        });
+        let preview_placement = middle_target.unwrap_or(self.will_split_placement);
+
         v_flex()
             .id("active-panel")
             .group("")
             .flex_1()
+            .child({
+                let content_bounds = self.content_bounds.clone();
+                canvas(move |bounds, _, _| content_bounds.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .size_full()
+            })
+            // The panel body answers right-click with the same menu as its
+            // tab, so a lone chrome-less panel stays manageable. Bubble
+            // phase: panel content can claim right-clicks of its own first.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener({
+                    let panel = active_panel.clone();
+                    move |this, event: &MouseDownEvent, window, cx| {
+                        this.open_panel_menu(panel.clone(), event.position, window, cx);
+                    }
+                }),
+            )
             .when(is_render_in_tabs, |this| this.pt_2())
             .child(
                 div()
@@ -854,14 +1086,44 @@ impl TabPanel {
                             .cached(StyleRefinement::default().absolute().size_full()),
                     ),
             )
+            // A middle-button press on the body arms a move of the active
+            // panel; the root's mouse-move handler starts the drag past the
+            // threshold. Gated on droppable (= not locked) rather than
+            // draggable, so a section's last panel can still move out.
+            .when(state.droppable, |this| {
+                this.on_mouse_down(
+                    MouseButton::Middle,
+                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        if let Some(panel) = this.active_panel(cx) {
+                            this.pending_middle_drag = Some((event.position, panel));
+                        }
+                    }),
+                )
+            })
             .when(state.droppable, |this| {
                 this.on_drag_move(cx.listener(Self::on_panel_drag_move))
+                    // A middle release over this panel lands the drag here.
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                            this.pending_middle_drag = None;
+                            let Some(dock) = this.dock_area.upgrade() else {
+                                return;
+                            };
+                            let Some(drag) = dock.update(cx, |dock, _| dock.middle_drag.take())
+                            else {
+                                return;
+                            };
+                            cx.stop_propagation();
+                            this.on_middle_drop(drag, event.position, window, cx);
+                        }),
+                    )
                     .child(
                         div()
                             .invisible()
                             .absolute()
                             .bg(cx.theme().drop_target)
-                            .map(|this| match self.will_split_placement {
+                            .map(|this| match preview_placement {
                                 Some(placement) => {
                                     let size = relative(0.5);
                                     match placement {
@@ -878,12 +1140,45 @@ impl TabPanel {
                                 None => this.top_0().left_0().size_full(),
                             })
                             .group_drag_over::<DragPanel>("", |this| this.visible())
+                            .when(middle_target.is_some(), |this| this.visible())
                             .on_drop(cx.listener(|this, drag: &DragPanel, window, cx| {
                                 this.on_drop(drag, None, true, window, cx)
                             })),
                     )
             })
             .into_any_element()
+    }
+
+    /// The split direction for a pointer inside bounds. The center merges
+    /// into the tabs (None); everywhere else the nearest edge wins, envelope
+    /// style, so the top and bottom of a wide panel are reachable at any x
+    /// (upstream checked left/right first, which squeezed the vertical
+    /// zones into a narrow middle strip).
+    fn placement_for(position: Point<Pixels>, bounds: Bounds<Pixels>) -> Option<Placement> {
+        if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
+            return None;
+        }
+        let fx = (position.x - bounds.left()) / bounds.size.width;
+        let fy = (position.y - bounds.top()) / bounds.size.height;
+
+        if (0.35..0.65).contains(&fx) && (0.35..0.65).contains(&fy) {
+            return None;
+        }
+
+        let mut best = fx;
+        let mut placement = Placement::Left;
+        if 1. - fx < best {
+            best = 1. - fx;
+            placement = Placement::Right;
+        }
+        if fy < best {
+            best = fy;
+            placement = Placement::Top;
+        }
+        if 1. - fy < best {
+            placement = Placement::Bottom;
+        }
+        Some(placement)
     }
 
     /// Calculate the split direction based on the current mouse position
@@ -893,23 +1188,25 @@ impl TabPanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let bounds = drag.bounds;
-        let position = drag.event.position;
-
-        // Check the mouse position to determine the split direction
-        if position.x < bounds.left() + bounds.size.width * 0.35 {
-            self.will_split_placement = Some(Placement::Left);
-        } else if position.x > bounds.left() + bounds.size.width * 0.65 {
-            self.will_split_placement = Some(Placement::Right);
-        } else if position.y < bounds.top() + bounds.size.height * 0.35 {
-            self.will_split_placement = Some(Placement::Top);
-        } else if position.y > bounds.top() + bounds.size.height * 0.65 {
-            self.will_split_placement = Some(Placement::Bottom);
-        } else {
-            // center to merge into the current tab
-            self.will_split_placement = None;
-        }
+        self.will_split_placement = Self::placement_for(drag.event.position, drag.bounds);
         cx.notify()
+    }
+
+    /// Complete a middle-button drag released over this panel: the same
+    /// placement math and drop path as the built-in drag.
+    fn on_middle_drop(
+        &mut self,
+        drag: MiddleDrag,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = drag.source.upgrade() else {
+            return;
+        };
+        self.will_split_placement = Self::placement_for(position, self.content_bounds.get());
+        let drag = DragPanel::new(drag.panel, source);
+        self.on_drop(&drag, None, true, window, cx);
     }
 
     /// Handle the drop event when dragging a panel
@@ -1187,7 +1484,76 @@ impl Render for TabPanel {
             .size_full()
             .overflow_hidden()
             .bg(cx.theme().background)
+            // An armed middle press (on a tab or the body) becomes a panel
+            // move once the pointer travels past the threshold. Lives on the
+            // root so a fast pull off a small tab still catches.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                let Some((start, _)) = this.pending_middle_drag.as_ref() else {
+                    return;
+                };
+                if event.pressed_button != Some(MouseButton::Middle) {
+                    this.pending_middle_drag = None;
+                    return;
+                }
+                if (event.position - *start).magnitude() <= MIDDLE_DRAG_THRESHOLD {
+                    return;
+                }
+                // Deliberately looser than draggable: a section's last panel
+                // (the lone center panel, say) may still move to another
+                // section. Dropping it on itself is a no-op, so this can't
+                // strand anything the built-in drag's guard protects.
+                if this.is_locked(cx) {
+                    this.pending_middle_drag = None;
+                    return;
+                }
+                let Some(dock) = this.dock_area.upgrade() else {
+                    return;
+                };
+                let Some((_, panel)) = this.pending_middle_drag.take() else {
+                    return;
+                };
+                let tabs = cx.entity();
+                let chip = cx.new(|_| DragPanel::new(panel.clone(), tabs.clone()));
+                let drag = MiddleDrag {
+                    panel,
+                    source: tabs.downgrade(),
+                    chip,
+                    position: event.position,
+                };
+                dock.update(cx, |dock, _| dock.middle_drag = Some(drag));
+                window.refresh();
+            }))
+            // Any unclaimed middle release disarms; runs after the tab and
+            // body handlers since bubble goes children first.
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(|this, _: &MouseUpEvent, _, _| {
+                    this.pending_middle_drag = None;
+                }),
+            )
             .child(self.render_title_bar(&state, window, cx))
             .child(self.render_active_panel(&state, window, cx))
+            // Same structure as gpui-component's ContextMenu element: a
+            // window-sized occluding layer swallows the dismissing click,
+            // the inner anchored pins the menu to the pointer.
+            .when_some(self.context_menu.as_ref(), |this, (position, menu, _)| {
+                this.child(
+                    deferred(
+                        anchored().child(
+                            div()
+                                .w(window.bounds().size.width)
+                                .h(window.bounds().size.height)
+                                .occlude()
+                                .child(
+                                    anchored()
+                                        .position(*position)
+                                        .snap_to_window_with_margin(px(8.))
+                                        .child(menu.clone()),
+                                ),
+                        ),
+                    )
+                    .with_priority(1),
+                )
+            })
     }
 }

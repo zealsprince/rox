@@ -8,12 +8,13 @@
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, relative, rgb, size, AnyView, App, Bounds, Context, Entity, MouseButton,
-    SharedString, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
+    anchored, deferred, div, prelude::*, px, relative, rgb, size, App, Bounds, Context,
+    DismissEvent, Entity, Focusable as _, MouseButton, MouseDownEvent, Pixels, Point,
+    SharedString, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
 };
-use gpui_component::button::Button;
-use rox_dock::{Panel, TabPanel};
-use gpui_component::{IconName, Root};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::Root;
+use rox_dock::{Panel, PanelView, TabPanel};
 
 use crate::library::Library;
 use crate::player::Player;
@@ -93,34 +94,6 @@ pub fn meter(level: f32) -> impl IntoElement {
         )
 }
 
-/// A panel's tab title with middle-click close. gpui only fires click
-/// handlers for the left button and the Tab element exposes no hook for the
-/// middle one, but the title is our own element rendered inside the tab, so
-/// the listener lives here.
-pub fn tab_title<P: Panel>(
-    title: impl Into<SharedString>,
-    panel: &Entity<P>,
-    tab_panel: Option<WeakEntity<TabPanel>>,
-) -> impl IntoElement {
-    let panel = panel.clone();
-    div()
-        .child(title.into())
-        .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
-            let Some(tabs) = tab_panel.as_ref().and_then(|tabs| tabs.upgrade()) else {
-                return;
-            };
-            // Same guard as the dock's own close action: the last panel of
-            // the last tab panel stays.
-            if !tabs.read(cx).closable(cx) {
-                return;
-            }
-            cx.stop_propagation();
-            tabs.update(cx, |tabs, cx| {
-                tabs.remove_panel(Arc::new(panel.clone()), window, cx);
-            });
-        })
-}
-
 /// A panel whose duplicate is just a fresh view over the shared state, no
 /// per-view config to carry across. The library panel keeps its own
 /// duplicate wiring because its copy takes the query along.
@@ -130,49 +103,47 @@ pub trait StatePanel: Panel {
     fn duplicate(state: AppState, cx: &mut Context<Self>) -> Self;
 }
 
-/// The toolbar button that duplicates a panel into the tab panel it sits in.
-pub fn duplicate_button<P: StatePanel>(panel: &Entity<P>) -> Button {
+/// The Duplicate entry for a panel's dropdown menu, which the dock serves
+/// on right-click and from the tab bar's ellipsis button. Duplicates into
+/// the tab panel the original sits in.
+pub fn duplicate_item<P: StatePanel>(menu: PopupMenu, panel: &Entity<P>) -> PopupMenu {
     let weak = panel.downgrade();
-    Button::new("duplicate")
-        .icon(IconName::Copy)
-        .tooltip("duplicate this panel")
-        .on_click(move |_, window, cx| {
-            let Some(this) = weak.upgrade() else { return };
-            let (state, tabs) = {
-                let panel = this.read(cx);
-                (panel.state(), panel.tab_panel())
-            };
-            let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                return;
-            };
-            let dup = cx.new(|cx| P::duplicate(state, cx));
-            tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-        })
+    menu.item(PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
+        let Some(this) = weak.upgrade() else { return };
+        let (state, tabs) = {
+            let panel = this.read(cx);
+            (panel.state(), panel.tab_panel())
+        };
+        let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+            return;
+        };
+        let dup = cx.new(|cx| P::duplicate(state, cx));
+        tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+    }))
 }
 
-/// The toolbar button that pops a panel out of its dock into an OS window.
-/// Pass the tab panel the panel currently sits in (from `on_added_to`).
-pub fn popout_button<P: Panel>(
+/// The Pop Out entry for a panel's dropdown menu: moves the panel out of its
+/// dock into an OS window. Pass the tab panel the panel currently sits in
+/// (from `on_added_to`); the state is what Dock Back later reaches the
+/// workspace through.
+pub fn popout_item<P: Panel>(
+    menu: PopupMenu,
     panel: &Entity<P>,
-    title: impl Into<SharedString>,
     tab_panel: Option<WeakEntity<TabPanel>>,
-) -> Button {
+    state: AppState,
+) -> PopupMenu {
     let panel = panel.clone();
-    let title: SharedString = title.into();
-    Button::new("pop-out")
-        .icon(IconName::ExternalLink)
-        .tooltip("pop out into its own window")
-        .on_click(move |_, window, cx| {
-            pop_out(panel.clone(), title.clone(), tab_panel.clone(), window, cx);
-        })
+    menu.item(PopupMenuItem::new("Pop Out").on_click(move |_, window, cx| {
+        pop_out(panel.clone(), tab_panel.clone(), state.clone(), window, cx);
+    }))
 }
 
 /// Move a docked panel into its own OS window. The panel entity itself moves,
 /// so it keeps rendering the same shared state; closing the window drops it.
 pub fn pop_out<P: Panel>(
     panel: Entity<P>,
-    title: SharedString,
     tab_panel: Option<WeakEntity<TabPanel>>,
+    state: AppState,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -183,7 +154,14 @@ pub fn pop_out<P: Panel>(
             tabs.remove_panel(Arc::new(panel.clone()), window, cx);
         });
     }
+    pop_out_view(Arc::new(panel), state, cx);
+}
 
+/// Open an OS window hosting an already-detached panel. Also the dock's
+/// middle-drag-out hook: dragging a panel out of the window lands here.
+/// The window title comes from the panel's name.
+pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
+    let title = panel.panel_name(cx);
     let bounds = Bounds::centered(None, size(px(900.), px(600.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -193,22 +171,64 @@ pub fn pop_out<P: Panel>(
         }),
         ..Default::default()
     };
-    let panel: AnyView = panel.into();
     cx.open_window(options, move |window, cx| {
-        let host = cx.new(|_| PopoutHost { panel });
+        let host = cx.new(|_| PopoutHost {
+            panel_view: panel,
+            state,
+            context_menu: None,
+        });
         cx.new(|cx| Root::new(host, window, cx))
     })
     .expect("failed to open the panel window");
 }
 
 /// A popped-out panel's window content: the moved panel view, full-size, on
-/// the same base styling the workspace root applies.
+/// the same base styling the workspace root applies. Right-click offers the
+/// way back into the dock.
 struct PopoutHost {
-    panel: AnyView,
+    panel_view: Arc<dyn PanelView>,
+    state: AppState,
+    /// The open right-click menu: its anchor position, the menu, and the
+    /// dismiss subscription that clears it.
+    context_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
+}
+
+impl PopoutHost {
+    /// Open the right-click menu. Dock Back moves the panel into the newest
+    /// live tab group of the workspace and closes this window; cross-window
+    /// drags can't work (a held button pins pointer events to its window,
+    /// and Wayland hides window positions), so this is the way home.
+    fn open_menu(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self.panel_view.clone();
+        let hosts = self.state.tab_hosts.clone();
+        let dockable = hosts.read(cx).last_live(cx).is_some();
+        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+            menu.item(
+                PopupMenuItem::new("Dock Back")
+                    .disabled(!dockable)
+                    .on_click(move |_, window, cx| {
+                        let Some(tabs) = hosts.read(cx).last_live(cx) else {
+                            return;
+                        };
+                        tabs.update(cx, |tabs, cx| {
+                            tabs.add_panel(panel.clone(), window, cx);
+                        });
+                        window.remove_window();
+                    }),
+            )
+        });
+        menu.focus_handle(cx).focus(window);
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.context_menu = None;
+            cx.notify();
+        });
+        self.context_menu = Some((position, menu, subscription));
+        cx.notify();
+    }
 }
 
 impl Render for PopoutHost {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -216,6 +236,34 @@ impl Render for PopoutHost {
             .bg(rgb(0x1c1c1c))
             .text_color(rgb(0xe0e0e0))
             .text_sm()
-            .child(self.panel.clone())
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.open_menu(event.position, window, cx);
+                }),
+            )
+            .child(self.panel_view.view())
+            // Same overlay structure as the dock's context menu: an
+            // occluding layer swallows the dismissing click, the anchored
+            // child pins the menu to the pointer.
+            .when_some(self.context_menu.as_ref(), |this, (position, menu, _)| {
+                this.child(
+                    deferred(
+                        anchored().child(
+                            div()
+                                .w(window.bounds().size.width)
+                                .h(window.bounds().size.height)
+                                .occlude()
+                                .child(
+                                    anchored()
+                                        .position(*position)
+                                        .snap_to_window_with_margin(px(8.))
+                                        .child(menu.clone()),
+                                ),
+                        ),
+                    )
+                    .with_priority(1),
+                )
+            })
     }
 }

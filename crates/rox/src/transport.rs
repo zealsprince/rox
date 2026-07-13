@@ -10,7 +10,7 @@ use gpui::{
     canvas, div, fill, point, prelude::*, px, rgb, rgba, size, App, Bounds, Context, EventEmitter,
     FocusHandle, Focusable, MouseButton, Pixels, Subscription, WeakEntity, Window,
 };
-use gpui_component::button::Button;
+use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 
 use rox_playback::engine::LoopMode;
@@ -338,8 +338,8 @@ macro_rules! transport_panel {
                 $name
             }
 
-            fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                panel::tab_title($name, &cx.entity(), self.tab_panel.clone())
+            fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+                gpui::SharedString::from($name)
             }
 
             fn inner_padding(&self, _cx: &App) -> bool {
@@ -362,15 +362,14 @@ macro_rules! transport_panel {
                 self.tab_panel = None;
             }
 
-            fn toolbar_buttons(
+            fn dropdown_menu(
                 &mut self,
+                menu: PopupMenu,
                 _window: &mut Window,
                 cx: &mut Context<Self>,
-            ) -> Option<Vec<Button>> {
-                Some(vec![
-                    panel::duplicate_button(&cx.entity()),
-                    panel::popout_button(&cx.entity(), $name, self.tab_panel.clone()),
-                ])
+            ) -> PopupMenu {
+                let menu = panel::duplicate_item(menu, &cx.entity());
+                panel::popout_item(menu, &cx.entity(), self.tab_panel.clone(), self.state.clone())
             }
         }
     };

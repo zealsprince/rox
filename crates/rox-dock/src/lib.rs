@@ -20,10 +20,11 @@ pub mod tab;
 use anyhow::Result;
 use gpui::{
     AnyElement, AnyView, App, AppContext, Axis, Bounds, Context, Edges, Entity, EntityId,
-    EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
-    SharedString, Styled, Subscription, WeakEntity, Window, actions, canvas, div,
-    prelude::FluentBuilder,
+    EventEmitter, InteractiveElement as _, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, Pixels, Point, Render, SharedString, Styled, Subscription, WeakEntity,
+    Window, actions, anchored, canvas, deferred, div, point, prelude::FluentBuilder, px,
 };
+use gpui_component::{ActiveTheme, Placement};
 use std::sync::Arc;
 
 pub use dock::*;
@@ -79,6 +80,16 @@ pub struct DockArea {
 
     /// The panel style, default is [`PanelStyle::Default`](PanelStyle::Default).
     pub(crate) panel_style: PanelStyle,
+
+    /// A panel move riding the middle mouse button, see
+    /// [`MiddleDrag`](tab_panel::MiddleDrag). Lives here because it spans
+    /// tab panels: the source starts it, any panel can receive it.
+    pub(crate) middle_drag: Option<MiddleDrag>,
+
+    /// What to do with a middle drag released outside the window; the app
+    /// hooks this to pop the panel out into its own OS window. The panel
+    /// arrives already detached from its group.
+    middle_drag_out: Option<Box<dyn Fn(Arc<dyn PanelView>, Point<Pixels>, &mut Window, &mut App)>>,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -551,6 +562,8 @@ impl DockArea {
             bottom_dock: None,
             locked: false,
             panel_style: PanelStyle::default(),
+            middle_drag: None,
+            middle_drag_out: None,
             _subscriptions: vec![],
         };
 
@@ -562,6 +575,67 @@ impl DockArea {
     /// Return the bounds of the dock area.
     pub fn bounds(&self) -> Bounds<Pixels> {
         self.bounds
+    }
+
+    /// Set what happens to a middle drag released outside the window. The
+    /// panel arrives already detached from its group.
+    pub fn on_middle_drag_out(
+        &mut self,
+        handler: impl Fn(Arc<dyn PanelView>, Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) {
+        self.middle_drag_out = Some(Box::new(handler));
+    }
+
+    /// The root dock placement for a middle-drag release near the dock
+    /// area's top or bottom edge, or past it (the menu bar sits above).
+    /// Only the vertical edges: the root stack is vertical, so only they
+    /// insert cleanly at the root.
+    pub(crate) fn edge_placement(&self, position: Point<Pixels>) -> Option<Placement> {
+        let band = px(36.);
+        let bounds = self.bounds;
+        if position.y < bounds.top() + band {
+            Some(Placement::Top)
+        } else if position.y > bounds.bottom() - band {
+            Some(Placement::Bottom)
+        } else {
+            None
+        }
+    }
+
+    /// Dock a middle-dragged panel at the root of the layout tree: a new
+    /// group spanning the window's full width, above or below everything.
+    fn dock_at_root(
+        &mut self,
+        drag: MiddleDrag,
+        placement: Placement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let DockItem::Split { view: root, .. } = &self.items else {
+            return;
+        };
+        let root = root.clone();
+        if root.read(cx).axis != placement.axis() {
+            return;
+        }
+        let Some(source) = drag.source.upgrade() else {
+            return;
+        };
+        source.update(cx, |tabs, cx| {
+            tabs.remove_panel(drag.panel.clone(), window, cx);
+        });
+
+        let weak_dock = cx.entity().downgrade();
+        let new_tabs = cx.new(|cx| TabPanel::new(None, weak_dock.clone(), window, cx));
+        new_tabs.update(cx, |tabs, cx| tabs.add_panel(drag.panel, window, cx));
+        let new_tabs: Arc<dyn PanelView> = Arc::new(new_tabs);
+        root.update(cx, |stack, cx| match placement {
+            Placement::Top => {
+                stack.insert_panel_before(new_tabs, 0, None, weak_dock, window, cx)
+            }
+            Placement::Bottom => stack.add_panel(new_tabs, None, weak_dock, window, cx),
+            _ => {}
+        });
     }
 
     /// Return the items of the dock area.
@@ -1111,6 +1185,163 @@ impl Render for DockArea {
                 .absolute()
                 .size_full(),
             )
+            // A middle release no tab panel claimed as a drop cancels the
+            // drag. Runs after their handlers: bubble goes children first.
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(|this, _, window, _| {
+                    if this.middle_drag.take().is_some() {
+                        window.refresh();
+                    }
+                }),
+            )
+            // The middle-drag layer: a window-sized overlay tracks the
+            // pointer everywhere (menu bar included), claims releases in
+            // the root edge bands, hands releases outside the window to
+            // the pop-out hook, and carries the chip. Painted last, so its
+            // handlers run first in the bubble; releases it doesn't claim
+            // fall through to the tab panels beneath.
+            .when_some(self.middle_drag.as_ref(), |this, drag| {
+                // The viewport, not window.bounds(): the latter includes
+                // window chrome, and the overlay carries the pop-out border,
+                // which has to hug the drawable area exactly.
+                let win_size = window.viewport_size();
+                let outside = drag.position.x < px(0.)
+                    || drag.position.y < px(0.)
+                    || drag.position.x > win_size.width
+                    || drag.position.y > win_size.height;
+                // The edge bands only claim an in-window pointer; outside,
+                // release means pop out, and the previews say so.
+                let edge_preview = if outside {
+                    None
+                } else {
+                    self.edge_placement(drag.position)
+                };
+                let dock_bounds = self.bounds;
+                this.child(
+                    deferred(
+                        // Anchored at the window origin: without an explicit
+                        // position it would sit at the dock area's origin,
+                        // below the menu bar, shifting every window-coord
+                        // child down by that much.
+                        anchored().position(point(px(0.), px(0.))).child(
+                            div()
+                                .id("middle-drag-overlay")
+                                .w(win_size.width)
+                                .h(win_size.height)
+                                // The pointer has left the window: releasing
+                                // now pops the panel out. The border is that
+                                // state made visible.
+                                .when(outside, |this| {
+                                    this.border_2().border_color(cx.theme().drag_border)
+                                })
+                                .child({
+                                    // Pointer tracking at the window level:
+                                    // the button grab keeps events coming
+                                    // with coordinates past the window
+                                    // edges, which hover-gated listeners
+                                    // never see.
+                                    let dock = cx.entity();
+                                    canvas(
+                                        |_, _, _| {},
+                                        move |_, _, window, _| {
+                                            window.on_mouse_event(
+                                                move |event: &MouseMoveEvent,
+                                                      phase,
+                                                      window,
+                                                      cx| {
+                                                    if !phase.bubble() {
+                                                        return;
+                                                    }
+                                                    dock.update(cx, |this, _| {
+                                                        let Some(drag) =
+                                                            this.middle_drag.as_mut()
+                                                        else {
+                                                            return;
+                                                        };
+                                                        if event.pressed_button
+                                                            == Some(MouseButton::Middle)
+                                                        {
+                                                            drag.position = event.position;
+                                                        } else {
+                                                            // The release was
+                                                            // missed; self-heal.
+                                                            this.middle_drag = None;
+                                                        }
+                                                    });
+                                                    window.refresh();
+                                                },
+                                            );
+                                        },
+                                    )
+                                    .absolute()
+                                    .size_full()
+                                })
+                                .on_mouse_up(
+                                    MouseButton::Middle,
+                                    cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                                        let Some(placement) = this.edge_placement(event.position)
+                                        else {
+                                            return;
+                                        };
+                                        let Some(drag) = this.middle_drag.take() else {
+                                            return;
+                                        };
+                                        cx.stop_propagation();
+                                        this.dock_at_root(drag, placement, window, cx);
+                                        window.refresh();
+                                    }),
+                                )
+                                .on_mouse_up_out(
+                                    MouseButton::Middle,
+                                    cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                                        let Some(drag) = this.middle_drag.take() else {
+                                            return;
+                                        };
+                                        window.refresh();
+                                        let Some(handler) = this.middle_drag_out.as_ref() else {
+                                            return;
+                                        };
+                                        let Some(source) = drag.source.upgrade() else {
+                                            return;
+                                        };
+                                        source.update(cx, |tabs, cx| {
+                                            tabs.remove_panel(drag.panel.clone(), window, cx);
+                                        });
+                                        handler(drag.panel, event.position, window, cx);
+                                    }),
+                                )
+                                // The full-width preview strip for a root
+                                // edge dock.
+                                .when_some(edge_preview, |this, placement| {
+                                    let h = dock_bounds.size.height * 0.25;
+                                    this.child(
+                                        div()
+                                            .absolute()
+                                            .left(dock_bounds.left())
+                                            .w(dock_bounds.size.width)
+                                            .bg(cx.theme().drop_target)
+                                            .map(|this| match placement {
+                                                Placement::Top => {
+                                                    this.top(dock_bounds.top()).h(h)
+                                                }
+                                                _ => this
+                                                    .top(dock_bounds.bottom() - h)
+                                                    .h(h),
+                                            }),
+                                    )
+                                })
+                                .child(
+                                    anchored()
+                                        .position(drag.position + point(px(8.), px(8.)))
+                                        .snap_to_window()
+                                        .child(drag.chip.clone()),
+                                ),
+                        ),
+                    )
+                    .with_priority(2),
+                )
+            })
             .map(|this| {
                 if let Some(zoom_view) = self.zoom_view.clone() {
                     this.child(zoom_view)

@@ -24,9 +24,10 @@ use crate::waveform::WaveformPanel;
 
 const MENU_BAR_H: f32 = 30.0;
 
-/// The bottom dock's starting height. Docks clamp to a 100px minimum, so
-/// this is just enough for the transport row plus its status line.
-const BOTTOM_DOCK_H: f32 = 120.0;
+/// The transport row's starting height, just enough for the controls plus
+/// their status line. The row is a regular split in the one layout tree,
+/// so it resizes and collapses like everything else.
+const TRANSPORT_ROW_H: f32 = 120.0;
 
 actions!(rox, [TogglePlayback, SeekBackward, SeekForward]);
 
@@ -121,14 +122,16 @@ pub struct Workspace {
     /// the active panel on activation and takes over from there.
     focus: FocusHandle,
     dock: Entity<DockArea>,
-    /// The stack the center tabs sit in; the parent that makes tab dragging
-    /// and splitting possible at all.
+    /// The root of the one layout tree: center tabs over the transport
+    /// row, vertically. One tree rather than center-plus-bottom-dock so
+    /// closing or moving everything in one region collapses the rest up
+    /// into the space.
     stack: Entity<StackPanel>,
     /// The tab panel the layout starts with. View-menu panels land here
     /// while it is still showing.
     center_tabs: Entity<TabPanel>,
-    /// The bottom dock's stack: the transport groups at start, and the row
-    /// View-menu audio panels append to.
+    /// The transport row's stack: the transport groups at start, and the
+    /// row View-menu audio panels append to.
     bottom_stack: Entity<StackPanel>,
 }
 
@@ -164,33 +167,9 @@ impl Workspace {
         let library_panel = cx.new(|cx| LibraryPanel::new(state.clone(), String::new(), cx));
         let (tabs, center_tabs) = tabs_item(vec![Arc::new(library_panel)], &weak_dock, window, cx);
 
-        // Tab dragging, dropping, and splitting only work when the tab panel
-        // has a parent StackPanel: without one it counts itself locked (which
-        // also kills closing, middle-click included). Wrap the tabs in a
-        // one-item split, built by hand because 0.5.1's
-        // DockItem::split_with_sizes adds every panel to its stack twice.
-        let stack = cx.new(|cx| {
-            let mut stack = StackPanel::new(Axis::Horizontal, window, cx);
-            stack.add_panel(
-                Arc::new(center_tabs.clone()),
-                None,
-                weak_dock.clone(),
-                window,
-                cx,
-            );
-            stack
-        });
-        let center = DockItem::Split {
-            axis: Axis::Horizontal,
-            size: None,
-            items: vec![tabs],
-            sizes: vec![None],
-            view: stack.clone(),
-        };
-
-        // The bottom dock replaces the old fixed player bar: the transport
-        // pieces as three side-by-side tab groups. Hand-built the same way
-        // as the center, and for the same lock reason.
+        // The transport pieces as three side-by-side tab groups in one row.
+        // Hand-built because 0.5.1's DockItem::split_with_sizes adds every
+        // panel to its stack twice.
         let playback = cx.new(|cx| TransportPanel::new(state.clone(), cx));
         let seek = cx.new(|cx| SeekStripPanel::new(state.clone(), cx));
         let volume = cx.new(|cx| VolumePanel::new(state.clone(), cx));
@@ -209,12 +188,43 @@ impl Workspace {
             }
             stack
         });
-        let bottom = DockItem::Split {
+        let transport_row = DockItem::Split {
             axis: Axis::Horizontal,
-            size: None,
+            size: Some(px(TRANSPORT_ROW_H)),
             items: vec![playback_item, seek_item, volume_item],
             sizes: sizes.to_vec(),
             view: bottom_stack.clone(),
+        };
+
+        // One vertical tree: the center tabs over the transport row, no
+        // separate bottom dock. Closing or moving everything out of one
+        // region hands its space to the rest instead of leaving a hole,
+        // and a parent stack is also what makes tab dragging, splitting,
+        // and closing possible at all.
+        let stack = cx.new(|cx| {
+            let mut stack = StackPanel::new(Axis::Vertical, window, cx);
+            stack.add_panel(
+                Arc::new(center_tabs.clone()),
+                None,
+                weak_dock.clone(),
+                window,
+                cx,
+            );
+            stack.add_panel(
+                Arc::new(bottom_stack.clone()),
+                Some(px(TRANSPORT_ROW_H)),
+                weak_dock.clone(),
+                window,
+                cx,
+            );
+            stack
+        });
+        let center = DockItem::Split {
+            axis: Axis::Vertical,
+            size: None,
+            items: vec![tabs, transport_row],
+            sizes: vec![None, Some(px(TRANSPORT_ROW_H))],
+            view: stack.clone(),
         };
 
         // Zoom needs nothing from the workspace anymore: adding tab panels
@@ -223,8 +233,13 @@ impl Workspace {
         // the menu bar.
         dock.update(cx, |dock, cx| {
             dock.set_center(center, window, cx);
-            dock.set_bottom_dock(bottom, Some(px(BOTTOM_DOCK_H)), true, window, cx);
             dock.set_toggle_button_visible(false, cx);
+            // A middle drag released outside the window pops the panel out
+            // into its own OS window, same as the menu's Pop Out.
+            let state = state.clone();
+            dock.on_middle_drag_out(move |panel, _, _, cx| {
+                crate::panel::pop_out_view(panel, state.clone(), cx);
+            });
         });
 
         Workspace {
@@ -245,10 +260,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // The dock's own add-to-center always targets the initial tabs item,
-        // but drags can empty that tab panel out of the tree. Add to it
-        // while it still shows, otherwise to the newest live tab panel, and
-        // failing both (everything popped out or closed) put the original
-        // one back on the stack first.
+        // but drags and closes can empty that tab panel out of the tree.
+        // Add to it while it still shows, otherwise to the newest live tab
+        // panel, and failing both put the original one back at the top of
+        // the root stack, above the transport row.
         let tabs = if self.center_tabs.read(cx).visible(cx) {
             self.center_tabs.clone()
         } else if let Some(tabs) = self.state.tab_hosts.read(cx).last_live(cx) {
@@ -257,19 +272,19 @@ impl Workspace {
             let tabs_view: Arc<dyn PanelView> = Arc::new(self.center_tabs.clone());
             let weak_dock = self.dock.downgrade();
             self.stack.update(cx, |stack, cx| {
-                stack.add_panel(tabs_view, None, weak_dock, window, cx);
+                stack.insert_panel_before(tabs_view, 0, None, weak_dock, window, cx);
             });
             self.center_tabs.clone()
         };
         tabs.update(cx, |tabs, cx| tabs.add_panel(panel, window, cx));
     }
 
-    /// New audio and transport panels join the bottom dock as their own tab
-    /// group at the end of the row - a new group rather than a new tab, so
-    /// they sit next to the transport pieces instead of hiding one. The
-    /// library stays a center panel: it wants the tall area, and keeping
-    /// additions on the center path preserves the recovery route when every
-    /// center panel has been closed or popped out.
+    /// New audio and transport panels join the transport row as their own
+    /// tab group at the end - a new group rather than a new tab, so they
+    /// sit next to the transport pieces instead of hiding one. The library
+    /// stays a center panel: it wants the tall area, and keeping additions
+    /// on the center path preserves the recovery route when every center
+    /// panel has been closed or popped out.
     fn add_bottom(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -277,6 +292,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let weak_dock = self.dock.downgrade();
+        // The row removes itself from the tree when its last group closes,
+        // so put it back at the bottom of the root stack first. A no-op
+        // while it is still attached: stacks skip panels they already hold.
+        let row: Arc<dyn PanelView> = Arc::new(self.bottom_stack.clone());
+        self.stack.update(cx, |stack, cx| {
+            stack.add_panel(
+                row,
+                Some(px(TRANSPORT_ROW_H)),
+                weak_dock.clone(),
+                window,
+                cx,
+            );
+        });
         let (_, tabs) = tabs_item(vec![panel], &weak_dock, window, cx);
         self.bottom_stack.update(cx, |stack, cx| {
             stack.add_panel(Arc::new(tabs), None, weak_dock, window, cx);

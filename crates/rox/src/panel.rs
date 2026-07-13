@@ -9,16 +9,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, rgb, size, svg, AnyElement, App, Bounds, Context,
+    anchored, deferred, div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context,
     DismissEvent, Div, Entity, Focusable as _, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds,
-    WindowOptions,
+    MouseUpEvent, Pixels, Point, Rgba, Subscription, TitlebarOptions, WeakEntity, Window,
+    WindowBounds, WindowOptions,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Root;
 use rox_dock::{Panel, PanelInfo, PanelView, TabPanel};
 
 use crate::library::Library;
+use crate::palette;
 use crate::player::Player;
 
 /// The shared entities every panel renders over: one player and one catalog
@@ -63,20 +64,20 @@ impl TabHosts {
 /// Icon paths come from [`crate::assets::icons`].
 pub fn icon_control<V: 'static>(
     icon: &'static str,
-    color: u32,
+    color: Rgba,
     on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
     cx: &mut Context<V>,
 ) -> impl IntoElement {
     div()
         .p_1p5()
         .rounded_md()
-        .hover(|d| d.bg(rgb(0x2a2a2a)))
+        .hover(|d| d.bg(palette::bg_control()))
         .cursor_pointer()
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| on_click(this, cx)),
         )
-        .child(svg().path(icon).size_4().text_color(rgb(color)))
+        .child(svg().path(icon).size_4().text_color(color))
 }
 
 /// The shared state of a click-and-drag strip: where it painted and
@@ -335,7 +336,7 @@ impl<P: Customizable> Render for CustomizeHost<P> {
         let body = match self.panel.upgrade() {
             Some(panel) => panel.update(cx, |panel, cx| panel.customize(window, cx)),
             None => div()
-                .text_color(rgb(0x808080))
+                .text_color(palette::text_muted())
                 .child("the panel was closed")
                 .into_any_element(),
         };
@@ -345,8 +346,8 @@ impl<P: Customizable> Render for CustomizeHost<P> {
             .flex_col()
             .gap_2()
             .p_3()
-            .bg(rgb(0x1c1c1c))
-            .text_color(rgb(0xe0e0e0))
+            .bg(palette::bg_elevated())
+            .text_color(palette::text_bright())
             .text_sm()
             .child(body)
     }
@@ -374,7 +375,12 @@ pub fn setting_row(
                 .child(div().flex_none().child(control)),
         )
         .when_some(description, |d, description| {
-            d.child(div().text_xs().text_color(rgb(0x808080)).child(description))
+            d.child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(description),
+            )
         })
 }
 
@@ -390,7 +396,7 @@ pub fn toggle<P: 'static>(
         .h(px(18.))
         .flex_none()
         .rounded_full()
-        .bg(rgb(0x2a2a2a))
+        .bg(palette::bg_control())
         .flex()
         .items_center()
         .when(on, |d| d.justify_end())
@@ -401,9 +407,9 @@ pub fn toggle<P: 'static>(
             cx.listener(move |this, _, _, cx| on_change(this, !on, cx)),
         )
         .child(div().size(px(14.)).rounded_full().bg(if on {
-            rgb(0xfdcb00)
+            palette::accent()
         } else {
-            rgb(0x707070)
+            palette::text_faint()
         }))
 }
 
@@ -429,8 +435,12 @@ fn segments<P: 'static, V: PartialEq + Copy + 'static>(
                 .when(i > 0, |d| d.ml(px(1.)))
                 .when(i == 0, |d| d.rounded_l_md())
                 .when(i == last, |d| d.rounded_r_md())
-                .bg(if picked { rgb(0xfdcb00) } else { rgb(0x2a2a2a) })
-                .when(!picked, |d| d.hover(|d| d.bg(rgb(0x3a3a3a))))
+                .bg(if picked {
+                    palette::accent()
+                } else {
+                    palette::bg_control()
+                })
+                .when(!picked, |d| d.hover(|d| d.bg(palette::bg_control_hover())))
                 .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -454,7 +464,11 @@ pub fn choices<P: 'static, V: PartialEq + Copy + 'static>(
         current,
         |label, picked| {
             div()
-                .text_color(if picked { rgb(0x121212) } else { rgb(0xc0c0c0) })
+                .text_color(if picked {
+                    palette::text_on_accent()
+                } else {
+                    palette::text()
+                })
                 .child(label)
                 .into_any_element()
         },
@@ -478,7 +492,11 @@ pub fn icon_choices<P: 'static, V: PartialEq + Copy + 'static>(
             svg()
                 .path(icon)
                 .size_4()
-                .text_color(if picked { rgb(0x121212) } else { rgb(0xc0c0c0) })
+                .text_color(if picked {
+                    palette::text_on_accent()
+                } else {
+                    palette::text()
+                })
                 .into_any_element()
         },
         on_pick,
@@ -537,8 +555,8 @@ impl Render for PopoutHost {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x1c1c1c))
-            .text_color(rgb(0xe0e0e0))
+            .bg(palette::bg_elevated())
+            .text_color(palette::text_bright())
             .text_sm()
             .on_mouse_down(
                 MouseButton::Right,

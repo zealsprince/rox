@@ -11,15 +11,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    actions, deferred, div, prelude::*, px, rgb, App, Axis, Context, Entity, FocusHandle,
-    KeyBinding, MouseButton, Subscription, Task, WeakEntity, Window, WindowBounds,
+    actions, deferred, div, prelude::*, px, App, Axis, Context, Entity, FocusHandle, KeyBinding,
+    MouseButton, Subscription, Task, WeakEntity, Window, WindowBounds,
 };
 use rox_dock::{
-    register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo,
-    PanelView, StackPanel, TabPanel,
+    register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo, PanelView,
+    StackPanel, TabPanel,
 };
 
 use crate::library::{Library, LibraryConfig, LibraryPanel};
+use crate::palette;
 use crate::panel::{self, AppState, TabHosts};
 use crate::player::Player;
 use crate::settings::{Settings, WindowState};
@@ -70,9 +71,9 @@ pub fn init(cx: &mut App) {
 /// workspace can re-register.
 fn register_panels(state: &AppState, cx: &mut App) {
     let s = state.clone();
-    register_panel(cx, "library", move |_, _, info, _, cx| {
+    register_panel(cx, "library", move |_, _, info, window, cx| {
         let config: LibraryConfig = panel::config_from_info(info);
-        Box::new(cx.new(|cx| LibraryPanel::new(s.clone(), config.query, cx)))
+        Box::new(cx.new(|cx| LibraryPanel::new(s.clone(), config, window, cx)))
     });
     // A panel whose config rides the layout dump.
     macro_rules! configured {
@@ -237,7 +238,8 @@ fn default_layout(
     Entity<TabPanel>,
     Entity<StackPanel>,
 ) {
-    let library_panel = cx.new(|cx| LibraryPanel::new(state.clone(), String::new(), cx));
+    let library_panel =
+        cx.new(|cx| LibraryPanel::new(state.clone(), LibraryConfig::default(), window, cx));
     let (tabs, center_tabs) = tabs_item(vec![Arc::new(library_panel)], weak_dock, window, cx);
 
     // The transport pieces as side-by-side tab groups in one row: the track
@@ -336,8 +338,7 @@ impl Workspace {
                 // The preferred add targets may not survive a rearranged
                 // layout; fresh detached entities take their place, and the
                 // add paths attach them back into the tree on first use.
-                let tabs =
-                    tabs.unwrap_or_else(|| tabs_item(Vec::new(), &weak_dock, window, cx).1);
+                let tabs = tabs.unwrap_or_else(|| tabs_item(Vec::new(), &weak_dock, window, cx).1);
                 let bottom = bottom
                     .unwrap_or_else(|| cx.new(|cx| StackPanel::new(Axis::Horizontal, window, cx)));
                 (item, stack, tabs, bottom)
@@ -487,7 +488,9 @@ impl Workspace {
                 .library
                 .update(cx, |library, cx| library.browse(cx)),
             MenuAction::OpenLibrary => {
-                let panel = cx.new(|cx| LibraryPanel::new(self.state.clone(), String::new(), cx));
+                let panel = cx.new(|cx| {
+                    LibraryPanel::new(self.state.clone(), LibraryConfig::default(), window, cx)
+                });
                 self.add_center(Arc::new(panel), window, cx);
             }
             MenuAction::OpenSpectrum => {
@@ -516,17 +519,19 @@ impl Workspace {
                 self.add_bottom(Arc::new(panel), window, cx);
             }
             MenuAction::OpenSeek => {
-                let panel = cx.new(|cx| SeekStripPanel::new(
-                    self.state.clone(),
-                    SeekConfig::default(),
-                    cx,
-                ));
+                let panel =
+                    cx.new(|cx| SeekStripPanel::new(self.state.clone(), SeekConfig::default(), cx));
                 self.add_bottom(Arc::new(panel), window, cx);
             }
         }
     }
 
-    fn menu_button(&self, index: usize, menu: &'static Menu, cx: &mut Context<Self>) -> impl IntoElement {
+    fn menu_button(
+        &self,
+        index: usize,
+        menu: &'static Menu,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let open = self.open_menu == Some(index);
         div()
             .relative()
@@ -535,8 +540,8 @@ impl Workspace {
             .flex()
             .items_center()
             .cursor_pointer()
-            .when(open, |d| d.bg(rgb(0x333333)))
-            .hover(|d| d.bg(rgb(0x2f2f2f)))
+            .when(open, |d| d.bg(palette::bg_control_active()))
+            .hover(|d| d.bg(palette::bg_menu_hover()))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -569,9 +574,9 @@ impl Workspace {
             .flex()
             .flex_col()
             .py_1()
-            .bg(rgb(0x262626))
+            .bg(palette::bg_menu())
             .border_1()
-            .border_color(rgb(0x3a3a3a))
+            .border_color(palette::border_light())
             .shadow_md()
             .occlude()
             .children(menu.items.iter().map(|item| {
@@ -580,7 +585,7 @@ impl Workspace {
                     .px_3()
                     .py_1()
                     .cursor_pointer()
-                    .hover(|d| d.bg(rgb(0x3a3a3a)))
+                    .hover(|d| d.bg(palette::bg_control_hover()))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
@@ -603,16 +608,22 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .key_context("Workspace")
             .on_action(cx.listener(|this, _: &TogglePlayback, _, cx| {
-                this.state.player.update(cx, |player, _| player.toggle_pause());
+                this.state
+                    .player
+                    .update(cx, |player, _| player.toggle_pause());
             }))
             .on_action(cx.listener(|this, _: &SeekBackward, _, cx| {
-                this.state.player.update(cx, |player, _| player.seek_by(-5.0));
+                this.state
+                    .player
+                    .update(cx, |player, _| player.seek_by(-5.0));
             }))
             .on_action(cx.listener(|this, _: &SeekForward, _, cx| {
-                this.state.player.update(cx, |player, _| player.seek_by(5.0));
+                this.state
+                    .player
+                    .update(cx, |player, _| player.seek_by(5.0));
             }))
-            .bg(rgb(0x1c1c1c))
-            .text_color(rgb(0xe0e0e0))
+            .bg(palette::bg_elevated())
+            .text_color(palette::text_bright())
             .text_sm()
             .child(
                 div()
@@ -620,9 +631,9 @@ impl Render for Workspace {
                     .flex_row()
                     .h(px(MENU_BAR_H))
                     .flex_none()
-                    .bg(rgb(0x242424))
+                    .bg(palette::bg_menubar())
                     .border_b_1()
-                    .border_color(rgb(0x333333))
+                    .border_color(palette::border())
                     .children(
                         MENUS
                             .iter()

@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba, size,
-    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, SharedString, Subscription,
-    WeakEntity, Window,
+    canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, size, App,
+    Bounds, Context, EventEmitter, FocusHandle, Focusable, SharedString, Subscription, WeakEntity,
+    Window,
 };
 use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -19,6 +19,7 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_viz::analysis::{log_bands, Analyzer, FFT_SIZE};
 use rox_viz::AudioFeed;
 
+use crate::palette;
 use crate::panel::{self, AppState, StatePanel};
 
 /// Bars never get thinner than this; the count collapses on narrow panels
@@ -174,7 +175,7 @@ impl Bars {
                     point(bounds.origin.x, bounds.origin.y + px(y)),
                     size(px(w), px(1.0)),
                 ),
-                rgba(0x6e6e6e28),
+                palette::alpha(palette::gridline(), 0x28),
             ));
         }
 
@@ -190,8 +191,8 @@ impl Bars {
                 // accent at the baseline fading out toward the bar tip.
                 linear_gradient(
                     0.0,
-                    linear_color_stop(rgba(0xfdcb00ff), 0.0),
-                    linear_color_stop(rgba(0xfdcb0040), 1.0),
+                    linear_color_stop(palette::accent(), 0.0),
+                    linear_color_stop(palette::alpha(palette::accent(), 0x40), 1.0),
                 ),
             ));
 
@@ -202,7 +203,7 @@ impl Bars {
                     point(x, bounds.origin.y + px(cap_y)),
                     size(px(bar_w), px(1.0)),
                 ),
-                rgba(0xfdcb00ff),
+                palette::accent(),
             ));
         }
     }
@@ -313,7 +314,7 @@ impl Render for SpectrumPanel {
 
         let bars = self.bars.clone();
         let feed = self.feed.clone();
-        div().size_full().bg(rgb(0x121212)).child(
+        div().size_full().bg(palette::bg_root()).child(
             canvas(
                 move |_, _, _| {},
                 move |bounds, _, window, _| {

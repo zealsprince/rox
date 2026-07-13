@@ -5,15 +5,16 @@
 //! search config, so a duplicated panel filters independently. Clicking a
 //! track queues it straight on the shared player.
 
-use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, relative, rgb, App, Context, Div, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Subscription, WeakEntity, Window,
+    div, prelude::*, px, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
+    KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Stateful, Subscription, WeakEntity,
+    Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::table::{Column, Table, TableDelegate, TableEvent, TableState};
 use rox_dock::{Panel, PanelEvent, PanelInfo, PanelState, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +23,7 @@ use rox_library::rusqlite::Connection;
 use rox_library::scanner::{self, ScanSummary};
 use rox_library::store;
 
+use crate::palette;
 use crate::panel::{self, AppState};
 
 /// Play from a clicked row: at most this many tracks are queued behind it.
@@ -53,12 +55,11 @@ impl EventEmitter<LibraryEvent> for Library {}
 impl Library {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let db_path = crate::settings::data_dir().join("library.db");
-        let (conn, status) = match store::open(&db_path)
-            .and_then(|conn| store::init_schema(&conn).map(|_| conn))
-        {
-            Ok(conn) => (Some(conn), SharedString::default()),
-            Err(e) => (None, SharedString::from(format!("library db: {e}"))),
-        };
+        let (conn, status) =
+            match store::open(&db_path).and_then(|conn| store::init_schema(&conn).map(|_| conn)) {
+                Ok(conn) => (Some(conn), SharedString::default()),
+                Err(e) => (None, SharedString::from(format!("library db: {e}"))),
+            };
 
         let mut this = Library {
             db_path,
@@ -163,14 +164,115 @@ impl Library {
 pub struct LibraryConfig {
     #[serde(default)]
     pub query: String,
+    /// Column widths in px, in table column order. Missing entries fall
+    /// back to the defaults, so an empty vec means the default layout.
+    #[serde(default)]
+    pub columns: Vec<f32>,
+}
+
+/// The column set, with saved widths overriding the defaults per index.
+fn track_columns(widths: &[f32]) -> Vec<Column> {
+    [
+        ("title", "title", 420.),
+        ("artist", "artist", 220.),
+        ("album", "album", 220.),
+        ("duration", "time", 64.),
+    ]
+    .iter()
+    .enumerate()
+    .map(|(ix, (key, name, default))| {
+        let width = widths.get(ix).copied().unwrap_or(*default);
+        let column = Column::new(*key, *name).width(px(width));
+        if *key == "duration" {
+            column.text_right()
+        } else {
+            column
+        }
+    })
+    .collect()
+}
+
+/// The table delegate: the column set and the rows one panel displays.
+/// Lives inside the panel's `TableState`; the panel swaps `view` when the
+/// query or the catalog changes.
+struct TrackTable {
+    state: AppState,
+    /// Rows currently displayed: the canonical order, or search hits.
+    view: Arc<Vec<u32>>,
+    columns: Vec<Column>,
+}
+
+impl TableDelegate for TrackTable {
+    fn columns_count(&self, _: &App) -> usize {
+        self.columns.len()
+    }
+
+    fn rows_count(&self, _: &App) -> usize {
+        self.view.len()
+    }
+
+    fn column(&self, col_ix: usize, _: &App) -> &Column {
+        &self.columns[col_ix]
+    }
+
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        div().id(("row", row_ix)).cursor_pointer()
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let Some(&row) = self.view.get(row_ix) else {
+            return div().into_any_element();
+        };
+        let Some(projection) = self.state.library.read(cx).projection().cloned() else {
+            return div().into_any_element();
+        };
+        let v = projection.resolve(row);
+        let cell = div().truncate();
+        match self.columns[col_ix].key.as_ref() {
+            "title" => cell.child(SharedString::from(v.title.to_string())),
+            "artist" => cell
+                .text_color(palette::text_secondary())
+                .child(SharedString::from(v.artist.to_string())),
+            "album" => cell
+                .text_color(palette::text_secondary())
+                .child(SharedString::from(v.album.to_string())),
+            "duration" => cell
+                .text_color(palette::text_muted())
+                .child(SharedString::from(fmt_ms(v.duration_ms))),
+            _ => cell,
+        }
+        .into_any_element()
+    }
+
+    /// No rows and a non-empty query means no hits; keep the body quiet
+    /// like the old flat list did. The no-library case never reaches here,
+    /// the panel renders its own empty state instead of the table.
+    fn render_empty(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        div()
+    }
 }
 
 /// One browse view over the shared catalog: its own search query and row
 /// order, duplicable and poppable like any panel.
 pub struct LibraryPanel {
     state: AppState,
-    /// Rows currently displayed: the canonical order, or search hits.
-    view: Arc<Vec<u32>>,
+    /// The table over the current view; the delegate holds the rows.
+    table: Entity<TableState<TrackTable>>,
     query: String,
     /// The panel's own focus, what the dock focuses on tab activation. Kept
     /// apart from the search focus so activating the tab does not put every
@@ -186,10 +288,16 @@ pub struct LibraryPanel {
     /// where the toolbar renders, so membership changes must re-render.
     _tabs_changed: Option<Subscription>,
     _library_changed: Subscription,
+    _table_events: Subscription,
 }
 
 impl LibraryPanel {
-    pub fn new(state: AppState, query: String, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        state: AppState,
+        config: LibraryConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut LibraryPanel, _, _: &LibraryEvent, cx| {
@@ -199,38 +307,100 @@ impl LibraryPanel {
                 this.refresh_title_bar(cx);
             },
         );
+        let delegate = TrackTable {
+            state: state.clone(),
+            view: Arc::new(Vec::new()),
+            columns: track_columns(&config.columns),
+        };
+        // Sorting waits on the projection growing sortable views; column
+        // moves would need the width persistence to track order too.
+        let table = cx.new(|cx| {
+            TableState::new(delegate, window, cx)
+                .sortable(false)
+                .col_movable(false)
+                .col_selectable(false)
+        });
+        let _table_events = cx.subscribe_in(&table, window, Self::on_table_event);
         let mut this = LibraryPanel {
             state,
-            view: Arc::new(Vec::new()),
-            query,
+            table,
+            query: config.query,
             focus: cx.focus_handle(),
             search_focus: cx.focus_handle(),
             error: None,
             tab_panel: None,
             _tabs_changed: None,
             _library_changed,
+            _table_events,
         };
         this.refresh_view(cx);
         this
     }
 
-    fn refresh_view(&mut self, cx: &App) {
-        let library = self.state.library.read(cx);
-        let Some(projection) = library.projection() else {
-            self.view = Arc::new(Vec::new());
-            return;
+    fn refresh_view(&mut self, cx: &mut Context<Self>) {
+        let view = {
+            let library = self.state.library.read(cx);
+            match library.projection() {
+                None => Arc::new(Vec::new()),
+                Some(projection) => {
+                    if self.query.is_empty() {
+                        library.order()
+                    } else {
+                        Arc::new(projection.search(&self.query))
+                    }
+                }
+            }
         };
-        self.view = if self.query.is_empty() {
-            library.order()
-        } else {
-            Arc::new(projection.search(&self.query))
-        };
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().view = view;
+            cx.notify();
+        });
+    }
+
+    fn on_table_event(
+        &mut self,
+        _: &Entity<TableState<TrackTable>>,
+        event: &TableEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            // A click queues the row; focus moves back to the panel so the
+            // playback keys stay with the workspace, not the table.
+            TableEvent::SelectRow(ix) => {
+                window.focus(&self.focus);
+                self.play_from(*ix, cx);
+            }
+            // Written back into the delegate's columns: refresh() re-reads
+            // them, and the layout dump persists them.
+            TableEvent::ColumnWidthsChanged(widths) => {
+                let widths = widths.clone();
+                self.table.update(cx, |table, _| {
+                    let columns = &mut table.delegate_mut().columns;
+                    for (column, width) in columns.iter_mut().zip(widths) {
+                        column.width = width;
+                    }
+                });
+            }
+            _ => {}
+        }
     }
 
     fn browse(&mut self, cx: &mut Context<Self>) {
         self.state
             .library
             .update(cx, |library, cx| library.browse(cx));
+    }
+
+    /// Current column widths, for the layout dump and for duplicates.
+    fn column_widths(&self, cx: &App) -> Vec<f32> {
+        self.table
+            .read(cx)
+            .delegate()
+            .columns
+            .iter()
+            .map(|column| f32::from(column.width))
+            .collect()
     }
 
     /// While docked, the panel's controls live in the tab panel's title bar,
@@ -245,12 +415,13 @@ impl LibraryPanel {
     /// Queue the clicked row and what follows it in the current view order.
     fn play_from(&mut self, ix: usize, cx: &mut Context<Self>) {
         let result = {
+            let view = self.table.read(cx).delegate().view.clone();
             let library = self.state.library.read(cx);
             let Some(projection) = library.projection() else {
                 return;
             };
-            let end = (ix + QUEUE_CAP).min(self.view.len());
-            let ids: Vec<i64> = self.view[ix..end]
+            let end = (ix + QUEUE_CAP).min(view.len());
+            let ids: Vec<i64> = view[ix..end]
                 .iter()
                 .map(|&row| projection.db_id[row as usize])
                 .collect();
@@ -291,7 +462,9 @@ impl LibraryPanel {
                 {
                     return;
                 }
-                let Some(text) = &keystroke.key_char else { return };
+                let Some(text) = &keystroke.key_char else {
+                    return;
+                };
                 self.query.push_str(text);
             }
         }
@@ -308,8 +481,8 @@ impl LibraryPanel {
             .items_center()
             .flex_none()
             .rounded_md()
-            .bg(rgb(0x2a2a2a))
-            .hover(|d| d.bg(rgb(0x3a3a3a)))
+            .bg(palette::bg_control())
+            .hover(|d| d.bg(palette::bg_control_hover()))
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -331,10 +504,16 @@ impl LibraryPanel {
             .flex()
             .items_center()
             .rounded_md()
-            .bg(rgb(0x141414))
+            .bg(palette::bg_input())
             .border_1()
-            .border_color(if focused { rgb(0x4a6a55) } else { rgb(0x333333) })
-            .when(self.query.is_empty(), |d| d.text_color(rgb(0x808080)))
+            .border_color(if focused {
+                palette::focus_ring()
+            } else {
+                palette::border()
+            })
+            .when(self.query.is_empty(), |d| {
+                d.text_color(palette::text_muted())
+            })
             .track_focus(&self.search_focus)
             // Scopes the workspace's playback key bindings out while the
             // box is focused, so space and arrows type instead.
@@ -371,79 +550,21 @@ impl LibraryPanel {
             .flex()
             .flex_row()
             .items_center()
-            .bg(rgb(0x1f1f1f))
+            .bg(palette::bg_toolbar())
             .border_b_1()
-            .border_color(rgb(0x333333))
+            .border_color(palette::border())
             .child(self.open_folder_button(cx))
             .child(self.search_box(window, cx).flex_1())
-            .child(div().flex_none().text_color(rgb(0x808080)).child(line))
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(palette::text_muted())
+                    .child(line),
+            )
     }
 
-    fn track_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        gpui::uniform_list(
-            "tracks",
-            self.view.len(),
-            cx.processor(|this, range: Range<usize>, _, cx| {
-                let Some(projection) = this.state.library.read(cx).projection().cloned() else {
-                    return Vec::new();
-                };
-                let view = this.view.clone();
-                range
-                    .map(|ix| {
-                        let v = projection.resolve(view[ix]);
-                        div()
-                            .id(ix)
-                            .flex_none()
-                            .h(px(28.))
-                            .px_2()
-                            .gap_2()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .when(ix % 2 == 1, |d| d.bg(rgb(0x202020)))
-                            .hover(|d| d.bg(rgb(0x2e2e2e)))
-                            .cursor_pointer()
-                            // Focus moves to the panel: queueing a track is
-                            // done with the search box, space should pause.
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                window.focus(&this.focus);
-                                this.play_from(ix, cx)
-                            }))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(SharedString::from(v.title.to_string())),
-                            )
-                            .child(
-                                div()
-                                    .w(relative(0.22))
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_color(rgb(0xa0a0a0))
-                                    .child(SharedString::from(v.artist.to_string())),
-                            )
-                            .child(
-                                div()
-                                    .w(relative(0.22))
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_color(rgb(0xa0a0a0))
-                                    .child(SharedString::from(v.album.to_string())),
-                            )
-                            .child(
-                                div()
-                                    .w(px(44.))
-                                    .flex_none()
-                                    .text_color(rgb(0x808080))
-                                    .child(fmt_ms(v.duration_ms)),
-                            )
-                    })
-                    .collect()
-            }),
-        )
-        .h_full()
+    fn track_list(&self) -> impl IntoElement {
+        Table::new(&self.table).stripe(true).bordered(false)
     }
 
     fn empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -462,7 +583,7 @@ impl LibraryPanel {
             .child(div().text_lg().child("open a music folder"))
             .child(
                 div()
-                    .text_color(rgb(0x808080))
+                    .text_color(palette::text_muted())
                     .child("it gets scanned into the library (flac, mp3, wav)"),
             )
     }
@@ -506,7 +627,7 @@ impl Panel for LibraryPanel {
                     div()
                         .max_w(px(240.))
                         .truncate()
-                        .text_color(rgb(0x808080))
+                        .text_color(palette::text_muted())
                         .child(line),
                 ),
         )
@@ -518,9 +639,10 @@ impl Panel for LibraryPanel {
 
     /// The layout dump carries the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
-    fn dump(&self, _cx: &App) -> PanelState {
+    fn dump(&self, cx: &App) -> PanelState {
         let config = LibraryConfig {
             query: self.query.clone(),
+            columns: self.column_widths(cx),
         };
         let mut state = PanelState::new(self);
         state.info =
@@ -558,34 +680,41 @@ impl Panel for LibraryPanel {
         // same catalog and player. Hand-rolled rather than through
         // `panel::duplicate_item` because the copy takes the query along.
         let weak = cx.entity().downgrade();
-        let menu = menu.item(PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
-            let Some(this) = weak.upgrade() else { return };
-            let (state, query, tabs) = {
-                let panel = this.read(cx);
-                (
-                    panel.state.clone(),
-                    panel.query.clone(),
-                    panel.tab_panel.clone(),
-                )
-            };
-            let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                return;
-            };
-            let dup = cx.new(|cx| LibraryPanel::new(state, query, cx));
-            tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-        }));
-        panel::popout_item(menu, &cx.entity(), self.tab_panel.clone(), self.state.clone())
+        let menu = menu.item(
+            PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
+                let Some(this) = weak.upgrade() else { return };
+                let (state, config, tabs) = {
+                    let panel = this.read(cx);
+                    let config = LibraryConfig {
+                        query: panel.query.clone(),
+                        columns: panel.column_widths(cx),
+                    };
+                    (panel.state.clone(), config, panel.tab_panel.clone())
+                };
+                let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+                    return;
+                };
+                let dup = cx.new(|cx| LibraryPanel::new(state, config, window, cx));
+                tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+            }),
+        );
+        panel::popout_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            self.state.clone(),
+        )
     }
 }
 
 impl Render for LibraryPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.state.library.read(cx).busy.is_some();
-        let empty = self.view.is_empty();
+        let empty = self.table.read(cx).delegate().view.is_empty();
         let body = if empty && !busy && self.query.is_empty() {
             self.empty_state(cx).into_any_element()
         } else {
-            self.track_list(cx).into_any_element()
+            self.track_list().into_any_element()
         };
         // The controls live in the tab bar via title_suffix while the panel
         // shares a group; solo or popped out there is no header at all, so
@@ -602,7 +731,7 @@ impl Render for LibraryPanel {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(0x181818))
+            .bg(palette::bg_panel())
             .when(headerless, |d| d.child(self.toolbar(window, cx)))
             .child(div().flex_1().min_h_0().child(body))
     }

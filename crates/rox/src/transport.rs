@@ -8,9 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, rgb, rgba, size, svg, AnyElement, App, Bounds,
-    Context, Div, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Subscription,
-    WeakEntity, Window,
+    canvas, div, fill, point, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, Div,
+    EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -21,6 +20,7 @@ use rox_playback::engine::LoopMode;
 
 use crate::assets::icons;
 use crate::library::LibraryEvent;
+use crate::palette;
 use crate::panel::{self, AppState, Customizable, ScrubState};
 use crate::player::fmt_time;
 
@@ -88,9 +88,9 @@ impl Render for TransportPanel {
         // Loop state reads through the button itself: dim while off, the
         // accent while on, the one-track glyph for single-track loop.
         let (loop_icon, loop_color) = match player.loop_mode() {
-            LoopMode::Off => (icons::REPEAT, 0x707070),
-            LoopMode::All => (icons::REPEAT, 0xfdcb00),
-            LoopMode::One => (icons::REPEAT_1, 0xfdcb00),
+            LoopMode::Off => (icons::REPEAT, palette::text_faint()),
+            LoopMode::All => (icons::REPEAT, palette::accent()),
+            LoopMode::One => (icons::REPEAT_1, palette::accent()),
         };
 
         // Play/pause is the primary action, so it gets the filled round
@@ -99,8 +99,8 @@ impl Render for TransportPanel {
             .size(px(30.))
             .flex_none()
             .rounded_full()
-            .bg(rgb(0xfdcb00))
-            .hover(|d| d.bg(rgb(0x66ffb3)))
+            .bg(palette::accent())
+            .hover(|d| d.bg(palette::accent_hover()))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -115,12 +115,12 @@ impl Render for TransportPanel {
                 svg()
                     .path(if playing { icons::PAUSE } else { icons::PLAY })
                     .size_4()
-                    .text_color(rgb(0x121212)),
+                    .text_color(palette::text_on_accent()),
             );
 
         div()
             .size_full()
-            .bg(rgb(0x121212))
+            .bg(palette::bg_root())
             .flex()
             .items_center()
             .map(|d| justify(d, self.config.align))
@@ -128,26 +128,26 @@ impl Render for TransportPanel {
             .px_2()
             .child(panel::icon_control(
                 icons::SKIP_BACK,
-                0xc0c0c0,
+                palette::text(),
                 |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.prev()),
                 cx,
             ))
             .child(panel::icon_control(
                 icons::REWIND,
-                0xc0c0c0,
+                palette::text(),
                 |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(-10.0)),
                 cx,
             ))
             .child(play_pause)
             .child(panel::icon_control(
                 icons::FAST_FORWARD,
-                0xc0c0c0,
+                palette::text(),
                 |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(10.0)),
                 cx,
             ))
             .child(panel::icon_control(
                 icons::SKIP_FORWARD,
-                0xc0c0c0,
+                palette::text(),
                 |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.next()),
                 cx,
             ))
@@ -290,7 +290,7 @@ impl Render for TrackInfoPanel {
 
         let root = div()
             .size_full()
-            .bg(rgb(0x121212))
+            .bg(palette::bg_root())
             .flex()
             .items_center()
             .map(|d| justify(d, self.config.align))
@@ -309,7 +309,7 @@ impl Render for TrackInfoPanel {
                 div()
                     .max_w_full()
                     .truncate()
-                    .text_color(rgb(0x808080))
+                    .text_color(palette::text_muted())
                     .child(line),
             );
         };
@@ -347,7 +347,7 @@ impl Render for TrackInfoPanel {
                     div()
                         .min_w_0()
                         .truncate()
-                        .text_color(rgb(0x808080))
+                        .text_color(palette::text_muted())
                         .child(byline),
                 )
             })
@@ -355,7 +355,7 @@ impl Render for TrackInfoPanel {
                 d.child(
                     div()
                         .flex_none()
-                        .text_color(rgb(0x808080))
+                        .text_color(palette::text_muted())
                         .child("(queue finished)"),
                 )
             })
@@ -468,7 +468,7 @@ fn paint_slider(volume: f32, muted: bool, bounds: Bounds<Pixels>, window: &mut W
     window.paint_quad(
         fill(
             Bounds::new(point(bounds.origin.x, track_y), size(px(w), px(TRACK_H))),
-            rgba(0x2a2a2aff),
+            palette::bg_control(),
         )
         .corner_radii(px(TRACK_H / 2.0)),
     );
@@ -479,9 +479,9 @@ fn paint_slider(volume: f32, muted: bool, bounds: Bounds<Pixels>, window: &mut W
                 size(px(knob_x), px(TRACK_H)),
             ),
             if muted {
-                rgba(0xfdcb0033)
+                palette::alpha(palette::accent(), 0x33)
             } else {
-                rgba(0xfdcb00ff)
+                palette::accent()
             },
         )
         .corner_radii(px(TRACK_H / 2.0)),
@@ -496,9 +496,9 @@ fn paint_slider(volume: f32, muted: bool, bounds: Bounds<Pixels>, window: &mut W
                 size(px(KNOB), px(KNOB)),
             ),
             if muted {
-                rgba(0x9a9a9aff)
+                palette::text_dim()
             } else {
-                rgba(0xe0e0e0ff)
+                palette::text_bright()
             },
         )
         .corner_radii(px(KNOB / 2.0)),
@@ -515,11 +515,11 @@ impl Render for VolumePanel {
         // The speaker doubles as the mute toggle and the state readout:
         // crossed out while muted, fewer waves at low volume.
         let (speaker, speaker_color) = if muted {
-            (icons::VOLUME_X, 0x707070)
+            (icons::VOLUME_X, palette::text_faint())
         } else if volume <= 0.5 {
-            (icons::VOLUME_1, 0xc0c0c0)
+            (icons::VOLUME_1, palette::text())
         } else {
-            (icons::VOLUME_2, 0xc0c0c0)
+            (icons::VOLUME_2, palette::text())
         };
 
         let scrub = self.scrub.clone();
@@ -563,7 +563,7 @@ impl Render for VolumePanel {
 
         div()
             .size_full()
-            .bg(rgb(0x121212))
+            .bg(palette::bg_root())
             .flex()
             .items_center()
             .map(|d| justify(d, self.config.align))
@@ -585,7 +585,7 @@ impl Render for VolumePanel {
                     .w(px(40.))
                     .flex_none()
                     .text_center()
-                    .text_color(rgb(0x808080))
+                    .text_color(palette::text_muted())
                     .child(format!("{percent}%")),
             )
     }
@@ -715,21 +715,21 @@ fn paint_strip(progress: f32, bounds: Bounds<Pixels>, window: &mut Window) {
             point(bounds.origin.x, bounds.origin.y + px(line_y)),
             size(px(w), px(STRIP_H)),
         ),
-        rgba(0xfdcb0033),
+        palette::alpha(palette::accent(), 0x33),
     ));
     window.paint_quad(fill(
         Bounds::new(
             point(bounds.origin.x, bounds.origin.y + px(line_y)),
             size(px(head_x), px(STRIP_H)),
         ),
-        rgba(0xfdcb00ff),
+        palette::accent(),
     ));
     window.paint_quad(fill(
         Bounds::new(
             point(bounds.origin.x + px(head_x - 1.0), bounds.origin.y),
             size(px(2.0), px(h)),
         ),
-        rgba(0xe0e0e0d9),
+        palette::alpha(palette::text_bright(), 0xd9),
     ));
 }
 
@@ -743,12 +743,16 @@ impl Render for SeekStripPanel {
             window.request_animation_frame();
         }
 
-        let root = div().size_full().bg(rgb(0x121212)).flex().items_center();
+        let root = div()
+            .size_full()
+            .bg(palette::bg_root())
+            .flex()
+            .items_center();
 
         let Some(now) = now else {
             return root
                 .justify_center()
-                .text_color(rgb(0x808080))
+                .text_color(palette::text_muted())
                 .child("nothing playing");
         };
 
@@ -810,14 +814,14 @@ impl Render for SeekStripPanel {
             .child(
                 div()
                     .flex_none()
-                    .text_color(rgb(0x808080))
+                    .text_color(palette::text_muted())
                     .child(fmt_time(now.position_secs)),
             )
             .child(track)
             .child(
                 div()
                     .flex_none()
-                    .text_color(rgb(0x808080))
+                    .text_color(palette::text_muted())
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,

@@ -46,7 +46,9 @@ impl Session {
         // Seed the session with the persisted playback state: volume lands
         // in the shared atomics before the stream opens, the loop mode
         // queues on the channel so the engine picks it up first thing.
-        shared.volume_bits.store(volume.to_bits(), Ordering::Relaxed);
+        shared
+            .volume_bits
+            .store(volume.to_bits(), Ordering::Relaxed);
         let out = output::open(shared.clone())?;
         let device_rate = out.sample_rate;
         let (tx, rx) = mpsc::channel::<Cmd>();
@@ -164,20 +166,18 @@ impl Player {
     /// notifies the player, which is what repaints the bar's clock and play
     /// state while a session runs.
     fn start_pump(&mut self, cx: &mut Context<Self>) {
-        self.pump = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(PUMP_INTERVAL).await;
-                let alive = this.update(cx, |this, cx| {
-                    if this.session.is_none() {
-                        return false;
-                    }
-                    this.drain_tap();
-                    cx.notify();
-                    true
-                });
-                if !matches!(alive, Ok(true)) {
-                    break;
+        self.pump = Some(cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(PUMP_INTERVAL).await;
+            let alive = this.update(cx, |this, cx| {
+                if this.session.is_none() {
+                    return false;
                 }
+                this.drain_tap();
+                cx.notify();
+                true
+            });
+            if !matches!(alive, Ok(true)) {
+                break;
             }
         }));
     }

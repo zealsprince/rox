@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, rgb, rgba, size, App, Bounds, Context, EventEmitter,
+    canvas, div, fill, point, prelude::*, px, size, App, Bounds, Context, EventEmitter,
     FocusHandle, Focusable, MouseButton, Pixels, SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::PopupMenu;
@@ -18,6 +18,7 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 
 use rox_playback::engine;
 
+use crate::palette;
 use crate::panel::{self, AppState, ScrubState, StatePanel};
 
 /// Resolution of the in-memory peaks. The paint resamples these down to
@@ -124,7 +125,7 @@ impl WaveformPanel {
             .flex()
             .items_center()
             .justify_center()
-            .text_color(rgb(0x808080))
+            .text_color(palette::text_muted())
             .child(text)
     }
 }
@@ -166,9 +167,9 @@ fn paint_peaks(peaks: &[(f32, f32)], progress: f32, bounds: Bounds<Pixels>, wind
                 size(px(BAR_WIDTH), px(bottom - top)),
             ),
             if played {
-                rgba(0xfdcb00ff)
+                palette::accent()
             } else {
-                rgba(0xfdcb0033)
+                palette::alpha(palette::accent(), 0x33)
             },
         ));
     }
@@ -179,7 +180,7 @@ fn paint_peaks(peaks: &[(f32, f32)], progress: f32, bounds: Bounds<Pixels>, wind
             point(bounds.origin.x + px(head_x - 1.0), bounds.origin.y),
             size(px(2.0), px(h)),
         ),
-        rgba(0xe0e0e0d9),
+        palette::alpha(palette::text_bright(), 0xd9),
     ));
 }
 
@@ -285,7 +286,7 @@ impl Render for WaveformPanel {
 
         div()
             .size_full()
-            .bg(rgb(0x121212))
+            .bg(palette::bg_root())
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,

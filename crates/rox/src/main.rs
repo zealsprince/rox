@@ -8,6 +8,7 @@
 
 mod assets;
 mod library;
+mod palette;
 mod panel;
 mod player;
 mod settings;
@@ -66,8 +67,15 @@ fn main() {
         rox_dock::init(cx);
         workspace::init(cx);
         // The widget baseline follows the app's existing dark palette;
-        // themes as shareable token sets come later.
+        // themes as shareable token sets come later. Selection follows
+        // the accent instead of the stock blue; only tokens widgets
+        // actually draw today are fed from the palette.
         Theme::change(ThemeMode::Dark, None, cx);
+        let theme = Theme::global_mut(cx);
+        theme.table_active = palette::alpha(palette::accent(), 0x26).into();
+        theme.table_active_border = palette::accent().into();
+        theme.list_active = palette::alpha(palette::accent(), 0x26).into();
+        theme.list_active_border = palette::accent().into();
         open_workspace(cx);
         cx.activate(true);
     });

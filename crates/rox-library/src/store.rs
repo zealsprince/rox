@@ -104,6 +104,33 @@ pub fn paths_for(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<String>
     Ok(out)
 }
 
+/// The display tags for one track, what a path-keyed lookup returns.
+pub struct TrackMeta {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub track_no: u16,
+}
+
+/// Resolve a playable path back to its tags, for showing what is playing.
+/// Ok(None) when the path is not in the library.
+pub fn meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<TrackMeta>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT title, artist, album, track_no FROM tracks
+         WHERE source = 'local' AND path = ?1",
+    )?;
+    let mut rows = stmt.query([path])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(TrackMeta {
+            title: row.get(0)?,
+            artist: row.get(1)?,
+            album: row.get(2)?,
+            track_no: row.get::<_, i64>(3)? as u16,
+        })),
+        None => Ok(None),
+    }
+}
+
 pub fn max_rowid(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT COALESCE(MAX(id), 0) FROM tracks", [], |r| r.get(0))
 }

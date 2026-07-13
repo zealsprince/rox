@@ -6,6 +6,7 @@
 //! the same shared entities. New Window stays in the menubar so
 //! multi-window on Wayland keeps getting exercised.
 
+mod assets;
 mod library;
 mod panel;
 mod player;
@@ -20,8 +21,8 @@ use gpui::{
     WindowBounds, WindowOptions,
 };
 use gpui_component::{Root, Theme, ThemeMode};
-use gpui_component_assets::Assets;
 
+use assets::Assets;
 use settings::Settings;
 use workspace::Workspace;
 

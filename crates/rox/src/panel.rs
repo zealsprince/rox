@@ -5,16 +5,18 @@
 //! popped-out panel is the same entity rehosted in its own OS window, no
 //! cross-window messaging needed.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, relative, rgb, size, App, Bounds, Context,
-    DismissEvent, Entity, Focusable as _, MouseButton, MouseDownEvent, Pixels, Point,
-    SharedString, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
+    anchored, deferred, div, prelude::*, px, rgb, size, svg, AnyElement, App, Bounds, Context,
+    DismissEvent, Div, Entity, Focusable as _, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Subscription, TitlebarOptions, WeakEntity, Window,
+    WindowBounds, WindowOptions,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Root;
-use rox_dock::{Panel, PanelView, TabPanel};
+use rox_dock::{Panel, PanelInfo, PanelView, TabPanel};
 
 use crate::library::Library;
 use crate::player::Player;
@@ -56,42 +58,127 @@ impl TabHosts {
     }
 }
 
-/// The compact clickable control chip the player bar introduced, shared
-/// with the transport panels so the button style never forks.
-pub fn control<V: 'static>(
-    label: impl Into<SharedString>,
+/// The flat icon button the transport panels share so the button style
+/// never forks: the icon alone at rest, a soft pill behind it on hover.
+/// Icon paths come from [`crate::assets::icons`].
+pub fn icon_control<V: 'static>(
+    icon: &'static str,
+    color: u32,
     on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
     cx: &mut Context<V>,
 ) -> impl IntoElement {
     div()
-        .px_2()
-        .py_1()
+        .p_1p5()
         .rounded_md()
-        .bg(rgb(0x2a2a2a))
-        .hover(|d| d.bg(rgb(0x3a3a3a)))
+        .hover(|d| d.bg(rgb(0x2a2a2a)))
         .cursor_pointer()
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| on_click(this, cx)),
         )
-        .child(label.into())
+        .child(svg().path(icon).size_4().text_color(rgb(color)))
 }
 
-/// The level meter strip: level as the filled share of a fixed track.
-pub fn meter(level: f32) -> impl IntoElement {
-    div()
-        .w(px(60.))
-        .h(px(6.))
-        .flex_none()
-        .rounded_sm()
-        .bg(rgb(0x2a2a2a))
-        .child(
-            div()
-                .h_full()
-                .rounded_sm()
-                .bg(rgb(0x3dff9c))
-                .w(relative(level)),
-        )
+/// The shared state of a click-and-drag strip: where it painted and
+/// whether a drag is live. Behind Arcs so the panel, its paint closures,
+/// and the window-level mouse handlers can all hold it.
+#[derive(Clone, Default)]
+pub struct ScrubState {
+    bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    dragging: Arc<AtomicBool>,
+}
+
+impl ScrubState {
+    /// Remember where the strip landed, from its prepaint.
+    pub fn set_bounds(&self, bounds: Bounds<Pixels>) {
+        *self.bounds.lock().unwrap() = Some(bounds);
+    }
+
+    /// A drag started (mouse down on the strip).
+    pub fn begin(&self) {
+        self.dragging.store(true, Ordering::Relaxed);
+    }
+
+    pub fn end(&self) {
+        self.dragging.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.dragging.load(Ordering::Relaxed)
+    }
+
+    /// Where `x` lands along the strip, 0 to 1; positions off the ends
+    /// clamp, so a drag can overshoot without letting go of the value.
+    pub fn fraction(&self, x: Pixels) -> Option<f32> {
+        let bounds = (*self.bounds.lock().unwrap())?;
+        let w = f32::from(bounds.size.width);
+        if w <= 0.0 {
+            return None;
+        }
+        Some((f32::from(x - bounds.origin.x) / w).clamp(0.0, 1.0))
+    }
+}
+
+/// Keep a live drag following the pointer: apply the strip fraction on
+/// every move, end the drag on release. Call from the strip's paint pass -
+/// window handlers only live one frame, the same idiom the dock's resize
+/// handles use. Applying must notify an entity so the next frame re-arms
+/// the handlers.
+pub fn scrub_on_paint(
+    scrub: &ScrubState,
+    window: &mut Window,
+    apply: impl Fn(f32, &mut App) + 'static,
+) {
+    if !scrub.is_dragging() {
+        return;
+    }
+    window.on_mouse_event({
+        let scrub = scrub.clone();
+        move |event: &MouseMoveEvent, phase, _, cx| {
+            if !phase.bubble() || !scrub.is_dragging() {
+                return;
+            }
+            // A release outside the window never reaches the up handler;
+            // a move without the button still held ends the drag instead.
+            if event.pressed_button != Some(MouseButton::Left) {
+                scrub.end();
+                return;
+            }
+            if let Some(fraction) = scrub.fraction(event.position.x) {
+                apply(fraction, cx);
+            }
+        }
+    });
+    window.on_mouse_event({
+        let scrub = scrub.clone();
+        move |_: &MouseUpEvent, phase, _, _| {
+            if phase.bubble() {
+                scrub.end();
+            }
+        }
+    });
+}
+
+/// Map a strip fraction to an absolute seek on the playing track, the
+/// seek strip's and the waveform's shared apply.
+pub fn seek_fraction(player: &Entity<Player>, fraction: f32, cx: &App) {
+    let player = player.read(cx);
+    let Some(now) = player.now_playing() else {
+        return;
+    };
+    let Some(duration) = now.duration_secs else {
+        return;
+    };
+    player.seek_to(fraction as f64 * duration);
+}
+
+/// Read a panel's config back out of a dumped panel state; anything
+/// missing or malformed falls back to defaults.
+pub fn config_from_info<C: Default + serde::de::DeserializeOwned>(info: &PanelInfo) -> C {
+    match info {
+        PanelInfo::Panel(value) => serde_json::from_value(value.clone()).unwrap_or_default(),
+        _ => C::default(),
+    }
 }
 
 /// A panel whose duplicate is just a fresh view over the shared state, no
@@ -180,6 +267,127 @@ pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
         cx.new(|cx| Root::new(host, window, cx))
     })
     .expect("failed to open the panel window");
+}
+
+/// A panel whose per-view config can be edited live in a customize window.
+/// New knobs (colors, layout, whatever a panel grows) go on the panel's
+/// config struct and get a row here.
+pub trait Customizable: Panel {
+    /// The customize window's control rows, editing the config in place.
+    /// Changes apply live; the layout dump persists them.
+    fn customize(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement;
+}
+
+/// The Customize entry for a panel's dropdown menu: opens the panel's
+/// customize window.
+pub fn customize_item<P: Customizable>(menu: PopupMenu, panel: &Entity<P>) -> PopupMenu {
+    let panel = panel.clone();
+    menu.item(PopupMenuItem::new("Customize...").on_click(move |_, _, cx| {
+        open_customize(panel.clone(), cx);
+    }))
+}
+
+/// Open the small window that edits a panel's config. It holds the panel
+/// weakly, so it never keeps a closed panel alive.
+fn open_customize<P: Customizable>(panel: Entity<P>, cx: &mut App) {
+    let title = panel.read(cx).panel_name();
+    let bounds = Bounds::centered(None, size(px(360.), px(180.)), cx);
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: Some(TitlebarOptions {
+            title: Some(format!("rox - customize {title}").into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let panel = panel.downgrade();
+    cx.open_window(options, move |window, cx| {
+        let host = cx.new(|cx| {
+            let _panel_changed = panel
+                .upgrade()
+                .map(|panel| cx.observe(&panel, |_, _, cx| cx.notify()));
+            CustomizeHost {
+                panel,
+                _panel_changed,
+            }
+        });
+        cx.new(|cx| Root::new(host, window, cx))
+    })
+    .expect("failed to open the customize window");
+}
+
+/// The customize window's content: the panel's own control rows on the
+/// workspace's base styling.
+struct CustomizeHost<P: Customizable> {
+    panel: WeakEntity<P>,
+    /// Repaints this window when the panel changes from anywhere else.
+    _panel_changed: Option<Subscription>,
+}
+
+impl<P: Customizable> Render for CustomizeHost<P> {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = match self.panel.upgrade() {
+            Some(panel) => panel.update(cx, |panel, cx| panel.customize(window, cx)),
+            None => div()
+                .text_color(rgb(0x808080))
+                .child("the panel was closed")
+                .into_any_element(),
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .bg(rgb(0x1c1c1c))
+            .text_color(rgb(0xe0e0e0))
+            .text_sm()
+            .child(body)
+    }
+}
+
+/// One labeled row of a customize window: the setting's name, then its
+/// control.
+pub fn setting_row(label: &'static str, control: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .child(div().text_color(rgb(0x808080)).child(label))
+        .child(control)
+}
+
+/// A row of exclusive choice chips, the picked one in the accent.
+pub fn choices<P: 'static, V: PartialEq + Copy + 'static>(
+    options: &'static [(&'static str, V)],
+    current: V,
+    on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    let mut row = div().flex().flex_row().gap_1();
+    for (label, value) in options {
+        let value = *value;
+        let picked = value == current;
+        let on_pick = on_pick.clone();
+        row = row.child(
+            div()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(if picked { rgb(0x3a3a3a) } else { rgb(0x2a2a2a) })
+                .when(picked, |d| d.text_color(rgb(0x3dff9c)))
+                .hover(|d| d.bg(rgb(0x3a3a3a)))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| on_pick(this, value, cx)),
+                )
+                .child(*label),
+        );
+    }
+    row
 }
 
 /// A popped-out panel's window content: the moved panel view, full-size, on

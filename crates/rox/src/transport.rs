@@ -1,30 +1,36 @@
-//! The transport panels - playback controls, a volume strip, and a
-//! click-to-seek strip - the app's whole playback UI, living in the bottom
-//! dock by default. Each is a view over the shared player entity, exactly
-//! like the audio views: duplicates are fresh views, pop-outs rehost the
-//! entity.
+//! The transport panels - playback controls, the track info readout, a
+//! volume strip, and a click-to-seek strip - the app's whole playback UI,
+//! living in the bottom dock by default. Each is a view over the shared
+//! player entity, exactly like the audio views: duplicates are fresh views,
+//! pop-outs rehost the entity.
 
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, rgb, rgba, size, App, Bounds, Context, EventEmitter,
-    FocusHandle, Focusable, MouseButton, Pixels, Subscription, WeakEntity, Window,
+    canvas, div, fill, point, prelude::*, px, rgb, rgba, size, svg, AnyElement, App, Bounds,
+    Context, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Subscription, WeakEntity,
+    Window,
 };
-use gpui_component::menu::PopupMenu;
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use serde::{Deserialize, Serialize};
 
+use rox_library::store::TrackMeta;
 use rox_playback::engine::LoopMode;
 
-use crate::panel::{self, AppState, StatePanel};
+use crate::assets::icons;
+use crate::library::LibraryEvent;
+use crate::panel::{self, AppState, Customizable, ScrubState, StatePanel};
+use crate::player::fmt_time;
 
 /// Thickness of the seek strip's track line.
 const STRIP_H: f32 = 6.0;
 
-/// The playback controls: prev, play/pause, next, the seek nudges, and the
-/// loop mode, with the status line (queue position, track name, clock)
-/// under them. The pump's tick notifies the player while a session runs,
-/// so the observe below keeps the play state fresh even in a popped-out
-/// window.
+/// The playback controls: prev, the seek nudges around play/pause, next,
+/// and the loop mode. What is playing lives in the track info panel. The pump's
+/// tick notifies the player while a session runs, so the observe below
+/// keeps the play state fresh even in a popped-out window.
 pub struct TransportPanel {
     state: AppState,
     focus: FocusHandle,
@@ -49,78 +55,262 @@ impl Render for TransportPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let player = self.state.player.read(cx);
         let playing = player.is_playing();
-        let loop_label = match player.loop_mode() {
-            LoopMode::Off => "loop: off",
-            LoopMode::All => "loop: all",
-            LoopMode::One => "loop: one",
+        // Loop state reads through the button itself: dim while off, the
+        // accent while on, the one-track glyph for single-track loop.
+        let (loop_icon, loop_color) = match player.loop_mode() {
+            LoopMode::Off => (icons::REPEAT, 0x707070),
+            LoopMode::All => (icons::REPEAT, 0x3dff9c),
+            LoopMode::One => (icons::REPEAT_1, 0x3dff9c),
         };
-        // The status line, or the reason there is none: a session-start
-        // error, else the idle message.
-        let status = player
-            .status_line()
-            .or_else(|| player.error())
-            .unwrap_or_else(|| "nothing playing".into());
 
-        let controls = div()
+        // Play/pause is the primary action, so it gets the filled round
+        // button while everything around it stays flat.
+        let play_pause = div()
+            .size(px(30.))
+            .flex_none()
+            .rounded_full()
+            .bg(rgb(0x3dff9c))
+            .hover(|d| d.bg(rgb(0x66ffb3)))
+            .cursor_pointer()
             .flex()
             .items_center()
             .justify_center()
-            .gap_2()
-            .child(panel::control(
-                "prev",
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.prev()),
-                cx,
-            ))
-            .child(panel::control(
-                if playing { "pause" } else { "play" },
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.toggle_pause()),
-                cx,
-            ))
-            .child(panel::control(
-                "next",
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.next()),
-                cx,
-            ))
-            .child(panel::control(
-                "-10s",
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(-10.0)),
-                cx,
-            ))
-            .child(panel::control(
-                "+10s",
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(10.0)),
-                cx,
-            ))
-            .child(panel::control(
-                loop_label,
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.cycle_loop()),
-                cx,
-            ));
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this: &mut Self, _, _, cx| {
+                    this.state.player.update(cx, |p, _| p.toggle_pause())
+                }),
+            )
+            .child(
+                svg()
+                    .path(if playing { icons::PAUSE } else { icons::PLAY })
+                    .size_4()
+                    .text_color(rgb(0x121212)),
+            );
 
         div()
             .size_full()
             .bg(rgb(0x121212))
             .flex()
-            .flex_col()
             .items_center()
             .justify_center()
-            .gap_2()
-            .px_3()
-            .child(controls)
-            .child(
+            .gap_1()
+            .child(panel::icon_control(
+                icons::SKIP_BACK,
+                0xc0c0c0,
+                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.prev()),
+                cx,
+            ))
+            .child(panel::icon_control(
+                icons::REWIND,
+                0xc0c0c0,
+                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(-10.0)),
+                cx,
+            ))
+            .child(play_pause)
+            .child(panel::icon_control(
+                icons::FAST_FORWARD,
+                0xc0c0c0,
+                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(10.0)),
+                cx,
+            ))
+            .child(panel::icon_control(
+                icons::SKIP_FORWARD,
+                0xc0c0c0,
+                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.next()),
+                cx,
+            ))
+            .child(panel::icon_control(
+                loop_icon,
+                loop_color,
+                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.cycle_loop()),
+                cx,
+            ))
+    }
+}
+
+/// Where a panel's text sits horizontally, the first cross-panel
+/// customization knob.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Align {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+/// The track info panel's per-view config: what a saved layout restores,
+/// and what the customize window edits.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct TrackInfoConfig {
+    #[serde(default)]
+    pub align: Align,
+}
+
+/// The track info readout the playback panel's status line grew into: the
+/// playing track's tags from the library - track number, title, duration,
+/// then artist and album - with the session errors and the idle message in
+/// its place while nothing shows.
+pub struct TrackInfoPanel {
+    state: AppState,
+    config: TrackInfoConfig,
+    /// The playing path's tags, or None for a file the library does not
+    /// know. Cached because the pump notifies every frame and the lookup is
+    /// a database query; cleared when the track or the catalog changes.
+    meta: Option<(PathBuf, Option<TrackMeta>)>,
+    focus: FocusHandle,
+    /// The tab panel this panel currently sits in, for duplicate and pop-out.
+    tab_panel: Option<WeakEntity<TabPanel>>,
+    _player_changed: Subscription,
+    _library_changed: Subscription,
+}
+
+impl TrackInfoPanel {
+    pub fn new(state: AppState, config: TrackInfoConfig, cx: &mut Context<Self>) -> Self {
+        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        let _library_changed = cx.subscribe(
+            &state.library,
+            |this: &mut Self, _, _: &LibraryEvent, cx| {
+                this.meta = None;
+                cx.notify();
+            },
+        );
+        TrackInfoPanel {
+            state,
+            config,
+            meta: None,
+            focus: cx.focus_handle(),
+            tab_panel: None,
+            _player_changed,
+            _library_changed,
+        }
+    }
+
+    /// No quick dropdown entries; the alignment lives in the customize
+    /// window.
+    fn config_menu(&self, menu: PopupMenu, _cx: &mut Context<Self>) -> PopupMenu {
+        menu
+    }
+
+    /// The playing path's tags, from the cache or one lookup on a miss.
+    fn meta_for(&mut self, path: &Path, cx: &App) -> Option<&TrackMeta> {
+        if self.meta.as_ref().map(|(p, _)| p.as_path()) != Some(path) {
+            let meta = self.state.library.read(cx).meta_for(path);
+            self.meta = Some((path.to_path_buf(), meta));
+        }
+        self.meta.as_ref().and_then(|(_, meta)| meta.as_ref())
+    }
+}
+
+impl Customizable for TrackInfoPanel {
+    fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        panel::setting_row(
+            "alignment",
+            panel::choices(
+                &[
+                    ("left", Align::Left),
+                    ("center", Align::Center),
+                    ("right", Align::Right),
+                ],
+                self.config.align,
+                |this: &mut Self, align, cx| {
+                    this.config.align = align;
+                    cx.notify();
+                },
+                cx,
+            ),
+        )
+        .into_any_element()
+    }
+}
+
+impl Render for TrackInfoPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let player = self.state.player.read(cx);
+        let now = player.now_playing();
+        let active = player.is_active();
+        let ended = player.queue_ended();
+        let error = player.error();
+
+        let root = div()
+            .size_full()
+            .bg(rgb(0x121212))
+            .flex()
+            .flex_col()
+            .map(|d| match self.config.align {
+                Align::Left => d.items_start(),
+                Align::Center => d.items_center(),
+                Align::Right => d.items_end(),
+            })
+            .justify_center()
+            .gap_1()
+            .px_3();
+
+        let Some(now) = now else {
+            // Nothing to describe: a session still opening, the reason one
+            // failed to start, or plain idle.
+            let line = if active {
+                "opening...".into()
+            } else {
+                error.unwrap_or_else(|| "nothing playing".into())
+            };
+            return root.child(
                 div()
                     .max_w_full()
                     .truncate()
                     .text_color(rgb(0x808080))
-                    .child(status),
-            )
+                    .child(line),
+            );
+        };
+
+        // An untagged file still shows something: its file name for the
+        // title, no byline.
+        let meta = self.meta_for(&now.path, cx);
+        let title = meta.map(|m| m.title.clone()).unwrap_or_else(|| {
+            now.path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| now.path.display().to_string())
+        });
+        let mut heading = String::new();
+        if let Some(no) = meta.map(|m| m.track_no).filter(|no| *no > 0) {
+            heading.push_str(&format!("{no:02}. "));
+        }
+        heading.push_str(&title);
+        if let Some(duration) = now.duration_secs {
+            heading.push_str(&format!(" ({})", fmt_time(duration)));
+        }
+        let byline = meta
+            .map(|m| [m.artist.as_str(), m.album.as_str()])
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" - ");
+
+        root.child(div().max_w_full().truncate().child(heading))
+            .when(!byline.is_empty(), |d| {
+                d.child(
+                    div()
+                        .max_w_full()
+                        .truncate()
+                        .text_color(rgb(0x808080))
+                        .child(byline),
+                )
+            })
+            .when(ended, |d| {
+                d.child(div().text_color(rgb(0x808080)).child("queue finished"))
+            })
     }
 }
 
-/// The volume strip: the level meter with the volume steppers around the
-/// readout, the bar's right side as its own panel.
+/// The volume strip: the speaker button that toggles mute, and the volume
+/// slider with the readout.
 pub struct VolumePanel {
     state: AppState,
+    /// The slider's painted bounds and drag state.
+    scrub: ScrubState,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -132,6 +322,7 @@ impl VolumePanel {
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
         VolumePanel {
             state,
+            scrub: ScrubState::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
@@ -139,11 +330,118 @@ impl VolumePanel {
     }
 }
 
+/// The volume slider: a rounded track, the setting as the filled side, a
+/// round knob at the position. Muted keeps the knob where it is and dims
+/// the fill. The slider spans 0 to 100%; a louder hand-edited settings
+/// value shows as full.
+fn paint_slider(volume: f32, muted: bool, bounds: Bounds<Pixels>, window: &mut Window) {
+    const TRACK_H: f32 = 4.0;
+    const KNOB: f32 = 12.0;
+
+    let w = f32::from(bounds.size.width);
+    let h = f32::from(bounds.size.height);
+    if w <= KNOB || h <= 0.0 {
+        return;
+    }
+
+    // The knob's travel is inset by its radius so it never clips the ends.
+    let knob_x = KNOB / 2.0 + volume.clamp(0.0, 1.0) * (w - KNOB);
+    let track_y = bounds.origin.y + px((h - TRACK_H) / 2.0);
+    window.paint_quad(
+        fill(
+            Bounds::new(point(bounds.origin.x, track_y), size(px(w), px(TRACK_H))),
+            rgba(0x2a2a2aff),
+        )
+        .corner_radii(px(TRACK_H / 2.0)),
+    );
+    window.paint_quad(
+        fill(
+            Bounds::new(
+                point(bounds.origin.x, track_y),
+                size(px(knob_x), px(TRACK_H)),
+            ),
+            if muted {
+                rgba(0x3dff9c33)
+            } else {
+                rgba(0x3dff9cff)
+            },
+        )
+        .corner_radii(px(TRACK_H / 2.0)),
+    );
+    window.paint_quad(
+        fill(
+            Bounds::new(
+                point(
+                    bounds.origin.x + px(knob_x - KNOB / 2.0),
+                    bounds.origin.y + px((h - KNOB) / 2.0),
+                ),
+                size(px(KNOB), px(KNOB)),
+            ),
+            if muted {
+                rgba(0x9a9a9aff)
+            } else {
+                rgba(0xe0e0e0ff)
+            },
+        )
+        .corner_radii(px(KNOB / 2.0)),
+    );
+}
+
 impl Render for VolumePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let player = self.state.player.read(cx);
-        let volume = (player.volume() * 100.0).round() as u32;
-        let meter = player.meter().min(1.0);
+        let volume = player.volume();
+        let muted = player.muted();
+        let percent = (volume * 100.0).round() as u32;
+
+        // The speaker doubles as the mute toggle and the state readout:
+        // crossed out while muted, fewer waves at low volume.
+        let (speaker, speaker_color) = if muted {
+            (icons::VOLUME_X, 0x707070)
+        } else if volume <= 0.5 {
+            (icons::VOLUME_1, 0xc0c0c0)
+        } else {
+            (icons::VOLUME_2, 0xc0c0c0)
+        };
+
+        let scrub = self.scrub.clone();
+        let player = self.state.player.clone();
+        let slider = div()
+            .flex_1()
+            .min_w(px(80.))
+            .max_w(px(200.))
+            .h(px(22.))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.scrub.begin();
+                    if let Some(fraction) = this.scrub.fraction(event.position.x) {
+                        this.state
+                            .player
+                            .update(cx, |player, cx| player.set_volume(fraction, cx));
+                    }
+                    cx.notify();
+                }),
+            )
+            .child(
+                canvas(
+                    {
+                        let scrub = scrub.clone();
+                        move |bounds, _, _| scrub.set_bounds(bounds)
+                    },
+                    move |bounds, _, window, _| {
+                        paint_slider(volume, muted, bounds, window);
+                        panel::scrub_on_paint(&scrub, window, {
+                            let player = player.clone();
+                            move |fraction, cx| {
+                                player.update(cx, |player, cx| player.set_volume(fraction, cx))
+                            }
+                        });
+                    },
+                )
+                .size_full(),
+            );
 
         div()
             .size_full()
@@ -152,34 +450,58 @@ impl Render for VolumePanel {
             .items_center()
             .justify_center()
             .gap_2()
-            .child(panel::meter(meter))
-            .child(panel::control(
-                "vol -",
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.nudge_volume(-0.1)),
+            .px_3()
+            .child(panel::icon_control(
+                speaker,
+                speaker_color,
+                |this: &mut Self, cx| {
+                    this.state
+                        .player
+                        .update(cx, |player, cx| player.toggle_mute(cx))
+                },
                 cx,
             ))
+            .child(slider)
             .child(
                 div()
                     .w(px(40.))
                     .flex_none()
                     .text_center()
-                    .child(format!("{volume}%")),
+                    .text_color(rgb(0x808080))
+                    .child(format!("{percent}%")),
             )
-            .child(panel::control(
-                "vol +",
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.nudge_volume(0.1)),
-                cx,
-            ))
+    }
+}
+
+/// The seek panel's per-view config: what a saved layout restores, and
+/// what the panel's dropdown menu edits. New display knobs land here, same
+/// as the library's.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SeekConfig {
+    /// The elapsed and remaining clocks around the strip.
+    #[serde(default = "default_true")]
+    pub timings: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for SeekConfig {
+    fn default() -> Self {
+        SeekConfig { timings: true }
     }
 }
 
 /// The seek strip: the waveform minus the peaks - a track line with the
-/// played side in the accent and a playhead, click to seek. Position and
-/// seek come off the player the same way the waveform's do.
+/// played side in the accent and a playhead, click or drag to seek, the
+/// elapsed and remaining clocks at its ends. Position and seek come off
+/// the player the same way the waveform's do.
 pub struct SeekStripPanel {
     state: AppState,
-    /// The strip's bounds as of the last paint, for click-to-seek mapping.
-    strip: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    config: SeekConfig,
+    /// The strip's painted bounds and drag state, for scrub mapping.
+    scrub: ScrubState,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -187,34 +509,51 @@ pub struct SeekStripPanel {
 }
 
 impl SeekStripPanel {
-    pub fn new(state: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: AppState, config: SeekConfig, cx: &mut Context<Self>) -> Self {
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
         SeekStripPanel {
             state,
-            strip: Arc::default(),
+            config,
+            scrub: ScrubState::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
         }
     }
 
-    fn seek_to_fraction(&mut self, x: Pixels, cx: &mut Context<Self>) {
-        let Some(bounds) = *self.strip.lock().unwrap() else {
-            return;
-        };
-        let player = self.state.player.read(cx);
-        let Some(now) = player.now_playing() else {
-            return;
-        };
-        let Some(duration) = now.duration_secs else {
-            return;
-        };
-        let w = f32::from(bounds.size.width);
-        if w <= 0.0 {
-            return;
-        }
-        let fraction = (f32::from(x - bounds.origin.x) / w).clamp(0.0, 1.0);
-        player.seek_to(fraction as f64 * duration);
+    /// The panel's own dropdown entries: the quick timings toggle, the
+    /// same knob the customize window edits.
+    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
+        let weak = cx.entity().downgrade();
+        menu.item(
+            PopupMenuItem::new("Show Timings")
+                .checked(self.config.timings)
+                .on_click(move |_, _, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    this.update(cx, |this, cx| {
+                        this.config.timings = !this.config.timings;
+                        cx.notify();
+                    });
+                }),
+        )
+    }
+}
+
+impl Customizable for SeekStripPanel {
+    fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        panel::setting_row(
+            "timings",
+            panel::choices(
+                &[("show", true), ("hide", false)],
+                self.config.timings,
+                |this: &mut Self, timings, cx| {
+                    this.config.timings = timings;
+                    cx.notify();
+                },
+                cx,
+            ),
+        )
+        .into_any_element()
     }
 }
 
@@ -262,53 +601,83 @@ impl Render for SeekStripPanel {
             window.request_animation_frame();
         }
 
-        let body = match &now {
-            None => div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(0x808080))
-                .child("nothing playing")
-                .into_any_element(),
-            Some(now) => {
-                let progress = now
-                    .duration_secs
-                    .filter(|d| *d > 0.0)
-                    .map(|d| (now.position_secs / d) as f32)
-                    .unwrap_or(0.0);
-                let strip = self.strip.clone();
-                canvas(
-                    move |bounds, _, _| {
-                        // Remember where the strip landed so a click maps
-                        // back to a position in the track.
-                        *strip.lock().unwrap() = Some(bounds);
-                    },
-                    move |bounds, _, window, _| {
-                        paint_strip(progress, bounds, window);
-                    },
-                )
-                .size_full()
-                .into_any_element()
-            }
-        };
-
-        div()
+        let root = div()
             .size_full()
             .bg(rgb(0x121212))
+            .flex()
+            .items_center()
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                    this.seek_to_fraction(event.position.x, cx);
+                    this.scrub.begin();
+                    if let Some(fraction) = this.scrub.fraction(event.position.x) {
+                        panel::seek_fraction(&this.state.player, fraction, cx);
+                    }
+                    cx.notify();
                 }),
+            );
+
+        let Some(now) = now else {
+            return root
+                .justify_center()
+                .text_color(rgb(0x808080))
+                .child("nothing playing");
+        };
+
+        let progress = now
+            .duration_secs
+            .filter(|d| *d > 0.0)
+            .map(|d| (now.position_secs / d) as f32)
+            .unwrap_or(0.0);
+        let scrub = self.scrub.clone();
+        let player = self.state.player.clone();
+        let track = div().flex_1().min_w_0().h_full().child(
+            canvas(
+                {
+                    let scrub = scrub.clone();
+                    move |bounds, _, _| scrub.set_bounds(bounds)
+                },
+                move |bounds, _, window, _| {
+                    paint_strip(progress, bounds, window);
+                    panel::scrub_on_paint(&scrub, window, {
+                        let player = player.clone();
+                        move |fraction, cx| panel::seek_fraction(&player, fraction, cx)
+                    });
+                },
             )
-            .child(body)
+            .size_full(),
+        );
+
+        if !self.config.timings {
+            return root.child(track);
+        }
+
+        // The clocks the reference bar shows: elapsed on the left, time
+        // left on the right, "-:--" until the duration resolves.
+        let remaining = now
+            .duration_secs
+            .map(|d| format!("-{}", fmt_time((d - now.position_secs).max(0.0))))
+            .unwrap_or_else(|| "-:--".into());
+        root.gap_2()
+            .px_2()
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(rgb(0x808080))
+                    .child(fmt_time(now.position_secs)),
+            )
+            .child(track)
+            .child(div().flex_none().text_color(rgb(0x808080)).child(remaining))
     }
 }
 
-/// The Panel, StatePanel, and focus plumbing is identical across the three
-/// transport panels; only the name differs.
+/// The Panel, StatePanel, and focus plumbing is identical across the
+/// transport panels; only the name differs. The `config` arm is for
+/// panels with a per-view config struct (a `config` field, a `config_menu`
+/// method, and a Customizable impl): the layout dump carries the config,
+/// Duplicate copies it, and the dropdown gets the panel's own entries plus
+/// Customize in a block above the shared items.
 macro_rules! transport_panel {
     ($panel:ty, $name:literal) => {
         impl StatePanel for $panel {
@@ -373,8 +742,93 @@ macro_rules! transport_panel {
             }
         }
     };
+    ($panel:ty, $name:literal, config) => {
+        impl EventEmitter<PanelEvent> for $panel {}
+
+        impl Focusable for $panel {
+            fn focus_handle(&self, _cx: &App) -> FocusHandle {
+                self.focus.clone()
+            }
+        }
+
+        impl Panel for $panel {
+            fn panel_name(&self) -> &'static str {
+                $name
+            }
+
+            fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+                gpui::SharedString::from($name)
+            }
+
+            fn inner_padding(&self, _cx: &App) -> bool {
+                false
+            }
+
+            /// The layout dump carries the panel's config; the builder
+            /// registered in `workspace::register_panels` reads it back.
+            fn dump(&self, _cx: &App) -> rox_dock::PanelState {
+                let mut state = rox_dock::PanelState::new(self);
+                state.info = rox_dock::PanelInfo::panel(
+                    serde_json::to_value(self.config.clone()).unwrap_or(serde_json::Value::Null),
+                );
+                state
+            }
+
+            fn on_added_to(
+                &mut self,
+                tab_panel: WeakEntity<TabPanel>,
+                _window: &mut Window,
+                cx: &mut Context<Self>,
+            ) {
+                self.tab_panel = Some(tab_panel.clone());
+                self.state
+                    .tab_hosts
+                    .update(cx, |hosts, _| hosts.report(tab_panel));
+            }
+
+            fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+                self.tab_panel = None;
+            }
+
+            fn dropdown_menu(
+                &mut self,
+                menu: PopupMenu,
+                _window: &mut Window,
+                cx: &mut Context<Self>,
+            ) -> PopupMenu {
+                // The config block: the panel's quick entries and the
+                // customize window, apart from the core panel items.
+                let menu = self.config_menu(menu, cx);
+                let menu = panel::customize_item(menu, &cx.entity());
+                let menu = menu.separator();
+                // Duplicate hand-rolled rather than through
+                // `panel::duplicate_item` because the copy takes the config
+                // along, like the library's.
+                let weak = cx.entity().downgrade();
+                let menu =
+                    menu.item(PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
+                        let Some(this) = weak.upgrade() else { return };
+                        let (state, config, tabs) = {
+                            let panel = this.read(cx);
+                            (
+                                panel.state.clone(),
+                                panel.config.clone(),
+                                panel.tab_panel.clone(),
+                            )
+                        };
+                        let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+                            return;
+                        };
+                        let dup = cx.new(|cx| <$panel>::new(state, config, cx));
+                        tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+                    }));
+                panel::popout_item(menu, &cx.entity(), self.tab_panel.clone(), self.state.clone())
+            }
+        }
+    };
 }
 
 transport_panel!(TransportPanel, "playback");
 transport_panel!(VolumePanel, "volume");
-transport_panel!(SeekStripPanel, "seek");
+transport_panel!(SeekStripPanel, "seek", config);
+transport_panel!(TrackInfoPanel, "track info", config);

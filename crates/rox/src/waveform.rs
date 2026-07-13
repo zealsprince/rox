@@ -1,13 +1,13 @@
 //! The waveform panel: the whole track's amplitude shape as mirrored bars
 //! around a center line, played bars in the accent, the rest as a dim ghost,
-//! with a playhead tracking the position clock. Clicking the strip seeks.
-//! Peaks come from a full decode of the current track on a background
+//! with a playhead tracking the position clock. Click or drag the strip to
+//! seek. Peaks come from a full decode of the current track on a background
 //! thread when the track changes - a few thousand min/max pairs held in
 //! memory, no cache on disk. Painting is a row of quads; while nothing
 //! plays the panel sits completely still.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use gpui::{
     canvas, div, fill, point, prelude::*, px, rgb, rgba, size, App, Bounds, Context, EventEmitter,
@@ -18,7 +18,7 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 
 use rox_playback::engine;
 
-use crate::panel::{self, AppState, StatePanel};
+use crate::panel::{self, AppState, ScrubState, StatePanel};
 
 /// Resolution of the in-memory peaks. The paint resamples these down to
 /// however many bars fit the width.
@@ -44,8 +44,8 @@ pub struct WaveformPanel {
     peaks: Peaks,
     /// Discards stale decode results when the track changes mid-decode.
     generation: u64,
-    /// The strip's bounds as of the last paint, for click-to-seek mapping.
-    strip: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    /// The strip's painted bounds and drag state, for scrub mapping.
+    scrub: ScrubState,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -62,7 +62,7 @@ impl WaveformPanel {
             track: None,
             peaks: Peaks::None,
             generation: 0,
-            strip: Arc::default(),
+            scrub: ScrubState::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
@@ -99,35 +99,20 @@ impl WaveformPanel {
         .detach();
     }
 
-    fn seek_to_fraction(&mut self, x: Pixels, cx: &mut Context<Self>) {
-        let Some(bounds) = *self.strip.lock().unwrap() else {
-            return;
-        };
-        let player = self.state.player.read(cx);
-        let Some(now) = player.now_playing() else {
-            return;
-        };
-        let Some(duration) = now.duration_secs else {
-            return;
-        };
-        let w = f32::from(bounds.size.width);
-        if w <= 0.0 {
-            return;
-        }
-        let fraction = (f32::from(x - bounds.origin.x) / w).clamp(0.0, 1.0);
-        player.seek_to(fraction as f64 * duration);
-    }
-
     fn strip(&self, progress: f32, peaks: Arc<Vec<(f32, f32)>>) -> impl IntoElement {
-        let strip = self.strip.clone();
+        let scrub = self.scrub.clone();
+        let player = self.state.player.clone();
         canvas(
-            move |bounds, _, _| {
-                // Remember where the strip landed so a click maps back to a
-                // position in the track.
-                *strip.lock().unwrap() = Some(bounds);
+            {
+                let scrub = scrub.clone();
+                move |bounds, _, _| scrub.set_bounds(bounds)
             },
             move |bounds, _, window, _| {
                 paint_peaks(&peaks, progress, bounds, window);
+                panel::scrub_on_paint(&scrub, window, {
+                    let player = player.clone();
+                    move |fraction, cx| panel::seek_fraction(&player, fraction, cx)
+                });
             },
         )
         .size_full()
@@ -305,7 +290,11 @@ impl Render for WaveformPanel {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                    this.seek_to_fraction(event.position.x, cx);
+                    this.scrub.begin();
+                    if let Some(fraction) = this.scrub.fraction(event.position.x) {
+                        panel::seek_fraction(&this.state.player, fraction, cx);
+                    }
+                    cx.notify();
                 }),
             )
             .child(body)

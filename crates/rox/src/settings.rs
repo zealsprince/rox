@@ -32,6 +32,9 @@ fn settings_path() -> PathBuf {
 pub struct Settings {
     /// Linear playback volume, same range the engine clamps to (0 to 2).
     pub volume: f32,
+    /// Whether output is muted. The volume above is the level mute returns
+    /// to, so muting never loses the setting.
+    pub muted: bool,
     /// Loop mode as its wire name: "off", "all", or "one". The engine's
     /// `LoopMode` stays serde-free; convert through the accessors.
     pub loop_mode: String,
@@ -60,6 +63,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             volume: 1.0,
+            muted: false,
             loop_mode: "off".into(),
             window: None,
             layout: None,

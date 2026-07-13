@@ -20,11 +20,13 @@ use rox_dock::{
 };
 
 use crate::library::{Library, LibraryConfig, LibraryPanel};
-use crate::panel::{AppState, TabHosts};
+use crate::panel::{self, AppState, TabHosts};
 use crate::player::Player;
 use crate::settings::{Settings, WindowState};
 use crate::spectrum::SpectrumPanel;
-use crate::transport::{SeekStripPanel, TransportPanel, VolumePanel};
+use crate::transport::{
+    SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportPanel, VolumePanel,
+};
 use crate::waveform::WaveformPanel;
 
 const MENU_BAR_H: f32 = 30.0;
@@ -68,9 +70,21 @@ pub fn init(cx: &mut App) {
 fn register_panels(state: &AppState, cx: &mut App) {
     let s = state.clone();
     register_panel(cx, "library", move |_, _, info, _, cx| {
-        let config = LibraryConfig::from_info(info);
+        let config: LibraryConfig = panel::config_from_info(info);
         Box::new(cx.new(|cx| LibraryPanel::new(s.clone(), config.query, cx)))
     });
+    // A panel whose config rides the layout dump.
+    macro_rules! configured {
+        ($name:literal, $panel:ty) => {{
+            let s = state.clone();
+            register_panel(cx, $name, move |_, _, info, _, cx| {
+                let config = panel::config_from_info(info);
+                Box::new(cx.new(|cx| <$panel>::new(s.clone(), config, cx)))
+            });
+        }};
+    }
+    configured!("seek", SeekStripPanel);
+    configured!("track info", TrackInfoPanel);
     macro_rules! stateless {
         ($name:literal, $panel:ty) => {{
             let s = state.clone();
@@ -80,7 +94,6 @@ fn register_panels(state: &AppState, cx: &mut App) {
         }};
     }
     stateless!("playback", TransportPanel);
-    stateless!("seek", SeekStripPanel);
     stateless!("volume", VolumePanel);
     stateless!("spectrum", SpectrumPanel);
     stateless!("waveform", WaveformPanel);
@@ -93,6 +106,7 @@ enum MenuAction {
     OpenLibrary,
     OpenSpectrum,
     OpenWaveform,
+    OpenTrackInfo,
     OpenPlayback,
     OpenVolume,
     OpenSeek,
@@ -137,6 +151,10 @@ const MENUS: &[Menu] = &[
             MenuItem {
                 label: "Waveform",
                 action: MenuAction::OpenWaveform,
+            },
+            MenuItem {
+                label: "Track Info",
+                action: MenuAction::OpenTrackInfo,
             },
             MenuItem {
                 label: "Playback",
@@ -221,17 +239,20 @@ fn default_layout(
     let library_panel = cx.new(|cx| LibraryPanel::new(state.clone(), String::new(), cx));
     let (tabs, center_tabs) = tabs_item(vec![Arc::new(library_panel)], weak_dock, window, cx);
 
-    // The transport pieces as three side-by-side tab groups in one row.
+    // The transport pieces as side-by-side tab groups in one row: the track
+    // info readout, the controls, the seek strip, and the volume strip.
+    let info = cx.new(|cx| TrackInfoPanel::new(state.clone(), TrackInfoConfig::default(), cx));
     let playback = cx.new(|cx| TransportPanel::new(state.clone(), cx));
-    let seek = cx.new(|cx| SeekStripPanel::new(state.clone(), cx));
+    let seek = cx.new(|cx| SeekStripPanel::new(state.clone(), SeekConfig::default(), cx));
     let volume = cx.new(|cx| VolumePanel::new(state.clone(), cx));
+    let (info_item, _) = tabs_item(vec![Arc::new(info)], weak_dock, window, cx);
     let (playback_item, _) = tabs_item(vec![Arc::new(playback)], weak_dock, window, cx);
     let (seek_item, _) = tabs_item(vec![Arc::new(seek)], weak_dock, window, cx);
     let (volume_item, _) = tabs_item(vec![Arc::new(volume)], weak_dock, window, cx);
     let transport_row = DockItem::split_with_sizes(
         Axis::Horizontal,
-        vec![playback_item, seek_item, volume_item],
-        vec![Some(px(420.)), None, Some(px(280.))],
+        vec![info_item, playback_item, seek_item, volume_item],
+        vec![None, Some(px(420.)), None, Some(px(280.))],
         weak_dock,
         window,
         cx,
@@ -476,6 +497,12 @@ impl Workspace {
                 let panel = cx.new(|cx| WaveformPanel::new(self.state.clone(), cx));
                 self.add_bottom(Arc::new(panel), window, cx);
             }
+            MenuAction::OpenTrackInfo => {
+                let panel = cx.new(|cx| {
+                    TrackInfoPanel::new(self.state.clone(), TrackInfoConfig::default(), cx)
+                });
+                self.add_bottom(Arc::new(panel), window, cx);
+            }
             MenuAction::OpenPlayback => {
                 let panel = cx.new(|cx| TransportPanel::new(self.state.clone(), cx));
                 self.add_bottom(Arc::new(panel), window, cx);
@@ -485,7 +512,11 @@ impl Workspace {
                 self.add_bottom(Arc::new(panel), window, cx);
             }
             MenuAction::OpenSeek => {
-                let panel = cx.new(|cx| SeekStripPanel::new(self.state.clone(), cx));
+                let panel = cx.new(|cx| SeekStripPanel::new(
+                    self.state.clone(),
+                    SeekConfig::default(),
+                    cx,
+                ));
                 self.add_bottom(Arc::new(panel), window, cx);
             }
         }

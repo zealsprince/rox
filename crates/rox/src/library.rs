@@ -97,6 +97,13 @@ impl Library {
             .map_err(|e| e.to_string())
     }
 
+    /// Resolve a playing file back to its tags on the UI-side connection,
+    /// for the track info panel. None when the path is not in the library.
+    pub fn meta_for(&self, path: &std::path::Path) -> Option<store::TrackMeta> {
+        let conn = self.conn.as_ref()?;
+        store::meta_for_path(conn, path.to_str()?).ok().flatten()
+    }
+
     /// Load the projection off the UI thread, optionally scanning `root`
     /// first. The finished projection and its canonical sort swap in whole.
     fn reload(&mut self, scan_root: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -156,17 +163,6 @@ impl Library {
 pub struct LibraryConfig {
     #[serde(default)]
     pub query: String,
-}
-
-impl LibraryConfig {
-    /// Read the config back out of a dumped panel state; anything missing
-    /// or malformed falls back to defaults.
-    pub fn from_info(info: &PanelInfo) -> Self {
-        match info {
-            PanelInfo::Panel(value) => serde_json::from_value(value.clone()).unwrap_or_default(),
-            _ => Self::default(),
-        }
-    }
 }
 
 /// One browse view over the shared catalog: its own search query and row

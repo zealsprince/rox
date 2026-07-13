@@ -38,7 +38,6 @@ struct Session {
     /// The queued paths, kept so the views can resolve the playing track
     /// back to its file.
     queue: Vec<PathBuf>,
-    meter: f32,
 }
 
 impl Session {
@@ -65,7 +64,6 @@ impl Session {
             _stream: out.stream,
             device_rate,
             queue,
-            meter: 0.0,
         })
     }
 }
@@ -150,7 +148,7 @@ impl Player {
             return;
         }
         self.session = None;
-        match Session::start(queue, self.settings.volume, self.settings.loop_mode()) {
+        match Session::start(queue, self.effective_volume(), self.settings.loop_mode()) {
             Ok(session) => {
                 self.feed.set_sample_rate(session.device_rate);
                 self.session = Some(session);
@@ -163,8 +161,8 @@ impl Player {
     }
 
     /// Run the tap drain on a timer instead of a render pass. The tick also
-    /// notifies the player, which is what repaints the bar's clock, meter,
-    /// and play state while a session runs.
+    /// notifies the player, which is what repaints the bar's clock and play
+    /// state while a session runs.
     fn start_pump(&mut self, cx: &mut Context<Self>) {
         self.pump = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -184,23 +182,16 @@ impl Player {
         }));
     }
 
-    /// Take whatever the tap holds, never wait for more. The peak drives
-    /// the level meter, the samples move on to the audio views' feed.
+    /// Take whatever the tap holds, never wait for more; the samples move
+    /// on to the audio views' feed.
     fn drain_tap(&mut self) {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let mut peak = 0.0f32;
         let mut drained: Vec<f32> = Vec::new();
         while let Ok(s) = session.tap.pop() {
-            peak = peak.max(s.abs());
             drained.push(s);
         }
-        session.meter = if drained.is_empty() {
-            session.meter * 0.85
-        } else {
-            peak.max(session.meter * 0.85)
-        };
         self.feed.push(&drained);
     }
 
@@ -233,14 +224,39 @@ impl Player {
             .unwrap_or(false)
     }
 
-    /// The smoothed output level the meter shows, zero while idle.
-    pub fn meter(&self) -> f32 {
-        self.session.as_ref().map(|s| s.meter).unwrap_or(0.0)
+    /// Whether a session is running at all, playing or paused. What tells
+    /// "opening..." apart from plain idle while the position clock is not
+    /// up yet.
+    pub fn is_active(&self) -> bool {
+        self.session.is_some()
     }
 
-    /// The persisted volume, the engine's clamp range (0 to 2).
+    /// Whether the queue has played through to its end and stopped.
+    pub fn queue_ended(&self) -> bool {
+        self.session
+            .as_ref()
+            .map(|s| s.shared.ended.load(Ordering::Relaxed))
+            .unwrap_or(false)
+    }
+
+    /// The persisted volume, the engine's clamp range (0 to 2). The level
+    /// mute returns to, not what the engine currently applies.
     pub fn volume(&self) -> f32 {
         self.settings.volume
+    }
+
+    /// Whether output is muted.
+    pub fn muted(&self) -> bool {
+        self.settings.muted
+    }
+
+    /// What the engine should actually apply: the volume, or silence.
+    fn effective_volume(&self) -> f32 {
+        if self.settings.muted {
+            0.0
+        } else {
+            self.settings.volume
+        }
     }
 
     /// The persisted loop mode.
@@ -257,14 +273,30 @@ impl Player {
         }
     }
 
-    /// Step the volume and persist it; the panels and the bar share this.
-    pub fn nudge_volume(&mut self, delta: f32) {
+    /// Set the volume and persist it; dragging the slider lands here.
+    /// Setting a level always unmutes: reaching for the slider means
+    /// wanting to hear something.
+    pub fn set_volume(&mut self, volume: f32, cx: &mut Context<Self>) {
         // Same clamp range the engine applies, so the persisted value and
         // the audible one never drift apart.
-        let volume = (self.settings.volume + delta).clamp(0.0, 2.0);
+        let volume = volume.clamp(0.0, 2.0);
         self.settings.volume = volume;
+        self.settings.muted = false;
         self.send(Cmd::Volume(volume));
-        Settings::update(|s| s.volume = volume);
+        Settings::update(move |s| {
+            s.volume = volume;
+            s.muted = false;
+        });
+        cx.notify();
+    }
+
+    /// Silence the output without losing the level; unmute restores it.
+    pub fn toggle_mute(&mut self, cx: &mut Context<Self>) {
+        let muted = !self.settings.muted;
+        self.settings.muted = muted;
+        self.send(Cmd::Volume(self.effective_volume()));
+        Settings::update(move |s| s.muted = muted);
+        cx.notify();
     }
 
     /// Step off -> all -> one -> off and persist the pick.
@@ -279,43 +311,14 @@ impl Player {
         Settings::update(|s| s.set_loop_mode(mode));
     }
 
-    /// The transport panel's status line: queue position, track name, and
-    /// clock, or "opening..." before the first track resolves. None while
-    /// no session is running.
-    pub fn status_line(&self) -> Option<SharedString> {
-        let session = self.session.as_ref()?;
-        let ended = session.shared.ended.load(Ordering::Relaxed);
-        Some(match session.shared.position(session.device_rate) {
-            Some((track, secs)) => {
-                let tracks = session.shared.tracks.lock().unwrap();
-                let info = tracks.get(track).and_then(|t| t.as_ref());
-                let name = info.map(|i| i.name.as_str()).unwrap_or("?");
-                let dur = info
-                    .and_then(|i| i.duration_secs)
-                    .map(fmt_time)
-                    .unwrap_or_else(|| "?".into());
-                format!(
-                    "[{}/{}] {}  {} / {}{}",
-                    track + 1,
-                    session.queue.len(),
-                    name,
-                    fmt_time(secs),
-                    dur,
-                    if ended { " (queue finished)" } else { "" },
-                )
-                .into()
-            }
-            None => "opening...".into(),
-        })
-    }
-
     /// The last session-start failure, shown while nothing plays.
     pub fn error(&self) -> Option<SharedString> {
         self.error.clone()
     }
 }
 
-fn fmt_time(secs: f64) -> String {
+/// The playback clock format the panels share: minutes and seconds.
+pub fn fmt_time(secs: f64) -> String {
     let m = (secs / 60.0).floor() as u64;
     format!("{m}:{:02}", (secs - (m * 60) as f64).floor() as u64)
 }

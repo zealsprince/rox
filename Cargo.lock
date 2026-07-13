@@ -5075,6 +5075,7 @@ dependencies = [
  "rox-library",
  "rox-playback",
  "rox-viz",
+ "rust-embed",
  "serde",
  "serde_json",
 ]

@@ -14,7 +14,8 @@ use gpui::{
     KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_dock::{Panel, PanelEvent, PanelInfo, PanelState, TabPanel};
+use serde::{Deserialize, Serialize};
 
 use rox_library::projection::Projection;
 use rox_library::rusqlite::Connection;
@@ -145,6 +146,26 @@ impl Library {
             }
         })
         .detach();
+    }
+}
+
+/// The panel's per-view config: what a saved layout restores, and the
+/// schema a future per-panel settings menu edits. One struct serves both,
+/// so new knobs land here.
+#[derive(Default, Serialize, Deserialize)]
+pub struct LibraryConfig {
+    #[serde(default)]
+    pub query: String,
+}
+
+impl LibraryConfig {
+    /// Read the config back out of a dumped panel state; anything missing
+    /// or malformed falls back to defaults.
+    pub fn from_info(info: &PanelInfo) -> Self {
+        match info {
+            PanelInfo::Panel(value) => serde_json::from_value(value.clone()).unwrap_or_default(),
+            _ => Self::default(),
+        }
     }
 }
 
@@ -497,6 +518,18 @@ impl Panel for LibraryPanel {
 
     fn inner_padding(&self, _cx: &App) -> bool {
         false
+    }
+
+    /// The layout dump carries the panel's config; the builder registered
+    /// in `workspace::register_panels` reads it back.
+    fn dump(&self, _cx: &App) -> PanelState {
+        let config = LibraryConfig {
+            query: self.query.clone(),
+        };
+        let mut state = PanelState::new(self);
+        state.info =
+            PanelInfo::panel(serde_json::to_value(config).unwrap_or(serde_json::Value::Null));
+        state
     }
 
     fn on_added_to(

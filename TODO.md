@@ -2,10 +2,9 @@
 
 ## Panels
 
-- Per-panel settings menu over a generic panel data system (styling,
-  configuration). Design the schema together with layout persistence below:
-  gpui-component restores layouts through a `PanelRegistry` that deserializes
-  each panel's state, so one serializable config per panel type serves both.
+- Per-panel settings menu over the panel config schema layout persistence
+  laid down (`LibraryConfig` and the dump/registry round-trip): each panel
+  type's config struct is what the menu edits.
 - Icons for buttons and menus. gpui-component-assets is already bundled with
   the widget icon set; check its `IconName` coverage before drawing our own.
 - Bring the generative visualizer back once it is a real GPU shader, zero CPU
@@ -14,10 +13,6 @@
 
 ## Persistence
 
-- Save window and panel layout, restore on open. `DockArea::dump()/load()`
-  plus the panel registry; window bounds belong to the same pass. The
-  settings file (`settings.rs`, next to the library DB) is where the layout
-  should land.
 - Waveform peak cache on disk keyed by file identity, with a generating
   animation while peaks compute so the panel never sits blank. The
   implementation doc set already reserves a waveform cache file format.

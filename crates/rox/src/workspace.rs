@@ -8,21 +8,36 @@
 //! playback's sake.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
     actions, deferred, div, prelude::*, px, rgb, App, Axis, Context, Entity, FocusHandle,
-    KeyBinding, MouseButton, WeakEntity, Window,
+    KeyBinding, MouseButton, Subscription, Task, WeakEntity, Window, WindowBounds,
 };
-use rox_dock::{DockArea, DockItem, Panel as _, PanelView, StackPanel, TabPanel};
+use rox_dock::{
+    register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo,
+    PanelView, StackPanel, TabPanel,
+};
 
-use crate::library::{Library, LibraryPanel};
+use crate::library::{Library, LibraryConfig, LibraryPanel};
 use crate::panel::{AppState, TabHosts};
 use crate::player::Player;
+use crate::settings::{Settings, WindowState};
 use crate::spectrum::SpectrumPanel;
 use crate::transport::{SeekStripPanel, TransportPanel, VolumePanel};
 use crate::waveform::WaveformPanel;
 
 const MENU_BAR_H: f32 = 30.0;
+
+/// Versions the layout dump in settings. Bump on incompatible panel or
+/// schema changes; a dump from another version is ignored and the default
+/// layout builds instead.
+const LAYOUT_VERSION: usize = 1;
+
+/// Layout events fire for every step of a drag or resize, so a save waits
+/// out this much quiet first. The close hook catches whatever a pending
+/// debounce still holds.
+const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// The transport row's starting height, just enough for the controls plus
 /// their status line. The row is a regular split in the one layout tree,
@@ -44,6 +59,31 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("left", SeekBackward, PLAYBACK_KEY_SCOPE),
         KeyBinding::new("right", SeekForward, PLAYBACK_KEY_SCOPE),
     ]);
+}
+
+/// Teach the dock's registry to rebuild every panel type from a layout
+/// dump. Registered per workspace so the builders capture that workspace's
+/// entities; the restore runs synchronously right after, before another
+/// workspace can re-register.
+fn register_panels(state: &AppState, cx: &mut App) {
+    let s = state.clone();
+    register_panel(cx, "library", move |_, _, info, _, cx| {
+        let config = LibraryConfig::from_info(info);
+        Box::new(cx.new(|cx| LibraryPanel::new(s.clone(), config.query, cx)))
+    });
+    macro_rules! stateless {
+        ($name:literal, $panel:ty) => {{
+            let s = state.clone();
+            register_panel(cx, $name, move |_, _, _, _, cx| {
+                Box::new(cx.new(|cx| <$panel>::new(s.clone(), cx)))
+            });
+        }};
+    }
+    stateless!("playback", TransportPanel);
+    stateless!("seek", SeekStripPanel);
+    stateless!("volume", VolumePanel);
+    stateless!("spectrum", SpectrumPanel);
+    stateless!("waveform", WaveformPanel);
 }
 
 #[derive(Clone, Copy)]
@@ -133,10 +173,14 @@ pub struct Workspace {
     /// The transport row's stack: the transport groups at start, and the
     /// row View-menu audio panels append to.
     bottom_stack: Entity<StackPanel>,
+    /// The debounce for layout saves; replacing it cancels the running
+    /// timer, so only a quiet layout dumps.
+    save_task: Option<Task<()>>,
+    _layout_changed: Subscription,
 }
 
 /// A one-group tabs item plus the TabPanel entity inside it, for wiring the
-/// group into a hand-built stack.
+/// group into a stack.
 fn tabs_item(
     panels: Vec<Arc<dyn PanelView>>,
     weak_dock: &WeakEntity<DockArea>,
@@ -151,6 +195,92 @@ fn tabs_item(
     (item, view)
 }
 
+/// The split's StackPanel entity, for keeping a handle to a stack a
+/// DockItem builder created.
+fn split_view(item: &DockItem) -> Entity<StackPanel> {
+    match item {
+        DockItem::Split { view, .. } => view.clone(),
+        _ => unreachable!("split_with_sizes builds a Split item"),
+    }
+}
+
+/// The starting layout: the library tab group over the transport row.
+/// Returns the center item plus the workspace's add targets: the root
+/// stack, the center tabs, and the transport row's stack.
+fn default_layout(
+    state: &AppState,
+    weak_dock: &WeakEntity<DockArea>,
+    window: &mut Window,
+    cx: &mut App,
+) -> (
+    DockItem,
+    Entity<StackPanel>,
+    Entity<TabPanel>,
+    Entity<StackPanel>,
+) {
+    let library_panel = cx.new(|cx| LibraryPanel::new(state.clone(), String::new(), cx));
+    let (tabs, center_tabs) = tabs_item(vec![Arc::new(library_panel)], weak_dock, window, cx);
+
+    // The transport pieces as three side-by-side tab groups in one row.
+    let playback = cx.new(|cx| TransportPanel::new(state.clone(), cx));
+    let seek = cx.new(|cx| SeekStripPanel::new(state.clone(), cx));
+    let volume = cx.new(|cx| VolumePanel::new(state.clone(), cx));
+    let (playback_item, _) = tabs_item(vec![Arc::new(playback)], weak_dock, window, cx);
+    let (seek_item, _) = tabs_item(vec![Arc::new(seek)], weak_dock, window, cx);
+    let (volume_item, _) = tabs_item(vec![Arc::new(volume)], weak_dock, window, cx);
+    let transport_row = DockItem::split_with_sizes(
+        Axis::Horizontal,
+        vec![playback_item, seek_item, volume_item],
+        vec![Some(px(420.)), None, Some(px(280.))],
+        weak_dock,
+        window,
+        cx,
+    );
+    let bottom_stack = split_view(&transport_row);
+
+    // One vertical tree: the center tabs over the transport row, no
+    // separate bottom dock. Closing or moving everything out of one region
+    // hands its space to the rest instead of leaving a hole, and a parent
+    // stack is also what makes tab dragging, splitting, and closing
+    // possible at all.
+    let center = DockItem::split_with_sizes(
+        Axis::Vertical,
+        vec![tabs, transport_row],
+        vec![None, Some(px(TRANSPORT_ROW_H))],
+        weak_dock,
+        window,
+        cx,
+    );
+    let stack = split_view(&center);
+    (center, stack, center_tabs, bottom_stack)
+}
+
+/// Pull the workspace's add targets back out of a restored layout: the
+/// root stack, the first tab group (where add_center prefers to land), and
+/// the last horizontal split (the transport row add_bottom appends to).
+/// The latter two are heuristics over a tree the user may have rearranged,
+/// so they can come up empty.
+fn layout_views(
+    item: &DockItem,
+) -> (
+    Entity<StackPanel>,
+    Option<Entity<TabPanel>>,
+    Option<Entity<StackPanel>>,
+) {
+    let DockItem::Split { view, items, .. } = item else {
+        unreachable!("a restored root stack is a Split item");
+    };
+    let center_tabs = items.iter().find_map(|child| match child {
+        DockItem::Tabs { view, .. } => Some(view.clone()),
+        _ => None,
+    });
+    let bottom = items.iter().rev().find_map(|child| match child {
+        DockItem::Split { axis, view, .. } if *axis == Axis::Horizontal => Some(view.clone()),
+        _ => None,
+    });
+    (view.clone(), center_tabs, bottom)
+}
+
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppState {
@@ -161,71 +291,54 @@ impl Workspace {
         let focus = cx.focus_handle();
         window.focus(&focus);
 
-        let dock = cx.new(|cx| DockArea::new("rox", None, window, cx));
+        let dock = cx.new(|cx| DockArea::new("rox", Some(LAYOUT_VERSION), window, cx));
         let weak_dock = dock.downgrade();
 
-        let library_panel = cx.new(|cx| LibraryPanel::new(state.clone(), String::new(), cx));
-        let (tabs, center_tabs) = tabs_item(vec![Arc::new(library_panel)], &weak_dock, window, cx);
+        register_panels(&state, cx);
 
-        // The transport pieces as three side-by-side tab groups in one row.
-        // Hand-built because 0.5.1's DockItem::split_with_sizes adds every
-        // panel to its stack twice.
-        let playback = cx.new(|cx| TransportPanel::new(state.clone(), cx));
-        let seek = cx.new(|cx| SeekStripPanel::new(state.clone(), cx));
-        let volume = cx.new(|cx| VolumePanel::new(state.clone(), cx));
-        let (playback_item, playback_tabs) =
-            tabs_item(vec![Arc::new(playback)], &weak_dock, window, cx);
-        let (seek_item, seek_tabs) = tabs_item(vec![Arc::new(seek)], &weak_dock, window, cx);
-        let (volume_item, volume_tabs) = tabs_item(vec![Arc::new(volume)], &weak_dock, window, cx);
-        let sizes = [Some(px(420.)), None, Some(px(280.))];
-        let bottom_stack = cx.new(|cx| {
-            let mut stack = StackPanel::new(Axis::Horizontal, window, cx);
-            for (tabs, size) in [playback_tabs, seek_tabs, volume_tabs]
-                .into_iter()
-                .zip(sizes)
-            {
-                stack.add_panel(Arc::new(tabs), size, weak_dock.clone(), window, cx);
+        // The saved layout when there is one it can trust: current version,
+        // and a stack at the root, which a dumped root stack always is.
+        // Anything else builds the default layout instead.
+        let restored = Settings::load()
+            .layout
+            .and_then(|value| serde_json::from_value::<DockAreaState>(value).ok())
+            .filter(|dump| {
+                dump.version == Some(LAYOUT_VERSION)
+                    && matches!(dump.center.info, PanelInfo::Stack { .. })
+            })
+            .map(|dump| dump.center.to_item(weak_dock.clone(), window, cx));
+
+        let (center, stack, center_tabs, bottom_stack) = match restored {
+            Some(item) => {
+                let (stack, tabs, bottom) = layout_views(&item);
+                // The preferred add targets may not survive a rearranged
+                // layout; fresh detached entities take their place, and the
+                // add paths attach them back into the tree on first use.
+                let tabs =
+                    tabs.unwrap_or_else(|| tabs_item(Vec::new(), &weak_dock, window, cx).1);
+                let bottom = bottom
+                    .unwrap_or_else(|| cx.new(|cx| StackPanel::new(Axis::Horizontal, window, cx)));
+                (item, stack, tabs, bottom)
             }
-            stack
-        });
-        let transport_row = DockItem::Split {
-            axis: Axis::Horizontal,
-            size: Some(px(TRANSPORT_ROW_H)),
-            items: vec![playback_item, seek_item, volume_item],
-            sizes: sizes.to_vec(),
-            view: bottom_stack.clone(),
+            None => default_layout(&state, &weak_dock, window, cx),
         };
 
-        // One vertical tree: the center tabs over the transport row, no
-        // separate bottom dock. Closing or moving everything out of one
-        // region hands its space to the rest instead of leaving a hole,
-        // and a parent stack is also what makes tab dragging, splitting,
-        // and closing possible at all.
-        let stack = cx.new(|cx| {
-            let mut stack = StackPanel::new(Axis::Vertical, window, cx);
-            stack.add_panel(
-                Arc::new(center_tabs.clone()),
-                None,
-                weak_dock.clone(),
-                window,
-                cx,
-            );
-            stack.add_panel(
-                Arc::new(bottom_stack.clone()),
-                Some(px(TRANSPORT_ROW_H)),
-                weak_dock.clone(),
-                window,
-                cx,
-            );
-            stack
+        // Save the layout when it settles after a change, and once more on
+        // close, which also catches window moves and resizes: those emit no
+        // dock events.
+        let _layout_changed =
+            cx.subscribe_in(&dock, window, |this, _, event: &DockEvent, window, cx| {
+                if matches!(event, DockEvent::LayoutChanged) {
+                    this.save_layout_soon(window, cx);
+                }
+            });
+        let this = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |this, cx| this.persist(window, cx));
+            }
+            true
         });
-        let center = DockItem::Split {
-            axis: Axis::Vertical,
-            size: None,
-            items: vec![tabs, transport_row],
-            sizes: vec![None, Some(px(TRANSPORT_ROW_H))],
-            view: stack.clone(),
-        };
 
         // Zoom needs nothing from the workspace anymore: adding tab panels
         // to stacks makes the dock area subscribe them, and the zoomed
@@ -250,7 +363,40 @@ impl Workspace {
             stack,
             center_tabs,
             bottom_stack,
+            save_task: None,
+            _layout_changed,
         }
+    }
+
+    /// Debounced persist: wait out [`SAVE_DEBOUNCE`] of quiet, then dump.
+    /// Replacing the task cancels the previous timer.
+    fn save_layout_soon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(SAVE_DEBOUNCE).await;
+            this.update_in(cx, |this, window, cx| this.persist(window, cx))
+                .ok();
+        }));
+    }
+
+    /// Dump the dock layout and the window frame into the settings file.
+    /// With several windows open the last writer wins; the file records the
+    /// layout most recently touched.
+    fn persist(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.save_task = None;
+        let layout = serde_json::to_value(self.dock.read(cx).dump(cx)).ok();
+        let bounds = window.window_bounds();
+        let frame = bounds.get_bounds();
+        let window_state = WindowState {
+            x: frame.origin.x.into(),
+            y: frame.origin.y.into(),
+            width: frame.size.width.into(),
+            height: frame.size.height.into(),
+            maximized: matches!(bounds, WindowBounds::Maximized(_)),
+        };
+        Settings::update(move |s| {
+            s.layout = layout;
+            s.window = Some(window_state);
+        });
     }
 
     fn add_center(

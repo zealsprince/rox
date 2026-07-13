@@ -1,6 +1,8 @@
 //! Persisted app settings: one JSON file in the app's data directory, next
-//! to the library database. Loaded once at startup, written whole on every
-//! change; the file is a handful of fields, so no debouncing.
+//! to the library database. Writers each own a few fields (the player its
+//! playback state, the workspace its window and layout) and write through
+//! [`Settings::update`], which reloads the file first so one writer's save
+//! never reverts another's fields to what they were at startup.
 
 use std::path::PathBuf;
 
@@ -33,6 +35,25 @@ pub struct Settings {
     /// Loop mode as its wire name: "off", "all", or "one". The engine's
     /// `LoopMode` stays serde-free; convert through the accessors.
     pub loop_mode: String,
+    /// The main window's last frame, restored on open. None until the first
+    /// window closes.
+    pub window: Option<WindowState>,
+    /// The dock layout as the dock crate's own serialized state, kept as raw
+    /// JSON so settings stay readable even when the layout schema moves; the
+    /// workspace validates and versions it on restore. None until a layout
+    /// has been saved.
+    pub layout: Option<serde_json::Value>,
+}
+
+/// A window frame in logical pixels, plus whether the window was maximized
+/// (the frame is then the restore size).
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub struct WindowState {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
 }
 
 impl Default for Settings {
@@ -40,6 +61,8 @@ impl Default for Settings {
         Settings {
             volume: 1.0,
             loop_mode: "off".into(),
+            window: None,
+            layout: None,
         }
     }
 }
@@ -66,9 +89,19 @@ impl Settings {
         settings
     }
 
+    /// Change some fields and persist: reload the file, apply, write it
+    /// back. Writers hold their own in-memory copies for reads, so going
+    /// through the file here is what keeps one writer's save from
+    /// reverting another's fields.
+    pub fn update(f: impl FnOnce(&mut Settings)) {
+        let mut settings = Settings::load();
+        f(&mut settings);
+        settings.save();
+    }
+
     /// Write the whole file. Failures log and move on; settings loss is not
     /// worth interrupting playback for.
-    pub fn save(&self) {
+    fn save(&self) {
         let path = settings_path();
         let text = serde_json::to_string_pretty(self).expect("settings serialize");
         if let Err(e) = std::fs::write(&path, text) {

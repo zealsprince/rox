@@ -261,9 +261,10 @@ impl Player {
     pub fn nudge_volume(&mut self, delta: f32) {
         // Same clamp range the engine applies, so the persisted value and
         // the audible one never drift apart.
-        self.settings.volume = (self.settings.volume + delta).clamp(0.0, 2.0);
-        self.send(Cmd::Volume(self.settings.volume));
-        self.settings.save();
+        let volume = (self.settings.volume + delta).clamp(0.0, 2.0);
+        self.settings.volume = volume;
+        self.send(Cmd::Volume(volume));
+        Settings::update(|s| s.volume = volume);
     }
 
     /// Step off -> all -> one -> off and persist the pick.
@@ -275,7 +276,7 @@ impl Player {
         };
         self.settings.set_loop_mode(mode);
         self.send(Cmd::SetLoop(mode));
-        self.settings.save();
+        Settings::update(|s| s.set_loop_mode(mode));
     }
 
     /// The transport panel's status line: queue position, track name, and

@@ -16,18 +16,34 @@ mod waveform;
 mod workspace;
 
 use gpui::{
-    px, size, App, AppContext, Application, Bounds, SharedString, TitlebarOptions, WindowBounds,
-    WindowOptions,
+    point, px, size, App, AppContext, Application, Bounds, SharedString, TitlebarOptions,
+    WindowBounds, WindowOptions,
 };
 use gpui_component::{Root, Theme, ThemeMode};
 use gpui_component_assets::Assets;
 
+use settings::Settings;
 use workspace::Workspace;
 
 pub fn open_workspace(cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(1100.), px(700.)), cx);
+    // Windows open on the saved frame, so a restart, and every New Window,
+    // comes back where the last-closed window sat.
+    let window_bounds = match Settings::load().window {
+        Some(w) => {
+            let bounds = Bounds {
+                origin: point(px(w.x), px(w.y)),
+                size: size(px(w.width), px(w.height)),
+            };
+            if w.maximized {
+                WindowBounds::Maximized(bounds)
+            } else {
+                WindowBounds::Windowed(bounds)
+            }
+        }
+        None => WindowBounds::Windowed(Bounds::centered(None, size(px(1100.), px(700.)), cx)),
+    };
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(window_bounds),
         titlebar: Some(TitlebarOptions {
             title: Some(SharedString::from("rox")),
             ..Default::default()

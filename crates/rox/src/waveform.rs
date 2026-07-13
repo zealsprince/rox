@@ -131,12 +131,7 @@ impl WaveformPanel {
 
 /// Mirrored bars around the center line, resampled to the width: played bars
 /// solid accent, the rest a dim ghost, and a playhead on top.
-fn paint_peaks(
-    peaks: &[(f32, f32)],
-    progress: f32,
-    bounds: Bounds<Pixels>,
-    window: &mut Window,
-) {
+fn paint_peaks(peaks: &[(f32, f32)], progress: f32, bounds: Bounds<Pixels>, window: &mut Window) {
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
     if w <= 0.0 || h <= 0.0 || peaks.is_empty() {
@@ -171,9 +166,9 @@ fn paint_peaks(
                 size(px(BAR_WIDTH), px(bottom - top)),
             ),
             if played {
-                rgba(0x3dff9cff)
+                rgba(0xfdcb00ff)
             } else {
-                rgba(0x3dff9c33)
+                rgba(0xfdcb0033)
             },
         ));
     }
@@ -246,7 +241,12 @@ impl Panel for WaveformPanel {
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let menu = panel::duplicate_item(menu, &cx.entity());
-        panel::popout_item(menu, &cx.entity(), self.tab_panel.clone(), self.state.clone())
+        panel::popout_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            self.state.clone(),
+        )
     }
 }
 

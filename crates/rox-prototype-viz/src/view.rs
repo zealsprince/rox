@@ -12,7 +12,7 @@ use gpui::{
 
 use crate::sim::{self, Mode, Payload, Shared, SimFrame};
 
-const BUCKET_COLORS: [u32; 5] = [0x1f8a4d40, 0x2bd97a66, 0x3dff9c99, 0x8fffc4cc, 0xd8ffe9ff];
+const BUCKET_COLORS: [u32; 5] = [0x1f8a4d40, 0x2bd97a66, 0xfdcb0099, 0x8fffc4cc, 0xd8ffe9ff];
 
 #[derive(Default)]
 struct Stats {

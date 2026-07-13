@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use gpui::{
     anchored, deferred, div, prelude::*, px, rgb, size, svg, AnyElement, App, Bounds, Context,
     DismissEvent, Div, Entity, Focusable as _, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Subscription, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowOptions,
+    MouseUpEvent, Pixels, Point, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    WindowOptions,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Root;
@@ -195,18 +195,20 @@ pub trait StatePanel: Panel {
 /// the tab panel the original sits in.
 pub fn duplicate_item<P: StatePanel>(menu: PopupMenu, panel: &Entity<P>) -> PopupMenu {
     let weak = panel.downgrade();
-    menu.item(PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
-        let Some(this) = weak.upgrade() else { return };
-        let (state, tabs) = {
-            let panel = this.read(cx);
-            (panel.state(), panel.tab_panel())
-        };
-        let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-            return;
-        };
-        let dup = cx.new(|cx| P::duplicate(state, cx));
-        tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-    }))
+    menu.item(
+        PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
+            let Some(this) = weak.upgrade() else { return };
+            let (state, tabs) = {
+                let panel = this.read(cx);
+                (panel.state(), panel.tab_panel())
+            };
+            let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+                return;
+            };
+            let dup = cx.new(|cx| P::duplicate(state, cx));
+            tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+        }),
+    )
 }
 
 /// The Pop Out entry for a panel's dropdown menu: moves the panel out of its
@@ -220,9 +222,11 @@ pub fn popout_item<P: Panel>(
     state: AppState,
 ) -> PopupMenu {
     let panel = panel.clone();
-    menu.item(PopupMenuItem::new("Pop Out").on_click(move |_, window, cx| {
-        pop_out(panel.clone(), tab_panel.clone(), state.clone(), window, cx);
-    }))
+    menu.item(
+        PopupMenuItem::new("Pop Out").on_click(move |_, window, cx| {
+            pop_out(panel.clone(), tab_panel.clone(), state.clone(), window, cx);
+        }),
+    )
 }
 
 /// Move a docked panel into its own OS window. The panel entity itself moves,
@@ -282,9 +286,11 @@ pub trait Customizable: Panel {
 /// customize window.
 pub fn customize_item<P: Customizable>(menu: PopupMenu, panel: &Entity<P>) -> PopupMenu {
     let panel = panel.clone();
-    menu.item(PopupMenuItem::new("Customize...").on_click(move |_, _, cx| {
-        open_customize(panel.clone(), cx);
-    }))
+    menu.item(
+        PopupMenuItem::new("Customize...").on_click(move |_, _, cx| {
+            open_customize(panel.clone(), cx);
+        }),
+    )
 }
 
 /// Open the small window that edits a panel's config. It holds the panel
@@ -346,48 +352,138 @@ impl<P: Customizable> Render for CustomizeHost<P> {
     }
 }
 
-/// One labeled row of a customize window: the setting's name, then its
-/// control.
-pub fn setting_row(label: &'static str, control: impl IntoElement) -> Div {
+/// One labeled row of a customize window: the setting's name and its
+/// control on one line, an optional dimmed description wrapping below.
+pub fn setting_row(
+    label: &'static str,
+    description: Option<&'static str>,
+    control: impl IntoElement,
+) -> Div {
     div()
         .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .gap_3()
-        .child(div().text_color(rgb(0x808080)).child(label))
-        .child(control)
+        .flex_col()
+        .gap(px(2.))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(label)
+                .child(div().flex_none().child(control)),
+        )
+        .when_some(description, |d, description| {
+            d.child(div().text_xs().text_color(rgb(0x808080)).child(description))
+        })
 }
 
-/// A row of exclusive choice chips, the picked one in the accent.
+/// An on/off switch: a pill track, the knob in the accent on the far side
+/// while on.
+pub fn toggle<P: 'static>(
+    on: bool,
+    on_change: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    div()
+        .w(px(34.))
+        .h(px(18.))
+        .flex_none()
+        .rounded_full()
+        .bg(rgb(0x2a2a2a))
+        .flex()
+        .items_center()
+        .when(on, |d| d.justify_end())
+        .p(px(2.))
+        .cursor_pointer()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| on_change(this, !on, cx)),
+        )
+        .child(div().size(px(14.)).rounded_full().bg(if on {
+            rgb(0xfdcb00)
+        } else {
+            rgb(0x707070)
+        }))
+}
+
+/// The chrome shared by the segmented pickers: a joined group of segments,
+/// the picked one filled with the accent, hairline gaps between the rest.
+fn segments<P: 'static, V: PartialEq + Copy + 'static>(
+    options: &'static [(&'static str, V)],
+    current: V,
+    render: impl Fn(&'static str, bool) -> AnyElement,
+    on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    let last = options.len().saturating_sub(1);
+    let mut group = div().flex().flex_row().flex_none().items_center();
+    for (i, (key, value)) in options.iter().enumerate() {
+        let value = *value;
+        let picked = value == current;
+        let on_pick = on_pick.clone();
+        group = group.child(
+            div()
+                .px_2()
+                .py_1()
+                .when(i > 0, |d| d.ml(px(1.)))
+                .when(i == 0, |d| d.rounded_l_md())
+                .when(i == last, |d| d.rounded_r_md())
+                .bg(if picked { rgb(0xfdcb00) } else { rgb(0x2a2a2a) })
+                .when(!picked, |d| d.hover(|d| d.bg(rgb(0x3a3a3a))))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| on_pick(this, value, cx)),
+                )
+                .child(render(key, picked)),
+        );
+    }
+    group
+}
+
+/// A segmented picker of exclusive choices, labeled with text.
 pub fn choices<P: 'static, V: PartialEq + Copy + 'static>(
     options: &'static [(&'static str, V)],
     current: V,
     on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
-    let mut row = div().flex().flex_row().gap_1();
-    for (label, value) in options {
-        let value = *value;
-        let picked = value == current;
-        let on_pick = on_pick.clone();
-        row = row.child(
+    segments(
+        options,
+        current,
+        |label, picked| {
             div()
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .bg(if picked { rgb(0x3a3a3a) } else { rgb(0x2a2a2a) })
-                .when(picked, |d| d.text_color(rgb(0x3dff9c)))
-                .hover(|d| d.bg(rgb(0x3a3a3a)))
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| on_pick(this, value, cx)),
-                )
-                .child(*label),
-        );
-    }
-    row
+                .text_color(if picked { rgb(0x121212) } else { rgb(0xc0c0c0) })
+                .child(label)
+                .into_any_element()
+        },
+        on_pick,
+        cx,
+    )
+}
+
+/// A segmented picker of exclusive choices, labeled with icons; each option
+/// pairs an icon path from [`crate::assets::icons`] with its value.
+pub fn icon_choices<P: 'static, V: PartialEq + Copy + 'static>(
+    options: &'static [(&'static str, V)],
+    current: V,
+    on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    segments(
+        options,
+        current,
+        |icon, picked| {
+            svg()
+                .path(icon)
+                .size_4()
+                .text_color(if picked { rgb(0x121212) } else { rgb(0xc0c0c0) })
+                .into_any_element()
+        },
+        on_pick,
+        cx,
+    )
 }
 
 /// A popped-out panel's window content: the moved panel view, full-size, on

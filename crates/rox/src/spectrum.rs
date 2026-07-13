@@ -131,7 +131,11 @@ impl Bars {
                 }
                 None => 0.0,
             };
-            let rate = if target > self.levels[i] { ATTACK } else { RELEASE };
+            let rate = if target > self.levels[i] {
+                ATTACK
+            } else {
+                RELEASE
+            };
             self.levels[i] += (target - self.levels[i]) * (rate * dt).min(1.0);
 
             // The cap rides up with the bar and falls back under gravity
@@ -177,21 +181,19 @@ impl Bars {
         for i in 0..count {
             let bar_h = (self.levels[i] * max_h).max(2.0);
             let x = bounds.origin.x + px(i as f32 * step);
-            window.paint_quad(
-                fill(
-                    Bounds::new(
-                        point(x, bounds.origin.y + px(h - bar_h)),
-                        size(px(bar_w), px(bar_h)),
-                    ),
-                    // Angle 0 points the gradient line at the top: solid
-                    // accent at the baseline fading out toward the bar tip.
-                    linear_gradient(
-                        0.0,
-                        linear_color_stop(rgba(0x3dff9cff), 0.0),
-                        linear_color_stop(rgba(0x3dff9c40), 1.0),
-                    ),
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(x, bounds.origin.y + px(h - bar_h)),
+                    size(px(bar_w), px(bar_h)),
                 ),
-            );
+                // Angle 0 points the gradient line at the top: solid
+                // accent at the baseline fading out toward the bar tip.
+                linear_gradient(
+                    0.0,
+                    linear_color_stop(rgba(0xfdcb00ff), 0.0),
+                    linear_color_stop(rgba(0xfdcb0040), 1.0),
+                ),
+            ));
 
             // Solid peak-hold cap sitting at the held level above the bar.
             let cap_y = (h - self.holds[i] * max_h - 1.0).max(0.0);
@@ -200,7 +202,7 @@ impl Bars {
                     point(x, bounds.origin.y + px(cap_y)),
                     size(px(bar_w), px(1.0)),
                 ),
-                rgba(0x3dff9cff),
+                rgba(0xfdcb00ff),
             ));
         }
     }
@@ -290,7 +292,12 @@ impl Panel for SpectrumPanel {
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let menu = panel::duplicate_item(menu, &cx.entity());
-        panel::popout_item(menu, &cx.entity(), self.tab_panel.clone(), self.state.clone())
+        panel::popout_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            self.state.clone(),
+        )
     }
 }
 

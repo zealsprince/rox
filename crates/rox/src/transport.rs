@@ -89,8 +89,8 @@ impl Render for TransportPanel {
         // accent while on, the one-track glyph for single-track loop.
         let (loop_icon, loop_color) = match player.loop_mode() {
             LoopMode::Off => (icons::REPEAT, 0x707070),
-            LoopMode::All => (icons::REPEAT, 0x3dff9c),
-            LoopMode::One => (icons::REPEAT_1, 0x3dff9c),
+            LoopMode::All => (icons::REPEAT, 0xfdcb00),
+            LoopMode::One => (icons::REPEAT_1, 0xfdcb00),
         };
 
         // Play/pause is the primary action, so it gets the filled round
@@ -99,7 +99,7 @@ impl Render for TransportPanel {
             .size(px(30.))
             .flex_none()
             .rounded_full()
-            .bg(rgb(0x3dff9c))
+            .bg(rgb(0xfdcb00))
             .hover(|d| d.bg(rgb(0x66ffb3)))
             .cursor_pointer()
             .flex()
@@ -189,11 +189,12 @@ fn align_row<P: 'static>(
 ) -> Div {
     panel::setting_row(
         "alignment",
-        panel::choices(
+        Some("where the controls sit when the panel has room to spare"),
+        panel::icon_choices(
             &[
-                ("left", Align::Left),
-                ("center", Align::Center),
-                ("right", Align::Right),
+                (icons::ALIGN_LEFT, Align::Left),
+                (icons::ALIGN_CENTER, Align::Center),
+                (icons::ALIGN_RIGHT, Align::Right),
             ],
             current,
             on_pick,
@@ -422,7 +423,7 @@ impl Customizable for VolumePanel {
         div()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_3()
             .child(align_row(
                 self.config.align,
                 |this: &mut Self, align, cx| {
@@ -433,8 +434,8 @@ impl Customizable for VolumePanel {
             ))
             .child(panel::setting_row(
                 "stretch",
-                panel::choices(
-                    &[("off", false), ("on", true)],
+                Some("let the slider fill the panel instead of capping its width"),
+                panel::toggle(
                     self.config.stretch,
                     |this: &mut Self, stretch, cx| {
                         this.config.stretch = stretch;
@@ -478,9 +479,9 @@ fn paint_slider(volume: f32, muted: bool, bounds: Bounds<Pixels>, window: &mut W
                 size(px(knob_x), px(TRACK_H)),
             ),
             if muted {
-                rgba(0x3dff9c33)
+                rgba(0xfdcb0033)
             } else {
-                rgba(0x3dff9cff)
+                rgba(0xfdcb00ff)
             },
         )
         .corner_radii(px(TRACK_H / 2.0)),
@@ -668,11 +669,11 @@ impl Customizable for SeekStripPanel {
         div()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_3()
             .child(panel::setting_row(
                 "timings",
-                panel::choices(
-                    &[("show", true), ("hide", false)],
+                Some("the elapsed and ending clocks around the strip"),
+                panel::toggle(
                     self.config.timings,
                     |this: &mut Self, timings, cx| {
                         this.config.timings = timings;
@@ -683,6 +684,7 @@ impl Customizable for SeekStripPanel {
             ))
             .child(panel::setting_row(
                 "ending",
+                Some("count down the time left or show the full length"),
                 panel::choices(
                     &[("remaining", false), ("total", true)],
                     self.config.show_total,
@@ -713,14 +715,14 @@ fn paint_strip(progress: f32, bounds: Bounds<Pixels>, window: &mut Window) {
             point(bounds.origin.x, bounds.origin.y + px(line_y)),
             size(px(w), px(STRIP_H)),
         ),
-        rgba(0x3dff9c33),
+        rgba(0xfdcb0033),
     ));
     window.paint_quad(fill(
         Bounds::new(
             point(bounds.origin.x, bounds.origin.y + px(line_y)),
             size(px(head_x), px(STRIP_H)),
         ),
-        rgba(0x3dff9cff),
+        rgba(0xfdcb00ff),
     ));
     window.paint_quad(fill(
         Bounds::new(
@@ -774,21 +776,22 @@ impl Render for SeekStripPanel {
                     cx.notify();
                 }),
             )
-            .child(canvas(
-                {
-                    let scrub = scrub.clone();
-                    move |bounds, _, _| scrub.set_bounds(bounds)
-                },
-                move |bounds, _, window, _| {
-                    paint_strip(progress, bounds, window);
-                    panel::scrub_on_paint(&scrub, window, {
-                        let player = player.clone();
-                        move |fraction, cx| panel::seek_fraction(&player, fraction, cx)
-                    });
-                },
-            )
-            .size_full(),
-        );
+            .child(
+                canvas(
+                    {
+                        let scrub = scrub.clone();
+                        move |bounds, _, _| scrub.set_bounds(bounds)
+                    },
+                    move |bounds, _, window, _| {
+                        paint_strip(progress, bounds, window);
+                        panel::scrub_on_paint(&scrub, window, {
+                            let player = player.clone();
+                            move |fraction, cx| panel::seek_fraction(&player, fraction, cx)
+                        });
+                    },
+                )
+                .size_full(),
+            );
 
         if !self.config.timings {
             return root.child(track);
@@ -904,8 +907,8 @@ macro_rules! transport_panel {
                 // `panel::duplicate_item` because the copy takes the config
                 // along, like the library's.
                 let weak = cx.entity().downgrade();
-                let menu =
-                    menu.item(PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
+                let menu = menu.item(PopupMenuItem::new("Duplicate").on_click(
+                    move |_, window, cx| {
                         let Some(this) = weak.upgrade() else { return };
                         let (state, config, tabs) = {
                             let panel = this.read(cx);
@@ -920,8 +923,14 @@ macro_rules! transport_panel {
                         };
                         let dup = cx.new(|cx| <$panel>::new(state, config, cx));
                         tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-                    }));
-                panel::popout_item(menu, &cx.entity(), self.tab_panel.clone(), self.state.clone())
+                    },
+                ));
+                panel::popout_item(
+                    menu,
+                    &cx.entity(),
+                    self.tab_panel.clone(),
+                    self.state.clone(),
+                )
             }
         }
     };

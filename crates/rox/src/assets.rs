@@ -22,6 +22,9 @@ pub mod icons {
     pub const VOLUME_1: &str = "icons/volume-1.svg";
     pub const VOLUME_2: &str = "icons/volume-2.svg";
     pub const VOLUME_X: &str = "icons/volume-x.svg";
+    pub const ALIGN_LEFT: &str = "icons/align-left.svg";
+    pub const ALIGN_CENTER: &str = "icons/align-center.svg";
+    pub const ALIGN_RIGHT: &str = "icons/align-right.svg";
 }
 
 /// Our embedded assets, checked before the bundled widget assets so a

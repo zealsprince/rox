@@ -1,7 +1,9 @@
 use crate::TabPanel;
+use crate::resizable::PANEL_MIN_SIZE;
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Context, Entity, EntityId, EventEmitter,
-    FocusHandle, Focusable, Global, Hsla, IntoElement, Render, SharedString, WeakEntity, Window,
+    FocusHandle, Focusable, Global, Hsla, IntoElement, Pixels, Render, SharedString, Size,
+    WeakEntity, Window,
 };
 use gpui_component::{button::Button, menu::PopupMenu};
 use std::{collections::HashMap, sync::Arc};
@@ -107,6 +109,13 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
         true
     }
 
+    /// The panel's minimum useful size along each axis. Resizable layouts
+    /// clamp their splits so a visible panel never shrinks below it; the
+    /// default is the global floor.
+    fn min_size(&self, cx: &App) -> Size<Pixels> {
+        gpui::size(PANEL_MIN_SIZE, PANEL_MIN_SIZE)
+    }
+
     /// Set active state of the panel.
     ///
     /// This method will be called when the panel is active or inactive.
@@ -175,6 +184,7 @@ pub trait PanelView: 'static + Send + Sync {
     fn closable(&self, cx: &App) -> bool;
     fn zoomable(&self, cx: &App) -> Option<PanelControl>;
     fn visible(&self, cx: &App) -> bool;
+    fn min_size(&self, cx: &App) -> Size<Pixels>;
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App);
     fn set_zoomed(&self, zoomed: bool, window: &mut Window, cx: &mut App);
     fn on_added_to(&self, tab_panel: WeakEntity<TabPanel>, window: &mut Window, cx: &mut App);
@@ -225,6 +235,10 @@ impl<T: Panel> PanelView for Entity<T> {
 
     fn visible(&self, cx: &App) -> bool {
         self.read(cx).visible(cx)
+    }
+
+    fn min_size(&self, cx: &App) -> Size<Pixels> {
+        self.read(cx).min_size(cx)
     }
 
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App) {

@@ -25,7 +25,8 @@ use crate::player::Player;
 use crate::settings::{Settings, WindowState};
 use crate::spectrum::SpectrumPanel;
 use crate::transport::{
-    SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportPanel, VolumePanel,
+    SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
+    VolumeConfig, VolumePanel,
 };
 use crate::waveform::WaveformPanel;
 
@@ -85,6 +86,8 @@ fn register_panels(state: &AppState, cx: &mut App) {
     }
     configured!("seek", SeekStripPanel);
     configured!("track info", TrackInfoPanel);
+    configured!("playback", TransportPanel);
+    configured!("volume", VolumePanel);
     macro_rules! stateless {
         ($name:literal, $panel:ty) => {{
             let s = state.clone();
@@ -93,8 +96,6 @@ fn register_panels(state: &AppState, cx: &mut App) {
             });
         }};
     }
-    stateless!("playback", TransportPanel);
-    stateless!("volume", VolumePanel);
     stateless!("spectrum", SpectrumPanel);
     stateless!("waveform", WaveformPanel);
 }
@@ -242,9 +243,9 @@ fn default_layout(
     // The transport pieces as side-by-side tab groups in one row: the track
     // info readout, the controls, the seek strip, and the volume strip.
     let info = cx.new(|cx| TrackInfoPanel::new(state.clone(), TrackInfoConfig::default(), cx));
-    let playback = cx.new(|cx| TransportPanel::new(state.clone(), cx));
+    let playback = cx.new(|cx| TransportPanel::new(state.clone(), TransportConfig::default(), cx));
     let seek = cx.new(|cx| SeekStripPanel::new(state.clone(), SeekConfig::default(), cx));
-    let volume = cx.new(|cx| VolumePanel::new(state.clone(), cx));
+    let volume = cx.new(|cx| VolumePanel::new(state.clone(), VolumeConfig::default(), cx));
     let (info_item, _) = tabs_item(vec![Arc::new(info)], weak_dock, window, cx);
     let (playback_item, _) = tabs_item(vec![Arc::new(playback)], weak_dock, window, cx);
     let (seek_item, _) = tabs_item(vec![Arc::new(seek)], weak_dock, window, cx);
@@ -504,11 +505,14 @@ impl Workspace {
                 self.add_bottom(Arc::new(panel), window, cx);
             }
             MenuAction::OpenPlayback => {
-                let panel = cx.new(|cx| TransportPanel::new(self.state.clone(), cx));
+                let panel = cx.new(|cx| {
+                    TransportPanel::new(self.state.clone(), TransportConfig::default(), cx)
+                });
                 self.add_bottom(Arc::new(panel), window, cx);
             }
             MenuAction::OpenVolume => {
-                let panel = cx.new(|cx| VolumePanel::new(self.state.clone(), cx));
+                let panel =
+                    cx.new(|cx| VolumePanel::new(self.state.clone(), VolumeConfig::default(), cx));
                 self.add_bottom(Arc::new(panel), window, cx);
             }
             MenuAction::OpenSeek => {

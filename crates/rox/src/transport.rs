@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use gpui::{
     canvas, div, fill, point, prelude::*, px, rgb, rgba, size, svg, AnyElement, App, Bounds,
-    Context, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Subscription, WeakEntity,
-    Window,
+    Context, Div, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Subscription,
+    WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -21,11 +21,19 @@ use rox_playback::engine::LoopMode;
 
 use crate::assets::icons;
 use crate::library::LibraryEvent;
-use crate::panel::{self, AppState, Customizable, ScrubState, StatePanel};
+use crate::panel::{self, AppState, Customizable, ScrubState};
 use crate::player::fmt_time;
 
 /// Thickness of the seek strip's track line.
 const STRIP_H: f32 = 6.0;
+
+/// The playback panel's per-view config: what a saved layout restores,
+/// and what the customize window edits.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct TransportConfig {
+    #[serde(default)]
+    pub align: Align,
+}
 
 /// The playback controls: prev, the seek nudges around play/pause, next,
 /// and the loop mode. What is playing lives in the track info panel. The pump's
@@ -33,6 +41,7 @@ const STRIP_H: f32 = 6.0;
 /// keeps the play state fresh even in a popped-out window.
 pub struct TransportPanel {
     state: AppState,
+    config: TransportConfig,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -40,14 +49,35 @@ pub struct TransportPanel {
 }
 
 impl TransportPanel {
-    pub fn new(state: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: AppState, config: TransportConfig, cx: &mut Context<Self>) -> Self {
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
         TransportPanel {
             state,
+            config,
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
         }
+    }
+
+    /// No quick dropdown entries; the alignment lives in the customize
+    /// window.
+    fn config_menu(&self, menu: PopupMenu, _cx: &mut Context<Self>) -> PopupMenu {
+        menu
+    }
+}
+
+impl Customizable for TransportPanel {
+    fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        align_row(
+            self.config.align,
+            |this: &mut Self, align, cx| {
+                this.config.align = align;
+                cx.notify();
+            },
+            cx,
+        )
+        .into_any_element()
     }
 }
 
@@ -93,8 +123,9 @@ impl Render for TransportPanel {
             .bg(rgb(0x121212))
             .flex()
             .items_center()
-            .justify_center()
+            .map(|d| justify(d, self.config.align))
             .gap_1()
+            .px_2()
             .child(panel::icon_control(
                 icons::SKIP_BACK,
                 0xc0c0c0,
@@ -129,7 +160,7 @@ impl Render for TransportPanel {
     }
 }
 
-/// Where a panel's text sits horizontally, the first cross-panel
+/// Where a panel's content sits horizontally, the cross-panel
 /// customization knob.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -140,6 +171,37 @@ pub enum Align {
     Right,
 }
 
+/// Apply an alignment along a row's main axis.
+fn justify(d: Div, align: Align) -> Div {
+    match align {
+        Align::Left => d.justify_start(),
+        Align::Center => d.justify_center(),
+        Align::Right => d.justify_end(),
+    }
+}
+
+/// The alignment setting row the transport panels' customize windows
+/// share.
+fn align_row<P: 'static>(
+    current: Align,
+    on_pick: impl Fn(&mut P, Align, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    panel::setting_row(
+        "alignment",
+        panel::choices(
+            &[
+                ("left", Align::Left),
+                ("center", Align::Center),
+                ("right", Align::Right),
+            ],
+            current,
+            on_pick,
+            cx,
+        ),
+    )
+}
+
 /// The track info panel's per-view config: what a saved layout restores,
 /// and what the customize window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -148,10 +210,10 @@ pub struct TrackInfoConfig {
     pub align: Align,
 }
 
-/// The track info readout the playback panel's status line grew into: the
-/// playing track's tags from the library - track number, title, duration,
-/// then artist and album - with the session errors and the idle message in
-/// its place while nothing shows.
+/// The track info readout the playback panel's status line grew into: one
+/// line with the playing track's tags from the library - track number,
+/// title, duration, then artist and album - with the session errors and
+/// the idle message in its place while nothing shows.
 pub struct TrackInfoPanel {
     state: AppState,
     config: TrackInfoConfig,
@@ -205,21 +267,13 @@ impl TrackInfoPanel {
 
 impl Customizable for TrackInfoPanel {
     fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        panel::setting_row(
-            "alignment",
-            panel::choices(
-                &[
-                    ("left", Align::Left),
-                    ("center", Align::Center),
-                    ("right", Align::Right),
-                ],
-                self.config.align,
-                |this: &mut Self, align, cx| {
-                    this.config.align = align;
-                    cx.notify();
-                },
-                cx,
-            ),
+        align_row(
+            self.config.align,
+            |this: &mut Self, align, cx| {
+                this.config.align = align;
+                cx.notify();
+            },
+            cx,
         )
         .into_any_element()
     }
@@ -237,14 +291,9 @@ impl Render for TrackInfoPanel {
             .size_full()
             .bg(rgb(0x121212))
             .flex()
-            .flex_col()
-            .map(|d| match self.config.align {
-                Align::Left => d.items_start(),
-                Align::Center => d.items_center(),
-                Align::Right => d.items_end(),
-            })
-            .justify_center()
-            .gap_1()
+            .items_center()
+            .map(|d| justify(d, self.config.align))
+            .gap_2()
             .px_3();
 
         let Some(now) = now else {
@@ -289,26 +338,46 @@ impl Render for TrackInfoPanel {
             .collect::<Vec<_>>()
             .join(" - ");
 
-        root.child(div().max_w_full().truncate().child(heading))
+        // One line: the heading, the byline dimmed beside it, both giving
+        // way gracefully when the panel runs out of room.
+        root.child(div().flex_shrink_0().max_w_full().truncate().child(heading))
             .when(!byline.is_empty(), |d| {
                 d.child(
                     div()
-                        .max_w_full()
+                        .min_w_0()
                         .truncate()
                         .text_color(rgb(0x808080))
                         .child(byline),
                 )
             })
             .when(ended, |d| {
-                d.child(div().text_color(rgb(0x808080)).child("queue finished"))
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_color(rgb(0x808080))
+                        .child("(queue finished)"),
+                )
             })
     }
+}
+
+/// The volume panel's per-view config: what a saved layout restores, and
+/// what the customize window edits.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct VolumeConfig {
+    #[serde(default)]
+    pub align: Align,
+    /// Let the slider fill whatever width the panel has instead of capping
+    /// at its natural size.
+    #[serde(default)]
+    pub stretch: bool,
 }
 
 /// The volume strip: the speaker button that toggles mute, and the volume
 /// slider with the readout.
 pub struct VolumePanel {
     state: AppState,
+    config: VolumeConfig,
     /// The slider's painted bounds and drag state.
     scrub: ScrubState,
     focus: FocusHandle,
@@ -318,15 +387,63 @@ pub struct VolumePanel {
 }
 
 impl VolumePanel {
-    pub fn new(state: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: AppState, config: VolumeConfig, cx: &mut Context<Self>) -> Self {
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
         VolumePanel {
             state,
+            config,
             scrub: ScrubState::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
         }
+    }
+
+    /// The panel's own dropdown entries: the quick stretch toggle, the
+    /// same knob the customize window edits.
+    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
+        let weak = cx.entity().downgrade();
+        menu.item(
+            PopupMenuItem::new("Stretch")
+                .checked(self.config.stretch)
+                .on_click(move |_, _, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    this.update(cx, |this, cx| {
+                        this.config.stretch = !this.config.stretch;
+                        cx.notify();
+                    });
+                }),
+        )
+    }
+}
+
+impl Customizable for VolumePanel {
+    fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(align_row(
+                self.config.align,
+                |this: &mut Self, align, cx| {
+                    this.config.align = align;
+                    cx.notify();
+                },
+                cx,
+            ))
+            .child(panel::setting_row(
+                "stretch",
+                panel::choices(
+                    &[("off", false), ("on", true)],
+                    self.config.stretch,
+                    |this: &mut Self, stretch, cx| {
+                        this.config.stretch = stretch;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .into_any_element()
     }
 }
 
@@ -409,7 +526,7 @@ impl Render for VolumePanel {
         let slider = div()
             .flex_1()
             .min_w(px(80.))
-            .max_w(px(200.))
+            .when(!self.config.stretch, |d| d.max_w(px(200.)))
             .h(px(22.))
             .cursor_pointer()
             .on_mouse_down(
@@ -448,7 +565,7 @@ impl Render for VolumePanel {
             .bg(rgb(0x121212))
             .flex()
             .items_center()
-            .justify_center()
+            .map(|d| justify(d, self.config.align))
             .gap_2()
             .px_3()
             .child(panel::icon_control(
@@ -481,6 +598,10 @@ pub struct SeekConfig {
     /// The elapsed and remaining clocks around the strip.
     #[serde(default = "default_true")]
     pub timings: bool,
+    /// The ending clock shows the full duration instead of the time left;
+    /// clicking the clock flips it.
+    #[serde(default)]
+    pub show_total: bool,
 }
 
 fn default_true() -> bool {
@@ -489,7 +610,10 @@ fn default_true() -> bool {
 
 impl Default for SeekConfig {
     fn default() -> Self {
-        SeekConfig { timings: true }
+        SeekConfig {
+            timings: true,
+            show_total: false,
+        }
     }
 }
 
@@ -541,19 +665,35 @@ impl SeekStripPanel {
 
 impl Customizable for SeekStripPanel {
     fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        panel::setting_row(
-            "timings",
-            panel::choices(
-                &[("show", true), ("hide", false)],
-                self.config.timings,
-                |this: &mut Self, timings, cx| {
-                    this.config.timings = timings;
-                    cx.notify();
-                },
-                cx,
-            ),
-        )
-        .into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(panel::setting_row(
+                "timings",
+                panel::choices(
+                    &[("show", true), ("hide", false)],
+                    self.config.timings,
+                    |this: &mut Self, timings, cx| {
+                        this.config.timings = timings;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "ending",
+                panel::choices(
+                    &[("remaining", false), ("total", true)],
+                    self.config.show_total,
+                    |this: &mut Self, show_total, cx| {
+                        this.config.show_total = show_total;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .into_any_element()
     }
 }
 
@@ -601,22 +741,7 @@ impl Render for SeekStripPanel {
             window.request_animation_frame();
         }
 
-        let root = div()
-            .size_full()
-            .bg(rgb(0x121212))
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                    this.scrub.begin();
-                    if let Some(fraction) = this.scrub.fraction(event.position.x) {
-                        panel::seek_fraction(&this.state.player, fraction, cx);
-                    }
-                    cx.notify();
-                }),
-            );
+        let root = div().size_full().bg(rgb(0x121212)).flex().items_center();
 
         let Some(now) = now else {
             return root
@@ -630,10 +755,26 @@ impl Render for SeekStripPanel {
             .filter(|d| *d > 0.0)
             .map(|d| (now.position_secs / d) as f32)
             .unwrap_or(0.0);
+        // The seek click lives on the track alone so the clocks beside it
+        // stay inert.
         let scrub = self.scrub.clone();
         let player = self.state.player.clone();
-        let track = div().flex_1().min_w_0().h_full().child(
-            canvas(
+        let track = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.scrub.begin();
+                    if let Some(fraction) = this.scrub.fraction(event.position.x) {
+                        panel::seek_fraction(&this.state.player, fraction, cx);
+                    }
+                    cx.notify();
+                }),
+            )
+            .child(canvas(
                 {
                     let scrub = scrub.clone();
                     move |bounds, _, _| scrub.set_bounds(bounds)
@@ -653,12 +794,14 @@ impl Render for SeekStripPanel {
             return root.child(track);
         }
 
-        // The clocks the reference bar shows: elapsed on the left, time
-        // left on the right, "-:--" until the duration resolves.
-        let remaining = now
-            .duration_secs
-            .map(|d| format!("-{}", fmt_time((d - now.position_secs).max(0.0))))
-            .unwrap_or_else(|| "-:--".into());
+        // The clocks the reference bar shows: elapsed on the left, the
+        // ending clock on the right - time left, or the full duration when
+        // toggled - and "-:--" until the duration resolves.
+        let ending = match now.duration_secs {
+            Some(d) if self.config.show_total => fmt_time(d),
+            Some(d) => format!("-{}", fmt_time((d - now.position_secs).max(0.0))),
+            None => "-:--".into(),
+        };
         root.gap_2()
             .px_2()
             .child(
@@ -668,32 +811,33 @@ impl Render for SeekStripPanel {
                     .child(fmt_time(now.position_secs)),
             )
             .child(track)
-            .child(div().flex_none().text_color(rgb(0x808080)).child(remaining))
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(rgb(0x808080))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.config.show_total = !this.config.show_total;
+                            cx.notify();
+                        }),
+                    )
+                    .child(ending),
+            )
     }
 }
 
-/// The Panel, StatePanel, and focus plumbing is identical across the
-/// transport panels; only the name differs. The `config` arm is for
-/// panels with a per-view config struct (a `config` field, a `config_menu`
-/// method, and a Customizable impl): the layout dump carries the config,
-/// Duplicate copies it, and the dropdown gets the panel's own entries plus
-/// Customize in a block above the shared items.
+/// The Panel and focus plumbing is identical across the transport panels;
+/// only the name and the minimum width differ. Every transport panel has a
+/// per-view config struct (a `config` field, a `config_menu` method, and a
+/// Customizable impl): the layout dump carries the config, Duplicate
+/// copies it, and the dropdown gets the panel's own entries plus Customize
+/// in a block above the shared items. The minimum width is what the
+/// resizable layout refuses to squeeze the panel below, so controls never
+/// slide off screen.
 macro_rules! transport_panel {
-    ($panel:ty, $name:literal) => {
-        impl StatePanel for $panel {
-            fn state(&self) -> AppState {
-                self.state.clone()
-            }
-
-            fn tab_panel(&self) -> Option<WeakEntity<TabPanel>> {
-                self.tab_panel.clone()
-            }
-
-            fn duplicate(state: AppState, cx: &mut Context<Self>) -> Self {
-                Self::new(state, cx)
-            }
-        }
-
+    ($panel:ty, $name:literal, min_w = $min_w:literal) => {
         impl EventEmitter<PanelEvent> for $panel {}
 
         impl Focusable for $panel {
@@ -715,53 +859,8 @@ macro_rules! transport_panel {
                 false
             }
 
-            fn on_added_to(
-                &mut self,
-                tab_panel: WeakEntity<TabPanel>,
-                _window: &mut Window,
-                cx: &mut Context<Self>,
-            ) {
-                self.tab_panel = Some(tab_panel.clone());
-                self.state
-                    .tab_hosts
-                    .update(cx, |hosts, _| hosts.report(tab_panel));
-            }
-
-            fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-                self.tab_panel = None;
-            }
-
-            fn dropdown_menu(
-                &mut self,
-                menu: PopupMenu,
-                _window: &mut Window,
-                cx: &mut Context<Self>,
-            ) -> PopupMenu {
-                let menu = panel::duplicate_item(menu, &cx.entity());
-                panel::popout_item(menu, &cx.entity(), self.tab_panel.clone(), self.state.clone())
-            }
-        }
-    };
-    ($panel:ty, $name:literal, config) => {
-        impl EventEmitter<PanelEvent> for $panel {}
-
-        impl Focusable for $panel {
-            fn focus_handle(&self, _cx: &App) -> FocusHandle {
-                self.focus.clone()
-            }
-        }
-
-        impl Panel for $panel {
-            fn panel_name(&self) -> &'static str {
-                $name
-            }
-
-            fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-                gpui::SharedString::from($name)
-            }
-
-            fn inner_padding(&self, _cx: &App) -> bool {
-                false
+            fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
+                gpui::size(px($min_w), rox_dock::resizable::PANEL_MIN_SIZE)
             }
 
             /// The layout dump carries the panel's config; the builder
@@ -828,7 +927,11 @@ macro_rules! transport_panel {
     };
 }
 
-transport_panel!(TransportPanel, "playback");
-transport_panel!(VolumePanel, "volume");
-transport_panel!(SeekStripPanel, "seek", config);
-transport_panel!(TrackInfoPanel, "track info", config);
+// The widths below are each panel's controls at their tightest: the
+// playback row's six buttons, the volume strip's icon, 80px slider floor,
+// and readout, the seek strip's clocks around a usable track, and enough
+// of the track info line to read a title.
+transport_panel!(TransportPanel, "playback", min_w = 210.);
+transport_panel!(VolumePanel, "volume", min_w = 200.);
+transport_panel!(SeekStripPanel, "seek", min_w = 160.);
+transport_panel!(TrackInfoPanel, "track info", min_w = 120.);

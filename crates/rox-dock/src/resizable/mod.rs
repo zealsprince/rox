@@ -12,8 +12,9 @@ pub use panel::*;
 pub(crate) use resize_handle::*;
 
 // Small enough that a panel can shrink to a tab bar plus one line of
-// controls; upstream ships 100, far too coarse for compact strips.
-pub(crate) const PANEL_MIN_SIZE: Pixels = px(40.);
+// controls; upstream ships 100, far too coarse for compact strips. Panels
+// that need more room say so through `Panel::min_size`.
+pub const PANEL_MIN_SIZE: Pixels = px(40.);
 
 /// Create a [`ResizablePanelGroup`] with horizontal resizing
 pub fn h_resizable(id: impl Into<ElementId>) -> ResizablePanelGroup {

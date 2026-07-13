@@ -9,8 +9,8 @@ use gpui_component::{ActiveTheme, AxisExt as _, Placement, h_flex};
 
 use super::{DockArea, Panel, PanelEvent, PanelState, PanelView, TabPanel};
 use gpui::{
-    App, AppContext as _, Axis, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Subscription, WeakEntity,
+    Along, App, AppContext as _, Axis, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, IntoElement, ParentElement, Pixels, Render, Size, Styled, Subscription, WeakEntity,
     Window,
 };
 use smallvec::SmallVec;
@@ -38,6 +38,28 @@ impl Panel for StackPanel {
             panel.set_active(active, window, cx);
         }
     }
+
+    fn min_size(&self, cx: &App) -> Size<Pixels> {
+        // Children sit side by side along the stack axis, so their
+        // minimums add; across it they share the span, so the largest
+        // wins.
+        let mut min: Size<Pixels> = Size::default();
+        for panel in self.panels.iter().filter(|p| p.visible(cx)) {
+            let m = panel.min_size(cx);
+            match self.axis {
+                Axis::Horizontal => {
+                    min.width += m.width;
+                    min.height = min.height.max(m.height);
+                }
+                Axis::Vertical => {
+                    min.height += m.height;
+                    min.width = min.width.max(m.width);
+                }
+            }
+        }
+        min
+    }
+
     fn dump(&self, cx: &App) -> PanelState {
         let sizes = self.state.read(cx).sizes().clone();
         let mut state = PanelState::new(self);
@@ -423,6 +445,7 @@ impl Render for StackPanel {
                     .axis(self.axis)
                     .children(self.panels.clone().into_iter().map(|panel| {
                         resizable_panel()
+                            .size_range(panel.min_size(cx).along(self.axis)..Pixels::MAX)
                             .child(panel.view())
                             .visible(panel.visible(cx))
                     })),

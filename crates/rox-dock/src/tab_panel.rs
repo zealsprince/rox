@@ -6,11 +6,12 @@ use gpui::{
     App, AppContext, Bounds, Context, Corner, DismissEvent, Div, DragMoveEvent, Empty, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Subscription,
-    WeakEntity, Window, anchored, canvas, deferred, div, prelude::FluentBuilder, px, relative,
-    rems,
+    ScrollHandle, SharedString, Size, StatefulInteractiveElement, StyleRefinement, Styled,
+    Subscription, WeakEntity, Window, anchored, canvas, deferred, div, prelude::FluentBuilder, px,
+    relative, rems,
 };
 use crate::PanelInfo;
+use crate::resizable::PANEL_MIN_SIZE;
 use crate::tab::{Tab, TabBar};
 use gpui_component::{
     ActiveTheme, AxisExt, IconName, Placement, Selectable, Sizable,
@@ -140,6 +141,16 @@ impl Panel for TabPanel {
 
     fn visible(&self, cx: &App) -> bool {
         self.visible_panels(cx).next().is_some()
+    }
+
+    fn min_size(&self, cx: &App) -> Size<Pixels> {
+        // As demanding as the most demanding visible tab; any of them can
+        // become the active one.
+        self.visible_panels(cx)
+            .fold(gpui::size(PANEL_MIN_SIZE, PANEL_MIN_SIZE), |acc, panel| {
+                let min = panel.min_size(cx);
+                gpui::size(acc.width.max(min.width), acc.height.max(min.height))
+            })
     }
 
     fn dropdown_menu(

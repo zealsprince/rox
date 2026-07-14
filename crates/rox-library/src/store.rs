@@ -4,7 +4,7 @@
 //! rowid ranges (WAL gives concurrent readers for free).
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
@@ -82,14 +82,38 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
 /// Every local path with its (mtime, size), so a rescan can skip files that
 /// have not changed without reading their tags.
 pub fn local_files(conn: &Connection) -> rusqlite::Result<HashMap<String, (i64, u64)>> {
-    let mut stmt =
-        conn.prepare("SELECT path, mtime, size FROM tracks WHERE source = 'local'")?;
+    let mut stmt = conn.prepare("SELECT path, mtime, size FROM tracks WHERE source = 'local'")?;
     let mut rows = stmt.query([])?;
     let mut out = HashMap::new();
     while let Some(row) = rows.next()? {
         out.insert(row.get(0)?, (row.get(1)?, row.get::<_, i64>(2)? as u64));
     }
     Ok(out)
+}
+
+/// The deepest directory holding every local track, for recovering the scan
+/// root from a library indexed before anything recorded it. None on an
+/// empty library.
+pub fn common_root(conn: &Connection) -> rusqlite::Result<Option<PathBuf>> {
+    let mut stmt = conn.prepare("SELECT path FROM tracks WHERE source = 'local'")?;
+    let mut rows = stmt.query([])?;
+    let mut root: Option<PathBuf> = None;
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(0)?;
+        let Some(dir) = Path::new(&path).parent() else {
+            continue;
+        };
+        root = Some(match root {
+            None => dir.to_path_buf(),
+            Some(root) => root
+                .components()
+                .zip(dir.components())
+                .take_while(|(a, b)| a == b)
+                .map(|(a, _)| a)
+                .collect(),
+        });
+    }
+    Ok(root.filter(|root| root.parent().is_some()))
 }
 
 /// Resolve projection db_ids back to playable paths, in the order given.

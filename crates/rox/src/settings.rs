@@ -46,6 +46,9 @@ pub struct Settings {
     /// workspace validates and versions it on restore. None until a layout
     /// has been saved.
     pub layout: Option<serde_json::Value>,
+    /// The folder the library was last scanned from, so a rescan works
+    /// across sessions. None until a folder has been opened.
+    pub library_root: Option<PathBuf>,
 }
 
 /// A window frame in logical pixels, plus whether the window was maximized
@@ -67,6 +70,7 @@ impl Default for Settings {
             loop_mode: "off".into(),
             window: None,
             layout: None,
+            library_root: None,
         }
     }
 }

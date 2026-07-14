@@ -57,7 +57,13 @@ pub fn open(shared: Arc<Shared>) -> Result<OpenOutput, String> {
     }?;
     stream.play().map_err(|e| format!("stream play: {e}"))?;
 
-    Ok(OpenOutput { stream, sample_rate, ring_frames, producer, tap })
+    Ok(OpenOutput {
+        stream,
+        sample_rate,
+        ring_frames,
+        producer,
+        tap,
+    })
 }
 
 fn build<T>(

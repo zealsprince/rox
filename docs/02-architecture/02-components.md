@@ -36,14 +36,16 @@ with local files as the first source, so source extensions extend the catalog
 instead of forcing a migration (see
 [source extensibility](01-overview.md#source-extensibility)).
 
-Boundary: the UI never touches SQLite. It queries the in-memory projection for browsing
-and sends scan/search requests. The projection and the database are kept in sync by the
-library service, not by callers.
+Boundary: browsing never touches SQLite. The UI reads the shared in-memory projection
+and derives its views from it; paths stay in the store, so playing a row costs one
+id-to-path read back through the service. Consistency is by rebuild: the projection is
+never patched, it is rebuilt from SQLite and swapped whole.
 
 Contract to the UI:
-- In: `browse(filter, sort)`, `search(query)`, `rescan(paths)`, `watch(on/off)`.
-- Out: query results against the in-memory projection (rows, album groupings), and change
-  events (`tracks_added`, `tracks_changed`, `tracks_removed`) so open views refresh.
+- In: `rescan(root)`, `watch(on/off)`, and `paths_for(ids)`, the id-to-path hop that
+  playback and selection resolve through.
+- Out: the projection, shared read-only, that browse order, search, filter, and sort
+  derive from, and a change event per swap so open views refresh together.
 
 Contract to the metadata writer: after a successful tag write, the writer sends a reindex
 request for those paths, and the library re-reads them and emits change events. A tag edit
@@ -94,7 +96,7 @@ and its output is drawn with GPUI primitives or blitted as an image.
 Contract:
 - In: the PCM tap ring, plus the current track for waveform precompute.
 - Out: analysis frames (spectrum bands, recent samples) the UI draws, and a cached
-  min/max peak waveform per track (a few KB, keyed on path + mtime).
+  min/max peak waveform per track (a few KB, keyed on file identity: path, size, mtime).
 
 ## UI shell and panel system
 
@@ -103,8 +105,8 @@ duplicate-with-config, pop-out into OS windows, layout persistence, and theming.
 
 Boundary: panels are views over shared entities. A duplicated panel is a second view with
 its own config over the same underlying state. A popped-out panel is a second OS window
-whose views point at the same entities as the main window, so playback and library state
-stay shared without any cross-window messaging.
+whose views point at the same entities as the main window, so playback, library, and
+selection state stay shared without any cross-window messaging.
 
 Contract:
 - Layouts and themes serialize to disk as shareable artifacts. A layout is an arrangement

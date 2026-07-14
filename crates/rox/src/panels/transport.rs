@@ -19,9 +19,9 @@ use rox_library::store::TrackMeta;
 use rox_playback::engine::LoopMode;
 
 use crate::assets::icons;
-use crate::library::LibraryEvent;
 use crate::palette;
 use crate::panel::{self, AppState, Customizable, ScrubState};
+use crate::panels::library::LibraryEvent;
 use crate::player::fmt_time;
 
 /// Thickness of the seek strip's track line.

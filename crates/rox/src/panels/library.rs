@@ -2,9 +2,11 @@
 //! and the dockable panel that browses it. The catalog owns the app's library
 //! database and only ever hands out the in-memory projection, per the library
 //! service boundary. Panels are views over the shared catalog with their own
-//! search config, so a duplicated panel filters independently. Clicking a
-//! track queues it straight on the shared player.
+//! search config, so a duplicated panel filters independently. Double
+//! clicking a track queues it straight on the shared player; single clicks
+//! select, and the selection publishes app-wide for panels that display it.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -26,7 +28,8 @@ use rox_library::store;
 use crate::palette;
 use crate::panel::{self, AppState};
 
-/// Play from a clicked row: at most this many tracks are queued behind it.
+/// Play from a double-clicked row: at most this many tracks are queued
+/// behind it.
 const QUEUE_CAP: usize = 1000;
 
 /// The catalog changed: a scan finished or the projection reloaded. Panels
@@ -45,6 +48,9 @@ pub struct Library {
     projection: Option<Arc<Projection>>,
     /// The canonical browse order: artist, album, track number.
     order: Arc<Vec<u32>>,
+    /// The folder scans read from, remembered for rescans and persisted
+    /// in settings. None until a folder has been opened.
+    scan_root: Option<PathBuf>,
     /// Set while a scan or projection load runs in the background.
     busy: Option<SharedString>,
     status: SharedString,
@@ -61,11 +67,20 @@ impl Library {
                 Err(e) => (None, SharedString::from(format!("library db: {e}"))),
             };
 
+        // A library indexed before the root was persisted still has one in
+        // its paths: the deepest directory shared by every track. Session
+        // only; the next Open Folder persists what the user actually picked.
+        let scan_root = crate::settings::Settings::load().library_root.or_else(|| {
+            conn.as_ref()
+                .and_then(|conn| store::common_root(conn).ok().flatten())
+        });
+
         let mut this = Library {
             db_path,
             conn,
             projection: None,
             order: Arc::new(Vec::new()),
+            scan_root,
             busy: None,
             status,
         };
@@ -83,9 +98,30 @@ impl Library {
         self.order.clone()
     }
 
-    /// What the toolbar shows: the running operation, or the last status.
-    pub fn line(&self) -> SharedString {
-        self.busy.clone().unwrap_or_else(|| self.status.clone())
+    /// The running background operation's label, for the menubar's badge.
+    pub fn busy(&self) -> Option<SharedString> {
+        self.busy.clone()
+    }
+
+    /// The last status line: the track count, scan counts, or an error.
+    pub fn status(&self) -> SharedString {
+        self.status.clone()
+    }
+
+    /// Whether a rescan has a folder to scan.
+    pub fn can_rescan(&self) -> bool {
+        self.scan_root.is_some()
+    }
+
+    /// Scan the remembered folder again; a no-op until one has been opened
+    /// or while a scan is already running.
+    pub fn rescan(&mut self, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        if let Some(root) = self.scan_root.clone() {
+            self.reload(Some(root), cx);
+        }
     }
 
     /// Resolve database ids to playable paths on the UI-side connection.
@@ -113,6 +149,11 @@ impl Library {
         } else {
             "loading library...".into()
         });
+        if let Some(root) = &scan_root {
+            self.scan_root = Some(root.clone());
+            let root = root.clone();
+            crate::settings::Settings::update(move |s| s.library_root = Some(root));
+        }
         let db_path = self.db_path.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -197,9 +238,37 @@ fn track_columns(widths: &[f32]) -> Vec<Column> {
 /// query or the catalog changes.
 struct TrackTable {
     state: AppState,
+    /// The owning panel, for dispatching context menu actions back to it.
+    panel: WeakEntity<LibraryPanel>,
     /// Rows currently displayed: the canonical order, or search hits.
     view: Arc<Vec<u32>>,
+    /// Selected rows as indices into `view`. Cleared when the view swaps,
+    /// since the indices point elsewhere afterwards.
+    selected: HashSet<usize>,
+    /// Where the next shift-click extends from: the last plain or
+    /// toggle-clicked row.
+    anchor: Option<usize>,
     columns: Vec<Column>,
+}
+
+impl TrackTable {
+    /// Resolve the selected rows to db ids in view order and publish them
+    /// on the shared selection.
+    fn publish_selection(&self, cx: &mut App) {
+        let Some(projection) = self.state.library.read(cx).projection().cloned() else {
+            return;
+        };
+        let mut rows: Vec<usize> = self.selected.iter().copied().collect();
+        rows.sort_unstable();
+        let ids: Vec<i64> = rows
+            .iter()
+            .filter_map(|&ix| self.view.get(ix))
+            .map(|&row| projection.db_id[row as usize])
+            .collect();
+        self.state
+            .selection
+            .update(cx, |selection, cx| selection.set(ids, cx));
+    }
 }
 
 impl TableDelegate for TrackTable {
@@ -221,7 +290,52 @@ impl TableDelegate for TrackTable {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        div().id(("row", row_ix)).cursor_pointer()
+        // The same wash the widget theme paints its own focus row with, so
+        // multi-selected rows read as one set.
+        div()
+            .id(("row", row_ix))
+            .cursor_pointer()
+            .when(self.selected.contains(&row_ix), |d| {
+                d.bg(palette::alpha(palette::accent(), 0x26))
+            })
+    }
+
+    /// The row context menu. A right click inside the selection acts on the
+    /// whole set; outside it, the click reselects just that row first, so
+    /// the menu always acts on what is highlighted.
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        if !self.selected.contains(&row_ix) {
+            self.selected = HashSet::from([row_ix]);
+            self.anchor = Some(row_ix);
+            self.publish_selection(cx);
+            cx.notify();
+        }
+        let mut rows: Vec<usize> = self.selected.iter().copied().collect();
+        rows.sort_unstable();
+        let panel = self.panel.clone();
+        if rows.len() > 1 {
+            menu.item(
+                PopupMenuItem::new(format!("Play {} Tracks", rows.len())).on_click(
+                    move |_, _, cx| {
+                        if let Some(panel) = panel.upgrade() {
+                            panel.update(cx, |panel, cx| panel.play_rows(rows.clone(), cx));
+                        }
+                    },
+                ),
+            )
+        } else {
+            menu.item(PopupMenuItem::new("Play").on_click(move |_, _, cx| {
+                if let Some(panel) = panel.upgrade() {
+                    panel.update(cx, |panel, cx| panel.play_from(row_ix, cx));
+                }
+            }))
+        }
     }
 
     fn render_td(
@@ -309,7 +423,10 @@ impl LibraryPanel {
         );
         let delegate = TrackTable {
             state: state.clone(),
+            panel: cx.weak_entity(),
             view: Arc::new(Vec::new()),
+            selected: HashSet::new(),
+            anchor: None,
             columns: track_columns(&config.columns),
         };
         // Sorting waits on the projection growing sortable views; column
@@ -352,7 +469,14 @@ impl LibraryPanel {
             }
         };
         self.table.update(cx, |table, cx| {
-            table.delegate_mut().view = view;
+            // Selection indices point into the old view; drop them along
+            // with the widget's own focus row. The shared selection keeps
+            // the last explicit pick, a view refresh is not one.
+            let delegate = table.delegate_mut();
+            delegate.view = view;
+            delegate.selected.clear();
+            delegate.anchor = None;
+            table.clear_selection(cx);
             cx.notify();
         });
     }
@@ -365,10 +489,40 @@ impl LibraryPanel {
         cx: &mut Context<Self>,
     ) {
         match event {
-            // A click queues the row; focus moves back to the panel so the
-            // playback keys stay with the workspace, not the table.
+            // A click selects; focus moves back to the panel so the
+            // playback keys stay with the workspace, not the table. Shift
+            // extends from the anchor, cmd (ctrl elsewhere) toggles, and a
+            // plain click starts over. The widget also fires this for a
+            // double click's first clicks, which land as a plain select.
             TableEvent::SelectRow(ix) => {
                 window.focus(&self.focus);
+                let ix = *ix;
+                let modifiers = window.modifiers();
+                self.table.update(cx, |table, cx| {
+                    let delegate = table.delegate_mut();
+                    if modifiers.shift {
+                        let anchor = delegate.anchor.unwrap_or(ix);
+                        let (lo, hi) = (anchor.min(ix), anchor.max(ix));
+                        delegate.selected = (lo..=hi).collect();
+                    } else if modifiers.secondary() {
+                        if !delegate.selected.insert(ix) {
+                            delegate.selected.remove(&ix);
+                            // The widget put its focus row here on the way
+                            // in; a toggle-off must clear that too.
+                            table.clear_selection(cx);
+                        }
+                        table.delegate_mut().anchor = Some(ix);
+                    } else {
+                        delegate.selected = HashSet::from([ix]);
+                        delegate.anchor = Some(ix);
+                    }
+                    table.delegate().publish_selection(cx);
+                    cx.notify();
+                });
+            }
+            // The double click is what plays, leaving single clicks free
+            // to select.
+            TableEvent::DoubleClickedRow(ix) => {
                 self.play_from(*ix, cx);
             }
             // Written back into the delegate's columns: refresh() re-reads
@@ -412,17 +566,27 @@ impl LibraryPanel {
         }
     }
 
-    /// Queue the clicked row and what follows it in the current view order.
+    /// Queue the double-clicked row and what follows it in the current
+    /// view order.
     fn play_from(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let end = {
+            let view = &self.table.read(cx).delegate().view;
+            (ix + QUEUE_CAP).min(view.len())
+        };
+        self.play_rows((ix..end).collect(), cx);
+    }
+
+    /// Resolve view rows to paths and queue them on the shared player.
+    fn play_rows(&mut self, rows: Vec<usize>, cx: &mut Context<Self>) {
         let result = {
             let view = self.table.read(cx).delegate().view.clone();
             let library = self.state.library.read(cx);
             let Some(projection) = library.projection() else {
                 return;
             };
-            let end = (ix + QUEUE_CAP).min(view.len());
-            let ids: Vec<i64> = view[ix..end]
-                .iter()
+            let ids: Vec<i64> = rows
+                .into_iter()
+                .filter_map(|ix| view.get(ix))
                 .map(|&row| projection.db_id[row as usize])
                 .collect();
             library.paths_for(&ids)
@@ -530,16 +694,10 @@ impl LibraryPanel {
             .child(search_text)
     }
 
-    fn status_line(&self, cx: &Context<Self>) -> SharedString {
-        self.error
-            .clone()
-            .unwrap_or_else(|| self.state.library.read(cx).line())
-    }
-
     /// The popped-out window has no title bar to host the controls, so it
-    /// keeps them as a toolbar row above the list.
+    /// keeps them as a toolbar row above the list. The catalog status lives
+    /// in the workspace menubar; only a panel-local error shows here.
     fn toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let line = self.status_line(cx);
         div()
             .flex_none()
             .h(px(36.))
@@ -553,12 +711,14 @@ impl LibraryPanel {
             .border_color(palette::border())
             .child(self.open_folder_button(cx))
             .child(self.search_box(window, cx).flex_1())
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(palette::text_muted())
-                    .child(line),
-            )
+            .when_some(self.error.clone(), |d, error| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_color(palette::text_muted())
+                        .child(error),
+                )
+            })
     }
 
     fn track_list(&self) -> impl IntoElement {
@@ -609,7 +769,6 @@ impl Panel for LibraryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
-        let line = self.status_line(cx);
         Some(
             div()
                 .flex()
@@ -619,13 +778,15 @@ impl Panel for LibraryPanel {
                 .gap_2()
                 .child(self.open_folder_button(cx))
                 .child(self.search_box(window, cx).w(px(180.)))
-                .child(
-                    div()
-                        .max_w(px(240.))
-                        .truncate()
-                        .text_color(palette::text_muted())
-                        .child(line),
-                ),
+                .when_some(self.error.clone(), |d, error| {
+                    d.child(
+                        div()
+                            .max_w(px(240.))
+                            .truncate()
+                            .text_color(palette::text_muted())
+                            .child(error),
+                    )
+                }),
         )
     }
 

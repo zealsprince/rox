@@ -68,7 +68,9 @@ impl Shared {
     /// Resolve the current position from the output clock: which track, and
     /// how many seconds in. `device_rate` converts frames to seconds.
     pub fn position(&self, device_rate: u32) -> Option<(usize, f64)> {
-        let consumed = self.frames_consumed.load(std::sync::atomic::Ordering::Relaxed);
+        let consumed = self
+            .frames_consumed
+            .load(std::sync::atomic::Ordering::Relaxed);
         let segments = self.segments.lock().unwrap();
         let seg = segments.iter().rev().find(|s| s.at_frame <= consumed)?;
         let frame = seg.track_frame + (consumed - seg.at_frame);

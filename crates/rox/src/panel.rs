@@ -18,16 +18,19 @@ use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Root;
 use rox_dock::{Panel, PanelInfo, PanelView, TabPanel};
 
-use crate::library::Library;
 use crate::palette;
+use crate::panels::library::Library;
 use crate::player::Player;
+use crate::selection::Selection;
 
-/// The shared entities every panel renders over: one player and one catalog
-/// per workspace. Cloning shares the handles, not the state.
+/// The shared entities every panel renders over: one player, one catalog,
+/// and one selection per workspace. Cloning shares the handles, not the
+/// state.
 #[derive(Clone)]
 pub struct AppState {
     pub library: Entity<Library>,
     pub player: Entity<Player>,
+    pub selection: Entity<Selection>,
     pub tab_hosts: Entity<TabHosts>,
 }
 
@@ -35,7 +38,7 @@ pub struct AppState {
 /// panel's `on_added_to`. Dragging a tab into a split makes the dock create
 /// tab panels on its own and nothing announces them to the workspace, so
 /// this registry is how it finds them, to pick a live tab panel for
-/// View-menu additions.
+/// Panels-menu additions.
 #[derive(Default)]
 pub struct TabHosts {
     hosts: Vec<WeakEntity<TabPanel>>,

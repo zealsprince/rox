@@ -42,7 +42,10 @@ fn main() {
         return;
     }
 
-    let queue: Vec<std::path::PathBuf> = std::mem::take(&mut args).into_iter().map(Into::into).collect();
+    let queue: Vec<std::path::PathBuf> = std::mem::take(&mut args)
+        .into_iter()
+        .map(Into::into)
+        .collect();
     if queue.is_empty() {
         eprintln!("usage: rox-prototype-playback [--count] <file> [file...]");
         std::process::exit(2);
@@ -150,7 +153,11 @@ fn print_status(shared: &Shared, device_rate: u32, meter: f32) {
         .map(|i| format!("{} Hz/{}ch", i.sample_rate, i.channels))
         .unwrap_or_default();
 
-    let state = if shared.playing.load(Ordering::Relaxed) { ">" } else { "=" };
+    let state = if shared.playing.load(Ordering::Relaxed) {
+        ">"
+    } else {
+        "="
+    };
     let bars = (meter.min(1.0) * 12.0).round() as usize;
     let vol = (shared.volume() * 100.0).round() as u32;
 

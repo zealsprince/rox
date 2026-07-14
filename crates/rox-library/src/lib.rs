@@ -4,6 +4,7 @@
 //! shape was validated at 10 million tracks in rox-prototype-library, which
 //! reuses these modules for its harness.
 
+pub mod art;
 pub mod projection;
 pub mod scanner;
 pub mod store;

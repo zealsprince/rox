@@ -7,14 +7,14 @@
 //! multi-window on Wayland keeps getting exercised.
 
 mod assets;
-mod library;
 mod palette;
 mod panel;
+mod panels;
+mod peaks;
 mod player;
+mod selection;
 mod settings;
-mod spectrum;
-mod transport;
-mod waveform;
+mod source;
 mod workspace;
 
 use gpui::{

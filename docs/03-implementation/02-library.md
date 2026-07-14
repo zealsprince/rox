@@ -174,7 +174,7 @@ whole. That is the entire consistency mechanism between store and projection.
  (play resolution, UI conn)                              order / search / filter views
 ```
 
-The sequence, driven by the library panel in `crates/rox/src/library.rs`:
+The sequence, driven by the library panel in `crates/rox/src/panels/library.rs`:
 
 1. The panel marks itself busy and spawns one background task.
 2. On the background executor: if a scan root was given, open a connection and run
@@ -190,16 +190,19 @@ keep rowids, identity survives the swap: a queue built against the old projectio
 still resolves. The view re-derives on every search keystroke, an empty query shares
 the canonical order's `Arc` and a non-empty one allocates a fresh hit vector.
 
-Playback resolution is the one projection-to-store hop: clicking a row queues it and
-up to 999 rows behind it in view order, mapping view rows to `db_id`s and `db_id`s to
-paths through `paths_for` on the panel's connection. Ids that no longer resolve drop
-out of the queue.
+Playback resolution is the one projection-to-store hop: double-clicking a row queues
+it and up to 999 rows behind it in view order, mapping view rows to `db_id`s and
+`db_id`s to paths through `paths_for` on the library's UI-side connection. Ids that no
+longer resolve drop out of the queue. Single clicks publish the selected rows as
+`db_id`s to the app-wide selection entity, and panels showing the selection resolve
+those ids back through the same hop.
 
 ## Reference
 
 The service lives in `crates/rox-library`: `store.rs` (schema, upsert, range reads),
 `projection.rs` (arena, interning, search, sort, sharded load), `scanner.rs` (walk,
-change key, lofty). The app wires it in `crates/rox/src/library.rs`. The scale
+change key, lofty), `art.rs` (cover art off a track's tags, with a folder image as the
+fallback). The app wires it in `crates/rox/src/panels/library.rs`. The scale
 harness is `crates/rox-prototype-library`, which reuses these modules against a
 generated catalog: `cargo run -p rox-prototype-library --release -- --tracks
 10_000_000` reproduces the measurements in

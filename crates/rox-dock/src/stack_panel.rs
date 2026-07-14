@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::PanelInfo;
 use crate::resizable::{
-    PANEL_MIN_SIZE, ResizablePanelEvent, ResizablePanelGroup, ResizablePanelState,
-    ResizableState, resizable_panel,
+    PANEL_MIN_SIZE, ResizablePanelEvent, ResizablePanelGroup, ResizablePanelState, ResizableState,
+    resizable_panel,
 };
 use gpui_component::{ActiveTheme, AxisExt as _, Placement, h_flex};
 

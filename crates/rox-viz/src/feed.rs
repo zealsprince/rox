@@ -42,7 +42,8 @@ impl AudioFeed {
         buf.extend(samples.iter().copied());
         let excess = buf.len().saturating_sub(KEEP_SAMPLES);
         buf.drain(..excess);
-        self.written.fetch_add(samples.len() as u64, Ordering::Relaxed);
+        self.written
+            .fetch_add(samples.len() as u64, Ordering::Relaxed);
     }
 
     pub fn set_sample_rate(&self, rate: u32) {

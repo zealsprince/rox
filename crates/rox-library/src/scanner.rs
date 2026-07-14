@@ -38,7 +38,9 @@ pub fn scan(conn: &mut Connection, root: &Path) -> rusqlite::Result<ScanSummary>
     let mut summary = ScanSummary::default();
     let mut batch: Vec<TrackRow> = Vec::with_capacity(BATCH);
     for path in files {
-        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
         let size = meta.len();
         let mtime = meta
             .modified()
@@ -59,7 +61,12 @@ pub fn scan(conn: &mut Connection, root: &Path) -> rusqlite::Result<ScanSummary>
                 fallback_row(&path)
             }
         };
-        batch.push(TrackRow { path: path_str, size, mtime, ..row });
+        batch.push(TrackRow {
+            path: path_str,
+            size,
+            mtime,
+            ..row
+        });
         summary.indexed += 1;
         if batch.len() == BATCH {
             store::insert_batch(conn, &batch)?;
@@ -73,7 +80,9 @@ pub fn scan(conn: &mut Connection, root: &Path) -> rusqlite::Result<ScanSummary>
 }
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -97,9 +106,8 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
     let mut row = fallback_row(path);
     row.duration_ms = file.properties().duration().as_millis() as u32;
     if let Some(tag) = file.primary_tag().or_else(|| file.first_tag()) {
-        let text = |v: Option<std::borrow::Cow<'_, str>>| {
-            v.map(|s| s.into_owned()).unwrap_or_default()
-        };
+        let text =
+            |v: Option<std::borrow::Cow<'_, str>>| v.map(|s| s.into_owned()).unwrap_or_default();
         if let Some(t) = tag.title().filter(|t| !t.is_empty()) {
             row.title = t.into_owned();
         }

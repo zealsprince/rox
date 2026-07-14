@@ -25,6 +25,9 @@ pub mod icons {
     pub const ALIGN_LEFT: &str = "icons/align-left.svg";
     pub const ALIGN_CENTER: &str = "icons/align-center.svg";
     pub const ALIGN_RIGHT: &str = "icons/align-right.svg";
+    pub const REFRESH_CW: &str = "icons/refresh-cw.svg";
+    pub const CHEVRON_RIGHT: &str = "icons/chevron-right.svg";
+    pub const DISC: &str = "icons/disc-3.svg";
 }
 
 /// Our embedded assets, checked before the bundled widget assets so a

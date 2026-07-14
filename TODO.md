@@ -2,20 +2,12 @@
 
 ## Panels
 
-- Per-panel settings menu over the panel config schema layout persistence
-  laid down (`LibraryConfig` and the dump/registry round-trip): each panel
-  type's config struct is what the menu edits.
-- Icons for buttons and menus. gpui-component-assets is already bundled with
-  the widget icon set; check its `IconName` coverage before drawing our own.
+- A customize window for the library panel: every other panel type edits its
+  config through the shared customize rows, while the library's (query,
+  column widths) is only editable in the panel itself.
 - Bring the generative visualizer back once it is a real GPU shader, zero CPU
   rasterization. ADR 8 still describes the removed flow field and should be
   rewritten around that decision.
-
-## Persistence
-
-- Waveform peak cache on disk keyed by file identity, with a generating
-  animation while peaks compute so the panel never sits blank. The
-  implementation doc set already reserves a waveform cache file format.
 
 ## Library
 
@@ -26,8 +18,8 @@
   panel plus library schema work. Track identity is already source-qualified,
   so playlist entries should reference track ids from the start.
 - Scanner sync gaps: rows for files deleted from disk are never removed, and
-  there is no filesystem watching. Both belong to the sync machinery the
-  implementation docs list as unbuilt.
+  there is no filesystem watching. Both belong to the `watch` half of the
+  library contract, which is still design only.
 
 ## Playback
 
@@ -46,6 +38,6 @@
 
 ## Docs
 
-- Contract drift to resolve one way or the other: the components doc says
-  the UI never touches SQLite but `LibraryPanel` holds a connection for
-  id-to-path resolution, and the `browse`/`watch` API exists only on paper.
+- Write 05-visualizer.md and 06-panels.md; their subjects are built now (the
+  peaks cache format, PCM tap and FFT wiring; the layout dump, panel config
+  model, customize windows, popout mechanics).

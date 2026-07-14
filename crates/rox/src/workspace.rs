@@ -11,25 +11,28 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    actions, deferred, div, prelude::*, px, App, Axis, Context, Entity, FocusHandle, KeyBinding,
-    MouseButton, Subscription, Task, WeakEntity, Window, WindowBounds,
+    actions, deferred, div, prelude::*, px, svg, App, Axis, Context, Div, Entity, FocusHandle,
+    KeyBinding, MouseButton, Subscription, Task, WeakEntity, Window, WindowBounds,
 };
 use rox_dock::{
     register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo, PanelView,
     StackPanel, TabPanel,
 };
 
-use crate::library::{Library, LibraryConfig, LibraryPanel};
+use crate::assets::icons;
 use crate::palette;
 use crate::panel::{self, AppState, TabHosts};
-use crate::player::Player;
-use crate::settings::{Settings, WindowState};
-use crate::spectrum::SpectrumPanel;
-use crate::transport::{
+use crate::panels::cover::{CoverArtPanel, CoverConfig};
+use crate::panels::library::{Library, LibraryConfig, LibraryEvent, LibraryPanel};
+use crate::panels::spectrum::SpectrumPanel;
+use crate::panels::transport::{
     SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
     VolumeConfig, VolumePanel,
 };
-use crate::waveform::WaveformPanel;
+use crate::panels::waveform::WaveformPanel;
+use crate::player::Player;
+use crate::selection::Selection;
+use crate::settings::{Settings, WindowState};
 
 const MENU_BAR_H: f32 = 30.0;
 
@@ -48,7 +51,7 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// so it resizes and collapses like everything else.
 const TRANSPORT_ROW_H: f32 = 120.0;
 
-actions!(rox, [TogglePlayback, SeekBackward, SeekForward]);
+actions!(rox, [TogglePlayback, SeekBackward, SeekForward, Quit]);
 
 /// Bindings match key contexts along the focus path, so this scope holds
 /// anywhere inside a workspace window except while the library search box
@@ -58,11 +61,24 @@ const PLAYBACK_KEY_SCOPE: Option<&str> = Some("Workspace && !SearchInput");
 
 /// App-level key bindings; call once at startup.
 pub fn init(cx: &mut App) {
+    // Quit binds unscoped so it fires in every window, popped-out panels
+    // and the search box included. The macOS system menu is not set, so
+    // Cmd+Q only exists through this binding.
+    let quit_keys = if cfg!(target_os = "macos") {
+        "cmd-q"
+    } else {
+        "alt-f4"
+    };
     cx.bind_keys([
         KeyBinding::new("space", TogglePlayback, PLAYBACK_KEY_SCOPE),
         KeyBinding::new("left", SeekBackward, PLAYBACK_KEY_SCOPE),
         KeyBinding::new("right", SeekForward, PLAYBACK_KEY_SCOPE),
+        KeyBinding::new(quit_keys, Quit, None),
     ]);
+    // Fallback for windows without a workspace in the focus path (popped-out
+    // panels); workspace windows persist their layout first via their own
+    // handler, which stops the action before it gets here.
+    cx.on_action(|_: &Quit, cx| cx.quit());
 }
 
 /// Teach the dock's registry to rebuild every panel type from a layout
@@ -87,6 +103,7 @@ fn register_panels(state: &AppState, cx: &mut App) {
     }
     configured!("seek", SeekStripPanel);
     configured!("track info", TrackInfoPanel);
+    configured!("cover art", CoverArtPanel);
     configured!("playback", TransportPanel);
     configured!("volume", VolumePanel);
     macro_rules! stateless {
@@ -106,6 +123,7 @@ enum MenuAction {
     NewWindow,
     OpenFolder,
     OpenLibrary,
+    OpenCoverArt,
     OpenSpectrum,
     OpenWaveform,
     OpenTrackInfo,
@@ -119,56 +137,80 @@ struct MenuItem {
     action: MenuAction,
 }
 
+/// A dropdown row: either an action item or a submenu that flies out to
+/// the side on hover.
+enum MenuEntry {
+    Item(MenuItem),
+    Submenu {
+        label: &'static str,
+        items: &'static [MenuItem],
+    },
+}
+
 struct Menu {
     label: &'static str,
-    items: &'static [MenuItem],
+    entries: &'static [MenuEntry],
 }
 
 const MENUS: &[Menu] = &[
     Menu {
         label: "Window",
-        items: &[MenuItem {
+        entries: &[MenuEntry::Item(MenuItem {
             label: "New Window",
             action: MenuAction::NewWindow,
-        }],
+        })],
     },
     Menu {
         label: "Library",
-        items: &[MenuItem {
+        entries: &[MenuEntry::Item(MenuItem {
             label: "Open Folder...",
             action: MenuAction::OpenFolder,
-        }],
+        })],
     },
     Menu {
-        label: "View",
-        items: &[
-            MenuItem {
+        label: "Panels",
+        entries: &[
+            MenuEntry::Item(MenuItem {
                 label: "Library",
                 action: MenuAction::OpenLibrary,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Cover Art",
+                action: MenuAction::OpenCoverArt,
+            }),
+            MenuEntry::Submenu {
+                label: "Controls",
+                items: &[
+                    MenuItem {
+                        label: "Track Info",
+                        action: MenuAction::OpenTrackInfo,
+                    },
+                    MenuItem {
+                        label: "Playback",
+                        action: MenuAction::OpenPlayback,
+                    },
+                    MenuItem {
+                        label: "Seek",
+                        action: MenuAction::OpenSeek,
+                    },
+                    MenuItem {
+                        label: "Volume",
+                        action: MenuAction::OpenVolume,
+                    },
+                ],
             },
-            MenuItem {
-                label: "Spectrum",
-                action: MenuAction::OpenSpectrum,
-            },
-            MenuItem {
-                label: "Waveform",
-                action: MenuAction::OpenWaveform,
-            },
-            MenuItem {
-                label: "Track Info",
-                action: MenuAction::OpenTrackInfo,
-            },
-            MenuItem {
-                label: "Playback",
-                action: MenuAction::OpenPlayback,
-            },
-            MenuItem {
-                label: "Volume",
-                action: MenuAction::OpenVolume,
-            },
-            MenuItem {
-                label: "Seek",
-                action: MenuAction::OpenSeek,
+            MenuEntry::Submenu {
+                label: "Visualizers",
+                items: &[
+                    MenuItem {
+                        label: "Spectrum",
+                        action: MenuAction::OpenSpectrum,
+                    },
+                    MenuItem {
+                        label: "Waveform",
+                        action: MenuAction::OpenWaveform,
+                    },
+                ],
             },
         ],
     },
@@ -176,6 +218,9 @@ const MENUS: &[Menu] = &[
 
 pub struct Workspace {
     open_menu: Option<usize>,
+    /// Which submenu entry of the open dropdown is flown out, by entry
+    /// index. Hovering an entry moves it, closing the menu clears it.
+    open_submenu: Option<usize>,
     state: AppState,
     /// Fallback focus so the key bindings keep a dispatch path under the
     /// Workspace context even before a panel takes focus. The dock focuses
@@ -187,16 +232,19 @@ pub struct Workspace {
     /// closing or moving everything in one region collapses the rest up
     /// into the space.
     stack: Entity<StackPanel>,
-    /// The tab panel the layout starts with. View-menu panels land here
+    /// The tab panel the layout starts with. Panels-menu panels land here
     /// while it is still showing.
     center_tabs: Entity<TabPanel>,
     /// The transport row's stack: the transport groups at start, and the
-    /// row View-menu audio panels append to.
+    /// row Panels-menu audio panels append to.
     bottom_stack: Entity<StackPanel>,
     /// The debounce for layout saves; replacing it cancels the running
     /// timer, so only a quiet layout dumps.
     save_task: Option<Task<()>>,
     _layout_changed: Subscription,
+    /// The menubar's right side shows the catalog status, so library
+    /// updates must repaint the workspace.
+    _library_changed: Subscription,
 }
 
 /// A one-group tabs item plus the TabPanel entity inside it, for wiring the
@@ -310,6 +358,7 @@ impl Workspace {
         let state = AppState {
             library: cx.new(Library::new),
             player: cx.new(Player::new),
+            selection: cx.new(|_| Selection::default()),
             tab_hosts: cx.new(|_| TabHosts::default()),
         };
         let focus = cx.focus_handle();
@@ -355,6 +404,8 @@ impl Workspace {
                     this.save_layout_soon(window, cx);
                 }
             });
+        let _library_changed =
+            cx.subscribe(&state.library, |_, _, _: &LibraryEvent, cx| cx.notify());
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             if let Some(this) = this.upgrade() {
@@ -380,6 +431,7 @@ impl Workspace {
 
         Workspace {
             open_menu: None,
+            open_submenu: None,
             state,
             focus,
             dock,
@@ -388,6 +440,7 @@ impl Workspace {
             bottom_stack,
             save_task: None,
             _layout_changed,
+            _library_changed,
         }
     }
 
@@ -493,6 +546,11 @@ impl Workspace {
                 });
                 self.add_center(Arc::new(panel), window, cx);
             }
+            MenuAction::OpenCoverArt => {
+                let panel =
+                    cx.new(|cx| CoverArtPanel::new(self.state.clone(), CoverConfig::default(), cx));
+                self.add_center(Arc::new(panel), window, cx);
+            }
             MenuAction::OpenSpectrum => {
                 let panel = cx.new(|cx| SpectrumPanel::new(self.state.clone(), cx));
                 self.add_bottom(Arc::new(panel), window, cx);
@@ -550,6 +608,7 @@ impl Workspace {
                     } else {
                         Some(index)
                     };
+                    this.open_submenu = None;
                     cx.notify();
                 }),
             )
@@ -558,11 +617,62 @@ impl Workspace {
             .when(open, |d| {
                 d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.open_menu = None;
+                    this.open_submenu = None;
                     cx.notify();
                 }))
             })
             .child(menu.label)
             .when(open, |d| d.child(deferred(self.dropdown(menu, cx))))
+    }
+
+    /// The menubar's right side: the catalog status line, a badge while a
+    /// scan or load runs, and a rescan button once a folder is known.
+    fn library_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (busy, status, can_rescan) = {
+            let library = self.state.library.read(cx);
+            (library.busy(), library.status(), library.can_rescan())
+        };
+        let scanning = busy.is_some();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_none()
+            .gap_2()
+            .px_2()
+            .when_some(busy, |d, label| {
+                d.child(
+                    div()
+                        .px_2()
+                        .py(px(2.))
+                        .rounded_full()
+                        .bg(palette::accent())
+                        .text_xs()
+                        .text_color(palette::text_on_accent())
+                        .child(label),
+                )
+            })
+            .when(!status.is_empty(), |d| {
+                d.child(
+                    div()
+                        .max_w(px(360.))
+                        .truncate()
+                        .text_color(palette::text_muted())
+                        .child(status),
+                )
+            })
+            .when(can_rescan && !scanning, |d| {
+                d.child(panel::icon_control(
+                    icons::REFRESH_CW,
+                    palette::text(),
+                    |this: &mut Workspace, cx| {
+                        this.state
+                            .library
+                            .update(cx, |library, cx| library.rescan(cx));
+                    },
+                    cx,
+                ))
+            })
     }
 
     fn dropdown(&self, menu: &'static Menu, cx: &mut Context<Self>) -> impl IntoElement {
@@ -579,23 +689,110 @@ impl Workspace {
             .border_color(palette::border_light())
             .shadow_md()
             .occlude()
-            .children(menu.items.iter().map(|item| {
-                let action = item.action;
-                div()
-                    .px_3()
-                    .py_1()
-                    .cursor_pointer()
-                    .hover(|d| d.bg(palette::bg_control_hover()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.open_menu = None;
-                            cx.notify();
-                            this.run(action, window, cx);
-                        }),
-                    )
-                    .child(item.label)
+            .children(
+                menu.entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, entry)| match entry {
+                        MenuEntry::Item(item) => self
+                            .action_item(item, cx)
+                            .id(("menu-entry", i))
+                            // Sliding onto a plain item retracts a flyout a
+                            // sibling submenu left open.
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                if *hovered && this.open_submenu.is_some() {
+                                    this.open_submenu = None;
+                                    cx.notify();
+                                }
+                            }))
+                            .into_any_element(),
+                        MenuEntry::Submenu { label, items } => {
+                            self.submenu_row(i, label, items, cx).into_any_element()
+                        }
+                    }),
+            )
+    }
+
+    /// A dropdown row that runs an action and closes the menu. The caller
+    /// chains its hover behavior, which differs between the top level and a
+    /// flyout.
+    fn action_item(&self, item: &'static MenuItem, cx: &mut Context<Self>) -> Div {
+        let action = item.action;
+        div()
+            .px_3()
+            .py_1()
+            .cursor_pointer()
+            .hover(|d| d.bg(palette::bg_control_hover()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    this.open_menu = None;
+                    this.open_submenu = None;
+                    cx.notify();
+                    this.run(action, window, cx);
+                }),
+            )
+            .child(item.label)
+    }
+
+    /// A dropdown row that flies its items out to the side while hovered.
+    /// The flyout stays open until another entry is hovered or the menu
+    /// closes, so the pointer can cross the gap without losing it.
+    fn submenu_row(
+        &self,
+        index: usize,
+        label: &'static str,
+        items: &'static [MenuItem],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let open = self.open_submenu == Some(index);
+        div()
+            .id(("menu-entry", index))
+            .relative()
+            .px_3()
+            .py_1()
+            .cursor_pointer()
+            .when(open, |d| d.bg(palette::bg_control_hover()))
+            .hover(|d| d.bg(palette::bg_control_hover()))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered && this.open_submenu != Some(index) {
+                    this.open_submenu = Some(index);
+                    cx.notify();
+                }
             }))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(label)
+            .child(
+                svg()
+                    .path(icons::CHEVRON_RIGHT)
+                    .size_3()
+                    .text_color(palette::text_muted()),
+            )
+            .when(open, |d| {
+                d.child(
+                    // Top offset backs out the parent's padding and the
+                    // dropdown border so the first item lines up with the
+                    // parent row.
+                    div()
+                        .absolute()
+                        .left_full()
+                        .top(px(-5.))
+                        .min_w(px(160.))
+                        .flex()
+                        .flex_col()
+                        .py_1()
+                        .bg(palette::bg_menu())
+                        .border_1()
+                        .border_color(palette::border_light())
+                        .shadow_md()
+                        .occlude()
+                        .children(items.iter().map(|item| self.action_item(item, cx))),
+                )
+            })
     }
 }
 
@@ -622,6 +819,13 @@ impl Render for Workspace {
                     .player
                     .update(cx, |player, _| player.seek_by(5.0));
             }))
+            // Quit bypasses the window close hook, so dump the layout and
+            // frame here or a pending debounce and any window move since
+            // the last save are lost.
+            .on_action(cx.listener(|this, _: &Quit, window, cx| {
+                this.persist(window, cx);
+                cx.quit();
+            }))
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
@@ -639,7 +843,9 @@ impl Render for Workspace {
                             .iter()
                             .enumerate()
                             .map(|(i, menu)| self.menu_button(i, menu, cx)),
-                    ),
+                    )
+                    .child(div().flex_1())
+                    .child(self.library_status(cx)),
             )
             .child(div().flex_1().min_h_0().child(self.dock.clone()))
     }

@@ -14,6 +14,17 @@ pub fn alpha(color: Rgba, a: u8) -> Rgba {
     }
 }
 
+/// A componentwise blend between two palette colors, `t` = 0 all `a`,
+/// `t` = 1 all `b`. For animated transitions between roles.
+pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    Rgba {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}
+
 // The accent family: the one brand color and its hover shift.
 
 pub fn accent() -> Rgba {

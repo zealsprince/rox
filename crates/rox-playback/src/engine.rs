@@ -20,9 +20,7 @@ use rtrb::Producer;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{
-    FormatOptions, FormatReader, SeekMode, SeekTo, TrackType,
-};
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Time, TimeBase, Timestamp};
@@ -118,7 +116,9 @@ impl Engine {
                     }
                     Cmd::Volume(v) => {
                         let v = v.clamp(0.0, 2.0);
-                        self.shared.volume_bits.store(v.to_bits(), Ordering::Relaxed);
+                        self.shared
+                            .volume_bits
+                            .store(v.to_bits(), Ordering::Relaxed);
                     }
                     Cmd::Seek(secs) => flush_to = Some(FlushAction::Seek(secs.max(0.0))),
                     Cmd::Next => {
@@ -343,10 +343,11 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<(f32, f32)>, Stri
             .map(|i| {
                 let from = (i as f64 * per) as usize;
                 let to = (((i + 1) as f64 * per) as usize).clamp(from + 1, coarse.len());
-                coarse[from..to].iter().fold(
-                    (f32::MAX, f32::MIN),
-                    |(lo, hi), &(bl, bh)| (lo.min(bl), hi.max(bh)),
-                )
+                coarse[from..to]
+                    .iter()
+                    .fold((f32::MAX, f32::MIN), |(lo, hi), &(bl, bh)| {
+                        (lo.min(bl), hi.max(bh))
+                    })
             })
             .collect()
     };
@@ -374,7 +375,12 @@ impl Source {
         }
 
         let format = symphonia::default::get_probe()
-            .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+            .probe(
+                &hint,
+                mss,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
             .map_err(|e| format!("probe: {e}"))?;
 
         let track = format
@@ -512,7 +518,10 @@ impl Source {
         let time = Time::try_from_secs_f64(secs).unwrap_or(Time::ZERO);
         match self.format.seek(
             SeekMode::Accurate,
-            SeekTo::Time { time, track_id: Some(self.track_id) },
+            SeekTo::Time {
+                time,
+                track_id: Some(self.track_id),
+            },
         ) {
             Ok(seeked) => {
                 self.decoder.reset();

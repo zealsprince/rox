@@ -71,10 +71,16 @@ fn main() {
         drop(p);
     }
 
-    let shards = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    let shards = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8);
     let t = Instant::now();
     let p = Projection::load_parallel(&db, shards).expect("parallel load");
-    report(&format!("cold open, parallel ({shards} readers)"), t.elapsed(), None);
+    report(
+        &format!("cold open, parallel ({shards} readers)"),
+        t.elapsed(),
+        None,
+    );
     assert_eq!(p.len() as u64, tracks);
 
     println!(
@@ -105,7 +111,11 @@ fn main() {
         p.search(query);
         let t = Instant::now();
         let hits = p.search(query);
-        report(&format!("search \"{query}\""), t.elapsed(), Some(hits.len()));
+        report(
+            &format!("search \"{query}\""),
+            t.elapsed(),
+            Some(hits.len()),
+        );
     }
 
     // Filters.
@@ -129,14 +139,21 @@ fn main() {
         }
     }
     let per = t.elapsed() / 1000;
-    println!("{:<44} {:>10.3?} per 50-row window", "scroll: resolve windows", per);
+    println!(
+        "{:<44} {:>10.3?} per 50-row window",
+        "scroll: resolve windows", per
+    );
     std::hint::black_box(sink);
 
     // Contrast: the same substring search pushed down to SQLite.
     if !skip_like {
         let t = Instant::now();
         let n = like_search(&conn, "moon").expect("like search");
-        report("sqlite LIKE \"%moon%\" (contrast)", t.elapsed(), Some(n as usize));
+        report(
+            "sqlite LIKE \"%moon%\" (contrast)",
+            t.elapsed(),
+            Some(n as usize),
+        );
     }
 }
 

@@ -627,9 +627,7 @@ impl DockArea {
         new_tabs.update(cx, |tabs, cx| tabs.add_panel(drag.panel, window, cx));
         let new_tabs: Arc<dyn PanelView> = Arc::new(new_tabs);
         root.update(cx, |stack, cx| match placement {
-            Placement::Top => {
-                stack.insert_panel_before(new_tabs, 0, None, weak_dock, window, cx)
-            }
+            Placement::Top => stack.insert_panel_before(new_tabs, 0, None, weak_dock, window, cx),
             Placement::Bottom => stack.add_panel(new_tabs, None, weak_dock, window, cx),
             _ => {}
         });
@@ -1301,21 +1299,16 @@ impl Render for DockArea {
                                         |_, _, _| {},
                                         move |_, _, window, _| {
                                             window.on_mouse_event(
-                                                move |event: &MouseMoveEvent,
-                                                      phase,
-                                                      window,
-                                                      cx| {
+                                                move |event: &MouseMoveEvent, phase, window, cx| {
                                                     if !phase.bubble() {
                                                         return;
                                                     }
                                                     dock.update(cx, |this, _| {
-                                                        let Some(drag) =
-                                                            this.middle_drag.as_mut()
+                                                        let Some(drag) = this.middle_drag.as_mut()
                                                         else {
                                                             return;
                                                         };
-                                                        if event.pressed_button
-                                                            == Some(drag.button)
+                                                        if event.pressed_button == Some(drag.button)
                                                         {
                                                             drag.position = event.position;
                                                         } else {
@@ -1359,12 +1352,8 @@ impl Render for DockArea {
                                             .w(dock_bounds.size.width)
                                             .bg(cx.theme().drop_target)
                                             .map(|this| match placement {
-                                                Placement::Top => {
-                                                    this.top(dock_bounds.top()).h(h)
-                                                }
-                                                _ => this
-                                                    .top(dock_bounds.bottom() - h)
-                                                    .h(h),
+                                                Placement::Top => this.top(dock_bounds.top()).h(h),
+                                                _ => this.top(dock_bounds.bottom() - h).h(h),
                                             }),
                                     )
                                 })

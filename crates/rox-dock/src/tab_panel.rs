@@ -2,6 +2,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::PanelInfo;
+use crate::resizable::PANEL_MIN_SIZE;
+use crate::tab::{Tab, TabBar};
 use gpui::{
     App, AppContext, Bounds, Context, Corner, DismissEvent, Div, DragMoveEvent, Empty, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
@@ -10,9 +13,6 @@ use gpui::{
     Subscription, WeakEntity, Window, anchored, canvas, deferred, div, prelude::FluentBuilder, px,
     relative, rems,
 };
-use crate::PanelInfo;
-use crate::resizable::PANEL_MIN_SIZE;
-use crate::tab::{Tab, TabBar};
 use gpui_component::{
     ActiveTheme, AxisExt, IconName, Placement, Selectable, Sizable,
     button::{Button, ButtonVariants as _},
@@ -540,20 +540,16 @@ impl TabPanel {
                         }),
                 )
                 .separator()
-                .item(
-                    PopupMenuItem::new("Close")
-                        .disabled(!closable)
-                        .on_click({
-                            let view = view.clone();
-                            move |_, window, cx| {
-                                view.update(cx, |this, cx| {
-                                    if this.can_close_panel(&panel, cx) {
-                                        this.remove_panel(panel.clone(), window, cx);
-                                    }
-                                });
+                .item(PopupMenuItem::new("Close").disabled(!closable).on_click({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            if this.can_close_panel(&panel, cx) {
+                                this.remove_panel(panel.clone(), window, cx);
                             }
-                        }),
-                )
+                        });
+                    }
+                }))
         });
 
         menu.focus_handle(cx).focus(window);
@@ -635,8 +631,7 @@ impl TabPanel {
                                         !zoomable,
                                     )
                                     .when(closable, |this| {
-                                        this.separator()
-                                            .menu("Close", Box::new(ClosePanel))
+                                        this.separator().menu("Close", Box::new(ClosePanel))
                                     })
                             })
                         }
@@ -819,12 +814,7 @@ impl TabPanel {
                             cx.listener({
                                 let panel = panel.clone();
                                 move |this, event: &MouseDownEvent, window, cx| {
-                                    this.open_panel_menu(
-                                        panel.clone(),
-                                        event.position,
-                                        window,
-                                        cx,
-                                    );
+                                    this.open_panel_menu(panel.clone(), event.position, window, cx);
                                 }
                             }),
                         )
@@ -929,11 +919,8 @@ impl TabPanel {
                             cx.listener({
                                 let panel = panel.clone();
                                 move |this, event: &MouseDownEvent, _, _| {
-                                    this.pending_middle_drag = Some((
-                                        event.position,
-                                        panel.clone(),
-                                        MouseButton::Middle,
-                                    ));
+                                    this.pending_middle_drag =
+                                        Some((event.position, panel.clone(), MouseButton::Middle));
                                 }
                             }),
                         )
@@ -990,12 +977,7 @@ impl TabPanel {
                             cx.listener({
                                 let panel = panel.clone();
                                 move |this, event: &MouseDownEvent, window, cx| {
-                                    this.open_panel_menu(
-                                        panel.clone(),
-                                        event.position,
-                                        window,
-                                        cx,
-                                    );
+                                    this.open_panel_menu(panel.clone(), event.position, window, cx);
                                 }
                             }),
                         )
@@ -1129,9 +1111,12 @@ impl TabPanel {
             .flex_1()
             .child({
                 let content_bounds = self.content_bounds.clone();
-                canvas(move |bounds, _, _| content_bounds.set(bounds), |_, _, _, _| {})
-                    .absolute()
-                    .size_full()
+                canvas(
+                    move |bounds, _, _| content_bounds.set(bounds),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full()
             })
             // The panel body answers right-click with the same menu as its
             // tab, so a lone chrome-less panel stays manageable. Bubble

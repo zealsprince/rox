@@ -24,7 +24,10 @@ pub struct Arena {
 
 impl Default for Arena {
     fn default() -> Self {
-        Arena { bytes: String::new(), offsets: vec![0] }
+        Arena {
+            bytes: String::new(),
+            offsets: vec![0],
+        }
     }
 }
 
@@ -48,7 +51,8 @@ impl Arena {
     fn append(&mut self, other: &Arena) {
         let base = self.bytes.len() as u32;
         self.bytes.push_str(&other.bytes);
-        self.offsets.extend(other.offsets[1..].iter().map(|o| o + base));
+        self.offsets
+            .extend(other.offsets[1..].iter().map(|o| o + base));
     }
 
     pub fn heap_bytes(&self) -> usize {
@@ -82,14 +86,25 @@ pub struct SymTable {
 
 impl From<Interner> for SymTable {
     fn from(interner: Interner) -> Self {
-        let lower = interner.table.par_iter().map(|s| s.to_lowercase()).collect();
-        SymTable { strings: interner.table, lower }
+        let lower = interner
+            .table
+            .par_iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+        SymTable {
+            strings: interner.table,
+            lower,
+        }
     }
 }
 
 impl SymTable {
     fn heap_bytes(&self) -> usize {
-        self.strings.iter().chain(self.lower.iter()).map(|s| s.capacity() + 24).sum()
+        self.strings
+            .iter()
+            .chain(self.lower.iter())
+            .map(|s| s.capacity() + 24)
+            .sum()
     }
 }
 
@@ -170,9 +185,14 @@ impl Projection {
     pub fn load_serial(conn: &rusqlite::Connection) -> rusqlite::Result<Self> {
         let max = store::max_rowid(conn)?;
         let mut b = Builder::default();
-        store::scan_range(conn, 0, max, |id, title, artist, album, genre, year, tn, dur| {
-            b.push(id, title, artist, album, genre, year, tn, dur);
-        })?;
+        store::scan_range(
+            conn,
+            0,
+            max,
+            |id, title, artist, album, genre, year, tn, dur| {
+                b.push(id, title, artist, album, genre, year, tn, dur);
+            },
+        )?;
         Ok(Self::merge(vec![b]))
     }
 
@@ -230,15 +250,33 @@ impl Projection {
         out.duration_ms.reserve(total);
 
         for shard in shards {
-            let map_a: Vec<u32> = shard.artists.table.iter().map(|s| artists.intern(s)).collect();
-            let map_b: Vec<u32> = shard.albums.table.iter().map(|s| albums.intern(s)).collect();
-            let map_g: Vec<u32> = shard.genres.table.iter().map(|s| genres.intern(s)).collect();
+            let map_a: Vec<u32> = shard
+                .artists
+                .table
+                .iter()
+                .map(|s| artists.intern(s))
+                .collect();
+            let map_b: Vec<u32> = shard
+                .albums
+                .table
+                .iter()
+                .map(|s| albums.intern(s))
+                .collect();
+            let map_g: Vec<u32> = shard
+                .genres
+                .table
+                .iter()
+                .map(|s| genres.intern(s))
+                .collect();
             out.db_id.extend_from_slice(&shard.db_id);
             out.title.append(&shard.title);
             out.title_lower.append(&shard.title_lower);
-            out.artist.extend(shard.artist.iter().map(|&s| map_a[s as usize]));
-            out.album.extend(shard.album.iter().map(|&s| map_b[s as usize]));
-            out.genre.extend(shard.genre.iter().map(|&s| map_g[s as usize]));
+            out.artist
+                .extend(shard.artist.iter().map(|&s| map_a[s as usize]));
+            out.album
+                .extend(shard.album.iter().map(|&s| map_b[s as usize]));
+            out.genre
+                .extend(shard.genre.iter().map(|&s| map_g[s as usize]));
             out.year.extend_from_slice(&shard.year);
             out.track_no.extend_from_slice(&shard.track_no);
             out.duration_ms.extend_from_slice(&shard.duration_ms);
@@ -278,8 +316,10 @@ impl Projection {
         let hit = |table: &SymTable| -> Vec<bool> {
             table.lower.par_iter().map(|s| s.contains(&q)).collect()
         };
-        let (a_hit, (b_hit, g_hit)) =
-            rayon::join(|| hit(&self.artists), || rayon::join(|| hit(&self.albums), || hit(&self.genres)));
+        let (a_hit, (b_hit, g_hit)) = rayon::join(
+            || hit(&self.artists),
+            || rayon::join(|| hit(&self.albums), || hit(&self.genres)),
+        );
 
         let finder = memmem::Finder::new(q.as_bytes());
         self.scan_rows(|i| {
@@ -334,9 +374,7 @@ impl Projection {
     /// string (the non-functional model's precomputed-keys claim).
     fn ranks(table: &SymTable) -> Vec<u32> {
         let mut order: Vec<u32> = (0..table.strings.len() as u32).collect();
-        order.par_sort_unstable_by(|&a, &b| {
-            table.lower[a as usize].cmp(&table.lower[b as usize])
-        });
+        order.par_sort_unstable_by(|&a, &b| table.lower[a as usize].cmp(&table.lower[b as usize]));
         let mut rank = vec![0u32; order.len()];
         for (pos, &sym) in order.iter().enumerate() {
             rank[sym as usize] = pos as u32;
@@ -351,7 +389,11 @@ impl Projection {
         let mut idx: Vec<u32> = (0..self.len() as u32).collect();
         idx.par_sort_unstable_by_key(|&i| {
             let i = i as usize;
-            (a_rank[self.artist[i] as usize], b_rank[self.album[i] as usize], self.track_no[i])
+            (
+                a_rank[self.artist[i] as usize],
+                b_rank[self.album[i] as usize],
+                self.track_no[i],
+            )
         });
         idx
     }
@@ -359,7 +401,9 @@ impl Projection {
     pub fn sort_title(&self) -> Vec<u32> {
         let mut idx: Vec<u32> = (0..self.len() as u32).collect();
         idx.par_sort_unstable_by(|&a, &b| {
-            self.title_lower.get(a as usize).cmp(self.title_lower.get(b as usize))
+            self.title_lower
+                .get(a as usize)
+                .cmp(self.title_lower.get(b as usize))
         });
         idx
     }

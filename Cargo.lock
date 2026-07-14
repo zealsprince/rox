@@ -5071,6 +5071,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui-component-assets",
+ "image",
  "rox-dock",
  "rox-library",
  "rox-playback",

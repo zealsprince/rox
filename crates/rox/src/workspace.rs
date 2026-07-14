@@ -20,6 +20,7 @@ use rox_dock::{
 };
 
 use crate::assets::icons;
+use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::palette;
 use crate::panel::{self, AppState, TabHosts};
 use crate::panels::cover::{CoverArtPanel, CoverConfig};
@@ -241,10 +242,15 @@ pub struct Workspace {
     /// The debounce for layout saves; replacing it cancels the running
     /// timer, so only a quiet layout dumps.
     save_task: Option<Task<()>>,
+    /// This window's slice of the backdrop: what it painted last, for
+    /// retiring the texture on a new bake.
+    backdrop: WindowBackdrop,
     _layout_changed: Subscription,
     /// The menubar's right side shows the catalog status, so library
     /// updates must repaint the workspace.
     _library_changed: Subscription,
+    /// A new bake must repaint the window that shows it.
+    _backdrop_changed: Subscription,
 }
 
 /// A one-group tabs item plus the TabPanel entity inside it, for wiring the
@@ -355,9 +361,11 @@ fn layout_views(
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let player = cx.new(Player::new);
         let state = AppState {
             library: cx.new(Library::new),
-            player: cx.new(Player::new),
+            now_art: cx.new(|cx| NowPlayingArt::new(player.clone(), cx)),
+            player,
             selection: cx.new(|_| Selection::default()),
             tab_hosts: cx.new(|_| TabHosts::default()),
         };
@@ -406,6 +414,7 @@ impl Workspace {
             });
         let _library_changed =
             cx.subscribe(&state.library, |_, _, _: &LibraryEvent, cx| cx.notify());
+        let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             if let Some(this) = this.upgrade() {
@@ -439,8 +448,10 @@ impl Workspace {
             center_tabs,
             bottom_stack,
             save_task: None,
+            backdrop: WindowBackdrop::default(),
             _layout_changed,
             _library_changed,
+            _backdrop_changed,
         }
     }
 
@@ -797,7 +808,7 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -829,6 +840,10 @@ impl Render for Workspace {
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
+            // The backdrop paints first, under the menubar and dock; how
+            // much shows through is the surfaces' call (ADR 10's strength
+            // scalar).
+            .children(self.backdrop.layer(&self.state.now_art, window, cx))
             .child(
                 div()
                     .flex()

@@ -18,6 +18,7 @@ use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Root;
 use rox_dock::{Panel, PanelInfo, PanelView, TabPanel};
 
+use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::palette;
 use crate::panels::library::Library;
 use crate::player::Player;
@@ -32,6 +33,9 @@ pub struct AppState {
     pub player: Entity<Player>,
     pub selection: Entity<Selection>,
     pub tab_hosts: Entity<TabHosts>,
+    /// The playing track's art baked into the window backdrop, one bake
+    /// shared by every window over this player.
+    pub now_art: Entity<NowPlayingArt>,
 }
 
 /// Every tab panel that has hosted one of our panels, reported from each
@@ -267,10 +271,17 @@ pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
         ..Default::default()
     };
     cx.open_window(options, move |window, cx| {
-        let host = cx.new(|_| PopoutHost {
-            panel_view: panel,
-            state,
-            context_menu: None,
+        let host = cx.new(|cx| {
+            // A popped-out window pumps its own frames, so the backdrop
+            // needs its own wake on a new bake.
+            let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+            PopoutHost {
+                panel_view: panel,
+                state,
+                backdrop: WindowBackdrop::default(),
+                context_menu: None,
+                _backdrop_changed,
+            }
         });
         cx.new(|cx| Root::new(host, window, cx))
     })
@@ -513,9 +524,13 @@ pub fn icon_choices<P: 'static, V: PartialEq + Copy + 'static>(
 struct PopoutHost {
     panel_view: Arc<dyn PanelView>,
     state: AppState,
+    /// This window's slice of the backdrop: what it painted last, for
+    /// retiring the texture on a new bake.
+    backdrop: WindowBackdrop,
     /// The open right-click menu: its anchor position, the menu, and the
     /// dismiss subscription that clears it.
     context_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
+    _backdrop_changed: Subscription,
 }
 
 impl PopoutHost {
@@ -567,6 +582,9 @@ impl Render for PopoutHost {
                     this.open_menu(event.position, window, cx);
                 }),
             )
+            // The backdrop paints first, under the panel; how much shows
+            // through is the surfaces' call (ADR 10's strength scalar).
+            .children(self.backdrop.layer(&self.state.now_art, window, cx))
             .child(self.panel_view.view())
             // Same overlay structure as the dock's context menu: an
             // occluding layer swallows the dismissing click, the anchored

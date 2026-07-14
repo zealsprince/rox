@@ -7,6 +7,7 @@
 //! multi-window on Wayland keeps getting exercised.
 
 mod assets;
+mod backdrop;
 mod palette;
 mod panel;
 mod panels;

@@ -45,13 +45,19 @@ fn scaled(color: Rgba, opacity: f32) -> Rgba {
 /// One listing defines each role three ways: the [`Palette`] field, its
 /// default, and the accessor panels call. Adding a role means adding one
 /// line here. Roles in the `surfaces` block are the backgrounds the
-/// backdrop can show through: their accessors read out at surface opacity,
-/// the rest read plain.
+/// backdrop can show through: their accessors read out at surface opacity.
+/// Roles in the `tints` block are sub-surface texture riding on a surface
+/// that already carries the wash: they read out at the square of surface
+/// opacity, thinning to a whisper under translucency instead of stacking
+/// a second coat. The rest read plain.
 macro_rules! tokens {
     (
         $( $(#[$doc:meta])* $role:ident: $default:literal; )*
         @surfaces {
             $( $(#[$sdoc:meta])* $srole:ident: $sdefault:literal; )*
+        }
+        @tints {
+            $( $(#[$tdoc:meta])* $trole:ident: $tdefault:literal; )*
         }
     ) => {
         /// The palette as data: one color per role. The default is the
@@ -60,6 +66,7 @@ macro_rules! tokens {
         pub struct Palette {
             $( $(#[$doc])* pub $role: Rgba, )*
             $( $(#[$sdoc])* pub $srole: Rgba, )*
+            $( $(#[$tdoc])* pub $trole: Rgba, )*
         }
 
         impl Default for Palette {
@@ -67,6 +74,7 @@ macro_rules! tokens {
                 Palette {
                     $( $role: rgb($default), )*
                     $( $srole: rgb($sdefault), )*
+                    $( $trole: rgb($tdefault), )*
                 }
             }
         }
@@ -83,6 +91,15 @@ macro_rules! tokens {
             pub fn $srole() -> Rgba {
                 let current = CURRENT.read().unwrap();
                 scaled(current.palette.$srole, current.surface_opacity)
+            }
+        )*
+
+        $(
+            $(#[$tdoc])*
+            pub fn $trole() -> Rgba {
+                let current = CURRENT.read().unwrap();
+                let opacity = current.surface_opacity;
+                scaled(current.palette.$trole, opacity * opacity)
             }
         )*
     };
@@ -117,16 +134,21 @@ tokens! {
     // Backgrounds, deepest to most raised.
     @surfaces {
         bg_root: 0x121212;
-        bg_input: 0x141414;
         bg_panel: 0x181818;
         bg_elevated: 0x1c1c1c;
-        bg_toolbar: 0x1f1f1f;
         bg_menubar: 0x242424;
         bg_menu: 0x262626;
         bg_control: 0x2a2a2a;
         bg_menu_hover: 0x2f2f2f;
         bg_control_active: 0x333333;
         bg_control_hover: 0x3a3a3a;
+    }
+
+    // Layered fills that always ride on one of the surfaces above: the
+    // library toolbar strip on the panel, the search box on the toolbar.
+    @tints {
+        bg_input: 0x141414;
+        bg_toolbar: 0x1f1f1f;
     }
 }
 
@@ -180,48 +202,51 @@ pub fn set_scalars(surface_opacity: f32, backdrop_strength: f32, cx: &mut App) {
     apply(cx);
 }
 
-/// The shared tail of every palette change: re-feed the gpui-component
-/// theme tokens the widgets draw, then repaint every open window.
+/// The shared tail of every palette change: project the gpui-component
+/// theme tokens the widgets draw from the palette, then repaint every
+/// open window. Per ADR 10 the widget theme stays a projection of our
+/// tokens, never the source; everything not projected here keeps the
+/// stock dark set.
 fn apply(cx: &mut App) {
-    // Start over from the stock dark baseline so repeated feeds scale
-    // pristine values instead of compounding alphas.
+    // Start over from the stock dark baseline so repeated feeds project
+    // onto pristine values instead of compounding.
     Theme::change(ThemeMode::Dark, None, cx);
-    let surface_opacity = CURRENT.read().unwrap().surface_opacity;
+    let (palette, opacity) = {
+        let current = CURRENT.read().unwrap();
+        (current.palette, current.surface_opacity)
+    };
     let theme = Theme::global_mut(cx);
-    // The widget baseline stays on gpui-component's stock dark set except
-    // where our tokens reach what its widgets actually draw today:
-    // selection follows the accent instead of the stock blue.
-    theme.table_active = alpha(accent(), 0x26).into();
-    theme.table_active_border = accent().into();
-    theme.list_active = alpha(accent(), 0x26).into();
-    theme.list_active_border = accent().into();
-    // The chrome between the backdrop and the panel content splits in
-    // two. Washes are visible chrome with nothing of ours underneath -
-    // the tab strip and its buttons, the table's row tints - and read out
-    // at surface opacity like our own surface tokens, or the backdrop
-    // could never show through the dock. One deref up front: field
+    // Selection follows the accent instead of the stock blue.
+    theme.table_active = alpha(palette.accent, 0x26).into();
+    theme.table_active_border = palette.accent.into();
+    theme.list_active = alpha(palette.accent, 0x26).into();
+    theme.list_active_border = palette.accent.into();
+    // The chrome between the backdrop and the panel content, projected
+    // from the palette roles whose ladder values sit nearest the stock
+    // dark set, so palette edits and later art tinting recolor the dock
+    // and table along with everything else. One deref up front: field
     // borrows through the Theme wrapper would each re-borrow it.
     let colors: &mut ThemeColor = theme;
-    for token in [
-        &mut colors.secondary,
-        &mut colors.tab_bar,
-        &mut colors.tab_active,
-        &mut colors.table_even,
-        &mut colors.table_head,
-        &mut colors.table_hover,
-    ] {
-        token.a *= surface_opacity;
-    }
+    // Washes: visible chrome with nothing of ours underneath - the tab
+    // strip, the active tab, toolbar buttons, the table's row hover -
+    // reading out at surface opacity like our own surface tokens.
+    colors.tab_bar = scaled(palette.bg_panel, opacity).into();
+    colors.tab_active = scaled(palette.bg_root, opacity).into();
+    colors.secondary = scaled(palette.bg_panel, opacity).into();
+    colors.table_hover = scaled(palette.bg_menu, opacity).into();
+    // Tints: the table's striping and header ride on the panel's own
+    // wash, so like the palette's tint roles they thin by the square.
+    let stripe = scaled(alpha(palette.bg_panel, 0xcc), opacity * opacity);
+    colors.table_even = stripe.into();
+    colors.table_head = stripe.into();
     // Structural backstops always sit under a surface that already
     // carries the wash: the stack body under the panel tiles, the tab
     // panel body under panel content, the table body over the panel's
     // own background. Scaling them would stack a second and third fog
     // layer over the backdrop, so translucency drops them out entirely.
-    if surface_opacity < 1.0 {
-        for token in [&mut colors.background, &mut colors.table] {
-            token.a = 0.0;
-        }
-    }
+    let structural = if opacity < 1.0 { 0.0 } else { 1.0 };
+    colors.background = scaled(palette.bg_root, structural).into();
+    colors.table = scaled(palette.bg_root, structural).into();
     // The static sits outside GPUI's reactivity, so the repaint is
     // explicit: wake every window, whichever entities they host.
     for window in cx.windows() {

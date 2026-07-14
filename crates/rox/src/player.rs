@@ -319,6 +319,12 @@ impl Player {
 
 /// The playback clock format the panels share: minutes and seconds.
 pub fn fmt_time(secs: f64) -> String {
+    fmt_time_padded(secs, 1)
+}
+
+/// `fmt_time` with the minutes zero-padded to `digits`, for clocks that
+/// tick every frame and need to hold one width for a whole track.
+pub fn fmt_time_padded(secs: f64, digits: usize) -> String {
     let m = (secs / 60.0).floor() as u64;
-    format!("{m}:{:02}", (secs - (m * 60) as f64).floor() as u64)
+    format!("{m:0digits$}:{:02}", (secs - (m * 60) as f64).floor() as u64)
 }

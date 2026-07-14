@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use gpui::{
     canvas, div, fill, point, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, Div,
-    EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Subscription, WeakEntity, Window,
+    EventEmitter, FocusHandle, Focusable, FontFeatures, MouseButton, Pixels, Subscription,
+    WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -22,7 +23,7 @@ use crate::assets::icons;
 use crate::palette;
 use crate::panel::{self, AppState, Customizable, ScrubState};
 use crate::panels::library::LibraryEvent;
-use crate::player::fmt_time;
+use crate::player::{fmt_time, fmt_time_padded};
 
 /// Thickness of the seek strip's track line.
 const STRIP_H: f32 = 6.0;
@@ -733,6 +734,17 @@ fn paint_strip(progress: f32, bounds: Bounds<Pixels>, window: &mut Window) {
     ));
 }
 
+/// A clock beside the strip: muted, fixed in the row, digits tabular so a
+/// tick never changes the text width.
+fn clock(text: String) -> Div {
+    let mut clock = div().flex_none().text_color(palette::text_muted());
+    clock
+        .text_style()
+        .get_or_insert_with(Default::default)
+        .font_features = Some(FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
+    clock.child(text)
+}
+
 impl Render for SeekStripPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = self.state.player.read(cx).now_playing();
@@ -803,34 +815,33 @@ impl Render for SeekStripPanel {
 
         // The clocks the reference bar shows: elapsed on the left, the
         // ending clock on the right - time left, or the full duration when
-        // toggled - and "-:--" until the duration resolves.
+        // toggled - and "-:--" until the duration resolves. Minutes pad to
+        // the duration's digits so neither clock changes width mid-track
+        // and wiggles the strip.
+        let digits = now
+            .duration_secs
+            .map(|d| (d as u64 / 60).to_string().len())
+            .unwrap_or(1);
         let ending = match now.duration_secs {
-            Some(d) if self.config.show_total => fmt_time(d),
-            Some(d) => format!("-{}", fmt_time((d - now.position_secs).max(0.0))),
+            Some(d) if self.config.show_total => fmt_time_padded(d, digits),
+            Some(d) => format!(
+                "-{}",
+                fmt_time_padded((d - now.position_secs).max(0.0), digits)
+            ),
             None => "-:--".into(),
         };
         root.gap_2()
             .px_2()
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(palette::text_muted())
-                    .child(fmt_time(now.position_secs)),
-            )
+            .child(clock(fmt_time_padded(now.position_secs, digits)))
             .child(track)
             .child(
-                div()
-                    .flex_none()
-                    .text_color(palette::text_muted())
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.config.show_total = !this.config.show_total;
-                            cx.notify();
-                        }),
-                    )
-                    .child(ending),
+                clock(ending).cursor_pointer().on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.config.show_total = !this.config.show_total;
+                        cx.notify();
+                    }),
+                ),
             )
     }
 }

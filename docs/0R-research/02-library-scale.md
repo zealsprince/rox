@@ -6,7 +6,7 @@ against 50-100k tracks, so does SQLite plus a full in-memory projection with sub
 search still deliver sub-second search, instant filtering, and smooth navigation at 10
 million tracks, and where does the work have to split across cores to get there?
 
-The prototype lives in `crates/rox-prototype-library`. No real files are involved: a
+The prototype lived in `crates/rox-prototype-library` (git history, commit bd22dc1). No real files are involved: a
 deterministic generator writes a synthetic catalog into SQLite with realistic
 cardinalities (10M tracks lands at 272k artists and 433k distinct album names), and the
 projection loads from there exactly as the real library service would. The projection is

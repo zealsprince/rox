@@ -203,7 +203,8 @@ The service lives in `crates/rox-library`: `store.rs` (schema, upsert, range rea
 `projection.rs` (arena, interning, search, sort, sharded load), `scanner.rs` (walk,
 change key, lofty), `art.rs` (cover art off a track's tags, with a folder image as the
 fallback). The app wires it in `crates/rox/src/panels/library.rs`. The scale
-harness is `crates/rox-prototype-library`, which reuses these modules against a
-generated catalog: `cargo run -p rox-prototype-library --release -- --tracks
-10_000_000` reproduces the measurements in
+harness was `crates/rox-prototype-library` (git history, commit bd22dc1), which
+reuses these modules against a generated catalog: `cargo run -p
+rox-prototype-library --release -- --tracks 10_000_000` reproduces the
+measurements in
 [research 02](../0R-research/02-library-scale.md).

@@ -1,8 +1,9 @@
 //! The playback engine per the components contract: Symphonia decode on a
 //! worker thread, a pre-allocated SPSC ring, a cpal callback that never
 //! allocates or locks, gapless decoder swap at track boundaries, and a lossy
-//! PCM tap for the visualizer. Grown out of the playback spike, which still
-//! drives this same engine from stdin in rox-prototype-playback.
+//! PCM tap for the visualizer. Grown out of the playback spike, which drove
+//! this same engine from stdin in rox-prototype-playback (git history, commit
+//! bd22dc1).
 
 pub mod engine;
 pub mod output;

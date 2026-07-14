@@ -164,6 +164,6 @@ lands on the same rebuild path.
 The engine lives in `crates/rox-playback`: `output.rs` (stream + callback), `engine.rs`
 (decode thread, gapless, seek, plus the offline decoders `decode_peaks` and
 `count_frames`), `resample.rs`, `shared.rs` (atomics, segments).
-`crates/rox-prototype-playback` is the CLI harness over it:
-`cargo run -p rox-prototype-playback -- <files>` plays with stdin commands;
-`--count <files>` runs the silent gapless verification.
+`crates/rox-prototype-playback` was the CLI harness over it (git history, commit
+bd22dc1): `cargo run -p rox-prototype-playback -- <files>` plays with stdin
+commands; `--count <files>` runs the silent gapless verification.

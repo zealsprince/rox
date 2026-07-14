@@ -5,7 +5,7 @@ left open: does a curl-noise flow field driven by spectrum bands hold a frame bu
 with CPU-side rendering, and does it draw better as GPUI polylines or as a per-frame
 image blit?
 
-The prototype lives in `crates/rox-prototype-viz`. It runs the sim on a worker thread the
+The prototype lived in `crates/rox-prototype-viz` (git history, commit bd22dc1). It ran the sim on a worker thread the
 way the real visualizer will: particles advected by the curl of 3D Perlin noise,
 driven by a synthetic 16-band spectrum (a kick on the lows, shimmer on the highs)
 standing in for the FFT of the PCM tap. Frames reach the UI through a latest-wins

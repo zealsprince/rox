@@ -6,9 +6,6 @@ members = [
     "crates/rox-playback",
     "crates/rox-library",
     "crates/rox-viz",
-    "crates/rox-prototype-viz",
-    "crates/rox-prototype-playback",
-    "crates/rox-prototype-library",
 ]
 default-members = ["crates/rox"]
 

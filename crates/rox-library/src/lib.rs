@@ -2,7 +2,7 @@
 //! truth and the write path, a full in-memory columnar projection is the read
 //! path, search is a case-folded substring scan over the projection. The
 //! shape was validated at 10 million tracks in rox-prototype-library, which
-//! reuses these modules for its harness.
+//! reused these modules for its harness (git history, commit bd22dc1).
 
 pub mod art;
 pub mod projection;

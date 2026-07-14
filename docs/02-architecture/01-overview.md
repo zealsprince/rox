@@ -96,8 +96,7 @@ not a redesign:
   visualizer subsystem drains the same ring either way and never knows the difference.
 
 The extension host mechanism (WASM in the style of Zed, or a subprocess model) is
-undecided and tracked in [open questions](../OPEN-QUESTIONS.md). No ADR until a
-prototype; nothing in the core blocks on it beyond the two calls above.
+undecided.
 
 ## Decisions (ADRs)
 

@@ -13,5 +13,3 @@ picture, or [Vision](01-product/01-vision.md) for the reasoning behind it.
   written when its detail is real, not before.
 - [Research](0R-research/README.md) - explorations that need a standalone prototype
   before any decision leans on them.
-- [Open Questions](OPEN-QUESTIONS.md) - the working decision log: what's genuinely
-  undecided.

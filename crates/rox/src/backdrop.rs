@@ -16,6 +16,7 @@ use gpui::{
 };
 use image::Frame;
 
+use crate::palette;
 use crate::player::Player;
 
 /// The longest side of the baked image. Small enough that the decode,
@@ -143,6 +144,9 @@ impl WindowBackdrop {
                 .inset_0()
                 .overflow_hidden()
                 .child(img(image?).size_full().object_fit(ObjectFit::Cover))
+                // Backdrop strength, applied as its inverse: a wash of the
+                // floor color over the bake.
+                .child(div().absolute().inset_0().bg(palette::backdrop_wash()))
                 .into_any_element(),
         )
     }

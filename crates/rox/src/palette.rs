@@ -2,15 +2,17 @@
 //! role, held as data in a process-global [`Palette`] behind one setter.
 //! Panels keep pulling from the plain accessors instead of inlining hex
 //! values; the accessors read the current palette, so a swap through
-//! [`set`] recolors the whole app. The static sits outside GPUI's
-//! reactivity, so [`set`] repaints explicitly - one choke point for every
-//! writer the ADR plans (user edits, transparency scalars, art-derived
-//! tinting).
+//! [`set`] recolors the whole app. ADR 10's transparency pair rides the
+//! same pipe: surface opacity applies inside the background accessors at
+//! read time, backdrop strength inside [`backdrop_wash`], neither stored
+//! per token. The static sits outside GPUI's reactivity, so the setters
+//! repaint explicitly - one choke point for every writer the ADR plans
+//! (user edits, the scalars, art-derived tinting).
 
 use std::sync::{LazyLock, RwLock};
 
 use gpui::{rgb, App, Rgba};
-use gpui_component::Theme;
+use gpui_component::{Theme, ThemeColor, ThemeMode};
 
 /// A palette color with its alpha replaced, for washes and gradients.
 pub fn alpha(color: Rgba, a: u8) -> Rgba {
@@ -31,28 +33,56 @@ pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     }
 }
 
+/// A color with its alpha scaled by a unit scalar, the surface accessors'
+/// read-time application of surface opacity.
+fn scaled(color: Rgba, opacity: f32) -> Rgba {
+    Rgba {
+        a: color.a * opacity,
+        ..color
+    }
+}
+
 /// One listing defines each role three ways: the [`Palette`] field, its
 /// default, and the accessor panels call. Adding a role means adding one
-/// line here.
+/// line here. Roles in the `surfaces` block are the backgrounds the
+/// backdrop can show through: their accessors read out at surface opacity,
+/// the rest read plain.
 macro_rules! tokens {
-    ($( $(#[$doc:meta])* $role:ident: $default:literal; )*) => {
+    (
+        $( $(#[$doc:meta])* $role:ident: $default:literal; )*
+        @surfaces {
+            $( $(#[$sdoc:meta])* $srole:ident: $sdefault:literal; )*
+        }
+    ) => {
         /// The palette as data: one color per role. The default is the
         /// hardcoded look the app has always rendered.
         #[derive(Clone, Copy)]
         pub struct Palette {
             $( $(#[$doc])* pub $role: Rgba, )*
+            $( $(#[$sdoc])* pub $srole: Rgba, )*
         }
 
         impl Default for Palette {
             fn default() -> Self {
-                Palette { $( $role: rgb($default), )* }
+                Palette {
+                    $( $role: rgb($default), )*
+                    $( $srole: rgb($sdefault), )*
+                }
             }
         }
 
         $(
             $(#[$doc])*
             pub fn $role() -> Rgba {
-                CURRENT.read().unwrap().$role
+                CURRENT.read().unwrap().palette.$role
+            }
+        )*
+
+        $(
+            $(#[$sdoc])*
+            pub fn $srole() -> Rgba {
+                let current = CURRENT.read().unwrap();
+                scaled(current.palette.$srole, current.surface_opacity)
             }
         )*
     };
@@ -66,19 +96,6 @@ tokens! {
     /// The library search box focus ring. Predates the accent settling on
     /// yellow, a candidate to fold into it.
     focus_ring: 0x4a6a55;
-
-    // Backgrounds, deepest to most raised.
-    bg_root: 0x121212;
-    bg_input: 0x141414;
-    bg_panel: 0x181818;
-    bg_elevated: 0x1c1c1c;
-    bg_toolbar: 0x1f1f1f;
-    bg_menubar: 0x242424;
-    bg_menu: 0x262626;
-    bg_control: 0x2a2a2a;
-    bg_menu_hover: 0x2f2f2f;
-    bg_control_active: 0x333333;
-    bg_control_hover: 0x3a3a3a;
 
     // Borders.
     border: 0x333333;
@@ -96,27 +113,115 @@ tokens! {
 
     // Canvas-only strokes.
     gridline: 0x6e6e6e;
+
+    // Backgrounds, deepest to most raised.
+    @surfaces {
+        bg_root: 0x121212;
+        bg_input: 0x141414;
+        bg_panel: 0x181818;
+        bg_elevated: 0x1c1c1c;
+        bg_toolbar: 0x1f1f1f;
+        bg_menubar: 0x242424;
+        bg_menu: 0x262626;
+        bg_control: 0x2a2a2a;
+        bg_menu_hover: 0x2f2f2f;
+        bg_control_active: 0x333333;
+        bg_control_hover: 0x3a3a3a;
+    }
 }
 
-/// The current palette. A static rather than a GPUI global so the
-/// accessors keep their plain signatures and paint closures can read them
-/// without a context.
-static CURRENT: LazyLock<RwLock<Palette>> = LazyLock::new(|| RwLock::new(Palette::default()));
+/// What the accessors read: the palette plus the transparency pair, held
+/// together so one lock serves a read.
+struct Current {
+    palette: Palette,
+    surface_opacity: f32,
+    backdrop_strength: f32,
+}
+
+/// The current palette and scalars. A static rather than a GPUI global so
+/// the accessors keep their plain signatures and paint closures can read
+/// them without a context.
+static CURRENT: LazyLock<RwLock<Current>> = LazyLock::new(|| {
+    RwLock::new(Current {
+        palette: Palette::default(),
+        surface_opacity: 1.0,
+        backdrop_strength: 1.0,
+    })
+});
+
+/// The wash the backdrop layer paints over the baked image: the floor
+/// color at the inverse of backdrop strength. Strength 1 shows the bake
+/// bare, 0 sinks it back into the floor.
+pub fn backdrop_wash() -> Rgba {
+    let current = CURRENT.read().unwrap();
+    Rgba {
+        a: 1.0 - current.backdrop_strength,
+        ..current.palette.bg_elevated
+    }
+}
 
 /// The one setter every palette change goes through: swap the global,
-/// re-feed the gpui-component theme tokens the widgets draw, and repaint
-/// every open window. Callers hand in a whole palette; layering user
-/// edits, scalars, or derivation together happens upstream of here.
+/// re-feed the widget theme, repaint every window. Callers hand in a whole
+/// palette; layering user edits, scalars, or derivation together happens
+/// upstream of here.
 pub fn set(palette: Palette, cx: &mut App) {
-    *CURRENT.write().unwrap() = palette;
+    CURRENT.write().unwrap().palette = palette;
+    apply(cx);
+}
+
+/// The transparency pair's setter, the same pipe as [`set`]. Runtime
+/// values only; persisting them stays with the settings' writers.
+pub fn set_scalars(surface_opacity: f32, backdrop_strength: f32, cx: &mut App) {
+    {
+        let mut current = CURRENT.write().unwrap();
+        current.surface_opacity = surface_opacity.clamp(0.0, 1.0);
+        current.backdrop_strength = backdrop_strength.clamp(0.0, 1.0);
+    }
+    apply(cx);
+}
+
+/// The shared tail of every palette change: re-feed the gpui-component
+/// theme tokens the widgets draw, then repaint every open window.
+fn apply(cx: &mut App) {
+    // Start over from the stock dark baseline so repeated feeds scale
+    // pristine values instead of compounding alphas.
+    Theme::change(ThemeMode::Dark, None, cx);
+    let surface_opacity = CURRENT.read().unwrap().surface_opacity;
+    let theme = Theme::global_mut(cx);
     // The widget baseline stays on gpui-component's stock dark set except
     // where our tokens reach what its widgets actually draw today:
     // selection follows the accent instead of the stock blue.
-    let theme = Theme::global_mut(cx);
     theme.table_active = alpha(accent(), 0x26).into();
     theme.table_active_border = accent().into();
     theme.list_active = alpha(accent(), 0x26).into();
     theme.list_active_border = accent().into();
+    // The chrome between the backdrop and the panel content splits in
+    // two. Washes are visible chrome with nothing of ours underneath -
+    // the tab strip and its buttons, the table's row tints - and read out
+    // at surface opacity like our own surface tokens, or the backdrop
+    // could never show through the dock. One deref up front: field
+    // borrows through the Theme wrapper would each re-borrow it.
+    let colors: &mut ThemeColor = theme;
+    for token in [
+        &mut colors.secondary,
+        &mut colors.tab_bar,
+        &mut colors.tab_active,
+        &mut colors.table_even,
+        &mut colors.table_head,
+        &mut colors.table_hover,
+    ] {
+        token.a *= surface_opacity;
+    }
+    // Structural backstops always sit under a surface that already
+    // carries the wash: the stack body under the panel tiles, the tab
+    // panel body under panel content, the table body over the panel's
+    // own background. Scaling them would stack a second and third fog
+    // layer over the backdrop, so translucency drops them out entirely.
+    if surface_opacity < 1.0 {
+        for token in [&mut colors.background, &mut colors.table] {
+            token.a = 0.0;
+        }
+    }
     // The static sits outside GPUI's reactivity, so the repaint is
     // explicit: wake every window, whichever entities they host.
     for window in cx.windows() {

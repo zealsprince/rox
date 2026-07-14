@@ -22,7 +22,7 @@ use gpui::{
     point, px, size, App, AppContext, Application, Bounds, SharedString, TitlebarOptions,
     WindowBounds, WindowOptions,
 };
-use gpui_component::{Root, Theme, ThemeMode};
+use gpui_component::Root;
 
 use assets::Assets;
 use settings::Settings;
@@ -67,11 +67,12 @@ fn main() {
         gpui_component::init(cx);
         rox_dock::init(cx);
         workspace::init(cx);
-        // The dark mode baseline first, then the palette through its one
-        // setter, which feeds the widget theme tokens and is the same
-        // choke point every later palette change goes through.
-        Theme::change(ThemeMode::Dark, None, cx);
+        // Startup theme wiring runs through the palette pipeline - the
+        // same choke point every later palette change goes through. The
+        // setters set the dark baseline and feed the widget theme tokens.
+        let settings = Settings::load();
         palette::set(palette::Palette::default(), cx);
+        palette::set_scalars(settings.surface_opacity, settings.backdrop_strength, cx);
         open_workspace(cx);
         cx.activate(true);
     });

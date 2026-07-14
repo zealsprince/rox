@@ -49,6 +49,12 @@ pub struct Settings {
     /// The folder the library was last scanned from, so a rescan works
     /// across sessions. None until a folder has been opened.
     pub library_root: Option<PathBuf>,
+    /// ADR 10's transparency pair, both 0 to 1. How opaque the app's
+    /// surfaces read, 1 fully opaque...
+    pub surface_opacity: f32,
+    /// ...and how strongly the backdrop shows behind them, 1 the bare
+    /// bake, 0 sunk into the floor.
+    pub backdrop_strength: f32,
 }
 
 /// A window frame in logical pixels, plus whether the window was maximized
@@ -71,6 +77,8 @@ impl Default for Settings {
             window: None,
             layout: None,
             library_root: None,
+            surface_opacity: 1.0,
+            backdrop_strength: 1.0,
         }
     }
 }
@@ -94,6 +102,18 @@ impl Settings {
         } else {
             1.0
         };
+        // The transparency pair reads straight into color math, so
+        // hand-edited values clamp to the unit range.
+        for scalar in [
+            &mut settings.surface_opacity,
+            &mut settings.backdrop_strength,
+        ] {
+            *scalar = if scalar.is_finite() {
+                scalar.clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+        }
         settings
     }
 

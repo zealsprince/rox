@@ -438,7 +438,13 @@ impl Render for StackPanel {
         h_flex()
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().tab_bar)
+            // A structural backstop, normally covered edge to edge by the
+            // panel tiles (resize handles are overlays, not gaps). On
+            // `background` rather than `tab_bar` so the app palette can
+            // treat it as structural: it drops out when surfaces go
+            // translucent instead of fogging the backdrop under every
+            // panel.
+            .bg(cx.theme().background)
             .child(
                 ResizablePanelGroup::new("stack-panel-group")
                     .with_state(&self.state)

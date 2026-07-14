@@ -6,7 +6,7 @@ rox is a desktop music player for people with large, carefully tagged local libr
 The UI is panels you compose yourself, duplicate with independent configs, and pop out
 into real OS windows. Themes are token sets a person can share. Tagging is deep enough
 to trust with a real collection, and the whole thing stays fast at tens of thousands of
-tracks. Rust, built on GPUI, with Linux, Mac, and Windows all first-class.
+tracks. Rust, built on GPUI, with Linux, Mac, and Windows all first-class. If it doesn't start in under a second, it isn't rox.
 
 ## Why
 
@@ -14,7 +14,8 @@ Foobar2000's magic was a panel UI you build yourself, a theme community on top o
 (CaTRoX, NekoRoX, Georgia), and tag and library management that held up at scale. That
 stack is stranded on Windows, and nothing on Linux or Mac covers all three legs: Tauon's
 tagging is shallow, Strawberry isn't composable, Quod Libet isn't something you'd theme.
-rox goes after that gap.
+
+Oh right, and it needs to be native, everywhere.
 
 ## Run it
 

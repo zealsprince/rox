@@ -115,3 +115,4 @@ Each ADR records the call, the alternatives weighed, and what it costs. They liv
 | [7 - Panels](decisions/07-adr-panels.md) | GPUI primitives with gpui-component as the widget baseline | Decided |
 | [8 - Visualizer rendering](decisions/08-adr-visualizer-rendering.md) | CPU-side rendering, forced by GPUI | Decided, prototype pending |
 | [9 - Audio output](decisions/09-adr-audio-output.md) | Output layer swappable, bit-perfect deferred | Decided |
+| [10 - Theming](decisions/10-adr-theming.md) | Palette as data behind one setter, CPU-baked backdrop | Decided |

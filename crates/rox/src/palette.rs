@@ -49,7 +49,10 @@ fn scaled(color: Rgba, opacity: f32) -> Rgba {
 /// Roles in the `tints` block are sub-surface texture riding on a surface
 /// that already carries the wash: they read out at the square of surface
 /// opacity, thinning to a whisper under translucency instead of stacking
-/// a second coat. The rest read plain.
+/// a second coat. Roles in the `ink` block are foregrounds drawn over the
+/// surfaces: they read out lifted toward `text_bright` as surfaces thin,
+/// so contrast survives whatever the backdrop shows through. The rest
+/// read plain.
 macro_rules! tokens {
     (
         $( $(#[$doc:meta])* $role:ident: $default:literal; )*
@@ -59,6 +62,9 @@ macro_rules! tokens {
         @tints {
             $( $(#[$tdoc:meta])* $trole:ident: $tdefault:literal; )*
         }
+        @ink {
+            $( $(#[$idoc:meta])* $irole:ident: $idefault:literal; )*
+        }
     ) => {
         /// The palette as data: one color per role. The default is the
         /// hardcoded look the app has always rendered.
@@ -67,6 +73,7 @@ macro_rules! tokens {
             $( $(#[$doc])* pub $role: Rgba, )*
             $( $(#[$sdoc])* pub $srole: Rgba, )*
             $( $(#[$tdoc])* pub $trole: Rgba, )*
+            $( $(#[$idoc])* pub $irole: Rgba, )*
         }
 
         impl Default for Palette {
@@ -75,6 +82,7 @@ macro_rules! tokens {
                     $( $role: rgb($default), )*
                     $( $srole: rgb($sdefault), )*
                     $( $trole: rgb($tdefault), )*
+                    $( $irole: rgb($idefault), )*
                 }
             }
         }
@@ -102,6 +110,18 @@ macro_rules! tokens {
                 scaled(current.palette.$trole, opacity * opacity)
             }
         )*
+
+        $(
+            $(#[$idoc])*
+            pub fn $irole() -> Rgba {
+                let current = CURRENT.read().unwrap();
+                mix(
+                    current.palette.$irole,
+                    current.palette.text_bright,
+                    1.0 - current.surface_opacity,
+                )
+            }
+        )*
     };
 }
 
@@ -118,18 +138,13 @@ tokens! {
     border: 0x333333;
     border_light: 0x3a3a3a;
 
-    // Text, brightest to faintest.
+    // The two text roles that stay fixed: the top of the ladder, which is
+    // also what the ink roles lift toward, and the dark text over
+    // accent-filled controls, which sit on opaque accent, not on a
+    // thinning surface.
     text_bright: 0xe0e0e0;
-    text: 0xc0c0c0;
-    text_secondary: 0xa0a0a0;
-    text_dim: 0x9a9a9a;
-    text_muted: 0x808080;
-    text_faint: 0x707070;
     /// Dark text over accent-filled controls.
     text_on_accent: 0x121212;
-
-    // Canvas-only strokes.
-    gridline: 0x6e6e6e;
 
     // Backgrounds, deepest to most raised.
     @surfaces {
@@ -149,6 +164,16 @@ tokens! {
     @tints {
         bg_input: 0x141414;
         bg_toolbar: 0x1f1f1f;
+    }
+
+    // Text, brightest to faintest, and the canvas strokes with it.
+    @ink {
+        text: 0xc0c0c0;
+        text_secondary: 0xa0a0a0;
+        text_dim: 0x9a9a9a;
+        text_muted: 0x808080;
+        text_faint: 0x707070;
+        gridline: 0x6e6e6e;
     }
 }
 
@@ -247,6 +272,18 @@ fn apply(cx: &mut App) {
     let structural = if opacity < 1.0 { 0.0 } else { 1.0 };
     colors.background = scaled(palette.bg_root, structural).into();
     colors.table = scaled(palette.bg_root, structural).into();
+    // The ink rule again, for the chrome's own labels and icons: as
+    // surfaces thin, foregrounds lift toward text_bright so tab titles,
+    // dock buttons, and the table header keep contrast.
+    let lift = 1.0 - opacity;
+    for token in [
+        &mut colors.tab_foreground,
+        &mut colors.muted_foreground,
+        &mut colors.secondary_foreground,
+        &mut colors.table_head_foreground,
+    ] {
+        *token = mix((*token).into(), palette.text_bright, lift).into();
+    }
     // The static sits outside GPUI's reactivity, so the repaint is
     // explicit: wake every window, whichever entities they host.
     for window in cx.windows() {

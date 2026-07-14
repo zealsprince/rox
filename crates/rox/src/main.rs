@@ -67,16 +67,11 @@ fn main() {
         gpui_component::init(cx);
         rox_dock::init(cx);
         workspace::init(cx);
-        // The widget baseline follows the app's existing dark palette;
-        // themes as shareable token sets come later. Selection follows
-        // the accent instead of the stock blue; only tokens widgets
-        // actually draw today are fed from the palette.
+        // The dark mode baseline first, then the palette through its one
+        // setter, which feeds the widget theme tokens and is the same
+        // choke point every later palette change goes through.
         Theme::change(ThemeMode::Dark, None, cx);
-        let theme = Theme::global_mut(cx);
-        theme.table_active = palette::alpha(palette::accent(), 0x26).into();
-        theme.table_active_border = palette::accent().into();
-        theme.list_active = palette::alpha(palette::accent(), 0x26).into();
-        theme.list_active_border = palette::accent().into();
+        palette::set(palette::Palette::default(), cx);
         open_workspace(cx);
         cx.activate(true);
     });

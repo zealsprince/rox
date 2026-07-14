@@ -24,7 +24,7 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 
 use rox_playback::engine;
 
-use crate::palette;
+use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, ScrubState, StatePanel};
 use crate::peaks;
 
@@ -32,14 +32,8 @@ use crate::peaks;
 /// however many bars fit the width.
 const PEAK_BINS: usize = 2048;
 
-/// Display bar geometry, a few px wide with a hairline gap.
-const BAR_WIDTH: f32 = 3.0;
-const BAR_GAP: f32 = 2.0;
+/// The shortest a bar draws, so quiet passages stay visible.
 const MIN_BAR: f32 = 2.0;
-
-/// How long a strip morph takes: stand-in to peaks, track to track, blank
-/// to anything, in geometry and color both.
-const REVEAL_SECS: f32 = 0.35;
 
 enum Peaks {
     /// No track has been seen yet.
@@ -166,7 +160,7 @@ impl WaveformPanel {
             self.to = shape;
             return;
         }
-        if self.morph_at.elapsed().as_secs_f32() >= REVEAL_SECS {
+        if self.morph_at.elapsed().as_secs_f32() >= tokens::EASE_SECS {
             self.from = self.to.clone();
         }
         self.to = shape;
@@ -178,7 +172,7 @@ impl WaveformPanel {
         let player = self.state.player.clone();
         let from = self.from.clone();
         let to = self.to.clone();
-        let u = (self.morph_at.elapsed().as_secs_f32() / REVEAL_SECS).min(1.0);
+        let u = (self.morph_at.elapsed().as_secs_f32() / tokens::EASE_SECS).min(1.0);
         let t = self.epoch.elapsed().as_secs_f32();
         canvas(
             {
@@ -288,7 +282,7 @@ fn paint_morph(
         return;
     }
 
-    let count = ((w / (BAR_WIDTH + BAR_GAP)) as usize).max(1);
+    let count = ((w / (tokens::BAR_W + tokens::BAR_GAP)) as usize).max(1);
     let step = w / count as f32;
     let center = h / 2.0;
     let max_bar = h * 0.46;
@@ -316,7 +310,7 @@ fn paint_morph(
         window.paint_quad(fill(
             Bounds::new(
                 point(bounds.origin.x + px(x), bounds.origin.y + px(top)),
-                size(px(BAR_WIDTH), px(bottom - top)),
+                size(px(tokens::BAR_W), px(bottom - top)),
             ),
             color,
         ));
@@ -333,8 +327,11 @@ fn paint_morph(
         let head_x = progress.clamp(0.0, 1.0) * w;
         window.paint_quad(fill(
             Bounds::new(
-                point(bounds.origin.x + px(head_x - 1.0), bounds.origin.y),
-                size(px(2.0), px(h)),
+                point(
+                    bounds.origin.x + px(head_x - tokens::PLAYHEAD_W / 2.0),
+                    bounds.origin.y,
+                ),
+                size(px(tokens::PLAYHEAD_W), px(h)),
             ),
             palette::alpha(palette::text_bright(), alpha),
         ));

@@ -9,17 +9,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context,
-    DismissEvent, Div, Entity, Focusable as _, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Rgba, Subscription, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowOptions,
+    anchored, deferred, div, fill, point, prelude::*, px, size, svg, AnyElement, App, Bounds,
+    Context, DismissEvent, Div, Entity, Focusable as _, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, Subscription, TitlebarOptions, WeakEntity,
+    Window, WindowBounds, WindowOptions,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Root;
 use rox_dock::{Panel, PanelInfo, PanelView, TabPanel};
 
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::palette;
+use crate::design::{palette, tokens};
 use crate::panels::library::Library;
 use crate::player::Player;
 use crate::selection::Selection;
@@ -76,8 +76,8 @@ pub fn icon_control<V: 'static>(
     cx: &mut Context<V>,
 ) -> impl IntoElement {
     div()
-        .p_1p5()
-        .rounded_md()
+        .p(tokens::ICON_PAD)
+        .rounded(tokens::RADIUS)
         .hover(|d| d.bg(palette::bg_control()))
         .cursor_pointer()
         .on_mouse_down(
@@ -125,6 +125,62 @@ impl ScrubState {
         }
         Some((f32::from(x - bounds.origin.x) / w).clamp(0.0, 1.0))
     }
+}
+
+/// A horizontal slider's paint: a rounded track, the fraction as the
+/// accent-filled side, a round knob at the position. `dimmed` keeps the
+/// knob where it is and fades the fill, the volume strip's muted look.
+pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window: &mut Window) {
+    let track_h = tokens::SLIDER_TRACK_H;
+    let knob = tokens::SLIDER_KNOB;
+
+    let w = f32::from(bounds.size.width);
+    let h = f32::from(bounds.size.height);
+    if w <= knob || h <= 0.0 {
+        return;
+    }
+
+    // The knob's travel is inset by its radius so it never clips the ends.
+    let knob_x = knob / 2.0 + fraction.clamp(0.0, 1.0) * (w - knob);
+    let track_y = bounds.origin.y + px((h - track_h) / 2.0);
+    window.paint_quad(
+        fill(
+            Bounds::new(point(bounds.origin.x, track_y), size(px(w), px(track_h))),
+            palette::bg_control(),
+        )
+        .corner_radii(px(track_h / 2.0)),
+    );
+    window.paint_quad(
+        fill(
+            Bounds::new(
+                point(bounds.origin.x, track_y),
+                size(px(knob_x), px(track_h)),
+            ),
+            if dimmed {
+                palette::alpha(palette::accent(), 0x33)
+            } else {
+                palette::accent()
+            },
+        )
+        .corner_radii(px(track_h / 2.0)),
+    );
+    window.paint_quad(
+        fill(
+            Bounds::new(
+                point(
+                    bounds.origin.x + px(knob_x - knob / 2.0),
+                    bounds.origin.y + px((h - knob) / 2.0),
+                ),
+                size(px(knob), px(knob)),
+            ),
+            if dimmed {
+                palette::text_dim()
+            } else {
+                palette::text_bright()
+            },
+        )
+        .corner_radii(px(knob / 2.0)),
+    );
 }
 
 /// Keep a live drag following the pointer: apply the strip fraction on
@@ -358,8 +414,8 @@ impl<P: Customizable> Render for CustomizeHost<P> {
             .size_full()
             .flex()
             .flex_col()
-            .gap_2()
-            .p_3()
+            .gap(tokens::SPACE_SM)
+            .p(tokens::SPACE_MD)
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
@@ -384,7 +440,7 @@ pub fn setting_row(
                 .flex_row()
                 .items_center()
                 .justify_between()
-                .gap_3()
+                .gap(tokens::SPACE_MD)
                 .child(label)
                 .child(div().flex_none().child(control)),
         )
@@ -444,11 +500,11 @@ fn segments<P: 'static, V: PartialEq + Copy + 'static>(
         let on_pick = on_pick.clone();
         group = group.child(
             div()
-                .px_2()
-                .py_1()
+                .px(tokens::SPACE_SM)
+                .py(tokens::SPACE_XS)
                 .when(i > 0, |d| d.ml(px(1.)))
-                .when(i == 0, |d| d.rounded_l_md())
-                .when(i == last, |d| d.rounded_r_md())
+                .when(i == 0, |d| d.rounded_l(tokens::RADIUS))
+                .when(i == last, |d| d.rounded_r(tokens::RADIUS))
                 .bg(if picked {
                     palette::accent()
                 } else {

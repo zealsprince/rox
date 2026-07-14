@@ -21,7 +21,7 @@ use rox_dock::{
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::palette;
+use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, TabHosts};
 use crate::panels::cover::{CoverArtPanel, CoverConfig};
 use crate::panels::library::{Library, LibraryConfig, LibraryEvent, LibraryPanel};
@@ -122,6 +122,7 @@ fn register_panels(state: &AppState, cx: &mut App) {
 #[derive(Clone, Copy)]
 enum MenuAction {
     NewWindow,
+    OpenSettings,
     OpenFolder,
     OpenLibrary,
     OpenCoverArt,
@@ -156,10 +157,16 @@ struct Menu {
 const MENUS: &[Menu] = &[
     Menu {
         label: "Window",
-        entries: &[MenuEntry::Item(MenuItem {
-            label: "New Window",
-            action: MenuAction::NewWindow,
-        })],
+        entries: &[
+            MenuEntry::Item(MenuItem {
+                label: "New Window",
+                action: MenuAction::NewWindow,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Settings...",
+                action: MenuAction::OpenSettings,
+            }),
+        ],
     },
     Menu {
         label: "Library",
@@ -547,6 +554,7 @@ impl Workspace {
     fn run(&mut self, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             MenuAction::NewWindow => crate::open_workspace(cx),
+            MenuAction::OpenSettings => crate::settings_window::open(cx),
             MenuAction::OpenFolder => self
                 .state
                 .library
@@ -605,7 +613,7 @@ impl Workspace {
         div()
             .relative()
             .h_full()
-            .px_3()
+            .px(tokens::SPACE_MD)
             .flex()
             .items_center()
             .cursor_pointer()
@@ -649,12 +657,12 @@ impl Workspace {
             .flex_row()
             .items_center()
             .flex_none()
-            .gap_2()
-            .px_2()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_SM)
             .when_some(busy, |d, label| {
                 d.child(
                     div()
-                        .px_2()
+                        .px(tokens::SPACE_SM)
                         .py(px(2.))
                         .rounded_full()
                         .bg(palette::accent())
@@ -694,34 +702,31 @@ impl Workspace {
             .min_w(px(180.))
             .flex()
             .flex_col()
-            .py_1()
+            .py(tokens::SPACE_XS)
             .bg(palette::bg_menu())
             .border_1()
             .border_color(palette::border_light())
             .shadow_md()
             .occlude()
-            .children(
-                menu.entries
-                    .iter()
-                    .enumerate()
-                    .map(|(i, entry)| match entry {
-                        MenuEntry::Item(item) => self
-                            .action_item(item, cx)
-                            .id(("menu-entry", i))
-                            // Sliding onto a plain item retracts a flyout a
-                            // sibling submenu left open.
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                if *hovered && this.open_submenu.is_some() {
-                                    this.open_submenu = None;
-                                    cx.notify();
-                                }
-                            }))
-                            .into_any_element(),
-                        MenuEntry::Submenu { label, items } => {
-                            self.submenu_row(i, label, items, cx).into_any_element()
-                        }
-                    }),
-            )
+            .children(menu.entries.iter().enumerate().map(|(i, entry)| {
+                match entry {
+                    MenuEntry::Item(item) => self
+                        .action_item(item, cx)
+                        .id(("menu-entry", i))
+                        // Sliding onto a plain item retracts a flyout a
+                        // sibling submenu left open.
+                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                            if *hovered && this.open_submenu.is_some() {
+                                this.open_submenu = None;
+                                cx.notify();
+                            }
+                        }))
+                        .into_any_element(),
+                    MenuEntry::Submenu { label, items } => {
+                        self.submenu_row(i, label, items, cx).into_any_element()
+                    }
+                }
+            }))
     }
 
     /// A dropdown row that runs an action and closes the menu. The caller
@@ -730,8 +735,8 @@ impl Workspace {
     fn action_item(&self, item: &'static MenuItem, cx: &mut Context<Self>) -> Div {
         let action = item.action;
         div()
-            .px_3()
-            .py_1()
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_XS)
             .cursor_pointer()
             .hover(|d| d.bg(palette::bg_control_hover()))
             .on_mouse_down(
@@ -760,8 +765,8 @@ impl Workspace {
         div()
             .id(("menu-entry", index))
             .relative()
-            .px_3()
-            .py_1()
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_XS)
             .cursor_pointer()
             .when(open, |d| d.bg(palette::bg_control_hover()))
             .hover(|d| d.bg(palette::bg_control_hover()))
@@ -775,7 +780,7 @@ impl Workspace {
             .flex_row()
             .items_center()
             .justify_between()
-            .gap_2()
+            .gap(tokens::SPACE_SM)
             .child(label)
             .child(
                 svg()
@@ -795,7 +800,7 @@ impl Workspace {
                         .min_w(px(160.))
                         .flex()
                         .flex_col()
-                        .py_1()
+                        .py(tokens::SPACE_XS)
                         .bg(palette::bg_menu())
                         .border_1()
                         .border_color(palette::border_light())

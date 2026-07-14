@@ -4,11 +4,14 @@
 //! [`Settings::update`], which reloads the file first so one writer's save
 //! never reverts another's fields to what they were at startup.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use rox_playback::engine::LoopMode;
+
+use crate::design::palette::Palette;
 
 /// The app's data directory, shared with the library database. Created on
 /// first use.
@@ -55,6 +58,14 @@ pub struct Settings {
     /// ...and how strongly the backdrop shows behind them, 1 the bare
     /// bake, 0 sunk into the floor.
     pub backdrop_strength: f32,
+    /// The user palette as role-name-to-`#rrggbb` entries,
+    /// [`Palette::to_map`]'s shape. Empty means the default palette;
+    /// unknown roles fall away on load, like the file's own fields.
+    pub palette: BTreeMap<String, String>,
+    /// Whether the playing track's art re-tints the palette and backs
+    /// the windows (ADR 10's derived mode). Off by default: the look
+    /// only follows the music when asked to.
+    pub art_theming: bool,
 }
 
 /// A window frame in logical pixels, plus whether the window was maximized
@@ -79,6 +90,8 @@ impl Default for Settings {
             library_root: None,
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
+            palette: BTreeMap::new(),
+            art_theming: false,
         }
     }
 }
@@ -135,6 +148,11 @@ impl Settings {
         if let Err(e) = std::fs::write(&path, text) {
             eprintln!("settings: writing {}: {e}", path.display());
         }
+    }
+
+    /// The user palette the map holds, over the defaults.
+    pub fn palette(&self) -> Palette {
+        Palette::from_map(&self.palette)
     }
 
     pub fn loop_mode(&self) -> LoopMode {

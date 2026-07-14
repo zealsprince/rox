@@ -16,8 +16,14 @@ Core, the center of gravity, get these wrong and there's no product:
 
 Peripheral, edges that can exist without being the point:
 
+- Listening stats. Every real listen recorded on disk, rolled up per track, artist,
+  album, and genre, surfaced in browse (most played, never played, recently played) and
+  a stats panel. Closest to core of anything on this list: the library obsessive treats
+  their history as part of the library. It sits behind the library because it's
+  worthless if browsing doesn't hold up first.
 - Last.fm scrobbling. Wanted, and the community expects it, but it isn't the reason to
-  switch.
+  switch. It reports the same listens stats records, so the two never disagree about
+  what counted.
 - Lyric display. A lyrics panel that shows words for the playing track, fetched or from a
   local file.
 - Auto-tagging. Fingerprint a track and pull correct metadata (MusicBrainz / AcoustID) to
@@ -96,5 +102,10 @@ Requirements product owns, structure is the architect's call:
   fonts, spacing, and accent. A layout is a saved arrangement of panels and their configs.
   Both are artifacts a person can hand to someone else and have work. No scripting layer,
   that's where Foobar's theming turned fragile.
+- **Listening history is a record, not counters.** A real listen (a skip isn't a
+  listen) lands on disk as an event with when it happened, keyed to track identity, so
+  history survives rescans and file moves, and any stat someone thinks of later can be
+  derived from what was kept. Data volume isn't a concern worth trading the raw record
+  against. Recording never touches the audio path and never slows browse.
 - **Panels pop out into real OS windows**, not fake in-app floats. Multi-monitor is the
   whole reason this matters.

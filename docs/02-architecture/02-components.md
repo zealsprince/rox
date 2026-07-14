@@ -51,6 +51,33 @@ Contract to the metadata writer: after a successful tag write, the writer sends 
 request for those paths, and the library re-reads them and emits change events. A tag edit
 and the browse view converge without a full rescan.
 
+## Play history
+
+Responsibility: turn playback into a durable record of listens and answer the stat
+queries browse and panels ask: play count and recency per track, rolled up by artist,
+album, and genre. Product hands down the shape ([scope](../01-product/03-scope.md)):
+events with timestamps keyed to track identity, never bare counters, because the raw
+record is what every future stat derives from.
+
+Boundary: nothing here touches the audio path. The playback engine already emits state
+(current track, position, transitions); play history consumes that state on the control
+side, applies the listen rule, and appends to the store off the UI thread. The listen
+rule matches the scrobble standard, half the track or four minutes of it, whichever
+comes first, so the local record and anything reported outward agree about what
+counted. Storage is the library database per
+[ADR 11](decisions/11-adr-play-history.md); aggregates are derived from events, and
+stats read at panel-open cadence, not per keystroke, so they stay in SQL rather than
+the projection.
+
+Contract:
+- In: playback state transitions (track opened, position advanced, track
+  ended or skipped), and the track's identity from the library.
+- Out: one listen event appended per real listen, stat queries (per-track count and
+  last-played, artist / album / genre rollups, recents), and a change event per append
+  so open views refresh.
+- To enrichment: the scrobbler consumes the same listen events rather than watching
+  playback itself.
+
 ## Metadata writer
 
 Responsibility: read and write tags across the format matrix, safely, in bulk. Wraps
@@ -124,8 +151,8 @@ network never blocks the UI, the audio path, or a browse query.
   Playback, browse, search, and manual tagging never depend on it.
 - **Off the hot paths.** Enrichment runs on its own workers behind channels. It never touches
   the real-time audio callback, and it reaches the library and metadata writer through their
-  existing contracts (a scrobble reads playback state, an auto-tag result goes through the same
-  atomic tag-write path as a manual edit).
+  existing contracts (a scrobble consumes play history's listen events, an auto-tag result goes
+  through the same atomic tag-write path as a manual edit).
 - **The pieces exist.** Last.fm scrobbling is a straightforward HTTP client. Auto-tagging is
   `rusty-chromaprint` (pure-Rust fingerprint) plus `musicbrainz_rs`, with a hand-rolled AcoustID
   call. Lyrics is a fetch-or-read-local panel. None of this is load-bearing for the core, so it

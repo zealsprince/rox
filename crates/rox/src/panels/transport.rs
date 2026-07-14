@@ -20,13 +20,10 @@ use rox_library::store::TrackMeta;
 use rox_playback::engine::LoopMode;
 
 use crate::assets::icons;
-use crate::palette;
+use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, Customizable, ScrubState};
 use crate::panels::library::LibraryEvent;
 use crate::player::{fmt_time, fmt_time_padded};
-
-/// Thickness of the seek strip's track line.
-const STRIP_H: f32 = 6.0;
 
 /// The playback panel's per-view config: what a saved layout restores,
 /// and what the customize window edits.
@@ -97,7 +94,7 @@ impl Render for TransportPanel {
         // Play/pause is the primary action, so it gets the filled round
         // button while everything around it stays flat.
         let play_pause = div()
-            .size(px(30.))
+            .size(tokens::PLAY_SIZE)
             .flex_none()
             .rounded_full()
             .bg(palette::accent())
@@ -125,8 +122,8 @@ impl Render for TransportPanel {
             .flex()
             .items_center()
             .map(|d| justify(d, self.config.align))
-            .gap_1()
-            .px_2()
+            .gap(tokens::SPACE_XS)
+            .px(tokens::SPACE_SM)
             .child(panel::icon_control(
                 icons::SKIP_BACK,
                 palette::text(),
@@ -295,8 +292,8 @@ impl Render for TrackInfoPanel {
             .flex()
             .items_center()
             .map(|d| justify(d, self.config.align))
-            .gap_2()
-            .px_3();
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD);
 
         let Some(now) = now else {
             // Nothing to describe: a session still opening, the reason one
@@ -424,7 +421,7 @@ impl Customizable for VolumePanel {
         div()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap(tokens::SPACE_MD)
             .child(align_row(
                 self.config.align,
                 |this: &mut Self, align, cx| {
@@ -449,63 +446,6 @@ impl Customizable for VolumePanel {
     }
 }
 
-/// The volume slider: a rounded track, the setting as the filled side, a
-/// round knob at the position. Muted keeps the knob where it is and dims
-/// the fill. The slider spans 0 to 100%; a louder hand-edited settings
-/// value shows as full.
-fn paint_slider(volume: f32, muted: bool, bounds: Bounds<Pixels>, window: &mut Window) {
-    const TRACK_H: f32 = 4.0;
-    const KNOB: f32 = 12.0;
-
-    let w = f32::from(bounds.size.width);
-    let h = f32::from(bounds.size.height);
-    if w <= KNOB || h <= 0.0 {
-        return;
-    }
-
-    // The knob's travel is inset by its radius so it never clips the ends.
-    let knob_x = KNOB / 2.0 + volume.clamp(0.0, 1.0) * (w - KNOB);
-    let track_y = bounds.origin.y + px((h - TRACK_H) / 2.0);
-    window.paint_quad(
-        fill(
-            Bounds::new(point(bounds.origin.x, track_y), size(px(w), px(TRACK_H))),
-            palette::bg_control(),
-        )
-        .corner_radii(px(TRACK_H / 2.0)),
-    );
-    window.paint_quad(
-        fill(
-            Bounds::new(
-                point(bounds.origin.x, track_y),
-                size(px(knob_x), px(TRACK_H)),
-            ),
-            if muted {
-                palette::alpha(palette::accent(), 0x33)
-            } else {
-                palette::accent()
-            },
-        )
-        .corner_radii(px(TRACK_H / 2.0)),
-    );
-    window.paint_quad(
-        fill(
-            Bounds::new(
-                point(
-                    bounds.origin.x + px(knob_x - KNOB / 2.0),
-                    bounds.origin.y + px((h - KNOB) / 2.0),
-                ),
-                size(px(KNOB), px(KNOB)),
-            ),
-            if muted {
-                palette::text_dim()
-            } else {
-                palette::text_bright()
-            },
-        )
-        .corner_radii(px(KNOB / 2.0)),
-    );
-}
-
 impl Render for VolumePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let player = self.state.player.read(cx);
@@ -527,9 +467,9 @@ impl Render for VolumePanel {
         let player = self.state.player.clone();
         let slider = div()
             .flex_1()
-            .min_w(px(80.))
-            .when(!self.config.stretch, |d| d.max_w(px(200.)))
-            .h(px(22.))
+            .min_w(tokens::SLIDER_MIN_W)
+            .when(!self.config.stretch, |d| d.max_w(tokens::SLIDER_MAX_W))
+            .h(tokens::CONTROL_H)
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -549,8 +489,11 @@ impl Render for VolumePanel {
                         let scrub = scrub.clone();
                         move |bounds, _, _| scrub.set_bounds(bounds)
                     },
+                    // Muted keeps the knob where it is and dims the fill. The
+                    // slider spans 0 to 100%; a louder hand-edited settings
+                    // value shows as full.
                     move |bounds, _, window, _| {
-                        paint_slider(volume, muted, bounds, window);
+                        panel::paint_slider(volume, muted, bounds, window);
                         panel::scrub_on_paint(&scrub, window, {
                             let player = player.clone();
                             move |fraction, cx| {
@@ -568,8 +511,21 @@ impl Render for VolumePanel {
             .flex()
             .items_center()
             .map(|d| justify(d, self.config.align))
-            .gap_2()
-            .px_3()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            // Scrolling anywhere on the strip nudges the volume; like the
+            // slider it spans 0 to 100% and unmutes on touch.
+            .on_scroll_wheel(cx.listener(|this, event: &gpui::ScrollWheelEvent, _, cx| {
+                let lines = match event.delta {
+                    gpui::ScrollDelta::Lines(lines) => lines.y,
+                    gpui::ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 20.0,
+                };
+                // A wheel notch arrives as 3 lines, so one notch steps 5%.
+                this.state.player.update(cx, |player, cx| {
+                    let volume = (player.volume() + lines / 3.0 * 0.05).clamp(0.0, 1.0);
+                    player.set_volume(volume, cx);
+                });
+            }))
             .child(panel::icon_control(
                 speaker,
                 speaker_color,
@@ -670,7 +626,7 @@ impl Customizable for SeekStripPanel {
         div()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
                 "timings",
                 Some("the elapsed and ending clocks around the strip"),
@@ -710,25 +666,28 @@ fn paint_strip(progress: f32, bounds: Bounds<Pixels>, window: &mut Window) {
     }
 
     let head_x = progress.clamp(0.0, 1.0) * w;
-    let line_y = (h - STRIP_H) / 2.0;
+    let line_y = (h - tokens::SEEK_STRIP_H) / 2.0;
     window.paint_quad(fill(
         Bounds::new(
             point(bounds.origin.x, bounds.origin.y + px(line_y)),
-            size(px(w), px(STRIP_H)),
+            size(px(w), px(tokens::SEEK_STRIP_H)),
         ),
         palette::alpha(palette::accent(), 0x33),
     ));
     window.paint_quad(fill(
         Bounds::new(
             point(bounds.origin.x, bounds.origin.y + px(line_y)),
-            size(px(head_x), px(STRIP_H)),
+            size(px(head_x), px(tokens::SEEK_STRIP_H)),
         ),
         palette::accent(),
     ));
     window.paint_quad(fill(
         Bounds::new(
-            point(bounds.origin.x + px(head_x - 1.0), bounds.origin.y),
-            size(px(2.0), px(h)),
+            point(
+                bounds.origin.x + px(head_x - tokens::PLAYHEAD_W / 2.0),
+                bounds.origin.y,
+            ),
+            size(px(tokens::PLAYHEAD_W), px(h)),
         ),
         palette::alpha(palette::text_bright(), 0xd9),
     ));
@@ -830,19 +789,17 @@ impl Render for SeekStripPanel {
             ),
             None => "-:--".into(),
         };
-        root.gap_2()
-            .px_2()
+        root.gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_SM)
             .child(clock(fmt_time_padded(now.position_secs, digits)))
             .child(track)
-            .child(
-                clock(ending).cursor_pointer().on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.config.show_total = !this.config.show_total;
-                        cx.notify();
-                    }),
-                ),
-            )
+            .child(clock(ending).cursor_pointer().on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.config.show_total = !this.config.show_total;
+                    cx.notify();
+                }),
+            ))
     }
 }
 

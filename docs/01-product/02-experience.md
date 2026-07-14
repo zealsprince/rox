@@ -26,6 +26,14 @@ messy import, correct album art, all keyboard-driven and fast. This is the workf
 Tauon loses and the reason a serious library person won't switch to it. rox has to win
 here or the rest doesn't matter to this user.
 
+**It knows what you actually listen to.** Every real listen lands on disk: play counts,
+first and last played, rolled up by artist, album, and genre. A skip ten seconds in
+doesn't count; an album on repeat all week does. Browse leans on it: sort by most
+played, surface what you haven't touched in a year. A stats panel makes the history
+something to look at, composed and themed like any other panel. The record is yours and
+local: fix a genre tag and your history re-buckets with it, and scrobbling becomes a
+copy sent out, not the only record you have.
+
 **It feels alive.** Spectrum analyzer, waveform seekbar, and a generative visualizer in
 the vein of the hivecom.net green shot. Not a gimmick tab, part of the surface you
 actually look at while listening.

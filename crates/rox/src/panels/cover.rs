@@ -20,7 +20,7 @@ use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use crate::palette;
+use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, Customizable};
 use crate::panels::library::LibraryEvent;
 use crate::selection::SelectionEvent;
@@ -33,9 +33,6 @@ pub struct CoverConfig {
     #[serde(default)]
     pub source: TrackSource,
 }
-
-/// How long a slide change takes, the waveform's reveal pace.
-const FADE_SECS: f32 = 0.35;
 
 /// One thing the panel can show. The fade runs between two of these.
 #[derive(Clone)]
@@ -102,12 +99,14 @@ impl CoverArtPanel {
         );
         // A rescan can rewrite tags, art files, and id -> path mappings;
         // drop the caches so both the resolve and the art re-read.
-        let _library_changed =
-            cx.subscribe(&state.library, |this: &mut Self, _, _: &LibraryEvent, cx| {
+        let _library_changed = cx.subscribe(
+            &state.library,
+            |this: &mut Self, _, _: &LibraryEvent, cx| {
                 this.resolved.invalidate();
                 this.art = None;
                 cx.notify();
-            });
+            },
+        );
         CoverArtPanel {
             state,
             config,
@@ -119,7 +118,7 @@ impl CoverArtPanel {
             to: Slide::Blank,
             // Backdated so a fresh panel starts settled instead of fading
             // blank into blank.
-            fade_at: Instant::now() - std::time::Duration::from_secs_f32(FADE_SECS),
+            fade_at: Instant::now() - std::time::Duration::from_secs_f32(tokens::EASE_SECS),
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
@@ -174,7 +173,7 @@ impl CoverArtPanel {
         if self.to.same(&slide) {
             return;
         }
-        if self.fade_at.elapsed().as_secs_f32() >= FADE_SECS {
+        if self.fade_at.elapsed().as_secs_f32() >= tokens::EASE_SECS {
             self.from = self.to.clone();
         }
         self.to = slide;
@@ -281,22 +280,24 @@ impl Panel for CoverArtPanel {
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
         // because the copy takes the config along, like the transports'.
         let weak = cx.entity().downgrade();
-        let menu = menu.item(PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
-            let Some(this) = weak.upgrade() else { return };
-            let (state, config, tabs) = {
-                let panel = this.read(cx);
-                (
-                    panel.state.clone(),
-                    panel.config.clone(),
-                    panel.tab_panel.clone(),
-                )
-            };
-            let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                return;
-            };
-            let dup = cx.new(|cx| CoverArtPanel::new(state, config, cx));
-            tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-        }));
+        let menu = menu.item(
+            PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
+                let Some(this) = weak.upgrade() else { return };
+                let (state, config, tabs) = {
+                    let panel = this.read(cx);
+                    (
+                        panel.state.clone(),
+                        panel.config.clone(),
+                        panel.tab_panel.clone(),
+                    )
+                };
+                let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+                    return;
+                };
+                let dup = cx.new(|cx| CoverArtPanel::new(state, config, cx));
+                tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+            }),
+        );
         panel::popout_item(
             menu,
             &cx.entity(),
@@ -354,7 +355,7 @@ impl Render for CoverArtPanel {
 
         // Frames only while a fade is actually running; a settled panel
         // costs zero.
-        let u = (self.fade_at.elapsed().as_secs_f32() / FADE_SECS).min(1.0);
+        let u = (self.fade_at.elapsed().as_secs_f32() / tokens::EASE_SECS).min(1.0);
         if u < 1.0 {
             window.request_animation_frame();
         }

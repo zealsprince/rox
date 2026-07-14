@@ -16,12 +16,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    div, img, prelude::*, AnyElement, App, Context, Entity, EntityId, ObjectFit, RenderImage,
-    Rgba, Subscription, Window,
+    div, img, prelude::*, AnyElement, App, Context, Entity, EntityId, ObjectFit, RenderImage, Rgba,
+    Subscription, Window,
 };
 use image::{Frame, RgbaImage};
 
-use crate::palette;
+use crate::design::{palette, tokens};
 use crate::player::Player;
 
 /// The longest side of the baked image. Small enough that the decode,
@@ -81,8 +81,7 @@ impl NowPlayingArt {
             // The engine's position clock blinks off for a moment between
             // tracks and while a fresh queue opens, with the session very
             // much alive.
-            let between_tracks =
-                playing.is_none() && player.is_active() && !player.queue_ended();
+            let between_tracks = playing.is_none() && player.is_active() && !player.queue_ended();
             (playing, between_tracks)
         };
         // Hold through the blink instead of flashing the backdrop and
@@ -203,9 +202,6 @@ fn extract_seed(small: &RgbaImage) -> Option<Rgba> {
     ))
 }
 
-/// How long a backdrop change takes, the cover fade's pace.
-const FADE_SECS: f32 = 0.35;
-
 /// A window root's handle on the backdrop: cross-fades from bake to bake
 /// and retires abandoned textures from that window's atlas. Each window
 /// that paints the layer keeps its own.
@@ -224,7 +220,7 @@ impl Default for WindowBackdrop {
             from: None,
             to: None,
             // Backdated so a fresh window starts settled.
-            fade_at: Instant::now() - std::time::Duration::from_secs_f32(FADE_SECS),
+            fade_at: Instant::now() - std::time::Duration::from_secs_f32(tokens::EASE_SECS),
         }
     }
 }
@@ -248,7 +244,7 @@ impl WindowBackdrop {
         if self.to.as_ref().map(|i| i.id) == image.as_ref().map(|i| i.id) {
             return;
         }
-        let abandoned = if self.fade_at.elapsed().as_secs_f32() >= FADE_SECS {
+        let abandoned = if self.fade_at.elapsed().as_secs_f32() >= tokens::EASE_SECS {
             std::mem::replace(&mut self.from, self.to.take())
         } else {
             self.to.take()
@@ -270,10 +266,18 @@ impl WindowBackdrop {
         window: &mut Window,
         cx: &App,
     ) -> Option<AnyElement> {
-        self.retarget(art.read(cx).backdrop(), window);
+        // The song-theming switch gates the paint, not the bake: the bake
+        // keeps following the player, so flipping the switch mid-track
+        // takes effect right away, riding the normal cross-fade in and out.
+        let image = if palette::art_theming() {
+            art.read(cx).backdrop()
+        } else {
+            None
+        };
+        self.retarget(image, window);
         // Frames only while a fade is running; settled costs zero. On
         // settle the outgoing texture leaves the atlas.
-        let u = (self.fade_at.elapsed().as_secs_f32() / FADE_SECS).min(1.0);
+        let u = (self.fade_at.elapsed().as_secs_f32() / tokens::EASE_SECS).min(1.0);
         if u < 1.0 {
             window.request_animation_frame();
         } else if let Some(old) = self.from.take() {

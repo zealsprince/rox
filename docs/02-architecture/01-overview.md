@@ -29,6 +29,8 @@ The requirements this structure has to honor, from [scope](../01-product/03-scop
   [source extensibility](#source-extensibility).
 - Broad-format local playback and tagging, with MP3 and FLAC as the core formats and
   contracts that stay format-agnostic.
+- Listening history as a durable record: real listens land on disk as events keyed to
+  track identity, off the audio path, never as bare counters.
 
 ## System overview
 
@@ -69,7 +71,8 @@ The four domains:
   visualizers. It takes commands (play, pause, seek, enqueue) and emits state.
 - **Library** owns the catalog: the SQLite store on disk, an in-memory projection for
   instant browse, the filesystem scanner, and search. It answers queries and emits change
-  events.
+  events. The play history record lives in the same store, appended from playback state
+  and queried for stats ([components](02-components.md#play-history)).
 - **Support services** (metadata writer, artwork, visualizer analysis) are narrower and
   hang off the two big domains.
 
@@ -115,3 +118,4 @@ Each ADR records the call, the alternatives weighed, and what it costs. They liv
 | [8 - Visualizer rendering](decisions/08-adr-visualizer-rendering.md) | CPU-side rendering, forced by GPUI | Decided, prototype pending |
 | [9 - Audio output](decisions/09-adr-audio-output.md) | Output layer swappable, bit-perfect deferred | Decided |
 | [10 - Theming](decisions/10-adr-theming.md) | Palette as data behind one setter, CPU-baked backdrop | Decided |
+| [11 - Play history](decisions/11-adr-play-history.md) | Append-only listen events in the library store | Decided |

@@ -19,13 +19,12 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_viz::analysis::{log_bands, Analyzer, FFT_SIZE};
 use rox_viz::AudioFeed;
 
-use crate::palette;
+use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, StatePanel};
 
-/// Bars never get thinner than this; the count collapses on narrow panels
-/// instead, so a small dock split doesn't smear.
-const MIN_BAR_PX: f32 = 3.0;
-const BAR_GAP: f32 = 2.0;
+// Bars follow the shared visualizer rhythm (`tokens::BAR_W`, `BAR_GAP`);
+// the count collapses on narrow panels instead of thinning the bars, so a
+// small dock split doesn't smear.
 const MIN_BARS: usize = 16;
 const MAX_BARS: usize = 192;
 
@@ -101,7 +100,8 @@ impl Bars {
             .unwrap_or(1.0 / 60.0);
         self.last_tick = Some(now);
 
-        let count = ((width / (MIN_BAR_PX + BAR_GAP)) as usize).clamp(MIN_BARS, MAX_BARS);
+        let count =
+            ((width / (tokens::BAR_W + tokens::BAR_GAP)) as usize).clamp(MIN_BARS, MAX_BARS);
         let rate = feed.sample_rate();
         if count != self.levels.len() || rate != self.sample_rate {
             self.sample_rate = rate;
@@ -165,7 +165,7 @@ impl Bars {
 
         let max_h = h * 0.94;
         let step = w / count as f32;
-        let bar_w = (step - BAR_GAP).max(1.0);
+        let bar_w = (step - tokens::BAR_GAP).max(1.0);
 
         // dB gridlines behind the bars.
         for db in DB_MARKS {

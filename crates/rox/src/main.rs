@@ -8,13 +8,14 @@
 
 mod assets;
 mod backdrop;
-mod palette;
+mod design;
 mod panel;
 mod panels;
 mod peaks;
 mod player;
 mod selection;
 mod settings;
+mod settings_window;
 mod source;
 mod workspace;
 
@@ -25,6 +26,7 @@ use gpui::{
 use gpui_component::Root;
 
 use assets::Assets;
+use design::palette;
 use settings::Settings;
 use workspace::Workspace;
 
@@ -71,8 +73,9 @@ fn main() {
         // same choke point every later palette change goes through. The
         // setters set the dark baseline and feed the widget theme tokens.
         let settings = Settings::load();
-        palette::set(palette::Palette::default(), cx);
+        palette::set(settings.palette(), cx);
         palette::set_scalars(settings.surface_opacity, settings.backdrop_strength, cx);
+        palette::set_art_theming(settings.art_theming, cx);
         open_workspace(cx);
         cx.activate(true);
     });

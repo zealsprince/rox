@@ -24,3 +24,5 @@ speculated ahead of the code. The set, one per domain:
 - `06-panels.md` - the layout and theme file formats, the panel config model,
   pop-out window mechanics and entity sharing
 - `07-workspace.md` - crate layout, build commands, CI, the GPUI version pin policy
+- `08-play-history.md` - the events schema and tag snapshot, listen-rule wiring against
+  the position clock, rollup queries and their indexes

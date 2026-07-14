@@ -24,8 +24,17 @@ Nothing on Linux or Mac fills the gap. The alternatives each drop one of the thr
   composable, and not themeable in any real sense.
 - **Quod Libet** is strong on tags and querying but ugly, and the interface isn't
   something you compose or theme.
+- **The new GPU-native crop**, all on GPUI:
+  [Hummingbird](https://github.com/hummingbird-player/hummingbird),
+  [Pawse](https://github.com/popovpsk/pawse), and
+  [vleer](https://github.com/vleerapp/vleer). Hummingbird is the closest: active,
+  cross-platform, themeable with hot reload, scrobbling. But its themes re-skin a fixed
+  layout rather than compose one, and nothing in it speaks to visualizers, deep tagging,
+  or libraries at scale. Pawse chases bit-perfect audiophile playback with built-in
+  themes, and vleer is streaming-first. Modern and fast, none of the three touch the
+  panel-composition or library-obsessive legs.
 
-So the gap is specific: no modern, cross-platform, GPU-accelerated player that puts
+So the gap is narrower than "no modern player exists" but still real: nothing puts
 Foobar-grade tagging and library management behind a composable, themeable, pop-out-able
 panel UI, with first-class visualizers, and stays fast on a huge library.
 

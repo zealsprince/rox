@@ -25,7 +25,7 @@ use rox_library::rusqlite::Connection;
 use rox_library::scanner::{self, ScanSummary};
 use rox_library::store;
 
-use crate::palette;
+use crate::design::{palette, tokens};
 use crate::panel::{self, AppState};
 
 /// Play from a double-clicked row: at most this many tracks are queued
@@ -640,12 +640,12 @@ impl LibraryPanel {
     fn open_folder_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         div()
             .id("open-folder")
-            .px_2()
-            .h(px(22.))
+            .px(tokens::SPACE_SM)
+            .h(tokens::CONTROL_H)
             .flex()
             .items_center()
             .flex_none()
-            .rounded_md()
+            .rounded(tokens::RADIUS)
             .bg(palette::bg_control())
             .hover(|d| d.bg(palette::bg_control_hover()))
             .cursor_pointer()
@@ -661,15 +661,15 @@ impl LibraryPanel {
             self.query.clone().into()
         };
         div()
-            .px_2()
-            .h(px(22.))
+            .px(tokens::SPACE_SM)
+            .h(tokens::CONTROL_H)
             .flex()
             .items_center()
-            .rounded_md()
+            .rounded(tokens::RADIUS)
             .bg(palette::bg_input())
             .border_1()
             .border_color(if focused {
-                palette::focus_ring()
+                palette::accent()
             } else {
                 palette::border()
             })
@@ -701,8 +701,8 @@ impl LibraryPanel {
         div()
             .flex_none()
             .h(px(36.))
-            .px_2()
-            .gap_2()
+            .px(tokens::SPACE_SM)
+            .gap(tokens::SPACE_SM)
             .flex()
             .flex_row()
             .items_center()
@@ -733,7 +733,7 @@ impl LibraryPanel {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap_2()
+            .gap(tokens::SPACE_SM)
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| this.browse(cx)))
             .child(div().text_lg().child("open a music folder"))
@@ -775,7 +775,7 @@ impl Panel for LibraryPanel {
                 .flex_row()
                 .items_center()
                 .flex_none()
-                .gap_2()
+                .gap(tokens::SPACE_SM)
                 .child(self.open_folder_button(cx))
                 .child(self.search_box(window, cx).w(px(180.)))
                 .when_some(self.error.clone(), |d, error| {

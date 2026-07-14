@@ -8,11 +8,14 @@
 //! per token. While a track plays, [`set_seed`] layers the derived mode
 //! on top: every role's hue and chroma move toward a seed color pulled
 //! from the cover art while its lightness holds, so the contrast ladder
-//! survives any album. Changes ease componentwise from wherever the
+//! survives any album. The whole derived mode sits behind the
+//! [`set_art_theming`] switch, off by default; the backdrop layers read
+//! the same switch. Changes ease componentwise from wherever the
 //! palette visibly is to the new target. The static sits outside GPUI's
 //! reactivity, so the setters repaint explicitly - one choke point for
 //! every writer.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, Instant};
@@ -20,8 +23,7 @@ use std::time::{Duration, Instant};
 use gpui::{rgb, App, Rgba};
 use gpui_component::{Theme, ThemeColor, ThemeMode};
 
-/// How long a palette change takes, the cover fade's pace.
-const EASE_SECS: f32 = 0.35;
+use super::tokens::EASE_SECS;
 
 /// A palette color with its alpha replaced, for washes and gradients.
 pub fn alpha(color: Rgba, a: u8) -> Rgba {
@@ -134,9 +136,21 @@ pub(crate) fn oklch_to_rgba(lightness: f32, chroma: f32, hue: f32, a: f32) -> Rg
     }
 }
 
-/// One listing defines each role three ways: the [`Palette`] field, its
-/// default, and the accessor panels call. Adding a role means adding one
-/// line here. Roles in the `surfaces` block are the backgrounds the
+/// One palette role by name: how the palette editor and the settings
+/// file reach a field without naming it. `name` keys the settings map
+/// and stays stable; `label` is the editor's display name, short because
+/// it reads under its `group` header.
+pub struct Role {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub group: &'static str,
+    pub get: fn(&Palette) -> Rgba,
+    pub set: fn(&mut Palette, Rgba),
+}
+
+/// One listing defines each role four ways: the [`Palette`] field, its
+/// default with the editor label beside it, the accessor panels call,
+/// and its [`ROLES`] entry. Adding a role means adding one line here. Roles in the `surfaces` block are the backgrounds the
 /// backdrop can show through: their accessors read out at surface opacity.
 /// Roles in the `tints` block are sub-surface texture riding on a surface
 /// that already carries the wash: they read out at the square of surface
@@ -147,15 +161,15 @@ pub(crate) fn oklch_to_rgba(lightness: f32, chroma: f32, hue: f32, a: f32) -> Rg
 /// read plain.
 macro_rules! tokens {
     (
-        $( $(#[$doc:meta])* $role:ident: $default:literal; )*
+        $( $(#[$doc:meta])* $role:ident: $default:literal, $label:literal; )*
         @surfaces {
-            $( $(#[$sdoc:meta])* $srole:ident: $sdefault:literal; )*
+            $( $(#[$sdoc:meta])* $srole:ident: $sdefault:literal, $slabel:literal; )*
         }
         @tints {
-            $( $(#[$tdoc:meta])* $trole:ident: $tdefault:literal; )*
+            $( $(#[$tdoc:meta])* $trole:ident: $tdefault:literal, $tlabel:literal; )*
         }
         @ink {
-            $( $(#[$idoc:meta])* $irole:ident: $idefault:literal; )*
+            $( $(#[$idoc:meta])* $irole:ident: $idefault:literal, $ilabel:literal; )*
         }
     ) => {
         /// The palette as data: one color per role. The default is the
@@ -237,58 +251,106 @@ macro_rules! tokens {
                 )
             }
         )*
+
+        /// Every role in listing order.
+        pub const ROLES: &[Role] = &[
+            $( Role { name: stringify!($role), label: $label, group: "Core", get: |p| p.$role, set: |p, c| p.$role = c }, )*
+            $( Role { name: stringify!($srole), label: $slabel, group: "Surfaces", get: |p| p.$srole, set: |p, c| p.$srole = c }, )*
+            $( Role { name: stringify!($trole), label: $tlabel, group: "Tints", get: |p| p.$trole, set: |p, c| p.$trole = c }, )*
+            $( Role { name: stringify!($irole), label: $ilabel, group: "Ink", get: |p| p.$irole, set: |p, c| p.$irole = c }, )*
+        ];
     };
 }
 
 tokens! {
     // The accent family: the one brand color and its hover shift.
-    accent: 0xfdcb00;
+    accent: 0xfdcb00, "Accent";
     /// The accent blended a quarter toward white, the lift hover states use.
-    accent_hover: 0xfed840;
-    /// The library search box focus ring. Predates the accent settling on
-    /// yellow, a candidate to fold into it.
-    focus_ring: 0x4a6a55;
+    accent_hover: 0xfed840, "Accent hover";
 
     // Borders.
-    border: 0x333333;
-    border_light: 0x3a3a3a;
+    border: 0x333333, "Border";
+    border_light: 0x3a3a3a, "Border light";
 
     // The two text roles that stay fixed: the top of the ladder, which is
     // also what the ink roles lift toward, and the dark text over
     // accent-filled controls, which sit on opaque accent, not on a
     // thinning surface.
-    text_bright: 0xe0e0e0;
+    text_bright: 0xe0e0e0, "Bright text";
     /// Dark text over accent-filled controls.
-    text_on_accent: 0x121212;
+    text_on_accent: 0x121212, "Text on accent";
 
     // Backgrounds, deepest to most raised.
     @surfaces {
-        bg_root: 0x121212;
-        bg_panel: 0x181818;
-        bg_elevated: 0x1c1c1c;
-        bg_menubar: 0x242424;
-        bg_menu: 0x262626;
-        bg_control: 0x2a2a2a;
-        bg_menu_hover: 0x2f2f2f;
-        bg_control_active: 0x333333;
-        bg_control_hover: 0x3a3a3a;
+        bg_root: 0x121212, "Root";
+        bg_panel: 0x181818, "Panel";
+        bg_elevated: 0x1c1c1c, "Elevated";
+        bg_menubar: 0x242424, "Menubar";
+        bg_menu: 0x262626, "Menu";
+        bg_control: 0x2a2a2a, "Control";
+        bg_menu_hover: 0x2f2f2f, "Menu hover";
+        bg_control_active: 0x333333, "Control active";
+        bg_control_hover: 0x3a3a3a, "Control hover";
     }
 
     // Layered fills that always ride on one of the surfaces above: the
     // library toolbar strip on the panel, the search box on the toolbar.
     @tints {
-        bg_input: 0x141414;
-        bg_toolbar: 0x1f1f1f;
+        bg_input: 0x141414, "Input";
+        bg_toolbar: 0x1f1f1f, "Toolbar";
     }
 
     // Text, brightest to faintest, and the canvas strokes with it.
     @ink {
-        text: 0xc0c0c0;
-        text_secondary: 0xa0a0a0;
-        text_dim: 0x9a9a9a;
-        text_muted: 0x808080;
-        text_faint: 0x707070;
-        gridline: 0x6e6e6e;
+        text: 0xc0c0c0, "Text";
+        text_secondary: 0xa0a0a0, "Secondary";
+        text_dim: 0x9a9a9a, "Dim";
+        text_muted: 0x808080, "Muted";
+        text_faint: 0x707070, "Faint";
+        gridline: 0x6e6e6e, "Gridline";
+    }
+}
+
+/// A `#rrggbb` string as a color; anything else is None. The settings
+/// map's format, tolerant of a missing `#` from a hand edit.
+fn parse_hex(hex: &str) -> Option<Rgba> {
+    let hex = hex.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+    u32::from_str_radix(hex, 16).ok().map(rgb)
+}
+
+impl Palette {
+    /// The palette as the settings file records it: every role as
+    /// `#rrggbb`, in role-name keys. The same shape a shared theme is.
+    pub fn to_map(&self) -> BTreeMap<String, String> {
+        ROLES
+            .iter()
+            .map(|role| {
+                let c = (role.get)(self);
+                let hex = format!(
+                    "#{:02x}{:02x}{:02x}",
+                    (c.r * 255.0).round() as u8,
+                    (c.g * 255.0).round() as u8,
+                    (c.b * 255.0).round() as u8
+                );
+                (role.name.to_string(), hex)
+            })
+            .collect()
+    }
+
+    /// A palette from the settings map, over the defaults: unknown keys
+    /// and unparsable values fall away silently, so the file survives
+    /// role changes in both directions.
+    pub fn from_map(map: &BTreeMap<String, String>) -> Palette {
+        let mut palette = Palette::default();
+        for role in ROLES {
+            if let Some(color) = map.get(role.name).and_then(|hex| parse_hex(hex)) {
+                (role.set)(&mut palette, color);
+            }
+        }
+        palette
     }
 }
 
@@ -301,6 +363,9 @@ struct Current {
     /// The cover-art seed while a track plays; None reads as the plain
     /// base palette.
     seed: Option<Rgba>,
+    /// The song-theming switch: whether the seed may derive at all.
+    /// Off, the seed is only remembered for a later enable.
+    art_theming: bool,
     /// The easing run: reads sample between these two by elapsed time.
     from: Palette,
     target: Palette,
@@ -342,7 +407,8 @@ impl Current {
     /// nothing snaps.
     fn retarget(&mut self) {
         self.from = self.snapshot();
-        self.target = derive(&self.base, self.seed);
+        let seed = if self.art_theming { self.seed } else { None };
+        self.target = derive(&self.base, seed);
         self.eased_at = Instant::now();
     }
 }
@@ -355,6 +421,7 @@ static CURRENT: LazyLock<RwLock<Current>> = LazyLock::new(|| {
     RwLock::new(Current {
         base: palette,
         seed: None,
+        art_theming: false,
         from: palette,
         target: palette,
         eased_at: Instant::now(),
@@ -411,9 +478,35 @@ pub fn set_seed(seed: Option<Rgba>, cx: &mut App) {
             return;
         }
         current.seed = seed;
+        // With song theming off the seed is only remembered, so a later
+        // enable picks up the playing track; nothing repaints.
+        if !current.art_theming {
+            return;
+        }
         current.retarget();
     }
     drive(cx);
+}
+
+/// The song-theming switch: whether the playing track's art re-tints the
+/// palette and backs the windows. Toggling eases like any other palette
+/// change, so the tint washes in or out instead of snapping.
+pub fn set_art_theming(on: bool, cx: &mut App) {
+    {
+        let mut current = CURRENT.write().unwrap();
+        if current.art_theming == on {
+            return;
+        }
+        current.art_theming = on;
+        current.retarget();
+    }
+    drive(cx);
+}
+
+/// Whether song theming is on, for the backdrop layers that paint outside
+/// the palette's own pipe.
+pub fn art_theming() -> bool {
+    CURRENT.read().unwrap().art_theming
 }
 
 /// How far the near-gray roles' chroma moves toward the seed's, and the
@@ -554,6 +647,21 @@ mod tests {
             let back = oklch_to_rgba(l, c, h, 1.0);
             for (a, b) in [(color.r, back.r), (color.g, back.g), (color.b, back.b)] {
                 assert!((a - b).abs() < 0.005, "{hex:06x} drifted: {a} vs {b}");
+            }
+        }
+    }
+
+    /// The settings map must carry a palette losslessly, or the user's
+    /// colors drift a little on every restart.
+    #[test]
+    fn map_roundtrips() {
+        let mut palette = Palette::default();
+        palette.accent = rgb(0x336699);
+        let back = Palette::from_map(&palette.to_map());
+        for role in ROLES {
+            let (a, b) = ((role.get)(&palette), (role.get)(&back));
+            for (a, b) in [(a.r, b.r), (a.g, b.g), (a.b, b.b)] {
+                assert!((a - b).abs() < 0.003, "{} drifted: {a} vs {b}", role.name);
             }
         }
     }

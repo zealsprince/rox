@@ -5,16 +5,21 @@
 //! upscale to window size multiplies it. The shared [`NowPlayingArt`]
 //! entity watches the player and owns the bake; window roots paint it
 //! through [`WindowBackdrop`], which also retires the previous texture from
-//! the window's atlas so a long session doesn't leak one per track.
+//! the window's atlas so a long session doesn't leak one per track. The
+//! same bake extracts the derivation seed for the palette's tinted mode;
+//! with several windows playing different tracks, the backdrop is per
+//! window but the seed is process-global and follows the most recent bake
+//! to land.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use gpui::{
-    div, img, prelude::*, AnyElement, App, Context, Entity, ObjectFit, RenderImage, Subscription,
-    Window,
+    div, img, prelude::*, AnyElement, App, Context, Entity, EntityId, ObjectFit, RenderImage,
+    Rgba, Subscription, Window,
 };
-use image::Frame;
+use image::{Frame, RgbaImage};
 
 use crate::palette;
 use crate::player::Player;
@@ -27,6 +32,12 @@ const BAKE_SIZE: u32 = 128;
 /// The gaussian sigma at bake size, a heavy blur so no cover detail
 /// survives into the backdrop.
 const BLUR_SIGMA: f32 = 8.0;
+
+/// Who set the palette seed last, by entity. Windows race on the global
+/// seed (the ADR's most-recently-started rule, approximated by bake
+/// completion order), and only the owner may clear it: one window
+/// stopping must not strip the tint another window's play owns.
+static SEED_OWNER: Mutex<Option<EntityId>> = Mutex::new(None);
 
 /// The playing track's art resolved once per track change and baked into
 /// the backdrop. One per workspace through
@@ -64,7 +75,21 @@ impl NowPlayingArt {
     /// executor, a stop clears the backdrop. The player notifies every
     /// pump tick, so everything up to the path compare stays cheap.
     fn sync(&mut self, cx: &mut Context<Self>) {
-        let playing = self.player.read(cx).now_playing().map(|now| now.path);
+        let (playing, between_tracks) = {
+            let player = self.player.read(cx);
+            let playing = player.now_playing().map(|now| now.path);
+            // The engine's position clock blinks off for a moment between
+            // tracks and while a fresh queue opens, with the session very
+            // much alive.
+            let between_tracks =
+                playing.is_none() && player.is_active() && !player.queue_ended();
+            (playing, between_tracks)
+        };
+        // Hold through the blink instead of flashing the backdrop and
+        // tint out and back on every song.
+        if between_tracks {
+            return;
+        }
         if playing == self.current {
             return;
         }
@@ -74,6 +99,11 @@ impl NowPlayingArt {
         let Some(path) = playing else {
             if self.backdrop.take().is_some() {
                 cx.notify();
+            }
+            // Fall back to the plain palette, unless the tint belongs to
+            // another window's play.
+            if *SEED_OWNER.lock().unwrap() == Some(cx.entity().entity_id()) {
+                palette::set_seed(None, cx);
             }
             return;
         };
@@ -90,8 +120,14 @@ impl NowPlayingArt {
                     return;
                 }
                 // A track without art clears the previous track's backdrop
-                // rather than leaving it up.
-                this.backdrop = baked;
+                // and tint rather than leaving them up.
+                let (backdrop, seed) = match baked {
+                    Some((image, seed)) => (Some(image), seed),
+                    None => (None, None),
+                };
+                this.backdrop = backdrop;
+                *SEED_OWNER.lock().unwrap() = Some(cx.entity().entity_id());
+                palette::set_seed(seed, cx);
                 cx.notify();
             })
             .ok();
@@ -100,50 +136,167 @@ impl NowPlayingArt {
     }
 }
 
-/// One cover into backdrop form: downscale, blur, and repack for the
-/// renderer. The heavy work, run off the UI thread once per track change.
-fn bake(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+/// One cover into backdrop form: downscale, extract the derivation seed,
+/// blur, and repack for the renderer. The heavy work, run off the UI
+/// thread once per track change.
+fn bake(bytes: &[u8]) -> Option<(Arc<RenderImage>, Option<Rgba>)> {
     let art = image::load_from_memory(bytes).ok()?;
     let small = art.thumbnail(BAKE_SIZE, BAKE_SIZE).into_rgba8();
+    let seed = extract_seed(&small);
     let mut baked = image::imageops::blur(&small, BLUR_SIGMA);
     // The renderer wants BGRA, the same swizzle gpui's own decode does.
     for pixel in baked.chunks_exact_mut(4) {
         pixel.swap(0, 2);
     }
-    Some(Arc::new(RenderImage::new(vec![Frame::new(baked)])))
+    Some((Arc::new(RenderImage::new(vec![Frame::new(baked)])), seed))
 }
 
-/// A window root's handle on the backdrop: paints the current bake and
-/// retires the previous one from that window's texture atlas when it
-/// changes. Each window that paints the layer keeps its own.
-#[derive(Default)]
+/// The hue bands the seed vote runs over; 15 degrees each, wide enough
+/// that one album color doesn't split across a boundary.
+const SEED_BANDS: usize = 24;
+/// Oklch chroma below this is gray noise: those pixels sit the vote out.
+const SEED_MIN_CHROMA: f32 = 0.03;
+
+/// The palette derivation seed off the pre-blur thumbnail: the
+/// chroma-weighted mean color of the most-voted hue band. Near-gray
+/// pixels and near-black or near-white ones don't vote, so a dark cover
+/// with one vivid element seeds that element. None when too little of
+/// the cover is colorful to trust - an achromatic album keeps the plain
+/// palette rather than amplifying noise.
+fn extract_seed(small: &RgbaImage) -> Option<Rgba> {
+    let mut weight = [0.0f32; SEED_BANDS];
+    let mut lightness = [0.0f32; SEED_BANDS];
+    let mut chroma = [0.0f32; SEED_BANDS];
+    let mut sin = [0.0f32; SEED_BANDS];
+    let mut cos = [0.0f32; SEED_BANDS];
+    for pixel in small.pixels() {
+        let color = Rgba {
+            r: pixel[0] as f32 / 255.0,
+            g: pixel[1] as f32 / 255.0,
+            b: pixel[2] as f32 / 255.0,
+            a: 1.0,
+        };
+        let (l, c, h) = palette::rgba_to_oklch(color);
+        if c < SEED_MIN_CHROMA || !(0.15..=0.95).contains(&l) {
+            continue;
+        }
+        let band = (((h / std::f32::consts::TAU) + 0.5) * SEED_BANDS as f32) as usize;
+        let band = band.min(SEED_BANDS - 1);
+        weight[band] += c;
+        lightness[band] += l * c;
+        chroma[band] += c * c;
+        sin[band] += h.sin() * c;
+        cos[band] += h.cos() * c;
+    }
+    let best = (0..SEED_BANDS).max_by(|a, b| weight[*a].total_cmp(&weight[*b]))?;
+    // The floor: the winning band must carry at least the weight of 2%
+    // of the cover voting at minimum chroma.
+    let pixels = (small.width() * small.height()) as f32;
+    if weight[best] < pixels * 0.02 * SEED_MIN_CHROMA {
+        return None;
+    }
+    Some(palette::oklch_to_rgba(
+        lightness[best] / weight[best],
+        chroma[best] / weight[best],
+        sin[best].atan2(cos[best]),
+        1.0,
+    ))
+}
+
+/// How long a backdrop change takes, the cover fade's pace.
+const FADE_SECS: f32 = 0.35;
+
+/// A window root's handle on the backdrop: cross-fades from bake to bake
+/// and retires abandoned textures from that window's atlas. Each window
+/// that paints the layer keeps its own.
 pub struct WindowBackdrop {
-    painted: Option<Arc<RenderImage>>,
+    /// What the fade leaves behind: painted at full under the incoming
+    /// bake so a same-cover track change stays invisible, or fading out
+    /// bare when the backdrop clears.
+    from: Option<Arc<RenderImage>>,
+    to: Option<Arc<RenderImage>>,
+    fade_at: Instant,
+}
+
+impl Default for WindowBackdrop {
+    fn default() -> Self {
+        WindowBackdrop {
+            from: None,
+            to: None,
+            // Backdated so a fresh window starts settled.
+            fade_at: Instant::now() - std::time::Duration::from_secs_f32(FADE_SECS),
+        }
+    }
+}
+
+/// One bake filling the window at a weight, cover-fit; the bilinear
+/// upscale is what multiplies the baked blur.
+fn sheet(image: &Arc<RenderImage>, opacity: f32) -> AnyElement {
+    div()
+        .absolute()
+        .inset_0()
+        .opacity(opacity)
+        .child(img(image.clone()).size_full().object_fit(ObjectFit::Cover))
+        .into_any_element()
 }
 
 impl WindowBackdrop {
-    /// The backdrop layer for a window root: the bake filling the window,
-    /// cover-fit and clipped. Paint it first, under every surface; None
-    /// while there is no bake, so the root's own background shows instead.
+    /// Point the fade at a new bake: the settled slide becomes the floor
+    /// of the next fade; an interrupted fade keeps its original floor and
+    /// abandons the barely-shown intermediate, the cover panel's rule.
+    fn retarget(&mut self, image: Option<Arc<RenderImage>>, window: &mut Window) {
+        if self.to.as_ref().map(|i| i.id) == image.as_ref().map(|i| i.id) {
+            return;
+        }
+        let abandoned = if self.fade_at.elapsed().as_secs_f32() >= FADE_SECS {
+            std::mem::replace(&mut self.from, self.to.take())
+        } else {
+            self.to.take()
+        };
+        if let Some(old) = abandoned {
+            let _ = window.drop_image(old);
+        }
+        self.to = image;
+        self.fade_at = Instant::now();
+    }
+
+    /// The backdrop layer for a window root: the current bake cross-fading
+    /// over the previous one, clipped to the window. Paint it first, under
+    /// every surface; None while there is nothing to show, so the root's
+    /// own background shows instead.
     pub fn layer(
         &mut self,
         art: &Entity<NowPlayingArt>,
         window: &mut Window,
         cx: &App,
     ) -> Option<AnyElement> {
-        let image = art.read(cx).backdrop();
-        if self.painted.as_ref().map(|i| i.id) != image.as_ref().map(|i| i.id) {
-            if let Some(old) = self.painted.take() {
-                let _ = window.drop_image(old);
-            }
-            self.painted = image.clone();
+        self.retarget(art.read(cx).backdrop(), window);
+        // Frames only while a fade is running; settled costs zero. On
+        // settle the outgoing texture leaves the atlas.
+        let u = (self.fade_at.elapsed().as_secs_f32() / FADE_SECS).min(1.0);
+        if u < 1.0 {
+            window.request_animation_frame();
+        } else if let Some(old) = self.from.take() {
+            let _ = window.drop_image(old);
+        }
+        if self.from.is_none() && self.to.is_none() {
+            return None;
+        }
+        // Smoothstepped so the fade eases out instead of stopping dead.
+        let u = u * u * (3.0 - 2.0 * u);
+        let mut root = div().absolute().inset_0().overflow_hidden();
+        if let Some(from) = &self.from {
+            // Under an incoming bake the floor holds at full, so the
+            // cross-fade never dips toward black between two covers; with
+            // nothing incoming it fades out bare.
+            let opacity = if self.to.is_some() { 1.0 } else { 1.0 - u };
+            root = root.child(sheet(from, opacity));
+        }
+        if let Some(to) = &self.to {
+            root = root.child(sheet(to, u));
         }
         Some(
-            div()
-                .absolute()
-                .inset_0()
-                .overflow_hidden()
-                .child(img(image?).size_full().object_fit(ObjectFit::Cover))
+            root
                 // Backdrop strength, applied as its inverse: a wash of the
                 // floor color over the bake.
                 .child(div().absolute().inset_0().bg(palette::backdrop_wash()))

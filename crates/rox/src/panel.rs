@@ -5,14 +5,15 @@
 //! popped-out panel is the same entity rehosted in its own OS window, no
 //! cross-window messaging needed.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gpui::{
     anchored, deferred, div, fill, point, prelude::*, px, size, svg, AnyElement, App, Bounds,
-    Context, DismissEvent, Div, Entity, Focusable as _, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, SharedString, Subscription,
-    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
+    Context, DismissEvent, Div, Entity, EntityId, Focusable as _, Global, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, SharedString, Size,
+    Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Root;
@@ -190,7 +191,7 @@ pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window:
             if dimmed {
                 palette::text_dim()
             } else {
-                palette::text_bright()
+                palette::highlight()
             },
         )
         .corner_radii(px(knob / 2.0)),
@@ -274,7 +275,7 @@ pub trait StatePanel: Panel {
 pub fn duplicate_item<P: StatePanel>(menu: PopupMenu, panel: &Entity<P>) -> PopupMenu {
     let weak = panel.downgrade();
     menu.item(
-        PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
+        PopupMenuItem::new("Duplicate Panel").on_click(move |_, window, cx| {
             let Some(this) = weak.upgrade() else { return };
             let (state, tabs) = {
                 let panel = this.read(cx);
@@ -365,9 +366,19 @@ pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
 /// New knobs (colors, layout, whatever a panel grows) go on the panel's
 /// config struct and get a row here.
 pub trait Customizable: Panel {
+    /// The shared state, so the customize window can back itself with
+    /// the playing track's art like every other window.
+    fn state(&self) -> AppState;
+
     /// The customize window's control rows, editing the config in place.
     /// Changes apply live; the layout dump persists them.
     fn customize(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement;
+
+    /// The customize window's initial size. Panels with more than the usual
+    /// row or two of controls override this for a taller window.
+    fn customize_size(&self) -> Size<Pixels> {
+        size(px(360.), px(180.))
+    }
 }
 
 /// The Customize entry for a panel's dropdown menu: opens the panel's
@@ -381,11 +392,34 @@ pub fn customize_item<P: Customizable>(menu: PopupMenu, panel: &Entity<P>) -> Po
     )
 }
 
-/// Open the small window that edits a panel's config. It holds the panel
-/// weakly, so it never keeps a closed panel alive.
+/// The open customize windows, keyed by the panel they edit: opening a
+/// panel's customize again focuses its window instead of stacking a
+/// second editor over the same config. Closed windows leave a stale
+/// handle whose activate fails, so the next open falls through and
+/// replaces it, same as [`settings_window`](crate::settings_window).
+#[derive(Default)]
+struct OpenCustomizers(HashMap<EntityId, WindowHandle<Root>>);
+
+impl Global for OpenCustomizers {}
+
+/// Open the small window that edits a panel's config, or bring the panel's
+/// open one to the front. It holds the panel weakly, so it never keeps a
+/// closed panel alive.
 fn open_customize<P: Customizable>(panel: Entity<P>, cx: &mut App) {
+    let id = panel.entity_id();
+    if let Some(handle) = cx
+        .try_global::<OpenCustomizers>()
+        .and_then(|open| open.0.get(&id).copied())
+    {
+        if handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+        {
+            return;
+        }
+    }
     let title = SharedString::from(format!("rox - customize {}", panel.read(cx).panel_name()));
-    let bounds = Bounds::centered(None, size(px(360.), px(180.)), cx);
+    let bounds = Bounds::centered(None, panel.read(cx).customize_size(), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
@@ -394,31 +428,45 @@ fn open_customize<P: Customizable>(panel: Entity<P>, cx: &mut App) {
         }),
         ..Default::default()
     };
+    let state = panel.read(cx).state();
     let panel = panel.downgrade();
-    cx.open_window(options, move |window, cx| {
-        // The Wayland backend ignores the creation-time titlebar title;
-        // only set_window_title reaches the compositor.
-        window.set_window_title(&title);
-        let host = cx.new(|cx| {
-            let _panel_changed = panel
-                .upgrade()
-                .map(|panel| cx.observe(&panel, |_, _, cx| cx.notify()));
-            CustomizeHost {
-                panel,
-                _panel_changed,
-            }
-        });
-        cx.new(|cx| Root::new(host, window, cx))
-    })
-    .expect("failed to open the customize window");
+    let handle = cx
+        .open_window(options, move |window, cx| {
+            // The Wayland backend ignores the creation-time titlebar title;
+            // only set_window_title reaches the compositor.
+            window.set_window_title(&title);
+            let host = cx.new(|cx| {
+                let _panel_changed = panel
+                    .upgrade()
+                    .map(|panel| cx.observe(&panel, |_, _, cx| cx.notify()));
+                // This window pumps its own frames, so the backdrop needs
+                // its own wake on a new bake.
+                let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+                CustomizeHost {
+                    panel,
+                    state,
+                    backdrop: WindowBackdrop::default(),
+                    _panel_changed,
+                    _backdrop_changed,
+                }
+            });
+            cx.new(|cx| Root::new(host, window, cx))
+        })
+        .expect("failed to open the customize window");
+    cx.default_global::<OpenCustomizers>().0.insert(id, handle);
 }
 
 /// The customize window's content: the panel's own control rows on the
 /// workspace's base styling.
 struct CustomizeHost<P: Customizable> {
     panel: WeakEntity<P>,
+    state: AppState,
+    /// This window's slice of the backdrop: what it painted last, for
+    /// retiring the texture on a new bake.
+    backdrop: WindowBackdrop,
     /// Repaints this window when the panel changes from anywhere else.
     _panel_changed: Option<Subscription>,
+    _backdrop_changed: Subscription,
 }
 
 impl<P: Customizable> Render for CustomizeHost<P> {
@@ -432,14 +480,26 @@ impl<P: Customizable> Render for CustomizeHost<P> {
         };
         div()
             .size_full()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_SM)
-            .p(tokens::SPACE_MD)
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
-            .child(body)
+            // The backdrop paints first, under the controls; without it
+            // translucent surfaces would sink into the window's own
+            // black instead of the playing track's art.
+            .children(self.backdrop.layer(&self.state.now_art, window, cx))
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_SM)
+                    .p(tokens::SPACE_MD)
+                    // The window's own surface over the backdrop: opaque
+                    // at full surface opacity, thinning to let the art
+                    // through only as the surfaces do.
+                    .bg(palette::bg_elevated())
+                    .child(body),
+            )
     }
 }
 

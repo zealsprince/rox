@@ -121,7 +121,7 @@ impl NowPlayingArt {
                 // A track without art clears the previous track's backdrop
                 // and tint rather than leaving them up.
                 let (backdrop, seed) = match baked {
-                    Some((image, seed)) => (Some(image), seed),
+                    Some((image, seed)) => (Some(image), Some(seed)),
                     None => (None, None),
                 };
                 this.backdrop = backdrop;
@@ -138,7 +138,7 @@ impl NowPlayingArt {
 /// One cover into backdrop form: downscale, extract the derivation seed,
 /// blur, and repack for the renderer. The heavy work, run off the UI
 /// thread once per track change.
-fn bake(bytes: &[u8]) -> Option<(Arc<RenderImage>, Option<Rgba>)> {
+fn bake(bytes: &[u8]) -> Option<(Arc<RenderImage>, palette::Seed)> {
     let art = image::load_from_memory(bytes).ok()?;
     let small = art.thumbnail(BAKE_SIZE, BAKE_SIZE).into_rgba8();
     let seed = extract_seed(&small);
@@ -155,19 +155,26 @@ fn bake(bytes: &[u8]) -> Option<(Arc<RenderImage>, Option<Rgba>)> {
 const SEED_BANDS: usize = 24;
 /// Oklch chroma below this is gray noise: those pixels sit the vote out.
 const SEED_MIN_CHROMA: f32 = 0.03;
+/// How many bands a runner-up must sit from the winner before it reads
+/// as a second color rather than a shade of the first: 60 degrees.
+const SEED_MIN_SEPARATION: usize = 4;
 
-/// The palette derivation seed off the pre-blur thumbnail: the
-/// chroma-weighted mean color of the most-voted hue band. Near-gray
-/// pixels and near-black or near-white ones don't vote, so a dark cover
-/// with one vivid element seeds that element. None when too little of
-/// the cover is colorful to trust - an achromatic album keeps the plain
-/// palette rather than amplifying noise.
-fn extract_seed(small: &RgbaImage) -> Option<Rgba> {
+/// The palette derivation seed off the pre-blur thumbnail. The primary
+/// is the chroma-weighted mean color of the most-voted hue band; the
+/// secondary the same off the strongest band far enough away in hue.
+/// Near-gray pixels and near-black or near-white ones don't vote, so a
+/// dark cover with one vivid element seeds that element; when too little
+/// of the cover is colorful to trust, the colors stay None rather than
+/// amplifying noise. The lightness mean runs over every pixel, gray mass
+/// included - it is the bright-album signal, and the white a colorful
+/// cover sits on is exactly what it must see.
+fn extract_seed(small: &RgbaImage) -> palette::Seed {
     let mut weight = [0.0f32; SEED_BANDS];
     let mut lightness = [0.0f32; SEED_BANDS];
     let mut chroma = [0.0f32; SEED_BANDS];
     let mut sin = [0.0f32; SEED_BANDS];
     let mut cos = [0.0f32; SEED_BANDS];
+    let mut cover_l = 0.0f32;
     for pixel in small.pixels() {
         let color = Rgba {
             r: pixel[0] as f32 / 255.0,
@@ -176,6 +183,7 @@ fn extract_seed(small: &RgbaImage) -> Option<Rgba> {
             a: 1.0,
         };
         let (l, c, h) = palette::rgba_to_oklch(color);
+        cover_l += l;
         if c < SEED_MIN_CHROMA || !(0.15..=0.95).contains(&l) {
             continue;
         }
@@ -187,19 +195,89 @@ fn extract_seed(small: &RgbaImage) -> Option<Rgba> {
         sin[band] += h.sin() * c;
         cos[band] += h.cos() * c;
     }
-    let best = (0..SEED_BANDS).max_by(|a, b| weight[*a].total_cmp(&weight[*b]))?;
-    // The floor: the winning band must carry at least the weight of 2%
-    // of the cover voting at minimum chroma.
-    let pixels = (small.width() * small.height()) as f32;
-    if weight[best] < pixels * 0.02 * SEED_MIN_CHROMA {
-        return None;
+    let pixels = (small.width() * small.height()).max(1) as f32;
+    // The floor: a band only counts if it carries at least the weight of
+    // 2% of the cover voting at minimum chroma.
+    let floor = pixels * 0.02 * SEED_MIN_CHROMA;
+    let band_color = |band: usize| {
+        palette::oklch_to_rgba(
+            lightness[band] / weight[band],
+            chroma[band] / weight[band],
+            sin[band].atan2(cos[band]),
+            1.0,
+        )
+    };
+    let best = (0..SEED_BANDS)
+        .filter(|&band| weight[band] >= floor)
+        .max_by(|a, b| weight[*a].total_cmp(&weight[*b]));
+    let second = best.and_then(|best| {
+        (0..SEED_BANDS)
+            .filter(|&band| {
+                let apart = band.abs_diff(best);
+                apart.min(SEED_BANDS - apart) >= SEED_MIN_SEPARATION
+            })
+            .filter(|&band| weight[band] >= floor)
+            .max_by(|a, b| weight[*a].total_cmp(&weight[*b]))
+    });
+    palette::Seed {
+        primary: best.map(band_color),
+        secondary: second.map(band_color),
+        lightness: cover_l / pixels,
     }
-    Some(palette::oklch_to_rgba(
-        lightness[best] / weight[best],
-        chroma[best] / weight[best],
-        sin[best].atan2(cos[best]),
-        1.0,
-    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::rgb;
+
+    fn hue_of(color: Rgba) -> f32 {
+        palette::rgba_to_oklch(color).2
+    }
+
+    fn hue_dist(a: f32, b: f32) -> f32 {
+        let d = (a - b).rem_euclid(std::f32::consts::TAU);
+        d.min(std::f32::consts::TAU - d)
+    }
+
+    /// The Polychrome case: a mostly white cover with a red mass and a
+    /// smaller blue one must read bright and carry both colors, red
+    /// first.
+    #[test]
+    fn bright_cover_seeds_both_accents() {
+        let small = RgbaImage::from_fn(100, 100, |x, _| {
+            image::Rgba(match x {
+                0..20 => [255, 0, 0, 255],
+                20..30 => [0, 0, 255, 255],
+                _ => [255, 255, 255, 255],
+            })
+        });
+        let seed = extract_seed(&small);
+        assert!(seed.lightness > 0.7, "read dark: {}", seed.lightness);
+        let primary = seed.primary.expect("red should win the vote");
+        let secondary = seed.secondary.expect("blue should place");
+        assert!(hue_dist(hue_of(primary), hue_of(rgb(0xff0000))) < 0.3);
+        assert!(hue_dist(hue_of(secondary), hue_of(rgb(0x0000ff))) < 0.3);
+    }
+
+    /// A dark cover with one vivid element seeds that element alone and
+    /// reads dark; the gray mass votes for no hue but counts toward the
+    /// lightness.
+    #[test]
+    fn dark_cover_seeds_its_one_color() {
+        let small = RgbaImage::from_fn(100, 100, |x, _| {
+            image::Rgba(if x < 10 {
+                [0, 255, 0, 255]
+            } else {
+                [20, 20, 20, 255]
+            })
+        });
+        let seed = extract_seed(&small);
+        assert!(seed.lightness < 0.5, "read bright: {}", seed.lightness);
+        let primary = seed.primary.expect("green should win the vote");
+        assert!(hue_dist(hue_of(primary), hue_of(rgb(0x00ff00))) < 0.3);
+        assert!(seed.secondary.is_none(), "found a second color in noise");
+    }
 }
 
 /// A window root's handle on the backdrop: cross-fades from bake to bake

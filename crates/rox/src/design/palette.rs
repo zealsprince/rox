@@ -8,7 +8,10 @@
 //! per token. While a track plays, [`set_seed`] layers the derived mode
 //! on top: every role's hue and chroma move toward a seed color pulled
 //! from the cover art while its lightness holds, so the contrast ladder
-//! survives any album. The whole derived mode sits behind the
+//! survives any album. A bright cover swaps the dark ladder for the
+//! designed light one before tinting, and when a second cover color
+//! stands apart from the first it takes the highlight role whole. The
+//! whole derived mode sits behind the
 //! [`set_art_theming`] switch, off by default; the backdrop layers read
 //! the same switch. Changes ease componentwise from wherever the
 //! palette visibly is to the new target. The static sits outside GPUI's
@@ -216,8 +219,13 @@ macro_rules! tokens {
             }
         }
 
+        // The accessors are the palette's read API, one per role, so a
+        // role read only through its field (a raw wash in the theme
+        // projection, an opaque overlay variant) leaves its generated
+        // accessor uncalled without meaning the token is dead.
         $(
             $(#[$doc])*
+            #[allow(dead_code)]
             pub fn $role() -> Rgba {
                 CURRENT.read().unwrap().role(|p| p.$role)
             }
@@ -225,6 +233,7 @@ macro_rules! tokens {
 
         $(
             $(#[$sdoc])*
+            #[allow(dead_code)]
             pub fn $srole() -> Rgba {
                 let current = CURRENT.read().unwrap();
                 scaled(current.role(|p| p.$srole), current.surface_opacity)
@@ -233,6 +242,7 @@ macro_rules! tokens {
 
         $(
             $(#[$tdoc])*
+            #[allow(dead_code)]
             pub fn $trole() -> Rgba {
                 let current = CURRENT.read().unwrap();
                 let opacity = current.surface_opacity;
@@ -242,6 +252,7 @@ macro_rules! tokens {
 
         $(
             $(#[$idoc])*
+            #[allow(dead_code)]
             pub fn $irole() -> Rgba {
                 let current = CURRENT.read().unwrap();
                 mix(
@@ -267,6 +278,11 @@ tokens! {
     accent: 0xfdcb00, "Accent";
     /// The accent blended a quarter toward white, the lift hover states use.
     accent_hover: 0xfed840, "Accent hover";
+    /// The contrast mark riding over accent fills: the playheads, the
+    /// slider knobs, the spectrum's peak caps. Sits at the bright text by
+    /// default; under song theming the cover's runner-up color takes it
+    /// when one stands apart from the seed.
+    highlight: 0xe0e0e0, "Highlight";
 
     // Borders.
     border: 0x333333, "Border";
@@ -354,6 +370,32 @@ impl Palette {
     }
 }
 
+/// What a playing track's cover contributes to derivation: its dominant
+/// color, the strongest color standing apart from it, and how bright the
+/// cover reads overall. The backdrop bake extracts one per track.
+#[derive(Clone, Copy)]
+pub struct Seed {
+    /// The dominant chromatic color; None when the cover is achromatic,
+    /// which tints nothing but still picks the ladder by lightness.
+    pub primary: Option<Rgba>,
+    /// The strongest color far enough from the primary in hue to read as
+    /// a second color rather than a shade of the first.
+    pub secondary: Option<Rgba>,
+    /// Mean perceptual lightness over the whole cover, gray mass and all.
+    pub lightness: f32,
+}
+
+impl Seed {
+    /// Whether two seeds would derive the same palette; alpha never
+    /// participates.
+    fn same(&self, other: &Seed) -> bool {
+        let key = |c: Option<Rgba>| c.map(|c| (c.r, c.g, c.b));
+        key(self.primary) == key(other.primary)
+            && key(self.secondary) == key(other.secondary)
+            && self.lightness == other.lightness
+    }
+}
+
 /// What the accessors read: the base palette and its writers' inputs,
 /// plus the easing run the reads actually sample.
 struct Current {
@@ -362,7 +404,7 @@ struct Current {
     base: Palette,
     /// The cover-art seed while a track plays; None reads as the plain
     /// base palette.
-    seed: Option<Rgba>,
+    seed: Option<Seed>,
     /// The song-theming switch: whether the seed may derive at all.
     /// Off, the seed is only remembered for a later enable.
     art_theming: bool,
@@ -469,12 +511,17 @@ pub fn set_scalars(surface_opacity: f32, backdrop_strength: f32, cx: &mut App) {
 /// when playback stops or the cover is achromatic. Eases like any other
 /// palette change, so a track change washes the tint across instead of
 /// snapping it.
-pub fn set_seed(seed: Option<Rgba>, cx: &mut App) {
+pub fn set_seed(seed: Option<Seed>, cx: &mut App) {
     {
         let mut current = CURRENT.write().unwrap();
         // Consecutive tracks off one album carry identical art; don't
         // restart the ease for a seed that isn't going anywhere.
-        if current.seed.map(|c| (c.r, c.g, c.b)) == seed.map(|c| (c.r, c.g, c.b)) {
+        let unchanged = match (&current.seed, &seed) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.same(b),
+            _ => false,
+        };
+        if unchanged {
             return;
         }
         current.seed = seed;
@@ -509,6 +556,29 @@ pub fn art_theming() -> bool {
     CURRENT.read().unwrap().art_theming
 }
 
+/// The palette as the current derivation lands it: the easing run's
+/// target, the base itself while nothing derives. What the locked editor
+/// swatches show and what export saves while song theming drives the
+/// colors, so a look a track built can leave as a theme.
+pub fn resolved() -> Palette {
+    CURRENT.read().unwrap().target
+}
+
+// The menu overlays read their fill and row hover opaque. A floating
+// dropdown has no backdrop behind it - it hovers over panel content -
+// so it stays filled while the menubar chrome it drops from thins with
+// surface opacity. Same eased colors as the scaled accessors, the
+// surface-opacity scale left off, matching the projected popover tokens
+// the gpui-component context menus already read.
+
+pub fn bg_menu_opaque() -> Rgba {
+    CURRENT.read().unwrap().role(|p| p.bg_menu)
+}
+
+pub fn bg_control_hover_opaque() -> Rgba {
+    CURRENT.read().unwrap().role(|p| p.bg_control_hover)
+}
+
 /// How far the near-gray roles' chroma moves toward the seed's, and the
 /// ceiling it never crosses: enough for surfaces and text to pick up the
 /// album's cast, never enough to become it.
@@ -517,13 +587,74 @@ const TINT_CAP: f32 = 0.045;
 /// Chroma above this marks a role as already colorful (the accent
 /// family): it keeps its own chroma and swings only its hue to the seed.
 const CHROMATIC: f32 = 0.05;
+/// How much of the seed's chroma the border roles carry, past the
+/// near-gray cap: hairlines sit on surfaces the backdrop saturates well
+/// beyond what the capped tint can answer, so a border must be a darker
+/// shade of the field, not a gray line over it. Scales with the seed,
+/// so a muted album still gets quiet borders.
+const BORDER_TINT: f32 = 0.6;
+/// Mean cover lightness above this reads as a light album: derivation
+/// tints the light ladder instead of the base.
+const LIGHT_COVER: f32 = 0.70;
+/// The lightness band the highlight clamps into when a runner-up cover
+/// color takes it, one band per ladder: far enough from the surfaces to
+/// read as a mark, wide enough that the color keeps the chroma to stay
+/// itself - pinning it to the ladder's own mark lightness crushed a
+/// vivid red to maroon on a light album.
+const HIGHLIGHT_DARK_BAND: (f32, f32) = (0.60, 0.85);
+const HIGHLIGHT_LIGHT_BAND: (f32, f32) = (0.30, 0.55);
 
-/// The derived palette: the base with every role re-tinted toward the
-/// seed, or the base itself while nothing seeds.
-fn derive(base: &Palette, seed: Option<Rgba>) -> Palette {
+impl Palette {
+    /// The light ladder, the dark defaults' designed counterpart:
+    /// surfaces mirrored bright, ink mirrored dark, the accent pulled
+    /// down to read over bright surfaces. Only derivation reads it - a
+    /// bright cover swaps it in for the base before tinting, so the app
+    /// goes light with the album instead of sitting dark under it.
+    fn light() -> Palette {
+        Palette {
+            accent: rgb(0xb07d00),
+            accent_hover: rgb(0x976a00),
+            highlight: rgb(0x1f1f1f),
+            // Deeper below the surfaces than a plain mirror of the dark
+            // deltas: the backdrop bleeding through translucent surfaces
+            // eats hairline contrast, so the light ladder buys more.
+            border: rgb(0xb3b3b3),
+            border_light: rgb(0xa9a9a9),
+            text_bright: rgb(0x1a1a1a),
+            text_on_accent: rgb(0xfafafa),
+            bg_root: rgb(0xededed),
+            bg_panel: rgb(0xe7e7e7),
+            bg_elevated: rgb(0xe3e3e3),
+            bg_menubar: rgb(0xdbdbdb),
+            bg_menu: rgb(0xd9d9d9),
+            bg_control: rgb(0xd5d5d5),
+            bg_menu_hover: rgb(0xd0d0d0),
+            bg_control_active: rgb(0xcccccc),
+            bg_control_hover: rgb(0xc5c5c5),
+            bg_input: rgb(0xebebeb),
+            bg_toolbar: rgb(0xe0e0e0),
+            text: rgb(0x3f3f3f),
+            text_secondary: rgb(0x5f5f5f),
+            text_dim: rgb(0x656565),
+            text_muted: rgb(0x7f7f7f),
+            text_faint: rgb(0x8f8f8f),
+            gridline: rgb(0x919191),
+        }
+    }
+}
+
+/// The derived palette: the ladder the cover's lightness picks, every
+/// role re-tinted toward the seed, or the base itself while nothing
+/// seeds. An achromatic cover tints nothing but still picks the ladder.
+fn derive(base: &Palette, seed: Option<Seed>) -> Palette {
     let Some(seed) = seed else { return *base };
-    let (_, seed_chroma, seed_hue) = rgba_to_oklch(seed);
-    base.map(|color| {
+    let light = seed.lightness > LIGHT_COVER;
+    let ladder = if light { Palette::light() } else { *base };
+    let Some(primary) = seed.primary else {
+        return ladder;
+    };
+    let (_, seed_chroma, seed_hue) = rgba_to_oklch(primary);
+    let mut derived = ladder.map(|color| {
         let (lightness, chroma, _) = rgba_to_oklch(color);
         let chroma = if chroma > CHROMATIC {
             chroma
@@ -531,7 +662,34 @@ fn derive(base: &Palette, seed: Option<Rgba>) -> Palette {
             (chroma + seed_chroma * TINT_STRENGTH).min(TINT_CAP)
         };
         oklch_to_rgba(lightness, chroma, seed_hue, color.a)
-    })
+    });
+    // Borders re-tint past the gray cap, [`BORDER_TINT`]'s rule.
+    for (derived_border, ladder_border) in [
+        (&mut derived.border, ladder.border),
+        (&mut derived.border_light, ladder.border_light),
+    ] {
+        let (lightness, ..) = rgba_to_oklch(ladder_border);
+        *derived_border = oklch_to_rgba(
+            lightness,
+            seed_chroma * BORDER_TINT,
+            seed_hue,
+            ladder_border.a,
+        );
+    }
+    // The runner-up color takes the highlight role as itself - its own
+    // chroma, hue, and lightness, the last clamped into the mark band
+    // opposite the ladder's surfaces so it still reads over them.
+    if let Some(secondary) = seed.secondary {
+        let (lightness, chroma, hue) = rgba_to_oklch(secondary);
+        let (lo, hi) = if light {
+            HIGHLIGHT_LIGHT_BAND
+        } else {
+            HIGHLIGHT_DARK_BAND
+        };
+        derived.highlight =
+            oklch_to_rgba(lightness.clamp(lo, hi), chroma, hue, ladder.highlight.a);
+    }
+    derived
 }
 
 /// Repaint generations: each palette change starts a pump that re-feeds
@@ -572,25 +730,66 @@ fn drive(cx: &mut App) {
 /// projection of our tokens, never the source; everything not projected
 /// here keeps the stock dark set.
 fn apply(cx: &mut App) {
-    // Start over from the stock dark baseline so repeated feeds project
-    // onto pristine values instead of compounding.
-    Theme::change(ThemeMode::Dark, None, cx);
-    let (palette, opacity) = {
+    let (palette, opacity, light) = {
         let current = CURRENT.read().unwrap();
-        (current.snapshot(), current.surface_opacity)
+        let light = current.art_theming
+            && current.seed.is_some_and(|seed| seed.lightness > LIGHT_COVER);
+        (current.snapshot(), current.surface_opacity, light)
     };
+    // Start over from the stock baseline so repeated feeds project onto
+    // pristine values instead of compounding. The baseline follows the
+    // ladder, so the widget tokens we never project (scrollbars,
+    // popovers, dialogs) don't sit dark on a light album.
+    let mode = if light {
+        ThemeMode::Light
+    } else {
+        ThemeMode::Dark
+    };
+    Theme::change(mode, None, cx);
     let theme = Theme::global_mut(cx);
     // Selection follows the accent instead of the stock blue.
     theme.table_active = alpha(palette.accent, 0x26).into();
     theme.table_active_border = palette.accent.into();
     theme.list_active = alpha(palette.accent, 0x26).into();
     theme.list_active_border = palette.accent.into();
+    // Hairlines follow our border roles instead of the stock set: the
+    // stock dark values sat near ours, but a light baseline's read
+    // near-white against the tinted ladder. Borders read plain, like our
+    // own border accessors - a thinned hairline is just a ghost.
+    theme.border = palette.border.into();
+    theme.sidebar_border = palette.border.into();
+    theme.title_bar_border = palette.border.into();
+    theme.table_row_border = palette.border.into();
+    theme.input = palette.border_light.into();
+    theme.ring = palette.accent.into();
+    // The scrollbar thumb rides the ink ladder like the faint text it
+    // sits beside; the track stays the stock transparent. Same alphas as
+    // the stock thumb, resting slightly sheer, opaque under the pointer.
+    theme.scrollbar_thumb = alpha(palette.text_faint, 0xe6).into();
+    theme.scrollbar_thumb_hover = palette.text_faint.into();
+    // Input boxes: resting border from our border role, focus ring from
+    // the accent, the same pair the hand-rolled search box drew with.
+    theme.input = palette.border.into();
+    theme.ring = palette.accent.into();
     // The chrome between the backdrop and the panel content, projected
     // from the palette roles whose ladder values sit nearest the stock
     // dark set, so palette edits and art tinting recolor the dock and
     // table along with everything else. One deref up front: field
     // borrows through the Theme wrapper would each re-borrow it.
     let colors: &mut ThemeColor = theme;
+    // Floating menus - the right-click context menus and their submenus -
+    // are overlays with no backdrop behind them, so they read the raw
+    // palette fields, not the opacity-scaled surface accessors: a popup
+    // stays filled while the panels it floats over thin. gpui-component's
+    // `accent` is its subtle highlight surface, our bg_menu_hover, not the
+    // brand accent, so a selected row matches the menubar dropdown's own
+    // hover instead of flooding with color. Selected text lands a step
+    // brighter than the resting item, the ladder's own order.
+    colors.popover = palette.bg_menu.into();
+    colors.popover_foreground = palette.text.into();
+    colors.foreground = palette.text.into();
+    colors.accent = palette.bg_menu_hover.into();
+    colors.accent_foreground = palette.text_bright.into();
     // Washes: visible chrome with nothing of ours underneath - the tab
     // strip, the active tab, toolbar buttons, the table's row hover -
     // reading out at surface opacity like our own surface tokens.
@@ -666,13 +865,23 @@ mod tests {
         }
     }
 
+    /// A seed with only a primary color, at a cover lightness that keeps
+    /// the dark ladder.
+    fn dark_seed(color: Rgba) -> Seed {
+        Seed {
+            primary: Some(color),
+            secondary: None,
+            lightness: 0.3,
+        }
+    }
+
     /// Derivation's core promise: whatever the seed, every role keeps
     /// its lightness, so the contrast ladder survives.
     #[test]
     fn derivation_preserves_lightness() {
         let base = Palette::default();
         for seed in [rgb(0xff2200), rgb(0x2244ff), rgb(0x88ff00), rgb(0xfdcb00)] {
-            let derived = derive(&base, Some(seed));
+            let derived = derive(&base, Some(dark_seed(seed)));
             for (before, after) in [
                 (base.bg_root, derived.bg_root),
                 (base.bg_menu, derived.bg_menu),
@@ -689,5 +898,70 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Borders follow the seed past the near-gray cap: a saturated
+    /// album gets dividers that are a shade of it, not gray.
+    #[test]
+    fn borders_outrun_the_gray_cap() {
+        let base = Palette::default();
+        let seed = rgb(0x88ff00);
+        let (.., seed_h) = rgba_to_oklch(seed);
+        let derived = derive(&base, Some(dark_seed(seed)));
+        let (l, c, h) = rgba_to_oklch(derived.border);
+        let (base_l, ..) = rgba_to_oklch(base.border);
+        assert!((l - base_l).abs() < 0.02, "border lightness drifted");
+        // The gamut walk may still trim the request at border lightness,
+        // but the result must land clear of the near-gray cap and on the
+        // seed's hue.
+        assert!(c > TINT_CAP + 0.02, "border stuck at the gray cap: {c}");
+        assert!((h - seed_h).abs() < 0.05, "border missed the hue");
+    }
+
+    /// A bright cover flips the ladder: surfaces light, ink dark, even
+    /// when the cover is too achromatic to tint anything.
+    #[test]
+    fn bright_cover_goes_light() {
+        let base = Palette::default();
+        for primary in [Some(rgb(0xff2200)), None] {
+            let derived = derive(
+                &base,
+                Some(Seed {
+                    primary,
+                    secondary: None,
+                    lightness: 0.9,
+                }),
+            );
+            let (root_l, ..) = rgba_to_oklch(derived.bg_root);
+            let (text_l, ..) = rgba_to_oklch(derived.text);
+            assert!(root_l > 0.8, "root stayed dark: {root_l}");
+            assert!(text_l < 0.5, "text stayed light: {text_l}");
+        }
+    }
+
+    /// The runner-up cover color takes the highlight role as itself:
+    /// its hue survives, its lightness lands in the mark band opposite
+    /// the surfaces, and enough chroma survives the clamp to read as
+    /// the cover's color rather than a gray.
+    #[test]
+    fn secondary_takes_highlight() {
+        let base = Palette::default();
+        let blue = rgb(0x2244ff);
+        let (.., blue_h) = rgba_to_oklch(blue);
+        let derived = derive(
+            &base,
+            Some(Seed {
+                secondary: Some(blue),
+                ..dark_seed(rgb(0xff2200))
+            }),
+        );
+        let (l, c, h) = rgba_to_oklch(derived.highlight);
+        let (lo, hi) = HIGHLIGHT_DARK_BAND;
+        assert!(
+            (lo - 0.01..=hi + 0.01).contains(&l),
+            "highlight left the dark band: {l}"
+        );
+        assert!((h - blue_h).abs() < 0.05, "highlight missed the hue");
+        assert!(c > 0.1, "highlight barely tinted: {c}");
     }
 }

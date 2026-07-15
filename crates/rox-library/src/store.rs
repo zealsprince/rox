@@ -164,6 +164,18 @@ pub fn paths_for(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<String>
     Ok(out)
 }
 
+/// Resolve a playable path to its track id, for marking the playing row.
+/// Ok(None) when the path is not in the library.
+pub fn id_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<i64>> {
+    let mut stmt =
+        conn.prepare_cached("SELECT id FROM tracks WHERE source = 'local' AND path = ?1")?;
+    let mut rows = stmt.query([path])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(row.get(0)?)),
+        None => Ok(None),
+    }
+}
+
 /// The display tags for one track, what a path-keyed lookup returns.
 pub struct TrackMeta {
     pub title: String,

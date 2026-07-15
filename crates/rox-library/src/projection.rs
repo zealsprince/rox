@@ -169,7 +169,22 @@ pub struct RowView<'a> {
     pub title: &'a str,
     pub artist: &'a str,
     pub album: &'a str,
+    pub genre: &'a str,
+    pub year: u16,
+    pub track_no: u16,
     pub duration_ms: u32,
+}
+
+/// A sortable column of the projection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortKey {
+    Title,
+    Artist,
+    Album,
+    Genre,
+    Year,
+    TrackNo,
+    Duration,
 }
 
 impl Projection {
@@ -304,6 +319,9 @@ impl Projection {
             title: self.title.get(i),
             artist: &self.artists.strings[self.artist[i] as usize],
             album: &self.albums.strings[self.album[i] as usize],
+            genre: &self.genres.strings[self.genre[i] as usize],
+            year: self.year[i],
+            track_no: self.track_no[i],
             duration_ms: self.duration_ms[i],
         }
     }
@@ -411,6 +429,59 @@ impl Projection {
     pub fn sort_year(&self) -> Vec<u32> {
         let mut idx: Vec<u32> = (0..self.len() as u32).collect();
         idx.par_sort_unstable_by_key(|&i| self.year[i as usize]);
+        idx
+    }
+
+    /// Sort a view - any subset of rows, in any order - by one key. Ties
+    /// fall back to the canonical artist, album, track order so equal keys
+    /// stay browsable; descending reverses the key alone, not the
+    /// tie-break.
+    pub fn sort_view(&self, view: &[u32], key: SortKey, descending: bool) -> Vec<u32> {
+        match key {
+            SortKey::Title => self.order_view(view, descending, |i| self.title_lower.get(i)),
+            SortKey::Artist => {
+                let rank = Self::ranks(&self.artists);
+                self.order_view(view, descending, move |i| rank[self.artist[i] as usize])
+            }
+            SortKey::Album => {
+                let rank = Self::ranks(&self.albums);
+                self.order_view(view, descending, move |i| rank[self.album[i] as usize])
+            }
+            SortKey::Genre => {
+                let rank = Self::ranks(&self.genres);
+                self.order_view(view, descending, move |i| rank[self.genre[i] as usize])
+            }
+            SortKey::Year => self.order_view(view, descending, |i| self.year[i]),
+            SortKey::TrackNo => self.order_view(view, descending, |i| self.track_no[i]),
+            SortKey::Duration => self.order_view(view, descending, |i| self.duration_ms[i]),
+        }
+    }
+
+    /// The shared sort skeleton behind [`Self::sort_view`]: primary key,
+    /// direction, canonical tie-break, all on precomputed integer ranks
+    /// except titles, which compare their lowered strings directly - a
+    /// subset comparison stays cheaper than ranking every title.
+    fn order_view<K, F>(&self, view: &[u32], descending: bool, primary: F) -> Vec<u32>
+    where
+        K: Ord,
+        F: Fn(usize) -> K + Sync,
+    {
+        let a_rank = Self::ranks(&self.artists);
+        let b_rank = Self::ranks(&self.albums);
+        let canonical = |i: usize| {
+            (
+                a_rank[self.artist[i] as usize],
+                b_rank[self.album[i] as usize],
+                self.track_no[i],
+            )
+        };
+        let mut idx = view.to_vec();
+        idx.par_sort_unstable_by(|&a, &b| {
+            let (a, b) = (a as usize, b as usize);
+            let ord = primary(a).cmp(&primary(b));
+            let ord = if descending { ord.reverse() } else { ord };
+            ord.then_with(|| canonical(a).cmp(&canonical(b)))
+        });
         idx
     }
 

@@ -243,6 +243,10 @@ impl CoverArtPanel {
 }
 
 impl Customizable for CoverArtPanel {
+    fn state(&self) -> AppState {
+        self.state.clone()
+    }
+
     fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         div()
             .flex()
@@ -330,7 +334,7 @@ impl Panel for CoverArtPanel {
         // because the copy takes the config along, like the transports'.
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Duplicate").on_click(move |_, window, cx| {
+            PopupMenuItem::new("Duplicate Panel").on_click(move |_, window, cx| {
                 let Some(this) = weak.upgrade() else { return };
                 let (state, config, tabs) = {
                     let panel = this.read(cx);

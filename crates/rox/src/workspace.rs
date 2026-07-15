@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use gpui::{
     actions, deferred, div, prelude::*, px, svg, App, Axis, Context, Div, Entity, FocusHandle,
-    FontFeatures, KeyBinding, MouseButton, Subscription, Task, WeakEntity, Window, WindowBounds,
+    FontFeatures, Global, KeyBinding, MouseButton, Subscription, Task, WeakEntity, Window,
+    WindowBounds,
 };
 use rox_dock::{
     register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo, PanelView,
@@ -26,7 +27,7 @@ use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, TabHosts};
 use crate::panels::cover::{CoverArtPanel, CoverConfig};
 use crate::panels::library::{Library, LibraryConfig, LibraryPanel};
-use crate::panels::spectrum::SpectrumPanel;
+use crate::panels::spectrum::{SpectrumConfig, SpectrumPanel};
 use crate::panels::transport::{
     SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
     VolumeConfig, VolumePanel,
@@ -37,6 +38,15 @@ use crate::selection::Selection;
 use crate::settings::{Settings, WindowState};
 
 const MENU_BAR_H: f32 = 30.0;
+
+/// How many workspace windows are open: counted up in [`Workspace::new`],
+/// down in the close hook. The last one to close takes the app with it;
+/// settings, popout, and customize windows are children of a workspace,
+/// not reasons to keep a headless process alive.
+#[derive(Default)]
+struct WorkspaceWindows(usize);
+
+impl Global for WorkspaceWindows {}
 
 /// Versions the layout dump in settings. Bump on incompatible panel or
 /// schema changes; a dump from another version is ignored and the default
@@ -53,7 +63,10 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// so it resizes and collapses like everything else.
 const TRANSPORT_ROW_H: f32 = 120.0;
 
-actions!(rox, [TogglePlayback, SeekBackward, SeekForward, Quit]);
+actions!(
+    rox,
+    [TogglePlayback, SeekBackward, SeekForward, OpenSettings, Quit]
+);
 
 /// Bindings match key contexts along the focus path, so this scope holds
 /// anywhere inside a workspace window except while the library search box
@@ -71,10 +84,20 @@ pub fn init(cx: &mut App) {
     } else {
         "alt-f4"
     };
+    // Preferences shortcut follows the platform: Cmd+, on macOS, Ctrl+,
+    // elsewhere. Ctrl+I is a second binding on both. These carry modifiers,
+    // so they stay unscoped past the search box without stealing typing.
+    let settings_keys = if cfg!(target_os = "macos") {
+        "cmd-,"
+    } else {
+        "ctrl-,"
+    };
     cx.bind_keys([
         KeyBinding::new("space", TogglePlayback, PLAYBACK_KEY_SCOPE),
         KeyBinding::new("left", SeekBackward, PLAYBACK_KEY_SCOPE),
         KeyBinding::new("right", SeekForward, PLAYBACK_KEY_SCOPE),
+        KeyBinding::new(settings_keys, OpenSettings, Some("Workspace")),
+        KeyBinding::new("ctrl-i", OpenSettings, Some("Workspace")),
         KeyBinding::new(quit_keys, Quit, None),
     ]);
     // Fallback for windows without a workspace in the focus path (popped-out
@@ -108,6 +131,7 @@ fn register_panels(state: &AppState, cx: &mut App) {
     configured!("cover art", CoverArtPanel);
     configured!("playback", TransportPanel);
     configured!("volume", VolumePanel);
+    configured!("spectrum", SpectrumPanel);
     macro_rules! stateless {
         ($name:literal, $panel:ty) => {{
             let s = state.clone();
@@ -116,7 +140,6 @@ fn register_panels(state: &AppState, cx: &mut App) {
             });
         }};
     }
-    stateless!("spectrum", SpectrumPanel);
     stateless!("waveform", WaveformPanel);
 }
 
@@ -431,10 +454,19 @@ impl Workspace {
             this.refresh_title(window, cx);
         });
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        cx.default_global::<WorkspaceWindows>().0 += 1;
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             if let Some(this) = this.upgrade() {
                 this.update(cx, |this, cx| this.persist(window, cx));
+            }
+            // Closing the last workspace window quits; without this, a
+            // settings or popout window left open keeps the app running
+            // with the menubar (and New Window) gone.
+            let open = cx.default_global::<WorkspaceWindows>();
+            open.0 = open.0.saturating_sub(1);
+            if open.0 == 0 {
+                cx.quit();
             }
             true
         });
@@ -484,14 +516,11 @@ impl Workspace {
         let title = match &path {
             Some(path) => {
                 let meta = self.state.library.read(cx).meta_for(path);
-                let track = meta
-                    .as_ref()
-                    .map(|m| m.title.clone())
-                    .unwrap_or_else(|| {
-                        path.file_stem()
-                            .map(|s| s.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| path.display().to_string())
-                    });
+                let track = meta.as_ref().map(|m| m.title.clone()).unwrap_or_else(|| {
+                    path.file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string())
+                });
                 match meta.map(|m| m.artist).filter(|a| !a.is_empty()) {
                     Some(artist) => format!("{artist} - {track} - rox"),
                     None => format!("{track} - rox"),
@@ -596,7 +625,7 @@ impl Workspace {
         match action {
             MenuAction::NewWindow => crate::open_workspace(cx),
             MenuAction::OpenSettings => {
-                crate::settings_window::open(self.state.library.clone(), cx)
+                crate::settings_window::open(self.state.clone(), cx)
             }
             MenuAction::OpenLibrary => {
                 let panel = cx.new(|cx| {
@@ -610,7 +639,9 @@ impl Workspace {
                 self.add_center(Arc::new(panel), window, cx);
             }
             MenuAction::OpenSpectrum => {
-                let panel = cx.new(|cx| SpectrumPanel::new(self.state.clone(), cx));
+                let panel = cx.new(|cx| {
+                    SpectrumPanel::new(self.state.clone(), SpectrumConfig::default(), cx)
+                });
                 self.add_bottom(Arc::new(panel), window, cx);
             }
             MenuAction::OpenWaveform => {
@@ -772,7 +803,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .py(tokens::SPACE_XS)
-            .bg(palette::bg_menu())
+            .bg(palette::bg_menu_opaque())
             .border_1()
             .border_color(palette::border_light())
             .shadow_md()
@@ -807,7 +838,7 @@ impl Workspace {
             .px(tokens::SPACE_MD)
             .py(tokens::SPACE_XS)
             .cursor_pointer()
-            .hover(|d| d.bg(palette::bg_control_hover()))
+            .hover(|d| d.bg(palette::bg_control_hover_opaque()))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
@@ -837,8 +868,8 @@ impl Workspace {
             .px(tokens::SPACE_MD)
             .py(tokens::SPACE_XS)
             .cursor_pointer()
-            .when(open, |d| d.bg(palette::bg_control_hover()))
-            .hover(|d| d.bg(palette::bg_control_hover()))
+            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .hover(|d| d.bg(palette::bg_control_hover_opaque()))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_submenu != Some(index) {
                     this.open_submenu = Some(index);
@@ -870,7 +901,7 @@ impl Workspace {
                         .flex()
                         .flex_col()
                         .py(tokens::SPACE_XS)
-                        .bg(palette::bg_menu())
+                        .bg(palette::bg_menu_opaque())
                         .border_1()
                         .border_color(palette::border_light())
                         .shadow_md()
@@ -903,6 +934,9 @@ impl Render for Workspace {
                 this.state
                     .player
                     .update(cx, |player, _| player.seek_by(5.0));
+            }))
+            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
+                crate::settings_window::open(this.state.clone(), cx);
             }))
             // Quit bypasses the window close hook, so dump the layout and
             // frame here or a pending debounce and any window move since

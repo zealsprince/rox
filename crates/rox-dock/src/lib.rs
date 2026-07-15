@@ -588,7 +588,10 @@ impl DockArea {
     /// Only the vertical edges: the root stack is vertical, so only they
     /// insert cleanly at the root.
     pub(crate) fn edge_placement(&self, position: Point<Pixels>) -> Option<Placement> {
-        let band = px(36.);
+        // Hug the true edge. A wider band swallowed the space just inside it,
+        // and a thin outermost panel with it, so there was no room to drop
+        // side-by-side before the full-width root dock took over.
+        let band = px(20.);
         let bounds = self.bounds;
         if position.y < bounds.top() + band {
             Some(Placement::Top)

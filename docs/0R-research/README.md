@@ -13,3 +13,6 @@ writeup before any decision leans on it.
   million tracks, prototyped in `crates/rox-prototype-library` (git history, commit bd22dc1). It holds: worst-case
   search 31 ms, filters single-digit ms, ~1 GB of projection, 1.9 s cold open with
   sharded readers.
+- [03 - Quit to tray](03-quit-to-tray.md) - can rox keep playing with no windows
+  and come back through a tray icon. The GPUI lifecycle and crate survey is in;
+  the ksni-on-Wayland prototype it frames hasn't run yet.

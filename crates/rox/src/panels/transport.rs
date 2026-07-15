@@ -127,6 +127,10 @@ fn random_index(len: usize) -> usize {
 }
 
 impl Customizable for TransportPanel {
+    fn state(&self) -> AppState {
+        self.state.clone()
+    }
+
     fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
@@ -346,6 +350,10 @@ impl TrackInfoPanel {
 }
 
 impl Customizable for TrackInfoPanel {
+    fn state(&self) -> AppState {
+        self.state.clone()
+    }
+
     fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         align_row(
             self.config.align,
@@ -500,6 +508,10 @@ impl VolumePanel {
 }
 
 impl Customizable for VolumePanel {
+    fn state(&self) -> AppState {
+        self.state.clone()
+    }
+
     fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
@@ -705,6 +717,10 @@ impl SeekStripPanel {
 }
 
 impl Customizable for SeekStripPanel {
+    fn state(&self) -> AppState {
+        self.state.clone()
+    }
+
     fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
@@ -772,7 +788,7 @@ fn paint_strip(progress: f32, bounds: Bounds<Pixels>, window: &mut Window) {
             ),
             size(px(tokens::PLAYHEAD_W), px(h)),
         ),
-        palette::alpha(palette::text_bright(), 0xd9),
+        palette::alpha(palette::highlight(), 0xd9),
     ));
 }
 
@@ -964,7 +980,7 @@ macro_rules! transport_panel {
                 // `panel::duplicate_item` because the copy takes the config
                 // along, like the library's.
                 let weak = cx.entity().downgrade();
-                let menu = menu.item(PopupMenuItem::new("Duplicate").on_click(
+                let menu = menu.item(PopupMenuItem::new("Duplicate Panel").on_click(
                     move |_, window, cx| {
                         let Some(this) = weak.upgrade() else { return };
                         let (state, config, tabs) = {

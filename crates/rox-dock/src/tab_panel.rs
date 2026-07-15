@@ -1212,36 +1212,41 @@ impl TabPanel {
             .into_any_element()
     }
 
-    /// The split direction for a pointer inside bounds. The center merges
-    /// into the tabs (None); everywhere else the nearest edge wins, envelope
-    /// style, so the top and bottom of a wide panel are reachable at any x
-    /// (upstream checked left/right first, which squeezed the vertical
-    /// zones into a narrow middle strip).
+    /// The split direction for a pointer inside bounds. A central rectangle
+    /// merges into the tabs (None). The top and bottom claim a band that hugs
+    /// the real edge, capped so a tall panel doesn't hand its whole upper or
+    /// lower half to a vertical split; the interior height between the bands
+    /// splits left or right. The old envelope style compared normalized
+    /// distances, so the top and bottom wedges widened toward the vertical
+    /// center and pinched side-by-side into a sliver right before the edge
+    /// took over - worst on thin panels, where that sliver was the whole
+    /// panel.
     fn placement_for(position: Point<Pixels>, bounds: Bounds<Pixels>) -> Option<Placement> {
         if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
             return None;
         }
-        let fx = (position.x - bounds.left()) / bounds.size.width;
-        let fy = (position.y - bounds.top()) / bounds.size.height;
+        let x = position.x - bounds.left();
+        let y = position.y - bounds.top();
+        let fx = x / bounds.size.width;
+        let fy = y / bounds.size.height;
+
+        let quarter = bounds.size.height * 0.25;
+        let band = if quarter < px(64.) { quarter } else { px(64.) };
+        if y < band {
+            return Some(Placement::Top);
+        }
+        if bounds.size.height - y < band {
+            return Some(Placement::Bottom);
+        }
 
         if (0.35..0.65).contains(&fx) && (0.35..0.65).contains(&fy) {
             return None;
         }
-
-        let mut best = fx;
-        let mut placement = Placement::Left;
-        if 1. - fx < best {
-            best = 1. - fx;
-            placement = Placement::Right;
-        }
-        if fy < best {
-            best = fy;
-            placement = Placement::Top;
-        }
-        if 1. - fy < best {
-            placement = Placement::Bottom;
-        }
-        Some(placement)
+        Some(if fx < 0.5 {
+            Placement::Left
+        } else {
+            Placement::Right
+        })
     }
 
     /// Calculate the split direction based on the current mouse position

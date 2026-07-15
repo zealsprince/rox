@@ -333,7 +333,7 @@ fn paint_morph(
                 ),
                 size(px(tokens::PLAYHEAD_W), px(h)),
             ),
-            palette::alpha(palette::text_bright(), alpha),
+            palette::alpha(palette::highlight(), alpha),
         ));
     }
 }

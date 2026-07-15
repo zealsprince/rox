@@ -24,9 +24,10 @@ use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{Root, Sizable as _};
 
 use crate::assets::icons;
+use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::palette::{self, Palette, Role, ROLES};
 use crate::design::tokens;
-use crate::panel::{self, ScrubState};
+use crate::panel::{self, AppState, ScrubState};
 use crate::panels::library::{Library, LibraryEvent};
 use crate::settings::{data_dir, settings_path, Settings};
 
@@ -64,8 +65,9 @@ struct OpenSettings(WindowHandle<Root>);
 impl Global for OpenSettings {}
 
 /// Open the settings window, or bring the open one to the front. The
-/// library entity comes along for the Library page, which edits it live.
-pub fn open(library: Entity<Library>, cx: &mut App) {
+/// state carries the library for the Library page, which edits it live,
+/// and the shared art bake for the window's own backdrop.
+pub fn open(state: AppState, cx: &mut App) {
     if let Some(open) = cx.try_global::<OpenSettings>() {
         let handle = open.0;
         if handle
@@ -90,7 +92,7 @@ pub fn open(library: Entity<Library>, cx: &mut App) {
             // The Wayland backend ignores the creation-time titlebar
             // title; only set_window_title reaches the compositor.
             window.set_window_title("rox - settings");
-            let view = cx.new(|cx| SettingsWindow::new(library, window, cx));
+            let view = cx.new(|cx| SettingsWindow::new(state, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         })
         .expect("failed to open the settings window");
@@ -104,10 +106,7 @@ enum Page {
     Library,
 }
 
-const PAGES: &[(Page, &str)] = &[
-    (Page::Appearance, "Appearance"),
-    (Page::Library, "Library"),
-];
+const PAGES: &[(Page, &str)] = &[(Page::Appearance, "Appearance"), (Page::Library, "Library")];
 
 struct SettingsWindow {
     page: Page,
@@ -126,6 +125,10 @@ struct SettingsWindow {
     scroll: ScrollHandle,
     /// The shared catalog, the Library page's subject.
     library: Entity<Library>,
+    /// The shared art bake and this window's slice of the backdrop, so
+    /// the window backs with the playing track's art like every other.
+    now_art: Entity<NowPlayingArt>,
+    backdrop: WindowBackdrop,
     /// The folder list with per-folder track counts, recounted on every
     /// library event rather than per frame.
     root_counts: Vec<(PathBuf, u64)>,
@@ -134,10 +137,14 @@ struct SettingsWindow {
     /// Scan progress ticks notify the library without emitting Updated;
     /// the Library page's busy line needs those repaints too.
     _library_repaint: Subscription,
+    /// This window pumps its own frames, so the backdrop needs its own
+    /// wake on a new bake.
+    _backdrop_changed: Subscription,
 }
 
 impl SettingsWindow {
-    fn new(library: Entity<Library>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let library = state.library;
         let settings = Settings::load();
         let base = settings.palette();
         let root_counts = library.read(cx).root_counts();
@@ -149,6 +156,7 @@ impl SettingsWindow {
             },
         );
         let _library_repaint = cx.observe(&library, |_, _, cx| cx.notify());
+        let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         let mut pickers = Vec::with_capacity(ROLES.len());
         let mut _picker_changes = Vec::with_capacity(ROLES.len());
         for (index, role) in ROLES.iter().enumerate() {
@@ -175,10 +183,13 @@ impl SettingsWindow {
             backdrop_scrub: ScrubState::default(),
             scroll: ScrollHandle::new(),
             library,
+            now_art: state.now_art,
+            backdrop: WindowBackdrop::default(),
             root_counts,
             _picker_changes,
             _library_changed,
             _library_repaint,
+            _backdrop_changed,
         }
     }
 
@@ -289,10 +300,15 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Save the working palette as a palette file, [`Palette::to_map`]'s
-    /// shape.
+    /// Save a palette file, [`Palette::to_map`]'s shape: the working
+    /// palette, or the derived one while song theming drives the colors,
+    /// so a look a track built can leave as a theme.
     fn export_palette(&mut self, cx: &mut Context<Self>) {
-        let map = self.base.to_map();
+        let map = if self.art_theming {
+            palette::resolved().to_map()
+        } else {
+            self.base.to_map()
+        };
         let home = dirs::home_dir().unwrap_or_default();
         let rx = cx.prompt_for_new_path(&home, Some("palette.json"));
         cx.spawn(async move |_, _| {
@@ -418,6 +434,8 @@ impl SettingsWindow {
 
     /// One cell of the color grid: the picker with its label beside it,
     /// or a dimmed inert swatch while song theming drives the palette.
+    /// The inert swatch shows the derived color the track landed on, the
+    /// same values export saves, not the base underneath.
     fn color_cell(&self, role: &Role, picker: &Entity<ColorPickerState>, locked: bool) -> Div {
         let control: AnyElement = if locked {
             div()
@@ -425,14 +443,17 @@ impl SettingsWindow {
                 .rounded(tokens::RADIUS)
                 .border_1()
                 .border_color(palette::border())
-                .bg((role.get)(&self.base))
+                .bg((role.get)(&palette::resolved()))
                 .opacity(0.5)
                 .into_any_element()
         } else {
             // The picker pads a 4px margin around its swatch square; the
             // counter-margin keeps the live cell the same 20px footprint
             // as the locked one, so the grid doesn't loosen when editable.
-            ColorPicker::new(picker).small().m(px(-4.)).into_any_element()
+            ColorPicker::new(picker)
+                .small()
+                .m(px(-4.))
+                .into_any_element()
         };
         div()
             .flex_1()
@@ -457,8 +478,8 @@ impl SettingsWindow {
         let mut body = div().flex().flex_col().gap(tokens::SPACE_XS);
         if locked {
             body = body.child(div().text_xs().text_color(palette::text_muted()).child(
-                "song theming is on, so the playing track drives these colors; \
-                 turn it off above to edit them",
+                "song theming is on, so the playing track drives these colors \
+                 and export saves them; turn it off above to edit them",
             ));
         }
 
@@ -488,8 +509,8 @@ impl SettingsWindow {
         }
 
         // Import and reset lock with the rest of the editor: they change
-        // the palette too. Export stays live; it reads the base palette,
-        // which a playing track never touches.
+        // the palette too. Export stays live; unlocked it saves the base
+        // palette, locked the derived one the swatches show.
         let controls = div()
             .flex()
             .flex_row()
@@ -570,7 +591,13 @@ impl SettingsWindow {
                 .text_xs()
                 .text_color(palette::text_muted())
                 .child(div().flex_1().child("folder"))
-                .child(div().w(TRACKS_COL_W).flex_none().text_right().child("tracks"))
+                .child(
+                    div()
+                        .w(TRACKS_COL_W)
+                        .flex_none()
+                        .text_right()
+                        .child("tracks"),
+                )
                 .child(div().w(ACTION_COL_W).flex_none()),
         );
         if self.root_counts.is_empty() {
@@ -750,12 +777,7 @@ fn small_button(
                     .on_mouse_down(MouseButton::Left, on_click)
             }
         })
-        .child(
-            svg()
-                .path(icon)
-                .size(px(12.))
-                .text_color(palette::text()),
-        )
+        .child(svg().path(icon).size(px(12.)).text_color(palette::text()))
         .child(label)
 }
 
@@ -779,12 +801,7 @@ fn icon_button(
                     .on_mouse_down(MouseButton::Left, on_click)
             }
         })
-        .child(
-            svg()
-                .path(icon)
-                .size(px(14.))
-                .text_color(palette::text()),
-        )
+        .child(svg().path(icon).size(px(14.)).text_color(palette::text()))
 }
 
 impl Render for SettingsWindow {
@@ -827,6 +844,10 @@ impl Render for SettingsWindow {
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
+            // The backdrop paints first, under the pages; without it
+            // translucent surfaces would sink into the window's own
+            // black instead of the playing track's art.
+            .children(self.backdrop.layer(&self.now_art, window, cx))
             .child(sidebar)
             .child(
                 div()
@@ -834,6 +855,11 @@ impl Render for SettingsWindow {
                     .min_w_0()
                     .h_full()
                     .relative()
+                    // The page's own surface, the window base the sidebar
+                    // sits beside: opaque at full surface opacity so the
+                    // backdrop only reads through as the surfaces thin,
+                    // never at 100% like the sidebar already holds.
+                    .bg(palette::bg_elevated())
                     .child(
                         div()
                             .id("settings-page")
@@ -847,12 +873,9 @@ impl Render for SettingsWindow {
                     // is what says more page hangs below the fold. The
                     // absolute wrapper gives the scrollbar its bounds; on
                     // its own it lays out to nothing.
-                    .child(
-                        div().absolute().inset_0().child(
-                            Scrollbar::vertical(&self.scroll)
-                                .scrollbar_show(ScrollbarShow::Always),
-                        ),
-                    ),
+                    .child(div().absolute().inset_0().child(
+                        Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
+                    )),
             )
     }
 }

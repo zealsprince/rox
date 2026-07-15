@@ -645,13 +645,26 @@ impl Palette {
 
 /// The derived palette: the ladder the cover's lightness picks, every
 /// role re-tinted toward the seed, or the base itself while nothing
-/// seeds. An achromatic cover tints nothing but still picks the ladder.
+/// seeds. An achromatic cover picks the ladder by lightness, then strips
+/// the colorful roles to neutral so a black-and-white album gets a
+/// black-and-white app.
 fn derive(base: &Palette, seed: Option<Seed>) -> Palette {
     let Some(seed) = seed else { return *base };
     let light = seed.lightness > LIGHT_COVER;
     let ladder = if light { Palette::light() } else { *base };
     let Some(primary) = seed.primary else {
-        return ladder;
+        // No hue to derive toward. Leaving the ladder as-is would keep
+        // the brand accent as a lone spot of color against a gray cover,
+        // so drop the colorful roles' chroma to zero at their own
+        // lightness; the near-gray roles are already neutral and stay.
+        return ladder.map(|color| {
+            let (lightness, chroma, hue) = rgba_to_oklch(color);
+            if chroma > CHROMATIC {
+                oklch_to_rgba(lightness, 0.0, hue, color.a)
+            } else {
+                color
+            }
+        });
     };
     let (_, seed_chroma, seed_hue) = rgba_to_oklch(primary);
     let mut derived = ladder.map(|color| {
@@ -916,6 +929,35 @@ mod tests {
         // seed's hue.
         assert!(c > TINT_CAP + 0.02, "border stuck at the gray cap: {c}");
         assert!((h - seed_h).abs() < 0.05, "border missed the hue");
+    }
+
+    /// An achromatic cover strips the brand accent to neutral instead of
+    /// leaving it a lone spot of color: a grayscale album gets a grayscale
+    /// app, the accent's lightness held while its color goes.
+    #[test]
+    fn achromatic_cover_neutralizes_accent() {
+        let base = Palette::default();
+        let (accent_l, accent_c, _) = rgba_to_oklch(base.accent);
+        assert!(accent_c > CHROMATIC, "premise: the default accent is colorful");
+        let derived = derive(
+            &base,
+            Some(Seed {
+                primary: None,
+                secondary: None,
+                lightness: 0.3,
+            }),
+        );
+        for role in [derived.accent, derived.accent_hover] {
+            let (_, c, _) = rgba_to_oklch(role);
+            assert!(c < 0.02, "colorful role kept its chroma: {c}");
+        }
+        let (l, ..) = rgba_to_oklch(derived.accent);
+        assert!((l - accent_l).abs() < 0.02, "accent lightness drifted");
+        // The near-gray roles were already neutral and come through
+        // untouched, so the ladder's contrast survives.
+        let (text_l, ..) = rgba_to_oklch(derived.text);
+        let (base_text_l, ..) = rgba_to_oklch(base.text);
+        assert!((text_l - base_text_l).abs() < 0.02, "text drifted");
     }
 
     /// A bright cover flips the ladder: surfaces light, ink dark, even

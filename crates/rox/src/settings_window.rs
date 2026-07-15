@@ -85,6 +85,7 @@ pub fn open(state: AppState, cx: &mut App) {
             title: Some("rox - settings".into()),
             ..Default::default()
         }),
+        app_id: Some(crate::APP_ID.into()),
         ..Default::default()
     };
     let handle = cx

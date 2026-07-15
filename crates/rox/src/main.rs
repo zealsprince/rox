@@ -30,6 +30,13 @@ use design::palette;
 use settings::Settings;
 use workspace::Workspace;
 
+/// The Wayland/X11 app id, set on every window we open. Windows share it so
+/// the compositor groups them as one app and, on Wayland, will consider an
+/// xdg-activation request from one window to raise another (bringing an
+/// already-open settings or customize window to the front). Without it the
+/// backend's activate is a no-op.
+pub const APP_ID: &str = "rox";
+
 pub fn open_workspace(cx: &mut App) {
     // Windows open on the saved frame, so a restart, and every New Window,
     // comes back where the last-closed window sat.
@@ -53,6 +60,7 @@ pub fn open_workspace(cx: &mut App) {
             title: Some(SharedString::from("rox")),
             ..Default::default()
         }),
+        app_id: Some(APP_ID.into()),
         ..Default::default()
     };
     cx.open_window(options, |window, cx| {

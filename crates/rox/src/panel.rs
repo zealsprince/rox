@@ -339,6 +339,7 @@ pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
             title: Some(title.clone()),
             ..Default::default()
         }),
+        app_id: Some(crate::APP_ID.into()),
         ..Default::default()
     };
     cx.open_window(options, move |window, cx| {
@@ -426,6 +427,7 @@ fn open_customize<P: Customizable>(panel: Entity<P>, cx: &mut App) {
             title: Some(title.clone()),
             ..Default::default()
         }),
+        app_id: Some(crate::APP_ID.into()),
         ..Default::default()
     };
     let state = panel.read(cx).state();

@@ -35,6 +35,7 @@ pub enum Cmd {
     Prev,
     Volume(f32),
     SetLoop(LoopMode),
+    SetShuffle(bool),
     Quit,
 }
 
@@ -67,6 +68,12 @@ struct Source {
 pub struct Engine {
     queue: Vec<PathBuf>,
     idx: usize,
+    /// The play order as queue indices: identity until shuffle swaps in a
+    /// permutation. All navigation walks this, so `order[pos]` is the
+    /// playing track and Prev retraces the shuffled path.
+    order: Vec<usize>,
+    /// Position within `order`; kept in sync with `idx` on every open.
+    pos: usize,
     shared: Arc<Shared>,
     producer: Producer<f32>,
     device_rate: u32,
@@ -88,6 +95,8 @@ impl Engine {
         rx: Receiver<Cmd>,
     ) -> Self {
         Engine {
+            order: (0..queue.len()).collect(),
+            pos: 0,
             queue,
             idx: 0,
             shared,
@@ -102,7 +111,7 @@ impl Engine {
     }
 
     pub fn run(mut self) {
-        let mut source = self.open_current(0);
+        let mut source = self.open_at(0);
 
         loop {
             // Commands first so pause/seek stay responsive even when the
@@ -122,21 +131,22 @@ impl Engine {
                     }
                     Cmd::Seek(secs) => flush_to = Some(FlushAction::Seek(secs.max(0.0))),
                     Cmd::Next => {
-                        if self.idx + 1 < self.queue.len() {
-                            flush_to = Some(FlushAction::Track(self.idx + 1));
-                        } else if self.loop_mode == LoopMode::All && !self.queue.is_empty() {
+                        if self.pos + 1 < self.order.len() {
+                            flush_to = Some(FlushAction::Track(self.pos + 1));
+                        } else if self.loop_mode == LoopMode::All && !self.order.is_empty() {
                             flush_to = Some(FlushAction::Track(0));
                         }
                     }
                     Cmd::Prev => {
-                        let target = if self.idx == 0 && self.loop_mode == LoopMode::All {
-                            self.queue.len().saturating_sub(1)
+                        let target = if self.pos == 0 && self.loop_mode == LoopMode::All {
+                            self.order.len().saturating_sub(1)
                         } else {
-                            self.idx.saturating_sub(1)
+                            self.pos.saturating_sub(1)
                         };
                         flush_to = Some(FlushAction::Track(target));
                     }
                     Cmd::SetLoop(mode) => self.loop_mode = mode,
+                    Cmd::SetShuffle(on) => self.set_shuffle(on),
                     Cmd::Quit => return,
                 }
             }
@@ -144,9 +154,9 @@ impl Engine {
             if let Some(action) = flush_to {
                 self.flush_ring();
                 match action {
-                    FlushAction::Track(i) => {
+                    FlushAction::Track(p) => {
                         self.shared.ended.store(false, Ordering::Relaxed);
-                        source = self.open_current(i);
+                        source = self.open_at(p);
                     }
                     FlushAction::Seek(secs) => {
                         if let Some(src) = source.as_mut() {
@@ -184,11 +194,11 @@ impl Engine {
                         // boundary. Loop modes pick the next open: One
                         // reopens the same track, All wraps the queue.
                         source = if self.loop_mode == LoopMode::One {
-                            self.open_current(self.idx)
-                        } else if self.idx + 1 < self.queue.len() {
-                            self.open_current(self.idx + 1)
-                        } else if self.loop_mode == LoopMode::All && !self.queue.is_empty() {
-                            self.open_current(0)
+                            self.open_at(self.pos)
+                        } else if self.pos + 1 < self.order.len() {
+                            self.open_at(self.pos + 1)
+                        } else if self.loop_mode == LoopMode::All && !self.order.is_empty() {
+                            self.open_at(0)
                         } else {
                             None
                         };
@@ -206,12 +216,15 @@ impl Engine {
         }
     }
 
-    /// Open queue[i], falling forward through unreadable files. Registers the
-    /// position segment for the new track.
-    fn open_current(&mut self, mut i: usize) -> Option<Source> {
-        while i < self.queue.len() {
+    /// Open the track at play-order position `p`, falling forward through
+    /// unreadable files in play order. Registers the position segment for
+    /// the new track.
+    fn open_at(&mut self, mut p: usize) -> Option<Source> {
+        while p < self.order.len() {
+            let i = self.order[p];
             match Source::open(&self.queue[i], self.device_rate) {
                 Ok((src, info)) => {
+                    self.pos = p;
                     self.idx = i;
                     self.shared.tracks.lock().unwrap()[i] = Some(info);
                     let at_frame = self.pushed_playable;
@@ -224,11 +237,27 @@ impl Engine {
                 }
                 Err(e) => {
                     eprintln!("\nskipping {}: {e}", self.queue[i].display());
-                    i += 1;
+                    p += 1;
                 }
             }
         }
         None
+    }
+
+    /// Swap the play order: a fresh permutation with the playing track
+    /// pinned first, or back to queue order at the current track. Only
+    /// future navigation changes; nothing flushes.
+    fn set_shuffle(&mut self, on: bool) {
+        if on {
+            self.order = shuffled(self.queue.len());
+            if let Some(p) = self.order.iter().position(|&i| i == self.idx) {
+                self.order.swap(0, p);
+            }
+            self.pos = 0;
+        } else {
+            self.order = (0..self.queue.len()).collect();
+            self.pos = self.idx;
+        }
     }
 
     /// Have the callback discard everything queued, wait for the ring to
@@ -260,7 +289,27 @@ impl Engine {
 
 enum FlushAction {
     Seek(f64),
+    /// Jump to this play-order position.
     Track(usize),
+}
+
+/// A Fisher-Yates permutation of `0..len`, xorshift64 off the std hasher's
+/// per-process random keys; a play order does not need a rand dependency.
+fn shuffled(len: usize) -> Vec<usize> {
+    use std::hash::{BuildHasher, Hasher};
+    let mut state = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
+        | 1;
+    let mut order: Vec<usize> = (0..len).collect();
+    for i in (1..len).rev() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let j = (state % (i as u64 + 1)) as usize;
+        order.swap(i, j);
+    }
+    order
 }
 
 /// Decode a whole file through the same path playback uses and report

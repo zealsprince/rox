@@ -32,14 +32,6 @@ impl TrackSource {
             }
         }
     }
-
-    /// What a panel says while the source points at nothing.
-    pub fn empty_message(self) -> &'static str {
-        match self {
-            TrackSource::Playing => "nothing playing",
-            TrackSource::Selected => "nothing selected",
-        }
-    }
 }
 
 /// A per-view cache over [`TrackSource::resolve`], for panels that render

@@ -56,6 +56,9 @@ pub fn open_workspace(cx: &mut App) {
         ..Default::default()
     };
     cx.open_window(options, |window, cx| {
+        // The Wayland backend ignores the creation-time titlebar title;
+        // only set_window_title reaches the compositor.
+        window.set_window_title("rox");
         let workspace = cx.new(|cx| Workspace::new(window, cx));
         // gpui-component windows layer sheets, dialogs, and dock drag
         // overlays through a Root at the top of the window.

@@ -7,8 +7,10 @@
 //! select, and the selection publishes app-wide for panels that display it.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use gpui::{
     div, prelude::*, px, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
@@ -38,6 +40,32 @@ pub enum LibraryEvent {
     Updated,
 }
 
+/// How often the UI samples a running scan's progress.
+const SCAN_POLL: Duration = Duration::from_millis(100);
+
+/// Live progress of a background scan: the scan thread writes it per file,
+/// the UI polls it at [`SCAN_POLL`] cadence. Zero total means the folder
+/// walk has not finished yet.
+#[derive(Default)]
+struct ScanProgress {
+    scanned: AtomicUsize,
+    total: AtomicUsize,
+    /// Full path of the file the scan last touched.
+    current: Mutex<String>,
+    /// Raised by [`Library::abort_scan`]; the scan stops at the next file.
+    cancel: AtomicBool,
+}
+
+/// What a background refresh does before the projection reloads.
+enum Refresh {
+    /// Just reload the projection.
+    Load,
+    /// Scan these folders first.
+    Scan(Vec<PathBuf>),
+    /// Drop this folder's rows first.
+    Remove(PathBuf),
+}
+
 /// The shared catalog entity. Owns the database and the projection; every
 /// library panel reads it, none of them own it.
 pub struct Library {
@@ -48,11 +76,14 @@ pub struct Library {
     projection: Option<Arc<Projection>>,
     /// The canonical browse order: artist, album, track number.
     order: Arc<Vec<u32>>,
-    /// The folder scans read from, remembered for rescans and persisted
-    /// in settings. None until a folder has been opened.
-    scan_root: Option<PathBuf>,
+    /// The folders scans read from, in the order they were added,
+    /// persisted in settings. Empty until a folder has been opened.
+    scan_roots: Vec<PathBuf>,
     /// Set while a scan or projection load runs in the background.
     busy: Option<SharedString>,
+    /// The running scan's progress, while one runs; the handle abort
+    /// reaches through.
+    scan: Option<Arc<ScanProgress>>,
     status: SharedString,
 }
 
@@ -67,25 +98,48 @@ impl Library {
                 Err(e) => (None, SharedString::from(format!("library db: {e}"))),
             };
 
-        // A library indexed before the root was persisted still has one in
+        // The same never-nests rule add_root keeps, applied to the loaded
+        // list: hand-edited files and lists from before the guard flatten
+        // here, a nested folder falling to the one that covers it.
+        let loaded = crate::settings::Settings::load().library_roots;
+        let before = loaded.len();
+        let mut scan_roots: Vec<PathBuf> = Vec::with_capacity(before);
+        for root in loaded {
+            if scan_roots.iter().any(|r| root.starts_with(r)) {
+                continue;
+            }
+            scan_roots.retain(|r| !r.starts_with(&root));
+            scan_roots.push(root);
+        }
+        if scan_roots.len() != before {
+            let roots = scan_roots.clone();
+            crate::settings::Settings::update(move |s| s.library_roots = roots);
+        }
+
+        // A library indexed before roots were persisted still has one in
         // its paths: the deepest directory shared by every track. Session
-        // only; the next Open Folder persists what the user actually picked.
-        let scan_root = crate::settings::Settings::load().library_root.or_else(|| {
-            conn.as_ref()
+        // only; the next Open Folder persists the whole list.
+        if scan_roots.is_empty() {
+            if let Some(root) = conn
+                .as_ref()
                 .and_then(|conn| store::common_root(conn).ok().flatten())
-        });
+            {
+                scan_roots.push(root);
+            }
+        }
 
         let mut this = Library {
             db_path,
             conn,
             projection: None,
             order: Arc::new(Vec::new()),
-            scan_root,
+            scan_roots,
             busy: None,
+            scan: None,
             status,
         };
         if this.conn.is_some() {
-            this.reload(None, cx);
+            this.reload(Refresh::Load, cx);
         }
         this
     }
@@ -104,24 +158,94 @@ impl Library {
     }
 
     /// The last status line: the track count, scan counts, or an error.
+    /// While a scan runs, the file it is currently on.
     pub fn status(&self) -> SharedString {
         self.status.clone()
     }
 
-    /// Whether a rescan has a folder to scan.
+    /// Whether a rescan has folders to scan.
     pub fn can_rescan(&self) -> bool {
-        self.scan_root.is_some()
+        !self.scan_roots.is_empty()
     }
 
-    /// Scan the remembered folder again; a no-op until one has been opened
-    /// or while a scan is already running.
+    /// Whether a scan is running right now, for the menubar's abort button.
+    /// False for other background work: only scans can be aborted.
+    pub fn scanning(&self) -> bool {
+        self.scan.is_some()
+    }
+
+    /// Stop the running scan at the next file. What it already indexed
+    /// stays in the library; the projection reload still follows, so the
+    /// partial result shows up. A no-op when no scan is running.
+    pub fn abort_scan(&mut self, cx: &mut Context<Self>) {
+        let Some(scan) = &self.scan else {
+            return;
+        };
+        scan.cancel.store(true, Ordering::Relaxed);
+        self.busy = Some("stopping...".into());
+        cx.notify();
+    }
+
+    /// Scan every remembered folder again; a no-op until one has been
+    /// opened or while a scan is already running.
     pub fn rescan(&mut self, cx: &mut Context<Self>) {
+        if self.busy.is_some() || self.scan_roots.is_empty() {
+            return;
+        }
+        self.reload(Refresh::Scan(self.scan_roots.clone()), cx);
+    }
+
+    /// Each folder with how many tracks it holds, on the UI-side
+    /// connection. The list never nests, so no track counts twice.
+    pub fn root_counts(&self) -> Vec<(PathBuf, u64)> {
+        self.scan_roots
+            .iter()
+            .map(|root| {
+                let count = self
+                    .conn
+                    .as_ref()
+                    .and_then(|conn| store::count_under(conn, root).ok())
+                    .unwrap_or(0);
+                (root.clone(), count)
+            })
+            .collect()
+    }
+
+    /// Add a folder and scan it. The list never nests, so counts never
+    /// overlap and removals never reach into another folder's tracks: one
+    /// already covered by a listed folder is not added, just rescanned,
+    /// and one that covers listed folders absorbs them. A no-op while a
+    /// scan is running.
+    pub fn add_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             return;
         }
-        if let Some(root) = self.scan_root.clone() {
-            self.reload(Some(root), cx);
+        if !self.scan_roots.iter().any(|r| root.starts_with(r)) {
+            self.scan_roots.retain(|r| !r.starts_with(&root));
+            self.scan_roots.push(root.clone());
+            self.persist_roots();
         }
+        self.reload(Refresh::Scan(vec![root]), cx);
+    }
+
+    /// Drop a folder: out of the list, its tracks out of the database. The
+    /// files themselves are untouched. A no-op while a scan is running.
+    pub fn remove_root(&mut self, root: &Path, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        let Some(ix) = self.scan_roots.iter().position(|r| r == root) else {
+            return;
+        };
+        self.scan_roots.remove(ix);
+        self.persist_roots();
+        self.reload(Refresh::Remove(root.to_path_buf()), cx);
+    }
+
+    /// Write the folder list through the settings file.
+    fn persist_roots(&self) {
+        let roots = self.scan_roots.clone();
+        crate::settings::Settings::update(move |s| s.library_roots = roots);
     }
 
     /// Resolve database ids to playable paths on the UI-side connection.
@@ -141,27 +265,33 @@ impl Library {
         store::meta_for_path(conn, path.to_str()?).ok().flatten()
     }
 
-    /// Load the projection off the UI thread, optionally scanning `root`
-    /// first. The finished projection and its canonical sort swap in whole.
-    fn reload(&mut self, scan_root: Option<PathBuf>, cx: &mut Context<Self>) {
-        self.busy = Some(if scan_root.is_some() {
-            "scanning...".into()
-        } else {
-            "loading library...".into()
+    /// Run a refresh off the UI thread: its own step first, then the
+    /// projection reload. The finished projection and its canonical sort
+    /// swap in whole. One refresh at a time: while one runs, another is
+    /// dropped here, so two never race on the database or the badge.
+    fn reload(&mut self, refresh: Refresh, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        self.busy = Some(match &refresh {
+            Refresh::Load => "loading library...".into(),
+            Refresh::Scan(_) => "scanning...".into(),
+            Refresh::Remove(_) => "removing...".into(),
         });
-        if let Some(root) = &scan_root {
-            self.scan_root = Some(root.clone());
-            let root = root.clone();
-            crate::settings::Settings::update(move |s| s.library_root = Some(root));
+        let progress = Arc::new(ScanProgress::default());
+        if matches!(refresh, Refresh::Scan(_)) {
+            self.scan = Some(progress.clone());
+            self.poll_scan(progress.clone(), cx);
         }
         let db_path = self.db_path.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { load(&db_path, scan_root) })
+                .spawn(async move { load(&db_path, refresh, &progress) })
                 .await;
             this.update(cx, |this, cx| {
                 this.busy = None;
+                this.scan = None;
                 match result {
                     Ok((projection, order, summary)) => {
                         this.status = status_line(projection.len(), summary.as_ref()).into();
@@ -180,6 +310,37 @@ impl Library {
         cx.notify();
     }
 
+    /// Mirror a running scan into the busy badge and status line: the count
+    /// so far and the file under the cursor. Stops itself once the reload
+    /// clears `busy`; only observers repaint, panels see no event.
+    fn poll_scan(&self, progress: Arc<ScanProgress>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(SCAN_POLL).await;
+                let live = this.update(cx, |this, cx| {
+                    if this.busy.is_none() {
+                        return false;
+                    }
+                    let total = progress.total.load(Ordering::Relaxed);
+                    // A pending stop owns the badge; counting on would
+                    // contradict it.
+                    if total > 0 && !progress.cancel.load(Ordering::Relaxed) {
+                        let scanned = progress.scanned.load(Ordering::Relaxed);
+                        this.busy = Some(format!("scanning {scanned}/{total}").into());
+                        this.status = progress.current.lock().unwrap().clone().into();
+                        cx.notify();
+                    }
+                    true
+                });
+                if !matches!(live, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Prompt for a folder and add it to the library.
     pub fn browse(&mut self, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -190,7 +351,7 @@ impl Library {
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(mut paths))) = rx.await {
                 if let Some(root) = paths.pop() {
-                    this.update(cx, |this, cx| this.reload(Some(root), cx)).ok();
+                    this.update(cx, |this, cx| this.add_root(root, cx)).ok();
                 }
             }
         })
@@ -637,22 +798,6 @@ impl LibraryPanel {
         self.refresh_title_bar(cx);
     }
 
-    fn open_folder_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        div()
-            .id("open-folder")
-            .px(tokens::SPACE_SM)
-            .h(tokens::CONTROL_H)
-            .flex()
-            .items_center()
-            .flex_none()
-            .rounded(tokens::RADIUS)
-            .bg(palette::bg_control())
-            .hover(|d| d.bg(palette::bg_control_hover()))
-            .cursor_pointer()
-            .on_click(cx.listener(|this, _, _, cx| this.browse(cx)))
-            .child("open folder")
-    }
-
     fn search_box(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let focused = self.search_focus.is_focused(window);
         let search_text: SharedString = if self.query.is_empty() {
@@ -709,7 +854,6 @@ impl LibraryPanel {
             .bg(palette::bg_toolbar())
             .border_b_1()
             .border_color(palette::border())
-            .child(self.open_folder_button(cx))
             .child(self.search_box(window, cx).flex_1())
             .when_some(self.error.clone(), |d, error| {
                 d.child(
@@ -776,7 +920,6 @@ impl Panel for LibraryPanel {
                 .items_center()
                 .flex_none()
                 .gap(tokens::SPACE_SM)
-                .child(self.open_folder_button(cx))
                 .child(self.search_box(window, cx).w(px(180.)))
                 .when_some(self.error.clone(), |d, error| {
                     d.child(
@@ -896,15 +1039,44 @@ impl Render for LibraryPanel {
 
 fn load(
     db_path: &std::path::Path,
-    scan_root: Option<PathBuf>,
+    refresh: Refresh,
+    progress: &ScanProgress,
 ) -> Result<(Projection, Vec<u32>, Option<ScanSummary>), rox_library::rusqlite::Error> {
-    let summary = match scan_root {
-        Some(root) => {
+    let summary = match refresh {
+        Refresh::Load => None,
+        Refresh::Scan(roots) => {
             let mut conn = store::open(db_path)?;
             store::init_schema(&conn)?;
-            Some(scanner::scan(&mut conn, &root)?)
+            // One summary and one running count across the folders; later
+            // folders grow the total as their walks finish.
+            let mut summary = ScanSummary::default();
+            let mut done = 0;
+            for root in roots {
+                let mut root_total = 0;
+                let s = scanner::scan(&mut conn, &root, |scanned, total, path| {
+                    root_total = total;
+                    progress.scanned.store(done + scanned, Ordering::Relaxed);
+                    progress.total.store(done + total, Ordering::Relaxed);
+                    *progress.current.lock().unwrap() = path.to_string_lossy().into_owned();
+                    !progress.cancel.load(Ordering::Relaxed)
+                })?;
+                done += root_total;
+                summary.indexed += s.indexed;
+                summary.unchanged += s.unchanged;
+                summary.untagged += s.untagged;
+                if s.aborted {
+                    summary.aborted = true;
+                    break;
+                }
+            }
+            Some(summary)
         }
-        None => None,
+        Refresh::Remove(root) => {
+            let conn = store::open(db_path)?;
+            store::init_schema(&conn)?;
+            store::remove_under(&conn, &root)?;
+            None
+        }
     };
     let shards = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -915,13 +1087,28 @@ fn load(
 }
 
 fn status_line(total: usize, summary: Option<&ScanSummary>) -> String {
-    match summary {
-        Some(s) => format!(
-            "{} tracks ({} indexed, {} unchanged, {} untagged)",
-            total, s.indexed, s.unchanged, s.untagged
-        ),
-        None => format!("{total} tracks"),
+    let Some(s) = summary else {
+        return format!("{total} tracks");
+    };
+    // Zero counts say nothing, keep them out so the line stays short
+    // enough for the menubar.
+    let mut parts = Vec::new();
+    if s.indexed > 0 {
+        parts.push(format!("{} indexed", s.indexed));
     }
+    if s.unchanged > 0 {
+        parts.push(format!("{} unchanged", s.unchanged));
+    }
+    if s.untagged > 0 {
+        parts.push(format!("{} untagged", s.untagged));
+    }
+    if s.aborted {
+        parts.push("stopped early".into());
+    }
+    if parts.is_empty() {
+        return format!("{total} tracks");
+    }
+    format!("{} tracks ({})", total, parts.join(", "))
 }
 
 fn fmt_ms(ms: u32) -> String {

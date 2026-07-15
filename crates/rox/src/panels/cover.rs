@@ -13,15 +13,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    div, img, prelude::*, px, svg, AnyElement, App, Context, EventEmitter, FocusHandle, Focusable,
-    Image, ImageFormat, ObjectFit, SharedString, Subscription, WeakEntity, Window,
+    div, img, prelude::*, px, relative, svg, AnyElement, App, Context, EventEmitter, FocusHandle,
+    Focusable, Image, ImageFormat, ObjectFit, SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, Customizable};
+use crate::panel::{self, align_row, justify, Align, AppState, Customizable};
 use crate::panels::library::LibraryEvent;
 use crate::selection::SelectionEvent;
 use crate::source::{self, ResolvedTrack, TrackSource};
@@ -32,6 +32,8 @@ use crate::source::{self, ResolvedTrack, TrackSource};
 pub struct CoverConfig {
     #[serde(default)]
     pub source: TrackSource,
+    #[serde(default)]
+    pub align: Align,
 }
 
 /// One thing the panel can show. The fade runs between two of these.
@@ -39,12 +41,13 @@ pub struct CoverConfig {
 enum Slide {
     /// Nothing at all: what the first slide fades in from.
     Blank,
-    /// The source points at no track; which message depends on the source.
-    Empty(&'static str),
+    /// The source points at no track: an empty sleeve stands in.
+    Empty,
     /// The track has no art anywhere: the dim disc stand-in.
     Disc,
-    /// A track's artwork.
-    Art(Arc<Image>),
+    /// A track's artwork, with its width over height so the art layer can
+    /// size itself to the letterboxed fit.
+    Art(Arc<Image>, f32),
 }
 
 impl Slide {
@@ -52,9 +55,10 @@ impl Slide {
     /// re-read of the same bytes never fades a cover into itself.
     fn same(&self, other: &Slide) -> bool {
         match (self, other) {
-            (Slide::Blank, Slide::Blank) | (Slide::Disc, Slide::Disc) => true,
-            (Slide::Empty(a), Slide::Empty(b)) => a == b,
-            (Slide::Art(a), Slide::Art(b)) => a.id() == b.id(),
+            (Slide::Blank, Slide::Blank)
+            | (Slide::Empty, Slide::Empty)
+            | (Slide::Disc, Slide::Disc) => true,
+            (Slide::Art(a, _), Slide::Art(b, _)) => a.id() == b.id(),
             _ => false,
         }
     }
@@ -63,10 +67,10 @@ impl Slide {
 pub struct CoverArtPanel {
     state: AppState,
     config: CoverConfig,
-    /// The loaded art keyed by the track it belongs to; None inside means
-    /// the track has no art. Kept so the pump's per-frame notifies never
-    /// re-read the file.
-    art: Option<(PathBuf, Option<Arc<Image>>)>,
+    /// The loaded art keyed by the track it belongs to, with its aspect
+    /// ratio; None inside means the track has no art. Kept so the pump's
+    /// per-frame notifies never re-read the file.
+    art: Option<(PathBuf, Option<(Arc<Image>, f32)>)>,
     /// The track a load is running for, so a render can tell "already
     /// fetching" from "needs a fetch".
     pending: Option<PathBuf>,
@@ -147,7 +151,15 @@ impl CoverArtPanel {
                     async move {
                         rox_library::art::cover_art(&path).and_then(|(bytes, mime)| {
                             let format = ImageFormat::from_mime_type(&mime)?;
-                            Some(Arc::new(Image::from_bytes(format, bytes)))
+                            // The shape off the header alone, no decode:
+                            // the art layer sizes itself by it so alignment
+                            // has a fitted element to place.
+                            let ratio = image::ImageReader::new(std::io::Cursor::new(&bytes))
+                                .with_guessed_format()
+                                .ok()
+                                .and_then(|reader| reader.into_dimensions().ok())
+                                .map_or(1.0, |(w, h)| w as f32 / h.max(1) as f32);
+                            Some((Arc::new(Image::from_bytes(format, bytes)), ratio))
                         })
                     }
                 })
@@ -168,16 +180,41 @@ impl CoverArtPanel {
     /// Point the panel at what it should show: the same slide stays put, a
     /// different one starts a fade from whatever was showing. A fade
     /// interrupted early keeps its original source, the waveform's rule, so
-    /// an intermediate that barely painted never flashes.
-    fn retarget(&mut self, slide: Slide) {
+    /// an intermediate that barely painted never flashes. Whatever the swap
+    /// leaves behind is retired, dropping its decoded bitmap.
+    fn retarget(&mut self, slide: Slide, cx: &mut App) {
         if self.to.same(&slide) {
             return;
         }
-        if self.fade_at.elapsed().as_secs_f32() >= tokens::EASE_SECS {
-            self.from = self.to.clone();
-        }
+        let abandoned = if self.fade_at.elapsed().as_secs_f32() >= tokens::EASE_SECS {
+            // The fade finished: the settled target becomes the new floor,
+            // the outgoing floor drops away.
+            std::mem::replace(&mut self.from, self.to.clone())
+        } else {
+            // Mid-fade: keep the original floor, abandon the intermediate
+            // that barely painted.
+            self.to.clone()
+        };
         self.to = slide;
         self.fade_at = Instant::now();
+        self.retire(abandoned, cx);
+    }
+
+    /// Drop a retired cover's decoded bitmap from gpui's asset cache, unless
+    /// the same art is still on screen. Covers reach the renderer through
+    /// `img`, which keeps every distinct decode in the process-wide asset
+    /// cache and never evicts on its own, so without this a long session
+    /// pins one full-size bitmap per album played.
+    fn retire(&self, slide: Slide, cx: &mut App) {
+        let Slide::Art(image, _) = slide else {
+            return;
+        };
+        let id = image.id();
+        let showing = |s: &Slide| matches!(s, Slide::Art(img, _) if img.id() == id);
+        if showing(&self.from) || showing(&self.to) {
+            return;
+        }
+        image.remove_asset(cx);
     }
 
     /// The panel's own dropdown entries: the source pick, the same knob the
@@ -207,15 +244,27 @@ impl CoverArtPanel {
 
 impl Customizable for CoverArtPanel {
     fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
-        source::source_row(
-            self.config.source,
-            |this: &mut Self, source, cx| {
-                this.config.source = source;
-                cx.notify();
-            },
-            cx,
-        )
-        .into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(source::source_row(
+                self.config.source,
+                |this: &mut Self, source, cx| {
+                    this.config.source = source;
+                    cx.notify();
+                },
+                cx,
+            ))
+            .child(align_row(
+                self.config.align,
+                |this: &mut Self, align, cx| {
+                    this.config.align = align;
+                    cx.notify();
+                },
+                cx,
+            ))
+            .into_any_element()
     }
 }
 
@@ -308,29 +357,67 @@ impl Panel for CoverArtPanel {
 }
 
 /// One slide at a weight, filling the panel. Opacity cascades to the
-/// subtree, so the whole slide fades as one.
-fn layer(slide: &Slide, opacity: f32) -> AnyElement {
-    let base = div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .opacity(opacity);
+/// subtree, so the whole slide fades as one; where the content sits when
+/// the panel is wider than it is the alignment knob.
+fn layer(slide: &Slide, opacity: f32, align: Align) -> AnyElement {
+    let base = justify(
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .opacity(opacity),
+        align,
+    );
+    // Only the art runs edge to edge; the stand-ins keep a margin from
+    // the panel sides so an alignment never presses them into the edge.
     match slide {
         Slide::Blank => base,
-        Slide::Empty(message) => base.text_color(palette::text_muted()).child(*message),
-        Slide::Disc => base.child(
+        // An empty sleeve: a bare outline where a cover would sit, a faint
+        // note inside. Quieter than the disc, which means a track is up but
+        // carries no art. It claims the space a square cover would - full
+        // width, the height cap transferring through the aspect ratio - so
+        // it stays a letterboxed square and the note scales with it.
+        Slide::Empty => {
+            let mut sleeve = div()
+                .w_full()
+                .max_h_full()
+                .rounded(tokens::RADIUS)
+                .border_1()
+                .border_color(palette::border())
+                .flex()
+                .items_center()
+                .justify_center();
+            sleeve.style().aspect_ratio = Some(1.0);
+            base.p(tokens::SPACE_SM).child(
+                sleeve.child(
+                    svg()
+                        .path(crate::assets::icons::MUSIC)
+                        .size(relative(0.35))
+                        .text_color(palette::text_faint()),
+                ),
+            )
+        }
+        Slide::Disc => base.p(tokens::SPACE_SM).child(
             svg()
                 .path(crate::assets::icons::DISC)
                 .size(px(48.))
                 .text_color(palette::text_faint()),
         ),
-        Slide::Art(image) => base.child(
-            img(image.clone())
-                .object_fit(ObjectFit::Contain)
-                .size_full(),
-        ),
+        // The frame hugs the letterboxed fit instead of filling the panel -
+        // full width, the height cap transferring back through the art's
+        // own ratio - so the alignment above has something to place.
+        Slide::Art(image, ratio) => {
+            let mut frame = div().w_full().max_h_full();
+            frame.style().aspect_ratio = Some(*ratio);
+            base.child(
+                frame.child(
+                    img(image.clone())
+                        .object_fit(ObjectFit::Contain)
+                        .size_full(),
+                ),
+            )
+        }
     }
     .into_any_element()
 }
@@ -338,17 +425,20 @@ fn layer(slide: &Slide, opacity: f32) -> AnyElement {
 impl Render for CoverArtPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.resolved.get(self.config.source, &self.state, cx) {
-            None => self.retarget(Slide::Empty(self.config.source.empty_message())),
+            None => self.retarget(Slide::Empty, cx),
             Some(path) => {
                 self.ensure_art(&path, cx);
-                match &self.art {
-                    Some((cached, art)) if *cached == path => self.retarget(match art {
-                        Some(image) => Slide::Art(image.clone()),
+                let target = match &self.art {
+                    Some((cached, art)) if *cached == path => Some(match art {
+                        Some((image, ratio)) => Slide::Art(image.clone(), *ratio),
                         None => Slide::Disc,
                     }),
                     // A load is still on its way; the current slide stays up
                     // and the next one fades in when it lands.
-                    _ => {}
+                    _ => None,
+                };
+                if let Some(target) = target {
+                    self.retarget(target, cx);
                 }
             }
         }
@@ -362,12 +452,22 @@ impl Render for CoverArtPanel {
         // Smoothstepped so the fade eases out instead of stopping dead.
         let u = u * u * (3.0 - 2.0 * u);
 
+        let align = self.config.align;
         let root = div().size_full().bg(palette::bg_root()).relative();
         if u >= 1.0 {
-            root.child(layer(&self.to, 1.0))
+            root.child(layer(&self.to, 1.0, align))
         } else {
-            root.child(layer(&self.from, 1.0 - u))
-                .child(layer(&self.to, u))
+            // Hold the outgoing cover at full under an incoming one so a
+            // same-art track change never dips toward the background, the
+            // backdrop's move. When what's coming isn't a cover (the disc
+            // stand-in, the empty sleeve), fade the old one out instead.
+            let floor = if matches!(self.to, Slide::Art(..)) {
+                1.0
+            } else {
+                1.0 - u
+            };
+            root.child(layer(&self.from, floor, align))
+                .child(layer(&self.to, u, align))
         }
     }
 }

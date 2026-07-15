@@ -21,7 +21,7 @@ use rox_playback::engine::LoopMode;
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, Customizable, ScrubState};
+use crate::panel::{self, align_row, justify, Align, AppState, Customizable, ScrubState};
 use crate::panels::library::LibraryEvent;
 use crate::player::{fmt_time, fmt_time_padded};
 
@@ -31,10 +31,18 @@ use crate::player::{fmt_time, fmt_time_padded};
 pub struct TransportConfig {
     #[serde(default)]
     pub align: Align,
+    /// The stop button that ejects the playing track.
+    #[serde(default)]
+    pub stop: bool,
+    /// The random button that plays one track from anywhere in the library.
+    #[serde(default)]
+    pub random: bool,
 }
 
 /// The playback controls: prev, the seek nudges around play/pause, next,
-/// and the loop mode. What is playing lives in the track info panel. The pump's
+/// and the loop and shuffle modes, plus the optional stop and random
+/// buttons. What is
+/// playing lives in the track info panel. The pump's
 /// tick notifies the player while a session runs, so the observe below
 /// keeps the play state fresh even in a popped-out window.
 pub struct TransportPanel {
@@ -58,24 +66,105 @@ impl TransportPanel {
         }
     }
 
-    /// No quick dropdown entries; the alignment lives in the customize
-    /// window.
-    fn config_menu(&self, menu: PopupMenu, _cx: &mut Context<Self>) -> PopupMenu {
-        menu
+    /// The panel's own dropdown entries: the optional button toggles, the
+    /// same knobs the customize window edits.
+    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
+        let weak = cx.entity().downgrade();
+        let menu = menu.item(
+            PopupMenuItem::new("Stop Button")
+                .checked(self.config.stop)
+                .on_click(move |_, _, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    this.update(cx, |this, cx| {
+                        this.config.stop = !this.config.stop;
+                        cx.notify();
+                    });
+                }),
+        );
+        let weak = cx.entity().downgrade();
+        menu.item(
+            PopupMenuItem::new("Random Button")
+                .checked(self.config.random)
+                .on_click(move |_, _, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    this.update(cx, |this, cx| {
+                        this.config.random = !this.config.random;
+                        cx.notify();
+                    });
+                }),
+        )
     }
+
+    /// Pick one track from anywhere in the library and play it as a fresh
+    /// one-track queue.
+    fn play_random(&mut self, cx: &mut Context<Self>) {
+        let paths = {
+            let library = self.state.library.read(cx);
+            let Some(projection) = library.projection() else {
+                return;
+            };
+            if projection.is_empty() {
+                return;
+            }
+            let id = projection.db_id[random_index(projection.len())];
+            library.paths_for(&[id]).ok()
+        };
+        let Some(paths) = paths else { return };
+        self.state
+            .player
+            .update(cx, |player, cx| player.play(paths, cx));
+    }
+}
+
+/// A random index below `len`, off the std hasher's per-process random
+/// keys; picking a track does not need a rand dependency.
+fn random_index(len: usize) -> usize {
+    use std::hash::{BuildHasher, Hasher};
+    let hash = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    (hash % len as u64) as usize
 }
 
 impl Customizable for TransportPanel {
     fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        align_row(
-            self.config.align,
-            |this: &mut Self, align, cx| {
-                this.config.align = align;
-                cx.notify();
-            },
-            cx,
-        )
-        .into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(align_row(
+                self.config.align,
+                |this: &mut Self, align, cx| {
+                    this.config.align = align;
+                    cx.notify();
+                },
+                cx,
+            ))
+            .child(panel::setting_row(
+                "stop",
+                Some("the stop button that ejects the playing track"),
+                panel::toggle(
+                    self.config.stop,
+                    |this: &mut Self, stop, cx| {
+                        this.config.stop = stop;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "random",
+                Some("the random button that plays one track from anywhere in the library"),
+                panel::toggle(
+                    self.config.random,
+                    |this: &mut Self, random, cx| {
+                        this.config.random = random;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .into_any_element()
     }
 }
 
@@ -83,12 +172,19 @@ impl Render for TransportPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let player = self.state.player.read(cx);
         let playing = player.is_playing();
+        let active = player.is_active();
         // Loop state reads through the button itself: dim while off, the
         // accent while on, the one-track glyph for single-track loop.
         let (loop_icon, loop_color) = match player.loop_mode() {
             LoopMode::Off => (icons::REPEAT, palette::text_faint()),
             LoopMode::All => (icons::REPEAT, palette::accent()),
             LoopMode::One => (icons::REPEAT_1, palette::accent()),
+        };
+        // Shuffle reads the same way: dim while off, the accent while on.
+        let shuffle_color = if player.shuffle() {
+            palette::accent()
+        } else {
+            palette::text_faint()
         };
 
         // Play/pause is the primary action, so it gets the filled round
@@ -149,56 +245,41 @@ impl Render for TransportPanel {
                 |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.next()),
                 cx,
             ))
+            // Stop ejects the track: the session drops and every view over
+            // it goes idle. Dim while nothing is loaded.
+            .when(self.config.stop, |d| {
+                d.child(panel::icon_control(
+                    icons::STOP,
+                    if active {
+                        palette::text()
+                    } else {
+                        palette::text_faint()
+                    },
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, cx| p.stop(cx)),
+                    cx,
+                ))
+            })
             .child(panel::icon_control(
                 loop_icon,
                 loop_color,
                 |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.cycle_loop()),
                 cx,
             ))
+            .child(panel::icon_control(
+                icons::SHUFFLE,
+                shuffle_color,
+                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.toggle_shuffle()),
+                cx,
+            ))
+            .when(self.config.random, |d| {
+                d.child(panel::icon_control(
+                    icons::DICE,
+                    palette::text(),
+                    |this: &mut Self, cx| this.play_random(cx),
+                    cx,
+                ))
+            })
     }
-}
-
-/// Where a panel's content sits horizontally, the cross-panel
-/// customization knob.
-#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Align {
-    #[default]
-    Left,
-    Center,
-    Right,
-}
-
-/// Apply an alignment along a row's main axis.
-fn justify(d: Div, align: Align) -> Div {
-    match align {
-        Align::Left => d.justify_start(),
-        Align::Center => d.justify_center(),
-        Align::Right => d.justify_end(),
-    }
-}
-
-/// The alignment setting row the transport panels' customize windows
-/// share.
-fn align_row<P: 'static>(
-    current: Align,
-    on_pick: impl Fn(&mut P, Align, &mut Context<P>) + Clone + 'static,
-    cx: &mut Context<P>,
-) -> Div {
-    panel::setting_row(
-        "alignment",
-        Some("where the controls sit when the panel has room to spare"),
-        panel::icon_choices(
-            &[
-                (icons::ALIGN_LEFT, Align::Left),
-                (icons::ALIGN_CENTER, Align::Center),
-                (icons::ALIGN_RIGHT, Align::Right),
-            ],
-            current,
-            on_pick,
-            cx,
-        ),
-    )
 }
 
 /// The track info panel's per-view config: what a saved layout restores,
@@ -296,20 +377,22 @@ impl Render for TrackInfoPanel {
             .px(tokens::SPACE_MD);
 
         let Some(now) = now else {
-            // Nothing to describe: a session still opening, the reason one
-            // failed to start, or plain idle.
+            // Nothing to describe: a session still opening, or the reason
+            // one failed to start. Plain idle stays blank.
             let line = if active {
-                "opening...".into()
+                Some("opening...".into())
             } else {
-                error.unwrap_or_else(|| "nothing playing".into())
+                error
             };
-            return root.child(
-                div()
-                    .max_w_full()
-                    .truncate()
-                    .text_color(palette::text_muted())
-                    .child(line),
-            );
+            return root.when_some(line, |root, line| {
+                root.child(
+                    div()
+                        .max_w_full()
+                        .truncate()
+                        .text_color(palette::text_muted())
+                        .child(line),
+                )
+            });
         };
 
         // An untagged file still shows something: its file name for the
@@ -721,10 +804,8 @@ impl Render for SeekStripPanel {
             .items_center();
 
         let Some(now) = now else {
-            return root
-                .justify_center()
-                .text_color(palette::text_muted())
-                .child("nothing playing");
+            // Idle: the strip stays blank until a session brings a track.
+            return root;
         };
 
         let progress = now
@@ -810,9 +891,13 @@ impl Render for SeekStripPanel {
 /// copies it, and the dropdown gets the panel's own entries plus Customize
 /// in a block above the shared items. The minimum width is what the
 /// resizable layout refuses to squeeze the panel below, so controls never
-/// slide off screen.
+/// slide off screen; a panel whose controls depend on its config passes a
+/// closure over `&self` instead of a literal.
 macro_rules! transport_panel {
     ($panel:ty, $name:literal, min_w = $min_w:literal) => {
+        transport_panel!($panel, $name, min_w = |_: &$panel| px($min_w));
+    };
+    ($panel:ty, $name:literal, min_w = $min_w:expr) => {
         impl EventEmitter<PanelEvent> for $panel {}
 
         impl Focusable for $panel {
@@ -835,7 +920,7 @@ macro_rules! transport_panel {
             }
 
             fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
-                gpui::size(px($min_w), rox_dock::resizable::PANEL_MIN_SIZE)
+                gpui::size(($min_w)(self), rox_dock::resizable::PANEL_MIN_SIZE)
             }
 
             /// The layout dump carries the panel's config; the builder
@@ -909,10 +994,18 @@ macro_rules! transport_panel {
 }
 
 // The widths below are each panel's controls at their tightest: the
-// playback row's six buttons, the volume strip's icon, 80px slider floor,
+// playback row's seven buttons plus 32px (icon, padding, gap) for each
+// optional button turned on, the volume strip's icon, 80px slider floor,
 // and readout, the seek strip's clocks around a usable track, and enough
 // of the track info line to read a title.
-transport_panel!(TransportPanel, "playback", min_w = 210.);
+transport_panel!(
+    TransportPanel,
+    "playback",
+    min_w = |this: &TransportPanel| {
+        let extras = this.config.stop as u8 + this.config.random as u8;
+        px(242. + f32::from(extras) * 32.)
+    }
+);
 transport_panel!(VolumePanel, "volume", min_w = 200.);
 transport_panel!(SeekStripPanel, "seek", min_w = 160.);
 transport_panel!(TrackInfoPanel, "track info", min_w = 120.);

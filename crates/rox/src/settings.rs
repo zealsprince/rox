@@ -23,7 +23,9 @@ pub fn data_dir() -> PathBuf {
     dir
 }
 
-fn settings_path() -> PathBuf {
+/// The settings file inside [`data_dir`], public so the settings window
+/// can hand the raw file to the system editor.
+pub fn settings_path() -> PathBuf {
     data_dir().join("settings.json")
 }
 
@@ -41,6 +43,9 @@ pub struct Settings {
     /// Loop mode as its wire name: "off", "all", or "one". The engine's
     /// `LoopMode` stays serde-free; convert through the accessors.
     pub loop_mode: String,
+    /// Whether playback shuffles: the queue plays in a random order
+    /// instead of front to back.
+    pub shuffle: bool,
     /// The main window's last frame, restored on open. None until the first
     /// window closes.
     pub window: Option<WindowState>,
@@ -49,9 +54,13 @@ pub struct Settings {
     /// workspace validates and versions it on restore. None until a layout
     /// has been saved.
     pub layout: Option<serde_json::Value>,
-    /// The folder the library was last scanned from, so a rescan works
-    /// across sessions. None until a folder has been opened.
-    pub library_root: Option<PathBuf>,
+    /// The folders the library scans, in the order they were added. Empty
+    /// until one has been opened.
+    pub library_roots: Vec<PathBuf>,
+    /// The single folder `library_roots` replaced. Read once on load to
+    /// seed the list, never written back.
+    #[serde(skip_serializing)]
+    library_root: Option<PathBuf>,
     /// ADR 10's transparency pair, both 0 to 1. How opaque the app's
     /// surfaces read, 1 fully opaque...
     pub surface_opacity: f32,
@@ -85,8 +94,10 @@ impl Default for Settings {
             volume: 1.0,
             muted: false,
             loop_mode: "off".into(),
+            shuffle: false,
             window: None,
             layout: None,
+            library_roots: Vec::new(),
             library_root: None,
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
@@ -126,6 +137,13 @@ impl Settings {
             } else {
                 1.0
             };
+        }
+        // A file from before multi-folder carries one library_root; it
+        // seeds the list here and the next save drops it.
+        if settings.library_roots.is_empty() {
+            if let Some(root) = settings.library_root.take() {
+                settings.library_roots.push(root);
+            }
         }
         settings
     }

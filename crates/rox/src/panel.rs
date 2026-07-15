@@ -11,13 +11,15 @@ use std::sync::{Arc, Mutex};
 use gpui::{
     anchored, deferred, div, fill, point, prelude::*, px, size, svg, AnyElement, App, Bounds,
     Context, DismissEvent, Div, Entity, Focusable as _, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, Subscription, TitlebarOptions, WeakEntity,
-    Window, WindowBounds, WindowOptions,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, SharedString, Subscription,
+    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Root;
 use rox_dock::{Panel, PanelInfo, PanelView, TabPanel};
+use serde::{Deserialize, Serialize};
 
+use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
 use crate::panels::library::Library;
@@ -75,6 +77,18 @@ pub fn icon_control<V: 'static>(
     on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
     cx: &mut Context<V>,
 ) -> impl IntoElement {
+    icon_control_sized(icon, px(16.), color, on_click, cx)
+}
+
+/// [`icon_control`] with the icon size exposed, for spots like the menubar
+/// where the transport-scale glyph reads too heavy.
+pub fn icon_control_sized<V: 'static>(
+    icon: &'static str,
+    size: Pixels,
+    color: Rgba,
+    on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
+    cx: &mut Context<V>,
+) -> impl IntoElement {
     div()
         .p(tokens::ICON_PAD)
         .rounded(tokens::RADIUS)
@@ -84,7 +98,7 @@ pub fn icon_control<V: 'static>(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| on_click(this, cx)),
         )
-        .child(svg().path(icon).size_4().text_color(color))
+        .child(svg().path(icon).size(size).text_color(color))
 }
 
 /// The shared state of a click-and-drag strip: where it painted and
@@ -316,17 +330,20 @@ pub fn pop_out<P: Panel>(
 /// middle-drag-out hook: dragging a panel out of the window lands here.
 /// The window title comes from the panel's name.
 pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
-    let title = panel.panel_name(cx);
+    let title = SharedString::from(format!("rox - {}", panel.panel_name(cx)));
     let bounds = Bounds::centered(None, size(px(900.), px(600.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
-            title: Some(format!("rox - {title}").into()),
+            title: Some(title.clone()),
             ..Default::default()
         }),
         ..Default::default()
     };
     cx.open_window(options, move |window, cx| {
+        // The Wayland backend ignores the creation-time titlebar title;
+        // only set_window_title reaches the compositor.
+        window.set_window_title(&title);
         let host = cx.new(|cx| {
             // A popped-out window pumps its own frames, so the backdrop
             // needs its own wake on a new bake.
@@ -367,18 +384,21 @@ pub fn customize_item<P: Customizable>(menu: PopupMenu, panel: &Entity<P>) -> Po
 /// Open the small window that edits a panel's config. It holds the panel
 /// weakly, so it never keeps a closed panel alive.
 fn open_customize<P: Customizable>(panel: Entity<P>, cx: &mut App) {
-    let title = panel.read(cx).panel_name();
+    let title = SharedString::from(format!("rox - customize {}", panel.read(cx).panel_name()));
     let bounds = Bounds::centered(None, size(px(360.), px(180.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
-            title: Some(format!("rox - customize {title}").into()),
+            title: Some(title.clone()),
             ..Default::default()
         }),
         ..Default::default()
     };
     let panel = panel.downgrade();
     cx.open_window(options, move |window, cx| {
+        // The Wayland backend ignores the creation-time titlebar title;
+        // only set_window_title reaches the compositor.
+        window.set_window_title(&title);
         let host = cx.new(|cx| {
             let _panel_changed = panel
                 .upgrade()
@@ -571,6 +591,48 @@ pub fn icon_choices<P: 'static, V: PartialEq + Copy + 'static>(
         },
         on_pick,
         cx,
+    )
+}
+
+/// Where a panel's content sits horizontally, the cross-panel
+/// customization knob.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Align {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+/// Apply an alignment along a row's main axis.
+pub fn justify(d: Div, align: Align) -> Div {
+    match align {
+        Align::Left => d.justify_start(),
+        Align::Center => d.justify_center(),
+        Align::Right => d.justify_end(),
+    }
+}
+
+/// The alignment setting row the panels' customize windows share.
+pub fn align_row<P: 'static>(
+    current: Align,
+    on_pick: impl Fn(&mut P, Align, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    setting_row(
+        "alignment",
+        Some("where the content sits when the panel has room to spare"),
+        icon_choices(
+            &[
+                (icons::ALIGN_LEFT, Align::Left),
+                (icons::ALIGN_CENTER, Align::Center),
+                (icons::ALIGN_RIGHT, Align::Right),
+            ],
+            current,
+            on_pick,
+            cx,
+        ),
     )
 }
 

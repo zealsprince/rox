@@ -26,18 +26,33 @@ pub struct ScanSummary {
     pub unchanged: usize,
     /// Files indexed by filename because their tags would not read.
     pub untagged: usize,
+    /// The scan stopped early because `progress` said to. Everything
+    /// counted above is in the store; the rest of the walk never ran.
+    pub aborted: bool,
 }
 
 /// Scan `root` recursively into the store. Blocking; run it off the UI thread.
-pub fn scan(conn: &mut Connection, root: &Path) -> rusqlite::Result<ScanSummary> {
+/// `progress` is called once per file with (scanned, total, path) before the
+/// file is read, so a UI can report the scan live; returning false stops the
+/// scan after flushing what it has.
+pub fn scan(
+    conn: &mut Connection,
+    root: &Path,
+    mut progress: impl FnMut(usize, usize, &Path) -> bool,
+) -> rusqlite::Result<ScanSummary> {
     let known = store::local_files(conn)?;
     let mut files = Vec::new();
     collect(root, &mut files);
     files.sort();
+    let total = files.len();
 
     let mut summary = ScanSummary::default();
     let mut batch: Vec<TrackRow> = Vec::with_capacity(BATCH);
-    for path in files {
+    for (i, path) in files.into_iter().enumerate() {
+        if !progress(i + 1, total, &path) {
+            summary.aborted = true;
+            break;
+        }
         let Ok(meta) = std::fs::metadata(&path) else {
             continue;
         };

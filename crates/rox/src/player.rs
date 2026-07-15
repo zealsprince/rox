@@ -41,11 +41,17 @@ struct Session {
 }
 
 impl Session {
-    fn start(queue: Vec<PathBuf>, volume: f32, loop_mode: LoopMode) -> Result<Session, String> {
+    fn start(
+        queue: Vec<PathBuf>,
+        volume: f32,
+        loop_mode: LoopMode,
+        shuffle: bool,
+    ) -> Result<Session, String> {
         let shared = Arc::new(Shared::new(queue.len()));
         // Seed the session with the persisted playback state: volume lands
-        // in the shared atomics before the stream opens, the loop mode
-        // queues on the channel so the engine picks it up first thing.
+        // in the shared atomics before the stream opens, the loop and
+        // shuffle modes queue on the channel so the engine picks them up
+        // first thing.
         shared
             .volume_bits
             .store(volume.to_bits(), Ordering::Relaxed);
@@ -53,6 +59,7 @@ impl Session {
         let device_rate = out.sample_rate;
         let (tx, rx) = mpsc::channel::<Cmd>();
         let _ = tx.send(Cmd::SetLoop(loop_mode));
+        let _ = tx.send(Cmd::SetShuffle(shuffle));
         let engine =
             engine::Engine::new(queue.clone(), shared.clone(), out.producer, device_rate, rx);
         std::thread::Builder::new()
@@ -150,7 +157,12 @@ impl Player {
             return;
         }
         self.session = None;
-        match Session::start(queue, self.effective_volume(), self.settings.loop_mode()) {
+        match Session::start(
+            queue,
+            self.effective_volume(),
+            self.settings.loop_mode(),
+            self.settings.shuffle,
+        ) {
             Ok(session) => {
                 self.feed.set_sample_rate(session.device_rate);
                 self.session = Some(session);
@@ -159,6 +171,16 @@ impl Player {
             }
             Err(e) => self.error = Some(format!("audio output: {e}").into()),
         }
+        cx.notify();
+    }
+
+    /// Drop the running session entirely: playback stops, the position
+    /// clock goes away, and the views over it - the seek strip, the
+    /// waveform, the cover - fall back to idle. The transport's eject.
+    pub fn stop(&mut self, cx: &mut Context<Self>) {
+        self.session = None;
+        self.pump = None;
+        self.error = None;
         cx.notify();
     }
 
@@ -297,6 +319,20 @@ impl Player {
         self.send(Cmd::Volume(self.effective_volume()));
         Settings::update(move |s| s.muted = muted);
         cx.notify();
+    }
+
+    /// Whether shuffle is on, the persisted mode.
+    pub fn shuffle(&self) -> bool {
+        self.settings.shuffle
+    }
+
+    /// Flip shuffle and persist the pick. The running session reshuffles in
+    /// place; the playing track keeps playing.
+    pub fn toggle_shuffle(&mut self) {
+        let on = !self.settings.shuffle;
+        self.settings.shuffle = on;
+        self.send(Cmd::SetShuffle(on));
+        Settings::update(move |s| s.shuffle = on);
     }
 
     /// Step off -> all -> one -> off and persist the pick.

@@ -17,8 +17,8 @@ Core, the center of gravity, get these wrong and there's no product:
 Peripheral, edges that can exist without being the point:
 
 - Listening stats. Every real listen recorded on disk, rolled up per track, artist,
-  album, and genre, surfaced in browse (most played, never played, recently played) and
-  a stats panel. Closest to core of anything on this list: the library obsessive treats
+  album, and genre, surfaced in a history panel (most played, never played, recently
+  played) and a stats panel. Closest to core of anything on this list: the library obsessive treats
   their history as part of the library. It sits behind the library because it's
   worthless if browsing doesn't hold up first.
 - Last.fm scrobbling. Wanted, and the community expects it, but it isn't the reason to

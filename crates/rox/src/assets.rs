@@ -19,6 +19,9 @@ pub mod icons {
     pub const FAST_FORWARD: &str = "icons/fast-forward.svg";
     pub const REPEAT: &str = "icons/repeat.svg";
     pub const REPEAT_1: &str = "icons/repeat-1.svg";
+    pub const STOP: &str = "icons/square.svg";
+    pub const SHUFFLE: &str = "icons/shuffle.svg";
+    pub const DICE: &str = "icons/dice-5.svg";
     pub const VOLUME_1: &str = "icons/volume-1.svg";
     pub const VOLUME_2: &str = "icons/volume-2.svg";
     pub const VOLUME_X: &str = "icons/volume-x.svg";
@@ -28,6 +31,14 @@ pub mod icons {
     pub const REFRESH_CW: &str = "icons/refresh-cw.svg";
     pub const CHEVRON_RIGHT: &str = "icons/chevron-right.svg";
     pub const DISC: &str = "icons/disc-3.svg";
+    pub const MUSIC: &str = "icons/music.svg";
+    pub const FOLDER: &str = "icons/folder.svg";
+    pub const FOLDER_PLUS: &str = "icons/folder-plus.svg";
+    pub const FILE_TEXT: &str = "icons/file-text.svg";
+    pub const DOWNLOAD: &str = "icons/download.svg";
+    pub const UPLOAD: &str = "icons/upload.svg";
+    /// Resolves from the bundled widget set, no file of ours needed.
+    pub const CLOSE: &str = "icons/close.svg";
 }
 
 /// Our embedded assets, checked before the bundled widget assets so a

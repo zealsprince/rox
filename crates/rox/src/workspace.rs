@@ -7,12 +7,13 @@
 //! the player's own pump task, so nothing here has to keep rendering for
 //! playback's sake.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
     actions, deferred, div, prelude::*, px, svg, App, Axis, Context, Div, Entity, FocusHandle,
-    KeyBinding, MouseButton, Subscription, Task, WeakEntity, Window, WindowBounds,
+    FontFeatures, KeyBinding, MouseButton, Subscription, Task, WeakEntity, Window, WindowBounds,
 };
 use rox_dock::{
     register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo, PanelView,
@@ -24,7 +25,7 @@ use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, TabHosts};
 use crate::panels::cover::{CoverArtPanel, CoverConfig};
-use crate::panels::library::{Library, LibraryConfig, LibraryEvent, LibraryPanel};
+use crate::panels::library::{Library, LibraryConfig, LibraryPanel};
 use crate::panels::spectrum::SpectrumPanel;
 use crate::panels::transport::{
     SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
@@ -123,7 +124,6 @@ fn register_panels(state: &AppState, cx: &mut App) {
 enum MenuAction {
     NewWindow,
     OpenSettings,
-    OpenFolder,
     OpenLibrary,
     OpenCoverArt,
     OpenSpectrum,
@@ -167,13 +167,6 @@ const MENUS: &[Menu] = &[
                 action: MenuAction::OpenSettings,
             }),
         ],
-    },
-    Menu {
-        label: "Library",
-        entries: &[MenuEntry::Item(MenuItem {
-            label: "Open Folder...",
-            action: MenuAction::OpenFolder,
-        })],
     },
     Menu {
         label: "Panels",
@@ -252,7 +245,14 @@ pub struct Workspace {
     /// This window's slice of the backdrop: what it painted last, for
     /// retiring the texture on a new bake.
     backdrop: WindowBackdrop,
+    /// The playing path the window title currently reflects; None while
+    /// the title is the plain app name. Compared each player tick so the
+    /// tag lookup and the platform title call only run on a track change.
+    titled_track: Option<PathBuf>,
     _layout_changed: Subscription,
+    /// The player pump notifies every tick while a session runs; the
+    /// title refresh rides it and bails on the path compare.
+    _player_changed: Subscription,
     /// The menubar's right side shows the catalog status, so library
     /// updates must repaint the workspace.
     _library_changed: Subscription,
@@ -419,8 +419,17 @@ impl Workspace {
                     this.save_layout_soon(window, cx);
                 }
             });
-        let _library_changed =
-            cx.subscribe(&state.library, |_, _, _: &LibraryEvent, cx| cx.notify());
+        // Observe rather than subscribe: scan progress ticks notify the
+        // library without emitting Updated, and the badge needs those too.
+        // A catalog change can also retag the playing track, so the title
+        // re-derives on the next player tick.
+        let _library_changed = cx.observe(&state.library, |this, _, cx| {
+            this.titled_track = None;
+            cx.notify();
+        });
+        let _player_changed = cx.observe_in(&state.player, window, |this, _, window, cx| {
+            this.refresh_title(window, cx);
+        });
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
@@ -456,10 +465,42 @@ impl Workspace {
             bottom_stack,
             save_task: None,
             backdrop: WindowBackdrop::default(),
+            titled_track: None,
             _layout_changed,
+            _player_changed,
             _library_changed,
             _backdrop_changed,
         }
+    }
+
+    /// Keep the window title on the playing track: "artist - title - rox"
+    /// while something plays, the plain app name otherwise. Untagged files
+    /// fall back to their file name, same as the track info readout.
+    fn refresh_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let path = self.state.player.read(cx).now_playing().map(|now| now.path);
+        if path == self.titled_track {
+            return;
+        }
+        let title = match &path {
+            Some(path) => {
+                let meta = self.state.library.read(cx).meta_for(path);
+                let track = meta
+                    .as_ref()
+                    .map(|m| m.title.clone())
+                    .unwrap_or_else(|| {
+                        path.file_stem()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string())
+                    });
+                match meta.map(|m| m.artist).filter(|a| !a.is_empty()) {
+                    Some(artist) => format!("{artist} - {track} - rox"),
+                    None => format!("{track} - rox"),
+                }
+            }
+            None => "rox".into(),
+        };
+        window.set_window_title(&title);
+        self.titled_track = path;
     }
 
     /// Debounced persist: wait out [`SAVE_DEBOUNCE`] of quiet, then dump.
@@ -554,11 +595,9 @@ impl Workspace {
     fn run(&mut self, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             MenuAction::NewWindow => crate::open_workspace(cx),
-            MenuAction::OpenSettings => crate::settings_window::open(cx),
-            MenuAction::OpenFolder => self
-                .state
-                .library
-                .update(cx, |library, cx| library.browse(cx)),
+            MenuAction::OpenSettings => {
+                crate::settings_window::open(self.state.library.clone(), cx)
+            }
             MenuAction::OpenLibrary => {
                 let panel = cx.new(|cx| {
                     LibraryPanel::new(self.state.clone(), LibraryConfig::default(), window, cx)
@@ -645,49 +684,79 @@ impl Workspace {
     }
 
     /// The menubar's right side: the catalog status line, a badge while a
-    /// scan or load runs, and a rescan button once a folder is known.
+    /// scan or load runs, a rescan button once a folder is known, and an
+    /// abort button while a scan runs.
     fn library_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (busy, status, can_rescan) = {
+        let (busy, status, can_rescan, scanning) = {
             let library = self.state.library.read(cx);
-            (library.busy(), library.status(), library.can_rescan())
+            (
+                library.busy(),
+                library.status(),
+                library.can_rescan(),
+                library.scanning(),
+            )
         };
-        let scanning = busy.is_some();
+        let idle = busy.is_none();
+        // Status text leftmost so its width changes grow into the empty
+        // middle of the bar; the badge and buttons keep their spot at the
+        // right edge.
         div()
             .flex()
             .flex_row()
             .items_center()
             .flex_none()
             .gap(tokens::SPACE_SM)
-            .px(tokens::SPACE_SM)
-            .when_some(busy, |d, label| {
-                d.child(
-                    div()
-                        .px(tokens::SPACE_SM)
-                        .py(px(2.))
-                        .rounded_full()
-                        .bg(palette::accent())
-                        .text_xs()
-                        .text_color(palette::text_on_accent())
-                        .child(label),
-                )
-            })
+            .px(tokens::SPACE_MD)
             .when(!status.is_empty(), |d| {
                 d.child(
                     div()
-                        .max_w(px(360.))
+                        .max_w(px(480.))
                         .truncate()
                         .text_color(palette::text_muted())
+                        // While scanning the status is the full path of the
+                        // file under the cursor: smaller text.
+                        .when(scanning, |d| d.text_xs())
                         .child(status),
                 )
             })
-            .when(can_rescan && !scanning, |d| {
-                d.child(panel::icon_control(
+            .when_some(busy, |d, label| {
+                // Tabular digits, so the count ticking up never changes
+                // the badge width within a digit count.
+                let mut badge = div()
+                    .px(tokens::SPACE_SM)
+                    .py(px(2.))
+                    .rounded_full()
+                    .bg(palette::accent())
+                    .text_xs()
+                    .text_color(palette::text_on_accent());
+                badge
+                    .text_style()
+                    .get_or_insert_with(Default::default)
+                    .font_features = Some(FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
+                d.child(badge.child(label))
+            })
+            .when(can_rescan && idle, |d| {
+                d.child(panel::icon_control_sized(
                     icons::REFRESH_CW,
-                    palette::text(),
+                    px(12.),
+                    palette::text_muted(),
                     |this: &mut Workspace, cx| {
                         this.state
                             .library
                             .update(cx, |library, cx| library.rescan(cx));
+                    },
+                    cx,
+                ))
+            })
+            .when(scanning, |d| {
+                d.child(panel::icon_control_sized(
+                    icons::CLOSE,
+                    px(12.),
+                    palette::text_muted(),
+                    |this: &mut Workspace, cx| {
+                        this.state
+                            .library
+                            .update(cx, |library, cx| library.abort_scan(cx));
                     },
                     cx,
                 ))

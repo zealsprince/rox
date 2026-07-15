@@ -79,6 +79,42 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
     tx.commit()
 }
 
+/// The half-open path range holding exactly the files under `root`: from
+/// the root plus a trailing separator up to the separator's successor
+/// byte. SQLite compares TEXT bytewise, so the (source, path) index
+/// serves range queries directly where a LIKE would not.
+fn path_range(root: &Path) -> (String, String) {
+    let mut lo = root.to_string_lossy().into_owned();
+    if !lo.ends_with(std::path::MAIN_SEPARATOR) {
+        lo.push(std::path::MAIN_SEPARATOR);
+    }
+    let mut hi = lo.clone();
+    hi.pop();
+    hi.push((std::path::MAIN_SEPARATOR as u8 + 1) as char);
+    (lo, hi)
+}
+
+/// How many local tracks live under one folder.
+pub fn count_under(conn: &Connection, root: &Path) -> rusqlite::Result<u64> {
+    let (lo, hi) = path_range(root);
+    conn.query_row(
+        "SELECT COUNT(*) FROM tracks WHERE source = 'local' AND path >= ?1 AND path < ?2",
+        rusqlite::params![lo, hi],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n as u64)
+}
+
+/// Drop every local track under one folder, for when it leaves the
+/// library. The files themselves are untouched.
+pub fn remove_under(conn: &Connection, root: &Path) -> rusqlite::Result<usize> {
+    let (lo, hi) = path_range(root);
+    conn.execute(
+        "DELETE FROM tracks WHERE source = 'local' AND path >= ?1 AND path < ?2",
+        rusqlite::params![lo, hi],
+    )
+}
+
 /// Every local path with its (mtime, size), so a rescan can skip files that
 /// have not changed without reading their tags.
 pub fn local_files(conn: &Connection) -> rusqlite::Result<HashMap<String, (i64, u64)>> {

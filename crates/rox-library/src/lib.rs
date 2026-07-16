@@ -18,11 +18,19 @@ pub struct TrackRow {
     pub path: String,
     pub title: String,
     pub artist: String,
+    /// The album's credited artist, falling back to the track artist when
+    /// the tag is missing, so a plain album groups the same either way.
+    pub album_artist: String,
     pub album: String,
     pub genre: String,
     pub year: u16,
     pub track_no: u16,
     pub duration_ms: u32,
+    /// The container's short lowercase name (mp3, flac, wav), off the
+    /// parsed file type, the extension when the parse fails.
+    pub codec: String,
+    /// The audio stream's bitrate in kbps; 0 when the parse fails.
+    pub bitrate_kbps: u16,
     pub size: u64,
     pub mtime: i64,
 }

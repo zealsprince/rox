@@ -13,6 +13,7 @@ use gpui::{
     WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -20,13 +21,15 @@ use rox_library::store::TrackMeta;
 use rox_playback::engine::LoopMode;
 
 use crate::assets::icons;
+use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, align_row, justify, Align, AppState, Customizable, ScrubState};
+use crate::panel::{self, align_row, justify, Align, AppState, PanelSettings, ScrubState};
+use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
 use crate::player::{fmt_time, fmt_time_padded};
 
 /// The playback panel's per-view config: what a saved layout restores,
-/// and what the customize window edits.
+/// and what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct TransportConfig {
     #[serde(default)]
@@ -37,6 +40,9 @@ pub struct TransportConfig {
     /// The random button that plays one track from anywhere in the library.
     #[serde(default)]
     pub random: bool,
+    /// The panel's palette override.
+    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
+    pub theme: PanelTheme,
 }
 
 /// The playback controls: prev, the seek nudges around play/pause, next,
@@ -126,12 +132,21 @@ fn random_index(len: usize) -> usize {
     (hash % len as u64) as usize
 }
 
-impl Customizable for TransportPanel {
+impl PanelSettings for TransportPanel {
     fn state(&self) -> AppState {
         self.state.clone()
     }
 
-    fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn pages(&self) -> &'static [&'static str] {
+        &["Controls"]
+    }
+
+    fn page(
+        &mut self,
+        _page: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .flex()
             .flex_col()
@@ -170,10 +185,26 @@ impl Customizable for TransportPanel {
             ))
             .into_any_element()
     }
+
+    fn theme(&self) -> PanelTheme {
+        self.config.theme.clone()
+    }
+
+    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
+        self.config.theme = theme;
+        cx.notify();
+    }
 }
 
 impl Render for TransportPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.config.theme.clone();
+        panel::themed(&theme, || self.body(cx).into_any_element())
+    }
+}
+
+impl TransportPanel {
+    fn body(&mut self, cx: &mut Context<Self>) -> Div {
         let player = self.state.player.read(cx);
         let playing = player.is_playing();
         let active = player.is_active();
@@ -287,11 +318,14 @@ impl Render for TransportPanel {
 }
 
 /// The track info panel's per-view config: what a saved layout restores,
-/// and what the customize window edits.
+/// and what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct TrackInfoConfig {
     #[serde(default)]
     pub align: Align,
+    /// The panel's palette override.
+    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
+    pub theme: PanelTheme,
 }
 
 /// The track info readout the playback panel's status line grew into: one
@@ -349,12 +383,21 @@ impl TrackInfoPanel {
     }
 }
 
-impl Customizable for TrackInfoPanel {
+impl PanelSettings for TrackInfoPanel {
     fn state(&self) -> AppState {
         self.state.clone()
     }
 
-    fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn pages(&self) -> &'static [&'static str] {
+        &["Layout"]
+    }
+
+    fn page(
+        &mut self,
+        _page: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         align_row(
             self.config.align,
             |this: &mut Self, align, cx| {
@@ -365,10 +408,26 @@ impl Customizable for TrackInfoPanel {
         )
         .into_any_element()
     }
+
+    fn theme(&self) -> PanelTheme {
+        self.config.theme.clone()
+    }
+
+    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
+        self.config.theme = theme;
+        cx.notify();
+    }
 }
 
 impl Render for TrackInfoPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.config.theme.clone();
+        panel::themed(&theme, || self.body(cx).into_any_element())
+    }
+}
+
+impl TrackInfoPanel {
+    fn body(&mut self, cx: &mut Context<Self>) -> Div {
         let player = self.state.player.read(cx);
         let now = player.now_playing();
         let active = player.is_active();
@@ -452,7 +511,7 @@ impl Render for TrackInfoPanel {
 }
 
 /// The volume panel's per-view config: what a saved layout restores, and
-/// what the customize window edits.
+/// what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct VolumeConfig {
     #[serde(default)]
@@ -461,6 +520,9 @@ pub struct VolumeConfig {
     /// at its natural size.
     #[serde(default)]
     pub stretch: bool,
+    /// The panel's palette override.
+    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
+    pub theme: PanelTheme,
 }
 
 /// The volume strip: the speaker button that toggles mute, and the volume
@@ -507,12 +569,21 @@ impl VolumePanel {
     }
 }
 
-impl Customizable for VolumePanel {
+impl PanelSettings for VolumePanel {
     fn state(&self) -> AppState {
         self.state.clone()
     }
 
-    fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn pages(&self) -> &'static [&'static str] {
+        &["Layout"]
+    }
+
+    fn page(
+        &mut self,
+        _page: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .flex()
             .flex_col()
@@ -539,10 +610,26 @@ impl Customizable for VolumePanel {
             ))
             .into_any_element()
     }
+
+    fn theme(&self) -> PanelTheme {
+        self.config.theme.clone()
+    }
+
+    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
+        self.config.theme = theme;
+        cx.notify();
+    }
 }
 
 impl Render for VolumePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.config.theme.clone();
+        panel::themed(&theme, || self.body(cx).into_any_element())
+    }
+}
+
+impl VolumePanel {
+    fn body(&mut self, cx: &mut Context<Self>) -> Div {
         let player = self.state.player.read(cx);
         let volume = player.volume();
         let muted = player.muted();
@@ -655,6 +742,9 @@ pub struct SeekConfig {
     /// clicking the clock flips it.
     #[serde(default)]
     pub show_total: bool,
+    /// The panel's palette override.
+    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
+    pub theme: PanelTheme,
 }
 
 fn default_true() -> bool {
@@ -666,6 +756,7 @@ impl Default for SeekConfig {
         SeekConfig {
             timings: true,
             show_total: false,
+            theme: PanelTheme::default(),
         }
     }
 }
@@ -716,12 +807,21 @@ impl SeekStripPanel {
     }
 }
 
-impl Customizable for SeekStripPanel {
+impl PanelSettings for SeekStripPanel {
     fn state(&self) -> AppState {
         self.state.clone()
     }
 
-    fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn pages(&self) -> &'static [&'static str] {
+        &["Clocks"]
+    }
+
+    fn page(
+        &mut self,
+        _page: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .flex()
             .flex_col()
@@ -752,6 +852,15 @@ impl Customizable for SeekStripPanel {
                 ),
             ))
             .into_any_element()
+    }
+
+    fn theme(&self) -> PanelTheme {
+        self.config.theme.clone()
+    }
+
+    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
+        self.config.theme = theme;
+        cx.notify();
     }
 }
 
@@ -805,6 +914,13 @@ fn clock(text: String) -> Div {
 
 impl Render for SeekStripPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.config.theme.clone();
+        panel::themed(&theme, || self.body(window, cx).into_any_element())
+    }
+}
+
+impl SeekStripPanel {
+    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let now = self.state.player.read(cx).now_playing();
 
         // The position clock only moves while a session runs; poll by frame
@@ -903,12 +1019,12 @@ impl Render for SeekStripPanel {
 /// The Panel and focus plumbing is identical across the transport panels;
 /// only the name and the minimum width differ. Every transport panel has a
 /// per-view config struct (a `config` field, a `config_menu` method, and a
-/// Customizable impl): the layout dump carries the config, Duplicate
-/// copies it, and the dropdown gets the panel's own entries plus Customize
-/// in a block above the shared items. The minimum width is what the
-/// resizable layout refuses to squeeze the panel below, so controls never
-/// slide off screen; a panel whose controls depend on its config passes a
-/// closure over `&self` instead of a literal.
+/// PanelSettings impl): the layout dump carries the config, Duplicate
+/// copies it, and the dropdown gets the panel's own entries plus Panel
+/// Settings in a block above the shared items. The minimum width is what
+/// the resizable layout refuses to squeeze the panel below, so controls
+/// never slide off screen; a panel whose controls depend on its config
+/// passes a closure over `&self` instead of a literal.
 macro_rules! transport_panel {
     ($panel:ty, $name:literal, min_w = $min_w:literal) => {
         transport_panel!($panel, $name, min_w = |_: &$panel| px($min_w));
@@ -972,32 +1088,34 @@ macro_rules! transport_panel {
                 cx: &mut Context<Self>,
             ) -> PopupMenu {
                 // The config block: the panel's quick entries and the
-                // customize window, apart from the core panel items.
+                // settings window, apart from the core panel items.
                 let menu = self.config_menu(menu, cx);
-                let menu = panel::customize_item(menu, &cx.entity());
                 let menu = menu.separator();
+                let menu = panel_settings::settings_item(menu, &cx.entity());
                 // Duplicate hand-rolled rather than through
                 // `panel::duplicate_item` because the copy takes the config
                 // along, like the library's.
                 let weak = cx.entity().downgrade();
-                let menu = menu.item(PopupMenuItem::new("Duplicate Panel").on_click(
-                    move |_, window, cx| {
-                        let Some(this) = weak.upgrade() else { return };
-                        let (state, config, tabs) = {
-                            let panel = this.read(cx);
-                            (
-                                panel.state.clone(),
-                                panel.config.clone(),
-                                panel.tab_panel.clone(),
-                            )
-                        };
-                        let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                            return;
-                        };
-                        let dup = cx.new(|cx| <$panel>::new(state, config, cx));
-                        tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-                    },
-                ));
+                let menu = menu.item(
+                    PopupMenuItem::new("Duplicate")
+                        .icon(Icon::default().path(icons::COPY))
+                        .on_click(move |_, window, cx| {
+                            let Some(this) = weak.upgrade() else { return };
+                            let (state, config, tabs) = {
+                                let panel = this.read(cx);
+                                (
+                                    panel.state.clone(),
+                                    panel.config.clone(),
+                                    panel.tab_panel.clone(),
+                                )
+                            };
+                            let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+                                return;
+                            };
+                            let dup = cx.new(|cx| <$panel>::new(state, config, cx));
+                            tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+                        }),
+                );
                 panel::popout_item(
                     menu,
                     &cx.entity(),

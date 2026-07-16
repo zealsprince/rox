@@ -46,6 +46,7 @@ impl Session {
         volume: f32,
         loop_mode: LoopMode,
         shuffle: bool,
+        paused_at: Option<f64>,
     ) -> Result<Session, String> {
         let shared = Arc::new(Shared::new(queue.len()));
         // Seed the session with the persisted playback state: volume lands
@@ -60,6 +61,14 @@ impl Session {
         let (tx, rx) = mpsc::channel::<Cmd>();
         let _ = tx.send(Cmd::SetLoop(loop_mode));
         let _ = tx.send(Cmd::SetShuffle(shuffle));
+        // The launch restore's seek and pause queue here too, ahead of the
+        // decode thread: the engine drains commands before it decodes, so
+        // the session comes up already paused at the position and nothing
+        // sounds.
+        if let Some(secs) = paused_at {
+            let _ = tx.send(Cmd::Seek(secs));
+            let _ = tx.send(Cmd::TogglePause);
+        }
         let engine =
             engine::Engine::new(queue.clone(), shared.clone(), out.producer, device_rate, rx);
         std::thread::Builder::new()
@@ -153,6 +162,21 @@ impl Player {
     /// Replace whatever is playing with a fresh queue; the old session quits
     /// on drop.
     pub fn play(&mut self, queue: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.start_session(queue, None, cx);
+    }
+
+    /// The launch restore: load one track paused at a position, ready on
+    /// the seek strip but silent until asked to play.
+    pub fn restore(&mut self, path: PathBuf, position_secs: f64, cx: &mut Context<Self>) {
+        self.start_session(vec![path], Some(position_secs.max(0.0)), cx);
+    }
+
+    fn start_session(
+        &mut self,
+        queue: Vec<PathBuf>,
+        paused_at: Option<f64>,
+        cx: &mut Context<Self>,
+    ) {
         if queue.is_empty() {
             return;
         }
@@ -162,6 +186,7 @@ impl Player {
             self.effective_volume(),
             self.settings.loop_mode(),
             self.settings.shuffle,
+            paused_at,
         ) {
             Ok(session) => {
                 self.feed.set_sample_rate(session.device_rate);

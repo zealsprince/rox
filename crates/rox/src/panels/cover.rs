@@ -13,27 +13,35 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    div, img, prelude::*, px, relative, svg, AnyElement, App, Context, EventEmitter, FocusHandle,
-    Focusable, Image, ImageFormat, ObjectFit, SharedString, Subscription, WeakEntity, Window,
+    div, img, prelude::*, px, relative, svg, AnyElement, App, Context, Div, EventEmitter,
+    FocusHandle, Focusable, Image, ImageFormat, ObjectFit, SharedString, Subscription, WeakEntity,
+    Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
+use crate::assets::icons;
+use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, align_row, justify, Align, AppState, Customizable};
+use crate::panel::{self, align_row, justify, Align, AppState, PanelSettings};
+use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
 use crate::selection::SelectionEvent;
 use crate::source::{self, ResolvedTrack, TrackSource};
 
 /// The cover panel's per-view config: what a saved layout restores, and
-/// what the customize window edits.
+/// what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct CoverConfig {
     #[serde(default)]
     pub source: TrackSource,
     #[serde(default)]
     pub align: Align,
+    /// The panel's palette override.
+    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
+    pub theme: PanelTheme,
 }
 
 /// One thing the panel can show. The fade runs between two of these.
@@ -242,12 +250,21 @@ impl CoverArtPanel {
     }
 }
 
-impl Customizable for CoverArtPanel {
+impl PanelSettings for CoverArtPanel {
     fn state(&self) -> AppState {
         self.state.clone()
     }
 
-    fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn pages(&self) -> &'static [&'static str] {
+        &["Content"]
+    }
+
+    fn page(
+        &mut self,
+        _page: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         div()
             .flex()
             .flex_col()
@@ -269,6 +286,15 @@ impl Customizable for CoverArtPanel {
                 cx,
             ))
             .into_any_element()
+    }
+
+    fn theme(&self) -> PanelTheme {
+        self.config.theme.clone()
+    }
+
+    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
+        self.config.theme = theme;
+        cx.notify();
     }
 }
 
@@ -325,31 +351,33 @@ impl Panel for CoverArtPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // The config block: the panel's quick entries and the customize
+        // The config block: the panel's quick entries and the settings
         // window, apart from the core panel items.
         let menu = self.config_menu(menu, cx);
-        let menu = panel::customize_item(menu, &cx.entity());
         let menu = menu.separator();
+        let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
         // because the copy takes the config along, like the transports'.
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Duplicate Panel").on_click(move |_, window, cx| {
-                let Some(this) = weak.upgrade() else { return };
-                let (state, config, tabs) = {
-                    let panel = this.read(cx);
-                    (
-                        panel.state.clone(),
-                        panel.config.clone(),
-                        panel.tab_panel.clone(),
-                    )
-                };
-                let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                    return;
-                };
-                let dup = cx.new(|cx| CoverArtPanel::new(state, config, cx));
-                tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-            }),
+            PopupMenuItem::new("Duplicate")
+                .icon(Icon::default().path(icons::COPY))
+                .on_click(move |_, window, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    let (state, config, tabs) = {
+                        let panel = this.read(cx);
+                        (
+                            panel.state.clone(),
+                            panel.config.clone(),
+                            panel.tab_panel.clone(),
+                        )
+                    };
+                    let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+                        return;
+                    };
+                    let dup = cx.new(|cx| CoverArtPanel::new(state, config, cx));
+                    tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+                }),
         );
         panel::popout_item(
             menu,
@@ -428,6 +456,13 @@ fn layer(slide: &Slide, opacity: f32, align: Align) -> AnyElement {
 
 impl Render for CoverArtPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.config.theme.clone();
+        panel::themed(&theme, || self.body(window, cx).into_any_element())
+    }
+}
+
+impl CoverArtPanel {
+    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         match self.resolved.get(self.config.source, &self.state, cx) {
             None => self.retarget(Slide::Empty, cx),
             Some(path) => {

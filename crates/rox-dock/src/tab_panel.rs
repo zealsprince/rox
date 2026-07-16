@@ -1119,17 +1119,22 @@ impl TabPanel {
                 .size_full()
             })
             // The panel body answers right-click with the same menu as its
-            // tab, so a lone chrome-less panel stays manageable. Bubble
-            // phase: panel content can claim right-clicks of its own first.
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener({
-                    let panel = active_panel.clone();
-                    move |this, event: &MouseDownEvent, window, cx| {
-                        this.open_panel_menu(panel.clone(), event.position, window, cx);
-                    }
-                }),
-            )
+            // tab, so a lone chrome-less panel stays manageable. A panel
+            // whose content serves context menus of its own opts out: the
+            // content's menu opens on the same bubble-phase right-click
+            // without stopping it, so answering here too would stack the
+            // panel dropdown on top of it.
+            .when(!active_panel.content_context_menu(cx), |this| {
+                this.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener({
+                        let panel = active_panel.clone();
+                        move |this, event: &MouseDownEvent, window, cx| {
+                            this.open_panel_menu(panel.clone(), event.position, window, cx);
+                        }
+                    }),
+                )
+            })
             .when(is_render_in_tabs, |this| this.pt_2())
             .child(
                 div()

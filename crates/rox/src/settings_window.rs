@@ -15,9 +15,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    canvas, div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, Div, Entity, Global,
-    Hsla, MouseButton, MouseDownEvent, PathPromptOptions, Pixels, ScrollHandle, SharedString,
-    Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
+    div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, Div, Entity, Global, Hsla,
+    MouseButton, PathPromptOptions, Pixels, ScrollHandle, SharedString, Subscription,
+    TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
@@ -30,33 +30,14 @@ use crate::design::tokens;
 use crate::panel::{self, AppState, ScrubState};
 use crate::panels::library::{Library, LibraryEvent};
 use crate::settings::{data_dir, settings_path, Settings};
-
-/// The scalar sliders' strip width; the percent readout rides beside it.
-const SLIDER_W: Pixels = px(140.);
-
-/// The sidebar's width, room for a page name and no more.
-const SIDEBAR_W: Pixels = px(140.);
-
-/// The narrowest a color cell renders whole: the swatch, its gap, and
-/// the longest role label. The grid fits as many columns as these allow,
-/// two at the window floor up to four when the window has the room.
-const COLOR_CELL_MIN_W: Pixels = px(150.);
+use crate::settings_ui::{
+    self, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
+};
 
 /// The folder table's fixed columns: the track counts and the remove
 /// control, sized to [`icon_button`]'s footprint so the header aligns.
 const TRACKS_COL_W: Pixels = px(64.);
 const ACTION_COL_W: Pixels = px(22.);
-
-/// The gap between a page's sections, a step over the row rhythm so a
-/// boundary reads as one.
-const SECTION_GAP: Pixels = px(20.);
-
-/// The floor under the window: the sidebar plus a colors row that still
-/// fits its labels, and enough height for a page to breathe.
-const MIN_SIZE: gpui::Size<Pixels> = gpui::Size {
-    width: px(560.),
-    height: px(400.),
-};
 
 /// The open settings window, if any: opening again focuses it instead
 /// of stacking a second editor over the same file.
@@ -80,7 +61,7 @@ pub fn open(state: AppState, cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(720.), px(520.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(MIN_SIZE),
+        window_min_size: Some(settings_ui::MIN_SIZE),
         titlebar: Some(TitlebarOptions {
             title: Some("rox - settings".into()),
             ..Default::default()
@@ -104,10 +85,15 @@ pub fn open(state: AppState, cx: &mut App) {
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Appearance,
+    Behavior,
     Library,
 }
 
-const PAGES: &[(Page, &str)] = &[(Page::Appearance, "Appearance"), (Page::Library, "Library")];
+const PAGES: &[(Page, &str)] = &[
+    (Page::Appearance, "Appearance"),
+    (Page::Behavior, "Behavior"),
+    (Page::Library, "Library"),
+];
 
 struct SettingsWindow {
     page: Page,
@@ -117,6 +103,7 @@ struct SettingsWindow {
     art_theming: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
+    restore_last_track: bool,
     /// One picker per palette role, in [`ROLES`] order.
     pickers: Vec<Entity<ColorPickerState>>,
     surface_scrub: ScrubState,
@@ -179,6 +166,7 @@ impl SettingsWindow {
             art_theming: settings.art_theming,
             surface_opacity: settings.surface_opacity,
             backdrop_strength: settings.backdrop_strength,
+            restore_last_track: settings.restore_last_track,
             pickers,
             surface_scrub: ScrubState::default(),
             backdrop_scrub: ScrubState::default(),
@@ -225,6 +213,14 @@ impl SettingsWindow {
         self.art_theming = on;
         palette::set_art_theming(on, cx);
         Settings::update(move |s| s.art_theming = on);
+        cx.notify();
+    }
+
+    /// The restore switch: straight into the file. Launch reads it there,
+    /// so the flip is live for the next start without touching playback.
+    fn set_restore_last_track(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.restore_last_track = on;
+        Settings::update(move |s| s.restore_last_track = on);
         cx.notify();
     }
 
@@ -323,71 +319,6 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// One scalar's slider: the shared slider chrome over a scrub strip,
-    /// applying live on click and drag, with the percent alongside.
-    fn slider(
-        &self,
-        scrub: &ScrubState,
-        value: f32,
-        apply: fn(&mut Self, f32, &mut Context<Self>),
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let entity = cx.entity();
-        let strip = div()
-            .w(SLIDER_W)
-            .h(tokens::CONTROL_H)
-            .flex_none()
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener({
-                    let scrub = scrub.clone();
-                    move |this: &mut Self, event: &MouseDownEvent, _, cx| {
-                        scrub.begin();
-                        if let Some(fraction) = scrub.fraction(event.position.x) {
-                            apply(this, fraction, cx);
-                        }
-                        cx.notify();
-                    }
-                }),
-            )
-            .child(
-                canvas(
-                    {
-                        let scrub = scrub.clone();
-                        move |bounds, _, _| scrub.set_bounds(bounds)
-                    },
-                    {
-                        let scrub = scrub.clone();
-                        move |bounds, _, window, _| {
-                            panel::paint_slider(value, false, bounds, window);
-                            panel::scrub_on_paint(&scrub, window, {
-                                let entity = entity.clone();
-                                move |fraction, cx| {
-                                    entity.update(cx, |this, cx| apply(this, fraction, cx));
-                                }
-                            });
-                        }
-                    },
-                )
-                .size_full(),
-            );
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_SM)
-            .child(strip)
-            .child(
-                div()
-                    .w(px(40.))
-                    .flex_none()
-                    .text_center()
-                    .text_color(palette::text_muted())
-                    .child(format!("{}%", (value * 100.0).round() as u32)),
-            )
-    }
-
     fn appearance_page(&self, columns: usize, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
@@ -412,7 +343,7 @@ impl SettingsWindow {
                     .child(panel::setting_row(
                         "surface opacity",
                         Some("how opaque the app's surfaces read over the backdrop"),
-                        self.slider(
+                        settings_ui::slider(
                             &self.surface_scrub,
                             self.surface_opacity,
                             Self::set_surface,
@@ -422,7 +353,7 @@ impl SettingsWindow {
                     .child(panel::setting_row(
                         "backdrop strength",
                         Some("how strongly the cover backdrop shows behind them"),
-                        self.slider(
+                        settings_ui::slider(
                             &self.backdrop_scrub,
                             self.backdrop_strength,
                             Self::set_backdrop,
@@ -431,6 +362,18 @@ impl SettingsWindow {
                     )),
             ))
             .child(self.colors_section(columns, cx))
+    }
+
+    fn behavior_page(&self, cx: &mut Context<Self>) -> Div {
+        div().flex().flex_col().gap(SECTION_GAP).child(section(
+            "startup",
+            None,
+            panel::setting_row(
+                "restore last track",
+                Some("launch with the last playing track loaded, paused where it left off"),
+                panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
+            ),
+        ))
     }
 
     /// One cell of the color grid: the picker with its label beside it,
@@ -456,22 +399,7 @@ impl SettingsWindow {
                 .m(px(-4.))
                 .into_any_element()
         };
-        div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_XS)
-            .child(control)
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(role.label),
-            )
+        settings_ui::color_cell(control, role.label, false, None)
     }
 
     fn colors_section(&self, columns: usize, cx: &mut Context<Self>) -> Div {
@@ -483,31 +411,10 @@ impl SettingsWindow {
                  and export saves them; turn it off above to edit them",
             ));
         }
-
-        // The grid: each listing group under its header, `columns` cells
-        // to a row, the last row padded so cells keep their width.
-        let mut i = 0;
-        while i < ROLES.len() {
-            let group = ROLES[i].group;
-            let end = ROLES[i..]
-                .iter()
-                .position(|role| role.group != group)
-                .map(|n| i + n)
-                .unwrap_or(ROLES.len());
-            body = body.child(header(group));
-            for row_start in (i..end).step_by(columns) {
-                let mut row = div().flex().flex_row().gap(tokens::SPACE_SM);
-                for j in row_start..row_start + columns {
-                    row = row.child(if j < end {
-                        self.color_cell(&ROLES[j], &self.pickers[j], locked)
-                    } else {
-                        div().flex_1()
-                    });
-                }
-                body = body.child(row);
-            }
-            i = end;
-        }
+        body = body.child(settings_ui::role_grid(columns, |j| {
+            self.color_cell(&ROLES[j], &self.pickers[j], locked)
+                .into_any_element()
+        }));
 
         // Import and reset lock with the rest of the editor: they change
         // the palette too. Export stays live; unlocked it saves the base
@@ -691,142 +598,24 @@ impl SettingsWindow {
             )
             .child(label)
     }
-
-    /// A sidebar row; the picked page reads like an active control.
-    fn nav_item(&self, page: Page, label: &'static str, cx: &mut Context<Self>) -> Div {
-        let picked = self.page == page;
-        div()
-            .px(tokens::SPACE_MD)
-            .py(tokens::SPACE_XS)
-            .rounded(tokens::RADIUS)
-            .cursor_pointer()
-            .when(picked, |d| d.bg(palette::bg_control_active()))
-            .when(!picked, |d| d.hover(|d| d.bg(palette::bg_menu_hover())))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.page = page;
-                    cx.notify();
-                }),
-            )
-            .child(label)
-    }
-}
-
-/// A header between setting groups, the palette listing's block names.
-fn header(label: &'static str) -> Div {
-    div()
-        .pt(tokens::SPACE_SM)
-        .text_xs()
-        .text_color(palette::text_muted())
-        .child(label)
-}
-
-/// A titled section of a page: the name over a hairline, an optional
-/// control riding the header's right edge, the rows under it.
-fn section(label: &'static str, trailing: Option<AnyElement>, body: impl IntoElement) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(tokens::SPACE_SM)
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .pb(tokens::SPACE_XS)
-                .border_b_1()
-                .border_color(palette::border())
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_muted())
-                        .child(label),
-                )
-                .when_some(trailing, |d, trailing| d.child(trailing)),
-        )
-        .child(body)
-}
-
-/// The settings window's text button, at the section header's scale
-/// where every one of them rides: an icon leading its label; inert ones
-/// dim and drop the click.
-fn small_button(
-    label: &'static str,
-    icon: &'static str,
-    inert: bool,
-    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    div()
-        .flex()
-        .flex_row()
-        .flex_none()
-        .items_center()
-        .gap(tokens::SPACE_XS)
-        .px(tokens::SPACE_SM)
-        .py(px(2.))
-        .text_xs()
-        .rounded(tokens::RADIUS)
-        .bg(palette::bg_control())
-        .map(|d| {
-            if inert {
-                d.opacity(0.5)
-            } else {
-                d.hover(|d| d.bg(palette::bg_control_hover()))
-                    .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, on_click)
-            }
-        })
-        .child(svg().path(icon).size(px(12.)).text_color(palette::text()))
-        .child(label)
-}
-
-/// A flat icon-only button for table rows: the glyph alone at rest, a
-/// soft pill behind it on hover, dimmed and inert like the text buttons.
-fn icon_button(
-    icon: &'static str,
-    inert: bool,
-    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    div()
-        .flex_none()
-        .p(tokens::SPACE_XS)
-        .rounded(tokens::RADIUS)
-        .map(|d| {
-            if inert {
-                d.opacity(0.5)
-            } else {
-                d.hover(|d| d.bg(palette::bg_control()))
-                    .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, on_click)
-            }
-        })
-        .child(svg().path(icon).size(px(14.)).text_color(palette::text()))
 }
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The color grid fits as many columns as whole cells fit the
-        // page: the window minus the sidebar and the body's insets.
-        let page_w = window.viewport_size().width - SIDEBAR_W - tokens::SPACE_MD * 2.;
-        let columns = usize::clamp((page_w / COLOR_CELL_MIN_W) as usize, 2, 4);
+        let columns = grid_columns(window);
 
-        let sidebar = div()
-            .w(SIDEBAR_W)
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_XS)
-            .p(tokens::SPACE_SM)
-            .bg(palette::bg_panel())
-            .border_r_1()
-            .border_color(palette::border())
-            .children(
-                PAGES
-                    .iter()
-                    .map(|(page, label)| self.nav_item(*page, label, cx)),
-            )
+        let sidebar = sidebar()
+            .children(PAGES.iter().map(|&(page, label)| {
+                settings_ui::nav_item(
+                    label,
+                    self.page == page,
+                    move |this: &mut Self, cx| {
+                        this.page = page;
+                        cx.notify();
+                    },
+                    cx,
+                )
+            }))
             // The escape hatches sink to the bottom: the raw file this
             // window edits and the folder it lives in.
             .child(div().flex_1())
@@ -835,6 +624,7 @@ impl Render for SettingsWindow {
 
         let page = match self.page {
             Page::Appearance => self.appearance_page(columns, cx),
+            Page::Behavior => self.behavior_page(cx),
             Page::Library => self.library_page(cx),
         };
 

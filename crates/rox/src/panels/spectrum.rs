@@ -13,17 +13,21 @@ use std::time::Instant;
 use gpui::{
     canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, relative, size,
     AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, Focusable, MouseButton,
-    MouseDownEvent, Rgba, SharedString, Size, Subscription, WeakEntity, Window,
+    MouseDownEvent, Rgba, SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use rox_viz::analysis::{log_bands, Analyzer, FFT_SIZE};
 use rox_viz::AudioFeed;
 
+use crate::assets::icons;
+use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, setting_row, toggle, AppState, Customizable, ScrubState};
+use crate::panel::{self, setting_row, toggle, AppState, PanelSettings, ScrubState};
+use crate::panel_settings;
 
 // Bars follow the shared visualizer rhythm (`tokens::BAR_W`, `BAR_GAP`);
 // the count collapses on narrow panels instead of thinning the bars, so a
@@ -85,6 +89,9 @@ pub struct SpectrumConfig {
     pub gradient: bool,
     /// Draw octave pitch markers (C1, C2, ...) across the analyzed range.
     pub labels: bool,
+    /// The panel's palette override.
+    #[serde(skip_serializing_if = "PanelTheme::is_empty")]
+    pub theme: PanelTheme,
 }
 
 impl Default for SpectrumConfig {
@@ -94,6 +101,7 @@ impl Default for SpectrumConfig {
             freq_hi: 16_000.0,
             gradient: false,
             labels: false,
+            theme: PanelTheme::default(),
         }
     }
 }
@@ -510,12 +518,21 @@ impl SpectrumPanel {
     }
 }
 
-impl Customizable for SpectrumPanel {
+impl PanelSettings for SpectrumPanel {
     fn state(&self) -> AppState {
         self.state.clone()
     }
 
-    fn customize(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn pages(&self) -> &'static [&'static str] {
+        &["Display"]
+    }
+
+    fn page(
+        &mut self,
+        _page: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .flex()
             .flex_col()
@@ -557,8 +574,13 @@ impl Customizable for SpectrumPanel {
             .into_any_element()
     }
 
-    fn customize_size(&self) -> Size<gpui::Pixels> {
-        size(px(400.), px(300.))
+    fn theme(&self) -> PanelTheme {
+        self.config.theme.clone()
+    }
+
+    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
+        self.config.theme = theme;
+        cx.notify();
     }
 }
 
@@ -615,31 +637,33 @@ impl Panel for SpectrumPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // The config block: the panel's quick toggles and the customize
+        // The config block: the panel's quick toggles and the settings
         // window, apart from the core panel items.
         let menu = self.config_menu(menu, cx);
-        let menu = panel::customize_item(menu, &cx.entity());
         let menu = menu.separator();
+        let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
         // because the copy takes the config along, like the cover panel's.
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Duplicate Panel").on_click(move |_, window, cx| {
-                let Some(this) = weak.upgrade() else { return };
-                let (state, config, tabs) = {
-                    let panel = this.read(cx);
-                    (
-                        panel.state.clone(),
-                        panel.config.clone(),
-                        panel.tab_panel.clone(),
-                    )
-                };
-                let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                    return;
-                };
-                let dup = cx.new(|cx| SpectrumPanel::new(state, config, cx));
-                tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-            }),
+            PopupMenuItem::new("Duplicate")
+                .icon(Icon::default().path(icons::COPY))
+                .on_click(move |_, window, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    let (state, config, tabs) = {
+                        let panel = this.read(cx);
+                        (
+                            panel.state.clone(),
+                            panel.config.clone(),
+                            panel.tab_panel.clone(),
+                        )
+                    };
+                    let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+                        return;
+                    };
+                    let dup = cx.new(|cx| SpectrumPanel::new(state, config, cx));
+                    tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+                }),
         );
         panel::popout_item(
             menu,
@@ -652,6 +676,13 @@ impl Panel for SpectrumPanel {
 
 impl Render for SpectrumPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.config.theme.clone();
+        panel::themed(&theme, || self.body(window, cx).into_any_element())
+    }
+}
+
+impl SpectrumPanel {
+    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         // Keep frames coming while a session runs (the tap only moves while
         // the player pumps it, but the position and pause state do not
         // notify) and while the bars are still falling. Otherwise: parked.

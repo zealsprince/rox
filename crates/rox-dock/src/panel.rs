@@ -170,6 +170,15 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
     fn inner_padding(&self, cx: &App) -> bool {
         true
     }
+
+    /// Whether the panel's content serves context menus of its own over the
+    /// body. True keeps the tab panel's body right-click out of the way, so
+    /// the content's menu never opens stacked under the panel dropdown; the
+    /// dropdown stays reachable from the tab and the toolbar. Default is
+    /// `false`: the body answers right-click with the panel dropdown.
+    fn content_context_menu(&self, cx: &App) -> bool {
+        false
+    }
 }
 
 /// The PanelView trait used to define the panel view.
@@ -195,6 +204,7 @@ pub trait PanelView: 'static + Send + Sync {
     fn focus_handle(&self, cx: &App) -> FocusHandle;
     fn dump(&self, cx: &App) -> PanelState;
     fn inner_padding(&self, cx: &App) -> bool;
+    fn content_context_menu(&self, cx: &App) -> bool;
 }
 
 impl<T: Panel> PanelView for Entity<T> {
@@ -283,6 +293,10 @@ impl<T: Panel> PanelView for Entity<T> {
 
     fn inner_padding(&self, cx: &App) -> bool {
         self.read(cx).inner_padding(cx)
+    }
+
+    fn content_context_menu(&self, cx: &App) -> bool {
+        self.read(cx).content_context_menu(cx)
     }
 }
 

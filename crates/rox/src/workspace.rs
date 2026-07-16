@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    actions, deferred, div, prelude::*, px, svg, App, Axis, Context, Div, Entity, FocusHandle,
-    FontFeatures, Global, KeyBinding, MouseButton, Subscription, Task, WeakEntity, Window,
-    WindowBounds,
+    actions, deferred, div, prelude::*, px, svg, App, Axis, Context, DismissEvent, Div, Entity,
+    FocusHandle, Focusable as _, FontFeatures, Global, KeyBinding, MouseButton, Subscription, Task,
+    WeakEntity, Window, WindowBounds,
 };
 use rox_dock::{
     register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo, PanelView,
@@ -32,10 +32,11 @@ use crate::panels::transport::{
     SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
     VolumeConfig, VolumePanel,
 };
-use crate::panels::waveform::WaveformPanel;
+use crate::panels::waveform::{WaveformConfig, WaveformPanel};
 use crate::player::Player;
+use crate::quick_play::QuickPlay;
 use crate::selection::Selection;
-use crate::settings::{Settings, WindowState};
+use crate::settings::{LastTrack, Settings, WindowState};
 
 const MENU_BAR_H: f32 = 30.0;
 
@@ -65,7 +66,14 @@ const TRANSPORT_ROW_H: f32 = 120.0;
 
 actions!(
     rox,
-    [TogglePlayback, SeekBackward, SeekForward, OpenSettings, Quit]
+    [
+        TogglePlayback,
+        SeekBackward,
+        SeekForward,
+        OpenSettings,
+        OpenQuickPlay,
+        Quit
+    ]
 );
 
 /// Bindings match key contexts along the focus path, so this scope holds
@@ -92,12 +100,21 @@ pub fn init(cx: &mut App) {
     } else {
         "ctrl-,"
     };
+    // The quick-play modal answers both the palette chord and the find
+    // chord; either habit lands in the same search.
+    let (quick_play_p, quick_play_f) = if cfg!(target_os = "macos") {
+        ("cmd-p", "cmd-f")
+    } else {
+        ("ctrl-p", "ctrl-f")
+    };
     cx.bind_keys([
         KeyBinding::new("space", TogglePlayback, PLAYBACK_KEY_SCOPE),
         KeyBinding::new("left", SeekBackward, PLAYBACK_KEY_SCOPE),
         KeyBinding::new("right", SeekForward, PLAYBACK_KEY_SCOPE),
         KeyBinding::new(settings_keys, OpenSettings, Some("Workspace")),
         KeyBinding::new("ctrl-i", OpenSettings, Some("Workspace")),
+        KeyBinding::new(quick_play_p, OpenQuickPlay, Some("Workspace")),
+        KeyBinding::new(quick_play_f, OpenQuickPlay, Some("Workspace")),
         KeyBinding::new(quit_keys, Quit, None),
     ]);
     // Fallback for windows without a workspace in the focus path (popped-out
@@ -132,15 +149,7 @@ fn register_panels(state: &AppState, cx: &mut App) {
     configured!("playback", TransportPanel);
     configured!("volume", VolumePanel);
     configured!("spectrum", SpectrumPanel);
-    macro_rules! stateless {
-        ($name:literal, $panel:ty) => {{
-            let s = state.clone();
-            register_panel(cx, $name, move |_, _, _, _, cx| {
-                Box::new(cx.new(|cx| <$panel>::new(s.clone(), cx)))
-            });
-        }};
-    }
-    stateless!("waveform", WaveformPanel);
+    configured!("waveform", WaveformPanel);
 }
 
 #[derive(Clone, Copy)]
@@ -265,6 +274,10 @@ pub struct Workspace {
     /// The debounce for layout saves; replacing it cancels the running
     /// timer, so only a quiet layout dumps.
     save_task: Option<Task<()>>,
+    /// The quick-play modal while it is up; dropped on dismiss.
+    quick_play: Option<Entity<QuickPlay>>,
+    /// Clears `quick_play` and hands focus back when the modal dismisses.
+    _quick_play_dismissed: Option<Subscription>,
     /// This window's slice of the backdrop: what it painted last, for
     /// retiring the texture on a new bake.
     backdrop: WindowBackdrop,
@@ -402,6 +415,28 @@ impl Workspace {
         let focus = cx.focus_handle();
         window.focus(&focus);
 
+        // The first workspace window is the launch, so it brings back what
+        // was playing: the saved id resolves against the library and loads
+        // paused at the saved position. A track gone from the library
+        // resolves to nothing and the start stays cold. New Window opens
+        // idle; its player is its own.
+        let settings = Settings::load();
+        if settings.restore_last_track && cx.default_global::<WorkspaceWindows>().0 == 0 {
+            if let Some(last) = settings.last_track {
+                let path = state
+                    .library
+                    .read(cx)
+                    .paths_for(&[last.id])
+                    .ok()
+                    .and_then(|mut paths| paths.pop());
+                if let Some(path) = path {
+                    state.player.update(cx, |player, cx| {
+                        player.restore(path, last.position_secs, cx)
+                    });
+                }
+            }
+        }
+
         let dock = cx.new(|cx| DockArea::new("rox", Some(LAYOUT_VERSION), window, cx));
         let weak_dock = dock.downgrade();
 
@@ -410,7 +445,7 @@ impl Workspace {
         // The saved layout when there is one it can trust: current version,
         // and a stack at the root, which a dumped root stack always is.
         // Anything else builds the default layout instead.
-        let restored = Settings::load()
+        let restored = settings
             .layout
             .and_then(|value| serde_json::from_value::<DockAreaState>(value).ok())
             .filter(|dump| {
@@ -496,6 +531,8 @@ impl Workspace {
             center_tabs,
             bottom_stack,
             save_task: None,
+            quick_play: None,
+            _quick_play_dismissed: None,
             backdrop: WindowBackdrop::default(),
             titled_track: None,
             _layout_changed,
@@ -503,6 +540,31 @@ impl Workspace {
             _library_changed,
             _backdrop_changed,
         }
+    }
+
+    /// Open the quick-play modal, or close it when it is already up. The
+    /// modal takes the keyboard through its search input; dismissal hands
+    /// focus back to the workspace so the playback keys keep working.
+    fn toggle_quick_play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quick_play.take().is_some() {
+            self._quick_play_dismissed = None;
+            window.focus(&self.focus);
+            cx.notify();
+            return;
+        }
+        let modal = cx.new(|cx| QuickPlay::new(self.state.clone(), window, cx));
+        self._quick_play_dismissed =
+            Some(
+                cx.subscribe_in(&modal, window, |this, _, _: &DismissEvent, window, cx| {
+                    this.quick_play = None;
+                    this._quick_play_dismissed = None;
+                    window.focus(&this.focus);
+                    cx.notify();
+                }),
+            );
+        window.focus(&modal.read(cx).focus_handle(cx));
+        self.quick_play = Some(modal);
+        cx.notify();
     }
 
     /// Keep the window title on the playing track: "artist - title - rox"
@@ -557,9 +619,20 @@ impl Workspace {
             height: frame.size.height.into(),
             maximized: matches!(bounds, WindowBounds::Maximized(_)),
         };
+        // The playing track rides along as its library id, for the launch
+        // restore. Nothing playing, or a file outside the library, clears
+        // it: the next launch starts cold.
+        let last_track = self.state.player.read(cx).now_playing().and_then(|now| {
+            let id = self.state.library.read(cx).id_for(&now.path)?;
+            Some(LastTrack {
+                id,
+                position_secs: now.position_secs,
+            })
+        });
         Settings::update(move |s| {
             s.layout = layout;
             s.window = Some(window_state);
+            s.last_track = last_track;
         });
     }
 
@@ -624,9 +697,7 @@ impl Workspace {
     fn run(&mut self, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             MenuAction::NewWindow => crate::open_workspace(cx),
-            MenuAction::OpenSettings => {
-                crate::settings_window::open(self.state.clone(), cx)
-            }
+            MenuAction::OpenSettings => crate::settings_window::open(self.state.clone(), cx),
             MenuAction::OpenLibrary => {
                 let panel = cx.new(|cx| {
                     LibraryPanel::new(self.state.clone(), LibraryConfig::default(), window, cx)
@@ -645,7 +716,9 @@ impl Workspace {
                 self.add_bottom(Arc::new(panel), window, cx);
             }
             MenuAction::OpenWaveform => {
-                let panel = cx.new(|cx| WaveformPanel::new(self.state.clone(), cx));
+                let panel = cx.new(|cx| {
+                    WaveformPanel::new(self.state.clone(), WaveformConfig::default(), cx)
+                });
                 self.add_bottom(Arc::new(panel), window, cx);
             }
             MenuAction::OpenTrackInfo => {
@@ -938,6 +1011,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
                 crate::settings_window::open(this.state.clone(), cx);
             }))
+            .on_action(cx.listener(|this, _: &OpenQuickPlay, window, cx| {
+                this.toggle_quick_play(window, cx);
+            }))
             // Quit bypasses the window close hook, so dump the layout and
             // frame here or a pending debounce and any window move since
             // the last save are lost.
@@ -971,5 +1047,24 @@ impl Render for Workspace {
                     .child(self.library_status(cx)),
             )
             .child(div().flex_1().min_h_0().child(self.dock.clone()))
+            // The quick-play modal floats over everything on an occluding
+            // layer, so a click outside it dismisses without also landing
+            // on whatever sits underneath.
+            .when_some(self.quick_play.clone(), |d, modal| {
+                d.child(
+                    deferred(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .occlude()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .pt(px(96.))
+                            .child(modal),
+                    )
+                    .with_priority(1),
+                )
+            })
     }
 }

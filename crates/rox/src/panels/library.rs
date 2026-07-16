@@ -14,12 +14,13 @@ use std::time::Duration;
 
 use gpui::{
     div, prelude::*, px, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, PathPromptOptions, SharedString, Stateful, Subscription, WeakEntity, Window,
+    KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Stateful, Subscription, WeakEntity,
+    Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableEvent, TableState};
-use gpui_component::{Sizable, Size};
+use gpui_component::{Icon, Side, Sizable, Size};
 use rox_dock::{Panel, PanelEvent, PanelInfo, PanelState, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -28,12 +29,15 @@ use rox_library::rusqlite::Connection;
 use rox_library::scanner::{self, ScanSummary};
 use rox_library::store;
 
+use crate::assets::icons;
+use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
 use crate::panel::{self, AppState};
+use crate::panel_settings;
 
 /// Play from a double-clicked row: at most this many tracks are queued
-/// behind it.
-const QUEUE_CAP: usize = 1000;
+/// behind it. The quick-play modal caps its queue the same way.
+pub(crate) const QUEUE_CAP: usize = 1000;
 
 /// How far page up and page down step the keyboard cursor.
 const PAGE_ROWS: isize = 25;
@@ -81,7 +85,7 @@ pub struct Library {
     /// open their own connections on the background executor.
     conn: Option<Connection>,
     projection: Option<Arc<Projection>>,
-    /// The canonical browse order: artist, album, track number.
+    /// The canonical browse order: album artist, album, track number.
     order: Arc<Vec<u32>>,
     /// The folders scans read from, in the order they were added,
     /// persisted in settings. Empty until a folder has been opened.
@@ -392,9 +396,12 @@ const COLUMNS: &[ColumnDef] = &[
     ColumnDef { key: "track", label: "#", default_width: 44., right: true, default_on: false, sort: SortKey::TrackNo },
     ColumnDef { key: "title", label: "title", default_width: 420., right: false, default_on: true, sort: SortKey::Title },
     ColumnDef { key: "artist", label: "artist", default_width: 220., right: false, default_on: true, sort: SortKey::Artist },
+    ColumnDef { key: "album_artist", label: "album artist", default_width: 220., right: false, default_on: false, sort: SortKey::AlbumArtist },
     ColumnDef { key: "album", label: "album", default_width: 220., right: false, default_on: true, sort: SortKey::Album },
     ColumnDef { key: "genre", label: "genre", default_width: 140., right: false, default_on: false, sort: SortKey::Genre },
     ColumnDef { key: "year", label: "year", default_width: 56., right: true, default_on: false, sort: SortKey::Year },
+    ColumnDef { key: "codec", label: "codec", default_width: 64., right: false, default_on: false, sort: SortKey::Codec },
+    ColumnDef { key: "bitrate", label: "kbps", default_width: 64., right: true, default_on: false, sort: SortKey::Bitrate },
     ColumnDef { key: "duration", label: "time", default_width: 64., right: true, default_on: true, sort: SortKey::Duration },
 ];
 
@@ -434,6 +441,20 @@ pub enum Density {
     Comfortable,
 }
 
+/// How the canonical browse order breaks into album groups (keyed by
+/// album artist and album). Compact spends one row per break, expanded
+/// two: the album artist and year, then the album with the group's track
+/// count and total time. Searching or sorting by a column always renders
+/// flat, whatever this says.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Headers {
+    Off,
+    Compact,
+    #[default]
+    Expanded,
+}
+
 impl Density {
     fn size(self) -> Size {
         match self {
@@ -453,6 +474,9 @@ pub struct LibraryConfig {
     /// The track list's row height.
     #[serde(default)]
     pub density: Density,
+    /// How the canonical order shows its group breaks.
+    #[serde(default)]
+    pub headers: Headers,
     /// The shown columns in display order, each with its width. Empty
     /// restores the registry default set. Named apart from the old
     /// index-keyed `columns` field so pre-registry layouts drop their
@@ -460,11 +484,14 @@ pub struct LibraryConfig {
     #[serde(default)]
     pub column_layout: Vec<ColumnSpec>,
     /// The sorted column's registry key. None browses the canonical
-    /// artist, album, track order.
+    /// album artist, album, track order.
     #[serde(default)]
     pub sort_key: Option<String>,
     #[serde(default)]
     pub sort_desc: bool,
+    /// The panel's palette override.
+    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
+    pub theme: PanelTheme,
 }
 
 /// Build the table columns from a saved layout (or the default set),
@@ -501,6 +528,108 @@ fn sort_key(key: &str) -> Option<SortKey> {
     column_def(key).map(|def| def.sort)
 }
 
+/// One display row of the track list: a track from the projection, or a
+/// line of the group header opening the artist/album run that follows it.
+/// Headers are presentation of the canonical order only - search hits and
+/// column sorts render flat - and they live in the same index space as
+/// tracks, so the virtualized table scrolls them like any row. The table
+/// draws every row one fixed height, so the expanded header block is two
+/// rows, each drawing its own line.
+#[derive(Clone, Copy, PartialEq)]
+enum Row {
+    Track(u32),
+    /// The group's name line, indexing [`TrackTable::groups`].
+    Header(u32),
+    /// The group's album and stats line under an expanded header.
+    Meta(u32),
+}
+
+/// One artist/album group of the current view: what its header rows draw.
+/// The name, year, and genre resolve through the first track.
+struct Group {
+    first: u32,
+    tracks: u32,
+    total_ms: u64,
+    /// The group's codec symbol while every track agrees; None once two
+    /// differ, and the meta line drops it.
+    codec: Option<u32>,
+    /// The bitrate spread over tracks that carry one, in kbps; both 0 when
+    /// none does.
+    min_kbps: u16,
+    max_kbps: u16,
+}
+
+/// The canonical order with a header block opening every album run: one
+/// row compact, name and stats rows expanded. Groups break on the album
+/// artist, not the track artist, so a compilation stays one run with its
+/// per-track artists inside. Breaks compare interned symbols and the
+/// stats are two integer sums, so the walk stays cheap and runs once per
+/// view swap, never while scrolling.
+fn group_rows(order: &[u32], projection: &Projection, expanded: bool) -> (Vec<Row>, Vec<Group>) {
+    let mut rows = Vec::with_capacity(order.len() + order.len() / 8);
+    let mut groups: Vec<Group> = Vec::new();
+    let mut last = None;
+    for &row in order {
+        let key = (
+            projection.album_artist[row as usize],
+            projection.album[row as usize],
+        );
+        if last != Some(key) {
+            let g = groups.len() as u32;
+            groups.push(Group {
+                first: row,
+                tracks: 0,
+                total_ms: 0,
+                codec: Some(projection.codec[row as usize]),
+                min_kbps: 0,
+                max_kbps: 0,
+            });
+            rows.push(Row::Header(g));
+            if expanded {
+                rows.push(Row::Meta(g));
+            }
+            last = Some(key);
+        }
+        let group = groups.last_mut().unwrap();
+        group.tracks += 1;
+        group.total_ms += projection.duration_ms[row as usize] as u64;
+        if group.codec != Some(projection.codec[row as usize]) {
+            group.codec = None;
+        }
+        let kbps = projection.bitrate_kbps[row as usize];
+        if kbps > 0 {
+            group.min_kbps = if group.min_kbps == 0 {
+                kbps
+            } else {
+                group.min_kbps.min(kbps)
+            };
+            group.max_kbps = group.max_kbps.max(kbps);
+        }
+        rows.push(Row::Track(row));
+    }
+    (rows, groups)
+}
+
+/// A group's codec and bitrate stat: "mp3 320 kbps" when everything
+/// agrees, the kbps a range when tracks spread, either half alone when
+/// the other is mixed or missing, empty when both are.
+fn group_quality(group: &Group, projection: &Projection) -> String {
+    let codec = group
+        .codec
+        .map(|sym| projection.codecs.strings[sym as usize].as_str())
+        .unwrap_or("");
+    let kbps = match (group.min_kbps, group.max_kbps) {
+        (0, _) => String::new(),
+        (min, max) if min == max => format!("{min} kbps"),
+        (min, max) => format!("{min}-{max} kbps"),
+    };
+    match (codec.is_empty(), kbps.is_empty()) {
+        (false, false) => format!("{codec} {kbps}"),
+        (false, true) => codec.to_string(),
+        _ => kbps,
+    }
+}
+
 /// The table delegate: the column set and the rows one panel displays.
 /// Lives inside the panel's `TableState`; the panel swaps `view` when the
 /// query or the catalog changes.
@@ -508,11 +637,20 @@ struct TrackTable {
     state: AppState,
     /// The owning panel, for dispatching context menu actions back to it.
     panel: WeakEntity<LibraryPanel>,
-    /// Rows currently displayed: the canonical order, or search hits,
-    /// re-sorted when a column sort is active.
-    view: Arc<Vec<u32>>,
-    /// Selected rows as indices into `view`. Cleared when the view swaps,
-    /// since the indices point elsewhere afterwards.
+    /// Rows currently displayed: the canonical order broken by group
+    /// headers, or flat search hits, re-sorted when a column sort is
+    /// active.
+    view: Arc<Vec<Row>>,
+    /// The current view's groups, what header rows index; empty when the
+    /// view renders flat. Swapped together with `view`, always.
+    groups: Vec<Group>,
+    /// How the canonical order breaks into groups. Lives on the delegate
+    /// because the view computation reads it; the panel reads it back for
+    /// the layout dump.
+    headers: Headers,
+    /// Selected rows as indices into `view`, track rows only - headers
+    /// take no selection. Cleared when the view swaps, since the indices
+    /// point elsewhere afterwards.
     selected: HashSet<usize>,
     /// Where the next shift-click extends from: the last plain or
     /// toggle-clicked row.
@@ -532,10 +670,185 @@ struct TrackTable {
 }
 
 impl TrackTable {
+    /// The track a view row holds; None for a header row.
+    fn track_at(&self, ix: usize) -> Option<u32> {
+        match self.view.get(ix) {
+            Some(&Row::Track(row)) => Some(row),
+            _ => None,
+        }
+    }
+
+    /// The nearest track row from `ix` heading `forward`, bouncing off the
+    /// ends; None only when the view holds no tracks. Cursor moves route
+    /// through this, so the cursor never lands on a header.
+    fn snap_to_track(&self, ix: usize, forward: bool) -> Option<usize> {
+        let len = self.view.len();
+        if len == 0 {
+            return None;
+        }
+        let ix = ix.min(len - 1);
+        let ahead = || (ix..len).find(|&i| self.track_at(i).is_some());
+        let behind = || (0..=ix).rev().find(|&i| self.track_at(i).is_some());
+        if forward {
+            ahead().or_else(behind)
+        } else {
+            behind().or_else(ahead)
+        }
+    }
+
+    /// The group's name line: compact packs the album artist, album, and
+    /// year into its one row; expanded gives the album artist the line,
+    /// larger, the year on the right, and hands the album to the meta
+    /// line under it.
+    fn render_group_header(&self, row_ix: usize, g: u32, cx: &App) -> Stateful<Div> {
+        let expanded = self.headers == Headers::Expanded;
+        let (artist, album, year) = match (
+            self.groups.get(g as usize),
+            self.state.library.read(cx).projection(),
+        ) {
+            (Some(group), Some(projection)) => {
+                let v = projection.resolve(group.first);
+                // Rows migrated from before the album artist column carry
+                // an empty one until a rescan re-reads their tags; the
+                // first track's artist stands in rather than "unknown".
+                let name = if v.album_artist.is_empty() {
+                    v.artist
+                } else {
+                    v.album_artist
+                };
+                (name.to_string(), v.album.to_string(), v.year)
+            }
+            _ => Default::default(),
+        };
+        let unknown = artist.is_empty() && (expanded || album.is_empty());
+        let artist = (!artist.is_empty()).then(|| SharedString::from(artist));
+        let album = (!expanded && !album.is_empty()).then(|| SharedString::from(album));
+        div()
+            .id(("row", row_ix))
+            .bg(palette::bg_elevated())
+            // The expanded block reads as one: no border between its name
+            // and meta lines. The width stays, so rows keep their height.
+            .when(expanded, |d| d.border_color(gpui::transparent_black()))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .px(tokens::SPACE_SM)
+                    .overflow_hidden()
+                    .when(unknown, |d| {
+                        d.child(
+                            div()
+                                .flex_1()
+                                .text_color(palette::text_muted())
+                                .child("unknown"),
+                        )
+                    })
+                    .when_some(artist, |d, artist| {
+                        d.child(
+                            div()
+                                .truncate()
+                                .text_color(palette::text_bright())
+                                .map(|d| {
+                                    if expanded {
+                                        d.flex_1().text_lg()
+                                    } else {
+                                        d.flex_none()
+                                    }
+                                })
+                                .child(artist),
+                        )
+                    })
+                    .when_some(album, |d, album| {
+                        d.child(
+                            div()
+                                .truncate()
+                                .text_color(palette::text_secondary())
+                                .child(album),
+                        )
+                    })
+                    .when(year != 0, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_color(if expanded {
+                                    palette::text_secondary()
+                                } else {
+                                    palette::text_muted()
+                                })
+                                .child(fmt_num(year)),
+                        )
+                    }),
+            )
+    }
+
+    /// The expanded header's second line: the album, then the group's
+    /// genre, codec and bitrate, track count, and total time on the right.
+    fn render_group_meta(&self, row_ix: usize, g: u32, cx: &App) -> Stateful<Div> {
+        let (album, genre, quality, tracks, total_ms) = match (
+            self.groups.get(g as usize),
+            self.state.library.read(cx).projection(),
+        ) {
+            (Some(group), Some(projection)) => {
+                let v = projection.resolve(group.first);
+                (
+                    v.album.to_string(),
+                    v.genre.to_string(),
+                    group_quality(group, projection),
+                    group.tracks,
+                    group.total_ms,
+                )
+            }
+            _ => Default::default(),
+        };
+        let mut stats = Vec::new();
+        if !genre.is_empty() {
+            stats.push(genre);
+        }
+        if !quality.is_empty() {
+            stats.push(quality);
+        }
+        stats.push(if tracks == 1 {
+            "1 track".to_string()
+        } else {
+            format!("{tracks} tracks")
+        });
+        stats.push(fmt_total(total_ms));
+        div().id(("row", row_ix)).bg(palette::bg_elevated()).child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_SM)
+                .px(tokens::SPACE_SM)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex_1()
+                        .truncate()
+                        .text_color(palette::text_secondary())
+                        .child(SharedString::from(album)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(palette::text_muted())
+                        .child(SharedString::from(stats.join(" | "))),
+                ),
+        )
+    }
+
     /// The next row whose leading text starts with the typed prefix, from
     /// the cursor on, wrapping. The leading text follows the active sort:
-    /// its column when it has text, artist for the canonical order and
-    /// for sorts without one (duration). ASCII-insensitive, like search.
+    /// its column when it has text, the album artist for the canonical
+    /// order (what the grouping runs on), the track artist for sorts
+    /// without text of their own (duration). ASCII-insensitive, like
+    /// search.
     fn find_prefix(&self, prefix: &str, include_current: bool, cx: &App) -> Option<usize> {
         let library = self.state.library.read(cx);
         let projection = library.projection()?;
@@ -550,11 +863,16 @@ impl TrackTable {
             None => 0,
         };
         (0..len).map(|i| (start + i) % len).find(|&ix| {
-            let v = projection.resolve(self.view[ix]);
+            let Some(row) = self.track_at(ix) else {
+                return false;
+            };
+            let v = projection.resolve(row);
             let text = match field {
                 Some("title") => v.title,
                 Some("album") => v.album,
-                _ => v.artist,
+                Some("album_artist") | None => v.album_artist,
+                Some("codec") => v.codec,
+                Some(_) => v.artist,
             };
             text.get(..prefix.len())
                 .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
@@ -569,17 +887,19 @@ impl TrackTable {
             let projection = library.projection()?;
             self.view
                 .iter()
-                .position(|&row| projection.db_id[row as usize] == id)
+                .position(|&row| matches!(row, Row::Track(r) if projection.db_id[r as usize] == id))
         });
         self.playing_row = row;
     }
 
     /// The rows this panel shows: the canonical order or search hits, put
-    /// through the active column sort when one is set.
-    fn compute_view(&self, query: &str, cx: &App) -> Arc<Vec<u32>> {
+    /// through the active column sort when one is set. Only the canonical
+    /// order gets grouping headers; a query or a column sort breaks the
+    /// artist/album runs the headers name, so those views render flat.
+    fn compute_view(&self, query: &str, cx: &App) -> (Arc<Vec<Row>>, Vec<Group>) {
         let library = self.state.library.read(cx);
         let Some(projection) = library.projection() else {
-            return Arc::new(Vec::new());
+            return (Arc::new(Vec::new()), Vec::new());
         };
         let base = if query.is_empty() {
             library.order()
@@ -591,9 +911,37 @@ impl TrackTable {
             .as_ref()
             .and_then(|(key, desc)| sort_key(key).map(|key| (key, *desc)));
         match active {
-            Some((key, desc)) => Arc::new(projection.sort_view(&base, key, desc)),
-            None => base,
+            Some((key, desc)) => (
+                Arc::new(
+                    projection
+                        .sort_view(&base, key, desc)
+                        .into_iter()
+                        .map(Row::Track)
+                        .collect(),
+                ),
+                Vec::new(),
+            ),
+            None if query.is_empty() && self.headers != Headers::Off => {
+                let (rows, groups) =
+                    group_rows(&base, projection, self.headers == Headers::Expanded);
+                (Arc::new(rows), groups)
+            }
+            None => (
+                Arc::new(base.iter().copied().map(Row::Track).collect()),
+                Vec::new(),
+            ),
         }
+    }
+
+    /// Append the owning panel's dropdown items to a row context menu.
+    /// Called while the table entity is mid-update, so the panel's
+    /// `dropdown_menu` must not read the table entity at build time (its
+    /// click handlers may, they run after the update ends).
+    fn panel_menu(&self, menu: PopupMenu, window: &mut Window, cx: &mut App) -> PopupMenu {
+        let Some(panel) = self.panel.upgrade() else {
+            return menu;
+        };
+        panel.update(cx, |panel, cx| panel.dropdown_menu(menu, window, cx))
     }
 
     /// Resolve the selected rows to db ids in view order and publish them
@@ -606,8 +954,8 @@ impl TrackTable {
         rows.sort_unstable();
         let ids: Vec<i64> = rows
             .iter()
-            .filter_map(|&ix| self.view.get(ix))
-            .map(|&row| projection.db_id[row as usize])
+            .filter_map(|&ix| self.track_at(ix))
+            .map(|row| projection.db_id[row as usize])
             .collect();
         self.state
             .selection
@@ -654,7 +1002,9 @@ impl TableDelegate for TrackTable {
             .upgrade()
             .map(|panel| panel.read(cx).query.clone())
             .unwrap_or_default();
-        self.view = self.compute_view(&query, cx);
+        let (view, groups) = self.compute_view(&query, cx);
+        self.view = view;
+        self.groups = groups;
         // The old indices point elsewhere in the new order, same as any
         // view swap. The widget's own focus row does too, but it can only
         // be cleared once the table's update ends.
@@ -673,8 +1023,17 @@ impl TableDelegate for TrackTable {
         &mut self,
         row_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
+        // A group header line is one full-width strip over emptied cells,
+        // since the table has no row-spanning cell. It hangs off the row
+        // itself, outside the horizontally scrolled cell region, so the
+        // title stays put when wide column sets scroll sideways.
+        match self.view.get(row_ix) {
+            Some(&Row::Header(g)) => return self.render_group_header(row_ix, g, cx),
+            Some(&Row::Meta(g)) => return self.render_group_meta(row_ix, g, cx),
+            _ => {}
+        }
         // The same wash the widget theme paints its own focus row with, so
         // multi-selected rows read as one set. The playing row wears a
         // fainter cut of it, so a selection still reads over the mark.
@@ -690,14 +1049,22 @@ impl TableDelegate for TrackTable {
 
     /// The row context menu. A right click inside the selection acts on the
     /// whole set; outside it, the click reselects just that row first, so
-    /// the menu always acts on what is highlighted.
+    /// the menu always acts on what is highlighted. The panel's own menu
+    /// rides along after the track actions: the panel body hands its
+    /// right-click to the table (`content_context_menu`), so this menu is
+    /// the only one a click over the list opens, and it must not dead-end
+    /// at Play. Headers get the panel menu alone; acting by group waits
+    /// until headers are more than presentation.
     fn context_menu(
         &mut self,
         row_ix: usize,
         menu: PopupMenu,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
+        if self.track_at(row_ix).is_none() {
+            return self.panel_menu(menu, window, cx);
+        }
         if !self.selected.contains(&row_ix) {
             self.selected = HashSet::from([row_ix]);
             self.anchor = Some(row_ix);
@@ -707,23 +1074,28 @@ impl TableDelegate for TrackTable {
         let mut rows: Vec<usize> = self.selected.iter().copied().collect();
         rows.sort_unstable();
         let panel = self.panel.clone();
-        if rows.len() > 1 {
+        let menu = if rows.len() > 1 {
             menu.item(
-                PopupMenuItem::new(format!("Play {} Tracks", rows.len())).on_click(
-                    move |_, _, cx| {
+                PopupMenuItem::new(format!("Play {} Tracks", rows.len()))
+                    .icon(Icon::default().path(icons::PLAY))
+                    .on_click(move |_, _, cx| {
                         if let Some(panel) = panel.upgrade() {
                             panel.update(cx, |panel, cx| panel.play_rows(rows.clone(), cx));
                         }
-                    },
-                ),
+                    }),
             )
         } else {
-            menu.item(PopupMenuItem::new("Play").on_click(move |_, _, cx| {
-                if let Some(panel) = panel.upgrade() {
-                    panel.update(cx, |panel, cx| panel.play_from(row_ix, cx));
-                }
-            }))
-        }
+            menu.item(
+                PopupMenuItem::new("Play")
+                    .icon(Icon::default().path(icons::PLAY))
+                    .on_click(move |_, _, cx| {
+                        if let Some(panel) = panel.upgrade() {
+                            panel.update(cx, |panel, cx| panel.play_from(row_ix, cx));
+                        }
+                    }),
+            )
+        };
+        self.panel_menu(menu.separator(), window, cx)
     }
 
     fn render_td(
@@ -733,7 +1105,8 @@ impl TableDelegate for TrackTable {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        let Some(&row) = self.view.get(row_ix) else {
+        // Header rows draw in render_tr; their cells stay empty.
+        let Some(row) = self.track_at(row_ix) else {
             return div().into_any_element();
         };
         let Some(projection) = self.state.library.read(cx).projection().cloned() else {
@@ -753,6 +1126,9 @@ impl TableDelegate for TrackTable {
             "artist" => cell
                 .text_color(palette::text_secondary())
                 .child(SharedString::from(v.artist.to_string())),
+            "album_artist" => cell
+                .text_color(palette::text_secondary())
+                .child(SharedString::from(v.album_artist.to_string())),
             "album" => cell
                 .text_color(palette::text_secondary())
                 .child(SharedString::from(v.album.to_string())),
@@ -762,6 +1138,12 @@ impl TableDelegate for TrackTable {
             "year" => cell
                 .text_color(palette::text_muted())
                 .child(fmt_num(v.year)),
+            "codec" => cell
+                .text_color(palette::text_muted())
+                .child(SharedString::from(v.codec.to_string())),
+            "bitrate" => cell
+                .text_color(palette::text_muted())
+                .child(fmt_num(v.bitrate_kbps)),
             "duration" => cell
                 .text_color(palette::text_muted())
                 .child(SharedString::from(fmt_ms(v.duration_ms))),
@@ -824,6 +1206,9 @@ pub struct LibraryPanel {
     type_ahead_at: Option<std::time::Instant>,
     /// The track list's row height, applied on the table each render.
     density: Density,
+    /// The panel's palette override, live for the render and carried by
+    /// the config dump like every other view knob.
+    theme: PanelTheme,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// Watches the hosting tab panel: whether this panel is solo decides
@@ -858,6 +1243,8 @@ impl LibraryPanel {
             state: state.clone(),
             panel: cx.weak_entity(),
             view: Arc::new(Vec::new()),
+            groups: Vec::new(),
+            headers: config.headers,
             selected: HashSet::new(),
             anchor: None,
             cursor: None,
@@ -894,6 +1281,7 @@ impl LibraryPanel {
             type_ahead: String::new(),
             type_ahead_at: None,
             density: config.density,
+            theme: config.theme,
             tab_panel: None,
             _tabs_changed: None,
             _library_changed,
@@ -953,11 +1341,19 @@ impl LibraryPanel {
             "down" => self.move_cursor(1, shift, cx),
             "pageup" => self.move_cursor(-PAGE_ROWS, shift, cx),
             "pagedown" => self.move_cursor(PAGE_ROWS, shift, cx),
-            "home" => self.set_cursor(0, shift, cx),
+            // The edges snap inward past a leading header.
+            "home" => {
+                if let Some(ix) = self.table.read(cx).delegate().snap_to_track(0, true) {
+                    self.set_cursor(ix, shift, cx);
+                }
+            }
             "end" => {
-                let len = self.table.read(cx).delegate().view.len();
-                if len > 0 {
-                    self.set_cursor(len - 1, shift, cx);
+                let target = {
+                    let delegate = self.table.read(cx).delegate();
+                    delegate.snap_to_track(delegate.view.len().saturating_sub(1), false)
+                };
+                if let Some(ix) = target {
+                    self.set_cursor(ix, shift, cx);
                 }
             }
             "enter" => self.play_selection(cx),
@@ -1004,14 +1400,18 @@ impl LibraryPanel {
     fn set_cursor(&mut self, ix: usize, extend: bool, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
-            if ix >= delegate.view.len() {
+            if delegate.track_at(ix).is_none() {
                 return;
             }
             delegate.cursor = Some(ix);
             if extend {
                 let anchor = delegate.anchor.unwrap_or(ix);
                 let (lo, hi) = (anchor.min(ix), anchor.max(ix));
-                delegate.selected = (lo..=hi).collect();
+                // A range spanning a group break selects its tracks only.
+                let range = (lo..=hi)
+                    .filter(|&i| delegate.track_at(i).is_some())
+                    .collect();
+                delegate.selected = range;
             } else {
                 delegate.selected = HashSet::from([ix]);
                 delegate.anchor = Some(ix);
@@ -1023,7 +1423,8 @@ impl LibraryPanel {
     }
 
     /// Step the cursor; the first press with no cursor lands on the edge
-    /// the step heads toward.
+    /// the step heads toward. A step landing on a header overshoots it the
+    /// way it was heading, bouncing back at the ends.
     fn move_cursor(&mut self, delta: isize, extend: bool, cx: &mut Context<Self>) {
         let target = {
             let delegate = self.table.read(cx).delegate();
@@ -1031,13 +1432,16 @@ impl LibraryPanel {
             if len == 0 {
                 return;
             }
-            match delegate.cursor {
+            let raw = match delegate.cursor {
                 None if delta >= 0 => 0,
                 None => len - 1,
                 Some(cursor) => (cursor as isize + delta).clamp(0, len as isize - 1) as usize,
-            }
+            };
+            delegate.snap_to_track(raw, delta >= 0)
         };
-        self.set_cursor(target, extend, cx);
+        if let Some(target) = target {
+            self.set_cursor(target, extend, cx);
+        }
     }
 
     /// Enter: a multi-selection plays exactly itself, a lone cursor plays
@@ -1071,9 +1475,10 @@ impl LibraryPanel {
             // Selection indices point into the old view; drop them along
             // with the widget's own focus row. The shared selection keeps
             // the last explicit pick, a view refresh is not one.
-            let view = table.delegate().compute_view(&query, cx);
+            let (view, groups) = table.delegate().compute_view(&query, cx);
             let delegate = table.delegate_mut();
             delegate.view = view;
+            delegate.groups = groups;
             delegate.selected.clear();
             delegate.anchor = None;
             delegate.cursor = None;
@@ -1099,13 +1504,24 @@ impl LibraryPanel {
             TableEvent::SelectRow(ix) => {
                 window.focus(&self.focus);
                 let ix = *ix;
+                // A header row takes no selection; drop the widget's own
+                // focus row so the click leaves no mark on it.
+                if self.table.read(cx).delegate().track_at(ix).is_none() {
+                    self.table.update(cx, |table, cx| table.clear_selection(cx));
+                    return;
+                }
                 let modifiers = window.modifiers();
                 self.table.update(cx, |table, cx| {
                     let delegate = table.delegate_mut();
                     if modifiers.shift {
                         let anchor = delegate.anchor.unwrap_or(ix);
                         let (lo, hi) = (anchor.min(ix), anchor.max(ix));
-                        delegate.selected = (lo..=hi).collect();
+                        // Tracks only across a group break, like the
+                        // keyboard's shift-extend.
+                        let range = (lo..=hi)
+                            .filter(|&i| delegate.track_at(i).is_some())
+                            .collect();
+                        delegate.selected = range;
                     } else if modifiers.secondary() {
                         if !delegate.selected.insert(ix) {
                             delegate.selected.remove(&ix);
@@ -1124,8 +1540,11 @@ impl LibraryPanel {
                 });
             }
             // The double click is what plays, leaving single clicks free
-            // to select.
-            TableEvent::DoubleClickedRow(ix) => {
+            // to select. Headers play nothing; acting by group waits
+            // until headers are more than presentation.
+            TableEvent::DoubleClickedRow(ix)
+                if self.table.read(cx).delegate().track_at(*ix).is_some() =>
+            {
                 self.play_from(*ix, cx);
             }
             // Written back into the delegate's columns: refresh() re-reads
@@ -1170,9 +1589,11 @@ impl LibraryPanel {
         LibraryConfig {
             query: self.query.clone(),
             density: self.density,
+            headers: self.table.read(cx).delegate().headers,
             column_layout: self.column_specs(cx),
             sort_key: sort.as_ref().map(|(key, _)| key.to_string()),
             sort_desc: sort.is_some_and(|(_, desc)| desc),
+            theme: self.theme.clone(),
         }
     }
 
@@ -1209,6 +1630,56 @@ impl LibraryPanel {
             .collect()
     }
 
+    /// The customize window's column picker: one chip per registry column,
+    /// filled while shown, plus a reset. Multi-select, so it wraps chips
+    /// instead of using the exclusive segmented control.
+    fn column_chips(&self, cx: &mut Context<Self>) -> Div {
+        let shown = self.shown_columns(cx);
+        let mut chips = div().flex().flex_row().flex_wrap().gap(tokens::SPACE_XS);
+        for def in COLUMNS {
+            let key = def.key;
+            let on = shown.contains(key);
+            chips = chips.child(
+                div()
+                    .px(tokens::SPACE_SM)
+                    .py(tokens::SPACE_XS)
+                    .rounded(tokens::RADIUS)
+                    .bg(if on {
+                        palette::accent()
+                    } else {
+                        palette::bg_control()
+                    })
+                    .text_color(if on {
+                        palette::text_on_accent()
+                    } else {
+                        palette::text()
+                    })
+                    .when(!on, |d| d.hover(|d| d.bg(palette::bg_control_hover())))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| this.toggle_column(key, cx)),
+                    )
+                    .child(def.label),
+            );
+        }
+        chips.child(
+            div()
+                .px(tokens::SPACE_SM)
+                .py(tokens::SPACE_XS)
+                .rounded(tokens::RADIUS)
+                .bg(palette::bg_control())
+                .text_color(palette::text_muted())
+                .hover(|d| d.bg(palette::bg_control_hover()))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.reset_columns(cx)),
+                )
+                .child("reset"),
+        )
+    }
+
     /// Restore the registry's default visible set and order.
     fn reset_columns(&mut self, cx: &mut Context<Self>) {
         let sort = self.table.read(cx).delegate().sort.clone();
@@ -1229,13 +1700,16 @@ impl LibraryPanel {
     }
 
     /// Queue the double-clicked row and what follows it in the current
-    /// view order.
+    /// view order. Headers pass under the cap, so it counts tracks.
     fn play_from(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let end = {
-            let view = &self.table.read(cx).delegate().view;
-            (ix + QUEUE_CAP).min(view.len())
+        let rows: Vec<usize> = {
+            let delegate = self.table.read(cx).delegate();
+            (ix..delegate.view.len())
+                .filter(|&i| delegate.track_at(i).is_some())
+                .take(QUEUE_CAP)
+                .collect()
         };
-        self.play_rows((ix..end).collect(), cx);
+        self.play_rows(rows, cx);
     }
 
     /// Resolve view rows to paths and queue them on the shared player.
@@ -1248,8 +1722,10 @@ impl LibraryPanel {
             };
             let ids: Vec<i64> = rows
                 .into_iter()
-                .filter_map(|ix| view.get(ix))
-                .map(|&row| projection.db_id[row as usize])
+                .filter_map(|ix| match view.get(ix) {
+                    Some(&Row::Track(row)) => Some(projection.db_id[row as usize]),
+                    _ => None,
+                })
                 .collect();
             library.paths_for(&ids)
         };
@@ -1359,6 +1835,19 @@ impl LibraryPanel {
         self.refresh_title_bar(cx);
     }
 
+    /// Set the header style and rebuild the view; persisted on the next
+    /// layout dump.
+    fn set_headers(&mut self, headers: Headers, cx: &mut Context<Self>) {
+        if self.table.read(cx).delegate().headers == headers {
+            return;
+        }
+        self.table
+            .update(cx, |table, _| table.delegate_mut().headers = headers);
+        self.refresh_view(cx);
+        cx.notify();
+        self.refresh_title_bar(cx);
+    }
+
     fn empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("library-empty")
@@ -1376,6 +1865,71 @@ impl LibraryPanel {
                     .text_color(palette::text_muted())
                     .child("it gets scanned into the library (flac, mp3, wav)"),
             )
+    }
+}
+
+impl panel::PanelSettings for LibraryPanel {
+    fn state(&self) -> AppState {
+        self.state.clone()
+    }
+
+    fn pages(&self) -> &'static [&'static str] {
+        &["View"]
+    }
+
+    fn page(
+        &mut self,
+        _page: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let headers = self.table.read(cx).delegate().headers;
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(panel::setting_block(
+                "columns",
+                Some("which columns show; drag the headers in the panel to reorder and size them"),
+                self.column_chips(cx),
+            ))
+            .child(panel::setting_row(
+                "headers",
+                Some("album breaks over the canonical order; searching or sorting renders flat"),
+                panel::choices(
+                    &[
+                        ("off", Headers::Off),
+                        ("compact", Headers::Compact),
+                        ("expanded", Headers::Expanded),
+                    ],
+                    headers,
+                    |this: &mut Self, headers, cx| this.set_headers(headers, cx),
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "density",
+                Some("the track list's row height"),
+                panel::choices(
+                    &[
+                        ("compact", Density::Compact),
+                        ("comfortable", Density::Comfortable),
+                    ],
+                    self.density,
+                    |this: &mut Self, density, cx| this.set_density(density, cx),
+                    cx,
+                ),
+            ))
+            .into_any_element()
+    }
+
+    fn theme(&self) -> PanelTheme {
+        self.theme.clone()
+    }
+
+    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
+        self.theme = theme;
+        cx.notify();
     }
 }
 
@@ -1427,6 +1981,13 @@ impl Panel for LibraryPanel {
         false
     }
 
+    /// The table serves row context menus over the whole body, so the tab
+    /// panel's body right-click stays out; the panel dropdown lives on the
+    /// tab and the toolbar.
+    fn content_context_menu(&self, _cx: &App) -> bool {
+        true
+    }
+
     /// The layout dump carries the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, cx: &App) -> PanelState {
@@ -1463,52 +2024,34 @@ impl Panel for LibraryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // View section: what this view shows and how, all flat so a click
-        // dismisses the menu and the next open rebuilds with the change
-        // reflected. Nested submenus keep their own state and can't close
-        // the root from inside, so a toggled check reads stale until the
-        // whole menu is reopened; flat items sidestep that.
+        // View section: quick settings only, all flat so a click dismisses
+        // the menu and the next open rebuilds with the change reflected.
+        // The bigger knobs - columns, headers, the query - live in the
+        // customize window, where they get real controls instead of a
+        // wall of check items.
         let weak = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Jump to Playing").on_click(move |_, _, cx| {
-                if let Some(this) = weak.upgrade() {
-                    this.update(cx, |this, cx| this.jump_to_playing(cx));
-                }
-            }),
+            PopupMenuItem::new("Jump to Playing")
+                .icon(Icon::default().path(icons::DISC))
+                .on_click(move |_, _, cx| {
+                    if let Some(this) = weak.upgrade() {
+                        this.update(cx, |this, cx| this.jump_to_playing(cx));
+                    }
+                }),
         );
 
-        let mut menu = menu.separator().label("Columns");
-        let shown = self.shown_columns(cx);
-        for def in COLUMNS {
-            let key = def.key;
-            let weak = cx.entity().downgrade();
-            menu = menu.item(
-                PopupMenuItem::new(def.label)
-                    .checked(shown.contains(key))
-                    .on_click(move |_, _, cx| {
-                        if let Some(panel) = weak.upgrade() {
-                            panel.update(cx, |panel, cx| panel.toggle_column(key, cx));
-                        }
-                    }),
-            );
-        }
-        let weak = cx.entity().downgrade();
-        let menu = menu.item(
-            PopupMenuItem::new("Reset Columns").on_click(move |_, _, cx| {
-                if let Some(panel) = weak.upgrade() {
-                    panel.update(cx, |panel, cx| panel.reset_columns(cx));
-                }
-            }),
-        );
-
-        let mut menu = menu.separator().label("Density");
-        for (density, name) in [
-            (Density::Compact, "Compact"),
-            (Density::Comfortable, "Comfortable"),
+        // The density options carry their own icon, so the check that marks
+        // the active one moves to the right edge instead of taking the left
+        // icon slot; a left check would drop the icon on the picked row.
+        let mut menu = menu.separator().label("Density").check_side(Side::Right);
+        for (density, name, icon) in [
+            (Density::Compact, "Compact", icons::ROWS_3),
+            (Density::Comfortable, "Comfortable", icons::ROWS_2),
         ] {
             let weak = cx.entity().downgrade();
             menu = menu.item(
                 PopupMenuItem::new(name)
+                    .icon(Icon::default().path(icon))
                     .checked(self.density == density)
                     .on_click(move |_, _, cx| {
                         if let Some(panel) = weak.upgrade() {
@@ -1520,22 +2063,25 @@ impl Panel for LibraryPanel {
 
         // Panel section: operations on the panel itself, not its contents.
         // Duplicate copies this view's config, over the same catalog and
-        // player. Hand-rolled rather than `panel::duplicate_item` because
-        // the copy takes the query along.
+        // player. Hand-rolled because the copy takes the query along.
+        let menu = menu.separator();
+        let menu = panel_settings::settings_item(menu, &cx.entity());
         let weak = cx.entity().downgrade();
-        let menu = menu.separator().item(
-            PopupMenuItem::new("Duplicate Panel").on_click(move |_, window, cx| {
-                let Some(this) = weak.upgrade() else { return };
-                let (state, config, tabs) = {
-                    let panel = this.read(cx);
-                    (panel.state.clone(), panel.config(cx), panel.tab_panel.clone())
-                };
-                let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                    return;
-                };
-                let dup = cx.new(|cx| LibraryPanel::new(state, config, window, cx));
-                tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-            }),
+        let menu = menu.item(
+            PopupMenuItem::new("Duplicate")
+                .icon(Icon::default().path(icons::COPY))
+                .on_click(move |_, window, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    let (state, config, tabs) = {
+                        let panel = this.read(cx);
+                        (panel.state.clone(), panel.config(cx), panel.tab_panel.clone())
+                    };
+                    let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+                        return;
+                    };
+                    let dup = cx.new(|cx| LibraryPanel::new(state, config, window, cx));
+                    tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+                }),
         );
         let _ = window;
         panel::popout_item(
@@ -1549,6 +2095,13 @@ impl Panel for LibraryPanel {
 
 impl Render for LibraryPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.theme.clone();
+        panel::themed(&theme, || self.body(window, cx).into_any_element())
+    }
+}
+
+impl LibraryPanel {
+    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let busy = self.state.library.read(cx).busy.is_some();
         let empty = self.table.read(cx).delegate().view.is_empty();
         let body = if empty && !busy && self.query.is_empty() {
@@ -1624,7 +2177,7 @@ fn load(
         .map(|n| n.get())
         .unwrap_or(4);
     let projection = Projection::load_parallel(db_path, shards)?;
-    let order = projection.sort_artist_album_track();
+    let order = projection.sort_canonical();
     Ok((projection, order, summary))
 }
 
@@ -1653,9 +2206,20 @@ fn status_line(total: usize, summary: Option<&ScanSummary>) -> String {
     format!("{} tracks ({})", total, parts.join(", "))
 }
 
-fn fmt_ms(ms: u32) -> String {
+pub(crate) fn fmt_ms(ms: u32) -> String {
     let secs = ms / 1000;
     format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+/// A group's total time: like [`fmt_ms`], growing an hours place once it
+/// earns one.
+fn fmt_total(ms: u64) -> String {
+    let secs = ms / 1000;
+    if secs >= 3600 {
+        format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
+    } else {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    }
 }
 
 /// A track number or year cell: blank when zero, since the scanner stores

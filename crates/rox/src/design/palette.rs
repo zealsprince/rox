@@ -16,15 +16,21 @@
 //! the same switch. Changes ease componentwise from wherever the
 //! palette visibly is to the new target. The static sits outside GPUI's
 //! reactivity, so the setters repaint explicitly - one choke point for
-//! every writer.
+//! every writer. On top of all of it, per ADR 13 a panel can carry a
+//! [`PanelTheme`]: a sparse override the accessors answer with while
+//! the panel renders inside [`scoped`]. An overridden role reads as
+//! written, passed by song theming and easing alike, while the rest
+//! keep following the app palette.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, Instant};
 
 use gpui::{rgb, App, Rgba};
 use gpui_component::{Theme, ThemeColor, ThemeMode};
+use serde::{Deserialize, Serialize};
 
 use super::tokens::EASE_SECS;
 
@@ -222,12 +228,16 @@ macro_rules! tokens {
         // The accessors are the palette's read API, one per role, so a
         // role read only through its field (a raw wash in the theme
         // projection, an opaque overlay variant) leaves its generated
-        // accessor uncalled without meaning the token is dead.
+        // accessor uncalled without meaning the token is dead. Each one
+        // asks the active panel scope first: an overridden role reads as
+        // written, an overridden opacity replaces the app's in the same
+        // scaling and lifting the global values get.
         $(
             $(#[$doc])*
             #[allow(dead_code)]
             pub fn $role() -> Rgba {
-                CURRENT.read().unwrap().role(|p| p.$role)
+                scope_color(stringify!($role))
+                    .unwrap_or_else(|| CURRENT.read().unwrap().role(|p| p.$role))
             }
         )*
 
@@ -236,7 +246,10 @@ macro_rules! tokens {
             #[allow(dead_code)]
             pub fn $srole() -> Rgba {
                 let current = CURRENT.read().unwrap();
-                scaled(current.role(|p| p.$srole), current.surface_opacity)
+                let color = scope_color(stringify!($srole))
+                    .unwrap_or_else(|| current.role(|p| p.$srole));
+                let opacity = scope_opacity().unwrap_or(current.surface_opacity);
+                scaled(color, opacity)
             }
         )*
 
@@ -245,8 +258,10 @@ macro_rules! tokens {
             #[allow(dead_code)]
             pub fn $trole() -> Rgba {
                 let current = CURRENT.read().unwrap();
-                let opacity = current.surface_opacity;
-                scaled(current.role(|p| p.$trole), opacity * opacity)
+                let color = scope_color(stringify!($trole))
+                    .unwrap_or_else(|| current.role(|p| p.$trole));
+                let opacity = scope_opacity().unwrap_or(current.surface_opacity);
+                scaled(color, opacity * opacity)
             }
         )*
 
@@ -255,11 +270,12 @@ macro_rules! tokens {
             #[allow(dead_code)]
             pub fn $irole() -> Rgba {
                 let current = CURRENT.read().unwrap();
-                mix(
-                    current.role(|p| p.$irole),
-                    current.role(|p| p.text_bright),
-                    1.0 - current.surface_opacity,
-                )
+                let color = scope_color(stringify!($irole))
+                    .unwrap_or_else(|| current.role(|p| p.$irole));
+                let bright = scope_color("text_bright")
+                    .unwrap_or_else(|| current.role(|p| p.text_bright));
+                let opacity = scope_opacity().unwrap_or(current.surface_opacity);
+                mix(color, bright, 1.0 - opacity)
             }
         )*
 
@@ -337,22 +353,23 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
     u32::from_str_radix(hex, 16).ok().map(rgb)
 }
 
+/// A color as the settings map's `#rrggbb`; alpha does not participate.
+fn to_hex(c: Rgba) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (c.r * 255.0).round() as u8,
+        (c.g * 255.0).round() as u8,
+        (c.b * 255.0).round() as u8
+    )
+}
+
 impl Palette {
     /// The palette as the settings file records it: every role as
     /// `#rrggbb`, in role-name keys. The same shape a shared theme is.
     pub fn to_map(&self) -> BTreeMap<String, String> {
         ROLES
             .iter()
-            .map(|role| {
-                let c = (role.get)(self);
-                let hex = format!(
-                    "#{:02x}{:02x}{:02x}",
-                    (c.r * 255.0).round() as u8,
-                    (c.g * 255.0).round() as u8,
-                    (c.b * 255.0).round() as u8
-                );
-                (role.name.to_string(), hex)
-            })
+            .map(|role| (role.name.to_string(), to_hex((role.get)(self))))
             .collect()
     }
 
@@ -368,6 +385,119 @@ impl Palette {
         }
         palette
     }
+}
+
+/// A panel's palette override: only the roles it overrides, in the
+/// settings map's role-to-hex shape, plus an optional surface opacity of
+/// the panel's own. Rides the panel's config through the layout dump, so
+/// it restores and duplicates like any other per-view knob. An overridden
+/// role reads as written - song theming and palette easing pass it by -
+/// while every other role keeps following the app palette, so a panel
+/// that only recolors its accent still tracks edits and tinting
+/// everywhere else.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PanelTheme {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub colors: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_opacity: Option<f32>,
+}
+
+impl PanelTheme {
+    /// Whether the theme overrides nothing at all. Empty themes skip the
+    /// scope entirely and serialize away, so an untouched panel's config
+    /// stays what it was.
+    pub fn is_empty(&self) -> bool {
+        self.colors.is_empty() && self.surface_opacity.is_none()
+    }
+
+    /// A role's override, when one is set and parses.
+    pub fn color(&self, role: &str) -> Option<Rgba> {
+        self.colors.get(role).and_then(|hex| parse_hex(hex))
+    }
+
+    /// Set or clear a role's override.
+    pub fn set_color(&mut self, role: &str, color: Option<Rgba>) {
+        match color {
+            Some(color) => {
+                self.colors.insert(role.to_string(), to_hex(color));
+            }
+            None => {
+                self.colors.remove(role);
+            }
+        }
+    }
+
+    /// The theme resolved for the read path: role names checked against
+    /// the listing, unknown and unparsable entries dropped, so a
+    /// hand-edited config degrades quietly. None while nothing overrides,
+    /// so renders skip the scope push.
+    pub fn scope(&self) -> Option<Scope> {
+        if self.is_empty() {
+            return None;
+        }
+        let colors: Vec<(&'static str, Rgba)> = ROLES
+            .iter()
+            .filter_map(|role| self.color(role.name).map(|color| (role.name, color)))
+            .collect();
+        Some(Scope {
+            colors: colors.into(),
+            surface_opacity: self.surface_opacity.map(|o| o.clamp(0.0, 1.0)),
+        })
+    }
+}
+
+/// A resolved [`PanelTheme`], what the accessors actually consult: cheap
+/// to clone, so the themed wrapper can carry it into every render phase.
+#[derive(Clone)]
+pub struct Scope {
+    colors: Arc<[(&'static str, Rgba)]>,
+    surface_opacity: Option<f32>,
+}
+
+thread_local! {
+    /// The active panel scopes, innermost last. A stack rather than a
+    /// slot so a themed subtree inside another themed subtree nests
+    /// instead of clobbering. Thread-local is enough: rendering runs on
+    /// the UI thread, and the paint closures that read the palette run
+    /// inside the element phases [`scoped`] wraps.
+    static SCOPES: RefCell<Vec<Scope>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The innermost scope's override for a role, if any.
+fn scope_color(role: &str) -> Option<Rgba> {
+    SCOPES.with(|scopes| {
+        scopes.borrow().last().and_then(|scope| {
+            scope
+                .colors
+                .iter()
+                .find(|(name, _)| *name == role)
+                .map(|(_, color)| *color)
+        })
+    })
+}
+
+/// The innermost scope's surface opacity, if it carries one.
+fn scope_opacity() -> Option<f32> {
+    SCOPES.with(|scopes| scopes.borrow().last().and_then(|scope| scope.surface_opacity))
+}
+
+/// Run `f` with a panel scope active: every accessor answers with the
+/// scope's roles and opacity, falling through to the app palette for the
+/// rest. The pop rides a drop guard, so an unwinding `f` can't leave the
+/// scope stuck on the stack.
+pub fn scoped<R>(scope: &Scope, f: impl FnOnce() -> R) -> R {
+    SCOPES.with(|scopes| scopes.borrow_mut().push(scope.clone()));
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            SCOPES.with(|scopes| {
+                scopes.borrow_mut().pop();
+            });
+        }
+    }
+    let _pop = Pop;
+    f()
 }
 
 /// What a playing track's cover contributes to derivation: its dominant
@@ -554,6 +684,12 @@ pub fn set_art_theming(on: bool, cx: &mut App) {
 /// the palette's own pipe.
 pub fn art_theming() -> bool {
     CURRENT.read().unwrap().art_theming
+}
+
+/// The app's surface opacity as it currently stands: what a panel's own
+/// override starts from when it forks off.
+pub fn app_surface_opacity() -> f32 {
+    CURRENT.read().unwrap().surface_opacity
 }
 
 /// The palette as the current derivation lands it: the easing run's
@@ -1005,5 +1141,63 @@ mod tests {
         );
         assert!((h - blue_h).abs() < 0.05, "highlight missed the hue");
         assert!(c > 0.1, "highlight barely tinted: {c}");
+    }
+
+    fn assert_rgb_eq(a: Rgba, b: Rgba, what: &str) {
+        for (a, b) in [(a.r, b.r), (a.g, b.g), (a.b, b.b)] {
+            assert!((a - b).abs() < 0.003, "{what} drifted: {a} vs {b}");
+        }
+    }
+
+    /// A panel scope's promise: overridden roles read as written, the
+    /// rest fall through, an overridden opacity scales and lifts like the
+    /// app's, and everything is back to the app palette once the scope
+    /// drops.
+    #[test]
+    fn scope_overrides_and_falls_through() {
+        let mut theme = PanelTheme::default();
+        theme.set_color("accent", Some(rgb(0x2244ff)));
+        theme.surface_opacity = Some(0.5);
+        let scope = theme.scope().unwrap();
+
+        let outside_accent = accent();
+        let outside_text = text();
+        scoped(&scope, || {
+            assert_rgb_eq(accent(), rgb(0x2244ff), "overridden accent");
+            // Not overridden: same color as outside, but at the scope's
+            // opacity - a surface thins, ink lifts halfway to bright.
+            let root = bg_root();
+            assert!((root.a - 0.5).abs() < 0.001, "surface kept app opacity");
+            assert_rgb_eq(
+                text(),
+                mix(outside_text, text_bright(), 0.5),
+                "lifted ink",
+            );
+        });
+        assert_rgb_eq(accent(), outside_accent, "accent after the scope");
+        assert!((bg_root().a - 1.0).abs() < 0.001, "opacity after the scope");
+    }
+
+    /// The theme's map shape survives a config roundtrip, and an empty
+    /// theme serializes to nothing at all.
+    #[test]
+    fn panel_theme_roundtrips() {
+        let mut theme = PanelTheme::default();
+        theme.set_color("accent", Some(rgb(0x336699)));
+        theme.surface_opacity = Some(0.8);
+        let json = serde_json::to_string(&theme).unwrap();
+        let back: PanelTheme = serde_json::from_str(&json).unwrap();
+        assert_rgb_eq(
+            back.color("accent").unwrap(),
+            rgb(0x336699),
+            "accent override",
+        );
+        assert_eq!(back.surface_opacity, Some(0.8));
+
+        theme.set_color("accent", None);
+        theme.surface_opacity = None;
+        assert!(theme.is_empty());
+        assert!(theme.scope().is_none());
+        assert_eq!(serde_json::to_string(&theme).unwrap(), "{}");
     }
 }

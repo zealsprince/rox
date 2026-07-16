@@ -75,6 +75,22 @@ pub struct Settings {
     /// the windows (ADR 10's derived mode). Off by default: the look
     /// only follows the music when asked to.
     pub art_theming: bool,
+    /// Whether launch loads the last playing track back up, paused where
+    /// it left off. The track below is written either way; this only
+    /// gates the restore.
+    pub restore_last_track: bool,
+    /// What was playing when the app closed, as a library track id so it
+    /// survives path changes, plus where the clock sat. None when nothing
+    /// was playing; a stale id degrades to the cold start on restore.
+    pub last_track: Option<LastTrack>,
+}
+
+/// The closing snapshot of the playing track: its library id and the
+/// position clock in seconds.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub struct LastTrack {
+    pub id: i64,
+    pub position_secs: f64,
 }
 
 /// A window frame in logical pixels, plus whether the window was maximized
@@ -103,6 +119,8 @@ impl Default for Settings {
             backdrop_strength: 1.0,
             palette: BTreeMap::new(),
             art_theming: false,
+            restore_last_track: true,
+            last_track: None,
         }
     }
 }

@@ -15,22 +15,37 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, size, App, Bounds, Context, EventEmitter,
+    canvas, div, fill, point, prelude::*, px, size, App, Bounds, Context, Div, EventEmitter,
     FocusHandle, Focusable, MouseButton, Pixels, Rgba, SharedString, Subscription, WeakEntity,
     Window,
 };
-use gpui_component::menu::PopupMenu;
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use serde::{Deserialize, Serialize};
 
 use rox_playback::engine;
 
+use crate::assets::icons;
+use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, ScrubState, StatePanel};
+use crate::panel::{self, AppState, PanelSettings, ScrubState};
+use crate::panel_settings;
 use crate::peaks;
 
 /// Resolution of the in-memory peaks. The paint resamples these down to
 /// however many bars fit the width.
 const PEAK_BINS: usize = 2048;
+
+/// The waveform panel's per-view config: nothing but its palette
+/// override so far - the strip itself has no knobs - but the struct is
+/// where any it grows will land, same as every other panel's.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct WaveformConfig {
+    /// The panel's palette override.
+    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
+    pub theme: PanelTheme,
+}
 
 /// The shortest a bar draws, so quiet passages stay visible.
 const MIN_BAR: f32 = 2.0;
@@ -70,6 +85,7 @@ impl Shape {
 
 pub struct WaveformPanel {
     state: AppState,
+    config: WaveformConfig,
     /// The track the peaks (or the running decode) belong to.
     track: Option<PathBuf>,
     peaks: Peaks,
@@ -93,10 +109,11 @@ pub struct WaveformPanel {
 }
 
 impl WaveformPanel {
-    pub fn new(state: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: AppState, config: WaveformConfig, cx: &mut Context<Self>) -> Self {
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
         WaveformPanel {
             state,
+            config,
             track: None,
             peaks: Peaks::None,
             generation: 0,
@@ -338,17 +355,18 @@ fn paint_morph(
     }
 }
 
-impl StatePanel for WaveformPanel {
+impl PanelSettings for WaveformPanel {
     fn state(&self) -> AppState {
         self.state.clone()
     }
 
-    fn tab_panel(&self) -> Option<WeakEntity<TabPanel>> {
-        self.tab_panel.clone()
+    fn theme(&self) -> PanelTheme {
+        self.config.theme.clone()
     }
 
-    fn duplicate(state: AppState, cx: &mut Context<Self>) -> Self {
-        WaveformPanel::new(state, cx)
+    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
+        self.config.theme = theme;
+        cx.notify();
     }
 }
 
@@ -373,6 +391,16 @@ impl Panel for WaveformPanel {
         false
     }
 
+    /// The layout dump carries the panel's config; the builder registered
+    /// in `workspace::register_panels` reads it back.
+    fn dump(&self, _cx: &App) -> rox_dock::PanelState {
+        let mut state = rox_dock::PanelState::new(self);
+        state.info = rox_dock::PanelInfo::panel(
+            serde_json::to_value(self.config.clone()).unwrap_or(serde_json::Value::Null),
+        );
+        state
+    }
+
     fn on_added_to(
         &mut self,
         tab_panel: WeakEntity<TabPanel>,
@@ -395,7 +423,30 @@ impl Panel for WaveformPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let menu = panel::duplicate_item(menu, &cx.entity());
+        let menu = panel_settings::settings_item(menu, &cx.entity());
+        // Duplicate hand-rolled rather than shared: the copy takes the
+        // config along, like every configured panel's.
+        let weak = cx.entity().downgrade();
+        let menu = menu.item(
+            PopupMenuItem::new("Duplicate")
+                .icon(Icon::default().path(icons::COPY))
+                .on_click(move |_, window, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    let (state, config, tabs) = {
+                        let panel = this.read(cx);
+                        (
+                            panel.state.clone(),
+                            panel.config.clone(),
+                            panel.tab_panel.clone(),
+                        )
+                    };
+                    let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
+                        return;
+                    };
+                    let dup = cx.new(|cx| WaveformPanel::new(state, config, cx));
+                    tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+                }),
+        );
         panel::popout_item(
             menu,
             &cx.entity(),
@@ -407,6 +458,13 @@ impl Panel for WaveformPanel {
 
 impl Render for WaveformPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.config.theme.clone();
+        panel::themed(&theme, || self.body(window, cx).into_any_element())
+    }
+}
+
+impl WaveformPanel {
+    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let player = self.state.player.read(cx);
         // A played-out queue counts as nothing playing: the strip clears
         // instead of sitting there fully lit.

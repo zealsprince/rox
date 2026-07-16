@@ -5,23 +5,24 @@
 //! popped-out panel is the same entity rehosted in its own OS window, no
 //! cross-window messaging needed.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gpui::{
     anchored, deferred, div, fill, point, prelude::*, px, size, svg, AnyElement, App, Bounds,
-    Context, DismissEvent, Div, Entity, EntityId, Focusable as _, Global, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, SharedString, Size,
-    Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions,
+    Context, DismissEvent, Div, Element, Entity, Focusable as _, GlobalElementId,
+    InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, Rgba, SharedString, Subscription, TitlebarOptions, WeakEntity, Window,
+    WindowBounds, WindowOptions,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use gpui_component::Root;
+use gpui_component::{Icon, Root};
 use rox_dock::{Panel, PanelInfo, PanelView, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
+use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
 use crate::panels::library::Library;
 use crate::player::Player;
@@ -260,36 +261,6 @@ pub fn config_from_info<C: Default + serde::de::DeserializeOwned>(info: &PanelIn
     }
 }
 
-/// A panel whose duplicate is just a fresh view over the shared state, no
-/// per-view config to carry across. The library panel keeps its own
-/// duplicate wiring because its copy takes the query along.
-pub trait StatePanel: Panel {
-    fn state(&self) -> AppState;
-    fn tab_panel(&self) -> Option<WeakEntity<TabPanel>>;
-    fn duplicate(state: AppState, cx: &mut Context<Self>) -> Self;
-}
-
-/// The Duplicate entry for a panel's dropdown menu, which the dock serves
-/// on right-click and from the tab bar's ellipsis button. Duplicates into
-/// the tab panel the original sits in.
-pub fn duplicate_item<P: StatePanel>(menu: PopupMenu, panel: &Entity<P>) -> PopupMenu {
-    let weak = panel.downgrade();
-    menu.item(
-        PopupMenuItem::new("Duplicate Panel").on_click(move |_, window, cx| {
-            let Some(this) = weak.upgrade() else { return };
-            let (state, tabs) = {
-                let panel = this.read(cx);
-                (panel.state(), panel.tab_panel())
-            };
-            let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                return;
-            };
-            let dup = cx.new(|cx| P::duplicate(state, cx));
-            tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-        }),
-    )
-}
-
 /// The Pop Out entry for a panel's dropdown menu: moves the panel out of its
 /// dock into an OS window. Pass the tab panel the panel currently sits in
 /// (from `on_added_to`); the state is what Dock Back later reaches the
@@ -302,9 +273,11 @@ pub fn popout_item<P: Panel>(
 ) -> PopupMenu {
     let panel = panel.clone();
     menu.item(
-        PopupMenuItem::new("Pop Out").on_click(move |_, window, cx| {
-            pop_out(panel.clone(), tab_panel.clone(), state.clone(), window, cx);
-        }),
+        PopupMenuItem::new("Pop Out")
+            .icon(Icon::default().path(icons::EXTERNAL_LINK))
+            .on_click(move |_, window, cx| {
+                pop_out(panel.clone(), tab_panel.clone(), state.clone(), window, cx);
+            }),
     )
 }
 
@@ -363,145 +336,120 @@ pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
     .expect("failed to open the panel window");
 }
 
-/// A panel whose per-view config can be edited live in a customize window.
-/// New knobs (colors, layout, whatever a panel grows) go on the panel's
-/// config struct and get a row here.
-pub trait Customizable: Panel {
-    /// The shared state, so the customize window can back itself with
+/// A panel whose per-view config is edited in its own settings window
+/// (see [`crate::panel_settings`]): the panel's own pages of control
+/// rows, then the shared Appearance page editing the panel's palette
+/// override. New knobs go on the panel's config struct and get a row on
+/// one of its pages.
+pub trait PanelSettings: Panel {
+    /// The shared state, so the settings window can back itself with
     /// the playing track's art like every other window.
     fn state(&self) -> AppState;
 
-    /// The customize window's control rows, editing the config in place.
-    /// Changes apply live; the layout dump persists them.
-    fn customize(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement;
-
-    /// The customize window's initial size. Panels with more than the usual
-    /// row or two of controls override this for a taller window.
-    fn customize_size(&self) -> Size<Pixels> {
-        size(px(360.), px(180.))
+    /// The panel's own pages, listed above the shared Appearance page.
+    /// Empty means the panel has no knobs beyond its appearance.
+    fn pages(&self) -> &'static [&'static str] {
+        &[]
     }
+
+    /// One of the panel's own pages: control rows editing the config in
+    /// place. Changes apply live; the layout dump persists them.
+    fn page(
+        &mut self,
+        page: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let _ = (page, window, cx);
+        div().into_any_element()
+    }
+
+    /// The panel's palette override, the Appearance page's subject.
+    fn theme(&self) -> PanelTheme;
+
+    /// Store an edited override: the next render picks it up, the layout
+    /// dump persists it.
+    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>);
 }
 
-/// The Customize entry for a panel's dropdown menu: opens the panel's
-/// customize window.
-pub fn customize_item<P: Customizable>(menu: PopupMenu, panel: &Entity<P>) -> PopupMenu {
-    let panel = panel.clone();
-    menu.item(
-        PopupMenuItem::new("Customize...").on_click(move |_, _, cx| {
-            open_customize(panel.clone(), cx);
-        }),
-    )
-}
-
-/// The open customize windows, keyed by the panel they edit: opening a
-/// panel's customize again focuses its window instead of stacking a
-/// second editor over the same config. Closed windows leave a stale
-/// handle whose activate fails, so the next open falls through and
-/// replaces it, same as [`settings_window`](crate::settings_window).
-#[derive(Default)]
-struct OpenCustomizers(HashMap<EntityId, WindowHandle<Root>>);
-
-impl Global for OpenCustomizers {}
-
-/// Open the small window that edits a panel's config, or bring the panel's
-/// open one to the front. It holds the panel weakly, so it never keeps a
-/// closed panel alive.
-fn open_customize<P: Customizable>(panel: Entity<P>, cx: &mut App) {
-    let id = panel.entity_id();
-    if let Some(handle) = cx
-        .try_global::<OpenCustomizers>()
-        .and_then(|open| open.0.get(&id).copied())
-    {
-        if handle
-            .update(cx, |_, window, _| window.activate_window())
-            .is_ok()
-        {
-            return;
-        }
-    }
-    let title = SharedString::from(format!("rox - customize {}", panel.read(cx).panel_name()));
-    let bounds = Bounds::centered(None, panel.read(cx).customize_size(), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: Some(TitlebarOptions {
-            title: Some(title.clone()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
+/// Build a panel body under its palette override and keep the override
+/// active through every element phase. Building under the scope covers
+/// the style reads that resolve eagerly (`.bg(palette::x())` runs as the
+/// div chain is built); the wrapper element re-enters it for layout,
+/// prepaint, and paint, which is when hover styles and canvas paint
+/// closures actually read the palette. An empty theme skips all of it.
+pub fn themed(theme: &PanelTheme, build: impl FnOnce() -> AnyElement) -> AnyElement {
+    let Some(scope) = theme.scope() else {
+        return build();
     };
-    let state = panel.read(cx).state();
-    let panel = panel.downgrade();
-    let handle = cx
-        .open_window(options, move |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar title;
-            // only set_window_title reaches the compositor.
-            window.set_window_title(&title);
-            let host = cx.new(|cx| {
-                let _panel_changed = panel
-                    .upgrade()
-                    .map(|panel| cx.observe(&panel, |_, _, cx| cx.notify()));
-                // This window pumps its own frames, so the backdrop needs
-                // its own wake on a new bake.
-                let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
-                CustomizeHost {
-                    panel,
-                    state,
-                    backdrop: WindowBackdrop::default(),
-                    _panel_changed,
-                    _backdrop_changed,
-                }
-            });
-            cx.new(|cx| Root::new(host, window, cx))
-        })
-        .expect("failed to open the customize window");
-    cx.default_global::<OpenCustomizers>().0.insert(id, handle);
+    let child = palette::scoped(&scope, build);
+    Themed { scope, child }.into_any_element()
 }
 
-/// The customize window's content: the panel's own control rows on the
-/// workspace's base styling.
-struct CustomizeHost<P: Customizable> {
-    panel: WeakEntity<P>,
-    state: AppState,
-    /// This window's slice of the backdrop: what it painted last, for
-    /// retiring the texture on a new bake.
-    backdrop: WindowBackdrop,
-    /// Repaints this window when the panel changes from anywhere else.
-    _panel_changed: Option<Subscription>,
-    _backdrop_changed: Subscription,
+/// The element that carries a panel's palette scope through the render
+/// phases. A pure pass-through otherwise: the child's layout is its
+/// layout.
+struct Themed {
+    scope: palette::Scope,
+    child: AnyElement,
 }
 
-impl<P: Customizable> Render for CustomizeHost<P> {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = match self.panel.upgrade() {
-            Some(panel) => panel.update(cx, |panel, cx| panel.customize(window, cx)),
-            None => div()
-                .text_color(palette::text_muted())
-                .child("the panel was closed")
-                .into_any_element(),
-        };
-        div()
-            .size_full()
-            .bg(palette::bg_elevated())
-            .text_color(palette::text_bright())
-            .text_sm()
-            // The backdrop paints first, under the controls; without it
-            // translucent surfaces would sink into the window's own
-            // black instead of the playing track's art.
-            .children(self.backdrop.layer(&self.state.now_art, window, cx))
-            .child(
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_SM)
-                    .p(tokens::SPACE_MD)
-                    // The window's own surface over the backdrop: opaque
-                    // at full surface opacity, thinning to let the art
-                    // through only as the surfaces do.
-                    .bg(palette::bg_elevated())
-                    .child(body),
-            )
+impl Element for Themed {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let layout_id = palette::scoped(&self.scope, || self.child.request_layout(window, cx));
+        (layout_id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        palette::scoped(&self.scope, || {
+            self.child.prepaint(window, cx);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        palette::scoped(&self.scope, || self.child.paint(window, cx));
+    }
+}
+
+impl IntoElement for Themed {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
     }
 }
 
@@ -534,6 +482,32 @@ pub fn setting_row(
                     .child(description),
             )
         })
+}
+
+/// A labeled block of a customize window: like [`setting_row`] but the
+/// control spans the full width below the description instead of sitting
+/// inline. Wrapping controls need this - the row's control slot is
+/// content-sized, and a wrap container without a definite width collapses
+/// to one item per line.
+pub fn setting_block(
+    label: &'static str,
+    description: Option<&'static str>,
+    control: impl IntoElement,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .child(label)
+        .when_some(description, |d, description| {
+            d.child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(description),
+            )
+        })
+        .child(div().mt(tokens::SPACE_XS).child(control))
 }
 
 /// An on/off switch: a pill track, the knob in the accent on the far side

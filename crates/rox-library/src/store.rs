@@ -22,21 +22,46 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     // the first source, streaming extensions add rows instead of migrations.
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS tracks (
-            id          INTEGER PRIMARY KEY,
-            source      TEXT NOT NULL DEFAULT 'local',
-            path        TEXT NOT NULL,
-            title       TEXT NOT NULL,
-            artist      TEXT NOT NULL,
-            album       TEXT NOT NULL,
-            genre       TEXT NOT NULL,
-            year        INTEGER NOT NULL,
-            track_no    INTEGER NOT NULL,
-            duration_ms INTEGER NOT NULL,
-            size        INTEGER NOT NULL,
-            mtime       INTEGER NOT NULL,
+            id           INTEGER PRIMARY KEY,
+            source       TEXT NOT NULL DEFAULT 'local',
+            path         TEXT NOT NULL,
+            title        TEXT NOT NULL,
+            artist       TEXT NOT NULL,
+            album_artist TEXT NOT NULL DEFAULT '',
+            album        TEXT NOT NULL,
+            genre        TEXT NOT NULL,
+            year         INTEGER NOT NULL,
+            track_no     INTEGER NOT NULL,
+            duration_ms  INTEGER NOT NULL,
+            codec        TEXT NOT NULL DEFAULT '',
+            bitrate      INTEGER NOT NULL DEFAULT 0,
+            size         INTEGER NOT NULL,
+            mtime        INTEGER NOT NULL,
             UNIQUE (source, path)
         );",
-    )
+    )?;
+    // A library from before the album artist column: add it, and reset
+    // every mtime so the next scan re-reads tags instead of skipping the
+    // files as unchanged, which would leave the column empty forever.
+    let mut stmt =
+        conn.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name = 'album_artist'")?;
+    if !stmt.exists([])? {
+        conn.execute_batch(
+            "ALTER TABLE tracks ADD COLUMN album_artist TEXT NOT NULL DEFAULT '';
+             UPDATE tracks SET mtime = 0;",
+        )?;
+    }
+    // Same move for a library from before codec and bitrate.
+    let mut stmt =
+        conn.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name = 'codec'")?;
+    if !stmt.exists([])? {
+        conn.execute_batch(
+            "ALTER TABLE tracks ADD COLUMN codec TEXT NOT NULL DEFAULT '';
+             ALTER TABLE tracks ADD COLUMN bitrate INTEGER NOT NULL DEFAULT 0;
+             UPDATE tracks SET mtime = 0;",
+        )?;
+    }
+    Ok(())
 }
 
 pub fn count(conn: &Connection) -> rusqlite::Result<u64> {
@@ -52,13 +77,16 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
     {
         let mut stmt = tx.prepare_cached(
             "INSERT INTO tracks
-             (path, title, artist, album, genre, year, track_no, duration_ms, size, mtime)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             (path, title, artist, album_artist, album, genre, year, track_no,
+              duration_ms, codec, bitrate, size, mtime)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT (source, path) DO UPDATE SET
                 title = excluded.title, artist = excluded.artist,
+                album_artist = excluded.album_artist,
                 album = excluded.album, genre = excluded.genre,
                 year = excluded.year, track_no = excluded.track_no,
-                duration_ms = excluded.duration_ms, size = excluded.size,
+                duration_ms = excluded.duration_ms, codec = excluded.codec,
+                bitrate = excluded.bitrate, size = excluded.size,
                 mtime = excluded.mtime",
         )?;
         for r in rows {
@@ -66,11 +94,14 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 r.path,
                 r.title,
                 r.artist,
+                r.album_artist,
                 r.album,
                 r.genre,
                 r.year,
                 r.track_no,
                 r.duration_ms,
+                r.codec,
+                r.bitrate_kbps,
                 r.size as i64,
                 r.mtime,
             ])?;
@@ -207,15 +238,19 @@ pub fn max_rowid(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT COALESCE(MAX(id), 0) FROM tracks", [], |r| r.get(0))
 }
 
-/// Stream the projection columns for one rowid range, in id order.
+/// Stream the projection columns for one rowid range, in id order. The
+/// sink's string order mirrors the SELECT: title, artist, album artist,
+/// album, genre, then codec after the numbers.
+#[allow(clippy::type_complexity)]
 pub fn scan_range(
     conn: &Connection,
     lo: i64,
     hi: i64,
-    mut sink: impl FnMut(i64, &str, &str, &str, &str, u16, u16, u32),
+    mut sink: impl FnMut(i64, &str, &str, &str, &str, &str, u16, u16, u32, &str, u16),
 ) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, title, artist, album, genre, year, track_no, duration_ms
+        "SELECT id, title, artist, album_artist, album, genre, year, track_no, duration_ms,
+                codec, bitrate
          FROM tracks WHERE id > ?1 AND id <= ?2 ORDER BY id",
     )?;
     let mut rows = stmt.query(rusqlite::params![lo, hi])?;
@@ -226,9 +261,12 @@ pub fn scan_range(
             row.get_ref(2)?.as_str().unwrap_or(""),
             row.get_ref(3)?.as_str().unwrap_or(""),
             row.get_ref(4)?.as_str().unwrap_or(""),
-            row.get::<_, i64>(5)? as u16,
+            row.get_ref(5)?.as_str().unwrap_or(""),
             row.get::<_, i64>(6)? as u16,
-            row.get::<_, i64>(7)? as u32,
+            row.get::<_, i64>(7)? as u16,
+            row.get::<_, i64>(8)? as u32,
+            row.get_ref(9)?.as_str().unwrap_or(""),
+            row.get::<_, i64>(10)? as u16,
         );
     }
     Ok(())

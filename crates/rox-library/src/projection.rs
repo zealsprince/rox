@@ -115,14 +115,19 @@ pub struct Builder {
     title: Arena,
     title_lower: Arena,
     artist: Vec<u32>,
+    album_artist: Vec<u32>,
     album: Vec<u32>,
     genre: Vec<u32>,
     year: Vec<u16>,
     track_no: Vec<u16>,
     duration_ms: Vec<u32>,
+    codec: Vec<u32>,
+    bitrate_kbps: Vec<u16>,
     artists: Interner,
+    album_artists: Interner,
     albums: Interner,
     genres: Interner,
+    codecs: Interner,
 }
 
 impl Builder {
@@ -132,21 +137,28 @@ impl Builder {
         id: i64,
         title: &str,
         artist: &str,
+        album_artist: &str,
         album: &str,
         genre: &str,
         year: u16,
         track_no: u16,
         duration_ms: u32,
+        codec: &str,
+        bitrate_kbps: u16,
     ) {
         self.db_id.push(id);
         self.title.push(title);
         self.title_lower.push_lowercased(title);
         self.artist.push(self.artists.intern(artist));
+        self.album_artist
+            .push(self.album_artists.intern(album_artist));
         self.album.push(self.albums.intern(album));
         self.genre.push(self.genres.intern(genre));
         self.year.push(year);
         self.track_no.push(track_no);
         self.duration_ms.push(duration_ms);
+        self.codec.push(self.codecs.intern(codec));
+        self.bitrate_kbps.push(bitrate_kbps);
     }
 }
 
@@ -155,24 +167,32 @@ pub struct Projection {
     pub title: Arena,
     pub title_lower: Arena,
     pub artist: Vec<u32>,
+    pub album_artist: Vec<u32>,
     pub album: Vec<u32>,
     pub genre: Vec<u32>,
     pub year: Vec<u16>,
     pub track_no: Vec<u16>,
     pub duration_ms: Vec<u32>,
+    pub codec: Vec<u32>,
+    pub bitrate_kbps: Vec<u16>,
     pub artists: SymTable,
+    pub album_artists: SymTable,
     pub albums: SymTable,
     pub genres: SymTable,
+    pub codecs: SymTable,
 }
 
 pub struct RowView<'a> {
     pub title: &'a str,
     pub artist: &'a str,
+    pub album_artist: &'a str,
     pub album: &'a str,
     pub genre: &'a str,
     pub year: u16,
     pub track_no: u16,
     pub duration_ms: u32,
+    pub codec: &'a str,
+    pub bitrate_kbps: u16,
 }
 
 /// A sortable column of the projection.
@@ -180,11 +200,14 @@ pub struct RowView<'a> {
 pub enum SortKey {
     Title,
     Artist,
+    AlbumArtist,
     Album,
     Genre,
     Year,
     TrackNo,
     Duration,
+    Codec,
+    Bitrate,
 }
 
 impl Projection {
@@ -204,8 +227,20 @@ impl Projection {
             conn,
             0,
             max,
-            |id, title, artist, album, genre, year, tn, dur| {
-                b.push(id, title, artist, album, genre, year, tn, dur);
+            |id, title, artist, album_artist, album, genre, year, tn, dur, codec, kbps| {
+                b.push(
+                    id,
+                    title,
+                    artist,
+                    album_artist,
+                    album,
+                    genre,
+                    year,
+                    tn,
+                    dur,
+                    codec,
+                    kbps,
+                );
             },
         )?;
         Ok(Self::merge(vec![b]))
@@ -231,8 +266,30 @@ impl Projection {
                             &conn,
                             lo,
                             hi,
-                            |id, title, artist, album, genre, year, tn, dur| {
-                                b.push(id, title, artist, album, genre, year, tn, dur);
+                            |id,
+                             title,
+                             artist,
+                             album_artist,
+                             album,
+                             genre,
+                             year,
+                             tn,
+                             dur,
+                             codec,
+                             kbps| {
+                                b.push(
+                                    id,
+                                    title,
+                                    artist,
+                                    album_artist,
+                                    album,
+                                    genre,
+                                    year,
+                                    tn,
+                                    dur,
+                                    codec,
+                                    kbps,
+                                );
                             },
                         )?;
                         Ok(b)
@@ -251,18 +308,23 @@ impl Projection {
 
     fn merge(shards: Vec<Builder>) -> Self {
         let mut artists = Interner::default();
+        let mut album_artists = Interner::default();
         let mut albums = Interner::default();
         let mut genres = Interner::default();
+        let mut codecs = Interner::default();
         let total: usize = shards.iter().map(|s| s.db_id.len()).sum();
 
         let mut out = Builder::default();
         out.db_id.reserve(total);
         out.artist.reserve(total);
+        out.album_artist.reserve(total);
         out.album.reserve(total);
         out.genre.reserve(total);
         out.year.reserve(total);
         out.track_no.reserve(total);
         out.duration_ms.reserve(total);
+        out.codec.reserve(total);
+        out.bitrate_kbps.reserve(total);
 
         for shard in shards {
             let map_a: Vec<u32> = shard
@@ -270,6 +332,12 @@ impl Projection {
                 .table
                 .iter()
                 .map(|s| artists.intern(s))
+                .collect();
+            let map_aa: Vec<u32> = shard
+                .album_artists
+                .table
+                .iter()
+                .map(|s| album_artists.intern(s))
                 .collect();
             let map_b: Vec<u32> = shard
                 .albums
@@ -283,11 +351,19 @@ impl Projection {
                 .iter()
                 .map(|s| genres.intern(s))
                 .collect();
+            let map_c: Vec<u32> = shard
+                .codecs
+                .table
+                .iter()
+                .map(|s| codecs.intern(s))
+                .collect();
             out.db_id.extend_from_slice(&shard.db_id);
             out.title.append(&shard.title);
             out.title_lower.append(&shard.title_lower);
             out.artist
                 .extend(shard.artist.iter().map(|&s| map_a[s as usize]));
+            out.album_artist
+                .extend(shard.album_artist.iter().map(|&s| map_aa[s as usize]));
             out.album
                 .extend(shard.album.iter().map(|&s| map_b[s as usize]));
             out.genre
@@ -295,6 +371,9 @@ impl Projection {
             out.year.extend_from_slice(&shard.year);
             out.track_no.extend_from_slice(&shard.track_no);
             out.duration_ms.extend_from_slice(&shard.duration_ms);
+            out.codec
+                .extend(shard.codec.iter().map(|&s| map_c[s as usize]));
+            out.bitrate_kbps.extend_from_slice(&shard.bitrate_kbps);
         }
 
         Projection {
@@ -302,14 +381,19 @@ impl Projection {
             title: out.title,
             title_lower: out.title_lower,
             artist: out.artist,
+            album_artist: out.album_artist,
             album: out.album,
             genre: out.genre,
             year: out.year,
             track_no: out.track_no,
             duration_ms: out.duration_ms,
+            codec: out.codec,
+            bitrate_kbps: out.bitrate_kbps,
             artists: SymTable::from(artists),
+            album_artists: SymTable::from(album_artists),
             albums: SymTable::from(albums),
             genres: SymTable::from(genres),
+            codecs: SymTable::from(codecs),
         }
     }
 
@@ -318,30 +402,34 @@ impl Projection {
         RowView {
             title: self.title.get(i),
             artist: &self.artists.strings[self.artist[i] as usize],
+            album_artist: &self.album_artists.strings[self.album_artist[i] as usize],
             album: &self.albums.strings[self.album[i] as usize],
             genre: &self.genres.strings[self.genre[i] as usize],
             year: self.year[i],
             track_no: self.track_no[i],
             duration_ms: self.duration_ms[i],
+            codec: &self.codecs.strings[self.codec[i] as usize],
+            bitrate_kbps: self.bitrate_kbps[i],
         }
     }
 
-    /// Case-folded substring over title, artist, album, and genre. Symbol
-    /// tables are matched whole first; the row scan then only does per-title
-    /// memmem plus three table lookups.
+    /// Case-folded substring over title, artist, album artist, album, and
+    /// genre. Symbol tables are matched whole first; the row scan then only
+    /// does per-title memmem plus four table lookups.
     pub fn search(&self, query: &str) -> Vec<u32> {
         let q = query.to_lowercase();
         let hit = |table: &SymTable| -> Vec<bool> {
             table.lower.par_iter().map(|s| s.contains(&q)).collect()
         };
-        let (a_hit, (b_hit, g_hit)) = rayon::join(
-            || hit(&self.artists),
+        let ((a_hit, aa_hit), (b_hit, g_hit)) = rayon::join(
+            || rayon::join(|| hit(&self.artists), || hit(&self.album_artists)),
             || rayon::join(|| hit(&self.albums), || hit(&self.genres)),
         );
 
         let finder = memmem::Finder::new(q.as_bytes());
         self.scan_rows(|i| {
             a_hit[self.artist[i] as usize]
+                || aa_hit[self.album_artist[i] as usize]
                 || b_hit[self.album[i] as usize]
                 || g_hit[self.genre[i] as usize]
                 || finder.find(self.title_lower.get(i).as_bytes()).is_some()
@@ -400,15 +488,17 @@ impl Projection {
         rank
     }
 
-    /// The canonical browse order: artist, album, track number.
-    pub fn sort_artist_album_track(&self) -> Vec<u32> {
-        let a_rank = Self::ranks(&self.artists);
+    /// The canonical browse order: album artist, album, track number. The
+    /// album artist keys it so an album's tracks stay one run under its
+    /// credited artist, per-track guests and all.
+    pub fn sort_canonical(&self) -> Vec<u32> {
+        let a_rank = Self::ranks(&self.album_artists);
         let b_rank = Self::ranks(&self.albums);
         let mut idx: Vec<u32> = (0..self.len() as u32).collect();
         idx.par_sort_unstable_by_key(|&i| {
             let i = i as usize;
             (
-                a_rank[self.artist[i] as usize],
+                a_rank[self.album_artist[i] as usize],
                 b_rank[self.album[i] as usize],
                 self.track_no[i],
             )
@@ -443,6 +533,12 @@ impl Projection {
                 let rank = Self::ranks(&self.artists);
                 self.order_view(view, descending, move |i| rank[self.artist[i] as usize])
             }
+            SortKey::AlbumArtist => {
+                let rank = Self::ranks(&self.album_artists);
+                self.order_view(view, descending, move |i| {
+                    rank[self.album_artist[i] as usize]
+                })
+            }
             SortKey::Album => {
                 let rank = Self::ranks(&self.albums);
                 self.order_view(view, descending, move |i| rank[self.album[i] as usize])
@@ -454,6 +550,11 @@ impl Projection {
             SortKey::Year => self.order_view(view, descending, |i| self.year[i]),
             SortKey::TrackNo => self.order_view(view, descending, |i| self.track_no[i]),
             SortKey::Duration => self.order_view(view, descending, |i| self.duration_ms[i]),
+            SortKey::Codec => {
+                let rank = Self::ranks(&self.codecs);
+                self.order_view(view, descending, move |i| rank[self.codec[i] as usize])
+            }
+            SortKey::Bitrate => self.order_view(view, descending, |i| self.bitrate_kbps[i]),
         }
     }
 
@@ -466,11 +567,11 @@ impl Projection {
         K: Ord,
         F: Fn(usize) -> K + Sync,
     {
-        let a_rank = Self::ranks(&self.artists);
+        let a_rank = Self::ranks(&self.album_artists);
         let b_rank = Self::ranks(&self.albums);
         let canonical = |i: usize| {
             (
-                a_rank[self.artist[i] as usize],
+                a_rank[self.album_artist[i] as usize],
                 b_rank[self.album[i] as usize],
                 self.track_no[i],
             )
@@ -489,11 +590,18 @@ impl Projection {
         self.db_id.capacity() * 8
             + self.title.heap_bytes()
             + self.title_lower.heap_bytes()
-            + (self.artist.capacity() + self.album.capacity() + self.genre.capacity()) * 4
-            + (self.year.capacity() + self.track_no.capacity()) * 2
+            + (self.artist.capacity()
+                + self.album_artist.capacity()
+                + self.album.capacity()
+                + self.genre.capacity()
+                + self.codec.capacity())
+                * 4
+            + (self.year.capacity() + self.track_no.capacity() + self.bitrate_kbps.capacity()) * 2
             + self.duration_ms.capacity() * 4
             + self.artists.heap_bytes()
+            + self.album_artists.heap_bytes()
             + self.albums.heap_bytes()
             + self.genres.heap_bytes()
+            + self.codecs.heap_bytes()
     }
 }

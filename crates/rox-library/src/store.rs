@@ -125,15 +125,47 @@ fn path_range(root: &Path) -> (String, String) {
     (lo, hi)
 }
 
-/// How many local tracks live under one folder.
-pub fn count_under(conn: &Connection, root: &Path) -> rusqlite::Result<u64> {
+/// One scope's rollup: how many tracks and distinct albums it holds and
+/// what its files weigh on disk.
+#[derive(Clone, Copy, Default)]
+pub struct Stats {
+    pub tracks: u64,
+    pub albums: u64,
+    pub bytes: u64,
+}
+
+/// The rollup columns behind [`Stats`]. Albums are distinct
+/// (album_artist, album) pairs joined on the unit separator so the pair
+/// never collides across the boundary; untagged tracks (empty album)
+/// count no album, and the CASE's NULL keeps them out of the DISTINCT.
+const STATS_COLUMNS: &str = "COUNT(*),
+     COUNT(DISTINCT CASE WHEN album <> '' THEN album_artist || char(31) || album END),
+     COALESCE(SUM(size), 0)";
+
+fn stats_row(r: &rusqlite::Row) -> rusqlite::Result<Stats> {
+    Ok(Stats {
+        tracks: r.get::<_, i64>(0)? as u64,
+        albums: r.get::<_, i64>(1)? as u64,
+        bytes: r.get::<_, i64>(2)? as u64,
+    })
+}
+
+/// The whole library's rollup.
+pub fn stats(conn: &Connection) -> rusqlite::Result<Stats> {
+    conn.query_row(&format!("SELECT {STATS_COLUMNS} FROM tracks"), [], stats_row)
+}
+
+/// The rollup for the local tracks under one folder.
+pub fn stats_under(conn: &Connection, root: &Path) -> rusqlite::Result<Stats> {
     let (lo, hi) = path_range(root);
     conn.query_row(
-        "SELECT COUNT(*) FROM tracks WHERE source = 'local' AND path >= ?1 AND path < ?2",
+        &format!(
+            "SELECT {STATS_COLUMNS} FROM tracks
+             WHERE source = 'local' AND path >= ?1 AND path < ?2"
+        ),
         rusqlite::params![lo, hi],
-        |r| r.get::<_, i64>(0),
+        stats_row,
     )
-    .map(|n| n as u64)
 }
 
 /// Drop every local track under one folder, for when it leaves the
@@ -270,4 +302,56 @@ pub fn scan_range(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(path: &str, album_artist: &str, album: &str, size: u64) -> TrackRow {
+        TrackRow {
+            path: path.into(),
+            title: String::new(),
+            artist: String::new(),
+            album_artist: album_artist.into(),
+            album: album.into(),
+            genre: String::new(),
+            year: 0,
+            track_no: 0,
+            duration_ms: 0,
+            codec: String::new(),
+            bitrate_kbps: 0,
+            size,
+            mtime: 0,
+        }
+    }
+
+    #[test]
+    fn stats_roll_up_tracks_albums_and_bytes() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        insert_batch(
+            &mut conn,
+            &[
+                // One album twice, the same title under another artist,
+                // an untagged track, and one outside the folder.
+                row("/m/a/1.mp3", "X", "Album", 100),
+                row("/m/a/2.mp3", "X", "Album", 200),
+                row("/m/b/1.mp3", "Y", "Album", 300),
+                row("/m/c/1.mp3", "Z", "", 50),
+                row("/n/d/1.mp3", "W", "Other", 400),
+            ],
+        )
+        .unwrap();
+
+        let whole = stats(&conn).unwrap();
+        assert_eq!(
+            (whole.tracks, whole.albums, whole.bytes),
+            (5, 3, 1050),
+            "an empty album tag counts no album"
+        );
+
+        let under = stats_under(&conn, Path::new("/m")).unwrap();
+        assert_eq!((under.tracks, under.albums, under.bytes), (4, 2, 650));
+    }
 }

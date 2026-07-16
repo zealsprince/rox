@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 
 use lofty::prelude::*;
@@ -41,14 +42,15 @@ pub struct ScanSummary {
 }
 
 /// Scan `root` recursively into the store. Blocking; run it off the UI thread.
-/// `progress` is called once per batch with (scanned, total, path), where path
-/// is the last file of the batch, so a UI can report the scan live; returning
-/// false stops the scan after flushing what it has. Cancellation lands at batch
-/// boundaries, which a parallel batch reaches in a fraction of a serial one.
+/// `progress` is called once per file with (scanned, total, path), from the
+/// worker threads and out of walk order, so a UI can report the scan live;
+/// returning false stops the scan after flushing what it has. Cancellation
+/// lands at batch boundaries, which a parallel batch reaches in a fraction
+/// of a serial one.
 pub fn scan(
     conn: &mut Connection,
     root: &Path,
-    mut progress: impl FnMut(usize, usize, &Path) -> bool,
+    progress: impl Fn(usize, usize, &Path) -> bool + Sync,
 ) -> rusqlite::Result<ScanSummary> {
     let known = store::local_files(conn)?;
     let mut files = Vec::new();
@@ -57,13 +59,23 @@ pub fn scan(
     let total = files.len();
 
     let mut summary = ScanSummary::default();
-    let mut scanned = 0;
+    let scanned = AtomicUsize::new(0);
+    let cancelled = AtomicBool::new(false);
     for chunk in files.chunks(BATCH) {
         // Stat and, where changed, tag-read the whole batch at once. The map
         // only touches the shared `known` set for reads, so it needs no locks.
+        // Each worker ticks progress for its own file; a false return raises
+        // the flag the batch loop honors after flushing.
         let outcomes: Vec<Outcome> = chunk
             .par_iter()
-            .map(|path| process_file(path, &known))
+            .map(|path| {
+                let outcome = process_file(path, &known);
+                let done = scanned.fetch_add(1, Ordering::Relaxed) + 1;
+                if !progress(done, total, path) {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+                outcome
+            })
             .collect();
 
         let mut batch: Vec<TrackRow> = Vec::with_capacity(chunk.len());
@@ -84,13 +96,9 @@ pub fn scan(
             store::insert_batch(conn, &batch)?;
         }
 
-        scanned += chunk.len();
-        // `chunk` is a non-empty slice of `files`, so last() is always Some.
-        if let Some(last) = chunk.last() {
-            if !progress(scanned, total, last) {
-                summary.aborted = true;
-                break;
-            }
+        if cancelled.load(Ordering::Relaxed) {
+            summary.aborted = true;
+            break;
         }
     }
     Ok(summary)

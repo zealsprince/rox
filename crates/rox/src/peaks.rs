@@ -20,8 +20,15 @@ use crate::settings;
 /// read as misses and get rewritten.
 const MAGIC: &[u8; 8] = b"roxwave1";
 
-fn cache_dir() -> PathBuf {
+/// Where the cache lives, public so the storage page can size it.
+pub fn cache_dir() -> PathBuf {
     settings::data_dir().join("waveforms")
+}
+
+/// Drop every entry; strips re-decode and re-store on their next play.
+/// Blocking on the directory walk; run off the UI thread.
+pub fn clear() {
+    let _ = std::fs::remove_dir_all(cache_dir());
 }
 
 /// Where a track's entry lives: a hash of the path names the file, the

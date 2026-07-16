@@ -37,6 +37,7 @@ use crate::player::Player;
 use crate::quick_play::QuickPlay;
 use crate::selection::Selection;
 use crate::settings::{LastTrack, Settings, WindowState};
+use crate::thumbs::Thumbs;
 
 const MENU_BAR_H: f32 = 30.0;
 
@@ -405,8 +406,10 @@ fn layout_views(
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let player = cx.new(Player::new);
+        let library = cx.new(Library::new);
         let state = AppState {
-            library: cx.new(Library::new),
+            thumbs: cx.new(|cx| Thumbs::new(&library, cx)),
+            library,
             now_art: cx.new(|cx| NowPlayingArt::new(player.clone(), cx)),
             player,
             selection: cx.new(|_| Selection::default()),

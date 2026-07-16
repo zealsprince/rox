@@ -5098,6 +5098,7 @@ dependencies = [
 name = "rox-library"
 version = "0.1.0"
 dependencies = [
+ "image",
  "lofty",
  "memchr",
  "rayon",

@@ -39,6 +39,7 @@ pub mod icons {
     pub const FILE_TEXT: &str = "icons/file-text.svg";
     pub const DOWNLOAD: &str = "icons/download.svg";
     pub const UPLOAD: &str = "icons/upload.svg";
+    pub const TRASH: &str = "icons/trash-2.svg";
     /// Resolves from the bundled widget set, no file of ours needed.
     pub const CLOSE: &str = "icons/close.svg";
     /// The panel menu's icons, all from the bundled widget set too.

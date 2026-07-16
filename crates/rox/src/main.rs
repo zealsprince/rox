@@ -20,6 +20,7 @@ mod settings;
 mod settings_ui;
 mod settings_window;
 mod source;
+mod thumbs;
 mod workspace;
 
 use gpui::{

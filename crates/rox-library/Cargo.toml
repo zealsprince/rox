@@ -13,3 +13,5 @@ rayon = "1.10"
 memchr = "2.7"
 # Tag reads for the scanner per ADR 4: lofty is the single metadata layer.
 lofty = "0.24"
+# Thumbnail decode, downscale, and re-encode for the artwork service.
+image = "0.25"

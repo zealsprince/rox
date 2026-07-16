@@ -13,9 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Stateful, Subscription, WeakEntity,
-    Window,
+    div, img, prelude::*, px, svg, AnyElement, App, Context, Div, Entity, EventEmitter,
+    FocusHandle, Focusable, KeyDownEvent, MouseButton, ObjectFit, PathPromptOptions,
+    ScrollStrategy, SharedString, Stateful, Subscription, WeakEntity, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
@@ -34,6 +34,7 @@ use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
 use crate::panel::{self, AppState};
 use crate::panel_settings;
+use crate::thumbs::Thumb;
 
 /// Play from a double-clicked row: at most this many tracks are queued
 /// behind it. The quick-play modal caps its queue the same way.
@@ -206,20 +207,29 @@ impl Library {
         self.reload(Refresh::Scan(self.scan_roots.clone()), cx);
     }
 
-    /// Each folder with how many tracks it holds, on the UI-side
-    /// connection. The list never nests, so no track counts twice.
-    pub fn root_counts(&self) -> Vec<(PathBuf, u64)> {
+    /// Each folder with its rollup - tracks, albums, bytes on disk - on
+    /// the UI-side connection. The list never nests, so nothing counts
+    /// twice.
+    pub fn root_stats(&self) -> Vec<(PathBuf, store::Stats)> {
         self.scan_roots
             .iter()
             .map(|root| {
-                let count = self
+                let stats = self
                     .conn
                     .as_ref()
-                    .and_then(|conn| store::count_under(conn, root).ok())
-                    .unwrap_or(0);
-                (root.clone(), count)
+                    .and_then(|conn| store::stats_under(conn, root).ok())
+                    .unwrap_or_default();
+                (root.clone(), stats)
             })
             .collect()
+    }
+
+    /// The whole library's rollup, for the storage page.
+    pub fn stats(&self) -> store::Stats {
+        self.conn
+            .as_ref()
+            .and_then(|conn| store::stats(conn).ok())
+            .unwrap_or_default()
     }
 
     /// Add a folder and scan it. The list never nests, so counts never
@@ -489,6 +499,11 @@ pub struct LibraryConfig {
     pub sort_key: Option<String>,
     #[serde(default)]
     pub sort_desc: bool,
+    /// The view row at the top of the viewport, so a relaunch reopens the
+    /// list where it was left. An index, not pixels: it survives a density
+    /// change, and drifts at most a group's headers if the catalog shifts.
+    #[serde(default)]
+    pub scroll_row: usize,
     /// The panel's palette override.
     #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
     pub theme: PanelTheme,
@@ -557,6 +572,10 @@ struct Group {
     /// none does.
     min_kbps: u16,
     max_kbps: u16,
+    /// The first track's path, what the header tile's thumbnail loads by.
+    /// Resolved through the store once, on the group's first paint; the
+    /// inner None is a track the store no longer knows.
+    art: Option<Option<PathBuf>>,
 }
 
 /// The canonical order with a header block opening every album run: one
@@ -583,6 +602,7 @@ fn group_rows(order: &[u32], projection: &Projection, expanded: bool) -> (Vec<Ro
                 codec: Some(projection.codec[row as usize]),
                 min_kbps: 0,
                 max_kbps: 0,
+                art: None,
             });
             rows.push(Row::Header(g));
             if expanded {
@@ -648,6 +668,9 @@ struct TrackTable {
     /// because the view computation reads it; the panel reads it back for
     /// the layout dump.
     headers: Headers,
+    /// The panel's row height, mirrored here because the header tile is
+    /// sized in rows and the widget's size lives outside the delegate.
+    density: Density,
     /// Selected rows as indices into `view`, track rows only - headers
     /// take no selection. Cleared when the view swaps, since the indices
     /// point elsewhere afterwards.
@@ -696,12 +719,107 @@ impl TrackTable {
         }
     }
 
+    /// The edge length of an expanded header's cover tile: the full
+    /// two-row block, so the art squares off exactly against the text.
+    fn tile_side(&self) -> gpui::Pixels {
+        self.density.size().table_row_height() * 2.
+    }
+
+    /// One half of an expanded header's cover tile. The table draws every
+    /// row one fixed height with no spanning cell, so each of the block's
+    /// two rows clips its own half of a two-row-tall square: the name row
+    /// the top (`bottom` false), the meta row the bottom. Same image
+    /// handle both times, so gpui decodes it once. Pending and missing
+    /// wear the same quiet placeholder, so a landing cover fills the tile
+    /// without shifting the text beside it.
+    fn group_tile(
+        &mut self,
+        g: u32,
+        bottom: bool,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let path = match self
+            .groups
+            .get(g as usize)
+            .and_then(|group| group.art.clone())
+        {
+            Some(path) => path,
+            None => {
+                let id = {
+                    let library = self.state.library.read(cx);
+                    self.groups.get(g as usize).and_then(|group| {
+                        library
+                            .projection()
+                            .map(|projection| projection.db_id[group.first as usize])
+                    })
+                };
+                let path = id
+                    .and_then(|id| self.state.library.read(cx).paths_for(&[id]).ok())
+                    .and_then(|mut paths| paths.pop());
+                if let Some(group) = self.groups.get_mut(g as usize) {
+                    group.art = Some(path.clone());
+                }
+                path
+            }
+        };
+        let thumb = match path {
+            Some(path) => self
+                .state
+                .thumbs
+                .update(cx, |thumbs, cx| thumbs.get(&path, cx)),
+            None => Thumb::Missing,
+        };
+        let side = self.tile_side();
+        let content: AnyElement = match thumb {
+            Thumb::Ready(image) => img(image)
+                .size_full()
+                .object_fit(ObjectFit::Cover)
+                .into_any_element(),
+            _ => div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path(icons::MUSIC)
+                        .size(px(16.))
+                        .text_color(palette::text_faint()),
+                )
+                .into_any_element(),
+        };
+        div()
+            .absolute()
+            .left_0()
+            .top_0()
+            .bottom_0()
+            .w(side)
+            .overflow_hidden()
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .w(side)
+                    .h(side)
+                    .map(|d| if bottom { d.bottom_0() } else { d.top_0() })
+                    .child(content),
+            )
+            .into_any_element()
+    }
+
     /// The group's name line: compact packs the album artist, album, and
     /// year into its one row; expanded gives the album artist the line,
-    /// larger, the year on the right, and hands the album to the meta
-    /// line under it.
-    fn render_group_header(&self, row_ix: usize, g: u32, cx: &App) -> Stateful<Div> {
+    /// larger, the year on the right, hands the album to the meta line
+    /// under it, and opens the two-row cover tile the meta line closes.
+    fn render_group_header(
+        &mut self,
+        row_ix: usize,
+        g: u32,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
         let expanded = self.headers == Headers::Expanded;
+        let tile = expanded.then(|| self.group_tile(g, false, cx));
+        let indent = self.tile_side() + tokens::SPACE_SM;
         let (artist, album, year) = match (
             self.groups.get(g as usize),
             self.state.library.read(cx).projection(),
@@ -729,6 +847,7 @@ impl TrackTable {
             // The expanded block reads as one: no border between its name
             // and meta lines. The width stays, so rows keep their height.
             .when(expanded, |d| d.border_color(gpui::transparent_black()))
+            .when_some(tile, |d, tile| d.child(tile))
             .child(
                 div()
                     .absolute()
@@ -738,6 +857,8 @@ impl TrackTable {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .px(tokens::SPACE_SM)
+                    // Clear of the cover tile, which spans the block.
+                    .when(expanded, |d| d.pl(indent))
                     .overflow_hidden()
                     .when(unknown, |d| {
                         d.child(
@@ -786,8 +907,16 @@ impl TrackTable {
     }
 
     /// The expanded header's second line: the album, then the group's
-    /// genre, codec and bitrate, track count, and total time on the right.
-    fn render_group_meta(&self, row_ix: usize, g: u32, cx: &App) -> Stateful<Div> {
+    /// genre, codec and bitrate, track count, and total time on the
+    /// right, beside the cover tile's bottom half.
+    fn render_group_meta(
+        &mut self,
+        row_ix: usize,
+        g: u32,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        let tile = self.group_tile(g, true, cx);
+        let indent = self.tile_side() + tokens::SPACE_SM;
         let (album, genre, quality, tracks, total_ms) = match (
             self.groups.get(g as usize),
             self.state.library.read(cx).projection(),
@@ -817,30 +946,36 @@ impl TrackTable {
             format!("{tracks} tracks")
         });
         stats.push(fmt_total(total_ms));
-        div().id(("row", row_ix)).bg(palette::bg_elevated()).child(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(tokens::SPACE_SM)
-                .px(tokens::SPACE_SM)
-                .overflow_hidden()
-                .child(
-                    div()
-                        .flex_1()
-                        .truncate()
-                        .text_color(palette::text_secondary())
-                        .child(SharedString::from(album)),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(palette::text_muted())
-                        .child(SharedString::from(stats.join(" | "))),
-                ),
-        )
+        div()
+            .id(("row", row_ix))
+            .bg(palette::bg_elevated())
+            .child(tile)
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .px(tokens::SPACE_SM)
+                    // Clear of the cover tile, which spans the block.
+                    .pl(indent)
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex_1()
+                            .truncate()
+                            .text_color(palette::text_secondary())
+                            .child(SharedString::from(album)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(palette::text_muted())
+                            .child(SharedString::from(stats.join(" | "))),
+                    ),
+            )
     }
 
     /// The next row whose leading text starts with the typed prefix, from
@@ -1029,9 +1164,9 @@ impl TableDelegate for TrackTable {
         // since the table has no row-spanning cell. It hangs off the row
         // itself, outside the horizontally scrolled cell region, so the
         // title stays put when wide column sets scroll sideways.
-        match self.view.get(row_ix) {
-            Some(&Row::Header(g)) => return self.render_group_header(row_ix, g, cx),
-            Some(&Row::Meta(g)) => return self.render_group_meta(row_ix, g, cx),
+        match self.view.get(row_ix).copied() {
+            Some(Row::Header(g)) => return self.render_group_header(row_ix, g, cx),
+            Some(Row::Meta(g)) => return self.render_group_meta(row_ix, g, cx),
             _ => {}
         }
         // The same wash the widget theme paints its own focus row with, so
@@ -1204,6 +1339,10 @@ pub struct LibraryPanel {
     /// The type-ahead buffer and when it last grew; a pause starts over.
     type_ahead: String,
     type_ahead_at: Option<std::time::Instant>,
+    /// The saved scroll row waiting for rows to restore against. The
+    /// catalog loads after the panel builds, so the first non-empty view
+    /// consumes this; None once applied.
+    restore_scroll: Option<usize>,
     /// The track list's row height, applied on the table each render.
     density: Density,
     /// The panel's palette override, live for the render and carried by
@@ -1218,6 +1357,7 @@ pub struct LibraryPanel {
     _table_events: Subscription,
     _search_events: Subscription,
     _player_changed: Subscription,
+    _thumbs_changed: Subscription,
 }
 
 impl LibraryPanel {
@@ -1245,6 +1385,7 @@ impl LibraryPanel {
             view: Arc::new(Vec::new()),
             groups: Vec::new(),
             headers: config.headers,
+            density: config.density,
             selected: HashSet::new(),
             anchor: None,
             cursor: None,
@@ -1270,6 +1411,11 @@ impl LibraryPanel {
         let _player_changed = cx.observe(&state.player, |this: &mut LibraryPanel, _, cx| {
             this.sync_playing(cx)
         });
+        // A thumbnail landing repaints the rows; the panel itself has
+        // nothing to recompute.
+        let _thumbs_changed = cx.observe(&state.thumbs, |this: &mut LibraryPanel, _, cx| {
+            this.table.update(cx, |_, cx| cx.notify());
+        });
         let mut this = LibraryPanel {
             state,
             table,
@@ -1280,6 +1426,7 @@ impl LibraryPanel {
             playing_path: None,
             type_ahead: String::new(),
             type_ahead_at: None,
+            restore_scroll: (config.scroll_row > 0).then_some(config.scroll_row),
             density: config.density,
             theme: config.theme,
             tab_panel: None,
@@ -1288,6 +1435,7 @@ impl LibraryPanel {
             _table_events,
             _search_events,
             _player_changed,
+            _thumbs_changed,
         };
         this.refresh_view(cx);
         // A duplicate opens with a track already playing; pick it up now
@@ -1486,6 +1634,20 @@ impl LibraryPanel {
             table.clear_selection(cx);
             cx.notify();
         });
+        // The saved scroll restores against the first view with rows; a
+        // strict deferred scroll on the handle, so it lands on the paint
+        // that shows them, even if the panel sits in a background tab
+        // until then. Earlier refreshes (the empty initial load) keep it
+        // pending.
+        if let Some(row) = self.restore_scroll {
+            if !self.table.read(cx).delegate().view.is_empty() {
+                self.restore_scroll = None;
+                self.table
+                    .read(cx)
+                    .vertical_scroll_handle
+                    .scroll_to_item_strict(row, ScrollStrategy::Top);
+            }
+        }
     }
 
     fn on_table_event(
@@ -1593,8 +1755,35 @@ impl LibraryPanel {
             column_layout: self.column_specs(cx),
             sort_key: sort.as_ref().map(|(key, _)| key.to_string()),
             sort_desc: sort.is_some_and(|(_, desc)| desc),
+            scroll_row: self.scroll_row(cx),
             theme: self.theme.clone(),
         }
+    }
+
+    /// The view row at the top of the viewport, read off the table's
+    /// scroll handle. The uniform list never reports child bounds to its
+    /// base handle, so the row comes from the pixel offset over the row
+    /// height - the density's, the same fixed height every row renders
+    /// at (the handle's own `last_item_size.item` is the viewport, not a
+    /// row). A restore still pending (the panel never painted) reports
+    /// its target, so an unshown panel round-trips its position instead
+    /// of dropping to zero.
+    fn scroll_row(&self, cx: &App) -> usize {
+        if let Some(row) = self.restore_scroll {
+            return row;
+        }
+        let table = self.table.read(cx);
+        let handle = table.vertical_scroll_handle.0.borrow();
+        if let Some(deferred) = &handle.deferred_scroll_to_item {
+            return deferred.item_index;
+        }
+        let row_height = table.delegate().density.size().table_row_height();
+        if row_height <= px(0.) {
+            return 0;
+        }
+        (-handle.base_handle.offset().y / row_height)
+            .floor()
+            .max(0.) as usize
     }
 
     /// Show or hide a registry column, keeping the rest in place. A shown
@@ -1831,6 +2020,9 @@ impl LibraryPanel {
             return;
         }
         self.density = density;
+        // The delegate mirrors it for the header tile's row math.
+        self.table
+            .update(cx, |table, _| table.delegate_mut().density = density);
         cx.notify();
         self.refresh_title_bar(cx);
     }
@@ -2147,15 +2339,17 @@ fn load(
             let mut summary = ScanSummary::default();
             let mut done = 0;
             for root in roots {
-                let mut root_total = 0;
+                // The scanner ticks this closure per file from its worker
+                // threads, so the captured state is atomics, not &mut.
+                let root_total = AtomicUsize::new(0);
                 let s = scanner::scan(&mut conn, &root, |scanned, total, path| {
-                    root_total = total;
+                    root_total.store(total, Ordering::Relaxed);
                     progress.scanned.store(done + scanned, Ordering::Relaxed);
                     progress.total.store(done + total, Ordering::Relaxed);
                     *progress.current.lock().unwrap() = path.to_string_lossy().into_owned();
                     !progress.cancel.load(Ordering::Relaxed)
                 })?;
-                done += root_total;
+                done += root_total.load(Ordering::Relaxed);
                 summary.indexed += s.indexed;
                 summary.unchanged += s.unchanged;
                 summary.untagged += s.untagged;

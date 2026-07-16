@@ -30,13 +30,18 @@ use crate::design::tokens;
 use crate::panel::{self, AppState, ScrubState};
 use crate::panels::library::{Library, LibraryEvent};
 use crate::settings::{data_dir, settings_path, Settings};
+use crate::thumbs::Thumbs;
+use rox_library::store::Stats;
 use crate::settings_ui::{
     self, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
 };
 
-/// The folder table's fixed columns: the track counts and the remove
-/// control, sized to [`icon_button`]'s footprint so the header aligns.
-const TRACKS_COL_W: Pixels = px(64.);
+/// The folder table's fixed columns: the rollup numbers and the remove
+/// control, the last sized to [`icon_button`]'s footprint so the header
+/// aligns.
+const TRACKS_COL_W: Pixels = px(56.);
+const ALBUMS_COL_W: Pixels = px(56.);
+const SIZE_COL_W: Pixels = px(72.);
 const ACTION_COL_W: Pixels = px(22.);
 
 /// The open settings window, if any: opening again focuses it instead
@@ -87,13 +92,30 @@ enum Page {
     Appearance,
     Behavior,
     Library,
+    Storage,
 }
 
 const PAGES: &[(Page, &str)] = &[
     (Page::Appearance, "Appearance"),
     (Page::Behavior, "Behavior"),
     (Page::Library, "Library"),
+    (Page::Storage, "Storage"),
 ];
+
+/// The storage page's measurements, taken entering the page and after a
+/// clear rather than per frame: the stats and the cache walk are cheap
+/// once, not every paint.
+#[derive(Clone, Copy, Default)]
+struct StorageInfo {
+    /// The whole library's rollup: tracks, albums, bytes of music.
+    music: Stats,
+    /// library.db with its WAL sidecars.
+    catalog: u64,
+    /// thumbs.db with its WAL sidecars.
+    thumbs: u64,
+    /// Everything under waveforms/.
+    waveforms: u64,
+}
 
 struct SettingsWindow {
     page: Page,
@@ -117,9 +139,14 @@ struct SettingsWindow {
     /// the window backs with the playing track's art like every other.
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
-    /// The folder list with per-folder track counts, recounted on every
+    /// The shared thumbnail service, whose durable store the storage
+    /// page sizes and clears.
+    thumbs: Entity<Thumbs>,
+    /// The storage page's numbers; None until the page is first opened.
+    storage: Option<StorageInfo>,
+    /// The folder list with per-folder rollups, recounted on every
     /// library event rather than per frame.
-    root_counts: Vec<(PathBuf, u64)>,
+    root_stats: Vec<(PathBuf, Stats)>,
     _picker_changes: Vec<Subscription>,
     _library_changed: Subscription,
     /// Scan progress ticks notify the library without emitting Updated;
@@ -135,11 +162,16 @@ impl SettingsWindow {
         let library = state.library;
         let settings = Settings::load();
         let base = settings.palette();
-        let root_counts = library.read(cx).root_counts();
+        let root_stats = library.read(cx).root_stats();
         let _library_changed = cx.subscribe(
             &library,
             |this: &mut Self, library, _: &LibraryEvent, cx| {
-                this.root_counts = library.read(cx).root_counts();
+                this.root_stats = library.read(cx).root_stats();
+                // A finished scan moves the storage numbers too; remeasure
+                // if they are on screen.
+                if this.page == Page::Storage {
+                    this.refresh_storage(cx);
+                }
                 cx.notify();
             },
         );
@@ -174,7 +206,9 @@ impl SettingsWindow {
             library,
             now_art: state.now_art,
             backdrop: WindowBackdrop::default(),
-            root_counts,
+            thumbs: state.thumbs,
+            storage: None,
+            root_stats,
             _picker_changes,
             _library_changed,
             _library_repaint,
@@ -445,9 +479,9 @@ impl SettingsWindow {
         section("colors", Some(controls.into_any_element()), body)
     }
 
-    /// One row of the folder table: the path, its track count, and a
+    /// One row of the folder table: the path, its rollup numbers, and a
     /// remove control, inert while a scan runs.
-    fn folder_row(&self, root: &Path, count: u64, scanning: bool, cx: &mut Context<Self>) -> Div {
+    fn folder_row(&self, root: &Path, stats: Stats, scanning: bool, cx: &mut Context<Self>) -> Div {
         let path: SharedString = root.to_string_lossy().into_owned().into();
         let remove = icon_button(icons::CLOSE, scanning, {
             let root = root.to_path_buf();
@@ -465,14 +499,9 @@ impl SettingsWindow {
             .border_b_1()
             .border_color(palette::border())
             .child(div().flex_1().min_w_0().truncate().child(path))
-            .child(
-                div()
-                    .w(TRACKS_COL_W)
-                    .flex_none()
-                    .text_right()
-                    .text_color(palette::text_muted())
-                    .child(count.to_string()),
-            )
+            .child(number_cell(TRACKS_COL_W, stats.tracks.to_string()))
+            .child(number_cell(ALBUMS_COL_W, stats.albums.to_string()))
+            .child(number_cell(SIZE_COL_W, human_size(stats.bytes)))
             .child(remove)
     }
 
@@ -506,9 +535,17 @@ impl SettingsWindow {
                         .text_right()
                         .child("tracks"),
                 )
+                .child(
+                    div()
+                        .w(ALBUMS_COL_W)
+                        .flex_none()
+                        .text_right()
+                        .child("albums"),
+                )
+                .child(div().w(SIZE_COL_W).flex_none().text_right().child("size"))
                 .child(div().w(ACTION_COL_W).flex_none()),
         );
-        if self.root_counts.is_empty() {
+        if self.root_stats.is_empty() {
             table = table.child(
                 div()
                     .py(tokens::SPACE_XS)
@@ -516,8 +553,8 @@ impl SettingsWindow {
                     .child("no folders yet"),
             );
         }
-        for (root, count) in &self.root_counts {
-            table = table.child(self.folder_row(root, *count, scanning, cx));
+        for (root, stats) in &self.root_stats {
+            table = table.child(self.folder_row(root, *stats, scanning, cx));
         }
         body = body.child(table);
 
@@ -556,12 +593,125 @@ impl SettingsWindow {
             .child(small_button(
                 "rescan",
                 icons::REFRESH_CW,
-                scanning || self.root_counts.is_empty(),
+                scanning || self.root_stats.is_empty(),
                 cx.listener(|this, _, _, cx| {
                     this.library.update(cx, |library, cx| library.rescan(cx));
                 }),
             ));
         section("folders", Some(controls.into_any_element()), body)
+    }
+
+    /// Measure everything the storage page shows: the library rollup on
+    /// the UI-side connection, the databases and the waveform cache by
+    /// stat. Cheap enough to run whole on page entry, too heavy per frame.
+    fn refresh_storage(&mut self, cx: &mut Context<Self>) {
+        let data = data_dir();
+        self.storage = Some(StorageInfo {
+            music: self.library.read(cx).stats(),
+            catalog: db_size(&data.join("library.db")),
+            thumbs: db_size(&data.join("thumbs.db")),
+            waveforms: dir_size(&crate::peaks::cache_dir()),
+        });
+        cx.notify();
+    }
+
+    /// Empty the thumbnail store. The delete runs off the UI thread on
+    /// the service's own connection, so it serializes against in-flight
+    /// loads; the sizes refresh when it lands.
+    fn clear_thumbs(&mut self, cx: &mut Context<Self>) {
+        let Some(conn) = self.thumbs.read(cx).store_conn() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .spawn(async move { rox_library::thumbs::clear(&conn) })
+                .await;
+            this.update(cx, |this, cx| this.refresh_storage(cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Drop the waveform cache; strips re-decode on their next play.
+    fn clear_waveforms(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .spawn(async move { crate::peaks::clear() })
+                .await;
+            this.update(cx, |this, cx| this.refresh_storage(cx)).ok();
+        })
+        .detach();
+    }
+
+    fn storage_page(&self, cx: &mut Context<Self>) -> Div {
+        let info = self.storage.unwrap_or_default();
+        let music = format!(
+            "{} tracks, {} albums, {}",
+            info.music.tracks,
+            info.music.albums,
+            human_size(info.music.bytes)
+        );
+        div()
+            .flex()
+            .flex_col()
+            .gap(SECTION_GAP)
+            .child(section(
+                "library",
+                None,
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "music files",
+                        Some("what the scanned folders hold; the files stay where they are"),
+                        readout(music),
+                    ))
+                    .child(panel::setting_row(
+                        "catalog",
+                        Some("the track index scans build (library.db)"),
+                        readout(human_size(info.catalog)),
+                    )),
+            ))
+            .child(section(
+                "caches",
+                None,
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "cover thumbnails",
+                        Some("small covers kept after their first render (thumbs.db); cleared ones rebuild as they scroll into view"),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(tokens::SPACE_SM)
+                            .child(readout(human_size(info.thumbs)))
+                            .child(small_button(
+                                "clear",
+                                icons::TRASH,
+                                false,
+                                cx.listener(|this, _, _, cx| this.clear_thumbs(cx)),
+                            )),
+                    ))
+                    .child(panel::setting_row(
+                        "waveforms",
+                        Some("each track's peak strip, kept after its first play; cleared ones re-decode next play"),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(tokens::SPACE_SM)
+                            .child(readout(human_size(info.waveforms)))
+                            .child(small_button(
+                                "clear",
+                                icons::TRASH,
+                                false,
+                                cx.listener(|this, _, _, cx| this.clear_waveforms(cx)),
+                            )),
+                    )),
+            ))
     }
 
     /// A sidebar footer row: hands something to the system - the raw
@@ -600,6 +750,65 @@ impl SettingsWindow {
     }
 }
 
+/// One right-aligned numeric cell of the folder table.
+fn number_cell(width: Pixels, value: String) -> Div {
+    div()
+        .w(width)
+        .flex_none()
+        .text_right()
+        .text_color(palette::text_muted())
+        .child(value)
+}
+
+/// A setting row's value where a control would sit.
+fn readout(value: String) -> Div {
+    div().text_color(palette::text_muted()).child(value)
+}
+
+/// Bytes as a short human size: whole numbers through KB, one decimal
+/// from MB up, decimal units like the file managers show.
+fn human_size(bytes: u64) -> String {
+    let mut value = bytes as f64;
+    let mut unit = "B";
+    for next in ["KB", "MB", "GB", "TB"] {
+        if value < 1000. {
+            break;
+        }
+        value /= 1000.;
+        unit = next;
+    }
+    match unit {
+        "B" => format!("{bytes} B"),
+        "KB" => format!("{} KB", value.round()),
+        _ => format!("{value:.1} {unit}"),
+    }
+}
+
+/// A SQLite database's weight on disk: the file plus its -wal and -shm
+/// sidecars, which hold real data between checkpoints.
+fn db_size(db: &Path) -> u64 {
+    ["", "-wal", "-shm"]
+        .iter()
+        .map(|suffix| {
+            let mut file = db.as_os_str().to_owned();
+            file.push(suffix);
+            std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0)
+        })
+        .sum()
+}
+
+/// Every file directly under one folder; the waveform cache is flat.
+fn dir_size(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.metadata().ok())
+        .map(|meta| meta.len())
+        .sum()
+}
+
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let columns = grid_columns(window);
@@ -609,8 +818,13 @@ impl Render for SettingsWindow {
                 settings_ui::nav_item(
                     label,
                     self.page == page,
+                    // Entering Storage measures the files fresh, so the
+                    // numbers are current without a per-frame stat.
                     move |this: &mut Self, cx| {
                         this.page = page;
+                        if page == Page::Storage {
+                            this.refresh_storage(cx);
+                        }
                         cx.notify();
                     },
                     cx,
@@ -626,6 +840,7 @@ impl Render for SettingsWindow {
             Page::Appearance => self.appearance_page(columns, cx),
             Page::Behavior => self.behavior_page(cx),
             Page::Library => self.library_page(cx),
+            Page::Storage => self.storage_page(cx),
         };
 
         div()

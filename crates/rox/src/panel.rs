@@ -27,6 +27,7 @@ use crate::design::{palette, tokens};
 use crate::panels::library::Library;
 use crate::player::Player;
 use crate::selection::Selection;
+use crate::thumbs::Thumbs;
 
 /// The shared entities every panel renders over: one player, one catalog,
 /// and one selection per workspace. Cloning shares the handles, not the
@@ -40,6 +41,9 @@ pub struct AppState {
     /// The playing track's art baked into the window backdrop, one bake
     /// shared by every window over this player.
     pub now_art: Entity<NowPlayingArt>,
+    /// The artwork service's texture cache, shared by every view that
+    /// draws cover thumbnails.
+    pub thumbs: Entity<Thumbs>,
 }
 
 /// Every tab panel that has hosted one of our panels, reported from each

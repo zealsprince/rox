@@ -964,6 +964,10 @@ fn apply(cx: &mut App) {
     colors.foreground = palette.text.into();
     colors.accent = palette.bg_menu_hover.into();
     colors.accent_foreground = palette.text_bright.into();
+    // The completion menu paints its matched-prefix highlight with the
+    // stock `blue` token; route it through the brand accent so
+    // suggestion matches read in the app's own highlight color.
+    colors.blue = palette.accent.into();
     // Washes: visible chrome with nothing of ours underneath - the tab
     // strip, the active tab, toolbar buttons, the table's row hover -
     // reading out at surface opacity like our own surface tokens.

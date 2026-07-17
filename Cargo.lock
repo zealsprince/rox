@@ -5073,11 +5073,13 @@ dependencies = [
 name = "rox"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "dirs 5.0.1",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
  "image",
+ "lsp-types",
  "md5",
  "rox-dock",
  "rox-library",

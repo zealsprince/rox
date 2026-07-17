@@ -27,6 +27,7 @@ use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
+use crate::history::History;
 use crate::lastfm::Scrobbler;
 use crate::panels::library::Library;
 use crate::player::Player;
@@ -51,6 +52,9 @@ pub struct AppState {
     /// The last.fm scrobbler over this workspace's player; also where the
     /// live scrobble config lives, for the panels' threshold markers.
     pub scrobbler: Entity<Scrobbler>,
+    /// The listen recorder riding the scrobbler's listen signal; history
+    /// views subscribe to it for the refresh when an event lands.
+    pub history: Entity<History>,
 }
 
 /// Every tab panel that has hosted one of our panels, reported from each
@@ -526,6 +530,32 @@ pub fn popout_item<P: Panel>(
             .icon(Icon::default().path(icons::EXTERNAL_LINK))
             .on_click(move |_, window, cx| {
                 pop_out(panel.clone(), tab_panel.clone(), state.clone(), window, cx);
+            }),
+    )
+}
+
+/// The Reveal in File Browser entry for a track context menu: shows the
+/// track's file in the platform file manager, which lands in its album
+/// folder. The id resolves to its path at click time, so the reveal
+/// follows a file the library has since re-scanned elsewhere; None (an
+/// empty selection) appends nothing.
+pub fn reveal_item(menu: PopupMenu, state: AppState, id: Option<i64>) -> PopupMenu {
+    let Some(id) = id else {
+        return menu;
+    };
+    menu.item(
+        PopupMenuItem::new("Reveal in File Browser")
+            .icon(Icon::default().path(icons::FOLDER))
+            .on_click(move |_, _, cx| {
+                let path = state
+                    .library
+                    .read(cx)
+                    .paths_for(&[id])
+                    .ok()
+                    .and_then(|mut paths| paths.pop());
+                if let Some(path) = path {
+                    cx.reveal_path(&path);
+                }
             }),
     )
 }

@@ -28,6 +28,7 @@ use crate::design::tokens;
 use crate::panel::{self, AppState, PanelSettings, ScrubState};
 use crate::panels::cover::CoverArtPanel;
 use crate::panels::grid::GridPanel;
+use crate::panels::history::HistoryPanel;
 use crate::panels::library::LibraryPanel;
 use crate::panels::metadata::MetadataPanel;
 use crate::panels::spectrum::SpectrumPanel;
@@ -128,6 +129,7 @@ pub fn open_for_view(panel: &Arc<dyn PanelView>, cx: &mut App) {
         GridPanel,
         CoverArtPanel,
         MetadataPanel,
+        HistoryPanel,
         TrackInfoPanel,
         TransportPanel,
         SeekStripPanel,

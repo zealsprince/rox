@@ -369,7 +369,10 @@ impl TrackInfoPanel {
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
         let _library_changed = cx.subscribe(
             &state.library,
-            |this: &mut Self, _, _: &LibraryEvent, cx| {
+            |this: &mut Self, _, event: &LibraryEvent, cx| {
+                if !matches!(event, LibraryEvent::Updated) {
+                    return;
+                }
                 this.meta = None;
                 cx.notify();
             },

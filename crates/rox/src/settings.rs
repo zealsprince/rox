@@ -6,7 +6,9 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use gpui::App;
 use serde::{Deserialize, Serialize};
 
 use rox_playback::engine::LoopMode;
@@ -89,6 +91,46 @@ pub struct Settings {
     /// The quick-play modal's appearance knobs, edited from its own config
     /// panel.
     pub quick_play: QuickPlayConfig,
+    /// How ratings read and click everywhere they show.
+    pub rating_style: RatingStyle,
+    /// The tag editor's last window size and column widths, restored on
+    /// the next open. None until an editor closes.
+    pub tag_editor: Option<TagEditorState>,
+}
+
+/// The rating scale: five stars for quick clicks, or a 0-10 number in
+/// half steps for finer review scores. Both write the library's one
+/// 0-100 value (a star is 20 points, 7.5 is 75), so flipping the style
+/// never loses a rating.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RatingStyle {
+    #[default]
+    Stars,
+    Numeric,
+}
+
+/// The live rating style, a static like the palette's: rating cells read
+/// it in render paths where a settings-file load has no place. Seeded at
+/// startup, flipped by the settings window.
+static RATING_NUMERIC: AtomicBool = AtomicBool::new(false);
+
+pub fn rating_style() -> RatingStyle {
+    if RATING_NUMERIC.load(Ordering::Relaxed) {
+        RatingStyle::Numeric
+    } else {
+        RatingStyle::Stars
+    }
+}
+
+/// Flip the live style and repaint every window: the static sits outside
+/// GPUI's reactivity, so nothing else would notice. Persisting is the
+/// caller's, startup seeds from the file through here too.
+pub fn set_rating_style(style: RatingStyle, cx: &mut App) {
+    RATING_NUMERIC.store(style == RatingStyle::Numeric, Ordering::Relaxed);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
 }
 
 /// How the quick-play modal draws its result list, the knobs its inline
@@ -155,6 +197,17 @@ pub struct LastTrack {
     pub position_secs: f64,
 }
 
+/// The tag editor's remembered shape: window size in logical pixels and
+/// the table's column widths in field order. Every editor window writes
+/// it on close, the last writer wins.
+#[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TagEditorState {
+    pub width: f32,
+    pub height: f32,
+    pub columns: Vec<f32>,
+}
+
 /// A window frame in logical pixels, plus whether the window was maximized
 /// (the frame is then the restore size).
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -185,6 +238,8 @@ impl Default for Settings {
             last_track: None,
             lastfm: Lastfm::default(),
             quick_play: QuickPlayConfig::default(),
+            rating_style: RatingStyle::default(),
+            tag_editor: None,
         }
     }
 }

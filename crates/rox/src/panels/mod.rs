@@ -4,6 +4,7 @@
 
 pub mod cover;
 pub mod grid;
+pub mod history;
 pub mod library;
 pub mod metadata;
 pub mod spectrum;

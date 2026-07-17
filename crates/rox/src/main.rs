@@ -9,6 +9,7 @@
 mod assets;
 mod backdrop;
 mod design;
+mod history;
 mod lastfm;
 mod panel;
 mod panel_settings;
@@ -16,12 +17,16 @@ mod panels;
 mod peaks;
 mod player;
 mod quick_play;
+mod rating_ui;
 mod search;
 mod selection;
 mod settings;
 mod settings_ui;
 mod settings_window;
 mod source;
+mod stats_window;
+mod suggest;
+mod tag_editor;
 mod thumbs;
 mod workspace;
 
@@ -86,6 +91,7 @@ fn main() {
         gpui_component::init(cx);
         rox_dock::init(cx);
         workspace::init(cx);
+        tag_editor::init(cx);
         // Startup theme wiring runs through the palette pipeline - the
         // same choke point every later palette change goes through. The
         // setters set the dark baseline and feed the widget theme tokens.
@@ -93,6 +99,7 @@ fn main() {
         palette::set(settings.palette(), cx);
         palette::set_scalars(settings.surface_opacity, settings.backdrop_strength, cx);
         palette::set_art_theming(settings.art_theming, cx);
+        settings::set_rating_style(settings.rating_style, cx);
         open_workspace(cx);
         cx.activate(true);
     });

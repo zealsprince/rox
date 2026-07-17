@@ -199,9 +199,11 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Tag read isolated per file: a malformed file that errors or panics
 /// lofty's parser costs that one file its tags, never the scan.
 fn read_tags(path: &Path) -> Option<TrackRow> {
-    let file = catch_unwind(AssertUnwindSafe(|| lofty::read_from_path(path)))
-        .ok()?
-        .ok()?;
+    let file = catch_unwind(AssertUnwindSafe(|| {
+        lofty::probe::Probe::open(path).and_then(|p| p.options(crate::parse_opts()).read())
+    }))
+    .ok()?
+    .ok()?;
     let mut row = fallback_row(path);
     row.duration_ms = file.properties().duration().as_millis() as u32;
     // The parsed type beats the extension a fallback row guesses from; a
@@ -240,6 +242,9 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         row.disc_no = tag.disk().unwrap_or(0) as u16;
         row.track_no = tag.track().unwrap_or(0) as u16;
     }
+    // The rating reads concretely per format - FMPS lives in TXXX frames
+    // and unmapped Vorbis keys, which the generic tag above never carries.
+    row.rating = crate::rating::read(path, file.file_type()).unwrap_or(0);
     Some(row)
 }
 
@@ -264,6 +269,7 @@ fn fallback_row(path: &Path) -> TrackRow {
             .map(str::to_lowercase)
             .unwrap_or_default(),
         bitrate_kbps: 0,
+        rating: 0,
         size: 0,
         mtime: 0,
     }
@@ -324,5 +330,24 @@ mod tests {
         retitle("Second");
         assert_eq!(reindex(&mut conn, std::slice::from_ref(&path)).unwrap(), 1);
         assert_eq!(title(&conn), "Second");
+
+        // A written rating imports on the re-read, half points intact.
+        writer::commit(
+            &path,
+            &[Change {
+                field: Field::Rating,
+                value: Some("7.5".into()),
+            }],
+        )
+        .unwrap();
+        assert_eq!(reindex(&mut conn, std::slice::from_ref(&path)).unwrap(), 1);
+        let rating: i64 = conn
+            .query_row(
+                "SELECT rating FROM tracks WHERE path = ?1",
+                [path.to_str().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rating, 75);
     }
 }

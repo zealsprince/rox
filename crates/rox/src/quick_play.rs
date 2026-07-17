@@ -8,11 +8,12 @@
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, svg, uniform_list, App, Context, DismissEvent, Div, Entity, EventEmitter,
-    FocusHandle, Focusable, KeyDownEvent, MouseButton, ScrollStrategy, SharedString, Subscription,
-    UniformListScrollHandle, Window,
+    div, prelude::*, px, svg, uniform_list, Action, App, Context, DismissEvent, Div, Entity,
+    EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton, ScrollStrategy, SharedString,
+    Subscription, UniformListScrollHandle, Window,
 };
 use gpui_component::input::{MoveDown, MovePageDown, MovePageUp, MoveUp};
+use rox_library::projection::QUERY_FIELDS;
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
@@ -20,11 +21,15 @@ use crate::panel::{self, AppState};
 use crate::panels::library::{fmt_ms, LibraryEvent, QUEUE_CAP};
 use crate::search::{SearchBox, SearchEvent};
 use crate::settings::{QuickPlayConfig, Settings};
+use crate::suggest;
 
 /// One result row's height; the list is a uniform_list, so every row must
 /// agree on it. Comfortable rows run taller.
 const ROW_H: f32 = 30.;
 const ROW_H_COMFORTABLE: f32 = 40.;
+
+/// What the subtitle line under the title adds to a row's height.
+const SUBTITLE_H: f32 = 14.;
 
 /// How many rows show before the list scrolls.
 const VISIBLE_ROWS: usize = 14;
@@ -68,10 +73,17 @@ impl QuickPlay {
         let search = cx.new(|cx| SearchBox::new("search the library", "", window, cx));
         let _input_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // A scan finishing mid-search would leave the hits pointing into
-        // the old projection; recompute over the new one.
+        // the old projection; recompute over the new one, suggestions
+        // included.
         let _library_changed = cx.subscribe(
             &state.library,
-            |this: &mut QuickPlay, _, _: &LibraryEvent, cx| this.refresh(cx),
+            |this: &mut QuickPlay, _, event: &LibraryEvent, cx| {
+                if !matches!(event, LibraryEvent::Updated) {
+                    return;
+                }
+                this.attach_suggestions(cx);
+                this.refresh(cx);
+            },
         );
         let mut this = QuickPlay {
             state,
@@ -86,17 +98,47 @@ impl QuickPlay {
             _input_events,
             _library_changed,
         };
+        this.attach_suggestions(cx);
         this.refresh(cx);
         this
     }
 
-    /// Each result row's height, taller when comfortable rows are on.
+    /// Point the search box's suggestion menu at the current projection;
+    /// at open and again whenever a scan lands a new one.
+    fn attach_suggestions(&self, cx: &mut Context<Self>) {
+        let provider = {
+            let library = self.state.library.read(cx);
+            suggest::query_provider(library.projection())
+        };
+        self.search
+            .update(cx, |search, cx| search.set_completions(provider, cx));
+    }
+
+    /// Each result row's height, taller when comfortable rows are on and
+    /// again when the subtitle line shows.
     fn row_h(&self) -> f32 {
-        if self.config.comfortable {
+        let base = if self.config.comfortable {
             ROW_H_COMFORTABLE
         } else {
             ROW_H
+        };
+        if self.config.show_subtitle {
+            base + SUBTITLE_H
+        } else {
+            base
         }
+    }
+
+    /// Let the search box's suggestion menu take an action first; true
+    /// when it was open and consumed it.
+    fn menu_action(
+        &mut self,
+        action: Box<dyn Action>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.search
+            .update(cx, |search, cx| search.menu_action(action, window, cx))
     }
 
     /// Flip the config panel open or shut.
@@ -252,17 +294,25 @@ impl QuickPlay {
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| this.play(ix, cx)),
                     )
-                    .child(div().flex_1().min_w_0().truncate().child(title))
-                    .when(self.config.show_subtitle, |d| {
-                        d.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_color(palette::text_secondary())
-                                .child(sub),
-                        )
-                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .justify_center()
+                            .child(div().w_full().truncate().child(title))
+                            .when(self.config.show_subtitle, |d| {
+                                d.child(
+                                    div()
+                                        .w_full()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(palette::text_secondary())
+                                        .child(sub),
+                                )
+                            }),
+                    )
                     .when(self.config.show_duration, |d| {
                         d.child(
                             div()
@@ -273,6 +323,45 @@ impl QuickPlay {
                     })
             })
             .collect()
+    }
+
+    /// The footer of field chips that makes the query syntax visible:
+    /// each one appends its `field:` to the query and pops the value
+    /// suggestions, so narrowing is one click plus picking a value.
+    fn hint_row(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .px(tokens::SPACE_SM)
+            .py(tokens::SPACE_XS)
+            .border_t_1()
+            .border_color(palette::border())
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .text_xs()
+            .text_color(palette::text_muted())
+            .child("narrow by")
+            .children(QUERY_FIELDS.iter().map(|(name, _)| {
+                let term = SharedString::from(format!("{name}:"));
+                div()
+                    .px(tokens::SPACE_XS)
+                    .rounded(tokens::RADIUS)
+                    .bg(palette::bg_control())
+                    .cursor_pointer()
+                    .hover(|d| d.bg(palette::bg_control_hover_opaque()))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener({
+                            let term = term.clone();
+                            move |this, _, window, cx| {
+                                this.search.update(cx, |search, cx| {
+                                    search.append_term(&term, window, cx)
+                                });
+                            }
+                        }),
+                    )
+                    .child(term)
+            }))
     }
 
     /// The settings button beside the search box: a sliders glyph that
@@ -396,9 +485,18 @@ impl Render for QuickPlay {
             // The input binds up/down (and page keys) to its own cursor
             // actions and swallows them without propagating on a single
             // line, so the list takes them in the capture phase before
-            // they reach it.
-            .capture_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_selected(-1, cx)))
-            .capture_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_selected(1, cx)))
+            // they reach it - unless the suggestion menu is open, which
+            // gets them first so it stays navigable.
+            .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
+                if !this.menu_action(Box::new(MoveUp), window, cx) {
+                    this.move_selected(-1, cx);
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
+                if !this.menu_action(Box::new(MoveDown), window, cx) {
+                    this.move_selected(1, cx);
+                }
+            }))
             .capture_action(cx.listener(|this, _: &MovePageUp, _, cx| {
                 this.move_selected(-PAGE_ROWS, cx)
             }))
@@ -435,6 +533,7 @@ impl Render for QuickPlay {
                     .when(self.show_config, |d| d.child(self.config_panel(cx))),
             )
             .child(list)
+            .child(self.hint_row(cx))
             .when_some(self.error.clone(), |d, error| {
                 d.child(
                     div()

@@ -4,10 +4,12 @@
 //! precomputed Vec<u32> of row indices over integer ranks. Search per ADR 6 is
 //! substring: the interned tables are scanned whole (they are a hundredth the
 //! row count), only titles need the full-row scan, and that scan splits across
-//! cores in fixed chunks.
+//! cores in fixed chunks. A query is terms ANDed per [`parse_query`], each
+//! free or pinned to one field with `field:value` syntax.
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use memchr::memmem;
 use rayon::prelude::*;
@@ -124,6 +126,7 @@ pub struct Builder {
     duration_ms: Vec<u32>,
     codec: Vec<u32>,
     bitrate_kbps: Vec<u16>,
+    rating: Vec<u8>,
     artists: Interner,
     album_artists: Interner,
     albums: Interner,
@@ -147,6 +150,7 @@ impl Builder {
         duration_ms: u32,
         codec: &str,
         bitrate_kbps: u16,
+        rating: u8,
     ) {
         self.db_id.push(id);
         self.title.push(title);
@@ -162,6 +166,7 @@ impl Builder {
         self.duration_ms.push(duration_ms);
         self.codec.push(self.codecs.intern(codec));
         self.bitrate_kbps.push(bitrate_kbps);
+        self.rating.push(rating);
     }
 }
 
@@ -179,6 +184,10 @@ pub struct Projection {
     pub duration_ms: Vec<u32>,
     pub codec: Vec<u32>,
     pub bitrate_kbps: Vec<u16>,
+    /// Ratings on the app's 0-100 scale, 0 unrated. Atomics, unlike every
+    /// other column: a rating click writes through the shared Arc in
+    /// place, so rating a track never pays a projection reload.
+    pub rating: Vec<AtomicU8>,
     pub artists: SymTable,
     pub album_artists: SymTable,
     pub albums: SymTable,
@@ -198,6 +207,89 @@ pub struct RowView<'a> {
     pub duration_ms: u32,
     pub codec: &'a str,
     pub bitrate_kbps: u16,
+    pub rating: u8,
+}
+
+/// A field a query term can be pinned to with `field:value` syntax.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryField {
+    Title,
+    Artist,
+    AlbumArtist,
+    Album,
+    Genre,
+    Year,
+}
+
+/// The `field:` prefixes the query syntax accepts, shared with the
+/// suggestion provider so both sides agree on the names.
+pub const QUERY_FIELDS: &[(&str, QueryField)] = &[
+    ("title", QueryField::Title),
+    ("artist", QueryField::Artist),
+    ("albumartist", QueryField::AlbumArtist),
+    ("album", QueryField::Album),
+    ("genre", QueryField::Genre),
+    ("year", QueryField::Year),
+];
+
+/// One parsed query term: a lowercased needle, maybe pinned to one field.
+pub struct Term {
+    pub field: Option<QueryField>,
+    pub needle: String,
+}
+
+/// Split a query into terms. Whitespace separates, double quotes keep a
+/// value together, and a known `field:` prefix pins the term to that
+/// field; every term must match for a row to hit. So
+/// `stronger artist:"daft punk"` is a free term and an artist term, and
+/// an unknown prefix like `ac:dc` stays one free term.
+pub fn parse_query(query: &str) -> Vec<Term> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut token = String::new();
+    let mut in_quotes = false;
+    for c in query.chars() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                token.push(c);
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if !token.is_empty() {
+                    tokens.push(std::mem::take(&mut token));
+                }
+            }
+            c => token.push(c),
+        }
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+
+    let strip = |s: &str| -> String { s.chars().filter(|&c| c != '"').collect() };
+    tokens
+        .iter()
+        .map(|raw| {
+            if let Some(i) = raw.find(':') {
+                let name = &raw[..i];
+                if !name.contains('"') {
+                    let name = name.to_lowercase();
+                    if let Some(&(_, field)) =
+                        QUERY_FIELDS.iter().find(|(n, _)| *n == name)
+                    {
+                        return Term {
+                            field: Some(field),
+                            needle: strip(&raw[i + 1..]).to_lowercase(),
+                        };
+                    }
+                }
+            }
+            Term {
+                field: None,
+                needle: strip(raw).to_lowercase(),
+            }
+        })
+        .filter(|t| !t.needle.is_empty())
+        .collect()
 }
 
 /// A sortable column of the projection.
@@ -213,6 +305,7 @@ pub enum SortKey {
     Duration,
     Codec,
     Bitrate,
+    Rating,
 }
 
 impl Projection {
@@ -232,7 +325,7 @@ impl Projection {
             conn,
             0,
             max,
-            |id, title, artist, album_artist, album, genre, year, dn, tn, dur, codec, kbps| {
+            |id, title, artist, album_artist, album, genre, year, dn, tn, dur, codec, kbps, rating| {
                 b.push(
                     id,
                     title,
@@ -246,6 +339,7 @@ impl Projection {
                     dur,
                     codec,
                     kbps,
+                    rating,
                 );
             },
         )?;
@@ -283,7 +377,8 @@ impl Projection {
                              tn,
                              dur,
                              codec,
-                             kbps| {
+                             kbps,
+                             rating| {
                                 b.push(
                                     id,
                                     title,
@@ -297,6 +392,7 @@ impl Projection {
                                     dur,
                                     codec,
                                     kbps,
+                                    rating,
                                 );
                             },
                         )?;
@@ -334,6 +430,7 @@ impl Projection {
         out.duration_ms.reserve(total);
         out.codec.reserve(total);
         out.bitrate_kbps.reserve(total);
+        out.rating.reserve(total);
 
         for shard in shards {
             let map_a: Vec<u32> = shard
@@ -384,6 +481,7 @@ impl Projection {
             out.codec
                 .extend(shard.codec.iter().map(|&s| map_c[s as usize]));
             out.bitrate_kbps.extend_from_slice(&shard.bitrate_kbps);
+            out.rating.extend_from_slice(&shard.rating);
         }
 
         Projection {
@@ -400,6 +498,7 @@ impl Projection {
             duration_ms: out.duration_ms,
             codec: out.codec,
             bitrate_kbps: out.bitrate_kbps,
+            rating: out.rating.into_iter().map(AtomicU8::new).collect(),
             artists: SymTable::from(artists),
             album_artists: SymTable::from(album_artists),
             albums: SymTable::from(albums),
@@ -422,29 +521,102 @@ impl Projection {
             duration_ms: self.duration_ms[i],
             codec: &self.codecs.strings[self.codec[i] as usize],
             bitrate_kbps: self.bitrate_kbps[i],
+            rating: self.rating[i].load(Ordering::Relaxed),
         }
     }
 
-    /// Case-folded substring over title, artist, album artist, album, and
-    /// genre. Symbol tables are matched whole first; the row scan then only
-    /// does per-title memmem plus four table lookups.
+    /// Case-folded substring search, one term at a time per
+    /// [`parse_query`]: a free term matches title, artist, album artist,
+    /// album, or genre; a pinned term only its field. Terms AND together.
+    /// Symbol tables are matched whole first; the row scan then only does
+    /// per-title memmem plus table lookups.
     pub fn search(&self, query: &str) -> Vec<u32> {
-        let q = query.to_lowercase();
-        let hit = |table: &SymTable| -> Vec<bool> {
-            table.lower.par_iter().map(|s| s.contains(&q)).collect()
-        };
-        let ((a_hit, aa_hit), (b_hit, g_hit)) = rayon::join(
-            || rayon::join(|| hit(&self.artists), || hit(&self.album_artists)),
-            || rayon::join(|| hit(&self.albums), || hit(&self.genres)),
-        );
+        let terms = parse_query(query);
+        if terms.is_empty() {
+            return (0..self.len() as u32).collect();
+        }
 
-        let finder = memmem::Finder::new(q.as_bytes());
+        /// What one term's row check needs, precomputed off the row scan.
+        enum Hits<'a> {
+            Any {
+                a: Vec<bool>,
+                aa: Vec<bool>,
+                b: Vec<bool>,
+                g: Vec<bool>,
+                finder: memmem::Finder<'a>,
+            },
+            Sym {
+                column: &'a [u32],
+                mask: Vec<bool>,
+            },
+            Title(memmem::Finder<'a>),
+            Year(Vec<bool>),
+        }
+
+        let hit = |table: &SymTable, q: &str| -> Vec<bool> {
+            table.lower.par_iter().map(|s| s.contains(q)).collect()
+        };
+        let hits: Vec<Hits> = terms
+            .iter()
+            .map(|t| match t.field {
+                None => Hits::Any {
+                    a: hit(&self.artists, &t.needle),
+                    aa: hit(&self.album_artists, &t.needle),
+                    b: hit(&self.albums, &t.needle),
+                    g: hit(&self.genres, &t.needle),
+                    finder: memmem::Finder::new(t.needle.as_bytes()),
+                },
+                Some(QueryField::Artist) => Hits::Sym {
+                    column: &self.artist,
+                    mask: hit(&self.artists, &t.needle),
+                },
+                Some(QueryField::AlbumArtist) => Hits::Sym {
+                    column: &self.album_artist,
+                    mask: hit(&self.album_artists, &t.needle),
+                },
+                Some(QueryField::Album) => Hits::Sym {
+                    column: &self.album,
+                    mask: hit(&self.albums, &t.needle),
+                },
+                Some(QueryField::Genre) => Hits::Sym {
+                    column: &self.genre,
+                    mask: hit(&self.genres, &t.needle),
+                },
+                Some(QueryField::Title) => {
+                    Hits::Title(memmem::Finder::new(t.needle.as_bytes()))
+                }
+                // A year needle matches on the digits, so `year:199`
+                // takes the whole decade; the mask covers every u16 once
+                // instead of formatting per row.
+                Some(QueryField::Year) => Hits::Year(
+                    (0..=u16::MAX)
+                        .map(|y| y.to_string().contains(&t.needle))
+                        .collect(),
+                ),
+            })
+            .collect();
+
         self.scan_rows(|i| {
-            a_hit[self.artist[i] as usize]
-                || aa_hit[self.album_artist[i] as usize]
-                || b_hit[self.album[i] as usize]
-                || g_hit[self.genre[i] as usize]
-                || finder.find(self.title_lower.get(i).as_bytes()).is_some()
+            hits.iter().all(|h| match h {
+                Hits::Any {
+                    a,
+                    aa,
+                    b,
+                    g,
+                    finder,
+                } => {
+                    a[self.artist[i] as usize]
+                        || aa[self.album_artist[i] as usize]
+                        || b[self.album[i] as usize]
+                        || g[self.genre[i] as usize]
+                        || finder.find(self.title_lower.get(i).as_bytes()).is_some()
+                }
+                Hits::Sym { column, mask } => mask[column[i] as usize],
+                Hits::Title(finder) => {
+                    finder.find(self.title_lower.get(i).as_bytes()).is_some()
+                }
+                Hits::Year(mask) => mask[self.year[i] as usize],
+            })
         })
     }
 
@@ -570,6 +742,9 @@ impl Projection {
                 self.order_view(view, descending, move |i| rank[self.codec[i] as usize])
             }
             SortKey::Bitrate => self.order_view(view, descending, |i| self.bitrate_kbps[i]),
+            SortKey::Rating => {
+                self.order_view(view, descending, |i| self.rating[i].load(Ordering::Relaxed))
+            }
         }
     }
 
@@ -618,6 +793,7 @@ impl Projection {
                 + self.bitrate_kbps.capacity())
                 * 2
             + self.duration_ms.capacity() * 4
+            + self.rating.capacity()
             + self.artists.heap_bytes()
             + self.album_artists.heap_bytes()
             + self.albums.heap_bytes()
@@ -645,9 +821,82 @@ mod tests {
             duration_ms: 0,
             codec: String::new(),
             bitrate_kbps: 0,
+            rating: 0,
             size: 0,
             mtime: 0,
         }
+    }
+
+    fn track(path: &str, title: &str, artist: &str, year: u16) -> TrackRow {
+        TrackRow {
+            path: path.into(),
+            title: title.into(),
+            artist: artist.into(),
+            album_artist: String::new(),
+            album: String::new(),
+            genre: String::new(),
+            year,
+            disc_no: 0,
+            track_no: 0,
+            duration_ms: 0,
+            codec: String::new(),
+            bitrate_kbps: 0,
+            rating: 0,
+            size: 0,
+            mtime: 0,
+        }
+    }
+
+    fn titles_for(p: &Projection, query: &str) -> Vec<String> {
+        p.search(query)
+            .iter()
+            .map(|&i| p.title.get(i as usize).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn query_parses_free_and_pinned_terms() {
+        let terms = parse_query(r#"stronger artist:"Daft Punk" ac:dc year:199"#);
+        assert_eq!(terms.len(), 4);
+        assert_eq!((terms[0].field, terms[0].needle.as_str()), (None, "stronger"));
+        assert_eq!(
+            (terms[1].field, terms[1].needle.as_str()),
+            (Some(QueryField::Artist), "daft punk")
+        );
+        // An unknown prefix stays free text, colon and all.
+        assert_eq!((terms[2].field, terms[2].needle.as_str()), (None, "ac:dc"));
+        assert_eq!(
+            (terms[3].field, terms[3].needle.as_str()),
+            (Some(QueryField::Year), "199")
+        );
+    }
+
+    /// A pinned term narrows to its field only, and terms AND together,
+    /// so a title term plus an artist term takes one artist's version.
+    #[test]
+    fn search_pins_terms_to_fields() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "Stronger", "Kanye West", 2007),
+                track("/m/2.mp3", "Stronger", "Daft Punk", 2001),
+                track("/m/3.mp3", "Daft Punk Tribute", "Nobody", 2010),
+            ],
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn).unwrap();
+
+        // Free text still matches across fields.
+        assert_eq!(titles_for(&p, "daft").len(), 2);
+        // Pinned to the artist, the tribute title no longer hits.
+        let hits = p.search(r#"stronger artist:"daft punk""#);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(p.resolve(hits[0]).artist, "Daft Punk");
+        // A year needle matches on the digits.
+        assert_eq!(titles_for(&p, "year:200").len(), 2);
+        assert_eq!(titles_for(&p, "stronger year:2007").len(), 1);
     }
 
     /// A two-disc set plays disc 1 through before disc 2 starts, instead

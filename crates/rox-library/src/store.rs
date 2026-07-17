@@ -36,6 +36,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             duration_ms  INTEGER NOT NULL,
             codec        TEXT NOT NULL DEFAULT '',
             bitrate      INTEGER NOT NULL DEFAULT 0,
+            rating       INTEGER NOT NULL DEFAULT 0,
             size         INTEGER NOT NULL,
             mtime        INTEGER NOT NULL,
             UNIQUE (source, path)
@@ -71,6 +72,15 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
              UPDATE tracks SET mtime = 0;",
         )?;
     }
+    // And for a library from before ratings. No mtime reset here: the
+    // rating is the app's own, never read from tags, so no rescan is owed.
+    let mut stmt =
+        conn.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name = 'rating'")?;
+    if !stmt.exists([])? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN rating INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    // The listen events ride the same database and schema setup (ADR 11).
+    crate::listens::init_schema(conn)?;
     Ok(())
 }
 
@@ -81,15 +91,17 @@ pub fn count(conn: &Connection) -> rusqlite::Result<u64> {
 
 /// Insert or refresh one batch of local rows inside a single transaction. An
 /// existing (source, path) row keeps its id, so projection db_ids stay valid
-/// across a rescan.
+/// across a rescan. A re-read file's rating imports like any tag, except a
+/// zero keeps the stored one: a rating the writer could not land in the
+/// file (wav, read-only media) must not vanish because the file changed.
 pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     {
         let mut stmt = tx.prepare_cached(
             "INSERT INTO tracks
              (path, title, artist, album_artist, album, genre, year, disc_no, track_no,
-              duration_ms, codec, bitrate, size, mtime)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+              duration_ms, codec, bitrate, rating, size, mtime)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT (source, path) DO UPDATE SET
                 title = excluded.title, artist = excluded.artist,
                 album_artist = excluded.album_artist,
@@ -97,7 +109,9 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 year = excluded.year, disc_no = excluded.disc_no,
                 track_no = excluded.track_no,
                 duration_ms = excluded.duration_ms, codec = excluded.codec,
-                bitrate = excluded.bitrate, size = excluded.size,
+                bitrate = excluded.bitrate,
+                rating = CASE excluded.rating WHEN 0 THEN rating ELSE excluded.rating END,
+                size = excluded.size,
                 mtime = excluded.mtime",
         )?;
         for r in rows {
@@ -114,6 +128,7 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 r.duration_ms,
                 r.codec,
                 r.bitrate_kbps,
+                r.rating,
                 r.size as i64,
                 r.mtime,
             ])?;
@@ -227,6 +242,81 @@ pub fn common_root(conn: &Connection) -> rusqlite::Result<Option<PathBuf>> {
     Ok(root.filter(|root| root.parent().is_some()))
 }
 
+/// Apply one file's committed tag changes to its row, so the projection
+/// can reload the edit without a rescan. Only the columns the library
+/// projects move; comment, composer, and custom fields have no column
+/// and fall through. The stored mtime stays put on purpose: the write
+/// bumped the file's, so the next rescan re-reads it and squares the
+/// row with the tag wholesale.
+pub fn apply_changes(
+    conn: &Connection,
+    id: i64,
+    changes: &[crate::writer::Change],
+) -> rusqlite::Result<()> {
+    use crate::writer::Field;
+    // The leading digits of a tag value: a "2020-05-01" date and a
+    // "5/12" track fraction both reduce to the number the column holds,
+    // the scanner's read of the same tags.
+    fn leading(value: &str) -> i64 {
+        let digits: String = value.chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits.parse().unwrap_or(0)
+    }
+    for change in changes {
+        let value = change.value.as_deref().unwrap_or("");
+        // The rating speaks the writer's 0-10 display number, not the
+        // column's 0-100; a cleared or unparseable one lands as unrated.
+        if change.field == Field::Rating {
+            let rating = crate::rating::parse_display(value).unwrap_or(0);
+            conn.execute(
+                "UPDATE tracks SET rating = ?2 WHERE id = ?1",
+                rusqlite::params![id, rating],
+            )?;
+            continue;
+        }
+        let (column, number) = match &change.field {
+            Field::Title => ("title", false),
+            Field::Artist => ("artist", false),
+            Field::Album => ("album", false),
+            Field::AlbumArtist => ("album_artist", false),
+            Field::Genre => ("genre", false),
+            Field::Year => ("year", true),
+            Field::TrackNo => ("track_no", true),
+            Field::DiscNo => ("disc_no", true),
+            _ => continue,
+        };
+        if number {
+            conn.execute(
+                &format!("UPDATE tracks SET {column} = ?2 WHERE id = ?1"),
+                rusqlite::params![id, leading(value)],
+            )?;
+        } else if column == "album_artist" && value.is_empty() {
+            // A cleared album artist falls back to the track artist, the
+            // scanner's grouping rule.
+            conn.execute(
+                "UPDATE tracks SET album_artist = artist WHERE id = ?1",
+                rusqlite::params![id],
+            )?;
+        } else {
+            conn.execute(
+                &format!("UPDATE tracks SET {column} = ?2 WHERE id = ?1"),
+                rusqlite::params![id, value],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// One track's rating onto its row: the app's 0-100 scale, 0 unrated.
+/// Ratings live in the library alone, never in the file's tags, so this
+/// touches no mtime and owes no rescan.
+pub fn set_rating(conn: &Connection, id: i64, rating: u8) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE tracks SET rating = ?2 WHERE id = ?1",
+        rusqlite::params![id, rating],
+    )?;
+    Ok(())
+}
+
 /// Resolve projection db_ids back to playable paths, in the order given.
 pub fn paths_for(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare_cached("SELECT path FROM tracks WHERE id = ?1")?;
@@ -284,17 +374,17 @@ pub fn max_rowid(conn: &Connection) -> rusqlite::Result<i64> {
 
 /// Stream the projection columns for one rowid range, in id order. The
 /// sink's string order mirrors the SELECT: title, artist, album artist,
-/// album, genre, then codec after the numbers.
+/// album, genre, then codec after the numbers, the rating last.
 #[allow(clippy::type_complexity)]
 pub fn scan_range(
     conn: &Connection,
     lo: i64,
     hi: i64,
-    mut sink: impl FnMut(i64, &str, &str, &str, &str, &str, u16, u16, u16, u32, &str, u16),
+    mut sink: impl FnMut(i64, &str, &str, &str, &str, &str, u16, u16, u16, u32, &str, u16, u8),
 ) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, title, artist, album_artist, album, genre, year, disc_no, track_no,
-                duration_ms, codec, bitrate
+                duration_ms, codec, bitrate, rating
          FROM tracks WHERE id > ?1 AND id <= ?2 ORDER BY id",
     )?;
     let mut rows = stmt.query(rusqlite::params![lo, hi])?;
@@ -312,6 +402,7 @@ pub fn scan_range(
             row.get::<_, i64>(9)? as u32,
             row.get_ref(10)?.as_str().unwrap_or(""),
             row.get::<_, i64>(11)? as u16,
+            row.get::<_, i64>(12)? as u8,
         );
     }
     Ok(())
@@ -335,6 +426,7 @@ mod tests {
             duration_ms: 0,
             codec: String::new(),
             bitrate_kbps: 0,
+            rating: 0,
             size,
             mtime: 0,
         }
@@ -367,5 +459,77 @@ mod tests {
 
         let under = stats_under(&conn, Path::new("/m")).unwrap();
         assert_eq!((under.tracks, under.albums, under.bytes), (4, 2, 650));
+    }
+
+    /// A rating lands on the row and a rescan's upsert leaves it alone,
+    /// since ratings are the app's own and never come back from tags.
+    #[test]
+    fn ratings_survive_a_rescan() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let track = || row("/m/a/1.mp3", "X", "Album", 100);
+        insert_batch(&mut conn, &[track()]).unwrap();
+        let id = id_for_path(&conn, "/m/a/1.mp3").unwrap().unwrap();
+
+        set_rating(&conn, id, 75).unwrap();
+        insert_batch(&mut conn, &[track()]).unwrap();
+
+        let p = crate::projection::Projection::load_serial(&conn).unwrap();
+        assert_eq!(p.resolve(0).rating, 75);
+    }
+
+    /// The edit path's landing half: committed changes move exactly their
+    /// columns, the reloaded projection shows them, and everything else
+    /// holds still.
+    #[test]
+    fn apply_changes_moves_only_named_columns() {
+        use crate::writer::{Change, Field};
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let mut before = row("/m/a/1.mp3", "X", "Album", 100);
+        before.title = "Before".into();
+        before.artist = "Someone".into();
+        before.year = 1999;
+        insert_batch(&mut conn, &[before]).unwrap();
+        let id = id_for_path(&conn, "/m/a/1.mp3").unwrap().unwrap();
+
+        apply_changes(
+            &conn,
+            id,
+            &[
+                Change {
+                    field: Field::Title,
+                    value: Some("After".into()),
+                },
+                Change {
+                    field: Field::Year,
+                    value: Some("2020-05-01".into()),
+                },
+                Change {
+                    field: Field::TrackNo,
+                    value: Some("5/12".into()),
+                },
+                Change {
+                    field: Field::AlbumArtist,
+                    value: None,
+                },
+                Change {
+                    field: Field::Comment,
+                    value: Some("no column".into()),
+                },
+            ],
+        )
+        .unwrap();
+
+        let p = crate::projection::Projection::load_serial(&conn).unwrap();
+        let v = p.resolve(0);
+        assert_eq!(v.title, "After");
+        assert_eq!(v.year, 2020, "the date's leading digits land as the year");
+        assert_eq!(v.track_no, 5, "a track fraction lands as its number");
+        assert_eq!(
+            v.album_artist, "Someone",
+            "a cleared album artist falls back to the artist"
+        );
+        assert_eq!((v.artist, v.album), ("Someone", "Album"), "untouched columns hold");
     }
 }

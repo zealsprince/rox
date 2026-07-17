@@ -24,10 +24,12 @@ use rox_dock::{
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
+use crate::history::History;
 use crate::lastfm::Scrobbler;
 use crate::panel::{self, AppState, TabHosts};
 use crate::panels::cover::{CoverArtPanel, CoverConfig};
 use crate::panels::grid::{GridConfig, GridPanel};
+use crate::panels::history::{HistoryConfig, HistoryPanel};
 use crate::panels::library::{Library, LibraryConfig, LibraryPanel};
 use crate::panels::metadata::{MetadataConfig, MetadataPanel};
 use crate::panels::spectrum::{SpectrumConfig, SpectrumPanel};
@@ -151,6 +153,7 @@ fn register_panels(state: &AppState, cx: &mut App) {
     configured!("track info", TrackInfoPanel);
     configured!("cover art", CoverArtPanel);
     configured!("metadata", MetadataPanel);
+    configured!("history", HistoryPanel);
     // The grid takes the window like the library: its search box builds
     // an input state.
     let s = state.clone();
@@ -168,10 +171,12 @@ fn register_panels(state: &AppState, cx: &mut App) {
 enum MenuAction {
     NewWindow,
     OpenSettings,
+    OpenStats,
     OpenLibrary,
     OpenCoverArt,
     OpenAlbumGrid,
     OpenMetadata,
+    OpenHistory,
     OpenSpectrum,
     OpenWaveform,
     OpenTrackInfo,
@@ -182,6 +187,7 @@ enum MenuAction {
 
 struct MenuItem {
     label: &'static str,
+    icon: &'static str,
     action: MenuAction,
 }
 
@@ -191,6 +197,7 @@ enum MenuEntry {
     Item(MenuItem),
     Submenu {
         label: &'static str,
+        icon: &'static str,
         items: &'static [MenuItem],
     },
 }
@@ -206,11 +213,18 @@ const MENUS: &[Menu] = &[
         entries: &[
             MenuEntry::Item(MenuItem {
                 label: "New Window",
+                icon: icons::PLUS,
                 action: MenuAction::NewWindow,
             }),
             MenuEntry::Item(MenuItem {
                 label: "Settings...",
+                icon: icons::SETTINGS,
                 action: MenuAction::OpenSettings,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Stats...",
+                icon: icons::CHART_PIE,
+                action: MenuAction::OpenStats,
             }),
         ],
     },
@@ -219,50 +233,67 @@ const MENUS: &[Menu] = &[
         entries: &[
             MenuEntry::Item(MenuItem {
                 label: "Library",
+                icon: icons::LIST_MUSIC,
                 action: MenuAction::OpenLibrary,
             }),
             MenuEntry::Item(MenuItem {
                 label: "Cover Art",
+                icon: icons::IMAGE,
                 action: MenuAction::OpenCoverArt,
             }),
             MenuEntry::Item(MenuItem {
                 label: "Album Grid",
+                icon: icons::LAYOUT_GRID,
                 action: MenuAction::OpenAlbumGrid,
             }),
             MenuEntry::Item(MenuItem {
                 label: "Metadata",
+                icon: icons::FILE_TEXT,
                 action: MenuAction::OpenMetadata,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "History",
+                icon: icons::CLOCK,
+                action: MenuAction::OpenHistory,
             }),
             MenuEntry::Submenu {
                 label: "Controls",
+                icon: icons::SLIDERS,
                 items: &[
                     MenuItem {
                         label: "Track Info",
+                        icon: icons::INFO,
                         action: MenuAction::OpenTrackInfo,
                     },
                     MenuItem {
                         label: "Playback",
+                        icon: icons::PLAY,
                         action: MenuAction::OpenPlayback,
                     },
                     MenuItem {
                         label: "Seek",
+                        icon: icons::FAST_FORWARD,
                         action: MenuAction::OpenSeek,
                     },
                     MenuItem {
                         label: "Volume",
+                        icon: icons::VOLUME_2,
                         action: MenuAction::OpenVolume,
                     },
                 ],
             },
             MenuEntry::Submenu {
                 label: "Visualizers",
+                icon: icons::EYE,
                 items: &[
                     MenuItem {
                         label: "Spectrum",
+                        icon: icons::AUDIO_LINES,
                         action: MenuAction::OpenSpectrum,
                     },
                     MenuItem {
                         label: "Waveform",
+                        icon: icons::AUDIO_WAVEFORM,
                         action: MenuAction::OpenWaveform,
                     },
                 ],
@@ -428,9 +459,11 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let player = cx.new(Player::new);
         let library = cx.new(Library::new);
+        let scrobbler = cx.new(|cx| Scrobbler::new(&player, &library, cx));
         let state = AppState {
             thumbs: cx.new(|cx| Thumbs::new(&library, cx)),
-            scrobbler: cx.new(|cx| Scrobbler::new(&player, &library, cx)),
+            history: cx.new(|cx| History::new(&scrobbler, cx)),
+            scrobbler,
             library,
             now_art: cx.new(|cx| NowPlayingArt::new(player.clone(), cx)),
             player,
@@ -789,6 +822,12 @@ impl Workspace {
                 });
                 self.add_center(Arc::new(panel), window, cx);
             }
+            MenuAction::OpenHistory => {
+                let panel =
+                    cx.new(|cx| HistoryPanel::new(self.state.clone(), HistoryConfig::default(), cx));
+                self.add_center(Arc::new(panel), window, cx);
+            }
+            MenuAction::OpenStats => crate::stats_window::open(self.state.clone(), cx),
             MenuAction::OpenSpectrum => {
                 let panel = cx.new(|cx| {
                     SpectrumPanel::new(self.state.clone(), SpectrumConfig::default(), cx)
@@ -975,8 +1014,8 @@ impl Workspace {
                             }
                         }))
                         .into_any_element(),
-                    MenuEntry::Submenu { label, items } => {
-                        self.submenu_row(i, label, items, cx).into_any_element()
+                    MenuEntry::Submenu { label, icon, items } => {
+                        self.submenu_row(i, label, icon, items, cx).into_any_element()
                     }
                 }
             }))
@@ -1001,6 +1040,16 @@ impl Workspace {
                     this.run(action, window, cx);
                 }),
             )
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .child(
+                svg()
+                    .path(item.icon)
+                    .size_3p5()
+                    .text_color(palette::text_muted()),
+            )
             .child(item.label)
     }
 
@@ -1011,6 +1060,7 @@ impl Workspace {
         &self,
         index: usize,
         label: &'static str,
+        icon: &'static str,
         items: &'static [MenuItem],
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1034,7 +1084,20 @@ impl Workspace {
             .items_center()
             .justify_between()
             .gap(tokens::SPACE_SM)
-            .child(label)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(
+                        svg()
+                            .path(icon)
+                            .size_3p5()
+                            .text_color(palette::text_muted()),
+                    )
+                    .child(label),
+            )
             .child(
                 svg()
                     .path(icons::CHEVRON_RIGHT)
@@ -1135,21 +1198,21 @@ impl Render for Workspace {
             .child(div().flex_1().min_h_0().child(self.dock.clone()))
             // The quick-play modal floats over everything on an occluding
             // layer, so a click outside it dismisses without also landing
-            // on whatever sits underneath.
+            // on whatever sits underneath. Not deferred: it is the last
+            // child so it already paints on top, and the search box's
+            // suggestion popover defers itself - gpui panics on a
+            // defer_draw inside a deferred draw.
             .when_some(self.quick_play.clone(), |d, modal| {
                 d.child(
-                    deferred(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .occlude()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .pt(px(96.))
-                            .child(modal),
-                    )
-                    .with_priority(1),
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .pt(px(96.))
+                        .child(modal),
                 )
             })
     }

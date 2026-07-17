@@ -191,7 +191,10 @@ impl GridPanel {
         // rebuild the albums over the new projection.
         let _library_changed = cx.subscribe(
             &state.library,
-            |this: &mut Self, _, _: &LibraryEvent, cx| {
+            |this: &mut Self, _, event: &LibraryEvent, cx| {
+                if !matches!(event, LibraryEvent::Updated) {
+                    return;
+                }
                 this.rebuild(cx);
                 // The catalog loads after a restored track starts, so the
                 // launch's follow waits for this first rebuild; rescans
@@ -1163,6 +1166,11 @@ impl GridPanel {
                         } else {
                             "Play".to_string()
                         };
+                        // The selected albums' tracks as db ids, resolved
+                        // now for the editor, the library rows' move.
+                        let ids: Vec<i64> = this.update(cx, |this, cx| {
+                            ixs.iter().flat_map(|&ix| this.ids_for(ix, cx)).collect()
+                        });
                         let panel = weak.clone();
                         let menu = menu.item(
                             PopupMenuItem::new(label)
@@ -1175,6 +1183,21 @@ impl GridPanel {
                                     }
                                 }),
                         );
+                        // The primary editing flow: the selection into the
+                        // tag editor window.
+                        let state = this.read(cx).state.clone();
+                        let reveal = ids.first().copied();
+                        let menu = menu.item(
+                            PopupMenuItem::new("Edit Tags...")
+                                .icon(Icon::default().path(icons::PENCIL))
+                                .on_click(move |_, _, cx| {
+                                    crate::tag_editor::open(state.clone(), ids.clone(), cx);
+                                }),
+                        );
+                        // Reveal follows the first album's first track,
+                        // landing in that album's folder.
+                        let menu =
+                            panel::reveal_item(menu, this.read(cx).state.clone(), reveal);
                         this.update(cx, |this, cx| {
                             this.dropdown_menu(menu.separator(), window, cx)
                         })

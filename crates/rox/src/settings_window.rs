@@ -36,7 +36,7 @@ use crate::lastfm::{self, AuthPhase, Scrobbler};
 use crate::panel::{self, AppState, ScrubState};
 use crate::panel_settings;
 use crate::panels::library::{Library, LibraryEvent};
-use crate::settings::{data_dir, settings_path, Settings};
+use crate::settings::{self, data_dir, settings_path, RatingStyle, Settings};
 use crate::settings_ui::{
     self, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
 };
@@ -151,6 +151,7 @@ struct SettingsWindow {
     surface_opacity: f32,
     backdrop_strength: f32,
     restore_last_track: bool,
+    rating_style: RatingStyle,
     /// One picker per palette role, in [`ROLES`] order.
     pickers: Vec<Entity<ColorPickerState>>,
     surface_scrub: ScrubState,
@@ -221,7 +222,10 @@ impl SettingsWindow {
         let root_stats = library.read(cx).root_stats();
         let _library_changed = cx.subscribe(
             &library,
-            |this: &mut Self, library, _: &LibraryEvent, cx| {
+            |this: &mut Self, library, event: &LibraryEvent, cx| {
+                if !matches!(event, LibraryEvent::Updated) {
+                    return;
+                }
                 this.root_stats = library.read(cx).root_stats();
                 // A finished scan moves the storage numbers too; remeasure
                 // if they are on screen.
@@ -303,6 +307,7 @@ impl SettingsWindow {
             surface_opacity: settings.surface_opacity,
             backdrop_strength: settings.backdrop_strength,
             restore_last_track: settings.restore_last_track,
+            rating_style: settings.rating_style,
             pickers,
             surface_scrub: ScrubState::default(),
             backdrop_scrub: ScrubState::default(),
@@ -368,6 +373,15 @@ impl SettingsWindow {
     fn set_restore_last_track(&mut self, on: bool, cx: &mut Context<Self>) {
         self.restore_last_track = on;
         Settings::update(move |s| s.restore_last_track = on);
+        cx.notify();
+    }
+
+    /// The rating scale: through the live static, so every open rating
+    /// column redraws, and into the file.
+    fn set_rating_style(&mut self, style: RatingStyle, cx: &mut Context<Self>) {
+        self.rating_style = style;
+        settings::set_rating_style(style, cx);
+        Settings::update(move |s| s.rating_style = style);
         cx.notify();
     }
 
@@ -512,15 +526,36 @@ impl SettingsWindow {
     }
 
     fn behavior_page(&self, cx: &mut Context<Self>) -> Div {
-        div().flex().flex_col().gap(SECTION_GAP).child(section(
-            "startup",
-            None,
-            panel::setting_row(
-                "restore last track",
-                Some("launch with the last playing track loaded, paused where it left off"),
-                panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
-            ),
-        ))
+        div()
+            .flex()
+            .flex_col()
+            .gap(SECTION_GAP)
+            .child(section(
+                "startup",
+                None,
+                panel::setting_row(
+                    "restore last track",
+                    Some("launch with the last playing track loaded, paused where it left off"),
+                    panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
+                ),
+            ))
+            .child(section(
+                "ratings",
+                None,
+                panel::setting_row(
+                    "rating scale",
+                    Some("stars for quick clicks, 0-10 in half steps for finer review scores"),
+                    panel::choices(
+                        &[
+                            ("stars", RatingStyle::Stars),
+                            ("0-10", RatingStyle::Numeric),
+                        ],
+                        self.rating_style,
+                        Self::set_rating_style,
+                        cx,
+                    ),
+                ),
+            ))
     }
 
     /// The Layout page: the opening workspace's dock as a tree - splits

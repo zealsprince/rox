@@ -39,11 +39,15 @@ use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, Tag};
 
 use crate::art;
+use crate::rating;
 
 /// A tag field the editor can address. The named set is what the library
 /// projects plus the fields a tag editor is expected to carry; `Custom`
 /// is a format-specific key, an ID3v2 TXXX description or a Vorbis
 /// comment key, written through the format tag so nothing re-maps it.
+/// `Rating` speaks the 0-10 display number and fans out to two tag forms
+/// on write (whole-star POPM/RATING, exact FMPS_Rating); the rating
+/// module owns the conversions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Field {
     Title,
@@ -56,6 +60,7 @@ pub enum Field {
     DiscNo,
     Comment,
     Composer,
+    Rating,
     Custom(String),
 }
 
@@ -87,7 +92,9 @@ fn item_key(field: &Field) -> Option<ItemKey> {
         Field::DiscNo => ItemKey::DiscNumber,
         Field::Comment => ItemKey::Comment,
         Field::Composer => ItemKey::Composer,
-        Field::Custom(_) => return None,
+        // The rating never writes as plain text; `apply_rating` puts its
+        // popularimeter form on the generic tag itself.
+        Field::Rating | Field::Custom(_) => return None,
     })
 }
 
@@ -120,13 +127,17 @@ pub fn read(path: &Path) -> Result<Vec<(Field, String)>, String> {
 }
 
 fn read_inner(path: &Path) -> Result<Vec<(Field, String)>, String> {
+    let kind = file_type(path)?;
     let mut out = Vec::new();
-    match file_type(path)? {
+    match kind {
         FileType::Mpeg => {
             let tag = parse_mpeg(path)?.id3v2().cloned().unwrap_or_default();
             named_fields(tag.clone().split_tag().1, &mut out);
             for frame in &tag {
                 if let Frame::UserText(f) = frame {
+                    if f.description.eq_ignore_ascii_case(rating::FMPS_KEY) {
+                        continue;
+                    }
                     out.push((Field::Custom(f.description.to_string()), f.content.to_string()));
                 }
             }
@@ -135,12 +146,22 @@ fn read_inner(path: &Path) -> Result<Vec<(Field, String)>, String> {
             let tag = parse_flac(path)?.vorbis_comments().cloned().unwrap_or_default();
             named_fields(tag.clone().split_tag().1, &mut out);
             for (key, value) in tag.items() {
+                // Rating-shaped keys stay out of the customs; they show
+                // as the one Rating field below instead.
+                if key.eq_ignore_ascii_case(rating::FMPS_KEY)
+                    || key.len() >= 7 && key[..7].eq_ignore_ascii_case("RATING:")
+                {
+                    continue;
+                }
                 if ItemKey::from_key(lofty::tag::TagType::VorbisComments, key).is_none() {
                     out.push((Field::Custom(key.to_string()), value.to_string()));
                 }
             }
         }
         _ => unreachable!("file_type only passes writable formats"),
+    }
+    if let Some(value) = rating::read(path, kind).filter(|v| *v > 0) {
+        out.push((Field::Rating, rating::display(value)));
     }
     Ok(out)
 }
@@ -182,6 +203,8 @@ pub fn commit_batch(edits: &[Edit]) -> Vec<(PathBuf, Result<(), String>)> {
 }
 
 fn commit_inner(path: &Path, tmp: &Path, changes: &[Change]) -> Result<(), String> {
+    let changes = expand_rating(changes);
+    let changes = changes.as_slice();
     let kind = file_type(path)?;
     // What must hold after the write: the audio stream untouched and the
     // pictures byte-identical, with the raw re-read standing in for the
@@ -242,6 +265,7 @@ fn write_tags(
             }
             let (remainder, mut generic) = tag.split_tag();
             apply_named(&mut generic, changes);
+            apply_rating(&mut generic, changes);
             if let Some((data, mime)) = rescue {
                 set_front_picture(&mut generic, data, &mime);
             }
@@ -272,7 +296,9 @@ fn write_tags(
                 }
             }
             let (remainder, mut generic) = tag.split_tag();
+            preserve_bare_rating(&mut generic, changes);
             apply_named(&mut generic, changes);
+            apply_rating(&mut generic, changes);
             flac.set_vorbis_comments(remainder.merge_tag(generic));
             file.rewind().map_err(|e| format!("rewind: {e}"))?;
             flac.save_to(&mut file, WriteOptions::default())
@@ -293,6 +319,75 @@ fn apply_named(generic: &mut Tag, changes: &[Change]) {
             Some(v) => drop(generic.insert_text(key, v.clone())),
             None => generic.remove_key(key),
         }
+    }
+}
+
+/// A rating change fanned out ahead of the write and the verify: the
+/// value normalized to its canonical display form (zero clears), plus
+/// its exact FMPS custom, which rides the ordinary custom path in both
+/// formats. The whole-star half goes through [`apply_rating`].
+fn expand_rating(changes: &[Change]) -> Vec<Change> {
+    let mut out = Vec::with_capacity(changes.len() + 1);
+    for change in changes {
+        if change.field != Field::Rating {
+            out.push(change.clone());
+            continue;
+        }
+        let value = change
+            .value
+            .as_deref()
+            .and_then(rating::parse_display)
+            .filter(|v| *v > 0);
+        out.push(Change {
+            field: Field::Rating,
+            value: value.map(rating::display),
+        });
+        out.push(Change {
+            field: Field::Custom(rating::FMPS_KEY.into()),
+            value: value.map(rating::fmps),
+        });
+    }
+    out
+}
+
+/// The rating changes onto the generic tag: the whole-star popularimeter
+/// with an empty email, which lofty merges to a bare POPM frame on ID3v2
+/// and a bare RATING key on Vorbis - the forms other players read. One
+/// rating per file: a set replaces every popularimeter, whoever wrote it.
+fn apply_rating(generic: &mut Tag, changes: &[Change]) {
+    for change in changes {
+        if change.field != Field::Rating {
+            continue;
+        }
+        match change.value.as_deref().and_then(rating::parse_display) {
+            Some(v) if v > 0 => {
+                generic.insert_text(ItemKey::Popularimeter, rating::popm_text(v));
+            }
+            _ => generic.remove_key(ItemKey::Popularimeter),
+        }
+    }
+}
+
+/// lofty's Vorbis split hands a bare RATING key through as its raw
+/// number, but its merge only writes the email|stars|counter form back,
+/// so any commit would silently drop a rating another app left there.
+/// Reformat it - at whole-star resolution, all the form carries - when
+/// this commit brings no rating of its own.
+fn preserve_bare_rating(generic: &mut Tag, changes: &[Change]) {
+    if changes.iter().any(|c| c.field == Field::Rating) {
+        return;
+    }
+    let Some(raw) = generic
+        .get_string(ItemKey::Popularimeter)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    if raw.contains('|') {
+        return;
+    }
+    if let Some(value) = rating::parse_popm_text(&raw).filter(|v| *v > 0) {
+        generic.insert_text(ItemKey::Popularimeter, rating::popm_text(value));
     }
 }
 
@@ -352,6 +447,28 @@ fn verify_fields(tmp: &Path, kind: FileType, changes: &[Change]) -> Result<(), S
         _ => unreachable!("file_type only passes writable formats"),
     };
     for change in changes {
+        // The rating verifies at star resolution: its popularimeter is
+        // the whole-star form by design, and a FLAC hands it back as the
+        // bare number rather than the written text. The exact value
+        // verifies through its FMPS custom like any other.
+        if change.field == Field::Rating {
+            let expected = change
+                .value
+                .as_deref()
+                .and_then(rating::parse_display)
+                .map(rating::stars);
+            let got = generic
+                .get_string(ItemKey::Popularimeter)
+                .and_then(rating::parse_popm_text)
+                .filter(|v| *v > 0)
+                .map(rating::stars);
+            if got != expected {
+                return Err(format!(
+                    "verify: rating read back {got:?} stars, expected {expected:?}"
+                ));
+            }
+            continue;
+        }
         let read_back = match &change.field {
             Field::Custom(key) => customs
                 .iter()
@@ -441,7 +558,7 @@ fn file_type(path: &Path) -> Result<FileType, String> {
 /// Tags only; the writer never needs the stream properties, and skipping
 /// them lets a file with a garbled stream still get its tags fixed.
 fn parse_opts() -> ParseOptions {
-    ParseOptions::new().read_properties(false)
+    crate::parse_opts().read_properties(false)
 }
 
 fn parse_mpeg(path: &Path) -> Result<MpegFile, String> {
@@ -701,6 +818,46 @@ mod tests {
         );
     }
 
+    /// The rating's fan-out and round trip on both formats: the exact
+    /// half-point value survives through FMPS, the whole-star companion
+    /// lands beside it, clearing removes both, and the FMPS custom never
+    /// shows up as a custom field.
+    #[test]
+    fn rating_round_trips_with_half_points() {
+        let dir = scratch("rating");
+        for path in [mp3_file(&dir, "track.mp3"), flac_file(&dir, "track.flac")] {
+            commit(&path, &[set(Field::Rating, "7.5")]).unwrap();
+            let fields = read(&path).unwrap();
+            assert_eq!(value_of(&fields, &Field::Rating).as_deref(), Some("7.5"));
+            assert!(
+                !fields
+                    .iter()
+                    .any(|(f, _)| matches!(f, Field::Custom(k) if k.eq_ignore_ascii_case("FMPS_Rating"))),
+                "the FMPS carrier reads as the rating, not a custom"
+            );
+            assert_eq!(crate::rating::read_path(&path), Some(75));
+
+            commit(&path, &[clear(Field::Rating)]).unwrap();
+            assert_eq!(value_of(&read(&path).unwrap(), &Field::Rating), None);
+            assert_eq!(crate::rating::read_path(&path), None);
+        }
+    }
+
+    /// The lofty 0.24 carve-out this module papers over: a bare Vorbis
+    /// RATING key survives an unrelated commit (at star resolution)
+    /// instead of being dropped by the asymmetric split/merge pair.
+    #[test]
+    fn unrelated_flac_commit_keeps_a_bare_rating() {
+        let dir = scratch("bare-rating");
+        let path = flac_file(&dir, "track.flac");
+        commit(&path, &[set(Field::Custom("RATING".into()), "80")]).unwrap();
+        commit(&path, &[set(Field::Title, "Untouched rating")]).unwrap();
+        assert_eq!(
+            value_of(&read(&path).unwrap(), &Field::Rating).as_deref(),
+            Some("8")
+        );
+    }
+
     #[test]
     fn clearing_removes_the_field() {
         let dir = scratch("clear");
@@ -770,6 +927,42 @@ mod tests {
             (n >> 7) as u8 & 0x7F,
             n as u8 & 0x7F,
         ]
+    }
+
+    /// The malformed date shape that used to cost the whole file: a TDRC
+    /// lofty cannot parse as a timestamp ("06-08", no year) fails the
+    /// read outright at the default parsing mode. Relaxed parsing drops
+    /// that one frame; everything else stays readable and writable.
+    #[test]
+    fn malformed_date_frame_costs_only_itself() {
+        let mut frames = Vec::new();
+        for (id, text) in [(b"TIT2", "Harry"), (b"TDRC", "06-08")] {
+            frames.extend(id);
+            frames.extend(synch(text.len() as u32 + 1));
+            frames.extend([0x00, 0x00]);
+            frames.push(0x00); // latin-1
+            frames.extend(text.as_bytes());
+        }
+        let mut bytes = b"ID3\x04\x00\x00".to_vec();
+        bytes.extend(synch(frames.len() as u32));
+        bytes.extend(&frames);
+        bytes.extend(mpeg_audio());
+
+        let dir = scratch("bad-date");
+        let path = dir.join("track.mp3");
+        fs::write(&path, bytes).unwrap();
+
+        let fields = read(&path).unwrap();
+        assert_eq!(value_of(&fields, &Field::Title).as_deref(), Some("Harry"));
+        assert_eq!(value_of(&fields, &Field::Year), None);
+
+        commit(&path, &[set(Field::Artist, "Highland")]).unwrap();
+        let fields = read(&path).unwrap();
+        assert_eq!(
+            value_of(&fields, &Field::Artist).as_deref(),
+            Some("Highland")
+        );
+        assert_eq!(value_of(&fields, &Field::Title).as_deref(), Some("Harry"));
     }
 
     /// The acceptance bullet this module carries for the Bandcamp shape:

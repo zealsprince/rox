@@ -120,7 +120,10 @@ impl CoverArtPanel {
         // drop the caches so both the resolve and the art re-read.
         let _library_changed = cx.subscribe(
             &state.library,
-            |this: &mut Self, _, _: &LibraryEvent, cx| {
+            |this: &mut Self, _, event: &LibraryEvent, cx| {
+                if !matches!(event, LibraryEvent::Updated) {
+                    return;
+                }
                 this.resolved.invalidate();
                 this.art = None;
                 cx.notify();

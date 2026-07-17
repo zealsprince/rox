@@ -5,7 +5,9 @@
 //! reused these modules for its harness (git history, commit bd22dc1).
 
 pub mod art;
+pub mod listens;
 pub mod projection;
+pub mod rating;
 pub mod scanner;
 pub mod store;
 pub mod thumbs;
@@ -14,6 +16,15 @@ pub mod writer;
 // Embedders hold a Connection for store queries, so its type needs to be
 // nameable without taking on the dep directly.
 pub use rusqlite;
+
+/// The parse options every lofty read in this crate starts from. Relaxed
+/// mode, because the default BestAttempt still hard-errors on a malformed
+/// date frame (a TDRC holding "06-08", say), and one garbage frame must
+/// cost that frame, never the file. Relaxed drops what it cannot parse,
+/// so a commit through the writer rewrites such a tag without the frame.
+pub(crate) fn parse_opts() -> lofty::config::ParseOptions {
+    lofty::config::ParseOptions::new().parsing_mode(lofty::config::ParsingMode::Relaxed)
+}
 
 /// One track row as it crosses scanner -> SQLite -> projection.
 pub struct TrackRow {
@@ -35,6 +46,9 @@ pub struct TrackRow {
     pub codec: String,
     /// The audio stream's bitrate in kbps; 0 when the parse fails.
     pub bitrate_kbps: u16,
+    /// The file's rating on the app's 0-100 scale, read off its tags
+    /// (FMPS exact, POPM stars); 0 when it carries none.
+    pub rating: u8,
     pub size: u64,
     pub mtime: i64,
 }

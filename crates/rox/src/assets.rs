@@ -42,6 +42,10 @@ pub mod icons {
     pub const UPLOAD: &str = "icons/upload.svg";
     pub const TRASH: &str = "icons/trash-2.svg";
     pub const PENCIL: &str = "icons/pencil.svg";
+    /// The rating stars: the same outline both ways, the filled one
+    /// carrying its fill so the pair reads set/unset at cell size.
+    pub const STAR: &str = "icons/star.svg";
+    pub const STAR_FILLED: &str = "icons/star-filled.svg";
     /// The settings sidebars' page icons; the last three resolve from
     /// the bundled widget set, no file of ours needed.
     pub const SLIDERS: &str = "icons/sliders-horizontal.svg";
@@ -52,12 +56,22 @@ pub mod icons {
     pub const PALETTE: &str = "icons/palette.svg";
     pub const LAYOUT_DASHBOARD: &str = "icons/layout-dashboard.svg";
     pub const EYE: &str = "icons/eye.svg";
-    /// Resolves from the bundled widget set, no file of ours needed.
+    /// These two resolve from the bundled widget set, no file of ours
+    /// needed.
     pub const CLOSE: &str = "icons/close.svg";
+    pub const CHECK: &str = "icons/check.svg";
     /// The panel menu's icons, all from the bundled widget set too.
     pub const SETTINGS: &str = "icons/settings-2.svg";
     pub const COPY: &str = "icons/copy.svg";
     pub const EXTERNAL_LINK: &str = "icons/external-link.svg";
+    /// The menubar dropdown icons; the first three resolve from the
+    /// bundled widget set.
+    pub const PLUS: &str = "icons/plus.svg";
+    pub const CHART_PIE: &str = "icons/chart-pie.svg";
+    pub const INFO: &str = "icons/info.svg";
+    pub const LAYOUT_GRID: &str = "icons/layout-grid.svg";
+    pub const AUDIO_LINES: &str = "icons/audio-lines.svg";
+    pub const AUDIO_WAVEFORM: &str = "icons/audio-waveform.svg";
 }
 
 /// Our embedded assets, checked before the bundled widget assets so a

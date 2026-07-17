@@ -27,3 +27,8 @@ rust-embed = "8"
 # background threads, and the md5 its request signatures require.
 ureq = "2"
 md5 = "0.7"
+# The tag editor's field suggestions ride the input widget's completion
+# menu, whose provider trait speaks these types; both already in the tree
+# through gpui-component.
+lsp-types = "0.97"
+anyhow = "1"

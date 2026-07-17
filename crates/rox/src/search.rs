@@ -10,11 +10,16 @@
 //! notified. Query semantics (what a string matches) stay in the
 //! projection; this is only the box.
 
+use std::rc::Rc;
+
 use gpui::{
-    div, App, AppContext, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, KeyDownEvent, ParentElement, Styled, Subscription, Window,
+    div, Action, App, AppContext, Context, Div, Entity, EntityInputHandler, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement, KeyDownEvent, ParentElement, Styled, Subscription,
+    Window,
 };
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{
+    CompletionProvider, Enter, IndentInline, Input, InputEvent, InputState,
+};
 use gpui_component::Sizable;
 
 /// What the box tells its host; the host reads the query back through
@@ -80,6 +85,52 @@ impl SearchBox {
         self
     }
 
+    /// Attach or swap the input's completion provider, the suggestion
+    /// menu over the query syntax's tag values.
+    pub fn set_completions(
+        &mut self,
+        provider: Option<Rc<dyn CompletionProvider>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.input
+            .update(cx, |input, _| input.lsp.completion_provider = provider);
+    }
+
+    /// Append a term to the query - a hint chip's `artist:` - space
+    /// separated, cursor at the end, focus back on the box. The term
+    /// itself lands through the input's typing path, so the suggestion
+    /// menu opens on it like it would for a keystroke.
+    pub fn append_term(&mut self, term: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| {
+            let value = input.value().to_string();
+            let sep = if value.is_empty() || value.ends_with(char::is_whitespace) {
+                ""
+            } else {
+                " "
+            };
+            // The silent set parks the cursor at the end; the non-silent
+            // insert there is what fires the completion trigger.
+            input.set_value(format!("{value}{sep}"), window, cx);
+            window.focus(&input.focus_handle(cx));
+            input.replace_text_in_range(None, term, window, cx);
+        });
+    }
+
+    /// Give the input's suggestion menu first claim on an action; true
+    /// when the menu was open and took it. A host that captures arrows
+    /// for its own list calls this first, so an open menu keeps its
+    /// navigation.
+    pub fn menu_action(
+        &mut self,
+        action: Box<dyn Action>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.input.update(cx, |input, cx| {
+            input.handle_action_for_context_menu(action, window, cx)
+        })
+    }
+
     pub fn query(&self) -> &str {
         &self.query
     }
@@ -106,6 +157,15 @@ impl SearchBox {
             // Scopes the workspace's playback key bindings out while the
             // input is focused, so space and arrows type instead.
             .key_context("SearchInput")
+            // Tab accepts the highlighted suggestion. The input binds tab
+            // to IndentInline, which the menu ignores, so translate it to
+            // the menu's accept; with the menu closed, tab keeps its
+            // default meaning.
+            .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
+                if !this.menu_action(Box::new(Enter { secondary: false }), window, cx) {
+                    cx.propagate();
+                }
+            }))
             // The escape ladder. The widget propagates escape when it has
             // nothing of its own (IME, context menu) to close, so it lands
             // here; stopped either way so a host's own escape handler

@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gpui::{Context, Entity, SharedString, Subscription};
+use gpui::{Context, Entity, EventEmitter, SharedString, Subscription};
 
 use rox_library::store::TrackMeta;
 
@@ -34,8 +34,17 @@ pub fn has_builtin_keys() -> bool {
 const API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 
 /// Last.fm refuses scrobbles for tracks this short, so the scrobbler
-/// doesn't try.
+/// doesn't try; the listen signal draws the same line, so history and
+/// scrobbling agree on what counts.
 const MIN_TRACK_SECS: f64 = 30.0;
+
+/// A play crossed the listen threshold: the one "real listen" signal.
+/// History records it always; the scrobble follows only while armed.
+pub struct Listened {
+    pub path: PathBuf,
+    /// When the play began, unix seconds.
+    pub started: u64,
+}
 
 /// The api_sig the API requires on every signed call: the parameters
 /// sorted by name, concatenated as name-value, the secret appended, md5
@@ -117,6 +126,9 @@ struct Watch {
     played: f64,
     last_pos: f64,
     now_playing_sent: bool,
+    /// The listen signal fired for this watch; set on the threshold
+    /// crossing whether or not scrobbling is armed.
+    listened: bool,
     scrobbled: bool,
 }
 
@@ -131,6 +143,8 @@ pub struct Scrobbler {
     watch: Option<Watch>,
     _player_changed: Subscription,
 }
+
+impl EventEmitter<Listened> for Scrobbler {}
 
 impl Scrobbler {
     pub fn new(
@@ -357,13 +371,27 @@ impl Scrobbler {
                 // A tick's worth of playback; anything bigger is a seek
                 // and doesn't count as listening.
                 watch.played += delta;
-            } else if delta < -5.0 && watch.scrobbled && now.position_secs < 5.0 {
-                // Back to the top after a scrobble - a loop restart or a
-                // deliberate replay - counts as a fresh play.
+            } else if delta < -5.0 && watch.listened && now.position_secs < 5.0 {
+                // Back to the top after a counted listen - a loop restart
+                // or a deliberate replay - counts as a fresh play.
                 self.begin_watch(now.path.clone(), now.duration_secs, now.position_secs, cx);
                 return;
             }
             watch.last_pos = now.position_secs;
+        }
+
+        // The listen signal fires on the threshold crossing no matter
+        // where scrobbling stands: history records every real listen,
+        // the scrobble below reuses the same crossing while armed.
+        let qualifies = self.watch.as_ref().is_some_and(|w| self.qualifies(w));
+        if let Some(watch) = self.watch.as_mut() {
+            if qualifies && !watch.listened {
+                watch.listened = true;
+                cx.emit(Listened {
+                    path: watch.path.clone(),
+                    started: watch.started,
+                });
+            }
         }
 
         if !self.armed() {
@@ -383,14 +411,20 @@ impl Scrobbler {
         let Some(watch) = self.watch.as_mut() else {
             return;
         };
-        if !watch.scrobbled {
-            if let Some(duration) = watch.duration.filter(|d| *d > MIN_TRACK_SECS) {
-                if watch.played >= duration * self.config.threshold as f64 {
-                    watch.scrobbled = true;
-                    self.submit("track.scrobble", cx);
-                }
-            }
+        if !watch.scrobbled && qualifies {
+            watch.scrobbled = true;
+            self.submit("track.scrobble", cx);
         }
+    }
+
+    /// The one "real listen" rule, shared by the scrobble and the
+    /// history recorder's [`Listened`] signal: the track is long enough
+    /// to count and enough of it has actually sounded.
+    fn qualifies(&self, watch: &Watch) -> bool {
+        watch
+            .duration
+            .filter(|d| *d > MIN_TRACK_SECS)
+            .is_some_and(|d| watch.played >= d * self.config.threshold as f64)
     }
 
     /// Point the watch at a track that just came up. The listened clock
@@ -416,6 +450,7 @@ impl Scrobbler {
             played: 0.0,
             last_pos: position,
             now_playing_sent: false,
+            listened: false,
             scrobbled: false,
         });
     }

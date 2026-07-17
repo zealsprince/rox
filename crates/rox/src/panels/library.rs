@@ -6,7 +6,7 @@
 //! clicking a track queues it straight on the shared player; single clicks
 //! select, and the selection publishes app-wide for panels that display it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,10 +23,12 @@ use gpui_component::{Icon, Side, Sizable, Size};
 use rox_dock::{Panel, PanelEvent, PanelInfo, PanelState, TabPanel};
 use serde::{Deserialize, Serialize};
 
+use rox_library::listens;
 use rox_library::projection::{Projection, SortKey};
-use rox_library::rusqlite::Connection;
+use rox_library::rusqlite::{self, Connection};
 use rox_library::scanner::{self, ScanSummary};
 use rox_library::store;
+use rox_library::writer;
 use rox_viz::analysis::{log_bands, Analyzer, FFT_SIZE};
 use rox_viz::AudioFeed;
 
@@ -57,6 +59,10 @@ const TYPE_AHEAD: Duration = Duration::from_millis(1000);
 /// subscribe and refresh their views.
 pub enum LibraryEvent {
     Updated,
+    /// One rating moved, in place through the shared projection. Its own
+    /// variant so the panels that rebuild on Updated - the grid's tiles,
+    /// the history reads, the stats recounts - sit a star click out.
+    Rated,
 }
 
 /// How often the UI samples a running scan's progress.
@@ -112,6 +118,10 @@ pub struct Library {
     /// The running scan's progress, while one runs; the handle abort
     /// reaches through.
     scan: Option<Arc<ScanProgress>>,
+    /// Rating clicks waiting on their tag write, newest value per track,
+    /// and whether the one-at-a-time drain is running.
+    pending_ratings: HashMap<i64, u8>,
+    rating_write_running: bool,
     status: SharedString,
 }
 
@@ -164,6 +174,8 @@ impl Library {
             scan_roots,
             busy: None,
             scan: None,
+            pending_ratings: HashMap::new(),
+            rating_write_running: false,
             status,
         };
         if this.conn.is_some() {
@@ -307,6 +319,151 @@ impl Library {
     pub fn id_for(&self, path: &std::path::Path) -> Option<i64> {
         let conn = self.conn.as_ref()?;
         store::id_for_path(conn, path.to_str()?).ok().flatten()
+    }
+
+    /// The history views' reads, on the UI-side connection: SQL over the
+    /// indexed events table at panel-open and listen-append cadence, per
+    /// ADR 11, never per keystroke or frame.
+    pub fn recent_listens(&self, limit: usize) -> Vec<listens::TrackPlays> {
+        self.listen_query(|conn| listens::recent(conn, limit))
+    }
+
+    pub fn most_played(&self, limit: usize) -> Vec<listens::TrackPlays> {
+        self.listen_query(|conn| listens::most_played(conn, limit))
+    }
+
+    pub fn never_played(&self, limit: usize) -> Vec<listens::TrackPlays> {
+        self.listen_query(|conn| listens::never_played(conn, limit))
+    }
+
+    /// Play counts grouped under one tag, the stats window's rollups.
+    pub fn listen_rollup(&self, by: listens::Rollup, limit: usize) -> Vec<listens::NamePlays> {
+        self.listen_query(|conn| listens::rollup(conn, by, limit))
+    }
+
+    /// How many listens landed at or after `since` (unix seconds).
+    pub fn listens_since(&self, since: i64) -> u64 {
+        self.conn
+            .as_ref()
+            .and_then(|conn| listens::count_since(conn, since).ok())
+            .unwrap_or_default()
+    }
+
+    fn listen_query<T>(
+        &self,
+        query: impl FnOnce(&Connection) -> rusqlite::Result<Vec<T>>,
+    ) -> Vec<T> {
+        self.conn
+            .as_ref()
+            .and_then(|conn| query(conn).ok())
+            .unwrap_or_default()
+    }
+
+    /// A committed tag edit into the catalog: the changes onto the track's
+    /// row, then a projection reload, so every panel shows the edit without
+    /// a rescan. The file itself was already written and verified by the
+    /// caller. While a scan runs the reload is dropped, but the row update
+    /// still lands, so the scan's own final reload carries the edit.
+    pub fn apply_edit(&mut self, path: &Path, changes: &[writer::Change], cx: &mut Context<Self>) {
+        let Some(id) = self.id_for(path) else { return };
+        let Some(conn) = &self.conn else { return };
+        if let Err(e) = store::apply_changes(conn, id, changes) {
+            self.status = format!("library: {e}").into();
+            cx.notify();
+            return;
+        }
+        self.reload(Refresh::Load, cx);
+    }
+
+    /// A batch of committed edits into the catalog, the tag editor's save:
+    /// every row update lands first, then one projection reload carries
+    /// them all. Calling [`Self::apply_edit`] per file would drop every
+    /// reload after the first on the busy guard.
+    pub fn apply_edits(&mut self, edits: &[writer::Edit], cx: &mut Context<Self>) {
+        for edit in edits {
+            let Some(id) = self.id_for(&edit.path) else {
+                continue;
+            };
+            let Some(conn) = &self.conn else { return };
+            if let Err(e) = store::apply_changes(conn, id, &edit.changes) {
+                self.status = format!("library: {e}").into();
+                cx.notify();
+            }
+        }
+        self.reload(Refresh::Load, cx);
+    }
+
+    /// A rating click into the catalog: onto the track's database row, and
+    /// into the shared projection in place - its ratings are atomics exactly
+    /// so this never pays the reload a tag edit does, and it works mid-scan
+    /// where a reload would be dropped. The row/id pair guards against a
+    /// projection swapped between paint and click; when they disagree the
+    /// database row still lands and the next reload shows it. The file's
+    /// tags follow through the write queue below.
+    pub fn set_rating(&mut self, row: u32, id: i64, rating: u8, cx: &mut Context<Self>) {
+        let Some(conn) = &self.conn else { return };
+        if let Err(e) = store::set_rating(conn, id, rating) {
+            self.status = format!("library: {e}").into();
+            cx.notify();
+            return;
+        }
+        if let Some(projection) = &self.projection {
+            if projection.db_id.get(row as usize) == Some(&id) {
+                projection.rating[row as usize].store(rating, Ordering::Relaxed);
+            }
+        }
+        self.queue_rating_write(id, rating, cx);
+        cx.emit(LibraryEvent::Rated);
+        cx.notify();
+    }
+
+    /// Queue one track's rating for its tag write. The map holds the
+    /// newest value per track and one drain runs at a time, so rapid
+    /// clicks collapse to the last value instead of racing the writer's
+    /// clone-and-rename on the same file.
+    fn queue_rating_write(&mut self, id: i64, rating: u8, cx: &mut Context<Self>) {
+        self.pending_ratings.insert(id, rating);
+        if self.rating_write_running {
+            return;
+        }
+        self.rating_write_running = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                let next = this.update(cx, |this, _| {
+                    let id = this.pending_ratings.keys().next().copied();
+                    id.map(|id| (id, this.pending_ratings.remove(&id).unwrap()))
+                });
+                let Ok(Some((id, rating))) = next else { break };
+                let Ok(Some(path)) = this.update(cx, |this, _| {
+                    this.paths_for(&[id]).ok().and_then(|mut paths| paths.pop())
+                }) else {
+                    continue;
+                };
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let change = writer::Change {
+                            field: writer::Field::Rating,
+                            value: (rating > 0).then(|| rox_library::rating::display(rating)),
+                        };
+                        writer::commit(&path, &[change]).map_err(|e| (path, e))
+                    })
+                    .await;
+                if let Err((path, e)) = result {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string());
+                    this.update(cx, |this, cx| {
+                        this.status = format!("rating: {name}: {e}").into();
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+            this.update(cx, |this, _| this.rating_write_running = false).ok();
+        })
+        .detach();
     }
 
     /// Run a refresh off the UI thread: its own step first, then the
@@ -487,6 +644,7 @@ const COLUMNS: &[ColumnDef] = &[
     ColumnDef { key: "codec", label: "codec", default_width: 64., right: false, default_on: false, sort: SortKey::Codec },
     ColumnDef { key: "bitrate", label: "kbps", default_width: 64., right: true, default_on: false, sort: SortKey::Bitrate },
     ColumnDef { key: "duration", label: "time", default_width: 64., right: true, default_on: true, sort: SortKey::Duration },
+    ColumnDef { key: "rating", label: "rating", default_width: 110., right: false, default_on: false, sort: SortKey::Rating },
 ];
 
 /// The registry entry for a key.
@@ -525,11 +683,11 @@ pub enum Density {
     Comfortable,
 }
 
-/// How the canonical browse order breaks into album groups (keyed by
-/// album artist and album). Compact spends one row per break, expanded
-/// two: the album artist and year, then the album with the group's track
-/// count and total time. Searching or sorting by a column always renders
-/// flat, whatever this says.
+/// How the canonical browse order breaks into groups (what [`GroupBy`]
+/// keys). Compact spends one row per break, expanded two: the group's
+/// name line, then a meta line with its track count and total time (and,
+/// grouped by album, the album with its cover tile). Searching or
+/// sorting by a column always renders flat, whatever this says.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Headers {
@@ -537,6 +695,34 @@ pub enum Headers {
     Compact,
     #[default]
     Expanded,
+}
+
+/// What the group headers break on. Album keys the album artist and
+/// album together over the canonical order as-is; the rest key one
+/// field, and genre and year re-sort the list by that field first
+/// (canonical inside each group), since the canonical order doesn't
+/// keep their runs contiguous.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupBy {
+    #[default]
+    Album,
+    /// The album artist, the canonical order's leading key.
+    Artist,
+    Genre,
+    Year,
+}
+
+impl GroupBy {
+    /// The re-sort a grouping needs before its runs are contiguous;
+    /// None keeps the canonical order (album and artist already are).
+    fn sort(self) -> Option<SortKey> {
+        match self {
+            GroupBy::Album | GroupBy::Artist => None,
+            GroupBy::Genre => Some(SortKey::Genre),
+            GroupBy::Year => Some(SortKey::Year),
+        }
+    }
 }
 
 impl Density {
@@ -568,6 +754,9 @@ pub struct LibraryConfig {
     /// How the canonical order shows its group breaks.
     #[serde(default)]
     pub headers: Headers,
+    /// What the headers group on while they show.
+    #[serde(default)]
+    pub group_by: GroupBy,
     /// The shown columns in display order, each with its width. Empty
     /// restores the registry default set. Named apart from the old
     /// index-keyed `columns` field so pre-registry layouts drop their
@@ -612,6 +801,7 @@ impl Default for LibraryConfig {
             search: true,
             density: Density::default(),
             headers: Headers::default(),
+            group_by: GroupBy::default(),
             column_layout: Vec::new(),
             sort_key: None,
             sort_desc: false,
@@ -676,8 +866,8 @@ enum Row {
     Disc(u16),
 }
 
-/// One artist/album group of the current view: what its header rows draw.
-/// The name, year, and genre resolve through the first track.
+/// One group of the current view: what its header rows draw. The name,
+/// year, and genre resolve through the first track.
 struct Group {
     first: u32,
     tracks: u32,
@@ -695,22 +885,34 @@ struct Group {
     art: Option<Option<PathBuf>>,
 }
 
-/// The canonical order with a header block opening every album run: one
-/// row compact, name and stats rows expanded. Groups break on the album
-/// artist, not the track artist, so a compilation stays one run with its
-/// per-track artists inside. A group spanning discs gets a divider row
-/// opening each numbered disc's run; untagged tracks (disc 0) sit under
-/// the header undivided. Breaks compare interned symbols and the stats
-/// are two integer sums, so the walk stays cheap and runs once per view
+/// The given order with a header block opening every group run: one row
+/// compact, name and stats rows expanded. The order must keep each
+/// group's rows contiguous (the caller re-sorts for genre and year).
+/// Album groups break on the album artist, not the track artist, so a
+/// compilation stays one run with its per-track artists inside, and a
+/// group spanning discs gets a divider row opening each numbered disc's
+/// run; untagged tracks (disc 0) sit under the header undivided. Breaks
+/// compare interned symbols (years their raw value) and the stats are
+/// two integer sums, so the walk stays cheap and runs once per view
 /// swap, never while scrolling.
-fn group_rows(order: &[u32], projection: &Projection, expanded: bool) -> (Vec<Row>, Vec<Group>) {
+fn group_rows(
+    order: &[u32],
+    projection: &Projection,
+    expanded: bool,
+    group_by: GroupBy,
+) -> (Vec<Row>, Vec<Group>) {
     let mut rows = Vec::with_capacity(order.len() + order.len() / 8);
     let mut groups: Vec<Group> = Vec::new();
-    let key = |row: u32| {
-        (
-            projection.album_artist[row as usize],
-            projection.album[row as usize],
-        )
+    let key = |row: u32| -> u64 {
+        let i = row as usize;
+        match group_by {
+            GroupBy::Album => {
+                (projection.album_artist[i] as u64) << 32 | projection.album[i] as u64
+            }
+            GroupBy::Artist => projection.album_artist[i] as u64,
+            GroupBy::Genre => projection.genre[i] as u64,
+            GroupBy::Year => projection.year[i] as u64,
+        }
     };
     let mut i = 0;
     while i < order.len() {
@@ -739,7 +941,8 @@ fn group_rows(order: &[u32], projection: &Projection, expanded: bool) -> (Vec<Ro
             rows.push(Row::Meta(g));
         }
         let disc = |row: u32| projection.disc_no[row as usize];
-        let multi_disc = run.iter().any(|&row| disc(row) != disc(run[0]));
+        let multi_disc = group_by == GroupBy::Album
+            && run.iter().any(|&row| disc(row) != disc(run[0]));
         let mut last_disc = None;
         for &row in run {
             if multi_disc && disc(row) > 0 && last_disc != Some(disc(row)) {
@@ -920,7 +1123,10 @@ fn playing_bars(levels: [f32; PULSE_BARS]) -> Div {
                 .bottom_0()
                 .left(px(ix as f32 * (BAR_W + GAP)))
                 .w(px(BAR_W))
-                .h(px(SPAN * (0.18 + 0.82 * level)))
+                // Whole-pixel heights only: layout rounding rounds a node's
+                // offset and size separately, and a fractional height makes
+                // the two disagree, wobbling the bottom edge by a pixel.
+                .h(px((SPAN * (0.18 + 0.82 * level)).round().max(1.)))
                 .rounded(px(1.))
                 .bg(palette::accent()),
         );
@@ -942,10 +1148,12 @@ struct TrackTable {
     /// The current view's groups, what header rows index; empty when the
     /// view renders flat. Swapped together with `view`, always.
     groups: Vec<Group>,
-    /// How the canonical order breaks into groups. Lives on the delegate
-    /// because the view computation reads it; the panel reads it back for
-    /// the layout dump.
+    /// How the canonical order breaks into groups, and on what field.
+    /// Mirrored from the panel like the density: the view computation
+    /// and the header render read them here, the knobs live on the
+    /// panel.
     headers: Headers,
+    group_by: GroupBy,
     /// The panel's row height, mirrored here because the header tile is
     /// sized in rows and the widget's size lives outside the delegate.
     density: Density,
@@ -1001,6 +1209,21 @@ impl TrackTable {
         } else {
             behind().or_else(ahead)
         }
+    }
+
+    /// The track rows under the group header line at `ix`, in view
+    /// order; None when the row is no header. Meta counts as the header
+    /// it sits under, disc dividers don't open a group of their own.
+    fn group_track_rows(&self, ix: usize) -> Option<Vec<usize>> {
+        match self.view.get(ix) {
+            Some(Row::Header(_)) | Some(Row::Meta(_)) => {}
+            _ => return None,
+        }
+        let rows = (ix + 1..self.view.len())
+            .take_while(|&i| !matches!(self.view.get(i), Some(Row::Header(_))))
+            .filter(|&i| self.track_at(i).is_some())
+            .collect();
+        Some(rows)
     }
 
     /// The edge length of an expanded header's cover tile: the full
@@ -1095,10 +1318,13 @@ impl TrackTable {
             .into_any_element()
     }
 
-    /// The group's name line: compact packs the album artist, album, and
-    /// year into its one row; expanded gives the album artist the line,
-    /// larger, the year on the right, hands the album to the meta line
-    /// under it, and opens the two-row cover tile the meta line closes.
+    /// The group's name line. Grouped by album, compact packs the album
+    /// artist, album, and year into its one row; expanded gives the
+    /// album artist the line, larger, the year on the right, hands the
+    /// album to the meta line under it, and opens the two-row cover tile
+    /// the meta line closes. The other groupings name their one field -
+    /// the tile and the trailing year are album presentation, so those
+    /// stay off.
     fn render_group_header(
         &mut self,
         row_ix: usize,
@@ -1106,28 +1332,49 @@ impl TrackTable {
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
         let expanded = self.headers == Headers::Expanded;
-        let tile = expanded.then(|| self.group_tile(g, false, cx));
+        let by_album = self.group_by == GroupBy::Album;
+        let has_tile = expanded && by_album;
+        let tile = has_tile.then(|| self.group_tile(g, false, cx));
         let indent = self.tile_side() + tokens::SPACE_SM;
-        let (artist, album, year) = match (
+        let (name, album, year) = match (
             self.groups.get(g as usize),
             self.state.library.read(cx).projection(),
         ) {
             (Some(group), Some(projection)) => {
                 let v = projection.resolve(group.first);
-                // Rows migrated from before the album artist column carry
-                // an empty one until a rescan re-reads their tags; the
-                // first track's artist stands in rather than "unknown".
-                let name = if v.album_artist.is_empty() {
-                    v.artist
-                } else {
-                    v.album_artist
-                };
-                (name.to_string(), v.album.to_string(), v.year)
+                match self.group_by {
+                    GroupBy::Album | GroupBy::Artist => {
+                        // Rows migrated from before the album artist
+                        // column carry an empty one until a rescan
+                        // re-reads their tags; the first track's artist
+                        // stands in rather than "unknown".
+                        let name = if v.album_artist.is_empty() {
+                            v.artist
+                        } else {
+                            v.album_artist
+                        };
+                        if by_album {
+                            (name.to_string(), v.album.to_string(), v.year)
+                        } else {
+                            (name.to_string(), String::new(), 0)
+                        }
+                    }
+                    GroupBy::Genre => (v.genre.to_string(), String::new(), 0),
+                    GroupBy::Year => (
+                        if v.year == 0 {
+                            String::new()
+                        } else {
+                            v.year.to_string()
+                        },
+                        String::new(),
+                        0,
+                    ),
+                }
             }
             _ => Default::default(),
         };
-        let unknown = artist.is_empty() && (expanded || album.is_empty());
-        let artist = (!artist.is_empty()).then(|| SharedString::from(artist));
+        let unknown = name.is_empty() && (expanded || album.is_empty());
+        let name = (!name.is_empty()).then(|| SharedString::from(name));
         let album = (!expanded && !album.is_empty()).then(|| SharedString::from(album));
         div()
             .id(("row", row_ix))
@@ -1146,7 +1393,7 @@ impl TrackTable {
                     .gap(tokens::SPACE_SM)
                     .px(tokens::SPACE_SM)
                     // Clear of the cover tile, which spans the block.
-                    .when(expanded, |d| d.pl(indent))
+                    .when(has_tile, |d| d.pl(indent))
                     .overflow_hidden()
                     .when(unknown, |d| {
                         d.child(
@@ -1156,7 +1403,7 @@ impl TrackTable {
                                 .child("unknown"),
                         )
                     })
-                    .when_some(artist, |d, artist| {
+                    .when_some(name, |d, name| {
                         d.child(
                             div()
                                 .truncate()
@@ -1168,7 +1415,7 @@ impl TrackTable {
                                         d.flex_none()
                                     }
                                 })
-                                .child(artist),
+                                .child(name),
                         )
                     })
                     .when_some(album, |d, album| {
@@ -1196,20 +1443,23 @@ impl TrackTable {
 
     /// The expanded header's second line: the album, then the group's
     /// genre, codec and bitrate, track count, and total time on the
-    /// right, beside the cover tile's bottom half.
+    /// right, beside the cover tile's bottom half. The other groupings
+    /// keep the count and time; the album, genre, and quality describe
+    /// one album, not a mixed run, and the tile goes with them.
     fn render_group_meta(
         &mut self,
         row_ix: usize,
         g: u32,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        let tile = self.group_tile(g, true, cx);
+        let by_album = self.group_by == GroupBy::Album;
+        let tile = by_album.then(|| self.group_tile(g, true, cx));
         let indent = self.tile_side() + tokens::SPACE_SM;
         let (album, genre, quality, tracks, total_ms) = match (
             self.groups.get(g as usize),
             self.state.library.read(cx).projection(),
         ) {
-            (Some(group), Some(projection)) => {
+            (Some(group), Some(projection)) if by_album => {
                 let v = projection.resolve(group.first);
                 (
                     v.album.to_string(),
@@ -1219,6 +1469,13 @@ impl TrackTable {
                     group.total_ms,
                 )
             }
+            (Some(group), Some(_)) => (
+                String::new(),
+                String::new(),
+                String::new(),
+                group.tracks,
+                group.total_ms,
+            ),
             _ => Default::default(),
         };
         let mut stats = Vec::new();
@@ -1237,7 +1494,7 @@ impl TrackTable {
         div()
             .id(("row", row_ix))
             .bg(palette::bg_elevated())
-            .child(tile)
+            .when_some(tile, |d, tile| d.child(tile))
             .child(
                 div()
                     .absolute()
@@ -1248,7 +1505,7 @@ impl TrackTable {
                     .gap(tokens::SPACE_SM)
                     .px(tokens::SPACE_SM)
                     // Clear of the cover tile, which spans the block.
-                    .pl(indent)
+                    .when(by_album, |d| d.pl(indent))
                     .overflow_hidden()
                     .child(
                         div()
@@ -1362,8 +1619,18 @@ impl TrackTable {
                 Vec::new(),
             ),
             None if query.is_empty() && self.headers != Headers::Off => {
-                let (rows, groups) =
-                    group_rows(&base, projection, self.headers == Headers::Expanded);
+                // Genre and year runs aren't contiguous in the canonical
+                // order; re-sort by the group field, canonical inside.
+                let base = match self.group_by.sort() {
+                    Some(key) => Arc::new(projection.sort_view(&base, key, false)),
+                    None => base,
+                };
+                let (rows, groups) = group_rows(
+                    &base,
+                    projection,
+                    self.headers == Headers::Expanded,
+                    self.group_by,
+                );
                 (Arc::new(rows), groups)
             }
             None => (
@@ -1514,6 +1781,10 @@ impl TableDelegate for TrackTable {
         // fainter cut of it, so a selection still reads over the mark.
         let selected = self.selected.contains(&row_ix);
         div()
+            // Group bounds resolve innermost-first, so one shared name
+            // still scopes each cell's group_hover to its own row: the
+            // rating cell fades its unrated stars in on row hover.
+            .group(ROW_GROUP)
             .id(("row", row_ix))
             .cursor_pointer()
             .when(selected, |d| d.bg(palette::alpha(palette::accent(), 0x26)))
@@ -1524,12 +1795,13 @@ impl TableDelegate for TrackTable {
 
     /// The row context menu. A right click inside the selection acts on the
     /// whole set; outside it, the click reselects just that row first, so
-    /// the menu always acts on what is highlighted. The panel's own menu
-    /// rides along after the track actions: the panel body hands its
-    /// right-click to the table (`content_context_menu`), so this menu is
-    /// the only one a click over the list opens, and it must not dead-end
-    /// at Play. Headers get the panel menu alone; acting by group waits
-    /// until headers are more than presentation.
+    /// the menu always acts on what is highlighted. A group header stands
+    /// for its album: the click selects the whole group, and the play item
+    /// reads Play Album. The panel's own menu rides along after the track
+    /// actions: the panel body hands its right-click to the table
+    /// (`content_context_menu`), so this menu is the only one a click over
+    /// the list opens, and it must not dead-end at Play. Disc dividers get
+    /// the panel menu alone.
     fn context_menu(
         &mut self,
         row_ix: usize,
@@ -1537,10 +1809,17 @@ impl TableDelegate for TrackTable {
         window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
-        if self.track_at(row_ix).is_none() {
+        let album = self.group_track_rows(row_ix);
+        if self.track_at(row_ix).is_none() && album.is_none() {
             return self.panel_menu(menu, window, cx);
         }
-        if !self.selected.contains(&row_ix) {
+        if let Some(rows) = &album {
+            self.selected = rows.iter().copied().collect();
+            self.anchor = rows.first().copied();
+            self.cursor = rows.first().copied();
+            self.publish_selection(cx);
+            cx.notify();
+        } else if !self.selected.contains(&row_ix) {
             self.selected = HashSet::from([row_ix]);
             self.anchor = Some(row_ix);
             self.publish_selection(cx);
@@ -1548,10 +1827,34 @@ impl TableDelegate for TrackTable {
         }
         let mut rows: Vec<usize> = self.selected.iter().copied().collect();
         rows.sort_unstable();
+        // The selection as db ids, resolved now so the editor gets this
+        // set even if another panel publishes over the shared selection
+        // before the click lands.
+        let ids: Vec<i64> = self
+            .state
+            .library
+            .read(cx)
+            .projection()
+            .map(|projection| {
+                rows.iter()
+                    .filter_map(|&ix| self.track_at(ix))
+                    .map(|row| projection.db_id[row as usize])
+                    .collect()
+            })
+            .unwrap_or_default();
         let panel = self.panel.clone();
-        let menu = if rows.len() > 1 {
+        let menu = if album.is_some() || rows.len() > 1 {
+            let label = if album.is_some() {
+                if self.group_by == GroupBy::Album {
+                    "Play Album".to_string()
+                } else {
+                    "Play Group".to_string()
+                }
+            } else {
+                format!("Play {} Tracks", rows.len())
+            };
             menu.item(
-                PopupMenuItem::new(format!("Play {} Tracks", rows.len()))
+                PopupMenuItem::new(label)
                     .icon(Icon::default().path(icons::PLAY))
                     .on_click(move |_, _, cx| {
                         if let Some(panel) = panel.upgrade() {
@@ -1570,6 +1873,20 @@ impl TableDelegate for TrackTable {
                     }),
             )
         };
+        // The primary editing flow: the selection into the tag editor
+        // window; the metadata panel's inline pencil stays the quick path.
+        let state = self.state.clone();
+        let reveal = ids.first().copied();
+        let menu = menu.item(
+            PopupMenuItem::new("Edit Tags...")
+                .icon(Icon::default().path(icons::PENCIL))
+                .on_click(move |_, _, cx| {
+                    crate::tag_editor::open(state.clone(), ids.clone(), cx);
+                }),
+        );
+        // Reveal follows the selection's first track; on a group header
+        // that lands in the album's folder.
+        let menu = panel::reveal_item(menu, self.state.clone(), reveal);
         self.panel_menu(menu.separator(), window, cx)
     }
 
@@ -1621,6 +1938,12 @@ impl TableDelegate for TrackTable {
             "duration" => cell
                 .text_color(palette::text_muted())
                 .child(SharedString::from(fmt_ms(v.duration_ms))),
+            "rating" => rating_cell(
+                self.state.clone(),
+                row,
+                projection.db_id[row as usize],
+                v.rating,
+            ),
             _ => cell,
         };
         // The playing mark rides the right edge of the leading cell,
@@ -1724,6 +2047,12 @@ pub struct LibraryPanel {
     glide_tick: Instant,
     /// The track list's row height, applied on the table each render.
     density: Density,
+    /// The header style and what the headers group on. The delegate
+    /// mirrors both for the view computation; they live here too so the
+    /// dropdown's checkmarks build without reading the table entity
+    /// (the row context menu builds mid-table-update).
+    headers: Headers,
+    group_by: GroupBy,
     /// The header tiles' corner radius; the delegate mirrors it for the
     /// tile render, the config dump carries it.
     art_rounding: f32,
@@ -1756,7 +2085,16 @@ impl LibraryPanel {
     ) -> Self {
         let _library_changed = cx.subscribe(
             &state.library,
-            |this: &mut LibraryPanel, _, _: &LibraryEvent, cx| {
+            |this: &mut LibraryPanel, _, event: &LibraryEvent, cx| {
+                // A rating click only needs the cells repainted: the value
+                // sits in the shared projection already, and re-sorting a
+                // rating-sorted view here would yank the row out from
+                // under the cursor mid-click. The order catches up on the
+                // next refresh.
+                if let LibraryEvent::Rated = event {
+                    this.table.update(cx, |_, cx| cx.notify());
+                    return;
+                }
                 this.error = None;
                 this.refresh_view(cx);
                 // The catalog loads after a restored track starts, so the
@@ -1778,6 +2116,7 @@ impl LibraryPanel {
             view: Arc::new(Vec::new()),
             groups: Vec::new(),
             headers: config.headers,
+            group_by: config.group_by,
             density: config.density,
             art_rounding: config.art_rounding,
             selected: HashSet::new(),
@@ -1824,6 +2163,8 @@ impl LibraryPanel {
             glide_to: None,
             glide_tick: Instant::now(),
             density: config.density,
+            headers: config.headers,
+            group_by: config.group_by,
             art_rounding: config.art_rounding,
             art_scrub: ScrubState::default(),
             theme: config.theme,
@@ -2091,10 +2432,22 @@ impl LibraryPanel {
             TableEvent::SelectRow(ix) => {
                 window.focus(&self.focus);
                 let ix = *ix;
-                // A header row takes no selection; drop the widget's own
-                // focus row so the click leaves no mark on it.
+                // A click on a group header selects its album whole. The
+                // widget's own focus row drops either way, so the header
+                // strip itself takes no mark; disc dividers just clear.
                 if self.table.read(cx).delegate().track_at(ix).is_none() {
-                    self.table.update(cx, |table, cx| table.clear_selection(cx));
+                    self.table.update(cx, |table, cx| {
+                        table.clear_selection(cx);
+                        let Some(rows) = table.delegate().group_track_rows(ix) else {
+                            return;
+                        };
+                        let delegate = table.delegate_mut();
+                        delegate.anchor = rows.first().copied();
+                        delegate.cursor = rows.first().copied();
+                        delegate.selected = rows.into_iter().collect();
+                        table.delegate().publish_selection(cx);
+                        cx.notify();
+                    });
                     return;
                 }
                 let modifiers = window.modifiers();
@@ -2127,8 +2480,9 @@ impl LibraryPanel {
                 });
             }
             // The double click is what plays, leaving single clicks free
-            // to select. Headers play nothing; acting by group waits
-            // until headers are more than presentation.
+            // to select. Headers play nothing on it; their single click
+            // already selects the album, and Play Album sits on the
+            // right click.
             TableEvent::DoubleClickedRow(ix)
                 if self.table.read(cx).delegate().track_at(*ix).is_some() =>
             {
@@ -2178,7 +2532,8 @@ impl LibraryPanel {
             query: self.query.clone(),
             search: self.show_search,
             density: self.density,
-            headers: self.table.read(cx).delegate().headers,
+            headers: self.headers,
+            group_by: self.group_by,
             column_layout: self.column_specs(cx),
             sort_key: sort.as_ref().map(|(key, _)| key.to_string()),
             sort_desc: sort.is_some_and(|(_, desc)| desc),
@@ -2448,11 +2803,26 @@ impl LibraryPanel {
     /// Set the header style and rebuild the view; persisted on the next
     /// layout dump.
     fn set_headers(&mut self, headers: Headers, cx: &mut Context<Self>) {
-        if self.table.read(cx).delegate().headers == headers {
+        if self.headers == headers {
             return;
         }
+        self.headers = headers;
         self.table
             .update(cx, |table, _| table.delegate_mut().headers = headers);
+        self.refresh_view(cx);
+        cx.notify();
+        self.refresh_title_bar(cx);
+    }
+
+    /// Set what the headers group on and rebuild the view; persisted on
+    /// the next layout dump like the header style.
+    fn set_group_by(&mut self, group_by: GroupBy, cx: &mut Context<Self>) {
+        if self.group_by == group_by {
+            return;
+        }
+        self.group_by = group_by;
+        self.table
+            .update(cx, |table, _| table.delegate_mut().group_by = group_by);
         self.refresh_view(cx);
         cx.notify();
         self.refresh_title_bar(cx);
@@ -2557,7 +2927,7 @@ impl panel::PanelSettings for LibraryPanel {
                 })
                 .into_any_element();
         }
-        let headers = self.table.read(cx).delegate().headers;
+        let headers = self.headers;
         div()
             .flex()
             .flex_col()
@@ -2569,7 +2939,7 @@ impl panel::PanelSettings for LibraryPanel {
             ))
             .child(panel::setting_row(
                 "headers",
-                Some("album breaks over the canonical order; searching or sorting renders flat"),
+                Some("group breaks over the canonical order; searching or sorting renders flat"),
                 panel::choices(
                     &[
                         ("off", Headers::Off),
@@ -2581,6 +2951,23 @@ impl panel::PanelSettings for LibraryPanel {
                     cx,
                 ),
             ))
+            .when(headers != Headers::Off, |d| {
+                d.child(panel::setting_row(
+                    "group by",
+                    Some("what the headers break on; genre and year re-sort the list"),
+                    panel::choices(
+                        &[
+                            ("album", GroupBy::Album),
+                            ("artist", GroupBy::Artist),
+                            ("genre", GroupBy::Genre),
+                            ("year", GroupBy::Year),
+                        ],
+                        self.group_by,
+                        |this: &mut Self, group_by, cx| this.set_group_by(group_by, cx),
+                        cx,
+                    ),
+                ))
+            })
             .child(panel::setting_row(
                 "density",
                 Some("the track list's row height"),
@@ -2743,9 +3130,9 @@ impl Panel for LibraryPanel {
     ) -> PopupMenu {
         // View section: quick settings only, all flat so a click dismisses
         // the menu and the next open rebuilds with the change reflected.
-        // The bigger knobs - columns, headers, the query - live in the
-        // customize window, where they get real controls instead of a
-        // wall of check items.
+        // The bigger knobs - columns, the query - live in the customize
+        // window, where they get real controls instead of a wall of
+        // check items.
         let weak = cx.entity().downgrade();
         let menu = menu.item(
             PopupMenuItem::new("Jump to Playing")
@@ -2776,6 +3163,47 @@ impl Panel for LibraryPanel {
                         }
                     }),
             );
+        }
+
+        // The header style and grouping read the panel's mirrors, never
+        // the table: this menu also builds inside the row context menu,
+        // mid-table-update.
+        let mut menu = menu.separator().label("Headers");
+        for (headers, name) in [
+            (Headers::Off, "Off"),
+            (Headers::Compact, "Compact"),
+            (Headers::Expanded, "Expanded"),
+        ] {
+            let weak = cx.entity().downgrade();
+            menu = menu.item(
+                PopupMenuItem::new(name)
+                    .checked(self.headers == headers)
+                    .on_click(move |_, _, cx| {
+                        if let Some(panel) = weak.upgrade() {
+                            panel.update(cx, |panel, cx| panel.set_headers(headers, cx));
+                        }
+                    }),
+            );
+        }
+        if self.headers != Headers::Off {
+            menu = menu.separator().label("Group By");
+            for (group_by, name) in [
+                (GroupBy::Album, "Album"),
+                (GroupBy::Artist, "Artist"),
+                (GroupBy::Genre, "Genre"),
+                (GroupBy::Year, "Year"),
+            ] {
+                let weak = cx.entity().downgrade();
+                menu = menu.item(
+                    PopupMenuItem::new(name)
+                        .checked(self.group_by == group_by)
+                        .on_click(move |_, _, cx| {
+                            if let Some(panel) = weak.upgrade() {
+                                panel.update(cx, |panel, cx| panel.set_group_by(group_by, cx));
+                            }
+                        }),
+                );
+            }
         }
 
         // Panel section: operations on the panel itself, not its contents.
@@ -2982,4 +3410,24 @@ fn fmt_num(n: u16) -> SharedString {
     } else {
         n.to_string().into()
     }
+}
+
+/// The track rows' hover group, for cells that only show on the row
+/// under the mouse.
+const ROW_GROUP: &str = "library-row";
+
+/// The rating column's cell: the shared rating control over the
+/// library's value, writing a click straight into the catalog. An
+/// unrated track keeps the cell invisible until its row is hovered, so
+/// the empty affordance never reads as column-wide noise; the control
+/// stops the mouse-down itself, so rating never reselects the row.
+fn rating_cell(state: AppState, row: u32, id: i64, rating: u8) -> Div {
+    crate::rating_ui::control(rating, move |value, _, cx| {
+        state
+            .library
+            .update(cx, |library, cx| library.set_rating(row, id, value, cx));
+    })
+    .when(rating == 0, |d| {
+        d.opacity(0.).group_hover(ROW_GROUP, |s| s.opacity(1.))
+    })
 }

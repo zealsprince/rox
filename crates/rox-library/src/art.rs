@@ -37,9 +37,11 @@ fn embedded(path: &Path) -> Option<(Vec<u8>, String)> {
     if let Some(art) = unsync_apic(path) {
         return Some(art);
     }
-    let file = catch_unwind(AssertUnwindSafe(|| lofty::read_from_path(path)))
-        .ok()?
-        .ok()?;
+    let file = catch_unwind(AssertUnwindSafe(|| {
+        lofty::probe::Probe::open(path).and_then(|p| p.options(crate::parse_opts()).read())
+    }))
+    .ok()?
+    .ok()?;
     let pictures: Vec<_> = file.tags().iter().flat_map(|tag| tag.pictures()).collect();
     let picture = pictures
         .iter()

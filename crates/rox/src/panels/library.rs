@@ -27,7 +27,7 @@ use rox_library::projection::{Projection, SortKey};
 use rox_library::rusqlite::Connection;
 use rox_library::scanner::{self, ScanSummary};
 use rox_library::store;
-use rox_viz::analysis::{log_bands, Analyzer, MAX_FFT_SIZE};
+use rox_viz::analysis::{log_bands, Analyzer, FFT_SIZE};
 use rox_viz::AudioFeed;
 
 use crate::assets::icons;
@@ -677,17 +677,16 @@ const PULSE_RELEASE: f32 = 10.0;
 /// ticks the bars hold their targets instead of dipping toward silence.
 const PULSE_SILENT_AFTER: f32 = 0.15;
 
-/// The mark's window size: the largest the feed keeps, since with three
-/// wide bands the low one wants bass bins more than it wants reaction
-/// time, and the eased levels hide the longer window's smear anyway.
-const PULSE_FFT: usize = MAX_FFT_SIZE;
+/// The mark's window size: the analyzer default, bass bins enough for
+/// three wide bands while reacting twice as fast as the largest window.
+const PULSE_FFT: usize = FFT_SIZE;
 
 /// The playing mark's audio tap: the spectrum panel's analysis at glyph
 /// scale. Three log bands over the player's PCM feed become the three bar
 /// levels; once the feed sits still past [`PULSE_SILENT_AFTER`] (paused,
 /// stopped) they fall to silence. Built lazily and boxed, so a table that
 /// never shows the playing row doesn't carry the FFT buffers (they run
-/// ~150KB).
+/// ~70KB).
 struct Pulse {
     analyzer: Analyzer,
     mono: [f32; PULSE_FFT],
@@ -773,19 +772,25 @@ impl Pulse {
 
 /// The playing mark: three bars riding the playing audio, low, mid, and
 /// high bands left to right. The floor keeps visible stubs through quiet
-/// passages and while paused, where the levels settle to rest.
+/// passages and while paused, where the levels settle to rest. Each bar
+/// hangs absolutely off the box floor: flex end-alignment drifted inside
+/// the table cell, moving the bases with the levels.
 fn playing_bars(levels: [f32; PULSE_BARS]) -> Div {
     const SPAN: f32 = 10.;
+    const BAR_W: f32 = 2.;
+    const GAP: f32 = 1.;
     let mut bars = div()
-        .flex()
+        .relative()
         .flex_none()
-        .items_end()
-        .gap(px(1.))
+        .w(px(PULSE_BARS as f32 * (BAR_W + GAP) - GAP))
         .h(px(SPAN));
-    for level in levels {
+    for (ix, level) in levels.into_iter().enumerate() {
         bars = bars.child(
             div()
-                .w(px(2.))
+                .absolute()
+                .bottom_0()
+                .left(px(ix as f32 * (BAR_W + GAP)))
+                .w(px(BAR_W))
                 .h(px(SPAN * (0.18 + 0.82 * level)))
                 .rounded(px(1.))
                 .bg(palette::accent()),

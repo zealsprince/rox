@@ -1,6 +1,7 @@
 //! The album grid panel: the catalog as a wall of cover tiles, NekoRoX's
 //! grid gallery. One tile per album in the library's canonical order,
-//! square and edge to edge, textures through the shared artwork service.
+//! square, the last column bleeding off the panel edge like the reference
+//! theme's grid, textures through the shared artwork service.
 //! Rows virtualize through a uniform_list, so a huge library costs only
 //! the tiles on screen. Clicking a tile publishes the album's tracks on
 //! the shared selection; a double click queues the album on the player.
@@ -15,7 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    div, img, prelude::*, px, svg, uniform_list, AnyElement, App, Context, Div, Entity,
+    canvas, div, img, prelude::*, px, svg, uniform_list, AnyElement, App, Context, Div, Entity,
     EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
     Pixels, SharedString, Subscription, UniformListScrollHandle, WeakEntity, Window,
 };
@@ -404,23 +405,21 @@ impl GridPanel {
         }
     }
 
-    /// How many tiles share a row at the current width.
+    /// How many tiles share a row at the current width: enough to cover
+    /// it, the last one bleeding off the edge like the reference theme's
+    /// grid. The ceil is what keeps the size knob continuous - tiles
+    /// render at exactly the configured edge, no snapping to fit.
     fn cols(&self) -> usize {
         let width = f32::from(self.width);
         if width <= 0. {
             return FALLBACK_COLS;
         }
-        ((width / self.config.tile).floor() as usize).max(1)
+        ((width / self.config.tile).ceil() as usize).max(1)
     }
 
-    /// A tile's actual edge: the width divided evenly, so the last column
-    /// meets the panel's right edge.
-    fn tile_side(&self, cols: usize) -> Pixels {
-        let width = f32::from(self.width);
-        if width <= 0. {
-            return px(self.config.tile);
-        }
-        px((width / cols as f32).floor())
+    /// A tile's edge: exactly the configured size.
+    fn tile_side(&self) -> Pixels {
+        px(self.config.tile)
     }
 
     /// One album tile: the cover filling a square, the label overlay while
@@ -559,29 +558,14 @@ impl GridPanel {
     /// painted width reconciles: the dock hosts panels cached, so a resize
     /// repaints this closure without re-running render, and a notify here
     /// is what recomputes the column count next frame.
-    fn rows(&mut self, range: Range<usize>, window: &mut Window, cx: &mut Context<Self>) -> Vec<Div> {
+    fn rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<Div> {
         let measured = self.scroll.0.borrow().base_handle.bounds().size.width;
         if measured > px(0.) && measured != self.width {
             self.width = measured;
             cx.notify();
         }
-        // A live drag-scroll follows the pointer at the window level, the
-        // scrub strips' idiom; the notify re-arms the handlers next frame.
-        if self.flick.is_dragging() {
-            let scroll = self.scroll.clone();
-            let weak = cx.entity().downgrade();
-            panel::flick_on_paint(&self.flick, window, move |dy, cx| {
-                let base = scroll.0.borrow().base_handle.clone();
-                let mut offset = base.offset();
-                offset.y += px(dy);
-                base.set_offset(offset);
-                if let Some(this) = weak.upgrade() {
-                    this.update(cx, |_, cx| cx.notify());
-                }
-            });
-        }
         let cols = self.cols();
-        let side = self.tile_side(cols);
+        let side = self.tile_side();
         range
             .map(|r| {
                 let mut row = div().flex().flex_row();
@@ -654,7 +638,7 @@ impl PanelSettings for GridPanel {
             .gap(tokens::SPACE_MD)
             .child(setting_row(
                 "tile size",
-                Some("how wide a cover tile wants to be; the grid fits as many as the panel holds"),
+                Some("the cover tiles' exact edge; the last column runs off the panel side"),
                 settings_ui::slider_labeled(
                     &self.tile_scrub,
                     fraction,
@@ -856,14 +840,38 @@ impl GridPanel {
                     }),
                 )
                 .child(
-                    uniform_list("album-grid", row_count, move |range, window, cx| {
+                    uniform_list("album-grid", row_count, move |range, _, cx| {
                         this.upgrade()
-                            .map(|this| {
-                                this.update(cx, |this, cx| this.rows(range, window, cx))
-                            })
+                            .map(|this| this.update(cx, |this, cx| this.rows(range, cx)))
                             .unwrap_or_default()
                     })
                     .track_scroll(self.scroll.clone())
+                    .size_full(),
+                )
+                // A live drag-scroll follows the pointer through window
+                // handlers armed in a paint pass, the scrub strips' idiom.
+                // The canvas exists for that paint hook; the list's rows
+                // closure can't arm them, it also runs during layout.
+                .child(
+                    canvas(|_, _, _| (), {
+                        let flick = self.flick.clone();
+                        let scroll = self.scroll.clone();
+                        let weak = cx.entity().downgrade();
+                        move |_, _, window, _| {
+                            let scroll = scroll.clone();
+                            let weak = weak.clone();
+                            panel::flick_on_paint(&flick, window, move |dy, cx| {
+                                let base = scroll.0.borrow().base_handle.clone();
+                                let mut offset = base.offset();
+                                offset.y += px(dy);
+                                base.set_offset(offset);
+                                if let Some(this) = weak.upgrade() {
+                                    this.update(cx, |_, cx| cx.notify());
+                                }
+                            });
+                        }
+                    })
+                    .absolute()
                     .size_full(),
                 )
                 .child(

@@ -35,6 +35,10 @@ use crate::source::{self, ResolvedTrack, TrackSource};
 /// what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct CoverConfig {
+    /// The rename shown as the tab and title text; None shows the
+    /// built-in name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub source: TrackSource,
     #[serde(default)]
@@ -228,31 +232,31 @@ impl CoverArtPanel {
     /// The panel's own dropdown entries: the source pick, the same knob the
     /// customize window edits.
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
-        let mut menu = menu;
-        for (label, source) in [
-            ("Follow Playing", TrackSource::Playing),
-            ("Follow Selection", TrackSource::Selected),
-        ] {
-            let weak = cx.entity().downgrade();
-            menu = menu.item(
-                PopupMenuItem::new(label)
-                    .checked(self.config.source == source)
-                    .on_click(move |_, _, cx| {
-                        let Some(this) = weak.upgrade() else { return };
-                        this.update(cx, |this, cx| {
-                            this.config.source = source;
-                            cx.notify();
-                        });
-                    }),
-            );
-        }
-        menu
+        source::source_menu(
+            menu,
+            self.config.source,
+            &cx.entity(),
+            |this, source, cx| {
+                this.config.source = source;
+                cx.notify();
+            },
+        )
     }
 }
 
 impl PanelSettings for CoverArtPanel {
     fn state(&self) -> AppState {
         self.state.clone()
+    }
+
+    fn custom_title(&self) -> Option<&str> {
+        self.config.title.as_deref()
+    }
+
+    fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
+        self.config.title = title;
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+        cx.notify();
     }
 
     fn pages(&self) -> &'static [&'static str] {
@@ -312,7 +316,11 @@ impl Panel for CoverArtPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("cover art")
+        panel::title_text(self.config.title.as_deref(), "cover art")
+    }
+
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        self.config.title.clone().map(SharedString::from)
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
@@ -355,6 +363,7 @@ impl Panel for CoverArtPanel {
         // window, apart from the core panel items.
         let menu = self.config_menu(menu, cx);
         let menu = menu.separator();
+        let menu = panel_settings::rename_item(menu, &cx.entity());
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
         // because the copy takes the config along, like the transports'.
@@ -390,8 +399,11 @@ impl Panel for CoverArtPanel {
 
 /// One slide at a weight, filling the panel. Opacity cascades to the
 /// subtree, so the whole slide fades as one; where the content sits when
-/// the panel is wider than it is the alignment knob.
-fn layer(slide: &Slide, opacity: f32, align: Align) -> AnyElement {
+/// the panel is wider than it is the alignment knob. The art carries the
+/// panel theme's rounding itself: gpui content masks stay rectangular,
+/// so the body's rounded corners would otherwise be painted square over
+/// by a cover running edge to edge.
+fn layer(slide: &Slide, opacity: f32, align: Align, rounding: Option<f32>) -> AnyElement {
     let base = justify(
         div()
             .absolute()
@@ -446,7 +458,8 @@ fn layer(slide: &Slide, opacity: f32, align: Align) -> AnyElement {
                 frame.child(
                     img(image.clone())
                         .object_fit(ObjectFit::Contain)
-                        .size_full(),
+                        .size_full()
+                        .when_some(rounding, |d, radius| d.rounded(px(radius))),
                 ),
             )
         }
@@ -457,7 +470,7 @@ fn layer(slide: &Slide, opacity: f32, align: Align) -> AnyElement {
 impl Render for CoverArtPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(window, cx).into_any_element())
+        panel::themed(&theme, || self.body(window, cx))
     }
 }
 
@@ -492,9 +505,10 @@ impl CoverArtPanel {
         let u = u * u * (3.0 - 2.0 * u);
 
         let align = self.config.align;
+        let rounding = self.config.theme.rounding;
         let root = div().size_full().bg(palette::bg_root()).relative();
         if u >= 1.0 {
-            root.child(layer(&self.to, 1.0, align))
+            root.child(layer(&self.to, 1.0, align, rounding))
         } else {
             // Hold the outgoing cover at full under an incoming one so a
             // same-art track change never dips toward the background, the
@@ -505,8 +519,8 @@ impl CoverArtPanel {
             } else {
                 1.0 - u
             };
-            root.child(layer(&self.from, floor, align))
-                .child(layer(&self.to, u, align))
+            root.child(layer(&self.from, floor, align, rounding))
+                .child(layer(&self.to, u, align, rounding))
         }
     }
 }

@@ -22,8 +22,8 @@ Peripheral, edges that can exist without being the point:
   their history as part of the library. It sits behind the library because it's
   worthless if browsing doesn't hold up first.
 - Last.fm scrobbling. Wanted, and the community expects it, but it isn't the reason to
-  switch. It reports the same listens stats records, so the two never disagree about
-  what counted.
+  switch. It measures a listen the way stats does, played time rather than wall time,
+  with its own send threshold as a user knob.
 - Lyric display. A lyrics panel that shows words for the playing track, fetched or from a
   local file.
 - Auto-tagging. Fingerprint a track and pull correct metadata (MusicBrainz / AcoustID) to
@@ -32,6 +32,8 @@ Peripheral, edges that can exist without being the point:
 - ReplayGain: closer to core than the rest, a large-library person leans on it, but it
   sits behind the tagging and browsing experience.
 - DSP / audio effect chain. Foobar has it, most people never touch it.
+- System integration. Media keys and the OS transport surface (MPRIS on Linux), and a
+  tray presence with quit-to-tray. Expected of a desktop player, invisible until missing.
 
 ## Sources as extensions
 

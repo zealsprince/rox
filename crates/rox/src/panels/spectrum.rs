@@ -113,6 +113,10 @@ const SILENT_AFTER: f32 = 0.15;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SpectrumConfig {
+    /// The rename shown as the tab and title text; None shows the
+    /// built-in name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Low bound of the analyzed range, Hz: the bars span log-spaced from
     /// here up to `freq_hi`.
     pub freq_lo: f32,
@@ -158,6 +162,7 @@ pub struct SpectrumConfig {
 impl Default for SpectrumConfig {
     fn default() -> Self {
         SpectrumConfig {
+            title: None,
             freq_lo: 30.0,
             freq_hi: 16_000.0,
             bar_width: tokens::BAR_W,
@@ -344,16 +349,9 @@ impl Bars {
             .unwrap_or(1.0 / 60.0);
         self.last_tick = Some(now);
 
-        // Frozen: keep the levels and holds exactly where they are - even a
-        // remap would reset them - and stop animating; paint keeps showing
-        // the standing frame.
         let written = feed.written();
         let fresh = written != self.last_written;
         self.last_written = written;
-        if hold && !fresh {
-            self.alive = false;
-            return;
-        }
 
         let count =
             ((width / (config.bar_w() + tokens::BAR_GAP)) as usize).clamp(MIN_BARS, MAX_BARS);
@@ -370,7 +368,8 @@ impl Bars {
                 0.0
             },
         };
-        if self.mapping.as_ref() != Some(&mapping) {
+        let remap = self.mapping.as_ref() != Some(&mapping);
+        if remap {
             self.zones = mapping.zones();
             self.mapping = Some(mapping);
             self.targets = vec![0.0; count];
@@ -379,10 +378,23 @@ impl Bars {
             self.hold_vel = vec![0.0; count];
         }
 
+        // Frozen: keep the levels and holds exactly where they are and stop
+        // animating; paint keeps showing the standing frame. A settings edit
+        // that remaps the bars still lands: the feed keeps the last window,
+        // so the frame re-analyzes below at the new mapping instead of
+        // ignoring the edit until playback resumes.
+        if hold && !fresh && !remap {
+            self.alive = false;
+            return;
+        }
+
         // New audio since last tick: analyze the latest window per zone and
         // refresh the targets. Nothing new: hold the targets - it's just
         // the gap between pump ticks - until the feed has sat still long
         // enough to read as stopped, then let the bars fall to silence.
+        // A remap also re-analyzes: it just reset the targets, and the
+        // buffered window rebuilds them at the new mapping without waiting
+        // for the next pump tick.
         if fresh {
             self.last_fresh = Some(now);
         }
@@ -398,7 +410,7 @@ impl Bars {
                 mono,
                 bands,
             } = zone;
-            let mags = (fresh && feed.latest_mono(mono) == mono.len())
+            let mags = ((fresh || remap) && feed.latest_mono(mono) == mono.len())
                 .then(|| analyzer.magnitudes(mono));
             for &(lo, hi) in bands.iter() {
                 let i = bar;
@@ -414,12 +426,19 @@ impl Bars {
                     self.targets[i] = 0.0;
                 }
                 let target = self.targets[i];
-                let rate = if target > self.levels[i] {
-                    ATTACK
+                if hold {
+                    // Frozen: the frame changed mapping, not time. Land on
+                    // the new targets at once - the next tick parks again,
+                    // so an ease would strand the bars partway.
+                    self.levels[i] = target;
                 } else {
-                    RELEASE
-                };
-                self.levels[i] += (target - self.levels[i]) * (rate * dt).min(1.0);
+                    let rate = if target > self.levels[i] {
+                        ATTACK
+                    } else {
+                        RELEASE
+                    };
+                    self.levels[i] += (target - self.levels[i]) * (rate * dt).min(1.0);
+                }
 
                 // The cap rides up with the bar and falls back under gravity
                 // once the bar drops away. Caps off: the holds shadow the
@@ -713,6 +732,16 @@ impl PanelSettings for SpectrumPanel {
         self.state.clone()
     }
 
+    fn custom_title(&self) -> Option<&str> {
+        self.config.title.as_deref()
+    }
+
+    fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
+        self.config.title = title;
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+        cx.notify();
+    }
+
     fn pages(&self) -> &'static [&'static str] {
         &["Display"]
     }
@@ -912,7 +941,11 @@ impl Panel for SpectrumPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("spectrum")
+        panel::title_text(self.config.title.as_deref(), "spectrum")
+    }
+
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        self.config.title.clone().map(SharedString::from)
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
@@ -955,6 +988,7 @@ impl Panel for SpectrumPanel {
         // window, apart from the core panel items.
         let menu = self.config_menu(menu, cx);
         let menu = menu.separator();
+        let menu = panel_settings::rename_item(menu, &cx.entity());
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
         // because the copy takes the config along, like the cover panel's.
@@ -991,7 +1025,7 @@ impl Panel for SpectrumPanel {
 impl Render for SpectrumPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(window, cx).into_any_element())
+        panel::themed(&theme, || self.body(window, cx))
     }
 }
 

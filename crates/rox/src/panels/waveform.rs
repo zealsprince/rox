@@ -49,6 +49,10 @@ const BAR_GAP_MAX: f32 = 8.0;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WaveformConfig {
+    /// The rename shown as the tab and title text; None shows the
+    /// built-in name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Bar thickness, px: the sampling step follows it, so thicker bars
     /// mean fewer of them.
     pub bar_width: f32,
@@ -69,6 +73,7 @@ pub struct WaveformConfig {
 impl Default for WaveformConfig {
     fn default() -> Self {
         WaveformConfig {
+            title: None,
             bar_width: tokens::BAR_W,
             bar_gap: tokens::BAR_GAP,
             outline: false,
@@ -471,6 +476,16 @@ impl PanelSettings for WaveformPanel {
         self.state.clone()
     }
 
+    fn custom_title(&self) -> Option<&str> {
+        self.config.title.as_deref()
+    }
+
+    fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
+        self.config.title = title;
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+        cx.notify();
+    }
+
     fn pages(&self) -> &'static [&'static str] {
         &["Display"]
     }
@@ -559,7 +574,11 @@ impl Panel for WaveformPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("waveform")
+        panel::title_text(self.config.title.as_deref(), "waveform")
+    }
+
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        self.config.title.clone().map(SharedString::from)
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
@@ -598,6 +617,22 @@ impl Panel for WaveformPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
+        // The config block: the panel's quick entries above the core panel
+        // items, like the transport panels'.
+        let weak = cx.entity().downgrade();
+        let menu = menu.item(
+            PopupMenuItem::new("Scrobble Marker")
+                .checked(self.config.scrobble_marker)
+                .on_click(move |_, _, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    this.update(cx, |this, cx| {
+                        this.config.scrobble_marker = !this.config.scrobble_marker;
+                        cx.notify();
+                    });
+                }),
+        );
+        let menu = menu.separator();
+        let menu = panel_settings::rename_item(menu, &cx.entity());
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than shared: the copy takes the
         // config along, like every configured panel's.
@@ -634,7 +669,7 @@ impl Panel for WaveformPanel {
 impl Render for WaveformPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(window, cx).into_any_element())
+        panel::themed(&theme, || self.body(window, cx))
     }
 }
 

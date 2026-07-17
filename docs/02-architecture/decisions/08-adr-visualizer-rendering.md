@@ -1,23 +1,25 @@
-# ADR 8: Visualizers render CPU-side, forced by GPUI
+# ADR 8: Spectrum and waveform on GPUI primitives, no generative visual
 
-**Status:** Decided, validated by the
-[visualizer prototype](../../0R-research/01-generative-visualizer.md): the generative
-visual draws as a per-frame image blit, polylines stay for spectrum and waveform
+**Status:** Decided, supersedes the original call (a CPU-simulated generative visual)
+after the [prototype](../../0R-research/01-generative-visualizer.md)
 
-Decision: draw the spectrum and waveform with GPUI primitives in a `canvas()` paint
-callback, and run the generative visual as a CPU simulation, drawn either as GPUI polylines
-(the path builder) or blitted as a per-frame image. No custom GPU shaders.
+Decision: the spectrum analyzer and waveform seekbar draw with GPUI primitives, quads
+and paths in a `canvas()` paint callback. The generative visual doesn't ship in CPU
+form; it returns only as a real GPU shader. GPUI exposes no public custom-surface or
+shader API, and its internal move to wgpu opened no door (no public device handle),
+so the return is gated on the framework.
 
-Alternatives: a custom WGSL shader handed to GPUI, or a separate wgpu surface composited
-into the window.
+Alternatives: the original call, a curl-noise flow field simulated on a worker thread
+and drawn as polylines or a per-frame image blit; a custom WGSL shader handed to
+GPUI; a separate wgpu surface composited into the window.
 
-Trade: this is the one product requirement GPUI doesn't cleanly satisfy. GPUI exposes no
-public custom-GPU-surface or shader API. Its recent internal move to wgpu did not open that
-door, it's an implementation detail with no public device handle. So a shader-driven fluid
-visual isn't available. The spectrum analyzer and waveform are easy and native: quads and
-paths at 60fps is exactly what GPUI is built for. The generative "green flow-field" look is
-a curl-noise flow field driven by FFT bands, run on a worker thread; if the look is lines,
-we advect points and draw polylines with no texture upload, which fits the reference best.
-The cost is a CPU budget for the sim and no access to true GPU-shader fluidity. The escape
-hatch, a separate wgpu surface, has no clean embedding API and is a last resort. This is the
-first thing to prototype, because it's the one place the framework fights the product.
+Trade: the prototype settled feasibility, not worth. Both CPU paths hold a 60fps
+budget at 12,000 particles, and the blit keeps the UI thread flat at 0.1 ms. What the
+working version costs is a worker thread rasterizing and copying a framebuffer for
+every frame the panel is visible, a standing tax for a decoration, and the output is
+a fixed-resolution buffer GPU-scaled to the panel, soft at large sizes on hidpi. A
+shader gets the same look sharp at any size for near nothing, so the CPU version is
+the worse form of the feature carried as maintenance while the right form stays
+possible. The spectrum and waveform lose nothing here: a handful of shapes per frame
+is exactly what GPUI's primitives are for. The escape hatch, a separate wgpu surface,
+still has no clean embedding API and stays a last resort.

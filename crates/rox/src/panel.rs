@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    anchored, canvas, deferred, div, fill, point, prelude::*, px, size, svg, AnyElement, App,
-    Bounds,
+    anchored, canvas, deferred, div, fill, point, prelude::*, px, size, svg, AbsoluteLength,
+    AnyElement, App, Bounds,
     Context, DismissEvent, Div, Element, Entity, Focusable as _, GlobalElementId,
     InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point, Rgba, SharedString, Subscription, TitlebarOptions, UniformListScrollHandle,
@@ -454,6 +454,24 @@ pub fn seek_fraction(player: &Entity<Player>, fraction: f32, cx: &App) {
     player.seek_to(fraction as f64 * duration);
 }
 
+/// A panel's tab and title text: the rename when one is set, the built-in
+/// name otherwise.
+pub fn title_text(custom: Option<&str>, default: &'static str) -> SharedString {
+    match custom {
+        Some(name) => SharedString::from(name.to_owned()),
+        None => default.into(),
+    }
+}
+
+/// Repaint the tab panel hosting a renamed panel. The tab bar draws the
+/// title, and that row only repaints when the tab panel itself is
+/// notified; the panel's own notify never reaches it.
+pub fn refresh_tab_panel(tab_panel: &Option<WeakEntity<TabPanel>>, cx: &mut App) {
+    if let Some(tabs) = tab_panel.as_ref().and_then(|tabs| tabs.upgrade()) {
+        tabs.update(cx, |_, cx| cx.notify());
+    }
+}
+
 /// Read a panel's config back out of a dumped panel state; anything
 /// missing or malformed falls back to defaults.
 pub fn config_from_info<C: Default + serde::de::DeserializeOwned>(info: &PanelInfo) -> C {
@@ -504,9 +522,13 @@ pub fn pop_out<P: Panel>(
 
 /// Open an OS window hosting an already-detached panel. Also the dock's
 /// middle-drag-out hook: dragging a panel out of the window lands here.
-/// The window title comes from the panel's name.
+/// The window title comes from the panel's rename when one is set, its
+/// built-in name otherwise.
 pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
-    let title = SharedString::from(format!("rox - {}", panel.panel_name(cx)));
+    let name = panel
+        .tab_name(cx)
+        .unwrap_or_else(|| panel.panel_name(cx).into());
+    let title = SharedString::from(format!("rox - {name}"));
     let bounds = Bounds::centered(None, size(px(900.), px(600.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -566,12 +588,32 @@ pub trait PanelSettings: Panel {
         div().into_any_element()
     }
 
+    /// The rename override, shown as the tab and title text in place of
+    /// the panel's built-in name. Lives on the panel's config, so the
+    /// layout dump persists it and Duplicate copies it.
+    fn custom_title(&self) -> Option<&str>;
+
+    /// Store an edited rename: the next render shows it, the layout dump
+    /// persists it. None goes back to the built-in name. Implementations
+    /// must repaint their hosting tab panel ([`refresh_tab_panel`]), which
+    /// is what draws the title.
+    fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>);
+
     /// The panel's palette override, the Appearance page's subject.
     fn theme(&self) -> PanelTheme;
 
     /// Store an edited override: the next render picks it up, the layout
     /// dump persists it.
     fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>);
+
+    /// The panel's own rows for the shared Appearance page, rendered as
+    /// a section between the frame and the colors: looks that live on
+    /// the panel's config rather than its theme, like the grid's art
+    /// rounding. None keeps the page to the shared knobs.
+    fn appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let _ = (window, cx);
+        None
+    }
 }
 
 /// Build a panel body under its palette override and keep the override
@@ -579,12 +621,48 @@ pub trait PanelSettings: Panel {
 /// the style reads that resolve eagerly (`.bg(palette::x())` runs as the
 /// div chain is built); the wrapper element re-enters it for layout,
 /// prepaint, and paint, which is when hover styles and canvas paint
-/// closures actually read the palette. An empty theme skips all of it.
-pub fn themed(theme: &PanelTheme, build: impl FnOnce() -> AnyElement) -> AnyElement {
-    let Some(scope) = theme.scope() else {
-        return build();
+/// closures actually read the palette. The theme's frame knobs apply
+/// here too: padding, rounding, and border style the body's root div -
+/// the radius must land on the body's own background quad, since gpui
+/// content masks stay rectangular and a wrapper's corners would be
+/// painted over, and padding on the body keeps the gap in the panel's
+/// own background - while margin wraps outside it, so the backdrop
+/// shows through that gap. An empty theme skips all of it.
+pub fn themed(theme: &PanelTheme, build: impl FnOnce() -> Div) -> AnyElement {
+    let frame = {
+        let (margin, padding, rounding, border) =
+            (theme.margin, theme.padding, theme.rounding, theme.border);
+        move || {
+            let mut body = build();
+            if let Some(padding) = padding {
+                body = body.p(px(padding));
+            }
+            if let Some(radius) = rounding {
+                body = body.rounded(px(radius));
+            }
+            if let Some(width) = border {
+                let width: AbsoluteLength = px(width).into();
+                let widths = &mut body.style().border_widths;
+                widths.top = Some(width);
+                widths.right = Some(width);
+                widths.bottom = Some(width);
+                widths.left = Some(width);
+                body = body.border_color(palette::border());
+            }
+            match margin {
+                Some(margin) => div()
+                    .size_full()
+                    .p(px(margin))
+                    .child(body)
+                    .into_any_element(),
+                None => body.into_any_element(),
+            }
+        }
     };
-    let child = palette::scoped(&scope, build);
+    let Some(scope) = theme.scope() else {
+        return frame();
+    };
+    let child = palette::scoped(&scope, frame);
     Themed { scope, child }.into_any_element()
 }
 

@@ -32,6 +32,10 @@ use crate::player::{fmt_time, fmt_time_padded};
 /// and what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct TransportConfig {
+    /// The rename shown as the tab and title text; None shows the
+    /// built-in name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub align: Align,
     /// The stop button that ejects the playing track.
@@ -137,6 +141,16 @@ impl PanelSettings for TransportPanel {
         self.state.clone()
     }
 
+    fn custom_title(&self) -> Option<&str> {
+        self.config.title.as_deref()
+    }
+
+    fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
+        self.config.title = title;
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+        cx.notify();
+    }
+
     fn pages(&self) -> &'static [&'static str] {
         &["Controls"]
     }
@@ -199,7 +213,7 @@ impl PanelSettings for TransportPanel {
 impl Render for TransportPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(cx).into_any_element())
+        panel::themed(&theme, || self.body(cx))
     }
 }
 
@@ -321,6 +335,10 @@ impl TransportPanel {
 /// and what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct TrackInfoConfig {
+    /// The rename shown as the tab and title text; None shows the
+    /// built-in name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub align: Align,
     /// The panel's palette override.
@@ -388,6 +406,16 @@ impl PanelSettings for TrackInfoPanel {
         self.state.clone()
     }
 
+    fn custom_title(&self) -> Option<&str> {
+        self.config.title.as_deref()
+    }
+
+    fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
+        self.config.title = title;
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+        cx.notify();
+    }
+
     fn pages(&self) -> &'static [&'static str] {
         &["Layout"]
     }
@@ -422,7 +450,7 @@ impl PanelSettings for TrackInfoPanel {
 impl Render for TrackInfoPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(cx).into_any_element())
+        panel::themed(&theme, || self.body(cx))
     }
 }
 
@@ -514,6 +542,10 @@ impl TrackInfoPanel {
 /// what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct VolumeConfig {
+    /// The rename shown as the tab and title text; None shows the
+    /// built-in name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub align: Align,
     /// Let the slider fill whatever width the panel has instead of capping
@@ -574,6 +606,16 @@ impl PanelSettings for VolumePanel {
         self.state.clone()
     }
 
+    fn custom_title(&self) -> Option<&str> {
+        self.config.title.as_deref()
+    }
+
+    fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
+        self.config.title = title;
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+        cx.notify();
+    }
+
     fn pages(&self) -> &'static [&'static str] {
         &["Layout"]
     }
@@ -624,7 +666,7 @@ impl PanelSettings for VolumePanel {
 impl Render for VolumePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(cx).into_any_element())
+        panel::themed(&theme, || self.body(cx))
     }
 }
 
@@ -735,6 +777,10 @@ impl VolumePanel {
 /// as the library's.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SeekConfig {
+    /// The rename shown as the tab and title text; None shows the
+    /// built-in name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// The elapsed and remaining clocks around the strip.
     #[serde(default = "default_true")]
     pub timings: bool,
@@ -759,6 +805,7 @@ fn default_true() -> bool {
 impl Default for SeekConfig {
     fn default() -> Self {
         SeekConfig {
+            title: None,
             timings: true,
             show_total: false,
             scrobble_marker: false,
@@ -828,6 +875,16 @@ impl SeekStripPanel {
 impl PanelSettings for SeekStripPanel {
     fn state(&self) -> AppState {
         self.state.clone()
+    }
+
+    fn custom_title(&self) -> Option<&str> {
+        self.config.title.as_deref()
+    }
+
+    fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
+        self.config.title = title;
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+        cx.notify();
     }
 
     fn pages(&self) -> &'static [&'static str] {
@@ -958,7 +1015,7 @@ fn clock(text: String) -> Div {
 impl Render for SeekStripPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(window, cx).into_any_element())
+        panel::themed(&theme, || self.body(window, cx))
     }
 }
 
@@ -1092,7 +1149,11 @@ macro_rules! transport_panel {
             }
 
             fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-                gpui::SharedString::from($name)
+                panel::title_text(self.config.title.as_deref(), $name)
+            }
+
+            fn tab_name(&self, _cx: &App) -> Option<gpui::SharedString> {
+                self.config.title.clone().map(gpui::SharedString::from)
             }
 
             fn inner_padding(&self, _cx: &App) -> bool {
@@ -1139,6 +1200,7 @@ macro_rules! transport_panel {
                 // settings window, apart from the core panel items.
                 let menu = self.config_menu(menu, cx);
                 let menu = menu.separator();
+                let menu = panel_settings::rename_item(menu, &cx.entity());
                 let menu = panel_settings::settings_item(menu, &cx.entity());
                 // Duplicate hand-rolled rather than through
                 // `panel::duplicate_item` because the copy takes the config

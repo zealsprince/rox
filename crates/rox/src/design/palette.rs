@@ -394,13 +394,32 @@ impl Palette {
 /// role reads as written - song theming and palette easing pass it by -
 /// while every other role keeps following the app palette, so a panel
 /// that only recolors its accent still tracks edits and tinting
-/// everywhere else.
+/// everywhere else. The frame knobs ride along: margin insets the panel
+/// from its cell, padding opens space inside its own surface, rounding
+/// and border shape its edge. They are geometry, not colors, so the
+/// themed wrapper applies them directly instead of going through the
+/// scope; the border draws in the border role's color, which the color
+/// grid already covers.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PanelTheme {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub colors: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_opacity: Option<f32>,
+    /// Space between the panel and its cell, in px; the backdrop shows
+    /// through the gap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin: Option<f32>,
+    /// Space inside the panel's edge, in px, kept in the panel's own
+    /// background; the content pulls in, the surface stays whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding: Option<f32>,
+    /// The panel's corner radius, in px.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounding: Option<f32>,
+    /// A border around the panel, in px of width.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border: Option<f32>,
 }
 
 impl PanelTheme {
@@ -408,7 +427,12 @@ impl PanelTheme {
     /// scope entirely and serialize away, so an untouched panel's config
     /// stays what it was.
     pub fn is_empty(&self) -> bool {
-        self.colors.is_empty() && self.surface_opacity.is_none()
+        self.colors.is_empty()
+            && self.surface_opacity.is_none()
+            && self.margin.is_none()
+            && self.padding.is_none()
+            && self.rounding.is_none()
+            && self.border.is_none()
     }
 
     /// A role's override, when one is set and parses.
@@ -430,10 +454,11 @@ impl PanelTheme {
 
     /// The theme resolved for the read path: role names checked against
     /// the listing, unknown and unparsable entries dropped, so a
-    /// hand-edited config degrades quietly. None while nothing overrides,
-    /// so renders skip the scope push.
+    /// hand-edited config degrades quietly. None while no color or
+    /// opacity overrides, so renders skip the scope push - the frame
+    /// knobs never need one, the wrapper reads them directly.
     pub fn scope(&self) -> Option<Scope> {
-        if self.is_empty() {
+        if self.colors.is_empty() && self.surface_opacity.is_none() {
             return None;
         }
         let colors: Vec<(&'static str, Rgba)> = ROLES

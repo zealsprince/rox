@@ -5,10 +5,6 @@ consumes the [product spec](../01-product/) and hands contracts down to
 [implementation](../03-implementation/). It does not write the code and it does not
 sequence the build.
 
-Status: draft. Grounded in a research pass over GPUI, the Rust audio stack, tagging,
-library indexing, and visualizers. Version-sensitive claims were true at research time
-and need re-checking before anyone pins a `Cargo.lock`.
-
 ## Constraints inherited from product
 
 The requirements this structure has to honor, from [scope](../01-product/03-scope.md):
@@ -115,7 +111,9 @@ Each ADR records the call, the alternatives weighed, and what it costs. They liv
 | [5 - Library store](decisions/05-adr-library-store.md) | SQLite source of truth plus in-memory projection | Decided |
 | [6 - Search](decisions/06-adr-search.md) | In-memory substring first, FTS5 next, tantivy only if needed | Decided |
 | [7 - Panels](decisions/07-adr-panels.md) | GPUI primitives with gpui-component as the widget baseline | Decided |
-| [8 - Visualizer rendering](decisions/08-adr-visualizer-rendering.md) | CPU-side rendering, forced by GPUI | Decided, prototype pending |
+| [8 - Visualizer rendering](decisions/08-adr-visualizer-rendering.md) | Spectrum and waveform on GPUI primitives, no generative visual | Decided |
 | [9 - Audio output](decisions/09-adr-audio-output.md) | Output layer swappable, bit-perfect deferred | Decided |
 | [10 - Theming](decisions/10-adr-theming.md) | Palette as data behind one setter, CPU-baked backdrop | Decided |
 | [11 - Play history](decisions/11-adr-play-history.md) | Append-only listen events in the library store | Decided |
+| [12 - Design tokens](decisions/12-adr-design-tokens.md) | Non-color tokens as consts beside the palette | Decided |
+| [13 - Panel theming](decisions/13-adr-panel-theming.md) | Sparse palette override per panel in config | Decided |

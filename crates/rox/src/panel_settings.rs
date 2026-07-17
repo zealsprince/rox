@@ -8,13 +8,15 @@
 //! per-view knob.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, size, AnyElement, App, Bounds, Context, Div, Entity, EntityId, Global,
-    Hsla, ScrollHandle, SharedString, Subscription, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowHandle, WindowOptions,
+    div, prelude::*, px, size, AnyElement, App, Bounds, Context, Div, Entity, EntityId,
+    Focusable as _, Global, Hsla, ScrollHandle, SharedString, Subscription, TitlebarOptions,
+    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{Icon, Root, Sizable as _};
@@ -24,13 +26,28 @@ use crate::backdrop::WindowBackdrop;
 use crate::design::palette::{self, PanelTheme, ROLES};
 use crate::design::tokens;
 use crate::panel::{self, AppState, PanelSettings, ScrubState};
+use crate::panels::cover::CoverArtPanel;
+use crate::panels::grid::GridPanel;
+use crate::panels::library::LibraryPanel;
+use crate::panels::metadata::MetadataPanel;
+use crate::panels::spectrum::SpectrumPanel;
+use crate::panels::transport::{SeekStripPanel, TrackInfoPanel, TransportPanel, VolumePanel};
+use crate::panels::waveform::WaveformPanel;
 use crate::settings_ui::{self, grid_columns, section, sidebar, small_button, SECTION_GAP};
+use rox_dock::PanelView;
 
 /// The open panel settings windows, keyed by the panel they edit:
 /// opening a panel's settings again focuses its window instead of
 /// stacking a second editor over the same config. Closed windows leave a
 /// stale handle whose activate fails, so the next open falls through and
 /// replaces it, same as [`settings_window`](crate::settings_window).
+/// The frame sliders' ceilings; every knob runs from zero (off) up to
+/// its own, in px.
+const MARGIN_MAX: f32 = 24.0;
+const PADDING_MAX: f32 = 24.0;
+const ROUNDING_MAX: f32 = 24.0;
+const BORDER_MAX: f32 = 6.0;
+
 #[derive(Default)]
 struct OpenPanelSettings(HashMap<EntityId, WindowHandle<Root>>);
 
@@ -91,6 +108,182 @@ pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     cx.default_global::<OpenPanelSettings>().0.insert(id, handle);
 }
 
+/// Open the settings window for a type-erased panel, the settings
+/// window's layout tree route in: try each settings-capable type until
+/// the view downcasts. The list mirrors the workspace's panel registry;
+/// a type missing here just has no settings entry from the tree.
+pub fn open_for_view(panel: &Arc<dyn PanelView>, cx: &mut App) {
+    macro_rules! try_open {
+        ($($ty:ty),+ $(,)?) => {
+            $(
+                if let Ok(panel) = panel.view().downcast::<$ty>() {
+                    open(panel, cx);
+                    return;
+                }
+            )+
+        };
+    }
+    try_open!(
+        LibraryPanel,
+        GridPanel,
+        CoverArtPanel,
+        MetadataPanel,
+        TrackInfoPanel,
+        TransportPanel,
+        SeekStripPanel,
+        VolumePanel,
+        SpectrumPanel,
+        WaveformPanel,
+    );
+}
+
+/// The open rename windows, keyed by the panel they rename; the same
+/// replace-a-stale-handle story as [`OpenPanelSettings`].
+#[derive(Default)]
+struct OpenRenames(HashMap<EntityId, WindowHandle<Root>>);
+
+impl Global for OpenRenames {}
+
+/// The Rename entry for a panel's dropdown menu: opens the panel's rename
+/// window. Sits in the panel section, above Panel Settings.
+pub fn rename_item<P: PanelSettings>(menu: PopupMenu, panel: &Entity<P>) -> PopupMenu {
+    let panel = panel.clone();
+    menu.item(
+        PopupMenuItem::new("Rename")
+            .icon(Icon::default().path(icons::PENCIL))
+            .on_click(move |_, _, cx| {
+                open_rename(panel.clone(), cx);
+            }),
+    )
+}
+
+/// Open a panel's rename window, or bring its open one to the front. The
+/// window holds the panel weakly, like the settings window.
+fn open_rename<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
+    let id = panel.entity_id();
+    if let Some(handle) = cx
+        .try_global::<OpenRenames>()
+        .and_then(|open| open.0.get(&id).copied())
+    {
+        if handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+        {
+            return;
+        }
+    }
+    let title = SharedString::from(format!("rox - rename {}", panel.read(cx).panel_name()));
+    let bounds = Bounds::centered(None, size(px(380.), px(112.)), cx);
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: Some(TitlebarOptions {
+            title: Some(title.clone()),
+            ..Default::default()
+        }),
+        app_id: Some(crate::APP_ID.into()),
+        ..Default::default()
+    };
+    let state = panel.read(cx).state();
+    let handle = cx
+        .open_window(options, move |window, cx| {
+            // The Wayland backend ignores the creation-time titlebar title;
+            // only set_window_title reaches the compositor.
+            window.set_window_title(&title);
+            let view = cx.new(|cx| RenameWindow::new(panel, state, window, cx));
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .expect("failed to open the rename window");
+    cx.default_global::<OpenRenames>().0.insert(id, handle);
+}
+
+/// The rename window's content: one input over the panel's title. Edits
+/// land as they are typed - the tab follows along - and Enter closes the
+/// window; clearing the field goes back to the built-in name.
+struct RenameWindow<P: PanelSettings> {
+    panel: WeakEntity<P>,
+    input: Entity<InputState>,
+    /// The shared state, for the window's own backdrop.
+    state: AppState,
+    backdrop: WindowBackdrop,
+    _input_events: Subscription,
+    /// This window pumps its own frames, so the backdrop needs its own
+    /// wake on a new bake.
+    _backdrop_changed: Subscription,
+}
+
+impl<P: PanelSettings> RenameWindow<P> {
+    fn new(
+        panel: Entity<P>,
+        state: AppState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // The built-in name sits as the placeholder, so an empty field
+        // reads as what it does: fall back to that name.
+        let (current, placeholder) = {
+            let panel = panel.read(cx);
+            (
+                panel.custom_title().unwrap_or_default().to_owned(),
+                panel.panel_name(),
+            )
+        };
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(placeholder)
+                .default_value(current)
+        });
+        let _input_events = cx.subscribe_in(
+            &input,
+            window,
+            |this, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    let value = input.read(cx).value().trim().to_string();
+                    let title = (!value.is_empty()).then_some(value);
+                    if let Some(panel) = this.panel.upgrade() {
+                        panel.update(cx, |panel, cx| panel.set_custom_title(title, cx));
+                    }
+                }
+                InputEvent::PressEnter { .. } => window.remove_window(),
+                _ => {}
+            },
+        );
+        let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        window.focus(&input.read(cx).focus_handle(cx));
+        RenameWindow {
+            panel: panel.downgrade(),
+            input,
+            state,
+            backdrop: WindowBackdrop::default(),
+            _input_events,
+            _backdrop_changed,
+        }
+    }
+}
+
+impl<P: PanelSettings> Render for RenameWindow<P> {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_XS)
+            .p(tokens::SPACE_MD)
+            .bg(palette::bg_elevated())
+            .text_color(palette::text_bright())
+            .text_sm()
+            // The backdrop paints first, under the input, like every
+            // other window over the shared state.
+            .children(self.backdrop.layer(&self.state.now_art, window, cx))
+            .child(Input::new(&self.input).w_full())
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child("shown as the panel's tab; empty goes back to the built-in name"),
+            )
+    }
+}
+
 /// The window content: the panel's own pages, then the shared Appearance
 /// page the window itself provides.
 struct PanelSettingsWindow<P: PanelSettings> {
@@ -103,6 +296,10 @@ struct PanelSettingsWindow<P: PanelSettings> {
     /// when one is set, the app palette's resolved color otherwise.
     pickers: Vec<Entity<ColorPickerState>>,
     opacity_scrub: ScrubState,
+    margin_scrub: ScrubState,
+    padding_scrub: ScrubState,
+    rounding_scrub: ScrubState,
+    border_scrub: ScrubState,
     /// The page body's scroll position, shared with the scrollbar so it
     /// can show how much page hangs below the fold.
     scroll: ScrollHandle,
@@ -154,6 +351,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             page: 0,
             pickers,
             opacity_scrub: ScrubState::default(),
+            margin_scrub: ScrubState::default(),
+            padding_scrub: ScrubState::default(),
+            rounding_scrub: ScrubState::default(),
+            border_scrub: ScrubState::default(),
             scroll: ScrollHandle::new(),
             state,
             backdrop: WindowBackdrop::default(),
@@ -217,20 +418,80 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         self.update_theme(|theme| theme.surface_opacity = Some(value), cx);
     }
 
-    /// Drop every override: the panel follows the app palette whole
-    /// again, and the swatches show the inherited colors.
-    fn reset_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.update_theme(|theme| *theme = PanelTheme::default(), cx);
+    // The frame setters: the strip fraction mapped onto whole px, zero
+    // clearing the knob so an untouched frame serializes away.
+
+    fn set_margin(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        let value = (fraction * MARGIN_MAX).round();
+        self.update_theme(|theme| theme.margin = (value > 0.0).then_some(value), cx);
+    }
+
+    fn set_padding(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        let value = (fraction * PADDING_MAX).round();
+        self.update_theme(|theme| theme.padding = (value > 0.0).then_some(value), cx);
+    }
+
+    fn set_rounding(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        let value = (fraction * ROUNDING_MAX).round();
+        self.update_theme(|theme| theme.rounding = (value > 0.0).then_some(value), cx);
+    }
+
+    fn set_border(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        let value = (fraction * BORDER_MAX).round();
+        self.update_theme(|theme| theme.border = (value > 0.0).then_some(value), cx);
+    }
+
+    /// One frame knob's slider row: the value over its 0 to `max` range,
+    /// the px readout alongside, unset reading as zero.
+    fn frame_slider(
+        &self,
+        scrub: &ScrubState,
+        value: Option<f32>,
+        max: f32,
+        apply: fn(&mut Self, f32, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let value = value.unwrap_or(0.0);
+        panel::value_slider(scrub, value / max, format!("{value:.0} px"), apply, cx)
+    }
+
+    /// Drop every color override: the panel follows the app palette
+    /// whole again, and the swatches show the inherited colors. The
+    /// frame and opacity keep their own resets, so recoloring can start
+    /// over without flattening the geometry.
+    fn reset_colors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_theme(|theme| theme.colors.clear(), cx);
         for (role, picker) in ROLES.iter().zip(&self.pickers) {
             let inherited = (role.get)(&palette::resolved());
             picker.update(cx, |picker, cx| picker.set_value(inherited, window, cx));
         }
     }
 
-    /// The shared Appearance page: the panel's opacity fork and the
-    /// override grid, the app palette editor's shape with inherit as the
-    /// resting state.
-    fn appearance_page(&mut self, theme: &PanelTheme, columns: usize, cx: &mut Context<Self>) -> Div {
+    /// Drop the frame knobs: the panel sits flush in its cell again,
+    /// square and borderless, colors untouched.
+    fn reset_frame(&mut self, cx: &mut Context<Self>) {
+        self.update_theme(
+            |theme| {
+                theme.margin = None;
+                theme.padding = None;
+                theme.rounding = None;
+                theme.border = None;
+            },
+            cx,
+        );
+    }
+
+    /// The shared Appearance page: the panel's opacity fork, the frame
+    /// knobs, the panel's own appearance section when it has one, and
+    /// the override grid, the app palette editor's shape with inherit
+    /// as the resting state.
+    fn appearance_page(
+        &mut self,
+        theme: &PanelTheme,
+        extra: Option<AnyElement>,
+        columns: usize,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let opacity = div()
             .flex()
             .flex_col()
@@ -251,6 +512,55 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     settings_ui::slider(&self.opacity_scrub, value, Self::set_opacity, cx),
                 ))
             });
+
+        let frame = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(panel::setting_row(
+                "margin",
+                Some("pull the panel in from its cell, the backdrop showing through the gap"),
+                self.frame_slider(
+                    &self.margin_scrub,
+                    theme.margin,
+                    MARGIN_MAX,
+                    Self::set_margin,
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "padding",
+                Some("space inside the panel's edge, kept in its own background"),
+                self.frame_slider(
+                    &self.padding_scrub,
+                    theme.padding,
+                    PADDING_MAX,
+                    Self::set_padding,
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "rounding",
+                Some("round the panel's corners off into the backdrop"),
+                self.frame_slider(
+                    &self.rounding_scrub,
+                    theme.rounding,
+                    ROUNDING_MAX,
+                    Self::set_rounding,
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "border",
+                Some("a line around the panel's edge, in the Border role's color"),
+                self.frame_slider(
+                    &self.border_scrub,
+                    theme.border,
+                    BORDER_MAX,
+                    Self::set_border,
+                    cx,
+                ),
+            ));
 
         let overridden = |name: &str| theme.colors.contains_key(name);
         let grid = settings_ui::role_grid(columns, |j| {
@@ -285,11 +595,19 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                  the app palette again",
             ))
             .child(grid);
-        let controls = small_button(
+        // Each section resets its own knobs: recoloring can start over
+        // without flattening the frame, and the other way around.
+        let frame_controls = small_button(
             "reset",
             icons::REFRESH_CW,
             false,
-            cx.listener(|this, _, window, cx| this.reset_theme(window, cx)),
+            cx.listener(|this, _, _, cx| this.reset_frame(cx)),
+        );
+        let color_controls = small_button(
+            "reset",
+            icons::REFRESH_CW,
+            false,
+            cx.listener(|this, _, window, cx| this.reset_colors(window, cx)),
         );
 
         div()
@@ -297,7 +615,16 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex_col()
             .gap(SECTION_GAP)
             .child(section("opacity", None, opacity))
-            .child(section("colors", Some(controls.into_any_element()), body))
+            .child(section("frame", Some(frame_controls.into_any_element()), frame))
+            // The panel's own appearance rows, when it has any: knobs
+            // that live on its config rather than its theme, like the
+            // grid's art rounding.
+            .children(extra)
+            .child(section(
+                "colors",
+                Some(color_controls.into_any_element()),
+                body,
+            ))
     }
 }
 
@@ -342,7 +669,9 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                     panel.update(cx, |panel, cx| panel.page(pages[picked], window, cx))
                 } else {
                     let theme = panel.read(cx).theme();
-                    self.appearance_page(&theme, columns, cx).into_any_element()
+                    let extra = panel.update(cx, |panel, cx| panel.appearance(window, cx));
+                    self.appearance_page(&theme, extra, columns, cx)
+                        .into_any_element()
                 };
                 (nav, body)
             }

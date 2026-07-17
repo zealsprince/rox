@@ -6,9 +6,12 @@
 
 use std::path::PathBuf;
 
-use gpui::{App, Context, Div};
+use gpui::{App, Context, Div, Entity};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::Icon;
 use serde::{Deserialize, Serialize};
 
+use crate::assets::icons;
 use crate::panel::{self, AppState};
 
 /// The two places a displayed track can come from.
@@ -59,6 +62,36 @@ impl ResolvedTrack {
                 .clone(),
         }
     }
+}
+
+/// The source block of a panel's dropdown menu: a section header over one
+/// checked entry per source, the same knob as [`source_row`]. Panels put
+/// this at the top of their menu so the follow mode reads the same
+/// everywhere.
+pub fn source_menu<P: 'static>(
+    menu: PopupMenu,
+    current: TrackSource,
+    panel: &Entity<P>,
+    set: impl Fn(&mut P, TrackSource, &mut Context<P>) + Clone + 'static,
+) -> PopupMenu {
+    let mut menu = menu.item(PopupMenuItem::label("Track"));
+    for (label, icon, source) in [
+        ("Follow Playing", icons::PLAY, TrackSource::Playing),
+        ("Follow Selection", icons::LIST_MUSIC, TrackSource::Selected),
+    ] {
+        let weak = panel.downgrade();
+        let set = set.clone();
+        menu = menu.item(
+            PopupMenuItem::new(label)
+                .icon(Icon::default().path(icon))
+                .checked(current == source)
+                .on_click(move |_, _, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    this.update(cx, |this, cx| set(this, source, cx));
+                }),
+        );
+    }
+    menu
 }
 
 /// The source setting row for a panel's customize window.

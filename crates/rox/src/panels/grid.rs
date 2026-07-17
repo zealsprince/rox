@@ -44,16 +44,30 @@ use crate::thumbs::Thumb;
 const TILE_MIN: f32 = 96.;
 const TILE_MAX: f32 = 256.;
 
+/// The tile rounding knob's ceiling, the panel frame sliders' scale.
+const TILE_ROUNDING_MAX: f32 = 24.;
+
 fn default_tile() -> f32 {
     192.
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// The grid panel's per-view config: what a saved layout restores, and
 /// what the settings window edits.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GridConfig {
+    /// The rename shown as the tab and title text; None shows the
+    /// built-in name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub query: String,
+    /// Show the search box; the query only applies while it shows.
+    #[serde(default = "default_true")]
+    pub search: bool,
     /// The preferred tile edge in px, within [`TILE_MIN`]..[`TILE_MAX`].
     #[serde(default = "default_tile")]
     pub tile: f32,
@@ -63,6 +77,10 @@ pub struct GridConfig {
     /// Glide there instead of jumping.
     #[serde(default)]
     pub smooth_follow: bool,
+    /// Each cover tile's corner radius, in px; zero keeps the wall
+    /// edge to edge.
+    #[serde(default)]
+    pub rounding: f32,
     /// The panel's palette override.
     #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
     pub theme: PanelTheme,
@@ -71,10 +89,13 @@ pub struct GridConfig {
 impl Default for GridConfig {
     fn default() -> Self {
         GridConfig {
+            title: None,
             query: String::new(),
+            search: true,
             tile: default_tile(),
             follow_playing: false,
             smooth_follow: false,
+            rounding: 0.,
             theme: PanelTheme::default(),
         }
     }
@@ -128,6 +149,8 @@ pub struct GridPanel {
     playing_path: Option<PathBuf>,
     /// The tile size slider's scrub strip, for the settings window.
     tile_scrub: ScrubState,
+    /// The tile rounding slider's scrub strip, same window.
+    rounding_scrub: ScrubState,
     /// A failed play, shown in a strip until the next one lands.
     error: Option<SharedString>,
     focus: FocusHandle,
@@ -182,6 +205,7 @@ impl GridPanel {
             last_tick: Instant::now(),
             playing_path: None,
             tile_scrub: ScrubState::default(),
+            rounding_scrub: ScrubState::default(),
             error: None,
             focus: cx.focus_handle(),
             tab_panel: None,
@@ -262,7 +286,7 @@ impl GridPanel {
         self.view = {
             let library = self.state.library.read(cx);
             match library.projection() {
-                Some(projection) if !self.config.query.is_empty() => {
+                Some(projection) if self.searching() => {
                     let mut hit = vec![false; projection.len()];
                     for row in projection.search(&self.config.query) {
                         hit[row as usize] = true;
@@ -299,6 +323,12 @@ impl GridPanel {
             }
         }
         cx.notify();
+    }
+
+    /// Whether the query narrows the wall: it only applies while the
+    /// search box shows.
+    fn searching(&self) -> bool {
+        self.config.search && !self.config.query.is_empty()
     }
 
     /// Map the shared box's events onto the grid: a changed query rebuilds
@@ -435,10 +465,15 @@ impl GridPanel {
                 .update(cx, |thumbs, cx| thumbs.get(&path, cx)),
             None => Thumb::Missing,
         };
+        // The knob's radius clips the cover itself, not just the tile's
+        // background: gpui content masks stay rectangular, so a rounded
+        // tile under a square image would paint over its own corners.
+        let radius = px(self.config.rounding);
         let content: AnyElement = match thumb {
             Thumb::Ready(image) => img(image)
                 .size_full()
                 .object_fit(ObjectFit::Cover)
+                .rounded(radius)
                 .into_any_element(),
             _ => div()
                 .size_full()
@@ -459,6 +494,7 @@ impl GridPanel {
             .h(side)
             .relative()
             .overflow_hidden()
+            .rounded(radius)
             .bg(palette::bg_elevated())
             .cursor_pointer()
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -492,6 +528,7 @@ impl GridPanel {
                         .absolute()
                         .inset_0()
                         .border_2()
+                        .rounded(radius)
                         .border_color(palette::accent()),
                 )
             })
@@ -554,6 +591,26 @@ impl GridPanel {
             })
     }
 
+    /// Solo or popped out there is no title bar to host the search, so it
+    /// renders as a toolbar row above the wall instead, the library's move.
+    fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex_none()
+            .h(px(36.))
+            .px(tokens::SPACE_SM)
+            .flex()
+            .flex_row()
+            .items_center()
+            .bg(palette::bg_toolbar())
+            .border_b_1()
+            .border_color(palette::border())
+            .child(
+                self.search
+                    .update(cx, |search, cx| search.element(cx))
+                    .flex_1(),
+            )
+    }
+
     /// The visible rows of the grid, each a run of tiles. Also where the
     /// painted width reconciles: the dock hosts panels cached, so a resize
     /// repaints this closure without re-running render, and a notify here
@@ -581,6 +638,16 @@ impl GridPanel {
 impl PanelSettings for GridPanel {
     fn state(&self) -> AppState {
         self.state.clone()
+    }
+
+    fn custom_title(&self) -> Option<&str> {
+        self.config.title.as_deref()
+    }
+
+    fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
+        self.config.title = title;
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+        cx.notify();
     }
 
     fn pages(&self) -> &'static [&'static str] {
@@ -637,6 +704,22 @@ impl PanelSettings for GridPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(setting_row(
+                "search",
+                Some("show the search box; the query only applies while it shows"),
+                toggle(
+                    self.config.search,
+                    |this: &mut Self, on, cx| {
+                        this.config.search = on;
+                        // The box keeps its text; the view snaps to the
+                        // full catalog while hidden. Rebuild notifies, the
+                        // tab panel repaints the vanishing suffix.
+                        this.rebuild(cx);
+                        this.refresh_title_bar(cx);
+                    },
+                    cx,
+                ),
+            ))
+            .child(setting_row(
                 "tile size",
                 Some("the cover tiles' exact edge; the last column runs off the panel side"),
                 settings_ui::slider_labeled(
@@ -661,6 +744,35 @@ impl PanelSettings for GridPanel {
         self.config.theme = theme;
         cx.notify();
     }
+
+    /// The grid's own appearance rows on the shared page: the tiles' art
+    /// rounding, a look knob that lives on the config rather than the
+    /// theme because it shapes the covers, not the panel frame.
+    fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let rounding = self.config.rounding;
+        let fraction = (rounding / TILE_ROUNDING_MAX).clamp(0., 1.);
+        Some(
+            settings_ui::section(
+                "tiles",
+                None,
+                setting_row(
+                    "art rounding",
+                    Some("round each cover tile's corners"),
+                    settings_ui::slider_labeled(
+                        &self.rounding_scrub,
+                        fraction,
+                        format!("{:.0} px", rounding),
+                        |this: &mut Self, fraction, cx| {
+                            this.config.rounding = (fraction * TILE_ROUNDING_MAX).round();
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ),
+            )
+            .into_any_element(),
+        )
+    }
 }
 
 impl EventEmitter<PanelEvent> for GridPanel {}
@@ -677,7 +789,11 @@ impl Panel for GridPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("album grid")
+        panel::title_text(self.config.title.as_deref(), "album grid")
+    }
+
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        self.config.title.clone().map(SharedString::from)
     }
 
     /// The search box shares the title bar row, the library's move.
@@ -686,6 +802,9 @@ impl Panel for GridPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
+        if !self.config.search {
+            return None;
+        }
         Some(
             self.search
                 .update(cx, |search, cx| search.element(cx))
@@ -729,6 +848,7 @@ impl Panel for GridPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
+        let menu = panel_settings::rename_item(menu, &cx.entity());
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
         // because the copy takes the config along, like the cover panel's.
@@ -765,7 +885,7 @@ impl Panel for GridPanel {
 impl Render for GridPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(window, cx).into_any_element())
+        panel::themed(&theme, || self.body(window, cx))
     }
 }
 
@@ -803,12 +923,23 @@ impl GridPanel {
             }
         }
 
+        // The search lives in the tab bar via title_suffix while the panel
+        // shares a group; solo or popped out there is no header at all, so
+        // it renders as a toolbar in the body instead.
+        let headerless = self
+            .tab_panel
+            .as_ref()
+            .and_then(|tabs| tabs.upgrade())
+            .map_or(true, |tabs| tabs.read(cx).panels_count() < 2);
         let root = div()
             .flex()
             .flex_col()
             .size_full()
             .bg(palette::bg_root())
-            .track_focus(&self.focus);
+            .track_focus(&self.focus)
+            .when(headerless && self.config.search, |d| {
+                d.child(self.toolbar(cx))
+            });
         let content: AnyElement = if self.cells.is_empty() {
             div()
                 .flex_1()
@@ -816,10 +947,10 @@ impl GridPanel {
                 .items_center()
                 .justify_center()
                 .text_color(palette::text_muted())
-                .child(if self.config.query.is_empty() {
-                    "the library is empty"
-                } else {
+                .child(if self.searching() {
                     "no matches"
+                } else {
+                    "the library is empty"
                 })
                 .into_any_element()
         } else {

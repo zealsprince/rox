@@ -63,8 +63,7 @@ Boundary: nothing here touches the audio path. The playback engine already emits
 (current track, position, transitions); play history consumes that state on the control
 side, applies the listen rule, and appends to the store off the UI thread. The listen
 rule matches the scrobble standard, half the track or four minutes of it, whichever
-comes first, so the local record and anything reported outward agree about what
-counted. Storage is the library database per
+comes first. Storage is the library database per
 [ADR 11](decisions/11-adr-play-history.md); aggregates are derived from events, and
 stats read at panel-open cadence, not per keystroke, so they stay in SQL rather than
 the projection.
@@ -75,8 +74,9 @@ Contract:
 - Out: one listen event appended per real listen, stat queries (per-track count and
   last-played, artist / album / genre rollups, recents), and a change event per append
   so open views refresh.
-- To enrichment: the scrobbler consumes the same listen events rather than watching
-  playback itself.
+- To enrichment: the scrobbler accrues played time off the same position clock, so
+  seeks and pauses don't count for either, but sends on its own threshold, a user
+  knob, rather than the listen rule.
 
 ## Metadata writer
 
@@ -112,13 +112,12 @@ Contract:
 
 ## Visualizer subsystem
 
-Responsibility: the spectrum analyzer, the waveform seekbar, and the generative visual.
-Consumes the playback PCM tap, owns the FFT analysis and the per-track waveform cache.
+Responsibility: the spectrum analyzer and the waveform seekbar. Consumes the playback
+PCM tap, owns the FFT analysis and the per-track waveform cache. The generative visual
+is gated on a real GPU shader ([ADR 8](decisions/08-adr-visualizer-rendering.md)).
 
-Boundary: analysis runs off the UI thread; rendering happens in a GPUI paint callback.
-The generative visual is a CPU simulation, because GPUI exposes no custom GPU shader (see
-[ADR 8](decisions/08-adr-visualizer-rendering.md)), so its cost lives on a worker thread
-and its output is drawn with GPUI primitives or blitted as an image.
+Boundary: analysis runs off the UI thread; rendering is GPUI primitives in a paint
+callback.
 
 Contract:
 - In: the PCM tap ring, plus the current track for waveform precompute.
@@ -139,6 +138,11 @@ Contract:
 - Layouts and themes serialize to disk as shareable artifacts. A layout is an arrangement
   of panels and their configs; a theme is a token set (colors, fonts, spacing, accent).
   Neither carries executable behavior.
+- Settings split by scope: an app settings window edits the settings file (appearance,
+  behavior, library folders, scrobbling, storage), and a per-panel customize window edits
+  that panel's config. Per-view state lives in panel config: columns, sort, density,
+  theme overrides, and the search query, entered through one shared box component, so
+  duplicated panels diverge and a layout carries all of it.
 
 ## Network enrichment boundary
 
@@ -151,8 +155,8 @@ network never blocks the UI, the audio path, or a browse query.
   Playback, browse, search, and manual tagging never depend on it.
 - **Off the hot paths.** Enrichment runs on its own workers behind channels. It never touches
   the real-time audio callback, and it reaches the library and metadata writer through their
-  existing contracts (a scrobble consumes play history's listen events, an auto-tag result goes
-  through the same atomic tag-write path as a manual edit).
+  existing contracts (the scrobbler reads the same position clock the listen rule does, an
+  auto-tag result goes through the same atomic tag-write path as a manual edit).
 - **The pieces exist.** Last.fm scrobbling is a straightforward HTTP client. Auto-tagging is
   `rusty-chromaprint` (pure-Rust fingerprint) plus `musicbrainz_rs`, with a hand-rolled AcoustID
   call. Lyrics is a fetch-or-read-local panel. None of this is load-bearing for the core, so it

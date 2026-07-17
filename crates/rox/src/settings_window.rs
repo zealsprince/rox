@@ -10,14 +10,18 @@
 //! song theming is on the editor locks, because the track is driving.
 //! Palettes import and export as the settings map's role-to-hex JSON,
 //! so a file, the settings entry, and a shared theme are one shape.
+//! Layout mirrors the opening workspace's dock tree - every split, tab
+//! group, and panel - with each panel's settings a click away, and
+//! moves whole compositions in and out as the layout dump's JSON.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, Div, Entity, Global, Hsla,
-    MouseButton, PathPromptOptions, Pixels, ScrollHandle, SharedString, Subscription,
-    TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
+    div, prelude::*, px, size, svg, AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, Div,
+    Entity, Global, Hsla, MouseButton, PathPromptOptions, Pixels, ScrollHandle, SharedString,
+    Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -30,9 +34,12 @@ use crate::design::palette::{self, Palette, Role, ROLES};
 use crate::design::tokens;
 use crate::lastfm::{self, AuthPhase, Scrobbler};
 use crate::panel::{self, AppState, ScrubState};
+use crate::panel_settings;
 use crate::panels::library::{Library, LibraryEvent};
 use crate::settings::{data_dir, settings_path, Settings};
 use crate::thumbs::Thumbs;
+use crate::workspace::Workspace;
+use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
 use rox_library::store::Stats;
 use crate::settings_ui::{
     self, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
@@ -54,8 +61,18 @@ impl Global for OpenSettings {}
 
 /// Open the settings window, or bring the open one to the front. The
 /// state carries the library for the Library page, which edits it live,
-/// and the shared art bake for the window's own backdrop.
-pub fn open(state: AppState, cx: &mut App) {
+/// and the shared art bake for the window's own backdrop. The workspace
+/// and its window handle are the Layout page's subject: the tree walks
+/// its dock, and an imported layout rebuilds in its window. The dock
+/// rides along as its own handle because open runs inside a workspace
+/// update, where the workspace entity can't be read.
+pub fn open(
+    state: AppState,
+    workspace: WeakEntity<Workspace>,
+    workspace_window: AnyWindowHandle,
+    dock: Entity<rox_dock::DockArea>,
+    cx: &mut App,
+) {
     if let Some(open) = cx.try_global::<OpenSettings>() {
         let handle = open.0;
         if handle
@@ -81,7 +98,9 @@ pub fn open(state: AppState, cx: &mut App) {
             // The Wayland backend ignores the creation-time titlebar
             // title; only set_window_title reaches the compositor.
             window.set_window_title("rox - settings");
-            let view = cx.new(|cx| SettingsWindow::new(state, window, cx));
+            let view = cx.new(|cx| {
+                SettingsWindow::new(state, workspace, workspace_window, dock, window, cx)
+            });
             cx.new(|cx| Root::new(view, window, cx))
         })
         .expect("failed to open the settings window");
@@ -93,6 +112,7 @@ pub fn open(state: AppState, cx: &mut App) {
 enum Page {
     Appearance,
     Behavior,
+    Layout,
     Library,
     Scrobbling,
     Storage,
@@ -101,6 +121,7 @@ enum Page {
 const PAGES: &[(Page, &str)] = &[
     (Page::Appearance, "Appearance"),
     (Page::Behavior, "Behavior"),
+    (Page::Layout, "Layout"),
     (Page::Library, "Library"),
     (Page::Scrobbling, "Scrobbling"),
     (Page::Storage, "Storage"),
@@ -139,6 +160,13 @@ struct SettingsWindow {
     scroll: ScrollHandle,
     /// The shared catalog, the Library page's subject.
     library: Entity<Library>,
+    /// The workspace that opened this window, the Layout page's subject:
+    /// the tree walks its dock and imports rebuild it. Weak, so the
+    /// settings window never keeps a closed workspace alive.
+    workspace: WeakEntity<Workspace>,
+    /// The workspace's OS window, for reaching its `Window` when an
+    /// imported layout rebuilds the dock there.
+    workspace_window: AnyWindowHandle,
     /// The shared art bake and this window's slice of the backdrop, so
     /// the window backs with the playing track's art like every other.
     now_art: Entity<NowPlayingArt>,
@@ -172,10 +200,21 @@ struct SettingsWindow {
     /// This window pumps its own frames, so the backdrop needs its own
     /// wake on a new bake.
     _backdrop_changed: Subscription,
+    /// The Layout page's tree follows the dock: layout events catch
+    /// drags and resizes, the observe catches an import's set_center,
+    /// which notifies without an event.
+    _dock_changes: Vec<Subscription>,
 }
 
 impl SettingsWindow {
-    fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        state: AppState,
+        workspace: WeakEntity<Workspace>,
+        workspace_window: AnyWindowHandle,
+        dock: Entity<rox_dock::DockArea>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let library = state.library;
         let settings = Settings::load();
         let base = settings.palette();
@@ -194,6 +233,18 @@ impl SettingsWindow {
         );
         let _library_repaint = cx.observe(&library, |_, _, cx| cx.notify());
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        // Subscribe to the dock handed in rather than reading it off the
+        // workspace: this constructor runs inside the workspace update
+        // that opened the window, so the workspace entity can't be read
+        // here. Subscribing never reads.
+        let _dock_changes = vec![
+            cx.subscribe(&dock, |_, _, event: &DockEvent, cx| {
+                if matches!(event, DockEvent::LayoutChanged) {
+                    cx.notify();
+                }
+            }),
+            cx.observe(&dock, |_, _, cx| cx.notify()),
+        ];
         let _scrobbler_changed = cx.observe(&state.scrobbler, |_, _, cx| cx.notify());
         // The credential inputs seed from the file and write through the
         // scrobbler per keystroke, so a paste is connected-ready with no
@@ -257,6 +308,8 @@ impl SettingsWindow {
             backdrop_scrub: ScrubState::default(),
             scroll: ScrollHandle::new(),
             library,
+            workspace,
+            workspace_window,
             now_art: state.now_art,
             backdrop: WindowBackdrop::default(),
             thumbs: state.thumbs,
@@ -272,6 +325,7 @@ impl SettingsWindow {
             _library_changed,
             _library_repaint,
             _backdrop_changed,
+            _dock_changes,
         }
     }
 
@@ -467,6 +521,194 @@ impl SettingsWindow {
                 panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
             ),
         ))
+    }
+
+    /// The Layout page: the opening workspace's dock as a tree - splits
+    /// and tab groups as muted structure lines, panels as named rows
+    /// with their settings a click away - and the composition's way in
+    /// and out as files.
+    fn layout_page(&self, cx: &mut Context<Self>) -> Div {
+        let mut body = div().flex().flex_col().gap(tokens::SPACE_XS).child(
+            div().text_xs().text_color(palette::text_muted()).child(
+                "the window's panels as they sit in splits and tab groups; \
+                 a row's gear opens that panel's settings",
+            ),
+        );
+        match self.workspace.upgrade() {
+            Some(workspace) => {
+                let root = workspace.read(cx).dock().read(cx).items().view();
+                let mut rows = Vec::new();
+                self.tree_rows(root, 0, &mut rows, cx);
+                body = body.child(div().flex().flex_col().children(rows));
+            }
+            None => {
+                body = body.child(
+                    div()
+                        .text_color(palette::text_muted())
+                        .child("the workspace window is closed"),
+                );
+            }
+        }
+
+        // Import and export ride the section header like the palette's
+        // controls: one file, the settings entry's layout shape, so a
+        // composition travels with every panel's config and theme.
+        let live = self.workspace.upgrade().is_some();
+        let controls = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .child(small_button(
+                "import",
+                icons::DOWNLOAD,
+                !live,
+                cx.listener(|this, _, window, cx| this.import_layout(window, cx)),
+            ))
+            .child(small_button(
+                "export",
+                icons::UPLOAD,
+                !live,
+                cx.listener(|this, _, _, cx| this.export_layout(cx)),
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .gap(SECTION_GAP)
+            .child(section(
+                "composition",
+                Some(controls.into_any_element()),
+                body,
+            ))
+    }
+
+    /// One node of the dock into rows. Walks the live stack and tab
+    /// entities rather than the dock's `DockItem` tree, which goes stale
+    /// once tabs are dragged around; these are what `dump` serializes.
+    fn tree_rows(
+        &self,
+        node: Arc<dyn PanelView>,
+        depth: usize,
+        rows: &mut Vec<AnyElement>,
+        cx: &mut Context<Self>,
+    ) {
+        let view = node.view();
+        if let Ok(stack) = view.clone().downcast::<StackPanel>() {
+            let (axis, children) = {
+                let stack = stack.read(cx);
+                (stack.axis(), stack.panels().to_vec())
+            };
+            rows.push(chrome_row(
+                depth,
+                match axis {
+                    Axis::Horizontal => "split, side by side",
+                    Axis::Vertical => "split, stacked",
+                },
+            ));
+            for child in children {
+                self.tree_rows(child, depth + 1, rows, cx);
+            }
+            return;
+        }
+        if let Ok(tabs) = view.downcast::<TabPanel>() {
+            let children = tabs.read(cx).panels().to_vec();
+            // A group of one reads as just its panel; the group only
+            // earns its own line once there are tabs to speak of.
+            if let [only] = children.as_slice() {
+                rows.push(self.panel_row(only.clone(), depth, cx));
+                return;
+            }
+            rows.push(chrome_row(depth, "tabs"));
+            for child in children {
+                rows.push(self.panel_row(child, depth + 1, cx));
+            }
+            return;
+        }
+        rows.push(self.panel_row(node, depth, cx));
+    }
+
+    /// A panel's row of the tree: its name, and the gear opening the
+    /// same settings window the panel's own dropdown does.
+    fn panel_row(
+        &self,
+        panel: Arc<dyn PanelView>,
+        depth: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let name: SharedString = panel.panel_name(cx).into();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(tokens::SPACE_MD)
+            .pl(indent(depth))
+            .child(div().min_w_0().truncate().child(name))
+            .child(icon_button(icons::SETTINGS, false, move |_, _, cx| {
+                panel_settings::open_for_view(&panel, cx);
+            }))
+            .into_any_element()
+    }
+
+    /// Save the workspace's layout as a file: the dump the settings
+    /// file holds, panel configs and themes included, so a composition
+    /// can leave as a shareable artifact.
+    fn export_layout(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let dump = workspace.read(cx).dock().read(cx).dump(cx);
+        let home = dirs::home_dir().unwrap_or_default();
+        let rx = cx.prompt_for_new_path(&home, Some("layout.json"));
+        cx.spawn(async move |_, _| {
+            let Ok(Ok(Some(path))) = rx.await else {
+                return;
+            };
+            if let Ok(json) = serde_json::to_string_pretty(&dump) {
+                std::fs::write(path, json).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Pick a layout file and swap it in: the same dump export writes,
+    /// rebuilt in the workspace's own window. The workspace refuses a
+    /// dump it can't trust, like a stale saved layout at launch, and a
+    /// file that isn't a layout at all is ignored.
+    fn import_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = self.workspace.clone();
+        let handle = self.workspace_window;
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.pop() else {
+                return;
+            };
+            let Some(dump) = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|json| serde_json::from_str::<DockAreaState>(&json).ok())
+            else {
+                return;
+            };
+            handle
+                .update(cx, |_, window, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.apply_layout(dump, window, cx);
+                        });
+                    }
+                })
+                .ok();
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
     }
 
     /// The Scrobbling page: the last.fm account section - the user's own
@@ -958,6 +1200,27 @@ impl SettingsWindow {
     }
 }
 
+/// How far a layout tree row steps in per depth.
+fn indent(depth: usize) -> Pixels {
+    px(14. * depth as f32)
+}
+
+/// A structure line of the layout tree: a split or tab group, muted so
+/// the panels carry the page. Padded to the icon buttons' height so the
+/// tree keeps one rhythm with and without controls.
+fn chrome_row(depth: usize, label: &'static str) -> AnyElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .py(tokens::SPACE_XS)
+        .pl(indent(depth))
+        .text_xs()
+        .text_color(palette::text_muted())
+        .child(label)
+        .into_any_element()
+}
+
 /// One right-aligned numeric cell of the folder table.
 fn number_cell(width: Pixels, value: String) -> Div {
     div()
@@ -1047,6 +1310,7 @@ impl Render for SettingsWindow {
         let page = match self.page {
             Page::Appearance => self.appearance_page(columns, cx),
             Page::Behavior => self.behavior_page(cx),
+            Page::Layout => self.layout_page(cx),
             Page::Library => self.library_page(cx),
             Page::Scrobbling => self.scrobbling_page(cx),
             Page::Storage => self.storage_page(cx),

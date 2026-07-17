@@ -29,6 +29,7 @@ use crate::panel::{self, AppState, TabHosts};
 use crate::panels::cover::{CoverArtPanel, CoverConfig};
 use crate::panels::grid::{GridConfig, GridPanel};
 use crate::panels::library::{Library, LibraryConfig, LibraryPanel};
+use crate::panels::metadata::{MetadataConfig, MetadataPanel};
 use crate::panels::spectrum::{SpectrumConfig, SpectrumPanel};
 use crate::panels::transport::{
     SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
@@ -149,6 +150,7 @@ fn register_panels(state: &AppState, cx: &mut App) {
     configured!("seek", SeekStripPanel);
     configured!("track info", TrackInfoPanel);
     configured!("cover art", CoverArtPanel);
+    configured!("metadata", MetadataPanel);
     // The grid takes the window like the library: its search box builds
     // an input state.
     let s = state.clone();
@@ -169,6 +171,7 @@ enum MenuAction {
     OpenLibrary,
     OpenCoverArt,
     OpenAlbumGrid,
+    OpenMetadata,
     OpenSpectrum,
     OpenWaveform,
     OpenTrackInfo,
@@ -225,6 +228,10 @@ const MENUS: &[Menu] = &[
             MenuEntry::Item(MenuItem {
                 label: "Album Grid",
                 action: MenuAction::OpenAlbumGrid,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Metadata",
+                action: MenuAction::OpenMetadata,
             }),
             MenuEntry::Submenu {
                 label: "Controls",
@@ -560,6 +567,43 @@ impl Workspace {
         }
     }
 
+    /// The dock area, for the settings window's Layout page: the tree
+    /// view walks it and export dumps it.
+    pub fn dock(&self) -> &Entity<DockArea> {
+        &self.dock
+    }
+
+    /// Swap in an imported layout dump: the launch restore's checks and
+    /// rebuild, on a live workspace. A dump from another version or with
+    /// a non-stack root is refused, same as a stale saved layout.
+    pub fn apply_layout(
+        &mut self,
+        dump: DockAreaState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if dump.version != Some(LAYOUT_VERSION)
+            || !matches!(dump.center.info, PanelInfo::Stack { .. })
+        {
+            return false;
+        }
+        // The registry's builders capture one workspace's entities;
+        // re-register so the rebuild lands on this one even after
+        // another window registered over it.
+        register_panels(&self.state, cx);
+        let weak_dock = self.dock.downgrade();
+        let item = dump.center.to_item(weak_dock.clone(), window, cx);
+        let (stack, tabs, bottom) = layout_views(&item);
+        self.stack = stack;
+        self.center_tabs = tabs.unwrap_or_else(|| tabs_item(Vec::new(), &weak_dock, window, cx).1);
+        self.bottom_stack =
+            bottom.unwrap_or_else(|| cx.new(|cx| StackPanel::new(Axis::Horizontal, window, cx)));
+        self.dock
+            .update(cx, |dock, cx| dock.set_center(item, window, cx));
+        self.save_layout_soon(window, cx);
+        true
+    }
+
     /// Open the quick-play modal, or close it when it is already up. The
     /// modal takes the keyboard through its search input; dismissal hands
     /// focus back to the workspace so the playback keys keep working.
@@ -715,7 +759,13 @@ impl Workspace {
     fn run(&mut self, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             MenuAction::NewWindow => crate::open_workspace(cx),
-            MenuAction::OpenSettings => crate::settings_window::open(self.state.clone(), cx),
+            MenuAction::OpenSettings => crate::settings_window::open(
+                self.state.clone(),
+                cx.entity().downgrade(),
+                window.window_handle(),
+                self.dock.clone(),
+                cx,
+            ),
             MenuAction::OpenLibrary => {
                 let panel = cx.new(|cx| {
                     LibraryPanel::new(self.state.clone(), LibraryConfig::default(), window, cx)
@@ -730,6 +780,12 @@ impl Workspace {
             MenuAction::OpenAlbumGrid => {
                 let panel = cx.new(|cx| {
                     GridPanel::new(self.state.clone(), GridConfig::default(), window, cx)
+                });
+                self.add_center(Arc::new(panel), window, cx);
+            }
+            MenuAction::OpenMetadata => {
+                let panel = cx.new(|cx| {
+                    MetadataPanel::new(self.state.clone(), MetadataConfig::default(), cx)
                 });
                 self.add_center(Arc::new(panel), window, cx);
             }
@@ -1032,8 +1088,14 @@ impl Render for Workspace {
                     .player
                     .update(cx, |player, _| player.seek_by(5.0));
             }))
-            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
-                crate::settings_window::open(this.state.clone(), cx);
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                crate::settings_window::open(
+                    this.state.clone(),
+                    cx.entity().downgrade(),
+                    window.window_handle(),
+                    this.dock.clone(),
+                    cx,
+                );
             }))
             .on_action(cx.listener(|this, _: &OpenQuickPlay, window, cx| {
                 this.toggle_quick_play(window, cx);

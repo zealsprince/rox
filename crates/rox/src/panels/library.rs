@@ -33,14 +33,19 @@ use rox_viz::AudioFeed;
 use crate::assets::icons;
 use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState};
+use crate::panel::{self, AppState, ScrubState};
 use crate::panel_settings;
 use crate::search::{SearchBox, SearchEvent};
+use crate::settings_ui;
 use crate::thumbs::Thumb;
 
 /// Play from a double-clicked row: at most this many tracks are queued
 /// behind it. The quick-play modal caps its queue the same way.
 pub(crate) const QUEUE_CAP: usize = 1000;
+
+/// The header tiles' rounding knob ceiling, the panel frame sliders'
+/// scale.
+const ART_ROUNDING_MAX: f32 = 24.;
 
 /// How far page up and page down step the keyboard cursor.
 const PAGE_ROWS: isize = 25;
@@ -479,10 +484,17 @@ impl Density {
 /// The panel's per-view config: what a saved layout restores, and the
 /// schema a future per-panel settings menu edits. One struct serves both,
 /// so new knobs land here.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct LibraryConfig {
+    /// The rename shown as the tab and title text; None shows the
+    /// built-in name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub query: String,
+    /// Show the search box; the query only applies while it shows.
+    #[serde(default = "default_true")]
+    pub search: bool,
     /// The track list's row height.
     #[serde(default)]
     pub density: Density,
@@ -512,9 +524,37 @@ pub struct LibraryConfig {
     /// Glide there instead of jumping.
     #[serde(default)]
     pub smooth_follow: bool,
+    /// The group headers' cover tile corner radius, in px.
+    #[serde(default)]
+    pub art_rounding: f32,
     /// The panel's palette override.
     #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
     pub theme: PanelTheme,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+// Hand-written over derived for the one default-true knob.
+impl Default for LibraryConfig {
+    fn default() -> Self {
+        LibraryConfig {
+            title: None,
+            query: String::new(),
+            search: true,
+            density: Density::default(),
+            headers: Headers::default(),
+            column_layout: Vec::new(),
+            sort_key: None,
+            sort_desc: false,
+            scroll_row: 0,
+            follow_playing: false,
+            smooth_follow: false,
+            art_rounding: 0.,
+            theme: PanelTheme::default(),
+        }
+    }
 }
 
 /// Build the table columns from a saved layout (or the default set),
@@ -820,6 +860,9 @@ struct TrackTable {
     /// The panel's row height, mirrored here because the header tile is
     /// sized in rows and the widget's size lives outside the delegate.
     density: Density,
+    /// The header tiles' corner radius, mirrored from the panel like the
+    /// density: the tile renders here, the knob lives on the panel.
+    art_rounding: f32,
     /// Selected rows as indices into `view`, track rows only - headers
     /// take no selection. Cleared when the view swaps, since the indices
     /// point elsewhere afterwards.
@@ -922,10 +965,14 @@ impl TrackTable {
             None => Thumb::Missing,
         };
         let side = self.tile_side();
+        // The knob's radius rides the cover itself: gpui content masks
+        // stay rectangular, so a rounded wrapper alone would leave the
+        // image's corners square.
         let content: AnyElement = match thumb {
             Thumb::Ready(image) => img(image)
                 .size_full()
                 .object_fit(ObjectFit::Cover)
+                .rounded(px(self.art_rounding))
                 .into_any_element(),
             _ => div()
                 .size_full()
@@ -1321,7 +1368,7 @@ impl TableDelegate for TrackTable {
         let query = self
             .panel
             .upgrade()
-            .map(|panel| panel.read(cx).query.clone())
+            .map(|panel| panel.read(cx).active_query().to_string())
             .unwrap_or_default();
         let (view, groups) = self.compute_view(&query, cx);
         self.view = view;
@@ -1544,6 +1591,9 @@ pub struct LibraryPanel {
     /// The query editor, the shared search box; `query` mirrors its value
     /// via change events.
     search: Entity<SearchBox>,
+    /// Show the search box; while hidden the query keeps its text but
+    /// stops applying.
+    show_search: bool,
     /// A panel-local error (a failed play), shown until the catalog updates.
     error: Option<SharedString>,
     /// The playing track's path, the change detector: the player notifies
@@ -1567,9 +1617,17 @@ pub struct LibraryPanel {
     glide_tick: Instant,
     /// The track list's row height, applied on the table each render.
     density: Density,
+    /// The header tiles' corner radius; the delegate mirrors it for the
+    /// tile render, the config dump carries it.
+    art_rounding: f32,
+    /// The art rounding slider's scrub strip, for the settings window.
+    art_scrub: ScrubState,
     /// The panel's palette override, live for the render and carried by
     /// the config dump like every other view knob.
     theme: PanelTheme,
+    /// The rename shown as the tab and title text, carried by the config
+    /// dump the same way.
+    custom_title: Option<String>,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// Watches the hosting tab panel: whether this panel is solo decides
@@ -1614,6 +1672,7 @@ impl LibraryPanel {
             groups: Vec::new(),
             headers: config.headers,
             density: config.density,
+            art_rounding: config.art_rounding,
             selected: HashSet::new(),
             anchor: None,
             cursor: None,
@@ -1647,6 +1706,7 @@ impl LibraryPanel {
             query: config.query,
             focus: cx.focus_handle(),
             search,
+            show_search: config.search,
             error: None,
             playing_path: None,
             type_ahead: String::new(),
@@ -1657,7 +1717,10 @@ impl LibraryPanel {
             glide_to: None,
             glide_tick: Instant::now(),
             density: config.density,
+            art_rounding: config.art_rounding,
+            art_scrub: ScrubState::default(),
             theme: config.theme,
+            custom_title: config.title,
             tab_panel: None,
             _tabs_changed: None,
             _library_changed,
@@ -1857,8 +1920,18 @@ impl LibraryPanel {
         });
     }
 
+    /// The query the view filters by: the box's text while the search
+    /// shows, nothing while it's hidden.
+    fn active_query(&self) -> &str {
+        if self.show_search {
+            &self.query
+        } else {
+            ""
+        }
+    }
+
     fn refresh_view(&mut self, cx: &mut Context<Self>) {
-        let query = self.query.clone();
+        let query = self.active_query().to_string();
         self.table.update(cx, |table, cx| {
             // Selection indices point into the old view; drop them along
             // with the widget's own focus row. The shared selection keeps
@@ -1989,7 +2062,9 @@ impl LibraryPanel {
     fn config(&self, cx: &App) -> LibraryConfig {
         let sort = self.table.read(cx).delegate().sort.clone();
         LibraryConfig {
+            title: self.custom_title.clone(),
             query: self.query.clone(),
+            search: self.show_search,
             density: self.density,
             headers: self.table.read(cx).delegate().headers,
             column_layout: self.column_specs(cx),
@@ -1998,6 +2073,7 @@ impl LibraryPanel {
             scroll_row: self.scroll_row(cx),
             follow_playing: self.follow_playing,
             smooth_follow: self.smooth_follow,
+            art_rounding: self.art_rounding,
             theme: self.theme.clone(),
         }
     }
@@ -2224,7 +2300,9 @@ impl LibraryPanel {
             .bg(palette::bg_toolbar())
             .border_b_1()
             .border_color(palette::border())
-            .child(self.search_box(window, cx).flex_1())
+            .when(self.show_search, |d| {
+                d.child(self.search_box(window, cx).flex_1())
+            })
             .when_some(self.error.clone(), |d, error| {
                 d.child(
                     div()
@@ -2291,6 +2369,16 @@ impl LibraryPanel {
 impl panel::PanelSettings for LibraryPanel {
     fn state(&self) -> AppState {
         self.state.clone()
+    }
+
+    fn custom_title(&self) -> Option<&str> {
+        self.custom_title.as_deref()
+    }
+
+    fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
+        self.custom_title = title;
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+        cx.notify();
     }
 
     fn pages(&self) -> &'static [&'static str] {
@@ -2378,6 +2466,22 @@ impl panel::PanelSettings for LibraryPanel {
                     cx,
                 ),
             ))
+            .child(panel::setting_row(
+                "search",
+                Some("show the search box; the query only applies while it shows"),
+                panel::toggle(
+                    self.show_search,
+                    |this: &mut Self, on, cx| {
+                        this.show_search = on;
+                        // The box keeps its text; the view snaps to the
+                        // full catalog while hidden.
+                        this.refresh_view(cx);
+                        cx.notify();
+                        this.refresh_title_bar(cx);
+                    },
+                    cx,
+                ),
+            ))
             .into_any_element()
     }
 
@@ -2388,6 +2492,40 @@ impl panel::PanelSettings for LibraryPanel {
     fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
         self.theme = theme;
         cx.notify();
+    }
+
+    /// The library's own appearance rows on the shared page: the group
+    /// headers' art rounding, a look knob that lives on the config
+    /// because it shapes the covers, not the panel frame.
+    fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let rounding = self.art_rounding;
+        let fraction = (rounding / ART_ROUNDING_MAX).clamp(0., 1.);
+        Some(
+            settings_ui::section(
+                "covers",
+                None,
+                panel::setting_row(
+                    "art rounding",
+                    Some("round the album headers' cover corners"),
+                    settings_ui::slider_labeled(
+                        &self.art_scrub,
+                        fraction,
+                        format!("{rounding:.0} px"),
+                        |this: &mut Self, fraction, cx| {
+                            let value = (fraction * ART_ROUNDING_MAX).round();
+                            this.art_rounding = value;
+                            // The delegate mirrors it for the tile render,
+                            // the density's route.
+                            this.table
+                                .update(cx, |table, _| table.delegate_mut().art_rounding = value);
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ),
+            )
+            .into_any_element(),
+        )
     }
 }
 
@@ -2405,7 +2543,11 @@ impl Panel for LibraryPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("library")
+        panel::title_text(self.custom_title.as_deref(), "library")
+    }
+
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        self.custom_title.clone().map(SharedString::from)
     }
 
     /// The panel's controls share the title bar row instead of stacking a
@@ -2415,6 +2557,9 @@ impl Panel for LibraryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
+        if !self.show_search && self.error.is_none() {
+            return None;
+        }
         Some(
             div()
                 .flex()
@@ -2422,7 +2567,9 @@ impl Panel for LibraryPanel {
                 .items_center()
                 .flex_none()
                 .gap(tokens::SPACE_SM)
-                .child(self.search_box(window, cx).w(px(180.)))
+                .when(self.show_search, |d| {
+                    d.child(self.search_box(window, cx).w(px(180.)))
+                })
                 .when_some(self.error.clone(), |d, error| {
                     d.child(
                         div()
@@ -2523,6 +2670,7 @@ impl Panel for LibraryPanel {
         // Duplicate copies this view's config, over the same catalog and
         // player. Hand-rolled because the copy takes the query along.
         let menu = menu.separator();
+        let menu = panel_settings::rename_item(menu, &cx.entity());
         let menu = panel_settings::settings_item(menu, &cx.entity());
         let weak = cx.entity().downgrade();
         let menu = menu.item(
@@ -2554,7 +2702,7 @@ impl Panel for LibraryPanel {
 impl Render for LibraryPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme.clone();
-        panel::themed(&theme, || self.body(window, cx).into_any_element())
+        panel::themed(&theme, || self.body(window, cx))
     }
 }
 
@@ -2582,7 +2730,7 @@ impl LibraryPanel {
 
         let busy = self.state.library.read(cx).busy.is_some();
         let empty = self.table.read(cx).delegate().view.is_empty();
-        let body = if empty && !busy && self.query.is_empty() {
+        let body = if empty && !busy && self.active_query().is_empty() {
             self.empty_state(cx).into_any_element()
         } else {
             self.track_list().into_any_element()
@@ -2605,7 +2753,10 @@ impl LibraryPanel {
             .bg(palette::bg_panel())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event, window, cx| this.on_panel_key(event, window, cx)))
-            .when(headerless, |d| d.child(self.toolbar(window, cx)))
+            .when(
+                headerless && (self.show_search || self.error.is_some()),
+                |d| d.child(self.toolbar(window, cx)),
+            )
             .child(div().flex_1().min_h_0().child(body))
     }
 }

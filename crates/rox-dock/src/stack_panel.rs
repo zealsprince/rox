@@ -117,6 +117,19 @@ impl StackPanel {
         self.panels.len()
     }
 
+    /// The stack's axis, for app-level walks over the live layout.
+    pub fn axis(&self) -> Axis {
+        self.axis
+    }
+
+    /// The children in stack order, for app-level walks over the live
+    /// layout. The `DockItem` tree the dock was built from goes stale
+    /// once tabs are dragged around; these entities are the truth, the
+    /// same ones `dump` serializes.
+    pub fn panels(&self) -> &[Arc<dyn PanelView>] {
+        &self.panels
+    }
+
     /// Return the index of the panel.
     pub(crate) fn index_of_panel(&self, panel: Arc<dyn PanelView>) -> Option<usize> {
         self.panels.iter().position(|p| p == &panel)

@@ -481,6 +481,17 @@ impl TabPanel {
         self.panels.len()
     }
 
+    /// The tabs in order, for app-level walks over the live layout, the
+    /// same entities `dump` serializes.
+    pub fn panels(&self) -> &[Arc<dyn PanelView>] {
+        &self.panels
+    }
+
+    /// The active tab's index.
+    pub fn active_index(&self) -> usize {
+        self.active_ix
+    }
+
     /// Return all visible panels
     fn visible_panels<'a>(&'a self, cx: &'a App) -> impl Iterator<Item = Arc<dyn PanelView>> + 'a {
         self.panels.iter().filter_map(|panel| {

@@ -34,12 +34,14 @@ pub mod icons {
     pub const CHEVRON_RIGHT: &str = "icons/chevron-right.svg";
     pub const DISC: &str = "icons/disc-3.svg";
     pub const MUSIC: &str = "icons/music.svg";
+    pub const LIST_MUSIC: &str = "icons/list-music.svg";
     pub const FOLDER: &str = "icons/folder.svg";
     pub const FOLDER_PLUS: &str = "icons/folder-plus.svg";
     pub const FILE_TEXT: &str = "icons/file-text.svg";
     pub const DOWNLOAD: &str = "icons/download.svg";
     pub const UPLOAD: &str = "icons/upload.svg";
     pub const TRASH: &str = "icons/trash-2.svg";
+    pub const PENCIL: &str = "icons/pencil.svg";
     /// Resolves from the bundled widget set, no file of ours needed.
     pub const CLOSE: &str = "icons/close.svg";
     /// The panel menu's icons, all from the bundled widget set too.

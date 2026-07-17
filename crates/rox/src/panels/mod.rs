@@ -5,6 +5,7 @@
 pub mod cover;
 pub mod grid;
 pub mod library;
+pub mod metadata;
 pub mod spectrum;
 pub mod transport;
 pub mod waveform;

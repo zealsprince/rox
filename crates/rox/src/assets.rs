@@ -42,6 +42,16 @@ pub mod icons {
     pub const UPLOAD: &str = "icons/upload.svg";
     pub const TRASH: &str = "icons/trash-2.svg";
     pub const PENCIL: &str = "icons/pencil.svg";
+    /// The settings sidebars' page icons; the last three resolve from
+    /// the bundled widget set, no file of ours needed.
+    pub const SLIDERS: &str = "icons/sliders-horizontal.svg";
+    pub const RADIO: &str = "icons/radio.svg";
+    pub const DATABASE: &str = "icons/database.svg";
+    pub const CLOCK: &str = "icons/clock.svg";
+    pub const IMAGE: &str = "icons/image.svg";
+    pub const PALETTE: &str = "icons/palette.svg";
+    pub const LAYOUT_DASHBOARD: &str = "icons/layout-dashboard.svg";
+    pub const EYE: &str = "icons/eye.svg";
     /// Resolves from the bundled widget set, no file of ours needed.
     pub const CLOSE: &str = "icons/close.svg";
     /// The panel menu's icons, all from the bundled widget set too.

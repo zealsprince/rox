@@ -13,6 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gpui::{App, Context, Entity, Image, ImageFormat, Subscription};
@@ -24,8 +25,15 @@ use crate::panels::library::{Library, LibraryEvent};
 /// at the small tile size on a 4K display, with headroom; below that
 /// the LRU thrashes every paint.
 const CAP: usize = 512;
-/// Loads in flight at once, the contract's bounded worker pool.
-const POOL: usize = 4;
+/// Loads in flight at once, the contract's bounded worker pool. Warm
+/// loads are stat-plus-point-lookup cheap, so the bound is really a
+/// cap on concurrent cover decodes when the store is cold.
+const POOL: usize = 16;
+/// Background tasks the post-refresh sweep splits the wall across. Low
+/// on purpose: the sweep warms the durable store for tiles nobody is
+/// looking at yet, so it should never crowd the interactive pool or
+/// the machine.
+const SWEEP_WORKERS: usize = 4;
 
 /// What a render gets for a track's thumbnail.
 pub enum Thumb {
@@ -58,6 +66,9 @@ pub struct Thumbs {
     clock: u64,
     /// Discards in-flight results from before an invalidation.
     generation: u64,
+    /// The running store sweep's stop flag; a new sweep raises it and
+    /// leaves a fresh one behind.
+    sweep_cancel: Arc<AtomicBool>,
     _library_changed: Subscription,
 }
 
@@ -65,10 +76,13 @@ impl Thumbs {
     pub fn new(library: &Entity<Library>, cx: &mut Context<Self>) -> Self {
         // A rescan can rewrite tags, art files, and id -> path mappings;
         // drop the textures so the next paints re-read through the
-        // store's (path, mtime, size) identity check.
-        let _library_changed = cx.subscribe(library, |this: &mut Self, _, _: &LibraryEvent, cx| {
-            this.invalidate(cx)
-        });
+        // store's (path, mtime, size) identity check. A settled catalog
+        // also kicks the sweep that warms the store for the whole wall.
+        let _library_changed =
+            cx.subscribe(library, |this: &mut Self, library, _: &LibraryEvent, cx| {
+                this.invalidate(cx);
+                this.sweep(&library, cx);
+            });
         let conn = rox_library::thumbs::open(&crate::settings::data_dir().join("thumbs.db"))
             .ok()
             .map(|conn| Arc::new(Mutex::new(conn)));
@@ -78,6 +92,7 @@ impl Thumbs {
             pending: HashSet::new(),
             clock: 0,
             generation: 0,
+            sweep_cancel: Arc::new(AtomicBool::new(false)),
             _library_changed,
         }
     }
@@ -128,6 +143,74 @@ impl Thumbs {
         })
         .detach();
         Thumb::Pending
+    }
+
+    /// Warm the durable store for the whole wall: every album's first
+    /// track, the tile identity the grid loads by, gets its thumbnail
+    /// generated in the background. Unchanged covers are point lookups,
+    /// so a warm sweep is light; a cold one pays each decode once here
+    /// instead of on first scroll-by. Runs after every library refresh
+    /// and replaces any sweep still going.
+    fn sweep(&mut self, library: &Entity<Library>, cx: &mut Context<Self>) {
+        self.sweep_cancel.store(true, Ordering::Relaxed);
+        let Some(conn) = self.conn.clone() else {
+            return;
+        };
+        let ids = {
+            let library = library.read(cx);
+            // Mid-refresh the projection is still the old catalog; the
+            // completion event kicks the sweep that matters.
+            if library.busy().is_some() {
+                return;
+            }
+            let Some(projection) = library.projection() else {
+                return;
+            };
+            // First row of each album run, the grid's grouping rule.
+            let mut ids = Vec::new();
+            let mut last = None;
+            for &row in library.order().iter() {
+                let key = (
+                    projection.album_artist[row as usize],
+                    projection.album[row as usize],
+                );
+                if last != Some(key) {
+                    ids.push(projection.db_id[row as usize]);
+                    last = Some(key);
+                }
+            }
+            ids
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.sweep_cancel = cancel.clone();
+        let db_path = crate::settings::data_dir().join("library.db");
+        for chunk in ids.chunks(ids.len().div_ceil(SWEEP_WORKERS).max(1)) {
+            let chunk = chunk.to_vec();
+            let cancel = cancel.clone();
+            let conn = conn.clone();
+            let db_path = db_path.clone();
+            cx.background_executor()
+                .spawn(async move {
+                    // Its own library connection, the scan idiom: the
+                    // UI-side one stays on the UI thread.
+                    let Ok(lib) = rox_library::store::open(&db_path) else {
+                        return;
+                    };
+                    for id in chunk {
+                        if cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let Ok(paths) = rox_library::store::paths_for(&lib, &[id]) else {
+                            continue;
+                        };
+                        let Some(path) = paths.first() else {
+                            continue;
+                        };
+                        rox_library::thumbs::thumbnail(&conn, Path::new(path));
+                    }
+                })
+                .detach();
+        }
     }
 
     /// The shared store connection, for the settings window to clear the

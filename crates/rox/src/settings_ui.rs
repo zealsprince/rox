@@ -58,9 +58,11 @@ pub fn sidebar() -> Div {
         .border_color(palette::border())
 }
 
-/// A sidebar row; the picked page reads like an active control.
+/// A sidebar row: the page's icon leading its name; the picked page
+/// reads like an active control.
 pub fn nav_item<P: 'static>(
     label: &'static str,
+    icon: &'static str,
     picked: bool,
     on_pick: impl Fn(&mut P, &mut Context<P>) + 'static,
     cx: &mut Context<P>,
@@ -69,6 +71,10 @@ pub fn nav_item<P: 'static>(
         .px(tokens::SPACE_MD)
         .py(tokens::SPACE_XS)
         .rounded(tokens::RADIUS)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_SM)
         .cursor_pointer()
         .when(picked, |d| d.bg(palette::bg_control_active()))
         .when(!picked, |d| d.hover(|d| d.bg(palette::bg_menu_hover())))
@@ -76,6 +82,7 @@ pub fn nav_item<P: 'static>(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| on_pick(this, cx)),
         )
+        .child(svg().path(icon).size(px(14.)).text_color(palette::text()))
         .child(label)
 }
 

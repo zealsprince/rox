@@ -70,6 +70,7 @@ struct Details {
     album: String,
     genre: String,
     year: u16,
+    disc_no: u16,
     track_no: u16,
     duration_ms: u32,
     codec: String,
@@ -157,6 +158,7 @@ impl MetadataPanel {
                     album: v.album.to_owned(),
                     genre: v.genre.to_owned(),
                     year: v.year,
+                    disc_no: v.disc_no,
                     track_no: v.track_no,
                     duration_ms: v.duration_ms,
                     codec: v.codec.to_owned(),
@@ -264,8 +266,8 @@ impl PanelSettings for MetadataPanel {
         cx.notify();
     }
 
-    fn pages(&self) -> &'static [&'static str] {
-        &["Content"]
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Content", icons::FILE_TEXT)]
     }
 
     fn page(
@@ -507,6 +509,9 @@ impl MetadataPanel {
             }
             if !d.album_artist.is_empty() && d.album_artist != d.artist {
                 fields.push(("album artist", d.album_artist.clone()));
+            }
+            if d.disc_no > 0 {
+                fields.push(("disc", d.disc_no.to_string()));
             }
             if d.track_no > 0 {
                 fields.push(("track", format!("{:02}", d.track_no)));

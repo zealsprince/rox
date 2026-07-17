@@ -119,6 +119,7 @@ pub struct Builder {
     album: Vec<u32>,
     genre: Vec<u32>,
     year: Vec<u16>,
+    disc_no: Vec<u16>,
     track_no: Vec<u16>,
     duration_ms: Vec<u32>,
     codec: Vec<u32>,
@@ -141,6 +142,7 @@ impl Builder {
         album: &str,
         genre: &str,
         year: u16,
+        disc_no: u16,
         track_no: u16,
         duration_ms: u32,
         codec: &str,
@@ -155,6 +157,7 @@ impl Builder {
         self.album.push(self.albums.intern(album));
         self.genre.push(self.genres.intern(genre));
         self.year.push(year);
+        self.disc_no.push(disc_no);
         self.track_no.push(track_no);
         self.duration_ms.push(duration_ms);
         self.codec.push(self.codecs.intern(codec));
@@ -171,6 +174,7 @@ pub struct Projection {
     pub album: Vec<u32>,
     pub genre: Vec<u32>,
     pub year: Vec<u16>,
+    pub disc_no: Vec<u16>,
     pub track_no: Vec<u16>,
     pub duration_ms: Vec<u32>,
     pub codec: Vec<u32>,
@@ -189,6 +193,7 @@ pub struct RowView<'a> {
     pub album: &'a str,
     pub genre: &'a str,
     pub year: u16,
+    pub disc_no: u16,
     pub track_no: u16,
     pub duration_ms: u32,
     pub codec: &'a str,
@@ -227,7 +232,7 @@ impl Projection {
             conn,
             0,
             max,
-            |id, title, artist, album_artist, album, genre, year, tn, dur, codec, kbps| {
+            |id, title, artist, album_artist, album, genre, year, dn, tn, dur, codec, kbps| {
                 b.push(
                     id,
                     title,
@@ -236,6 +241,7 @@ impl Projection {
                     album,
                     genre,
                     year,
+                    dn,
                     tn,
                     dur,
                     codec,
@@ -273,6 +279,7 @@ impl Projection {
                              album,
                              genre,
                              year,
+                             dn,
                              tn,
                              dur,
                              codec,
@@ -285,6 +292,7 @@ impl Projection {
                                     album,
                                     genre,
                                     year,
+                                    dn,
                                     tn,
                                     dur,
                                     codec,
@@ -321,6 +329,7 @@ impl Projection {
         out.album.reserve(total);
         out.genre.reserve(total);
         out.year.reserve(total);
+        out.disc_no.reserve(total);
         out.track_no.reserve(total);
         out.duration_ms.reserve(total);
         out.codec.reserve(total);
@@ -369,6 +378,7 @@ impl Projection {
             out.genre
                 .extend(shard.genre.iter().map(|&s| map_g[s as usize]));
             out.year.extend_from_slice(&shard.year);
+            out.disc_no.extend_from_slice(&shard.disc_no);
             out.track_no.extend_from_slice(&shard.track_no);
             out.duration_ms.extend_from_slice(&shard.duration_ms);
             out.codec
@@ -385,6 +395,7 @@ impl Projection {
             album: out.album,
             genre: out.genre,
             year: out.year,
+            disc_no: out.disc_no,
             track_no: out.track_no,
             duration_ms: out.duration_ms,
             codec: out.codec,
@@ -406,6 +417,7 @@ impl Projection {
             album: &self.albums.strings[self.album[i] as usize],
             genre: &self.genres.strings[self.genre[i] as usize],
             year: self.year[i],
+            disc_no: self.disc_no[i],
             track_no: self.track_no[i],
             duration_ms: self.duration_ms[i],
             codec: &self.codecs.strings[self.codec[i] as usize],
@@ -488,9 +500,11 @@ impl Projection {
         rank
     }
 
-    /// The canonical browse order: album artist, album, track number. The
-    /// album artist keys it so an album's tracks stay one run under its
-    /// credited artist, per-track guests and all.
+    /// The canonical browse order: album artist, album, disc, track number.
+    /// The album artist keys it so an album's tracks stay one run under its
+    /// credited artist, per-track guests and all; the disc keys ahead of the
+    /// track so a multi-disc set plays through in order instead of
+    /// interleaving its discs' track numbers.
     pub fn sort_canonical(&self) -> Vec<u32> {
         let a_rank = Self::ranks(&self.album_artists);
         let b_rank = Self::ranks(&self.albums);
@@ -500,6 +514,7 @@ impl Projection {
             (
                 a_rank[self.album_artist[i] as usize],
                 b_rank[self.album[i] as usize],
+                self.disc_no[i],
                 self.track_no[i],
             )
         });
@@ -573,6 +588,7 @@ impl Projection {
             (
                 a_rank[self.album_artist[i] as usize],
                 b_rank[self.album[i] as usize],
+                self.disc_no[i],
                 self.track_no[i],
             )
         };
@@ -596,12 +612,67 @@ impl Projection {
                 + self.genre.capacity()
                 + self.codec.capacity())
                 * 4
-            + (self.year.capacity() + self.track_no.capacity() + self.bitrate_kbps.capacity()) * 2
+            + (self.year.capacity()
+                + self.disc_no.capacity()
+                + self.track_no.capacity()
+                + self.bitrate_kbps.capacity())
+                * 2
             + self.duration_ms.capacity() * 4
             + self.artists.heap_bytes()
             + self.album_artists.heap_bytes()
             + self.albums.heap_bytes()
             + self.genres.heap_bytes()
             + self.codecs.heap_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TrackRow;
+
+    fn row(path: &str, album: &str, disc_no: u16, track_no: u16) -> TrackRow {
+        TrackRow {
+            path: path.into(),
+            title: String::new(),
+            artist: String::new(),
+            album_artist: "Various Artists".into(),
+            album: album.into(),
+            genre: String::new(),
+            year: 0,
+            disc_no,
+            track_no,
+            duration_ms: 0,
+            codec: String::new(),
+            bitrate_kbps: 0,
+            size: 0,
+            mtime: 0,
+        }
+    }
+
+    /// A two-disc set plays disc 1 through before disc 2 starts, instead
+    /// of interleaving the discs' track numbers.
+    #[test]
+    fn canonical_order_keys_disc_before_track() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                row("/m/2-1.mp3", "Set", 2, 1),
+                row("/m/1-2.mp3", "Set", 1, 2),
+                row("/m/2-2.mp3", "Set", 2, 2),
+                row("/m/1-1.mp3", "Set", 1, 1),
+            ],
+        )
+        .unwrap();
+
+        let p = Projection::load_serial(&conn).unwrap();
+        let keys: Vec<(u16, u16)> = p
+            .sort_canonical()
+            .iter()
+            .map(|&i| (p.disc_no[i as usize], p.track_no[i as usize]))
+            .collect();
+        assert_eq!(keys, [(1, 1), (1, 2), (2, 1), (2, 2)]);
     }
 }

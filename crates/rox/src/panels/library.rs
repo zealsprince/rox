@@ -62,6 +62,15 @@ pub enum LibraryEvent {
 /// How often the UI samples a running scan's progress.
 const SCAN_POLL: Duration = Duration::from_millis(100);
 
+/// Interim projection swaps while a scan runs, so panels fill in live
+/// instead of waiting for the end. An empty library polls fast until the
+/// first batch lands - the first scan should paint tracks right away. A
+/// populated one takes its first swap after [`SCAN_REFRESH_FIRST`], then
+/// settles to [`SCAN_REFRESH_STEADY`].
+const SCAN_REFRESH_EMPTY: Duration = Duration::from_secs(1);
+const SCAN_REFRESH_FIRST: Duration = Duration::from_secs(15);
+const SCAN_REFRESH_STEADY: Duration = Duration::from_secs(30);
+
 /// Live progress of a background scan: the scan thread writes it per file,
 /// the UI polls it at [`SCAN_POLL`] cadence. Zero total means the folder
 /// walk has not finished yet.
@@ -93,7 +102,7 @@ pub struct Library {
     /// open their own connections on the background executor.
     conn: Option<Connection>,
     projection: Option<Arc<Projection>>,
-    /// The canonical browse order: album artist, album, track number.
+    /// The canonical browse order: album artist, album, disc, track number.
     order: Arc<Vec<u32>>,
     /// The folders scans read from, in the order they were added,
     /// persisted in settings. Empty until a folder has been opened.
@@ -317,6 +326,7 @@ impl Library {
         if matches!(refresh, Refresh::Scan(_)) {
             self.scan = Some(progress.clone());
             self.poll_scan(progress.clone(), cx);
+            self.refresh_during_scan(cx);
         }
         let db_path = self.db_path.clone();
         cx.spawn(async move |this, cx| {
@@ -365,6 +375,63 @@ impl Library {
                         this.status = progress.current.lock().unwrap().clone().into();
                         cx.notify();
                     }
+                    true
+                });
+                if !matches!(live, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Swap interim projections in while a scan runs, so panels fill in
+    /// live. The scanner commits per batch and the store is WAL, so a
+    /// reader sees whatever has landed. Each swap is the same whole
+    /// replace the final reload does, minus the status line and badge,
+    /// which the scan still owns. Stops itself when the scan ends; the
+    /// final reload swaps the authoritative result.
+    fn refresh_during_scan(&self, cx: &mut Context<Self>) {
+        let db_path = self.db_path.clone();
+        let mut delay = if self.projection.as_ref().is_none_or(|p| p.is_empty()) {
+            SCAN_REFRESH_EMPTY
+        } else {
+            SCAN_REFRESH_FIRST
+        };
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(delay).await;
+                if !matches!(this.read_with(cx, |this, _| this.scan.is_some()), Ok(true)) {
+                    break;
+                }
+                let db_path = db_path.clone();
+                let loaded = cx
+                    .background_executor()
+                    .spawn(async move { load_projection(&db_path) })
+                    .await;
+                let Ok((projection, order)) = loaded else {
+                    continue;
+                };
+                // Nothing indexed yet: keep the fast poll until the
+                // first batch lands.
+                if projection.is_empty() && delay == SCAN_REFRESH_EMPTY {
+                    continue;
+                }
+                delay = if delay == SCAN_REFRESH_EMPTY {
+                    SCAN_REFRESH_FIRST
+                } else {
+                    SCAN_REFRESH_STEADY
+                };
+                let live = this.update(cx, |this, cx| {
+                    // The scan finished while this projection loaded; the
+                    // final reload's swap is newer, keep it.
+                    if this.scan.is_none() {
+                        return false;
+                    }
+                    this.projection = Some(Arc::new(projection));
+                    this.order = Arc::new(order);
+                    cx.emit(LibraryEvent::Updated);
+                    cx.notify();
                     true
                 });
                 if !matches!(live, Ok(true)) {
@@ -605,6 +672,8 @@ enum Row {
     Header(u32),
     /// The group's album and stats line under an expanded header.
     Meta(u32),
+    /// The divider opening one disc's run inside a multi-disc group.
+    Disc(u16),
 }
 
 /// One artist/album group of the current view: what its header rows draw.
@@ -629,51 +698,71 @@ struct Group {
 /// The canonical order with a header block opening every album run: one
 /// row compact, name and stats rows expanded. Groups break on the album
 /// artist, not the track artist, so a compilation stays one run with its
-/// per-track artists inside. Breaks compare interned symbols and the
-/// stats are two integer sums, so the walk stays cheap and runs once per
-/// view swap, never while scrolling.
+/// per-track artists inside. A group spanning discs gets a divider row
+/// opening each numbered disc's run; untagged tracks (disc 0) sit under
+/// the header undivided. Breaks compare interned symbols and the stats
+/// are two integer sums, so the walk stays cheap and runs once per view
+/// swap, never while scrolling.
 fn group_rows(order: &[u32], projection: &Projection, expanded: bool) -> (Vec<Row>, Vec<Group>) {
     let mut rows = Vec::with_capacity(order.len() + order.len() / 8);
     let mut groups: Vec<Group> = Vec::new();
-    let mut last = None;
-    for &row in order {
-        let key = (
+    let key = |row: u32| {
+        (
             projection.album_artist[row as usize],
             projection.album[row as usize],
-        );
-        if last != Some(key) {
-            let g = groups.len() as u32;
-            groups.push(Group {
-                first: row,
-                tracks: 0,
-                total_ms: 0,
-                codec: Some(projection.codec[row as usize]),
-                min_kbps: 0,
-                max_kbps: 0,
-                art: None,
-            });
-            rows.push(Row::Header(g));
-            if expanded {
-                rows.push(Row::Meta(g));
+        )
+    };
+    let mut i = 0;
+    while i < order.len() {
+        // One album run: the canonical order keeps a group contiguous, so
+        // its extent is known before any of its rows are pushed, which is
+        // what lets the first disc get its divider too.
+        let mut j = i + 1;
+        while j < order.len() && key(order[j]) == key(order[i]) {
+            j += 1;
+        }
+        let run = &order[i..j];
+        i = j;
+
+        let g = groups.len() as u32;
+        groups.push(Group {
+            first: run[0],
+            tracks: 0,
+            total_ms: 0,
+            codec: Some(projection.codec[run[0] as usize]),
+            min_kbps: 0,
+            max_kbps: 0,
+            art: None,
+        });
+        rows.push(Row::Header(g));
+        if expanded {
+            rows.push(Row::Meta(g));
+        }
+        let disc = |row: u32| projection.disc_no[row as usize];
+        let multi_disc = run.iter().any(|&row| disc(row) != disc(run[0]));
+        let mut last_disc = None;
+        for &row in run {
+            if multi_disc && disc(row) > 0 && last_disc != Some(disc(row)) {
+                rows.push(Row::Disc(disc(row)));
+                last_disc = Some(disc(row));
             }
-            last = Some(key);
+            let group = groups.last_mut().unwrap();
+            group.tracks += 1;
+            group.total_ms += projection.duration_ms[row as usize] as u64;
+            if group.codec != Some(projection.codec[row as usize]) {
+                group.codec = None;
+            }
+            let kbps = projection.bitrate_kbps[row as usize];
+            if kbps > 0 {
+                group.min_kbps = if group.min_kbps == 0 {
+                    kbps
+                } else {
+                    group.min_kbps.min(kbps)
+                };
+                group.max_kbps = group.max_kbps.max(kbps);
+            }
+            rows.push(Row::Track(row));
         }
-        let group = groups.last_mut().unwrap();
-        group.tracks += 1;
-        group.total_ms += projection.duration_ms[row as usize] as u64;
-        if group.codec != Some(projection.codec[row as usize]) {
-            group.codec = None;
-        }
-        let kbps = projection.bitrate_kbps[row as usize];
-        if kbps > 0 {
-            group.min_kbps = if group.min_kbps == 0 {
-                kbps
-            } else {
-                group.min_kbps.min(kbps)
-            };
-            group.max_kbps = group.max_kbps.max(kbps);
-        }
-        rows.push(Row::Track(row));
     }
     (rows, groups)
 }
@@ -1177,6 +1266,23 @@ impl TrackTable {
             )
     }
 
+    /// The slim strip opening one disc's run inside a multi-disc group,
+    /// a full-width line like the header rows so it stays put when wide
+    /// column sets scroll sideways.
+    fn render_disc_row(&mut self, row_ix: usize, disc: u16) -> Stateful<Div> {
+        div().id(("row", row_ix)).child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .flex_row()
+                .items_center()
+                .px(tokens::SPACE_SM)
+                .text_color(palette::text_muted())
+                .child(SharedString::from(format!("Disc {disc}"))),
+        )
+    }
+
     /// The next row whose leading text starts with the typed prefix, from
     /// the cursor on, wrapping. The leading text follows the active sort:
     /// its column when it has text, the album artist for the canonical
@@ -1400,6 +1506,7 @@ impl TableDelegate for TrackTable {
         match self.view.get(row_ix).copied() {
             Some(Row::Header(g)) => return self.render_group_header(row_ix, g, cx),
             Some(Row::Meta(g)) => return self.render_group_meta(row_ix, g, cx),
+            Some(Row::Disc(disc)) => return self.render_disc_row(row_ix, disc),
             _ => {}
         }
         // The same wash the widget theme paints its own focus row with, so
@@ -1760,7 +1867,8 @@ impl LibraryPanel {
     }
 
     /// Scroll the playing row into view: a glide when smooth is on, the
-    /// jump otherwise.
+    /// jump otherwise. Scroll only - the automatic follow never touches
+    /// the selection, that's the menu jump's move.
     fn follow_playing(&mut self, cx: &mut Context<Self>) {
         if self.smooth_follow {
             if let Some(row) = self.table.read(cx).delegate().playing_row {
@@ -1768,7 +1876,11 @@ impl LibraryPanel {
                 cx.notify();
             }
         } else {
-            self.jump_to_playing(cx);
+            self.table.update(cx, |table, cx| {
+                if let Some(row) = table.delegate().playing_row {
+                    table.scroll_to_row(row, cx);
+                }
+            });
         }
     }
 
@@ -1911,13 +2023,13 @@ impl LibraryPanel {
         }
     }
 
-    /// Scroll the playing track's row into view, when the view holds it.
+    /// The menu's jump: put the cursor on the playing row, which selects
+    /// it, publishes, and scrolls it into view in one move.
     fn jump_to_playing(&mut self, cx: &mut Context<Self>) {
-        self.table.update(cx, |table, cx| {
-            if let Some(row) = table.delegate().playing_row {
-                table.scroll_to_row(row, cx);
-            }
-        });
+        let row = self.table.read(cx).delegate().playing_row;
+        if let Some(row) = row {
+            self.set_cursor(row, false, cx);
+        }
     }
 
     /// The query the view filters by: the box's text while the search
@@ -2381,8 +2493,8 @@ impl panel::PanelSettings for LibraryPanel {
         cx.notify();
     }
 
-    fn pages(&self) -> &'static [&'static str] {
-        &["View", "Behavior"]
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("View", icons::ROWS_3), ("Behavior", icons::SLIDERS)]
     }
 
     fn page(
@@ -2396,6 +2508,22 @@ impl panel::PanelSettings for LibraryPanel {
                 .flex()
                 .flex_col()
                 .gap(tokens::SPACE_MD)
+                .child(panel::setting_row(
+                    "search",
+                    Some("show the search box; the query only applies while it shows"),
+                    panel::toggle(
+                        self.show_search,
+                        |this: &mut Self, on, cx| {
+                            this.show_search = on;
+                            // The box keeps its text; the view snaps to the
+                            // full catalog while hidden.
+                            this.refresh_view(cx);
+                            cx.notify();
+                            this.refresh_title_bar(cx);
+                        },
+                        cx,
+                    ),
+                ))
                 .child(panel::setting_row(
                     "follow playing",
                     Some("scroll to the playing row whenever the track changes"),
@@ -2463,22 +2591,6 @@ impl panel::PanelSettings for LibraryPanel {
                     ],
                     self.density,
                     |this: &mut Self, density, cx| this.set_density(density, cx),
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                "search",
-                Some("show the search box; the query only applies while it shows"),
-                panel::toggle(
-                    self.show_search,
-                    |this: &mut Self, on, cx| {
-                        this.show_search = on;
-                        // The box keeps its text; the view snaps to the
-                        // full catalog while hidden.
-                        this.refresh_view(cx);
-                        cx.notify();
-                        this.refresh_title_bar(cx);
-                    },
                     cx,
                 ),
             ))
@@ -2742,7 +2854,7 @@ impl LibraryPanel {
             .tab_panel
             .as_ref()
             .and_then(|tabs| tabs.upgrade())
-            .map_or(true, |tabs| tabs.read(cx).panels_count() < 2);
+            .is_none_or(|tabs| tabs.read(cx).panels_count() < 2);
         // The root must size itself: the dock's tab panel lays the panel view
         // out as a root element (cached, absolute), where flex_1 has no flex
         // parent to grow in and the height would collapse to the content.
@@ -2804,12 +2916,21 @@ fn load(
             None
         }
     };
+    let (projection, order) = load_projection(db_path)?;
+    Ok((projection, order, summary))
+}
+
+/// Load the projection and its canonical order, sharded across cores.
+/// Blocking; run it off the UI thread.
+fn load_projection(
+    db_path: &std::path::Path,
+) -> Result<(Projection, Vec<u32>), rox_library::rusqlite::Error> {
     let shards = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
     let projection = Projection::load_parallel(db_path, shards)?;
     let order = projection.sort_canonical();
-    Ok((projection, order, summary))
+    Ok((projection, order))
 }
 
 fn status_line(total: usize, summary: Option<&ScanSummary>) -> String {

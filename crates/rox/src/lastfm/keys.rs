@@ -7,5 +7,5 @@
 //! it identifies the app, not any user - accounts still authorize per
 //! session in the browser.
 
-pub const API_KEY: &str = "";
-pub const API_SECRET: &str = "";
+pub const API_KEY: &str = "334a242c889697bf3da7b46502f51a0c";
+pub const API_SECRET: &str = "1957d340c6a2633684e4aac219395895";

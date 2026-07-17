@@ -5,6 +5,7 @@
 //! popped-out panel is the same entity rehosted in its own OS window, no
 //! cross-window messaging needed.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -221,8 +222,10 @@ pub struct FlickState {
 
 #[derive(Default)]
 struct FlickInner {
-    /// The pointer's last y and when it was there, the velocity sample.
-    last: Option<(Pixels, Instant)>,
+    /// The pointer's recent path, (y, when) with the newest last. The
+    /// release reads its velocity off this window, so speed built up
+    /// earlier in the drag can't survive a pause at the end.
+    samples: VecDeque<(f32, Instant)>,
     /// Total pointer travel this drag; past the dead zone it counts as a
     /// scroll and the release swallows the click.
     travel: f32,
@@ -238,12 +241,17 @@ const FLICK_DEAD_ZONE: f32 = 4.0;
 const FLICK_DECAY: f32 = 0.02;
 /// Coasting below this speed stops, px/s.
 const FLICK_REST: f32 = 12.0;
+/// How far back the release looks for its velocity, in seconds. Only
+/// motion inside this window coasts: a pause before letting go leaves
+/// the window empty, and a jittery hold nets out to nearly zero.
+const FLICK_WINDOW: f32 = 0.1;
 
 impl FlickState {
     /// A press landed: start tracking, stop any coast.
     pub fn begin(&self, y: Pixels) {
         let mut inner = self.inner.lock().unwrap();
-        inner.last = Some((y, Instant::now()));
+        inner.samples.clear();
+        inner.samples.push_back((f32::from(y), Instant::now()));
         inner.travel = 0.0;
         inner.velocity = 0.0;
         self.dragging.store(true, Ordering::Relaxed);
@@ -260,22 +268,25 @@ impl FlickState {
     }
 
     /// Track a move to `y`: the pointer's delta comes back for the host
-    /// to scroll by (zero inside the dead zone), and the velocity sample
-    /// updates for the coast.
+    /// to scroll by (zero inside the dead zone), and the sample joins
+    /// the velocity window.
     fn track(&self, y: Pixels) -> f32 {
         let mut inner = self.inner.lock().unwrap();
-        let Some((last_y, at)) = inner.last else {
+        let y = f32::from(y);
+        let Some(&(last_y, _)) = inner.samples.back() else {
             return 0.0;
         };
-        let dy = f32::from(y - last_y);
-        let dt = at.elapsed().as_secs_f32();
-        inner.last = Some((y, Instant::now()));
-        inner.travel += dy.abs();
-        if dt > 0.0 {
-            // Blend toward the instantaneous speed so one slow final
-            // sample doesn't erase the flick.
-            inner.velocity = inner.velocity * 0.7 + (dy / dt) * 0.3;
+        let now = Instant::now();
+        inner.samples.push_back((y, now));
+        while inner
+            .samples
+            .front()
+            .is_some_and(|&(_, at)| now.duration_since(at).as_secs_f32() > FLICK_WINDOW)
+        {
+            inner.samples.pop_front();
         }
+        let dy = y - last_y;
+        inner.travel += dy.abs();
         if inner.travel > FLICK_DEAD_ZONE {
             dy
         } else {
@@ -283,9 +294,27 @@ impl FlickState {
         }
     }
 
-    /// The release: done dragging, keep the velocity for the coast.
+    /// The release: done dragging, the coast's velocity is the net
+    /// motion across the sample window. A pause before letting go has
+    /// aged every sample out, so the coast starts from rest.
     fn end(&self) {
         self.dragging.store(false, Ordering::Relaxed);
+        let mut inner = self.inner.lock().unwrap();
+        let now = Instant::now();
+        while inner
+            .samples
+            .front()
+            .is_some_and(|&(_, at)| now.duration_since(at).as_secs_f32() > FLICK_WINDOW)
+        {
+            inner.samples.pop_front();
+        }
+        inner.velocity = match (inner.samples.front(), inner.samples.back()) {
+            (Some(&(y0, t0)), Some(&(y1, t1))) if t1 > t0 => {
+                (y1 - y0) / t1.duration_since(t0).as_secs_f32()
+            }
+            _ => 0.0,
+        };
+        inner.samples.clear();
     }
 
     /// One coast step: the distance to scroll this frame, decayed toward
@@ -570,9 +599,10 @@ pub trait PanelSettings: Panel {
     /// the playing track's art like every other window.
     fn state(&self) -> AppState;
 
-    /// The panel's own pages, listed above the shared Appearance page.
-    /// Empty means the panel has no knobs beyond its appearance.
-    fn pages(&self) -> &'static [&'static str] {
+    /// The panel's own pages as name and sidebar icon pairs, listed
+    /// above the shared Appearance page. Empty means the panel has no
+    /// knobs beyond its appearance.
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
         &[]
     }
 

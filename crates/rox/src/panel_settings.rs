@@ -645,9 +645,10 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                 let appearance = pages.len();
                 let picked = self.page.min(appearance);
                 let mut nav = sidebar();
-                for (i, label) in pages.iter().enumerate() {
+                for (i, &(label, icon)) in pages.iter().enumerate() {
                     nav = nav.child(settings_ui::nav_item(
                         label,
+                        icon,
                         picked == i,
                         move |this: &mut Self, cx| {
                             this.page = i;
@@ -658,6 +659,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                 }
                 nav = nav.child(settings_ui::nav_item(
                     "Appearance",
+                    icons::PALETTE,
                     picked == appearance,
                     move |this: &mut Self, cx| {
                         this.page = appearance;
@@ -666,7 +668,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                     cx,
                 ));
                 let body = if picked < appearance {
-                    panel.update(cx, |panel, cx| panel.page(pages[picked], window, cx))
+                    panel.update(cx, |panel, cx| panel.page(pages[picked].0, window, cx))
                 } else {
                     let theme = panel.read(cx).theme();
                     let extra = panel.update(cx, |panel, cx| panel.appearance(window, cx));

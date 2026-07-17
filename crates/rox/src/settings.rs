@@ -86,6 +86,33 @@ pub struct Settings {
     /// The last.fm connection and scrobbling knobs, the settings window's
     /// Scrobbling page.
     pub lastfm: Lastfm,
+    /// The quick-play modal's appearance knobs, edited from its own config
+    /// panel.
+    pub quick_play: QuickPlayConfig,
+}
+
+/// How the quick-play modal draws its result list, the knobs its inline
+/// config panel edits. Persisted so the look survives reopening the modal,
+/// which the workspace rebuilds each time.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuickPlayConfig {
+    /// Show the artist and album line under each result's title.
+    pub show_subtitle: bool,
+    /// Show each result's duration on the right.
+    pub show_duration: bool,
+    /// Give each result row more height.
+    pub comfortable: bool,
+}
+
+impl Default for QuickPlayConfig {
+    fn default() -> Self {
+        QuickPlayConfig {
+            show_subtitle: true,
+            show_duration: true,
+            comfortable: false,
+        }
+    }
 }
 
 /// The last.fm account and how scrobbling behaves. The key and secret
@@ -157,6 +184,7 @@ impl Default for Settings {
             restore_last_track: true,
             last_track: None,
             lastfm: Lastfm::default(),
+            quick_play: QuickPlayConfig::default(),
         }
     }
 }

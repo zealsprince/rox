@@ -237,6 +237,7 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         row.album = text(tag.album());
         row.genre = text(tag.genre());
         row.year = tag.date().map(|d| d.year).unwrap_or(0);
+        row.disc_no = tag.disk().unwrap_or(0) as u16;
         row.track_no = tag.track().unwrap_or(0) as u16;
     }
     Some(row)
@@ -254,6 +255,7 @@ fn fallback_row(path: &Path) -> TrackRow {
         album: String::new(),
         genre: String::new(),
         year: 0,
+        disc_no: 0,
         track_no: 0,
         duration_ms: 0,
         codec: path
@@ -316,11 +318,11 @@ mod tests {
         };
 
         retitle("First");
-        assert_eq!(reindex(&mut conn, &[path.clone()]).unwrap(), 1);
+        assert_eq!(reindex(&mut conn, std::slice::from_ref(&path)).unwrap(), 1);
         assert_eq!(title(&conn), "First");
 
         retitle("Second");
-        assert_eq!(reindex(&mut conn, &[path.clone()]).unwrap(), 1);
+        assert_eq!(reindex(&mut conn, std::slice::from_ref(&path)).unwrap(), 1);
         assert_eq!(title(&conn), "Second");
     }
 }

@@ -26,6 +26,8 @@ pub struct TrackRow {
     pub album: String,
     pub genre: String,
     pub year: u16,
+    /// The disc this track sits on within a multi-disc set; 0 when untagged.
+    pub disc_no: u16,
     pub track_no: u16,
     pub duration_ms: u32,
     /// The container's short lowercase name (mp3, flac, wav), off the

@@ -151,8 +151,8 @@ impl PanelSettings for TransportPanel {
         cx.notify();
     }
 
-    fn pages(&self) -> &'static [&'static str] {
-        &["Controls"]
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Controls", icons::PLAY)]
     }
 
     fn page(
@@ -416,8 +416,8 @@ impl PanelSettings for TrackInfoPanel {
         cx.notify();
     }
 
-    fn pages(&self) -> &'static [&'static str] {
-        &["Layout"]
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Layout", icons::ALIGN_LEFT)]
     }
 
     fn page(
@@ -616,8 +616,8 @@ impl PanelSettings for VolumePanel {
         cx.notify();
     }
 
-    fn pages(&self) -> &'static [&'static str] {
-        &["Layout"]
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Layout", icons::ALIGN_LEFT)]
     }
 
     fn page(
@@ -887,8 +887,8 @@ impl PanelSettings for SeekStripPanel {
         cx.notify();
     }
 
-    fn pages(&self) -> &'static [&'static str] {
-        &["Clocks"]
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Clocks", icons::CLOCK)]
     }
 
     fn page(

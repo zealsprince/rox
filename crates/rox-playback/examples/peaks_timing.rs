@@ -49,7 +49,7 @@ fn probe_scan() {
             failed += 1;
             println!("FAIL {}: probe: {e}", path.display());
         }
-        if total % 1000 == 0 {
+        if total.is_multiple_of(1000) {
             eprintln!("... {total} probed, {failed} failed");
         }
     }

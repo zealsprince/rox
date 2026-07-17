@@ -31,6 +31,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             album        TEXT NOT NULL,
             genre        TEXT NOT NULL,
             year         INTEGER NOT NULL,
+            disc_no      INTEGER NOT NULL DEFAULT 0,
             track_no     INTEGER NOT NULL,
             duration_ms  INTEGER NOT NULL,
             codec        TEXT NOT NULL DEFAULT '',
@@ -61,6 +62,15 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
              UPDATE tracks SET mtime = 0;",
         )?;
     }
+    // And for a library from before the disc number.
+    let mut stmt =
+        conn.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name = 'disc_no'")?;
+    if !stmt.exists([])? {
+        conn.execute_batch(
+            "ALTER TABLE tracks ADD COLUMN disc_no INTEGER NOT NULL DEFAULT 0;
+             UPDATE tracks SET mtime = 0;",
+        )?;
+    }
     Ok(())
 }
 
@@ -77,14 +87,15 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
     {
         let mut stmt = tx.prepare_cached(
             "INSERT INTO tracks
-             (path, title, artist, album_artist, album, genre, year, track_no,
+             (path, title, artist, album_artist, album, genre, year, disc_no, track_no,
               duration_ms, codec, bitrate, size, mtime)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT (source, path) DO UPDATE SET
                 title = excluded.title, artist = excluded.artist,
                 album_artist = excluded.album_artist,
                 album = excluded.album, genre = excluded.genre,
-                year = excluded.year, track_no = excluded.track_no,
+                year = excluded.year, disc_no = excluded.disc_no,
+                track_no = excluded.track_no,
                 duration_ms = excluded.duration_ms, codec = excluded.codec,
                 bitrate = excluded.bitrate, size = excluded.size,
                 mtime = excluded.mtime",
@@ -98,6 +109,7 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 r.album,
                 r.genre,
                 r.year,
+                r.disc_no,
                 r.track_no,
                 r.duration_ms,
                 r.codec,
@@ -278,11 +290,11 @@ pub fn scan_range(
     conn: &Connection,
     lo: i64,
     hi: i64,
-    mut sink: impl FnMut(i64, &str, &str, &str, &str, &str, u16, u16, u32, &str, u16),
+    mut sink: impl FnMut(i64, &str, &str, &str, &str, &str, u16, u16, u16, u32, &str, u16),
 ) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, title, artist, album_artist, album, genre, year, track_no, duration_ms,
-                codec, bitrate
+        "SELECT id, title, artist, album_artist, album, genre, year, disc_no, track_no,
+                duration_ms, codec, bitrate
          FROM tracks WHERE id > ?1 AND id <= ?2 ORDER BY id",
     )?;
     let mut rows = stmt.query(rusqlite::params![lo, hi])?;
@@ -296,9 +308,10 @@ pub fn scan_range(
             row.get_ref(5)?.as_str().unwrap_or(""),
             row.get::<_, i64>(6)? as u16,
             row.get::<_, i64>(7)? as u16,
-            row.get::<_, i64>(8)? as u32,
-            row.get_ref(9)?.as_str().unwrap_or(""),
-            row.get::<_, i64>(10)? as u16,
+            row.get::<_, i64>(8)? as u16,
+            row.get::<_, i64>(9)? as u32,
+            row.get_ref(10)?.as_str().unwrap_or(""),
+            row.get::<_, i64>(11)? as u16,
         );
     }
     Ok(())
@@ -317,6 +330,7 @@ mod tests {
             album: album.into(),
             genre: String::new(),
             year: 0,
+            disc_no: 0,
             track_no: 0,
             duration_ms: 0,
             codec: String::new(),

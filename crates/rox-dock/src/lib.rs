@@ -2,6 +2,29 @@
 // upstream: crate-internal imports now go through the gpui_component
 // dependency, rust-i18n strings are inlined, and the action namespaces are
 // renamed so they don't collide with the ones gpui_component::init registers.
+
+// This is upstream source, kept as close to it as possible so re-vendoring
+// stays a clean diff. We don't lint gpui-component's style choices.
+#![allow(
+    clippy::bool_assert_comparison,
+    clippy::collapsible_if,
+    clippy::get_first,
+    clippy::into_iter_on_ref,
+    clippy::let_unit_value,
+    clippy::module_inception,
+    clippy::needless_borrow,
+    clippy::needless_return,
+    clippy::new_without_default,
+    clippy::op_ref,
+    clippy::question_mark,
+    clippy::redundant_pattern_matching,
+    clippy::single_match,
+    clippy::type_complexity,
+    clippy::unnecessary_map_or,
+    clippy::unused_unit,
+    clippy::unwrap_or_default
+)]
+
 mod dock;
 mod invalid_panel;
 mod panel;

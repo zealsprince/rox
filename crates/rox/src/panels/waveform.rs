@@ -302,6 +302,7 @@ fn placeholder_bar(i: usize, count: usize, t: f32, max_bar: f32) -> f32 {
 /// A shape's bar `i` of `count`: top and bottom in strip-local y, and the
 /// bar's color. `x_mid` and `w` place the bar against the shape's playhead
 /// for the played/ghost split.
+#[allow(clippy::too_many_arguments)]
 fn sample(
     shape: &Shape,
     i: usize,
@@ -350,6 +351,7 @@ fn sample(
 /// instead of popping. Each shape that has a playhead draws it, the
 /// retiring one fading out as the incoming one fades in; the scrobble
 /// marker, when asked for, rides the same fade.
+#[allow(clippy::too_many_arguments)]
 fn paint_morph(
     from: &Shape,
     to: &Shape,
@@ -486,8 +488,8 @@ impl PanelSettings for WaveformPanel {
         cx.notify();
     }
 
-    fn pages(&self) -> &'static [&'static str] {
-        &["Display"]
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Display", icons::EYE)]
     }
 
     fn page(
@@ -679,6 +681,12 @@ impl WaveformPanel {
         // A played-out queue counts as nothing playing: the strip clears
         // instead of sitting there fully lit.
         let now = player.now_playing().filter(|_| !player.queue_ended());
+        // The engine's position clock blinks off for a moment between
+        // tracks and while a fresh queue opens, with the session very much
+        // alive (the backdrop holds through the same blink). Snapping blank
+        // here would throw away the shape mid-switch, so the next track
+        // could only fade in from nothing.
+        let between_tracks = now.is_none() && player.is_active() && !player.queue_ended();
 
         // Kick a decode when the playing track changes.
         if let Some(now) = &now {
@@ -686,10 +694,12 @@ impl WaveformPanel {
                 let path = now.path.clone();
                 self.start_decode(path, cx);
             }
-            // The position clock only moves while a session runs, and pause
-            // and track skips do not notify; poll by frame like the player
-            // bar does (the morphs and the generating animation ride these
-            // frames too). No track up: fully parked.
+        }
+        // The position clock only moves while a session runs, and pause
+        // and track skips do not notify; poll by frame like the player
+        // bar does (the morphs and the generating animation ride these
+        // frames too, and through the blink). No track up: fully parked.
+        if now.is_some() || between_tracks {
             window.request_animation_frame();
         }
 
@@ -700,6 +710,10 @@ impl WaveformPanel {
             .flatten();
 
         let body = match (&now, &self.peaks) {
+            // Hold the strip through the blink: whatever it shows stays up,
+            // and the next track's shape morphs from it instead of popping
+            // in from blank.
+            (None, _) if between_tracks => self.strip(marker).into_any_element(),
             (None, _) | (Some(_), Peaks::None) => {
                 // Nothing on screen to morph from later; snap the strip
                 // empty so the next track fades in from blank.

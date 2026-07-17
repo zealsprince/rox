@@ -366,10 +366,10 @@ fn to_hex(c: Rgba) -> String {
 impl Palette {
     /// The palette as the settings file records it: every role as
     /// `#rrggbb`, in role-name keys. The same shape a shared theme is.
-    pub fn to_map(&self) -> BTreeMap<String, String> {
+    pub fn to_map(self) -> BTreeMap<String, String> {
         ROLES
             .iter()
-            .map(|role| (role.name.to_string(), to_hex((role.get)(self))))
+            .map(|role| (role.name.to_string(), to_hex((role.get)(&self))))
             .collect()
     }
 
@@ -1028,8 +1028,10 @@ mod tests {
     /// colors drift a little on every restart.
     #[test]
     fn map_roundtrips() {
-        let mut palette = Palette::default();
-        palette.accent = rgb(0x336699);
+        let palette = Palette {
+            accent: rgb(0x336699),
+            ..Default::default()
+        };
         let back = Palette::from_map(&palette.to_map());
         for role in ROLES {
             let (a, b) = ((role.get)(&palette), (role.get)(&back));

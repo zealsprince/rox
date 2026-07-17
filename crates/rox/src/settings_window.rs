@@ -37,13 +37,13 @@ use crate::panel::{self, AppState, ScrubState};
 use crate::panel_settings;
 use crate::panels::library::{Library, LibraryEvent};
 use crate::settings::{data_dir, settings_path, Settings};
+use crate::settings_ui::{
+    self, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
+};
 use crate::thumbs::Thumbs;
 use crate::workspace::Workspace;
 use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
 use rox_library::store::Stats;
-use crate::settings_ui::{
-    self, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
-};
 
 /// The folder table's fixed columns: the rollup numbers and the remove
 /// control, the last sized to [`icon_button`]'s footprint so the header
@@ -118,13 +118,13 @@ enum Page {
     Storage,
 }
 
-const PAGES: &[(Page, &str)] = &[
-    (Page::Appearance, "Appearance"),
-    (Page::Behavior, "Behavior"),
-    (Page::Layout, "Layout"),
-    (Page::Library, "Library"),
-    (Page::Scrobbling, "Scrobbling"),
-    (Page::Storage, "Storage"),
+const PAGES: &[(Page, &str, &str)] = &[
+    (Page::Appearance, "Appearance", icons::PALETTE),
+    (Page::Behavior, "Behavior", icons::SLIDERS),
+    (Page::Layout, "Layout", icons::LAYOUT_DASHBOARD),
+    (Page::Library, "Library", icons::LIST_MUSIC),
+    (Page::Scrobbling, "Scrobbling", icons::RADIO),
+    (Page::Storage, "Storage", icons::DATABASE),
 ];
 
 /// The storage page's measurements, taken entering the page and after a
@@ -531,7 +531,7 @@ impl SettingsWindow {
         let mut body = div().flex().flex_col().gap(tokens::SPACE_XS).child(
             div().text_xs().text_color(palette::text_muted()).child(
                 "the window's panels as they sit in splits and tab groups; \
-                 a row's gear opens that panel's settings",
+                 a row's buttons opens that panel's settings",
             ),
         );
         match self.workspace.upgrade() {
@@ -571,15 +571,11 @@ impl SettingsWindow {
                 !live,
                 cx.listener(|this, _, _, cx| this.export_layout(cx)),
             ));
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section(
-                "composition",
-                Some(controls.into_any_element()),
-                body,
-            ))
+        div().flex().flex_col().gap(SECTION_GAP).child(section(
+            "composition",
+            Some(controls.into_any_element()),
+            body,
+        ))
     }
 
     /// One node of the dock into rows. Walks the live stack and tab
@@ -722,8 +718,7 @@ impl SettingsWindow {
         // A build with its own api identity connects in one click; only
         // one without asks for the user's pair.
         let builtin = lastfm::has_builtin_keys();
-        let keys_ready =
-            builtin || (!config.api_key.is_empty() && !config.api_secret.is_empty());
+        let keys_ready = builtin || (!config.api_key.is_empty() && !config.api_secret.is_empty());
 
         // The connect strip: where the connection stands, and the one
         // action that moves it along.
@@ -777,16 +772,19 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
-            .child(div().text_xs().text_color(palette::text_muted()).child(
-                if builtin {
-                    "connect your last.fm account: authorize rox in the browser \
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(if builtin {
+                        "connect your last.fm account: authorize rox in the browser \
                      and played tracks scrobble to it"
-                } else {
-                    "this build ships no api identity, so scrobbling needs your own \
+                    } else {
+                        "this build ships no api identity, so scrobbling needs your own \
                      api account (last.fm/api/account/create); paste its key and \
                      shared secret, then connect"
-                },
-            ))
+                    }),
+            )
             .when(!builtin, |d| {
                 d.child(panel::setting_row(
                     "api key",
@@ -1285,9 +1283,10 @@ impl Render for SettingsWindow {
         let columns = grid_columns(window);
 
         let sidebar = sidebar()
-            .children(PAGES.iter().map(|&(page, label)| {
+            .children(PAGES.iter().map(|&(page, label, icon)| {
                 settings_ui::nav_item(
                     label,
+                    icon,
                     self.page == page,
                     // Entering Storage measures the files fresh, so the
                     // numbers are current without a per-frame stat.

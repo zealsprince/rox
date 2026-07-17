@@ -226,60 +226,6 @@ fn extract_seed(small: &RgbaImage) -> palette::Seed {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui::rgb;
-
-    fn hue_of(color: Rgba) -> f32 {
-        palette::rgba_to_oklch(color).2
-    }
-
-    fn hue_dist(a: f32, b: f32) -> f32 {
-        let d = (a - b).rem_euclid(std::f32::consts::TAU);
-        d.min(std::f32::consts::TAU - d)
-    }
-
-    /// The Polychrome case: a mostly white cover with a red mass and a
-    /// smaller blue one must read bright and carry both colors, red
-    /// first.
-    #[test]
-    fn bright_cover_seeds_both_accents() {
-        let small = RgbaImage::from_fn(100, 100, |x, _| {
-            image::Rgba(match x {
-                0..20 => [255, 0, 0, 255],
-                20..30 => [0, 0, 255, 255],
-                _ => [255, 255, 255, 255],
-            })
-        });
-        let seed = extract_seed(&small);
-        assert!(seed.lightness > 0.7, "read dark: {}", seed.lightness);
-        let primary = seed.primary.expect("red should win the vote");
-        let secondary = seed.secondary.expect("blue should place");
-        assert!(hue_dist(hue_of(primary), hue_of(rgb(0xff0000))) < 0.3);
-        assert!(hue_dist(hue_of(secondary), hue_of(rgb(0x0000ff))) < 0.3);
-    }
-
-    /// A dark cover with one vivid element seeds that element alone and
-    /// reads dark; the gray mass votes for no hue but counts toward the
-    /// lightness.
-    #[test]
-    fn dark_cover_seeds_its_one_color() {
-        let small = RgbaImage::from_fn(100, 100, |x, _| {
-            image::Rgba(if x < 10 {
-                [0, 255, 0, 255]
-            } else {
-                [20, 20, 20, 255]
-            })
-        });
-        let seed = extract_seed(&small);
-        assert!(seed.lightness < 0.5, "read bright: {}", seed.lightness);
-        let primary = seed.primary.expect("green should win the vote");
-        assert!(hue_dist(hue_of(primary), hue_of(rgb(0x00ff00))) < 0.3);
-        assert!(seed.secondary.is_none(), "found a second color in noise");
-    }
-}
-
 /// A window root's handle on the backdrop: cross-fades from bake to bake
 /// and retires abandoned textures from that window's atlas. Each window
 /// that paints the layer keeps its own.
@@ -384,5 +330,59 @@ impl WindowBackdrop {
                 .child(div().absolute().inset_0().bg(palette::backdrop_wash()))
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::rgb;
+
+    fn hue_of(color: Rgba) -> f32 {
+        palette::rgba_to_oklch(color).2
+    }
+
+    fn hue_dist(a: f32, b: f32) -> f32 {
+        let d = (a - b).rem_euclid(std::f32::consts::TAU);
+        d.min(std::f32::consts::TAU - d)
+    }
+
+    /// The Polychrome case: a mostly white cover with a red mass and a
+    /// smaller blue one must read bright and carry both colors, red
+    /// first.
+    #[test]
+    fn bright_cover_seeds_both_accents() {
+        let small = RgbaImage::from_fn(100, 100, |x, _| {
+            image::Rgba(match x {
+                0..20 => [255, 0, 0, 255],
+                20..30 => [0, 0, 255, 255],
+                _ => [255, 255, 255, 255],
+            })
+        });
+        let seed = extract_seed(&small);
+        assert!(seed.lightness > 0.7, "read dark: {}", seed.lightness);
+        let primary = seed.primary.expect("red should win the vote");
+        let secondary = seed.secondary.expect("blue should place");
+        assert!(hue_dist(hue_of(primary), hue_of(rgb(0xff0000))) < 0.3);
+        assert!(hue_dist(hue_of(secondary), hue_of(rgb(0x0000ff))) < 0.3);
+    }
+
+    /// A dark cover with one vivid element seeds that element alone and
+    /// reads dark; the gray mass votes for no hue but counts toward the
+    /// lightness.
+    #[test]
+    fn dark_cover_seeds_its_one_color() {
+        let small = RgbaImage::from_fn(100, 100, |x, _| {
+            image::Rgba(if x < 10 {
+                [0, 255, 0, 255]
+            } else {
+                [20, 20, 20, 255]
+            })
+        });
+        let seed = extract_seed(&small);
+        assert!(seed.lightness < 0.5, "read bright: {}", seed.lightness);
+        let primary = seed.primary.expect("green should win the vote");
+        assert!(hue_dist(hue_of(primary), hue_of(rgb(0x00ff00))) < 0.3);
+        assert!(seed.secondary.is_none(), "found a second color in noise");
     }
 }

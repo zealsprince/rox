@@ -74,7 +74,7 @@ fn folder_art(path: &Path) -> Option<(Vec<u8>, String)> {
         else {
             continue;
         };
-        if best.as_ref().map_or(true, |(r, _)| rank < *r) {
+        if best.as_ref().is_none_or(|(r, _)| rank < *r) {
             best = Some((rank, candidate));
         }
     }

@@ -76,13 +76,16 @@ impl Slide {
     }
 }
 
+/// Loaded cover art with its aspect ratio; None means the track has no art.
+type LoadedArt = Option<(Arc<Image>, f32)>;
+
 pub struct CoverArtPanel {
     state: AppState,
     config: CoverConfig,
     /// The loaded art keyed by the track it belongs to, with its aspect
     /// ratio; None inside means the track has no art. Kept so the pump's
     /// per-frame notifies never re-read the file.
-    art: Option<(PathBuf, Option<(Arc<Image>, f32)>)>,
+    art: Option<(PathBuf, LoadedArt)>,
     /// The track a load is running for, so a render can tell "already
     /// fetching" from "needs a fetch".
     pending: Option<PathBuf>,
@@ -259,8 +262,8 @@ impl PanelSettings for CoverArtPanel {
         cx.notify();
     }
 
-    fn pages(&self) -> &'static [&'static str] {
-        &["Content"]
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Content", icons::IMAGE)]
     }
 
     fn page(

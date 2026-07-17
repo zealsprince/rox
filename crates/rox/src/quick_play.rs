@@ -8,20 +8,23 @@
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, uniform_list, App, Context, DismissEvent, Div, Entity, EventEmitter,
+    div, prelude::*, px, svg, uniform_list, App, Context, DismissEvent, Div, Entity, EventEmitter,
     FocusHandle, Focusable, KeyDownEvent, MouseButton, ScrollStrategy, SharedString, Subscription,
     UniformListScrollHandle, Window,
 };
 use gpui_component::input::{MoveDown, MovePageDown, MovePageUp, MoveUp};
 
+use crate::assets::icons;
 use crate::design::{palette, tokens};
-use crate::panel::AppState;
+use crate::panel::{self, AppState};
 use crate::panels::library::{fmt_ms, LibraryEvent, QUEUE_CAP};
 use crate::search::{SearchBox, SearchEvent};
+use crate::settings::{QuickPlayConfig, Settings};
 
-/// One result row's height; the list is a uniform_list, so every row
-/// must agree on it.
+/// One result row's height; the list is a uniform_list, so every row must
+/// agree on it. Comfortable rows run taller.
 const ROW_H: f32 = 30.;
+const ROW_H_COMFORTABLE: f32 = 40.;
 
 /// How many rows show before the list scrolls.
 const VISIBLE_ROWS: usize = 14;
@@ -43,6 +46,11 @@ pub struct QuickPlay {
     scroll: UniformListScrollHandle,
     /// A failed play, shown until the next query change.
     error: Option<SharedString>,
+    /// The result list's appearance knobs, mirrored from settings and
+    /// written back on every edit.
+    config: QuickPlayConfig,
+    /// Whether the inline config panel is open, beside the search box.
+    show_config: bool,
     _input_events: Subscription,
     _library_changed: Subscription,
 }
@@ -73,11 +81,36 @@ impl QuickPlay {
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             error: None,
+            config: Settings::load().quick_play,
+            show_config: false,
             _input_events,
             _library_changed,
         };
         this.refresh(cx);
         this
+    }
+
+    /// Each result row's height, taller when comfortable rows are on.
+    fn row_h(&self) -> f32 {
+        if self.config.comfortable {
+            ROW_H_COMFORTABLE
+        } else {
+            ROW_H
+        }
+    }
+
+    /// Flip the config panel open or shut.
+    fn toggle_config(&mut self, cx: &mut Context<Self>) {
+        self.show_config = !self.show_config;
+        cx.notify();
+    }
+
+    /// Change one config knob, persist it, repaint.
+    fn edit_config(&mut self, edit: impl FnOnce(&mut QuickPlayConfig), cx: &mut Context<Self>) {
+        edit(&mut self.config);
+        let config = self.config.clone();
+        Settings::update(move |s| s.quick_play = config);
+        cx.notify();
     }
 
     /// Recompute the hits for the current query and reset the highlight
@@ -196,10 +229,15 @@ impl QuickPlay {
                 })
                 .collect()
         };
+        let row_h = self.row_h();
         rows.into_iter()
             .map(|(ix, title, sub, time)| {
                 div()
-                    .h(px(ROW_H))
+                    // Fills the list's width so a long title truncates
+                    // inside the modal instead of running the row wide, and
+                    // the duration stays pinned to the right edge.
+                    .w_full()
+                    .h(px(row_h))
                     .px(tokens::SPACE_SM)
                     .flex()
                     .flex_row()
@@ -214,29 +252,108 @@ impl QuickPlay {
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| this.play(ix, cx)),
                     )
-                    .child(div().flex_1().truncate().child(title))
-                    .child(
-                        div()
-                            .flex_1()
-                            .truncate()
-                            .text_color(palette::text_secondary())
-                            .child(sub),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(palette::text_muted())
-                            .child(time),
-                    )
+                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    .when(self.config.show_subtitle, |d| {
+                        d.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(palette::text_secondary())
+                                .child(sub),
+                        )
+                    })
+                    .when(self.config.show_duration, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_color(palette::text_muted())
+                                .child(time),
+                        )
+                    })
             })
             .collect()
+    }
+
+    /// The settings button beside the search box: a sliders glyph that
+    /// opens the config panel, tinted while it is open.
+    fn config_button(&self, cx: &mut Context<Self>) -> Div {
+        let on = self.show_config;
+        div()
+            .flex_none()
+            .p(tokens::SPACE_XS)
+            .rounded(tokens::RADIUS)
+            .cursor_pointer()
+            .when(on, |d| d.bg(palette::bg_control_active()))
+            .when(!on, |d| d.hover(|d| d.bg(palette::bg_control())))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.toggle_config(cx)),
+            )
+            .child(
+                svg()
+                    .path(icons::SLIDERS)
+                    .size(px(16.))
+                    .text_color(if on {
+                        palette::text()
+                    } else {
+                        palette::text_muted()
+                    }),
+            )
+    }
+
+    /// The inline config panel that drops under the search row when the
+    /// settings button is on: the modal's appearance knobs, each writing
+    /// straight through to settings.
+    fn config_panel(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_SM)
+            .pt(tokens::SPACE_SM)
+            .mt(tokens::SPACE_SM)
+            .border_t_1()
+            .border_color(palette::border())
+            .child(panel::setting_row(
+                "subtitle",
+                Some("show the artist and album under each result"),
+                panel::toggle(
+                    self.config.show_subtitle,
+                    |this: &mut Self, on, cx| {
+                        this.edit_config(|c| c.show_subtitle = on, cx);
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "duration",
+                Some("show each result's length on the right"),
+                panel::toggle(
+                    self.config.show_duration,
+                    |this: &mut Self, on, cx| {
+                        this.edit_config(|c| c.show_duration = on, cx);
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "comfortable rows",
+                Some("give each result more height"),
+                panel::toggle(
+                    self.config.comfortable,
+                    |this: &mut Self, on, cx| {
+                        this.edit_config(|c| c.comfortable = on, cx);
+                    },
+                    cx,
+                ),
+            ))
     }
 }
 
 impl Render for QuickPlay {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let len = self.hits.len();
-        let list_h = px(ROW_H * len.clamp(1, VISIBLE_ROWS) as f32);
+        let list_h = px(self.row_h() * len.clamp(1, VISIBLE_ROWS) as f32);
         let this = cx.entity().downgrade();
         let list = if len == 0 {
             div()
@@ -301,7 +418,21 @@ impl Render for QuickPlay {
                     .p(tokens::SPACE_SM)
                     .border_b_1()
                     .border_color(palette::border())
-                    .child(self.search.update(cx, |search, cx| search.element(cx))),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(tokens::SPACE_SM)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(self.search.update(cx, |search, cx| search.element(cx))),
+                            )
+                            .child(self.config_button(cx)),
+                    )
+                    .when(self.show_config, |d| d.child(self.config_panel(cx))),
             )
             .child(list)
             .when_some(self.error.clone(), |d, error| {

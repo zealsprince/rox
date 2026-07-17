@@ -1,7 +1,7 @@
 //! The album grid panel: the catalog as a wall of cover tiles, NekoRoX's
 //! grid gallery. One tile per album in the library's canonical order,
-//! square, the last column bleeding off the panel edge like the reference
-//! theme's grid, textures through the shared artwork service.
+//! square, the columns splitting the panel width evenly so the wall runs
+//! edge to edge, textures through the shared artwork service.
 //! Rows virtualize through a uniform_list, so a huge library costs only
 //! the tiles on screen. Clicking a tile publishes the album's tracks on
 //! the shared selection; a double click queues the album on the player.
@@ -10,6 +10,7 @@
 //! the library's table: per the workspace rule, browsing surfaces are
 //! panels of their own, never library view modes.
 
+use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,10 +18,10 @@ use std::time::Instant;
 
 use gpui::{
     canvas, div, img, prelude::*, px, svg, uniform_list, AnyElement, App, Context, Div, Entity,
-    EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
-    Pixels, SharedString, Subscription, UniformListScrollHandle, WeakEntity, Window,
+    EventEmitter, FocusHandle, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
+    ObjectFit, Pixels, SharedString, Subscription, UniformListScrollHandle, WeakEntity, Window,
 };
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -44,8 +45,12 @@ use crate::thumbs::Thumb;
 const TILE_MIN: f32 = 96.;
 const TILE_MAX: f32 = 256.;
 
-/// The tile rounding knob's ceiling, the panel frame sliders' scale.
-const TILE_ROUNDING_MAX: f32 = 24.;
+/// The tile rounding knob's ceiling, in percent of circular: 100 rounds
+/// a square tile all the way into a circle.
+const TILE_ROUNDING_MAX: f32 = 100.;
+
+/// The tile gap knob's ceiling, the panel frame sliders' scale.
+const TILE_GAP_MAX: f32 = 24.;
 
 fn default_tile() -> f32 {
     192.
@@ -77,10 +82,13 @@ pub struct GridConfig {
     /// Glide there instead of jumping.
     #[serde(default)]
     pub smooth_follow: bool,
-    /// Each cover tile's corner radius, in px; zero keeps the wall
-    /// edge to edge.
+    /// Each cover tile's corner rounding, in percent of circular: zero
+    /// keeps the wall square, 100 rounds each cover into a circle.
     #[serde(default)]
     pub rounding: f32,
+    /// The space between tiles, in px; zero keeps the wall seamless.
+    #[serde(default)]
+    pub gap: f32,
     /// The panel's palette override.
     #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
     pub theme: PanelTheme,
@@ -96,6 +104,7 @@ impl Default for GridConfig {
             follow_playing: false,
             smooth_follow: false,
             rounding: 0.,
+            gap: 0.,
             theme: PanelTheme::default(),
         }
     }
@@ -114,6 +123,10 @@ struct Cell {
 /// measured a width.
 const FALLBACK_COLS: usize = 4;
 
+/// Rows of covers asked for past each edge of the viewport, so a scroll
+/// reveals loaded tiles instead of placeholders.
+const PREFETCH_ROWS: usize = 2;
+
 pub struct GridPanel {
     state: AppState,
     config: GridConfig,
@@ -127,8 +140,11 @@ pub struct GridPanel {
     /// The query editor, the shared search box; `config.query` mirrors
     /// its value via change events.
     search: Entity<SearchBox>,
-    /// The clicked album, the accent outline and the published selection.
-    selected: Option<usize>,
+    /// The clicked albums, the accent outlines and the published
+    /// selection; grows by the library's click rules, per tile.
+    selected: HashSet<usize>,
+    /// Where a shift-extend grows from: the last plain or toggle click.
+    anchor: Option<usize>,
     /// The tile under the pointer, wearing the label overlay.
     hovered: Option<usize>,
     /// The width the grid last laid out for. The dock hosts panels cached,
@@ -151,6 +167,8 @@ pub struct GridPanel {
     tile_scrub: ScrubState,
     /// The tile rounding slider's scrub strip, same window.
     rounding_scrub: ScrubState,
+    /// The tile gap slider's scrub strip, same window.
+    gap_scrub: ScrubState,
     /// A failed play, shown in a strip until the next one lands.
     error: Option<SharedString>,
     focus: FocusHandle,
@@ -196,7 +214,8 @@ impl GridPanel {
             view: Arc::new(Vec::new()),
             cells: Vec::new(),
             search,
-            selected: None,
+            selected: HashSet::new(),
+            anchor: None,
             hovered: None,
             width: px(0.),
             scroll: UniformListScrollHandle::new(),
@@ -206,6 +225,7 @@ impl GridPanel {
             playing_path: None,
             tile_scrub: ScrubState::default(),
             rounding_scrub: ScrubState::default(),
+            gap_scrub: ScrubState::default(),
             error: None,
             focus: cx.focus_handle(),
             tab_panel: None,
@@ -235,41 +255,50 @@ impl GridPanel {
         }
     }
 
+    /// The playing track's album in the current view, when it holds one.
+    fn playing_cell(&self, cx: &App) -> Option<usize> {
+        let path = self.playing_path.as_ref()?;
+        let library = self.state.library.read(cx);
+        let id = library.id_for(path)?;
+        let projection = library.projection()?;
+        let view_ix = self
+            .view
+            .iter()
+            .position(|&row| projection.db_id[row as usize] == id)?;
+        // Cells are contiguous runs over the view; the last one
+        // starting at or before the hit holds it.
+        Some(
+            self.cells
+                .partition_point(|cell| cell.start <= view_ix)
+                .saturating_sub(1),
+        )
+    }
+
     /// Scroll the playing track's album into view: a glide when smooth is
     /// on, a centered jump otherwise.
     fn follow_playing(&mut self, cx: &mut Context<Self>) {
-        let row = {
-            let Some(path) = &self.playing_path else {
-                return;
-            };
-            let library = self.state.library.read(cx);
-            let Some(id) = library.id_for(path) else {
-                return;
-            };
-            let Some(projection) = library.projection() else {
-                return;
-            };
-            let Some(view_ix) = self
-                .view
-                .iter()
-                .position(|&row| projection.db_id[row as usize] == id)
-            else {
-                return;
-            };
-            // Cells are contiguous runs over the view; the last one
-            // starting at or before the hit holds it.
-            let cell_ix = self
-                .cells
-                .partition_point(|cell| cell.start <= view_ix)
-                .saturating_sub(1);
-            cell_ix / self.cols()
+        let Some(cell_ix) = self.playing_cell(cx) else {
+            return;
         };
         // Both modes head for the same row through the per-frame stepping
         // in `body`: the row is the stable fact, its offset depends on a
         // layout that may still be settling (a launch's first frames), so
         // even the jump re-pins until the target holds still.
-        self.glide_to = Some(row);
+        self.glide_to = Some(cell_ix / self.cols());
         cx.notify();
+    }
+
+    /// The menu's jump: select the playing track's album and head there
+    /// with the panel's configured motion. The automatic follow never
+    /// touches the selection; this deliberate move does.
+    fn jump_to_playing(&mut self, cx: &mut Context<Self>) {
+        let Some(cell_ix) = self.playing_cell(cx) else {
+            return;
+        };
+        self.selected = HashSet::from([cell_ix]);
+        self.anchor = Some(cell_ix);
+        self.publish_selection(cx);
+        self.follow_playing(cx);
     }
 
     /// Recompute the view and its album runs: the canonical order, cut to
@@ -281,7 +310,8 @@ impl GridPanel {
     /// stays one tile.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.cells.clear();
-        self.selected = None;
+        self.selected.clear();
+        self.anchor = None;
         self.hovered = None;
         self.view = {
             let library = self.state.library.read(cx);
@@ -407,19 +437,51 @@ impl GridPanel {
         path
     }
 
-    /// Publish the clicked album's tracks on the shared selection.
-    fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
-        self.selected = Some(ix);
-        let ids = self.ids_for(ix, cx);
+    /// Put a click on an album tile: plain selects just it, shift extends
+    /// from the anchor, cmd (ctrl elsewhere) toggles - the library's
+    /// click rules, by tile. Publishes the selection either way.
+    fn select(&mut self, ix: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
+        if modifiers.shift {
+            let anchor = self.anchor.unwrap_or(ix);
+            let (lo, hi) = (anchor.min(ix), anchor.max(ix));
+            self.selected = (lo..=hi).collect();
+        } else if modifiers.secondary() {
+            if !self.selected.insert(ix) {
+                self.selected.remove(&ix);
+            }
+            self.anchor = Some(ix);
+        } else {
+            self.selected = HashSet::from([ix]);
+            self.anchor = Some(ix);
+        }
+        self.publish_selection(cx);
+        cx.notify();
+    }
+
+    /// Resolve the selected albums to db ids in view order and publish
+    /// them on the shared selection.
+    fn publish_selection(&mut self, cx: &mut Context<Self>) {
+        let mut ixs: Vec<usize> = self.selected.iter().copied().collect();
+        ixs.sort_unstable();
+        let ids: Vec<i64> = ixs.iter().flat_map(|&ix| self.ids_for(ix, cx)).collect();
         self.state
             .selection
             .update(cx, |selection, cx| selection.set(ids, cx));
-        cx.notify();
     }
 
     /// Queue the album on the shared player.
     fn play(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let ids = self.ids_for(ix, cx);
+        self.play_many(vec![ix], cx);
+    }
+
+    /// Queue several albums on the shared player, in view order under
+    /// the queue cap.
+    fn play_many(&mut self, ixs: Vec<usize>, cx: &mut Context<Self>) {
+        let ids: Vec<i64> = ixs
+            .iter()
+            .flat_map(|&ix| self.ids_for(ix, cx))
+            .take(QUEUE_CAP)
+            .collect();
         let result = self.state.library.read(cx).paths_for(&ids);
         match result {
             Ok(paths) => {
@@ -435,21 +497,29 @@ impl GridPanel {
         }
     }
 
-    /// How many tiles share a row at the current width: enough to cover
-    /// it, the last one bleeding off the edge like the reference theme's
-    /// grid. The ceil is what keeps the size knob continuous - tiles
-    /// render at exactly the configured edge, no snapping to fit.
+    /// How many tiles share a row at the current width: enough that the
+    /// configured edge covers it. The ceil keeps the actual edge at or
+    /// under the configured one, so nothing upscales past the stored
+    /// thumbnail.
     fn cols(&self) -> usize {
         let width = f32::from(self.width);
         if width <= 0. {
             return FALLBACK_COLS;
         }
-        ((width / self.config.tile).ceil() as usize).max(1)
+        let gap = self.config.gap;
+        (((width + gap) / (self.config.tile + gap)).ceil() as usize).max(1)
     }
 
-    /// A tile's edge: exactly the configured size.
+    /// A tile's edge: the panel width split evenly over the columns with
+    /// the gaps taken out, so the last column lands on the panel edge
+    /// instead of bleeding past it.
     fn tile_side(&self) -> Pixels {
-        px(self.config.tile)
+        let width = f32::from(self.width);
+        if width <= 0. {
+            return px(self.config.tile);
+        }
+        let cols = self.cols() as f32;
+        px(((width - self.config.gap * (cols - 1.)) / cols).max(1.))
     }
 
     /// One album tile: the cover filling a square, the label overlay while
@@ -465,10 +535,12 @@ impl GridPanel {
                 .update(cx, |thumbs, cx| thumbs.get(&path, cx)),
             None => Thumb::Missing,
         };
-        // The knob's radius clips the cover itself, not just the tile's
-        // background: gpui content masks stay rectangular, so a rounded
-        // tile under a square image would paint over its own corners.
-        let radius = px(self.config.rounding);
+        // The knob is percent of circular, so the radius scales with the
+        // tile: 100 turns the square into a circle. It clips the cover
+        // itself, not just the tile's background: gpui content masks stay
+        // rectangular, so a rounded tile under a square image would paint
+        // over its own corners.
+        let radius = side * (self.config.rounding / 200.);
         let content: AnyElement = match thumb {
             Thumb::Ready(image) => img(image)
                 .size_full()
@@ -516,13 +588,13 @@ impl GridPanel {
                     if event.click_count > 1 {
                         this.play(ix, cx);
                     } else {
-                        this.select(ix, cx);
+                        this.select(ix, event.modifiers, cx);
                     }
                 }),
             )
             .child(content)
             .when(self.hovered == Some(ix), |d| d.child(self.label(ix, cx)))
-            .when(self.selected == Some(ix), |d| {
+            .when(self.selected.contains(&ix), |d| {
                 d.child(
                     div()
                         .absolute()
@@ -623,15 +695,32 @@ impl GridPanel {
         }
         let cols = self.cols();
         let side = self.tile_side();
-        range
+        let gap = px(self.config.gap);
+        let rows = range
+            .clone()
             .map(|r| {
-                let mut row = div().flex().flex_row();
+                // The bottom padding is the vertical gap; on every row so
+                // the list's heights stay uniform.
+                let mut row = div().flex().flex_row().gap(gap).pb(gap);
                 for ix in (r * cols)..((r + 1) * cols).min(self.cells.len()) {
                     row = row.child(self.tile(ix, side, cx));
                 }
                 row
             })
-            .collect()
+            .collect();
+        // Warm the margin: ask for the covers just past both edges so a
+        // scroll reveals loaded tiles. Asked after the visible tiles,
+        // which keeps those first in line for the load pool's slots.
+        let above = (range.start * cols).saturating_sub(PREFETCH_ROWS * cols)..range.start * cols;
+        let below = range.end * cols..((range.end + PREFETCH_ROWS) * cols).min(self.cells.len());
+        for ix in above.chain(below) {
+            if let Some(path) = self.art_path(ix, cx) {
+                self.state.thumbs.update(cx, |thumbs, cx| {
+                    thumbs.get(&path, cx);
+                });
+            }
+        }
+        rows
     }
 }
 
@@ -650,55 +739,16 @@ impl PanelSettings for GridPanel {
         cx.notify();
     }
 
-    fn pages(&self) -> &'static [&'static str] {
-        &["Content", "Behavior"]
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Behavior", icons::SLIDERS)]
     }
 
     fn page(
         &mut self,
-        page: &'static str,
+        _page: &'static str,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if page == "Behavior" {
-            return div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(setting_row(
-                    "follow playing",
-                    Some("scroll to the playing album whenever the track changes"),
-                    toggle(
-                        self.config.follow_playing,
-                        |this: &mut Self, on, cx| {
-                            this.config.follow_playing = on;
-                            // Catch up right away instead of waiting for
-                            // the next track change.
-                            if on {
-                                this.follow_playing(cx);
-                            }
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-                .when(self.config.follow_playing, |d| {
-                    d.child(setting_row(
-                        "smooth scrolling",
-                        Some("glide to the album instead of jumping"),
-                        toggle(
-                            self.config.smooth_follow,
-                            |this: &mut Self, on, cx| {
-                                this.config.smooth_follow = on;
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                })
-                .into_any_element();
-        }
-        let fraction = ((self.config.tile - TILE_MIN) / (TILE_MAX - TILE_MIN)).clamp(0., 1.);
         div()
             .flex()
             .flex_col()
@@ -720,19 +770,36 @@ impl PanelSettings for GridPanel {
                 ),
             ))
             .child(setting_row(
-                "tile size",
-                Some("the cover tiles' exact edge; the last column runs off the panel side"),
-                settings_ui::slider_labeled(
-                    &self.tile_scrub,
-                    fraction,
-                    format!("{}px", self.config.tile.round() as u32),
-                    |this: &mut Self, fraction, cx| {
-                        this.config.tile = TILE_MIN + fraction * (TILE_MAX - TILE_MIN);
+                "follow playing",
+                Some("scroll to the playing album whenever the track changes"),
+                toggle(
+                    self.config.follow_playing,
+                    |this: &mut Self, on, cx| {
+                        this.config.follow_playing = on;
+                        // Catch up right away instead of waiting for
+                        // the next track change.
+                        if on {
+                            this.follow_playing(cx);
+                        }
                         cx.notify();
                     },
                     cx,
                 ),
             ))
+            .when(self.config.follow_playing, |d| {
+                d.child(setting_row(
+                    "smooth scrolling",
+                    Some("glide to the album instead of jumping"),
+                    toggle(
+                        self.config.smooth_follow,
+                        |this: &mut Self, on, cx| {
+                            this.config.smooth_follow = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+            })
             .into_any_element()
     }
 
@@ -745,30 +812,64 @@ impl PanelSettings for GridPanel {
         cx.notify();
     }
 
-    /// The grid's own appearance rows on the shared page: the tiles' art
-    /// rounding, a look knob that lives on the config rather than the
-    /// theme because it shapes the covers, not the panel frame.
+    /// The grid's own appearance rows on the shared page: the tiles'
+    /// size, gap, and art rounding, look knobs that live on the config
+    /// rather than the theme because they shape the covers, not the
+    /// panel frame.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tile_fraction = ((self.config.tile - TILE_MIN) / (TILE_MAX - TILE_MIN)).clamp(0., 1.);
         let rounding = self.config.rounding;
-        let fraction = (rounding / TILE_ROUNDING_MAX).clamp(0., 1.);
+        let rounding_fraction = (rounding / TILE_ROUNDING_MAX).clamp(0., 1.);
         Some(
             settings_ui::section(
                 "tiles",
                 None,
-                setting_row(
-                    "art rounding",
-                    Some("round each cover tile's corners"),
-                    settings_ui::slider_labeled(
-                        &self.rounding_scrub,
-                        fraction,
-                        format!("{:.0} px", rounding),
-                        |this: &mut Self, fraction, cx| {
-                            this.config.rounding = (fraction * TILE_ROUNDING_MAX).round();
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(setting_row(
+                        "tile size",
+                        Some("the cover tiles' widest edge; columns split the panel width evenly"),
+                        settings_ui::slider_labeled(
+                            &self.tile_scrub,
+                            tile_fraction,
+                            format!("{}px", self.config.tile.round() as u32),
+                            |this: &mut Self, fraction, cx| {
+                                this.config.tile = TILE_MIN + fraction * (TILE_MAX - TILE_MIN);
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(setting_row(
+                        "gap",
+                        Some("space between the covers; zero keeps the wall seamless"),
+                        settings_ui::slider_labeled(
+                            &self.gap_scrub,
+                            (self.config.gap / TILE_GAP_MAX).clamp(0., 1.),
+                            format!("{:.0} px", self.config.gap),
+                            |this: &mut Self, fraction, cx| {
+                                this.config.gap = (fraction * TILE_GAP_MAX).round();
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(setting_row(
+                        "art rounding",
+                        Some("round each cover's corners; 100% is a circle"),
+                        settings_ui::slider_labeled(
+                            &self.rounding_scrub,
+                            rounding_fraction,
+                            format!("{:.0} %", rounding),
+                            |this: &mut Self, fraction, cx| {
+                                this.config.rounding = (fraction * TILE_ROUNDING_MAX).round();
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )),
             )
             .into_any_element(),
         )
@@ -816,6 +917,13 @@ impl Panel for GridPanel {
         false
     }
 
+    /// The wall serves tile context menus over the whole body, so the
+    /// tab panel's body right-click stays out; the panel dropdown rides
+    /// along after the play items, the library's arrangement.
+    fn content_context_menu(&self, _cx: &App) -> bool {
+        true
+    }
+
     /// The layout dump carries the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
@@ -848,6 +956,18 @@ impl Panel for GridPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
+        let weak = cx.entity().downgrade();
+        let menu = menu
+            .item(
+                PopupMenuItem::new("Jump to Playing")
+                    .icon(Icon::default().path(icons::DISC))
+                    .on_click(move |_, _, cx| {
+                        if let Some(this) = weak.upgrade() {
+                            this.update(cx, |this, cx| this.jump_to_playing(cx));
+                        }
+                    }),
+            )
+            .separator();
         let menu = panel_settings::rename_item(menu, &cx.entity());
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
@@ -930,7 +1050,7 @@ impl GridPanel {
             .tab_panel
             .as_ref()
             .and_then(|tabs| tabs.upgrade())
-            .map_or(true, |tabs| tabs.read(cx).panels_count() < 2);
+            .is_none_or(|tabs| tabs.read(cx).panels_count() < 2);
         let root = div()
             .flex()
             .flex_col()
@@ -1011,6 +1131,55 @@ impl GridPanel {
                         .inset_0()
                         .child(Scrollbar::vertical(&self.scroll)),
                 )
+                // The wall's right-click menu, keyed off the hovered tile
+                // since the builder gets no position: a click inside the
+                // selection acts on the whole set, outside it the click
+                // reselects just that tile first, so the menu always acts
+                // on what is highlighted - the library's rule. Off any
+                // tile the panel menu stands alone.
+                .context_menu({
+                    let weak = cx.entity().downgrade();
+                    move |menu, window, cx| {
+                        let Some(this) = weak.upgrade() else {
+                            return menu;
+                        };
+                        let Some(ix) = this.read(cx).hovered else {
+                            return this
+                                .update(cx, |this, cx| this.dropdown_menu(menu, window, cx));
+                        };
+                        let ixs = this.update(cx, |this, cx| {
+                            if !this.selected.contains(&ix) {
+                                this.selected = HashSet::from([ix]);
+                                this.anchor = Some(ix);
+                                this.publish_selection(cx);
+                                cx.notify();
+                            }
+                            let mut ixs: Vec<usize> = this.selected.iter().copied().collect();
+                            ixs.sort_unstable();
+                            ixs
+                        });
+                        let label = if ixs.len() > 1 {
+                            format!("Play {} Albums", ixs.len())
+                        } else {
+                            "Play".to_string()
+                        };
+                        let panel = weak.clone();
+                        let menu = menu.item(
+                            PopupMenuItem::new(label)
+                                .icon(Icon::default().path(icons::PLAY))
+                                .on_click(move |_, _, cx| {
+                                    if let Some(this) = panel.upgrade() {
+                                        this.update(cx, |this, cx| {
+                                            this.play_many(ixs.clone(), cx)
+                                        });
+                                    }
+                                }),
+                        );
+                        this.update(cx, |this, cx| {
+                            this.dropdown_menu(menu.separator(), window, cx)
+                        })
+                    }
+                })
                 .into_any_element()
         };
         root.child(content)

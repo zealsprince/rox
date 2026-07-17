@@ -742,8 +742,8 @@ impl PanelSettings for SpectrumPanel {
         cx.notify();
     }
 
-    fn pages(&self) -> &'static [&'static str] {
-        &["Display"]
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Display", icons::EYE)]
     }
 
     fn page(

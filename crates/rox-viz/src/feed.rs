@@ -8,11 +8,11 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use crate::analysis::FFT_SIZE;
+use crate::analysis::MAX_FFT_SIZE;
 
-/// Interleaved stereo samples kept for analysis: one FFT window with slack.
-/// Older samples fall off the front.
-const KEEP_SAMPLES: usize = FFT_SIZE * 2 * 2;
+/// Interleaved stereo samples kept for analysis: the largest FFT window
+/// with slack. Older samples fall off the front.
+const KEEP_SAMPLES: usize = MAX_FFT_SIZE * 2 * 2;
 
 pub struct AudioFeed {
     /// Interleaved stereo, newest at the back.

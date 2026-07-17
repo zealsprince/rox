@@ -742,6 +742,11 @@ pub struct SeekConfig {
     /// clicking the clock flips it.
     #[serde(default)]
     pub show_total: bool,
+    /// A thin line at the scrobble threshold, where the playing track
+    /// counts as listened for last.fm. Only draws while scrobbling is
+    /// connected and on.
+    #[serde(default)]
+    pub scrobble_marker: bool,
     /// The panel's palette override.
     #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
     pub theme: PanelTheme,
@@ -756,6 +761,7 @@ impl Default for SeekConfig {
         SeekConfig {
             timings: true,
             show_total: false,
+            scrobble_marker: false,
             theme: PanelTheme::default(),
         }
     }
@@ -789,17 +795,29 @@ impl SeekStripPanel {
         }
     }
 
-    /// The panel's own dropdown entries: the quick timings toggle, the
-    /// same knob the customize window edits.
+    /// The panel's own dropdown entries: the quick timings and marker
+    /// toggles, the same knobs the customize window edits.
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
         let weak = cx.entity().downgrade();
-        menu.item(
+        let menu = menu.item(
             PopupMenuItem::new("Show Timings")
                 .checked(self.config.timings)
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
                     this.update(cx, |this, cx| {
                         this.config.timings = !this.config.timings;
+                        cx.notify();
+                    });
+                }),
+        );
+        let weak = cx.entity().downgrade();
+        menu.item(
+            PopupMenuItem::new("Scrobble Marker")
+                .checked(self.config.scrobble_marker)
+                .on_click(move |_, _, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    this.update(cx, |this, cx| {
+                        this.config.scrobble_marker = !this.config.scrobble_marker;
                         cx.notify();
                     });
                 }),
@@ -851,6 +869,18 @@ impl PanelSettings for SeekStripPanel {
                     cx,
                 ),
             ))
+            .child(panel::setting_row(
+                "scrobble marker",
+                Some("a thin line where the track counts as scrobbled to last.fm"),
+                panel::toggle(
+                    self.config.scrobble_marker,
+                    |this: &mut Self, on, cx| {
+                        this.config.scrobble_marker = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
             .into_any_element()
     }
 
@@ -865,8 +895,9 @@ impl PanelSettings for SeekStripPanel {
 }
 
 /// The track line centered in whatever height the panel gets: unplayed side
-/// dim, played side solid, the waveform's playhead on top.
-fn paint_strip(progress: f32, bounds: Bounds<Pixels>, window: &mut Window) {
+/// dim, played side solid, the waveform's playhead on top. `marker` draws
+/// the scrobble threshold as a thin full-height line under the playhead.
+fn paint_strip(progress: f32, marker: Option<f32>, bounds: Bounds<Pixels>, window: &mut Window) {
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
     if w <= 0.0 || h <= 0.0 {
@@ -889,6 +920,18 @@ fn paint_strip(progress: f32, bounds: Bounds<Pixels>, window: &mut Window) {
         ),
         palette::accent(),
     ));
+    if let Some(marker) = marker {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(
+                    bounds.origin.x + px(marker.clamp(0.0, 1.0) * w),
+                    bounds.origin.y,
+                ),
+                size(px(1.0), px(h)),
+            ),
+            palette::alpha(palette::highlight(), 0x80),
+        ));
+    }
     window.paint_quad(fill(
         Bounds::new(
             point(
@@ -945,6 +988,11 @@ impl SeekStripPanel {
             .filter(|d| *d > 0.0)
             .map(|d| (now.position_secs / d) as f32)
             .unwrap_or(0.0);
+        // The marker only shows where a scrobble could actually land: the
+        // toggle on and the scrobbler armed.
+        let marker = (self.config.scrobble_marker)
+            .then(|| self.state.scrobbler.read(cx).marker())
+            .flatten();
         // The seek click lives on the track alone so the clocks beside it
         // stay inert.
         let scrub = self.scrub.clone();
@@ -971,7 +1019,7 @@ impl SeekStripPanel {
                         move |bounds, _, _| scrub.set_bounds(bounds)
                     },
                     move |bounds, _, window, _| {
-                        paint_strip(progress, bounds, window);
+                        paint_strip(progress, marker, bounds, window);
                         panel::scrub_on_paint(&scrub, window, {
                             let player = player.clone();
                             move |fraction, cx| panel::seek_fraction(&player, fraction, cx)

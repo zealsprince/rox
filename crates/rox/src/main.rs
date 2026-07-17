@@ -9,12 +9,14 @@
 mod assets;
 mod backdrop;
 mod design;
+mod lastfm;
 mod panel;
 mod panel_settings;
 mod panels;
 mod peaks;
 mod player;
 mod quick_play;
+mod search;
 mod selection;
 mod settings;
 mod settings_ui;

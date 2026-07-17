@@ -15,9 +15,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, size, App, Bounds, Context, Div, EventEmitter,
-    FocusHandle, Focusable, MouseButton, Pixels, Rgba, SharedString, Subscription, WeakEntity,
-    Window,
+    canvas, div, fill, point, prelude::*, px, size, AnyElement, App, BorderStyle, Bounds, Context,
+    Div, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Rgba, SharedString,
+    Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Icon;
@@ -29,7 +29,7 @@ use rox_playback::engine;
 use crate::assets::icons;
 use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelSettings, ScrubState};
+use crate::panel::{self, setting_row, toggle, AppState, PanelSettings, ScrubState};
 use crate::panel_settings;
 use crate::peaks;
 
@@ -37,14 +37,56 @@ use crate::peaks;
 /// however many bars fit the width.
 const PEAK_BINS: usize = 2048;
 
-/// The waveform panel's per-view config: nothing but its palette
-/// override so far - the strip itself has no knobs - but the struct is
-/// where any it grows will land, same as every other panel's.
-#[derive(Clone, Default, Serialize, Deserialize)]
+/// The spans the bar sliders pick across, px. Values snap to whole pixels
+/// so the bars stay crisp.
+const BAR_W_MIN: f32 = 1.0;
+const BAR_W_MAX: f32 = 12.0;
+const BAR_GAP_MAX: f32 = 8.0;
+
+/// The waveform panel's per-view config: what a saved layout restores, and
+/// what the customize window edits. Missing fields take the defaults, so a
+/// layout dumped before a knob existed still loads.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WaveformConfig {
+    /// Bar thickness, px: the sampling step follows it, so thicker bars
+    /// mean fewer of them.
+    pub bar_width: f32,
+    /// Space between bars, px: zero merges them into a solid shape.
+    pub bar_gap: f32,
+    /// Trace the bars as outlines instead of filling them; with the gap
+    /// at zero the strip reads as one outlined shape.
+    pub outline: bool,
+    /// A thin line at the scrobble threshold, where the playing track
+    /// counts as listened for last.fm. Only draws while scrobbling is
+    /// connected and on.
+    pub scrobble_marker: bool,
     /// The panel's palette override.
-    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
+    #[serde(skip_serializing_if = "PanelTheme::is_empty")]
     pub theme: PanelTheme,
+}
+
+impl Default for WaveformConfig {
+    fn default() -> Self {
+        WaveformConfig {
+            bar_width: tokens::BAR_W,
+            bar_gap: tokens::BAR_GAP,
+            outline: false,
+            scrobble_marker: false,
+            theme: PanelTheme::default(),
+        }
+    }
+}
+
+impl WaveformConfig {
+    /// The bar rhythm, clamped to the slider spans so a hand-edited file
+    /// can't collapse the step to nothing.
+    fn bars(&self) -> (f32, f32) {
+        (
+            self.bar_width.clamp(BAR_W_MIN, BAR_W_MAX),
+            self.bar_gap.clamp(0.0, BAR_GAP_MAX),
+        )
+    }
 }
 
 /// The shortest a bar draws, so quiet passages stay visible.
@@ -98,6 +140,10 @@ pub struct WaveformPanel {
     morph_at: Instant,
     /// The strip's painted bounds and drag state, for scrub mapping.
     scrub: ScrubState,
+    /// The customize window's slider strips, one per knob so a drag on one
+    /// never moves the other.
+    bar_w_scrub: ScrubState,
+    gap_scrub: ScrubState,
     /// Time zero for the generating animation's phase.
     epoch: Instant,
     focus: FocusHandle,
@@ -121,6 +167,8 @@ impl WaveformPanel {
             to: Shape::Blank,
             morph_at: Instant::now(),
             scrub: ScrubState::default(),
+            bar_w_scrub: ScrubState::default(),
+            gap_scrub: ScrubState::default(),
             epoch: Instant::now(),
             focus: cx.focus_handle(),
             tab_panel: None,
@@ -184,20 +232,31 @@ impl WaveformPanel {
         self.morph_at = Instant::now();
     }
 
-    fn strip(&self) -> impl IntoElement {
+    fn set_bar_width(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.config.bar_width = (BAR_W_MIN + fraction * (BAR_W_MAX - BAR_W_MIN)).round();
+        cx.notify();
+    }
+
+    fn set_bar_gap(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.config.bar_gap = (fraction * BAR_GAP_MAX).round();
+        cx.notify();
+    }
+
+    fn strip(&self, marker: Option<f32>) -> impl IntoElement {
         let scrub = self.scrub.clone();
         let player = self.state.player.clone();
         let from = self.from.clone();
         let to = self.to.clone();
         let u = (self.morph_at.elapsed().as_secs_f32() / tokens::EASE_SECS).min(1.0);
         let t = self.epoch.elapsed().as_secs_f32();
+        let config = self.config.clone();
         canvas(
             {
                 let scrub = scrub.clone();
                 move |bounds, _, _| scrub.set_bounds(bounds)
             },
             move |bounds, _, window, _| {
-                paint_morph(&from, &to, u, t, bounds, window);
+                paint_morph(&from, &to, u, t, marker, &config, bounds, window);
                 panel::scrub_on_paint(&scrub, window, {
                     let player = player.clone();
                     move |fraction, cx| panel::seek_fraction(&player, fraction, cx)
@@ -284,12 +343,15 @@ fn sample(
 /// The strip: `to`'s bars, blended per bar from wherever `from` had them
 /// while the morph runs, geometry and color both, so shape changes flow
 /// instead of popping. Each shape that has a playhead draws it, the
-/// retiring one fading out as the incoming one fades in.
+/// retiring one fading out as the incoming one fades in; the scrobble
+/// marker, when asked for, rides the same fade.
 fn paint_morph(
     from: &Shape,
     to: &Shape,
     u: f32,
     t: f32,
+    marker: Option<f32>,
+    config: &WaveformConfig,
     bounds: Bounds<Pixels>,
     window: &mut Window,
 ) {
@@ -299,8 +361,12 @@ fn paint_morph(
         return;
     }
 
-    let count = ((w / (tokens::BAR_W + tokens::BAR_GAP)) as usize).max(1);
+    let (bar_w, gap) = config.bars();
+    let count = ((w / (bar_w + gap)) as usize).max(1);
     let step = w / count as f32;
+    // Bars fill the step minus the gap, so a zero gap tiles them into a
+    // solid shape with no seams.
+    let draw_w = (step - gap).max(1.0);
     let center = h / 2.0;
     let max_bar = h * 0.46;
 
@@ -308,6 +374,8 @@ fn paint_morph(
     let u = u.clamp(0.0, 1.0);
     let u = u * u * (3.0 - 2.0 * u);
 
+    // The silhouette's neighbor edges, for the merged-outline risers.
+    let mut prev = (center, center);
     for i in 0..count {
         let x = i as f32 * step;
         let x_mid = x + step * 0.5;
@@ -324,19 +392,62 @@ fn paint_morph(
                 b
             }
         };
-        window.paint_quad(fill(
-            Bounds::new(
-                point(bounds.origin.x + px(x), bounds.origin.y + px(top)),
-                size(px(tokens::BAR_W), px(bottom - top)),
-            ),
-            color,
-        ));
+        let x0 = bounds.origin.x + px(x);
+        let bar = Bounds::new(
+            point(x0, bounds.origin.y + px(top)),
+            size(px(draw_w), px(bottom - top)),
+        );
+        if !config.outline {
+            window.paint_quad(fill(bar, color));
+        } else if gap > 0.0 {
+            // Separate bars: each its own hollow frame, the spectrum's
+            // outline look.
+            window.paint_quad(gpui::outline(bar, color, BorderStyle::default()));
+        } else {
+            // Merged bars: trace the silhouette instead - 1px top and
+            // bottom edges plus risers spanning the jump to the neighbor,
+            // one continuous outlined shape.
+            for y in [top, bottom - 1.0] {
+                window.paint_quad(fill(
+                    Bounds::new(point(x0, bounds.origin.y + px(y)), size(px(draw_w), px(1.0))),
+                    color,
+                ));
+            }
+            for (a, b) in [(prev.0, top), (prev.1, bottom)] {
+                let rise = (b - a).abs();
+                if rise >= 1.0 {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(x0, bounds.origin.y + px(a.min(b))),
+                            size(px(1.0), px(rise)),
+                        ),
+                        color,
+                    ));
+                }
+            }
+        }
+        prev = (top, bottom);
     }
 
     for (shape, weight) in [(from, 1.0 - u), (to, u)] {
         let Shape::Peaks(_, progress) = shape else {
             continue;
         };
+        if let Some(marker) = marker {
+            let alpha = (0x80 as f32 * weight) as u8;
+            if alpha > 0 {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(
+                            bounds.origin.x + px(marker.clamp(0.0, 1.0) * w),
+                            bounds.origin.y,
+                        ),
+                        size(px(1.0), px(h)),
+                    ),
+                    palette::alpha(palette::highlight(), alpha),
+                ));
+            }
+        }
         let alpha = (0xd9 as f32 * weight) as u8;
         if alpha == 0 {
             continue;
@@ -358,6 +469,70 @@ fn paint_morph(
 impl PanelSettings for WaveformPanel {
     fn state(&self) -> AppState {
         self.state.clone()
+    }
+
+    fn pages(&self) -> &'static [&'static str] {
+        &["Display"]
+    }
+
+    fn page(
+        &mut self,
+        _page: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (bar_w, gap) = self.config.bars();
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(setting_row(
+                "bar width",
+                Some("how thick each bar draws"),
+                panel::value_slider(
+                    &self.bar_w_scrub,
+                    (bar_w - BAR_W_MIN) / (BAR_W_MAX - BAR_W_MIN),
+                    format!("{bar_w:.0} px"),
+                    Self::set_bar_width,
+                    cx,
+                ),
+            ))
+            .child(setting_row(
+                "bar gap",
+                Some("space between bars, zero merges them into a solid shape"),
+                panel::value_slider(
+                    &self.gap_scrub,
+                    gap / BAR_GAP_MAX,
+                    format!("{gap:.0} px"),
+                    Self::set_bar_gap,
+                    cx,
+                ),
+            ))
+            .child(setting_row(
+                "outline",
+                Some("trace the bars instead of filling them; merged bars read as one shape"),
+                toggle(
+                    self.config.outline,
+                    |this: &mut Self, on, cx| {
+                        this.config.outline = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(setting_row(
+                "scrobble marker",
+                Some("a thin line where the track counts as scrobbled to last.fm"),
+                toggle(
+                    self.config.scrobble_marker,
+                    |this: &mut Self, on, cx| {
+                        this.config.scrobble_marker = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .into_any_element()
     }
 
     fn theme(&self) -> PanelTheme {
@@ -483,6 +658,12 @@ impl WaveformPanel {
             window.request_animation_frame();
         }
 
+        // The marker only shows where a scrobble could actually land: the
+        // toggle on and the scrobbler armed.
+        let marker = (self.config.scrobble_marker)
+            .then(|| self.state.scrobbler.read(cx).marker())
+            .flatten();
+
         let body = match (&now, &self.peaks) {
             (None, _) | (Some(_), Peaks::None) => {
                 // Nothing on screen to morph from later; snap the strip
@@ -496,7 +677,7 @@ impl WaveformPanel {
                 .into_any_element(),
             (Some(_), Peaks::Decoding) => {
                 self.retarget(Shape::Placeholder);
-                self.strip().into_any_element()
+                self.strip(marker).into_any_element()
             }
             (Some(now), Peaks::Ready(peaks)) => {
                 let progress = now
@@ -505,7 +686,7 @@ impl WaveformPanel {
                     .map(|d| (now.position_secs / d) as f32)
                     .unwrap_or(0.0);
                 self.retarget(Shape::Peaks(peaks.clone(), progress));
-                self.strip().into_any_element()
+                self.strip(marker).into_any_element()
             }
         };
 

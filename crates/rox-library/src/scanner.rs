@@ -104,6 +104,27 @@ pub fn scan(
     Ok(summary)
 }
 
+/// Re-read exactly these files and upsert their rows, the write-back half
+/// of the metadata writer's contract: after a commit the library re-reads
+/// the written paths and converges without a rescan. The empty known set
+/// forces every read, since the caller only names files it just changed.
+/// Files that vanished since are skipped, matching what a scan would do.
+/// Blocking; run it off the UI thread.
+pub fn reindex(conn: &mut Connection, paths: &[PathBuf]) -> rusqlite::Result<usize> {
+    let known = HashMap::new();
+    let rows: Vec<TrackRow> = paths
+        .par_iter()
+        .filter_map(|path| match process_file(path, &known) {
+            Outcome::Indexed { row, .. } => Some(*row),
+            _ => None,
+        })
+        .collect();
+    if !rows.is_empty() {
+        store::insert_batch(conn, &rows)?;
+    }
+    Ok(rows.len())
+}
+
 /// What one file's stat-and-read produced, kept separate from the store write
 /// so the read can run in parallel and the write stays a single transaction.
 enum Outcome {
@@ -249,4 +270,57 @@ fn fallback_row(path: &Path) -> TrackRow {
 fn filename_title(path: &Path) -> String {
     let name = path.file_stem().unwrap_or_default().to_string_lossy();
     name.into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::writer::{self, Change, Field};
+
+    /// The write-back loop the metadata writer's contract names: commit,
+    /// reindex the written path, and the store row converges without a
+    /// rescan - even when the row already exists.
+    #[test]
+    fn reindex_rereads_named_files() {
+        let dir = std::env::temp_dir().join("rox-scanner-reindex");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The writer test fixture's minimal MPEG stream, enough for the
+        // full tag read this module runs.
+        let mut audio = Vec::new();
+        for frame in 0..3u32 {
+            audio.extend([0xFF, 0xFB, 0x90, 0x00]);
+            audio.extend((0..413u32).map(|i| ((frame * 413 + i) * 7 % 251) as u8));
+        }
+        let path = dir.join("track.mp3");
+        std::fs::write(&path, &audio).unwrap();
+
+        let mut conn = store::open(&dir.join("library.db")).unwrap();
+        store::init_schema(&conn).unwrap();
+
+        let title = |conn: &Connection| {
+            store::meta_for_path(conn, path.to_str().unwrap())
+                .unwrap()
+                .unwrap()
+                .title
+        };
+        let retitle = |value: &str| {
+            writer::commit(
+                &path,
+                &[Change {
+                    field: Field::Title,
+                    value: Some(value.to_string()),
+                }],
+            )
+            .unwrap();
+        };
+
+        retitle("First");
+        assert_eq!(reindex(&mut conn, &[path.clone()]).unwrap(), 1);
+        assert_eq!(title(&conn), "First");
+
+        retitle("Second");
+        assert_eq!(reindex(&mut conn, &[path.clone()]).unwrap(), 1);
+        assert_eq!(title(&conn), "Second");
+    }
 }

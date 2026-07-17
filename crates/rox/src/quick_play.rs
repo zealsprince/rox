@@ -12,13 +12,12 @@ use gpui::{
     FocusHandle, Focusable, KeyDownEvent, MouseButton, ScrollStrategy, SharedString, Subscription,
     UniformListScrollHandle, Window,
 };
-use gpui_component::input::{
-    Input, InputEvent, InputState, MoveDown, MovePageDown, MovePageUp, MoveUp,
-};
+use gpui_component::input::{MoveDown, MovePageDown, MovePageUp, MoveUp};
 
 use crate::design::{palette, tokens};
 use crate::panel::AppState;
 use crate::panels::library::{fmt_ms, LibraryEvent, QUEUE_CAP};
+use crate::search::{SearchBox, SearchEvent};
 
 /// One result row's height; the list is a uniform_list, so every row
 /// must agree on it.
@@ -32,8 +31,9 @@ const PAGE_ROWS: isize = 10;
 
 pub struct QuickPlay {
     state: AppState,
-    /// The query editor; `query` mirrors its value via change events.
-    input: Entity<InputState>,
+    /// The query editor, the shared search box; `query` mirrors its value
+    /// via change events.
+    search: Entity<SearchBox>,
     query: String,
     /// Projection rows matching the query, in the library panel's view
     /// order: canonical browse order while empty, search order otherwise.
@@ -51,14 +51,14 @@ impl EventEmitter<DismissEvent> for QuickPlay {}
 
 impl Focusable for QuickPlay {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.input.read(cx).focus_handle(cx)
+        self.search.read(cx).focus_handle(cx)
     }
 }
 
 impl QuickPlay {
     pub fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("search the library"));
-        let _input_events = cx.subscribe_in(&input, window, Self::on_input_event);
+        let search = cx.new(|cx| SearchBox::new("search the library", "", window, cx));
+        let _input_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // A scan finishing mid-search would leave the hits pointing into
         // the old projection; recompute over the new one.
         let _library_changed = cx.subscribe(
@@ -67,7 +67,7 @@ impl QuickPlay {
         );
         let mut this = QuickPlay {
             state,
-            input,
+            search,
             query: String::new(),
             hits: Arc::new(Vec::new()),
             selected: 0,
@@ -100,20 +100,23 @@ impl QuickPlay {
         cx.notify();
     }
 
-    fn on_input_event(
+    fn on_search_event(
         &mut self,
-        input: &Entity<InputState>,
-        event: &InputEvent,
+        search: &Entity<SearchBox>,
+        event: &SearchEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            InputEvent::Change => {
-                self.query = input.read(cx).value().to_string();
+            SearchEvent::Changed => {
+                self.query = search.read(cx).query().to_string();
                 self.refresh(cx);
             }
-            InputEvent::PressEnter { .. } => self.play(self.selected, cx),
-            _ => {}
+            SearchEvent::Submitted => self.play(self.selected, cx),
+            // The box's escape ladder ends here: the query is already
+            // empty, so escape closes the modal.
+            SearchEvent::Dismissed => cx.emit(DismissEvent),
+            SearchEvent::FocusChanged => {}
         }
     }
 
@@ -285,8 +288,9 @@ impl Render for QuickPlay {
             .capture_action(cx.listener(|this, _: &MovePageDown, _, cx| {
                 this.move_selected(PAGE_ROWS, cx)
             }))
-            // The input propagates escape when it has nothing of its own
-            // (IME, context menu) to close, so it lands here.
+            // The search box handles escape while it has focus (its clear
+            // then dismiss ladder); this catches an escape from anywhere
+            // else in the modal.
             .on_key_down(cx.listener(|_, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {
                     cx.emit(DismissEvent);
@@ -297,7 +301,7 @@ impl Render for QuickPlay {
                     .p(tokens::SPACE_SM)
                     .border_b_1()
                     .border_color(palette::border())
-                    .child(Input::new(&self.input).w_full()),
+                    .child(self.search.update(cx, |search, cx| search.element(cx))),
             )
             .child(list)
             .when_some(self.error.clone(), |d, error| {

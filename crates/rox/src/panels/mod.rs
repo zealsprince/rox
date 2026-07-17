@@ -3,6 +3,7 @@
 //! ADR 7, lives in [`crate::panel`]; this module just gathers the panels.
 
 pub mod cover;
+pub mod grid;
 pub mod library;
 pub mod spectrum;
 pub mod transport;

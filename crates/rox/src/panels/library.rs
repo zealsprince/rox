@@ -10,15 +10,14 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     div, img, prelude::*, px, svg, AnyElement, App, Context, Div, Entity, EventEmitter,
     FocusHandle, Focusable, KeyDownEvent, MouseButton, ObjectFit, PathPromptOptions,
     ScrollStrategy, SharedString, Stateful, Subscription, WeakEntity, Window,
 };
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableEvent, TableState};
 use gpui_component::{Icon, Side, Sizable, Size};
 use rox_dock::{Panel, PanelEvent, PanelInfo, PanelState, TabPanel};
@@ -28,12 +27,15 @@ use rox_library::projection::{Projection, SortKey};
 use rox_library::rusqlite::Connection;
 use rox_library::scanner::{self, ScanSummary};
 use rox_library::store;
+use rox_viz::analysis::{log_bands, Analyzer, MAX_FFT_SIZE};
+use rox_viz::AudioFeed;
 
 use crate::assets::icons;
 use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
 use crate::panel::{self, AppState};
 use crate::panel_settings;
+use crate::search::{SearchBox, SearchEvent};
 use crate::thumbs::Thumb;
 
 /// Play from a double-clicked row: at most this many tracks are queued
@@ -504,6 +506,12 @@ pub struct LibraryConfig {
     /// change, and drifts at most a group's headers if the catalog shifts.
     #[serde(default)]
     pub scroll_row: usize,
+    /// Scroll to the playing row when the track changes.
+    #[serde(default)]
+    pub follow_playing: bool,
+    /// Glide there instead of jumping.
+    #[serde(default)]
+    pub smooth_follow: bool,
     /// The panel's palette override.
     #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
     pub theme: PanelTheme,
@@ -650,6 +658,142 @@ fn group_quality(group: &Group, projection: &Projection) -> String {
     }
 }
 
+/// The playing mark's band count and analysis range: low, mid, high over
+/// roughly the musical spectrum, log-split like the spectrum panel's bars.
+const PULSE_BARS: usize = 3;
+const PULSE_LO_HZ: f32 = 60.0;
+const PULSE_HI_HZ: f32 = 10_000.0;
+
+/// The dB window and per-second smoothing the levels ease through, the
+/// spectrum panel's numbers: bands jump up fast and fall slowly, so beats
+/// read as beats instead of flicker.
+const PULSE_FLOOR_DB: f32 = -66.0;
+const PULSE_MAX_DB: f32 = -12.0;
+const PULSE_ATTACK: f32 = 40.0;
+const PULSE_RELEASE: f32 = 10.0;
+
+/// How long the feed may sit still before it reads as stopped audio rather
+/// than the gap between pump ticks, the spectrum panel's number: between
+/// ticks the bars hold their targets instead of dipping toward silence.
+const PULSE_SILENT_AFTER: f32 = 0.15;
+
+/// The mark's window size: the largest the feed keeps, since with three
+/// wide bands the low one wants bass bins more than it wants reaction
+/// time, and the eased levels hide the longer window's smear anyway.
+const PULSE_FFT: usize = MAX_FFT_SIZE;
+
+/// The playing mark's audio tap: the spectrum panel's analysis at glyph
+/// scale. Three log bands over the player's PCM feed become the three bar
+/// levels; once the feed sits still past [`PULSE_SILENT_AFTER`] (paused,
+/// stopped) they fall to silence. Built lazily and boxed, so a table that
+/// never shows the playing row doesn't carry the FFT buffers (they run
+/// ~150KB).
+struct Pulse {
+    analyzer: Analyzer,
+    mono: [f32; PULSE_FFT],
+    last_written: u64,
+    last_tick: Option<Instant>,
+    sample_rate: u32,
+    bands: Vec<(usize, usize)>,
+    /// What each bar eases toward: refreshed per analysis, held between
+    /// them, zeroed once the feed reads as stopped.
+    targets: [f32; PULSE_BARS],
+    /// When the feed last carried new audio.
+    last_fresh: Option<Instant>,
+    levels: [f32; PULSE_BARS],
+}
+
+impl Pulse {
+    fn new() -> Self {
+        Pulse {
+            analyzer: Analyzer::new(PULSE_FFT),
+            mono: [0.0; PULSE_FFT],
+            last_written: 0,
+            last_tick: None,
+            sample_rate: 0,
+            bands: Vec::new(),
+            targets: [0.0; PULSE_BARS],
+            last_fresh: None,
+            levels: [0.0; PULSE_BARS],
+        }
+    }
+
+    /// One tick, the spectrum's step at three bands: pull the newest
+    /// window off the feed when it moved and refresh each band's target,
+    /// hold the targets between pump ticks, let the levels fall once the
+    /// feed reads as stopped.
+    fn step(&mut self, feed: &AudioFeed) -> [f32; PULSE_BARS] {
+        let now = Instant::now();
+        let dt = self
+            .last_tick
+            .map(|t| (now - t).as_secs_f32().min(0.1))
+            .unwrap_or(1.0 / 60.0);
+        self.last_tick = Some(now);
+
+        let rate = feed.sample_rate();
+        if rate != self.sample_rate {
+            self.sample_rate = rate;
+            self.bands = log_bands(PULSE_BARS, PULSE_LO_HZ, PULSE_HI_HZ, rate, PULSE_FFT / 2);
+        }
+        let written = feed.written();
+        let fresh = written != self.last_written && feed.latest_mono(&mut self.mono) == PULSE_FFT;
+        self.last_written = written;
+        let mags = fresh.then(|| self.analyzer.magnitudes(&self.mono));
+        if fresh {
+            self.last_fresh = Some(now);
+        }
+        let stopped = self
+            .last_fresh
+            .is_none_or(|t| (now - t).as_secs_f32() > PULSE_SILENT_AFTER);
+
+        for (i, level) in self.levels.iter_mut().enumerate() {
+            if let Some(mags) = mags {
+                let (lo, hi) = self.bands[i];
+                let mut peak = 0.0f32;
+                for &m in &mags[lo..hi] {
+                    peak = peak.max(m);
+                }
+                let db = 20.0 * (peak + 1e-9).log10();
+                self.targets[i] =
+                    ((db - PULSE_FLOOR_DB) / (PULSE_MAX_DB - PULSE_FLOOR_DB)).clamp(0.0, 1.0);
+            } else if stopped {
+                self.targets[i] = 0.0;
+            }
+            let target = self.targets[i];
+            let rate = if target > *level {
+                PULSE_ATTACK
+            } else {
+                PULSE_RELEASE
+            };
+            *level += (target - *level) * (rate * dt).min(1.0);
+        }
+        self.levels
+    }
+}
+
+/// The playing mark: three bars riding the playing audio, low, mid, and
+/// high bands left to right. The floor keeps visible stubs through quiet
+/// passages and while paused, where the levels settle to rest.
+fn playing_bars(levels: [f32; PULSE_BARS]) -> Div {
+    const SPAN: f32 = 10.;
+    let mut bars = div()
+        .flex()
+        .flex_none()
+        .items_end()
+        .gap(px(1.))
+        .h(px(SPAN));
+    for level in levels {
+        bars = bars.child(
+            div()
+                .w(px(2.))
+                .h(px(SPAN * (0.18 + 0.82 * level)))
+                .rounded(px(1.))
+                .bg(palette::accent()),
+        );
+    }
+    bars
+}
+
 /// The table delegate: the column set and the rows one panel displays.
 /// Lives inside the panel's `TableState`; the panel swaps `view` when the
 /// query or the catalog changes.
@@ -690,6 +834,9 @@ struct TrackTable {
     /// panel, and its row in the current view when the view holds it.
     playing_id: Option<i64>,
     playing_row: Option<usize>,
+    /// The playing mark's band meter, born the first time the playing row
+    /// renders under a live session.
+    pulse: Option<Box<Pulse>>,
 }
 
 impl TrackTable {
@@ -1111,6 +1258,40 @@ impl TableDelegate for TrackTable {
         &self.columns[col_ix]
     }
 
+    /// The header cell: the stock label plus a right-click menu that
+    /// toggles the shown columns in place, the customize window's chips
+    /// without the trip there. The table's own right-click menu stays a
+    /// row affair; over the header it builds empty and never shows, so
+    /// the two menus don't stack.
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let shown: HashSet<String> = self.columns.iter().map(|c| c.key.to_string()).collect();
+        let panel = self.panel.clone();
+        div()
+            .size_full()
+            .child(self.column(col_ix, cx).name.clone())
+            .context_menu(move |mut menu, _, _| {
+                for def in COLUMNS {
+                    let key = def.key;
+                    let panel = panel.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(def.label)
+                            .checked(shown.contains(key))
+                            .on_click(move |_, _, cx| {
+                                if let Some(panel) = panel.upgrade() {
+                                    panel.update(cx, |panel, cx| panel.toggle_column(key, cx));
+                                }
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+
     /// The header sort hook. The widget has already advanced the clicked
     /// column's cycle (canonical -> descending -> ascending) in its own
     /// column state; mirror it into the delegate's columns and swap the
@@ -1237,7 +1418,7 @@ impl TableDelegate for TrackTable {
         &mut self,
         row_ix: usize,
         col_ix: usize,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         // Header rows draw in render_tr; their cells stay empty.
@@ -1248,15 +1429,14 @@ impl TableDelegate for TrackTable {
             return div().into_any_element();
         };
         let v = projection.resolve(row);
+        let playing = self.playing_row == Some(row_ix);
         let cell = div().truncate();
-        match self.columns[col_ix].key.as_ref() {
+        let cell = match self.columns[col_ix].key.as_ref() {
             "track" => cell
                 .text_color(palette::text_muted())
                 .child(fmt_num(v.track_no)),
             "title" => cell
-                .when(self.playing_row == Some(row_ix), |d| {
-                    d.text_color(palette::accent())
-                })
+                .when(playing, |d| d.text_color(palette::accent()))
                 .child(SharedString::from(v.title.to_string())),
             "artist" => cell
                 .text_color(palette::text_secondary())
@@ -1283,8 +1463,35 @@ impl TableDelegate for TrackTable {
                 .text_color(palette::text_muted())
                 .child(SharedString::from(fmt_ms(v.duration_ms))),
             _ => cell,
+        };
+        // The playing mark rides the right edge of the leading cell,
+        // whichever column that is, so it survives any column layout and
+        // the text keeps its place. Repainting by frame while a session
+        // runs follows the transport's poll: it is what steps the meter,
+        // and it never stops on pause, because pause flips on the audio
+        // thread and notifies nobody - the feed just stops moving and the
+        // bars fall to rest.
+        if playing && col_ix == 0 {
+            let (active, feed) = {
+                let player = self.state.player.read(cx);
+                (player.is_active(), player.feed())
+            };
+            let levels = if active {
+                let table = cx.entity_id();
+                window.on_next_frame(move |_, cx| cx.notify(table));
+                self.pulse.get_or_insert_with(|| Box::new(Pulse::new())).step(&feed)
+            } else {
+                [0.0; PULSE_BARS]
+            };
+            return div()
+                .flex()
+                .items_center()
+                .gap(tokens::SPACE_XS)
+                .child(cell.flex_1().min_w_0())
+                .child(playing_bars(levels))
+                .into_any_element();
         }
-        .into_any_element()
+        cell.into_any_element()
     }
 
     /// Keep the delegate's columns in the widget's order: the table calls
@@ -1329,8 +1536,9 @@ pub struct LibraryPanel {
     /// put every keystroke in the query, and so the playback key bindings
     /// (scoped out of SearchInput) stay live.
     focus: FocusHandle,
-    /// The query editor; `query` mirrors its value via change events.
-    search_input: Entity<InputState>,
+    /// The query editor, the shared search box; `query` mirrors its value
+    /// via change events.
+    search: Entity<SearchBox>,
     /// A panel-local error (a failed play), shown until the catalog updates.
     error: Option<SharedString>,
     /// The playing track's path, the change detector: the player notifies
@@ -1343,6 +1551,15 @@ pub struct LibraryPanel {
     /// catalog loads after the panel builds, so the first non-empty view
     /// consumes this; None once applied.
     restore_scroll: Option<usize>,
+    /// Scroll to the playing row when the track changes, and whether to
+    /// glide there instead of jumping.
+    follow_playing: bool,
+    smooth_follow: bool,
+    /// The view row the follow glide is headed to; stepped every frame in
+    /// `body` and cleared on arrival.
+    glide_to: Option<usize>,
+    /// The last glide tick, its dt.
+    glide_tick: Instant,
     /// The track list's row height, applied on the table each render.
     density: Density,
     /// The panel's palette override, live for the render and carried by
@@ -1372,6 +1589,12 @@ impl LibraryPanel {
             |this: &mut LibraryPanel, _, _: &LibraryEvent, cx| {
                 this.error = None;
                 this.refresh_view(cx);
+                // The catalog loads after a restored track starts, so the
+                // launch's follow waits for this first rebuild; rescans
+                // re-land on the playing row the same way.
+                if this.follow_playing {
+                    this.follow_playing(cx);
+                }
                 cx.notify();
                 this.refresh_title_bar(cx);
             },
@@ -1393,6 +1616,7 @@ impl LibraryPanel {
             sort,
             playing_id: None,
             playing_row: None,
+            pulse: None,
         };
         // Widths and order persist by column key, so a drag survives a
         // layout save; the delegate mirrors the widget's reorder.
@@ -1402,12 +1626,8 @@ impl LibraryPanel {
                 .col_selectable(false)
         });
         let _table_events = cx.subscribe_in(&table, window, Self::on_table_event);
-        let search_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("search")
-                .default_value(config.query.clone())
-        });
-        let _search_events = cx.subscribe_in(&search_input, window, Self::on_search_event);
+        let search = cx.new(|cx| SearchBox::new("search", &config.query, window, cx).small());
+        let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         let _player_changed = cx.observe(&state.player, |this: &mut LibraryPanel, _, cx| {
             this.sync_playing(cx)
         });
@@ -1421,12 +1641,16 @@ impl LibraryPanel {
             table,
             query: config.query,
             focus: cx.focus_handle(),
-            search_input,
+            search,
             error: None,
             playing_path: None,
             type_ahead: String::new(),
             type_ahead_at: None,
             restore_scroll: (config.scroll_row > 0).then_some(config.scroll_row),
+            follow_playing: config.follow_playing,
+            smooth_follow: config.smooth_follow,
+            glide_to: None,
+            glide_tick: Instant::now(),
             density: config.density,
             theme: config.theme,
             tab_panel: None,
@@ -1462,6 +1686,22 @@ impl LibraryPanel {
             delegate.locate_playing(cx);
             cx.notify();
         });
+        if self.follow_playing {
+            self.follow_playing(cx);
+        }
+    }
+
+    /// Scroll the playing row into view: a glide when smooth is on, the
+    /// jump otherwise.
+    fn follow_playing(&mut self, cx: &mut Context<Self>) {
+        if self.smooth_follow {
+            if let Some(row) = self.table.read(cx).delegate().playing_row {
+                self.glide_to = Some(row);
+                cx.notify();
+            }
+        } else {
+            self.jump_to_playing(cx);
+        }
     }
 
     /// Browse from the keyboard while the panel itself is focused: arrows
@@ -1471,12 +1711,7 @@ impl LibraryPanel {
     /// the solo and popped-out layouts its toolbar sits inside the panel
     /// root, so its keystrokes bubble through here.
     fn on_panel_key(&mut self, event: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
-        if self
-            .search_input
-            .read(cx)
-            .focus_handle(cx)
-            .is_focused(window)
-        {
+        if self.search.read(cx).is_focused(window, cx) {
             return;
         }
         let keystroke = &event.keystroke;
@@ -1756,6 +1991,8 @@ impl LibraryPanel {
             sort_key: sort.as_ref().map(|(key, _)| key.to_string()),
             sort_desc: sort.is_some_and(|(_, desc)| desc),
             scroll_row: self.scroll_row(cx),
+            follow_playing: self.follow_playing,
+            smooth_follow: self.smooth_follow,
             theme: self.theme.clone(),
         }
     }
@@ -1933,14 +2170,14 @@ impl LibraryPanel {
 
     fn on_search_event(
         &mut self,
-        input: &Entity<InputState>,
-        event: &InputEvent,
-        _window: &mut Window,
+        search: &Entity<SearchBox>,
+        event: &SearchEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            InputEvent::Change => {
-                self.query = input.read(cx).value().to_string();
+            SearchEvent::Changed => {
+                self.query = search.read(cx).query().to_string();
                 self.refresh_view(cx);
                 cx.notify();
                 self.refresh_title_bar(cx);
@@ -1948,37 +2185,23 @@ impl LibraryPanel {
             // The input's focus ring renders in the title bar while the
             // panel shares a group, and that row only repaints when the
             // tab panel is notified.
-            InputEvent::Focus | InputEvent::Blur => {
+            SearchEvent::FocusChanged => {
                 cx.notify();
                 self.refresh_title_bar(cx);
             }
-            _ => {}
+            // Escape on an empty query leaves the box, which hands the
+            // playback keys back to the workspace.
+            SearchEvent::Dismissed => {
+                window.focus(&self.focus);
+                cx.notify();
+                self.refresh_title_bar(cx);
+            }
+            SearchEvent::Submitted => {}
         }
     }
 
     fn search_box(&self, _window: &Window, cx: &mut Context<Self>) -> Div {
-        div()
-            // Scopes the workspace's playback key bindings out while the
-            // input is focused, so space and arrows type instead.
-            .key_context("SearchInput")
-            // First escape clears the query, a second one leaves the box,
-            // which hands the playback keys back to the workspace. The
-            // widget propagates escape when it has nothing of its own
-            // (IME, context menu) to close, so it lands here.
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key != "escape" {
-                    return;
-                }
-                if this.query.is_empty() {
-                    window.focus(&this.focus);
-                    cx.notify();
-                    this.refresh_title_bar(cx);
-                } else {
-                    this.search_input
-                        .update(cx, |input, cx| input.set_value("", window, cx));
-                }
-            }))
-            .child(Input::new(&self.search_input).small().w_full())
+        self.search.update(cx, |search, cx| search.element(cx))
     }
 
     /// The popped-out window has no title bar to host the controls, so it
@@ -2066,15 +2289,53 @@ impl panel::PanelSettings for LibraryPanel {
     }
 
     fn pages(&self) -> &'static [&'static str] {
-        &["View"]
+        &["View", "Behavior"]
     }
 
     fn page(
         &mut self,
-        _page: &'static str,
+        page: &'static str,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if page == "Behavior" {
+            return div()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_MD)
+                .child(panel::setting_row(
+                    "follow playing",
+                    Some("scroll to the playing row whenever the track changes"),
+                    panel::toggle(
+                        self.follow_playing,
+                        |this: &mut Self, on, cx| {
+                            this.follow_playing = on;
+                            // Catch up right away instead of waiting for
+                            // the next track change.
+                            if on {
+                                this.follow_playing(cx);
+                            }
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+                .when(self.follow_playing, |d| {
+                    d.child(panel::setting_row(
+                        "smooth scrolling",
+                        Some("glide to the row instead of jumping"),
+                        panel::toggle(
+                            self.smooth_follow,
+                            |this: &mut Self, on, cx| {
+                                this.smooth_follow = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                })
+                .into_any_element();
+        }
         let headers = self.table.read(cx).delegate().headers;
         div()
             .flex()
@@ -2294,6 +2555,26 @@ impl Render for LibraryPanel {
 
 impl LibraryPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        // The follow glide eases toward the playing row, stepped here in
+        // render (the cover panel's fade idiom), one frame at a time until
+        // it lands.
+        let dt = self.glide_tick.elapsed().as_secs_f32().min(0.05);
+        self.glide_tick = Instant::now();
+        if let Some(row) = self.glide_to {
+            let (handle, count) = {
+                let table = self.table.read(cx);
+                (
+                    table.vertical_scroll_handle.clone(),
+                    table.delegate().view.len(),
+                )
+            };
+            match panel::glide_target(&handle, row, count) {
+                Some(target) if !panel::glide_step(&handle, target, dt) => self.glide_to = None,
+                // Not laid out yet, or still moving: keep going.
+                _ => window.request_animation_frame(),
+            }
+        }
+
         let busy = self.state.library.read(cx).busy.is_some();
         let empty = self.table.read(cx).delegate().view.is_empty();
         let body = if empty && !busy && self.query.is_empty() {

@@ -24,8 +24,10 @@ use rox_dock::{
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
+use crate::lastfm::Scrobbler;
 use crate::panel::{self, AppState, TabHosts};
 use crate::panels::cover::{CoverArtPanel, CoverConfig};
+use crate::panels::grid::{GridConfig, GridPanel};
 use crate::panels::library::{Library, LibraryConfig, LibraryPanel};
 use crate::panels::spectrum::{SpectrumConfig, SpectrumPanel};
 use crate::panels::transport::{
@@ -147,6 +149,13 @@ fn register_panels(state: &AppState, cx: &mut App) {
     configured!("seek", SeekStripPanel);
     configured!("track info", TrackInfoPanel);
     configured!("cover art", CoverArtPanel);
+    // The grid takes the window like the library: its search box builds
+    // an input state.
+    let s = state.clone();
+    register_panel(cx, "album grid", move |_, _, info, window, cx| {
+        let config: GridConfig = panel::config_from_info(info);
+        Box::new(cx.new(|cx| GridPanel::new(s.clone(), config, window, cx)))
+    });
     configured!("playback", TransportPanel);
     configured!("volume", VolumePanel);
     configured!("spectrum", SpectrumPanel);
@@ -159,6 +168,7 @@ enum MenuAction {
     OpenSettings,
     OpenLibrary,
     OpenCoverArt,
+    OpenAlbumGrid,
     OpenSpectrum,
     OpenWaveform,
     OpenTrackInfo,
@@ -211,6 +221,10 @@ const MENUS: &[Menu] = &[
             MenuEntry::Item(MenuItem {
                 label: "Cover Art",
                 action: MenuAction::OpenCoverArt,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Album Grid",
+                action: MenuAction::OpenAlbumGrid,
             }),
             MenuEntry::Submenu {
                 label: "Controls",
@@ -409,6 +423,7 @@ impl Workspace {
         let library = cx.new(Library::new);
         let state = AppState {
             thumbs: cx.new(|cx| Thumbs::new(&library, cx)),
+            scrobbler: cx.new(|cx| Scrobbler::new(&player, &library, cx)),
             library,
             now_art: cx.new(|cx| NowPlayingArt::new(player.clone(), cx)),
             player,
@@ -710,6 +725,12 @@ impl Workspace {
             MenuAction::OpenCoverArt => {
                 let panel =
                     cx.new(|cx| CoverArtPanel::new(self.state.clone(), CoverConfig::default(), cx));
+                self.add_center(Arc::new(panel), window, cx);
+            }
+            MenuAction::OpenAlbumGrid => {
+                let panel = cx.new(|cx| {
+                    GridPanel::new(self.state.clone(), GridConfig::default(), window, cx)
+                });
                 self.add_center(Arc::new(panel), window, cx);
             }
             MenuAction::OpenSpectrum => {

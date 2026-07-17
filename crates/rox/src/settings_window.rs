@@ -20,6 +20,7 @@ use gpui::{
     TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{Root, Sizable as _};
 
@@ -27,6 +28,7 @@ use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::palette::{self, Palette, Role, ROLES};
 use crate::design::tokens;
+use crate::lastfm::{self, AuthPhase, Scrobbler};
 use crate::panel::{self, AppState, ScrubState};
 use crate::panels::library::{Library, LibraryEvent};
 use crate::settings::{data_dir, settings_path, Settings};
@@ -92,6 +94,7 @@ enum Page {
     Appearance,
     Behavior,
     Library,
+    Scrobbling,
     Storage,
 }
 
@@ -99,6 +102,7 @@ const PAGES: &[(Page, &str)] = &[
     (Page::Appearance, "Appearance"),
     (Page::Behavior, "Behavior"),
     (Page::Library, "Library"),
+    (Page::Scrobbling, "Scrobbling"),
     (Page::Storage, "Storage"),
 ];
 
@@ -142,12 +146,25 @@ struct SettingsWindow {
     /// The shared thumbnail service, whose durable store the storage
     /// page sizes and clears.
     thumbs: Entity<Thumbs>,
+    /// The workspace's scrobbler, the Scrobbling page's subject: the api
+    /// credential edits, the connect flow, and the knobs all go through
+    /// it, and it persists them.
+    scrobbler: Entity<Scrobbler>,
+    /// The api credential inputs; edits mirror into the scrobbler per
+    /// keystroke, the pickers' cadence.
+    lastfm_key: Entity<InputState>,
+    lastfm_secret: Entity<InputState>,
+    threshold_scrub: ScrubState,
     /// The storage page's numbers; None until the page is first opened.
     storage: Option<StorageInfo>,
     /// The folder list with per-folder rollups, recounted on every
     /// library event rather than per frame.
     root_stats: Vec<(PathBuf, Stats)>,
     _picker_changes: Vec<Subscription>,
+    _lastfm_changes: Vec<Subscription>,
+    /// The connect flow's phases land through here, so the page's status
+    /// line follows along.
+    _scrobbler_changed: Subscription,
     _library_changed: Subscription,
     /// Scan progress ticks notify the library without emitting Updated;
     /// the Library page's busy line needs those repaints too.
@@ -177,6 +194,42 @@ impl SettingsWindow {
         );
         let _library_repaint = cx.observe(&library, |_, _, cx| cx.notify());
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        let _scrobbler_changed = cx.observe(&state.scrobbler, |_, _, cx| cx.notify());
+        // The credential inputs seed from the file and write through the
+        // scrobbler per keystroke, so a paste is connected-ready with no
+        // save step.
+        let lastfm_key = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("api key")
+                .default_value(settings.lastfm.api_key.clone())
+        });
+        let lastfm_secret = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("shared secret")
+                .masked(true)
+                .default_value(settings.lastfm.api_secret.clone())
+        });
+        let scrobbler = state.scrobbler.clone();
+        let mut _lastfm_changes = Vec::with_capacity(2);
+        for (input, apply) in [
+            (
+                &lastfm_key,
+                (|s: &mut Scrobbler, value, cx: &mut gpui::Context<Scrobbler>| {
+                    s.set_api_key(value, cx)
+                }) as fn(&mut Scrobbler, String, &mut gpui::Context<Scrobbler>),
+            ),
+            (&lastfm_secret, |s, value, cx| s.set_api_secret(value, cx)),
+        ] {
+            _lastfm_changes.push(cx.subscribe(input, {
+                let scrobbler = scrobbler.clone();
+                move |_, input, event: &InputEvent, cx| {
+                    if let InputEvent::Change = event {
+                        let value = input.read(cx).value().trim().to_string();
+                        scrobbler.update(cx, |s, cx| apply(s, value, cx));
+                    }
+                }
+            }));
+        }
         let mut pickers = Vec::with_capacity(ROLES.len());
         let mut _picker_changes = Vec::with_capacity(ROLES.len());
         for (index, role) in ROLES.iter().enumerate() {
@@ -207,9 +260,15 @@ impl SettingsWindow {
             now_art: state.now_art,
             backdrop: WindowBackdrop::default(),
             thumbs: state.thumbs,
+            scrobbler,
+            lastfm_key,
+            lastfm_secret,
+            threshold_scrub: ScrubState::default(),
             storage: None,
             root_stats,
             _picker_changes,
+            _lastfm_changes,
+            _scrobbler_changed,
             _library_changed,
             _library_repaint,
             _backdrop_changed,
@@ -408,6 +467,155 @@ impl SettingsWindow {
                 panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
             ),
         ))
+    }
+
+    /// The Scrobbling page: the last.fm account section - the user's own
+    /// api credentials, the connect flow, the connection readout - and
+    /// the scrobbling knobs under it.
+    fn scrobbling_page(&self, cx: &mut Context<Self>) -> Div {
+        let scrobbler = self.scrobbler.read(cx);
+        let config = scrobbler.config().clone();
+        let phase = scrobbler.phase().clone();
+        let connected = !config.session_key.is_empty();
+        // A build with its own api identity connects in one click; only
+        // one without asks for the user's pair.
+        let builtin = lastfm::has_builtin_keys();
+        let keys_ready =
+            builtin || (!config.api_key.is_empty() && !config.api_secret.is_empty());
+
+        // The connect strip: where the connection stands, and the one
+        // action that moves it along.
+        let status: SharedString = if connected {
+            format!("connected as {}", config.username).into()
+        } else {
+            match &phase {
+                AuthPhase::Idle => "not connected".into(),
+                AuthPhase::Requesting => "requesting a token...".into(),
+                AuthPhase::Waiting(_) => {
+                    "authorize rox in the browser, then finish connecting".into()
+                }
+                AuthPhase::Confirming => "confirming...".into(),
+                AuthPhase::Failed(e) => format!("connection failed: {e}").into(),
+            }
+        };
+        let action = if connected {
+            small_button(
+                "disconnect",
+                icons::CLOSE,
+                false,
+                cx.listener(|this, _, _, cx| {
+                    this.scrobbler.update(cx, |s, cx| s.disconnect(cx));
+                }),
+            )
+        } else {
+            match phase {
+                AuthPhase::Requesting | AuthPhase::Confirming => {
+                    small_button("working...", icons::REFRESH_CW, true, |_, _, _| {})
+                }
+                AuthPhase::Waiting(_) => small_button(
+                    "finish connecting",
+                    icons::REFRESH_CW,
+                    false,
+                    cx.listener(|this, _, _, cx| {
+                        this.scrobbler.update(cx, |s, cx| s.finish_auth(cx));
+                    }),
+                ),
+                _ => small_button(
+                    "connect",
+                    icons::EXTERNAL_LINK,
+                    !keys_ready,
+                    cx.listener(|this, _, _, cx| {
+                        this.scrobbler.update(cx, |s, cx| s.begin_auth(cx));
+                    }),
+                ),
+            }
+        };
+
+        let account = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(div().text_xs().text_color(palette::text_muted()).child(
+                if builtin {
+                    "connect your last.fm account: authorize rox in the browser \
+                     and played tracks scrobble to it"
+                } else {
+                    "this build ships no api identity, so scrobbling needs your own \
+                     api account (last.fm/api/account/create); paste its key and \
+                     shared secret, then connect"
+                },
+            ))
+            .when(!builtin, |d| {
+                d.child(panel::setting_row(
+                    "api key",
+                    None,
+                    Input::new(&self.lastfm_key).w(px(240.)),
+                ))
+                .child(panel::setting_row(
+                    "shared secret",
+                    None,
+                    Input::new(&self.lastfm_secret).w(px(240.)),
+                ))
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(tokens::SPACE_MD)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(palette::text_muted())
+                            .child(status),
+                    )
+                    .child(action),
+            );
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(SECTION_GAP)
+            .child(section("last.fm", None, account))
+            .child(section(
+                "scrobbling",
+                None,
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "scrobble tracks",
+                        Some("send played tracks to last.fm once they cross the threshold"),
+                        panel::toggle(
+                            config.scrobbling,
+                            |this: &mut Self, on, cx| {
+                                this.scrobbler.update(cx, |s, cx| s.set_scrobbling(on, cx));
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(panel::setting_row(
+                        "scrobble threshold",
+                        Some(
+                            "how much of a track has to play before it scrobbles; \
+                             the seek strip and waveform can mark it",
+                        ),
+                        settings_ui::slider(
+                            &self.threshold_scrub,
+                            config.threshold,
+                            |this: &mut Self, fraction, cx| {
+                                this.scrobbler
+                                    .update(cx, |s, cx| s.set_threshold(fraction, cx));
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )),
+            ))
     }
 
     /// One cell of the color grid: the picker with its label beside it,
@@ -840,6 +1048,7 @@ impl Render for SettingsWindow {
             Page::Appearance => self.appearance_page(columns, cx),
             Page::Behavior => self.behavior_page(cx),
             Page::Library => self.library_page(cx),
+            Page::Scrobbling => self.scrobbling_page(cx),
             Page::Storage => self.storage_page(cx),
         };
 

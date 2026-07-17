@@ -179,6 +179,20 @@ pub fn slider<P: 'static>(
     apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
+    let readout = format!("{}%", (value * 100.0).round() as u32);
+    slider_labeled(scrub, value, readout, apply, cx)
+}
+
+/// [`slider`] with the readout text exposed, for values whose natural
+/// unit is not a percent (a pixel size, a count). `value` stays the 0 to
+/// 1 strip fraction; the caller maps it to its range in `apply`.
+pub fn slider_labeled<P: 'static>(
+    scrub: &ScrubState,
+    value: f32,
+    readout: String,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
     let entity = cx.entity();
     let strip = div()
         .w(SLIDER_W)
@@ -233,7 +247,7 @@ pub fn slider<P: 'static>(
                 .flex_none()
                 .text_center()
                 .text_color(palette::text_muted())
-                .child(format!("{}%", (value * 100.0).round() as u32)),
+                .child(readout),
         )
 }
 

@@ -19,9 +19,11 @@ use gpui::{App, Context, Entity, Image, ImageFormat, Subscription};
 
 use crate::panels::library::{Library, LibraryEvent};
 
-/// Decoded textures kept at once: a few viewports of header tiles, not
-/// the library.
-const CAP: usize = 128;
+/// Decoded textures kept at once: a few viewports of tiles, not the
+/// library. Sized for the hungriest consumer, a full-screen album grid
+/// at the small tile size on a 4K display, with headroom; below that
+/// the LRU thrashes every paint.
+const CAP: usize = 512;
 /// Loads in flight at once, the contract's bounded worker pool.
 const POOL: usize = 4;
 

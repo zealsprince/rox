@@ -9,6 +9,7 @@ pub mod projection;
 pub mod scanner;
 pub mod store;
 pub mod thumbs;
+pub mod writer;
 
 // Embedders hold a Connection for store queries, so its type needs to be
 // nameable without taking on the dep directly.

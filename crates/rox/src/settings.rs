@@ -83,6 +83,41 @@ pub struct Settings {
     /// survives path changes, plus where the clock sat. None when nothing
     /// was playing; a stale id degrades to the cold start on restore.
     pub last_track: Option<LastTrack>,
+    /// The last.fm connection and scrobbling knobs, the settings window's
+    /// Scrobbling page.
+    pub lastfm: Lastfm,
+}
+
+/// The last.fm account and how scrobbling behaves. The key and secret
+/// override the build's own api identity (`lastfm::keys`), for builds
+/// that ship none; the session key is what the connect flow lands and
+/// never expires until revoked on last.fm.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Lastfm {
+    pub api_key: String,
+    pub api_secret: String,
+    pub session_key: String,
+    /// The account the session belongs to, for the settings readout.
+    pub username: String,
+    /// Whether playback scrobbles at all; the connection stays either way.
+    pub scrobbling: bool,
+    /// How much of a track has to actually play before it scrobbles, as a
+    /// fraction of its duration. The seek strip and waveform can mark it.
+    pub threshold: f32,
+}
+
+impl Default for Lastfm {
+    fn default() -> Self {
+        Lastfm {
+            api_key: String::new(),
+            api_secret: String::new(),
+            session_key: String::new(),
+            username: String::new(),
+            scrobbling: true,
+            threshold: 0.5,
+        }
+    }
 }
 
 /// The closing snapshot of the playing track: its library id and the
@@ -121,6 +156,7 @@ impl Default for Settings {
             art_theming: false,
             restore_last_track: true,
             last_track: None,
+            lastfm: Lastfm::default(),
         }
     }
 }
@@ -156,6 +192,13 @@ impl Settings {
                 1.0
             };
         }
+        // The threshold reads straight into the scrobble math and the
+        // marker paint, so a hand-edited value clamps to a sane band.
+        settings.lastfm.threshold = if settings.lastfm.threshold.is_finite() {
+            settings.lastfm.threshold.clamp(0.1, 1.0)
+        } else {
+            0.5
+        };
         // A file from before multi-folder carries one library_root; it
         // seeds the list here and the next save drops it.
         if settings.library_roots.is_empty() {

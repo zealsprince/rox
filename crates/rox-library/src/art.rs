@@ -91,8 +91,10 @@ fn folder_art(path: &Path) -> Option<(Vec<u8>, String)> {
 /// is applied frame by frame, so their sizes count the stuffed bytes as
 /// stored and the walk below stays aligned. A tag unsynchronised as one
 /// stream (header flag alone) reads fine through lofty and stays there.
-/// None means the tag is not this shape; the lofty path takes over.
-fn unsync_apic(path: &Path) -> Option<(Vec<u8>, String)> {
+/// None means the tag is not this shape; the lofty path takes over. The
+/// writer leans on the same probe to carry the picture through a commit,
+/// since lofty would hand it the mangled bytes to write back.
+pub(crate) fn unsync_apic(path: &Path) -> Option<(Vec<u8>, String)> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut header = [0u8; 10];
     file.read_exact(&mut header).ok()?;
@@ -192,7 +194,7 @@ fn resync(data: &[u8]) -> Vec<u8> {
 
 /// A 4-byte synchsafe integer; None when a byte has its high bit set,
 /// which no conforming tag writes.
-fn synchsafe(bytes: &[u8]) -> Option<u32> {
+pub(crate) fn synchsafe(bytes: &[u8]) -> Option<u32> {
     let quad: [u8; 4] = bytes.try_into().ok()?;
     if quad.iter().any(|b| b & 0x80 != 0) {
         return None;

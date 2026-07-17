@@ -7,13 +7,15 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use gpui::{
-    anchored, deferred, div, fill, point, prelude::*, px, size, svg, AnyElement, App, Bounds,
+    anchored, canvas, deferred, div, fill, point, prelude::*, px, size, svg, AnyElement, App,
+    Bounds,
     Context, DismissEvent, Div, Element, Entity, Focusable as _, GlobalElementId,
     InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, Rgba, SharedString, Subscription, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowOptions,
+    Pixels, Point, Rgba, SharedString, Subscription, TitlebarOptions, UniformListScrollHandle,
+    WeakEntity, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Root};
@@ -24,6 +26,7 @@ use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
+use crate::lastfm::Scrobbler;
 use crate::panels::library::Library;
 use crate::player::Player;
 use crate::selection::Selection;
@@ -44,6 +47,9 @@ pub struct AppState {
     /// The artwork service's texture cache, shared by every view that
     /// draws cover thumbnails.
     pub thumbs: Entity<Thumbs>,
+    /// The last.fm scrobbler over this workspace's player; also where the
+    /// live scrobble config lives, for the panels' threshold markers.
+    pub scrobbler: Entity<Scrobbler>,
 }
 
 /// Every tab panel that has hosted one of our panels, reported from each
@@ -201,6 +207,198 @@ pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window:
         )
         .corner_radii(px(knob / 2.0)),
     );
+}
+
+/// The shared state of a drag-to-scroll surface: press, drag past a dead
+/// zone to scroll, release to let the built-up velocity coast. Behind
+/// Arcs like [`ScrubState`], so the view, its paint closures, and the
+/// window-level handlers can all hold it.
+#[derive(Clone, Default)]
+pub struct FlickState {
+    inner: Arc<Mutex<FlickInner>>,
+    dragging: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct FlickInner {
+    /// The pointer's last y and when it was there, the velocity sample.
+    last: Option<(Pixels, Instant)>,
+    /// Total pointer travel this drag; past the dead zone it counts as a
+    /// scroll and the release swallows the click.
+    travel: f32,
+    /// Coasting speed after release, px/s downward-positive.
+    velocity: f32,
+}
+
+/// Pointer travel below this stays a click, in px. Matches the slop a
+/// finger or a twitchy mouse needs before a press means "scroll".
+const FLICK_DEAD_ZONE: f32 = 4.0;
+/// The coast's exponential decay: velocity multiplies by this each
+/// second, so a flick settles in about a second.
+const FLICK_DECAY: f32 = 0.02;
+/// Coasting below this speed stops, px/s.
+const FLICK_REST: f32 = 12.0;
+
+impl FlickState {
+    /// A press landed: start tracking, stop any coast.
+    pub fn begin(&self, y: Pixels) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.last = Some((y, Instant::now()));
+        inner.travel = 0.0;
+        inner.velocity = 0.0;
+        self.dragging.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.dragging.load(Ordering::Relaxed)
+    }
+
+    /// Whether the drag left the dead zone, so the release is a scroll's
+    /// end and not a click.
+    pub fn scrolled(&self) -> bool {
+        self.inner.lock().unwrap().travel > FLICK_DEAD_ZONE
+    }
+
+    /// Track a move to `y`: the pointer's delta comes back for the host
+    /// to scroll by (zero inside the dead zone), and the velocity sample
+    /// updates for the coast.
+    fn track(&self, y: Pixels) -> f32 {
+        let mut inner = self.inner.lock().unwrap();
+        let Some((last_y, at)) = inner.last else {
+            return 0.0;
+        };
+        let dy = f32::from(y - last_y);
+        let dt = at.elapsed().as_secs_f32();
+        inner.last = Some((y, Instant::now()));
+        inner.travel += dy.abs();
+        if dt > 0.0 {
+            // Blend toward the instantaneous speed so one slow final
+            // sample doesn't erase the flick.
+            inner.velocity = inner.velocity * 0.7 + (dy / dt) * 0.3;
+        }
+        if inner.travel > FLICK_DEAD_ZONE {
+            dy
+        } else {
+            0.0
+        }
+    }
+
+    /// The release: done dragging, keep the velocity for the coast.
+    fn end(&self) {
+        self.dragging.store(false, Ordering::Relaxed);
+    }
+
+    /// One coast step: the distance to scroll this frame, decayed toward
+    /// rest. None once settled (or while still dragging).
+    pub fn coast(&self, dt: f32) -> Option<f32> {
+        if self.is_dragging() {
+            return None;
+        }
+        let mut inner = self.inner.lock().unwrap();
+        if inner.velocity.abs() < FLICK_REST {
+            inner.velocity = 0.0;
+            return None;
+        }
+        let dy = inner.velocity * dt;
+        inner.velocity *= FLICK_DECAY.powf(dt);
+        Some(dy)
+    }
+}
+
+/// Keep a live drag-scroll following the pointer: scroll by the pointer's
+/// delta on every move, end the drag on release. Call from the surface's
+/// paint pass, the [`scrub_on_paint`] idiom - window handlers only live
+/// one frame. Applying must notify an entity so the next frame re-arms
+/// the handlers.
+pub fn flick_on_paint(
+    flick: &FlickState,
+    window: &mut Window,
+    apply: impl Fn(f32, &mut App) + 'static,
+) {
+    if !flick.is_dragging() {
+        return;
+    }
+    window.on_mouse_event({
+        let flick = flick.clone();
+        move |event: &MouseMoveEvent, phase, _, cx| {
+            if !phase.bubble() || !flick.is_dragging() {
+                return;
+            }
+            // A release outside the window never reaches the up handler;
+            // a move without the button still held ends the drag instead.
+            if event.pressed_button != Some(MouseButton::Left) {
+                flick.end();
+                return;
+            }
+            let dy = flick.track(event.position.y);
+            if dy != 0.0 {
+                apply(dy, cx);
+            }
+        }
+    });
+    window.on_mouse_event({
+        let flick = flick.clone();
+        move |_: &MouseUpEvent, phase, _, _| {
+            if phase.bubble() {
+                flick.end();
+            }
+        }
+    });
+}
+
+/// Where a uniform list's offset should sit to center item `ix` of
+/// `count`, for the follow-playing glide: item extent times index, pulled
+/// back by half the viewport, clamped to the scrollable range. The item
+/// extent derives from the content height (the handle's `item` size is
+/// the viewport, despite the name). None before the list's first layout.
+pub fn glide_target(handle: &UniformListScrollHandle, ix: usize, count: usize) -> Option<Pixels> {
+    if count == 0 {
+        return None;
+    }
+    let sizes = handle.0.borrow().last_item_size?;
+    let item_h = sizes.contents.height / count as f32;
+    let viewport_h = sizes.item.height;
+    if viewport_h <= px(0.) {
+        return None;
+    }
+    let y = item_h * ix as f32 - (viewport_h - item_h) * 0.5;
+    let max = (sizes.contents.height - viewport_h).max(px(0.));
+    Some(y.clamp(px(0.), max))
+}
+
+/// Pin a uniform list's offset to `target` in one move. Returns true once
+/// already there - callers keep re-pinning until the target holds still,
+/// which rides out the stale first layouts around a launch, where item
+/// extents shift as the measured width lands.
+pub fn glide_snap(handle: &UniformListScrollHandle, target: Pixels) -> bool {
+    let base = handle.0.borrow().base_handle.clone();
+    let mut offset = base.offset();
+    if (-offset.y - target).abs() < px(1.) {
+        return true;
+    }
+    offset.y = -target;
+    base.set_offset(offset);
+    false
+}
+
+/// One glide step toward `target`: an exponential approach, done inside
+/// a pixel. Returns whether another frame is needed; the caller requests
+/// it and re-renders.
+pub fn glide_step(handle: &UniformListScrollHandle, target: Pixels, dt: f32) -> bool {
+    let base = handle.0.borrow().base_handle.clone();
+    let mut offset = base.offset();
+    let current = -offset.y;
+    let diff = target - current;
+    if diff.abs() < px(1.) {
+        offset.y = -target;
+        base.set_offset(offset);
+        return false;
+    }
+    // Cover 92% of the remaining distance every tenth of a second.
+    let step = 1.0 - (0.08_f32).powf(dt * 10.0);
+    offset.y = -(current + diff * step.clamp(0.0, 1.0));
+    base.set_offset(offset);
+    true
 }
 
 /// Keep a live drag following the pointer: apply the strip fraction on
@@ -512,6 +710,79 @@ pub fn setting_block(
             )
         })
         .child(div().mt(tokens::SPACE_XS).child(control))
+}
+
+/// The settings-page sliders' strip width and the readout beside them.
+pub const SLIDER_W: Pixels = px(150.);
+pub const READOUT_W: Pixels = px(60.);
+
+/// One scalar's slider row: the shared slider chrome over a scrub strip,
+/// applying the strip fraction live on click and drag, the readout riding
+/// alongside. Callers map the fraction into their own range and format
+/// their own readout.
+pub fn value_slider<P: 'static>(
+    scrub: &ScrubState,
+    fraction: f32,
+    readout: String,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    let entity = cx.entity();
+    let strip = div()
+        .w(SLIDER_W)
+        .h(tokens::CONTROL_H)
+        .flex_none()
+        .cursor_pointer()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener({
+                let scrub = scrub.clone();
+                let apply = apply.clone();
+                move |this: &mut P, event: &MouseDownEvent, _, cx| {
+                    scrub.begin();
+                    if let Some(fraction) = scrub.fraction(event.position.x) {
+                        apply(this, fraction, cx);
+                    }
+                    cx.notify();
+                }
+            }),
+        )
+        .child(
+            canvas(
+                {
+                    let scrub = scrub.clone();
+                    move |bounds, _, _| scrub.set_bounds(bounds)
+                },
+                {
+                    let scrub = scrub.clone();
+                    move |bounds, _, window, _| {
+                        paint_slider(fraction, false, bounds, window);
+                        scrub_on_paint(&scrub, window, {
+                            let entity = entity.clone();
+                            let apply = apply.clone();
+                            move |fraction, cx| {
+                                entity.update(cx, |this, cx| apply(this, fraction, cx));
+                            }
+                        });
+                    }
+                },
+            )
+            .size_full(),
+        );
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_SM)
+        .child(strip)
+        .child(
+            div()
+                .w(READOUT_W)
+                .flex_none()
+                .text_right()
+                .text_color(palette::text_muted())
+                .child(readout),
+        )
 }
 
 /// An on/off switch: a pill track, the knob in the accent on the far side

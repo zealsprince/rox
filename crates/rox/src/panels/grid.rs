@@ -52,8 +52,16 @@ const TILE_ROUNDING_MAX: f32 = 100.;
 /// The tile gap knob's ceiling, the panel frame sliders' scale.
 const TILE_GAP_MAX: f32 = 24.;
 
+/// The dim knob's ceiling, in percent of fully hidden: 100 fades the
+/// other covers out entirely.
+const TILE_DIM_MAX: f32 = 100.;
+
 fn default_tile() -> f32 {
     192.
+}
+
+fn default_dim() -> f32 {
+    60.
 }
 
 fn default_true() -> bool {
@@ -82,6 +90,13 @@ pub struct GridConfig {
     /// Glide there instead of jumping.
     #[serde(default)]
     pub smooth_follow: bool,
+    /// While a track plays, fade every cover but the playing album's;
+    /// hovering lights a tile back up.
+    #[serde(default)]
+    pub dim_playing: bool,
+    /// How far the dimmed covers fade, in percent of fully hidden.
+    #[serde(default = "default_dim")]
+    pub dim: f32,
     /// Each cover tile's corner rounding, in percent of circular: zero
     /// keeps the wall square, 100 rounds each cover into a circle.
     #[serde(default)]
@@ -103,6 +118,8 @@ impl Default for GridConfig {
             tile: default_tile(),
             follow_playing: false,
             smooth_follow: false,
+            dim_playing: false,
+            dim: default_dim(),
             rounding: 0.,
             gap: 0.,
             theme: PanelTheme::default(),
@@ -117,6 +134,11 @@ struct Cell {
     start: usize,
     len: u32,
     art: Option<Option<PathBuf>>,
+    /// The tile's current opacity under the dim mode, easing toward its
+    /// target every frame. None until the tile's first paint, which
+    /// lands at the target directly: only changes fade, a tile scrolled
+    /// into a dimmed wall arrives already dimmed.
+    dim: Option<f32>,
 }
 
 /// How many columns the grid falls back to before its first paint has
@@ -163,12 +185,19 @@ pub struct GridPanel {
     last_tick: Instant,
     /// The playing track's path, the change detector for follow-playing.
     playing_path: Option<PathBuf>,
+    /// The playing album's cell in the current view, kept fresh by
+    /// `sync_playing` and `rebuild` so per-frame dimming never rescans.
+    playing_ix: Option<usize>,
+    /// Whether audio is moving right now; pause lifts the dim.
+    playing: bool,
     /// The tile size slider's scrub strip, for the settings window.
     tile_scrub: ScrubState,
     /// The tile rounding slider's scrub strip, same window.
     rounding_scrub: ScrubState,
     /// The tile gap slider's scrub strip, same window.
     gap_scrub: ScrubState,
+    /// The dim amount slider's scrub strip, the behavior page.
+    dim_scrub: ScrubState,
     /// A failed play, shown in a strip until the next one lands.
     error: Option<SharedString>,
     focus: FocusHandle,
@@ -226,9 +255,12 @@ impl GridPanel {
             glide_to: None,
             last_tick: Instant::now(),
             playing_path: None,
+            playing_ix: None,
+            playing: false,
             tile_scrub: ScrubState::default(),
             rounding_scrub: ScrubState::default(),
             gap_scrub: ScrubState::default(),
+            dim_scrub: ScrubState::default(),
             error: None,
             focus: cx.focus_handle(),
             tab_panel: None,
@@ -245,17 +277,31 @@ impl GridPanel {
     }
 
     /// Follow the player: on a track change, head for the album it lives
-    /// in. The compare keeps the per-tick observer cheap, the player
-    /// notifies every pump.
+    /// in, and keep the dim mode's facts fresh. The compares keep the
+    /// per-tick observer cheap, the player notifies every pump.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
-        let path = self.state.player.read(cx).now_playing().map(|now| now.path);
+        let (playing, path) = {
+            let player = self.state.player.read(cx);
+            (
+                player.is_playing(),
+                player.now_playing().map(|now| now.path),
+            )
+        };
+        if playing != self.playing {
+            // Pause lifts the dim, resuming drops it back; render steps
+            // the fade, this kicks it off.
+            self.playing = playing;
+            cx.notify();
+        }
         if path == self.playing_path {
             return;
         }
         self.playing_path = path;
+        self.playing_ix = self.playing_cell(cx);
         if self.config.follow_playing {
             self.follow_playing(cx);
         }
+        cx.notify();
     }
 
     /// The playing track's album in the current view, when it holds one.
@@ -280,7 +326,7 @@ impl GridPanel {
     /// Scroll the playing track's album into view: a glide when smooth is
     /// on, a centered jump otherwise.
     fn follow_playing(&mut self, cx: &mut Context<Self>) {
-        let Some(cell_ix) = self.playing_cell(cx) else {
+        let Some(cell_ix) = self.playing_ix else {
             return;
         };
         // Both modes head for the same row through the per-frame stepping
@@ -295,7 +341,7 @@ impl GridPanel {
     /// with the panel's configured motion. The automatic follow never
     /// touches the selection; this deliberate move does.
     fn jump_to_playing(&mut self, cx: &mut Context<Self>) {
-        let Some(cell_ix) = self.playing_cell(cx) else {
+        let Some(cell_ix) = self.playing_ix else {
             return;
         };
         self.selected = HashSet::from([cell_ix]);
@@ -349,12 +395,14 @@ impl GridPanel {
                         start: i,
                         len: 0,
                         art: None,
+                        dim: None,
                     });
                     last = Some(key);
                 }
                 self.cells.last_mut().unwrap().len += 1;
             }
         }
+        self.playing_ix = self.playing_cell(cx);
         cx.notify();
     }
 
@@ -429,6 +477,12 @@ impl GridPanel {
             let id = self.cells.get(ix).and_then(|cell| {
                 let projection = library.projection()?;
                 let row = *self.view.get(cell.start)?;
+                // No album tag means this is the unknown bucket, not a real
+                // album: keep the placeholder instead of whichever loose
+                // track's art lands first.
+                if projection.resolve(row).album.is_empty() {
+                    return None;
+                }
                 Some(projection.db_id[row as usize])
             });
             id.and_then(|id| library.paths_for(&[id]).ok())
@@ -525,11 +579,38 @@ impl GridPanel {
         px(((width - self.config.gap * (cols - 1.)) / cols).max(1.))
     }
 
+    /// A tile's resting opacity under the dim mode: full for the playing
+    /// album and the hovered tile, the configured floor for everything
+    /// else while audio moves, full for all when it stops.
+    fn dim_target(&self, ix: usize) -> f32 {
+        if self.config.dim_playing
+            && self.playing
+            && self.playing_ix != Some(ix)
+            && self.hovered != Some(ix)
+        {
+            1.0 - self.config.dim / TILE_DIM_MAX
+        } else {
+            1.0
+        }
+    }
+
     /// One album tile: the cover filling a square, the label overlay while
     /// hovered, the accent outline while selected. Pending and missing art
     /// wear the same quiet placeholder, so a landing cover fills the tile
     /// without a flash.
     fn tile(&mut self, ix: usize, side: Pixels, cx: &mut Context<Self>) -> AnyElement {
+        // The first paint lands at the target directly; from then on the
+        // stepping in `body` owns the value.
+        let dim = match self.cells.get(ix).and_then(|cell| cell.dim) {
+            Some(dim) => dim,
+            None => {
+                let target = self.dim_target(ix);
+                if let Some(cell) = self.cells.get_mut(ix) {
+                    cell.dim = Some(target);
+                }
+                target
+            }
+        };
         let path = self.art_path(ix, cx);
         let thumb = match path {
             Some(path) => self
@@ -571,6 +652,7 @@ impl GridPanel {
             .overflow_hidden()
             .rounded(radius)
             .bg(palette::bg_elevated())
+            .when(dim < 1., |d| d.opacity(dim))
             .cursor_pointer()
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 let target = hovered.then_some(ix);
@@ -797,6 +879,34 @@ impl PanelSettings for GridPanel {
                         self.config.smooth_follow,
                         |this: &mut Self, on, cx| {
                             this.config.smooth_follow = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+            })
+            .child(setting_row(
+                "dim while playing",
+                Some("fade every cover but the playing album's; hovering lights a tile back up"),
+                toggle(
+                    self.config.dim_playing,
+                    |this: &mut Self, on, cx| {
+                        this.config.dim_playing = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .when(self.config.dim_playing, |d| {
+                d.child(setting_row(
+                    "dim amount",
+                    Some("how far the other covers fade; 100% hides them"),
+                    settings_ui::slider_labeled(
+                        &self.dim_scrub,
+                        (self.config.dim / TILE_DIM_MAX).clamp(0., 1.),
+                        format!("{:.0} %", self.config.dim),
+                        |this: &mut Self, fraction, cx| {
+                            this.config.dim = (fraction * TILE_DIM_MAX).round();
                             cx.notify();
                         },
                         cx,
@@ -1044,6 +1154,27 @@ impl GridPanel {
             } else {
                 window.request_animation_frame();
             }
+        }
+        // The dim fade: every painted tile's opacity eases toward its
+        // target, the glide's exponential approach. Frames only while
+        // one is still moving; a settled wall costs a linear scan.
+        let step = 1.0 - (0.08_f32).powf(dt * 10.0);
+        let mut fading = false;
+        for ix in 0..self.cells.len() {
+            let Some(current) = self.cells[ix].dim else {
+                continue;
+            };
+            let target = self.dim_target(ix);
+            let diff = target - current;
+            self.cells[ix].dim = Some(if diff.abs() < 0.005 {
+                target
+            } else {
+                fading = true;
+                current + diff * step
+            });
+        }
+        if fading {
+            window.request_animation_frame();
         }
 
         // The search lives in the tab bar via title_suffix while the panel

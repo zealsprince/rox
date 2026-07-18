@@ -6,6 +6,8 @@
 //! snapshot keeps the row readable. Every stat is derived from these
 //! rows by SQL; nothing stores a counter as the source.
 
+use std::collections::HashMap;
+
 use rusqlite::Connection;
 
 /// The events table beside the tracks it keys to. No foreign key on
@@ -205,6 +207,17 @@ pub fn rollup(
             sub: row.get(1)?,
             plays: row.get::<_, i64>(2)? as u64,
         })
+    })?;
+    rows.collect()
+}
+
+/// Every track's play count in one aggregate, for the projection's
+/// plays column. Tracks with no listens stay out of the map.
+pub fn counts(conn: &Connection) -> rusqlite::Result<HashMap<i64, u32>> {
+    let mut stmt =
+        conn.prepare_cached("SELECT track_id, COUNT(*) FROM listens GROUP BY track_id")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? as u32))
     })?;
     rows.collect()
 }

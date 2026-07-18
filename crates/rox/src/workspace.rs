@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use gpui::{
     actions, deferred, div, prelude::*, px, svg, App, Axis, Context, DismissEvent, Div, Entity,
-    FocusHandle, Focusable as _, FontFeatures, Global, KeyBinding, MouseButton, Subscription, Task,
+    FocusHandle, Focusable as _, FontFeatures, Global, KeyBinding, KeyDownEvent, MouseButton,
+    Subscription, Task,
     WeakEntity, Window, WindowBounds,
 };
 use rox_dock::{
@@ -24,7 +25,7 @@ use rox_dock::{
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
-use crate::history::History;
+use crate::history::{History, HistoryEvent};
 use crate::lastfm::Scrobbler;
 use crate::panel::{self, AppState, TabHosts};
 use crate::panels::cover::{CoverArtPanel, CoverConfig};
@@ -78,6 +79,7 @@ actions!(
         SeekForward,
         OpenSettings,
         OpenQuickPlay,
+        ZoomPanel,
         Quit
     ]
 );
@@ -121,6 +123,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-i", OpenSettings, Some("Workspace")),
         KeyBinding::new(quick_play_p, OpenQuickPlay, Some("Workspace")),
         KeyBinding::new(quick_play_f, OpenQuickPlay, Some("Workspace")),
+        // Fullscreens the last-clicked panel group over the whole dock
+        // area; the same chord or a plain escape backs out. Shift keeps
+        // it off the search boxes' bare-escape ladder.
+        KeyBinding::new("shift-escape", ZoomPanel, Some("Workspace")),
         KeyBinding::new(quit_keys, Quit, None),
     ]);
     // Fallback for windows without a workspace in the focus path (popped-out
@@ -345,6 +351,9 @@ pub struct Workspace {
     /// The menubar's right side shows the catalog status, so library
     /// updates must repaint the workspace.
     _library_changed: Subscription,
+    /// A landed listen bumps its track's play count in the shared
+    /// projection, so plays columns move without a reload.
+    _history_changed: Subscription,
     /// A new bake must repaint the window that shows it.
     _backdrop_changed: Subscription,
 }
@@ -546,6 +555,13 @@ impl Workspace {
         let _player_changed = cx.observe_in(&state.player, window, |this, _, window, cx| {
             this.refresh_title(window, cx);
         });
+        let _history_changed =
+            cx.subscribe(&state.history, |this, _, event: &HistoryEvent, cx| {
+                let HistoryEvent::Recorded { track_id } = *event;
+                this.state
+                    .library
+                    .update(cx, |library, cx| library.record_play(track_id, cx));
+            });
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         cx.default_global::<WorkspaceWindows>().0 += 1;
         let this = cx.entity().downgrade();
@@ -596,6 +612,7 @@ impl Workspace {
             _layout_changed,
             _player_changed,
             _library_changed,
+            _history_changed,
             _backdrop_changed,
         }
     }
@@ -1162,6 +1179,24 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &OpenQuickPlay, window, cx| {
                 this.toggle_quick_play(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ZoomPanel, window, cx| {
+                this.dock
+                    .update(cx, |dock, cx| dock.toggle_zoom_active(window, cx));
+            }))
+            // Escape backs out of a zoomed panel. A raw listener, not a
+            // binding: bindings win over key listeners, and the escape
+            // ladders (search boxes, quick-play) live in listeners that
+            // stop propagation - a binding here would steal their escape.
+            // This runs last in the bubble, so it only sees what they let
+            // through.
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key != "escape" || event.keystroke.modifiers.modified() {
+                    return;
+                }
+                if this.dock.update(cx, |dock, cx| dock.zoom_out(window, cx)) {
+                    cx.stop_propagation();
+                }
             }))
             // Quit bypasses the window close hook, so dump the layout and
             // frame here or a pending debounce and any window move since

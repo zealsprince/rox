@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 use memchr::memmem;
 use rayon::prelude::*;
@@ -188,6 +188,11 @@ pub struct Projection {
     /// other column: a rating click writes through the shared Arc in
     /// place, so rating a track never pays a projection reload.
     pub rating: Vec<AtomicU8>,
+    /// Play counts derived from the listens table at load. Atomics for
+    /// the ratings' reason: a landing listen bumps its track in place,
+    /// so a play never pays a projection reload. Per ADR 11 the events
+    /// stay the source; this column only caches their per-track count.
+    pub plays: Vec<AtomicU32>,
     pub artists: SymTable,
     pub album_artists: SymTable,
     pub albums: SymTable,
@@ -208,6 +213,7 @@ pub struct RowView<'a> {
     pub codec: &'a str,
     pub bitrate_kbps: u16,
     pub rating: u8,
+    pub plays: u32,
 }
 
 /// A field a query term can be pinned to with `field:value` syntax.
@@ -306,6 +312,7 @@ pub enum SortKey {
     Codec,
     Bitrate,
     Rating,
+    Plays,
 }
 
 impl Projection {
@@ -343,7 +350,9 @@ impl Projection {
                 );
             },
         )?;
-        Ok(Self::merge(vec![b]))
+        let projection = Self::merge(vec![b]);
+        projection.fill_plays(conn)?;
+        Ok(projection)
     }
 
     /// Load with one reader per shard over disjoint rowid ranges (WAL allows
@@ -407,7 +416,25 @@ impl Projection {
         for b in builders {
             shards.push(b?);
         }
-        Ok(Self::merge(shards))
+        let projection = Self::merge(shards);
+        let conn = store::open(db_path)?;
+        projection.fill_plays(&conn)?;
+        Ok(projection)
+    }
+
+    /// Fill the plays column from the listens table: one aggregate query,
+    /// then a walk mapping counts onto rows by track id.
+    fn fill_plays(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+        let counts = crate::listens::counts(conn)?;
+        if counts.is_empty() {
+            return Ok(());
+        }
+        for (i, id) in self.db_id.iter().enumerate() {
+            if let Some(&n) = counts.get(id) {
+                self.plays[i].store(n, Ordering::Relaxed);
+            }
+        }
+        Ok(())
     }
 
     fn merge(shards: Vec<Builder>) -> Self {
@@ -484,6 +511,7 @@ impl Projection {
             out.rating.extend_from_slice(&shard.rating);
         }
 
+        let plays = (0..out.db_id.len()).map(|_| AtomicU32::new(0)).collect();
         Projection {
             db_id: out.db_id,
             title: out.title,
@@ -499,6 +527,7 @@ impl Projection {
             codec: out.codec,
             bitrate_kbps: out.bitrate_kbps,
             rating: out.rating.into_iter().map(AtomicU8::new).collect(),
+            plays,
             artists: SymTable::from(artists),
             album_artists: SymTable::from(album_artists),
             albums: SymTable::from(albums),
@@ -522,6 +551,7 @@ impl Projection {
             codec: &self.codecs.strings[self.codec[i] as usize],
             bitrate_kbps: self.bitrate_kbps[i],
             rating: self.rating[i].load(Ordering::Relaxed),
+            plays: self.plays[i].load(Ordering::Relaxed),
         }
     }
 
@@ -745,6 +775,9 @@ impl Projection {
             SortKey::Rating => {
                 self.order_view(view, descending, |i| self.rating[i].load(Ordering::Relaxed))
             }
+            SortKey::Plays => {
+                self.order_view(view, descending, |i| self.plays[i].load(Ordering::Relaxed))
+            }
         }
     }
 
@@ -794,6 +827,7 @@ impl Projection {
                 * 2
             + self.duration_ms.capacity() * 4
             + self.rating.capacity()
+            + self.plays.capacity() * 4
             + self.artists.heap_bytes()
             + self.album_artists.heap_bytes()
             + self.albums.heap_bytes()
@@ -897,6 +931,33 @@ mod tests {
         // A year needle matches on the digits.
         assert_eq!(titles_for(&p, "year:200").len(), 2);
         assert_eq!(titles_for(&p, "stronger year:2007").len(), 1);
+    }
+
+    /// The plays column loads the listens aggregate and sorts like any
+    /// other key; a track with no events stays at zero.
+    #[test]
+    fn plays_fill_from_listens() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "A", 2000),
+                track("/m/2.mp3", "Two", "B", 2001),
+            ],
+        )
+        .unwrap();
+        let listen = crate::listens::listen_for_path(&conn, "/m/2.mp3", 100)
+            .unwrap()
+            .unwrap();
+        crate::listens::append(&conn, &listen).unwrap();
+        crate::listens::append(&conn, &listen).unwrap();
+
+        let p = Projection::load_serial(&conn).unwrap();
+        assert_eq!(p.resolve(0).plays, 0);
+        assert_eq!(p.resolve(1).plays, 2);
+        let by_plays = p.sort_view(&[0, 1], SortKey::Plays, true);
+        assert_eq!(by_plays, [1, 0]);
     }
 
     /// A two-disc set plays disc 1 through before disc 2 starts, instead

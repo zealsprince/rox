@@ -15,9 +15,10 @@ use rox_library::{listens, store};
 
 use crate::lastfm::{Listened, Scrobbler};
 
-/// A listen landed on disk; history views re-query.
+/// A listen landed on disk; history views re-query, and the library
+/// bumps the track's cached play count in place.
 pub enum HistoryEvent {
-    Recorded,
+    Recorded { track_id: i64 },
 }
 
 /// The recorder entity, one per workspace beside its scrobbler.
@@ -51,20 +52,20 @@ impl History {
                 .spawn(async move {
                     let conn = store::open(&db_path).map_err(|e| e.to_string())?;
                     let Some(path) = path.to_str() else {
-                        return Ok(false);
+                        return Ok(None);
                     };
                     let Some(listen) = listens::listen_for_path(&conn, path, started as i64)
                         .map_err(|e| e.to_string())?
                     else {
-                        return Ok(false);
+                        return Ok(None);
                     };
                     listens::append(&conn, &listen).map_err(|e| e.to_string())?;
-                    Ok::<bool, String>(true)
+                    Ok::<Option<i64>, String>(Some(listen.track_id))
                 })
                 .await;
             this.update(cx, |_, cx| match recorded {
-                Ok(true) => cx.emit(HistoryEvent::Recorded),
-                Ok(false) => {}
+                Ok(Some(track_id)) => cx.emit(HistoryEvent::Recorded { track_id }),
+                Ok(None) => {}
                 Err(e) => eprintln!("history: {e}"),
             })
             .ok();

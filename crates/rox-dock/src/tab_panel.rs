@@ -1495,6 +1495,19 @@ impl TabPanel {
         }
     }
 
+    /// The keyboard path into zoom; same behavior as the menu item.
+    pub(crate) fn toggle_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_action_toggle_zoom(&ToggleZoom, window, cx);
+    }
+
+    /// Zoom out only; a no-op when not zoomed, so callers can fire it
+    /// blindly without flipping an unzoomed group in.
+    pub(crate) fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.zoomed {
+            self.on_action_toggle_zoom(&ToggleZoom, window, cx);
+        }
+    }
+
     fn on_action_toggle_zoom(
         &mut self,
         _: &ToggleZoom,
@@ -1592,6 +1605,15 @@ impl Render for TabPanel {
             .size_full()
             .overflow_hidden()
             .bg(cx.theme().background)
+            // Record this group as the last one clicked; the dock's
+            // keyboard zoom targets it. Capture phase, so tabs and panel
+            // content that stop mouse events can't hide the click.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                let weak = cx.entity().downgrade();
+                _ = this
+                    .dock_area
+                    .update(cx, |dock, _| dock.active_tab_panel = Some(weak));
+            }))
             // An armed press (middle or Alt+Left, on a tab or the body)
             // becomes a panel move once the pointer travels past the
             // threshold. Lives on the root so a fast pull off a small tab

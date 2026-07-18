@@ -98,6 +98,11 @@ pub struct DockArea {
     /// The top zoom view of the dock_area, if any.
     zoom_view: Option<AnyView>,
 
+    /// The tab group the pointer last went down in, recorded by every
+    /// [`TabPanel`](TabPanel) render root. The keyboard zoom toggle acts
+    /// on this group; a stale weak handle just no-ops.
+    pub(crate) active_tab_panel: Option<WeakEntity<TabPanel>>,
+
     /// Lock panels layout, but allow to resize.
     locked: bool,
 
@@ -574,6 +579,7 @@ impl DockArea {
             bounds: Bounds::default(),
             items: dock_item,
             zoom_view: None,
+            active_tab_panel: None,
             toggle_button_panels: Edges::default(),
             toggle_button_visible: true,
             left_dock: None,
@@ -1220,6 +1226,37 @@ impl DockArea {
     pub fn set_zoomed_out(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.zoom_view = None;
         cx.notify();
+    }
+
+    /// Toggle zoom on the last-clicked tab group; already zoomed means
+    /// zoom out, whichever group holds the zoom. No group clicked yet is
+    /// a no-op.
+    pub fn toggle_zoom_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.zoom_view.is_some() {
+            self.zoom_out(window, cx);
+            return;
+        }
+        let Some(tab_panel) = self.active_tab_panel.as_ref().and_then(|p| p.upgrade()) else {
+            return;
+        };
+        tab_panel.update(cx, |panel, cx| panel.toggle_zoom(window, cx));
+    }
+
+    /// Dismiss the zoomed panel, if any; returns whether there was one.
+    /// Routed through the zoomed [`TabPanel`](TabPanel) so its own zoomed
+    /// flag (which drives the menu label) stays in sync.
+    pub fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(view) = self.zoom_view.clone() else {
+            return false;
+        };
+        if let Ok(tab_panel) = view.downcast::<TabPanel>() {
+            tab_panel.update(cx, |panel, cx| panel.zoom_out(window, cx));
+        }
+        // Synchronous and idempotent: covers a zoom view that is not a
+        // TabPanel and a desynced zoomed flag; the ZoomOut the panel just
+        // emitted clears it again asynchronously, which is harmless.
+        self.set_zoomed_out(window, cx);
+        true
     }
 
     fn render_items(&self, _window: &mut Window, _cx: &mut Context<Self>) -> AnyElement {

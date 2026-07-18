@@ -36,7 +36,7 @@ use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
 use crate::panel::AppState;
 use crate::panels::library::{fmt_ms, Library};
-use crate::settings::Settings;
+use crate::settings::{rating_style, RatingStyle, Settings};
 use crate::settings_ui::{self, section, SECTION_GAP};
 use crate::suggest;
 
@@ -893,23 +893,11 @@ impl TagEditor {
                         .when(faded, |d| d.text_color(palette::text_muted()))
                         .child(text)
                         .into_any_element()
-                } else if *field_def == Field::Rating {
-                    // The click control leads, like the library's rating
-                    // cells; the input beside it types an exact value
-                    // and rejects anything the scale cannot parse.
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(tokens::SPACE_SM)
-                        .child(rating_field(&self.inputs[i], cx))
-                        .child(
-                            div()
-                                .w(px(64.))
-                                .flex_none()
-                                .child(Input::new(&self.inputs[i]).small()),
-                        )
-                        .into_any_element()
+                } else if *field_def == Field::Rating && rating_style() == RatingStyle::Stars {
+                    // Star style rates by click alone, the library cells'
+                    // face; the numeric style falls through to the plain
+                    // input below, where 0-10 types exactly.
+                    rating_field(&self.inputs[i], cx).into_any_element()
                 } else {
                     // Tab out of a field takes its open suggestion along
                     // the way; the walk itself is the stock next stop,
@@ -1058,9 +1046,11 @@ impl TableDelegate for CellGrid {
         let rows = self.order.len();
         let total = rows * self.columns.len();
         let cell = self.cells[self.order[row_ix]][col_ix].clone();
-        // Rating cells hold no focusable input, so they render the click
-        // control and sit outside the tab walk entirely.
-        if FIELDS[col_ix].0 == Field::Rating {
+        // Star-style rating cells hold no focusable input: they render
+        // the click control and sit outside the tab walk. The numeric
+        // style keeps them as plain 0-10 inputs in the walk below.
+        let stars = rating_style() == RatingStyle::Stars;
+        if stars && FIELDS[col_ix].0 == Field::Rating {
             return div()
                 .h_full()
                 .flex()
@@ -1080,7 +1070,7 @@ impl TableDelegate for CellGrid {
             let mut pos = from;
             loop {
                 pos = (pos as i64 + dir).rem_euclid(total as i64) as usize;
-                if FIELDS[pos / rows].0 != Field::Rating {
+                if !(stars && FIELDS[pos / rows].0 == Field::Rating) {
                     return pos;
                 }
             }

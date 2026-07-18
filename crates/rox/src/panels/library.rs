@@ -63,6 +63,9 @@ pub enum LibraryEvent {
     /// variant so the panels that rebuild on Updated - the grid's tiles,
     /// the history reads, the stats recounts - sit a star click out.
     Rated,
+    /// One listen landed, its count bumped in place through the shared
+    /// projection, same deal as Rated: cells repaint, nothing rebuilds.
+    Played,
 }
 
 /// How often the UI samples a running scan's progress.
@@ -442,6 +445,21 @@ impl Library {
         cx.notify();
     }
 
+    /// A landed listen into the shared projection in place: plays are
+    /// atomics like the ratings, so the count moves without the reload
+    /// a catalog change pays. The event row is already on disk; this
+    /// only refreshes the cached column, per ADR 11 the events stay
+    /// the source.
+    pub fn record_play(&mut self, id: i64, cx: &mut Context<Self>) {
+        let Some(projection) = &self.projection else {
+            return;
+        };
+        if let Some(row) = projection.db_id.iter().position(|&other| other == id) {
+            projection.plays[row].fetch_add(1, Ordering::Relaxed);
+            cx.emit(LibraryEvent::Played);
+        }
+    }
+
     /// Queue one track's rating for its tag write. The map holds the
     /// newest value per track and one drain runs at a time, so rapid
     /// clicks collapse to the last value instead of racing the writer's
@@ -670,6 +688,7 @@ const COLUMNS: &[ColumnDef] = &[
     ColumnDef { key: "bitrate", label: "kbps", default_width: 64., right: true, default_on: false, sort: SortKey::Bitrate },
     ColumnDef { key: "duration", label: "time", default_width: 64., right: true, default_on: true, sort: SortKey::Duration },
     ColumnDef { key: "rating", label: "rating", default_width: 110., right: false, default_on: false, sort: SortKey::Rating },
+    ColumnDef { key: "plays", label: "plays", default_width: 56., right: true, default_on: false, sort: SortKey::Plays },
 ];
 
 /// The registry entry for a key.
@@ -808,6 +827,16 @@ pub struct LibraryConfig {
     /// The group headers' cover tile corner radius, in px.
     #[serde(default)]
     pub art_rounding: f32,
+    /// Show the expanded album headers' cover tile.
+    #[serde(default = "default_true")]
+    pub header_art: bool,
+    /// Show the year on the group headers' name line.
+    #[serde(default = "default_true")]
+    pub header_year: bool,
+    /// Show the genre and quality on the expanded headers' meta line;
+    /// the track count and total time always stay.
+    #[serde(default = "default_true")]
+    pub header_details: bool,
     /// The panel's palette override.
     #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
     pub theme: PanelTheme,
@@ -834,6 +863,9 @@ impl Default for LibraryConfig {
             follow_playing: false,
             smooth_follow: false,
             art_rounding: 0.,
+            header_art: true,
+            header_year: true,
+            header_details: true,
             theme: PanelTheme::default(),
         }
     }
@@ -1185,6 +1217,11 @@ struct TrackTable {
     /// The header tiles' corner radius, mirrored from the panel like the
     /// density: the tile renders here, the knob lives on the panel.
     art_rounding: f32,
+    /// The header rows' look knobs, mirrored from the panel the same
+    /// way: the cover tile, the year, and the meta line's details.
+    header_art: bool,
+    header_year: bool,
+    header_details: bool,
     /// Selected rows as indices into `view`, track rows only - headers
     /// take no selection. Cleared when the view swaps, since the indices
     /// point elsewhere afterwards.
@@ -1280,9 +1317,13 @@ impl TrackTable {
                 let id = {
                     let library = self.state.library.read(cx);
                     self.groups.get(g as usize).and_then(|group| {
-                        library
-                            .projection()
-                            .map(|projection| projection.db_id[group.first as usize])
+                        library.projection().and_then(|projection| {
+                            // No album tag means this is the unknown bucket,
+                            // not a real album: keep the placeholder instead
+                            // of whichever loose track's art lands first.
+                            (!projection.resolve(group.first).album.is_empty())
+                                .then(|| projection.db_id[group.first as usize])
+                        })
                     })
                 };
                 let path = id
@@ -1358,7 +1399,7 @@ impl TrackTable {
     ) -> Stateful<Div> {
         let expanded = self.headers == Headers::Expanded;
         let by_album = self.group_by == GroupBy::Album;
-        let has_tile = expanded && by_album;
+        let has_tile = expanded && by_album && self.header_art;
         let tile = has_tile.then(|| self.group_tile(g, false, cx));
         let indent = self.tile_side() + tokens::SPACE_SM;
         let (name, album, year) = match (
@@ -1451,7 +1492,7 @@ impl TrackTable {
                                 .child(album),
                         )
                     })
-                    .when(year != 0, |d| {
+                    .when(year != 0 && self.header_year, |d| {
                         d.child(
                             div()
                                 .flex_none()
@@ -1478,7 +1519,8 @@ impl TrackTable {
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
         let by_album = self.group_by == GroupBy::Album;
-        let tile = by_album.then(|| self.group_tile(g, true, cx));
+        let has_tile = by_album && self.header_art;
+        let tile = has_tile.then(|| self.group_tile(g, true, cx));
         let indent = self.tile_side() + tokens::SPACE_SM;
         let (album, genre, quality, tracks, total_ms) = match (
             self.groups.get(g as usize),
@@ -1504,11 +1546,13 @@ impl TrackTable {
             _ => Default::default(),
         };
         let mut stats = Vec::new();
-        if !genre.is_empty() {
-            stats.push(genre);
-        }
-        if !quality.is_empty() {
-            stats.push(quality);
+        if self.header_details {
+            if !genre.is_empty() {
+                stats.push(genre);
+            }
+            if !quality.is_empty() {
+                stats.push(quality);
+            }
         }
         stats.push(if tracks == 1 {
             "1 track".to_string()
@@ -1530,7 +1574,7 @@ impl TrackTable {
                     .gap(tokens::SPACE_SM)
                     .px(tokens::SPACE_SM)
                     // Clear of the cover tile, which spans the block.
-                    .when(by_album, |d| d.pl(indent))
+                    .when(has_tile, |d| d.pl(indent))
                     .overflow_hidden()
                     .child(
                         div()
@@ -1802,8 +1846,9 @@ impl TableDelegate for TrackTable {
             _ => {}
         }
         // The same wash the widget theme paints its own focus row with, so
-        // multi-selected rows read as one set. The playing row wears a
-        // fainter cut of it, so a selection still reads over the mark.
+        // multi-selected rows read as one set. The playing row wears the
+        // highlight role instead, a faint cut of it, so it stays apart
+        // from the accent-washed selection.
         let selected = self.selected.contains(&row_ix);
         div()
             // Group bounds resolve innermost-first, so one shared name
@@ -1814,7 +1859,7 @@ impl TableDelegate for TrackTable {
             .cursor_pointer()
             .when(selected, |d| d.bg(palette::alpha(palette::accent(), 0x26)))
             .when(self.playing_row == Some(row_ix) && !selected, |d| {
-                d.bg(palette::alpha(palette::accent(), 0x12))
+                d.bg(palette::alpha(palette::highlight(), 0x12))
             })
     }
 
@@ -1969,6 +2014,13 @@ impl TableDelegate for TrackTable {
                 projection.db_id[row as usize],
                 v.rating,
             ),
+            // Blank at zero like the track and year cells: never played
+            // reads cleaner as absence than as a column of zeros.
+            "plays" => cell.text_color(palette::text_muted()).child(if v.plays == 0 {
+                SharedString::default()
+            } else {
+                SharedString::from(v.plays.to_string())
+            }),
             _ => cell,
         };
         // The playing mark rides the right edge of the leading cell,
@@ -2083,6 +2135,11 @@ pub struct LibraryPanel {
     art_rounding: f32,
     /// The art rounding slider's scrub strip, for the settings window.
     art_scrub: ScrubState,
+    /// The header rows' look knobs; the delegate mirrors them for the
+    /// header renders, the config dump carries them.
+    header_art: bool,
+    header_year: bool,
+    header_details: bool,
     /// The panel's palette override, live for the render and carried by
     /// the config dump like every other view knob.
     theme: PanelTheme,
@@ -2111,12 +2168,12 @@ impl LibraryPanel {
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut LibraryPanel, _, event: &LibraryEvent, cx| {
-                // A rating click only needs the cells repainted: the value
-                // sits in the shared projection already, and re-sorting a
-                // rating-sorted view here would yank the row out from
-                // under the cursor mid-click. The order catches up on the
-                // next refresh.
-                if let LibraryEvent::Rated = event {
+                // A rating click or a landed listen only needs the cells
+                // repainted: the value sits in the shared projection
+                // already, and re-sorting a rating-sorted view here would
+                // yank the row out from under the cursor mid-click. The
+                // order catches up on the next refresh.
+                if matches!(event, LibraryEvent::Rated | LibraryEvent::Played) {
                     this.table.update(cx, |_, cx| cx.notify());
                     return;
                 }
@@ -2144,6 +2201,9 @@ impl LibraryPanel {
             group_by: config.group_by,
             density: config.density,
             art_rounding: config.art_rounding,
+            header_art: config.header_art,
+            header_year: config.header_year,
+            header_details: config.header_details,
             selected: HashSet::new(),
             anchor: None,
             cursor: None,
@@ -2192,6 +2252,9 @@ impl LibraryPanel {
             group_by: config.group_by,
             art_rounding: config.art_rounding,
             art_scrub: ScrubState::default(),
+            header_art: config.header_art,
+            header_year: config.header_year,
+            header_details: config.header_details,
             theme: config.theme,
             custom_title: config.title,
             tab_panel: None,
@@ -2566,6 +2629,9 @@ impl LibraryPanel {
             follow_playing: self.follow_playing,
             smooth_follow: self.smooth_follow,
             art_rounding: self.art_rounding,
+            header_art: self.header_art,
+            header_year: self.header_year,
+            header_details: self.header_details,
             theme: self.theme.clone(),
         }
     }
@@ -2610,7 +2676,9 @@ impl LibraryPanel {
                     columns.remove(ix);
                 }
             } else {
-                let column = Column::new(def.key, def.label).width(px(def.default_width));
+                let column = Column::new(def.key, def.label)
+                    .width(px(def.default_width))
+                    .sort(ColumnSort::Default);
                 columns.push(if def.right { column.text_right() } else { column });
             }
             table.refresh(cx);
@@ -3018,37 +3086,90 @@ impl panel::PanelSettings for LibraryPanel {
         cx.notify();
     }
 
-    /// The library's own appearance rows on the shared page: the group
-    /// headers' art rounding, a look knob that lives on the config
-    /// because it shapes the covers, not the panel frame.
+    /// The library's own appearance rows on the shared page: what the
+    /// group heading rows show and how their covers round, look knobs
+    /// that live on the config because they shape the rows, not the
+    /// panel frame.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let rounding = self.art_rounding;
         let fraction = (rounding / ART_ROUNDING_MAX).clamp(0., 1.);
-        Some(
-            settings_ui::section(
-                "covers",
-                None,
-                panel::setting_row(
-                    "art rounding",
-                    Some("round the album headers' cover corners"),
-                    settings_ui::slider_labeled(
-                        &self.art_scrub,
-                        fraction,
-                        format!("{rounding:.0} px"),
-                        |this: &mut Self, fraction, cx| {
-                            let value = (fraction * ART_ROUNDING_MAX).round();
-                            this.art_rounding = value;
-                            // The delegate mirrors it for the tile render,
-                            // the density's route.
-                            this.table
-                                .update(cx, |table, _| table.delegate_mut().art_rounding = value);
-                            cx.notify();
-                        },
-                        cx,
-                    ),
+        let headers = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(panel::setting_row(
+                "cover art",
+                Some("the expanded album headers' cover tile"),
+                panel::toggle(
+                    self.header_art,
+                    |this: &mut Self, on, cx| {
+                        this.header_art = on;
+                        this.table
+                            .update(cx, |table, _| table.delegate_mut().header_art = on);
+                        cx.notify();
+                    },
+                    cx,
                 ),
-            )
-            .into_any_element(),
+            ))
+            .child(panel::setting_row(
+                "year",
+                Some("the year on the heading rows"),
+                panel::toggle(
+                    self.header_year,
+                    |this: &mut Self, on, cx| {
+                        this.header_year = on;
+                        this.table
+                            .update(cx, |table, _| table.delegate_mut().header_year = on);
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "details",
+                Some("the genre and quality on the expanded meta line; the track count and total time stay"),
+                panel::toggle(
+                    self.header_details,
+                    |this: &mut Self, on, cx| {
+                        this.header_details = on;
+                        this.table
+                            .update(cx, |table, _| table.delegate_mut().header_details = on);
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ));
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(settings_ui::SECTION_GAP)
+                .child(settings_ui::section("headers", None, headers))
+                .child(settings_ui::section(
+                    "covers",
+                    None,
+                    panel::setting_row(
+                        "art rounding",
+                        Some("round the album headers' cover corners"),
+                        settings_ui::slider_labeled(
+                            &self.art_scrub,
+                            fraction,
+                            format!("{rounding:.0} px"),
+                            |this: &mut Self, fraction, cx| {
+                                let value = (fraction * ART_ROUNDING_MAX).round();
+                                this.art_rounding = value;
+                                // The delegate mirrors it for the tile render,
+                                // the density's route.
+                                this.table.update(cx, |table, _| {
+                                    table.delegate_mut().art_rounding = value
+                                });
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ),
+                ))
+                .into_any_element(),
         )
     }
 }

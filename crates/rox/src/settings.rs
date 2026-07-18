@@ -96,6 +96,9 @@ pub struct Settings {
     /// The tag editor's last window size and column widths, restored on
     /// the next open. None until an editor closes.
     pub tag_editor: Option<TagEditorState>,
+    /// The stats window's last size and range pick, restored on the next
+    /// open. None until the window closes.
+    pub stats_window: Option<StatsWindowState>,
 }
 
 /// The rating scale: five stars for quick clicks, or a 0-10 number in
@@ -208,6 +211,18 @@ pub struct TagEditorState {
     pub columns: Vec<f32>,
 }
 
+/// The stats window's remembered shape: size in logical pixels and the
+/// range pick, written on close and when the range changes. The range
+/// rides as the pick's key ("all", "year", "month"), decoded back in
+/// [`crate::stats_window`]; an unknown key falls back to all time.
+#[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct StatsWindowState {
+    pub width: f32,
+    pub height: f32,
+    pub range: String,
+}
+
 /// A window frame in logical pixels, plus whether the window was maximized
 /// (the frame is then the restore size).
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -240,6 +255,7 @@ impl Default for Settings {
             quick_play: QuickPlayConfig::default(),
             rating_style: RatingStyle::default(),
             tag_editor: None,
+            stats_window: None,
         }
     }
 }

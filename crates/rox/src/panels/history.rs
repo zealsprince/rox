@@ -132,7 +132,7 @@ impl HistoryPanel {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let library = self.state.library.read(cx);
         self.rows = match self.config.view {
-            HistoryView::Recent => library.recent_listens(ROWS_CAP),
+            HistoryView::Recent => library.recent_listens(0, ROWS_CAP),
             HistoryView::Most => library.most_played(ROWS_CAP),
             HistoryView::Never => library.never_played(ROWS_CAP),
         };
@@ -480,8 +480,8 @@ impl HistoryPanel {
 }
 
 /// A listen's age as a short readout: seconds up through years, one
-/// unit, no calendar math.
-fn fmt_ago(secs: i64) -> String {
+/// unit, no calendar math. The stats panel's recents read it too.
+pub fn fmt_ago(secs: i64) -> String {
     let secs = secs.max(0);
     let (value, unit) = match secs {
         s if s < 60 => return "just now".into(),

@@ -8,6 +8,7 @@
 
 mod assets;
 mod backdrop;
+mod charts;
 mod design;
 mod history;
 mod lastfm;

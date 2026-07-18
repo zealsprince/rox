@@ -111,14 +111,16 @@ fn track_plays_row(row: &rusqlite::Row) -> rusqlite::Result<TrackPlays> {
 const SNAPSHOT_COLUMNS: &str = "COALESCE(t.title, l.title),
      COALESCE(t.artist, l.artist), COALESCE(t.album, l.album)";
 
-/// The newest events first, one row per event.
-pub fn recent(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<TrackPlays>> {
+/// The newest events at or after `since` first, one row per event; 0
+/// reads them all.
+pub fn recent(conn: &Connection, since: i64, limit: usize) -> rusqlite::Result<Vec<TrackPlays>> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT l.track_id, 1, l.played_at, {SNAPSHOT_COLUMNS}
          FROM listens l LEFT JOIN tracks t ON t.id = l.track_id
-         ORDER BY l.played_at DESC, l.id DESC LIMIT ?1"
+         WHERE l.played_at >= ?1
+         ORDER BY l.played_at DESC, l.id DESC LIMIT ?2"
     ))?;
-    let rows = stmt.query_map([limit as i64], track_plays_row)?;
+    let rows = stmt.query_map([since, limit as i64], track_plays_row)?;
     rows.collect()
 }
 
@@ -156,35 +158,111 @@ pub enum Rollup {
     Genre,
 }
 
-/// One name's line in a stats rollup.
+/// One name's line in a stats rollup. `sub` is the line's secondary
+/// text: the album rollup carries the album artist there (an album name
+/// alone reads ambiguous), the others leave it empty.
 #[derive(Clone)]
 pub struct NamePlays {
     pub name: String,
+    pub sub: String,
     pub plays: u64,
 }
 
-/// Play counts grouped under one tag, most first. Grouping goes through
-/// the live catalog first, so fixing a tag re-buckets its history;
-/// untagged plays (empty name) stay out of the list.
-pub fn rollup(conn: &Connection, by: Rollup, limit: usize) -> rusqlite::Result<Vec<NamePlays>> {
+/// Play counts grouped under one tag, most first, over the events at or
+/// after `since` (0 counts them all) - the stats panel's range knob.
+/// Grouping goes through the live catalog first, so fixing a tag
+/// re-buckets its history; untagged plays (empty name) stay out of the
+/// list.
+pub fn rollup(
+    conn: &Connection,
+    by: Rollup,
+    since: i64,
+    limit: usize,
+) -> rusqlite::Result<Vec<NamePlays>> {
+    let column = match by {
+        Rollup::Artist => "artist",
+        Rollup::Album => "album",
+        Rollup::Genre => "genre",
+    };
+    // The album rollup's secondary text. The snapshot has no
+    // album_artist column, so a deleted track's rows fall back to the
+    // plain artist; MAX() keeps the pick deterministic when a group
+    // spans several.
+    let sub = match by {
+        Rollup::Album => "MAX(COALESCE(t.album_artist, l.artist))",
+        _ => "''",
+    };
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT COALESCE(t.{column}, l.{column}) AS name, {sub}, COUNT(*) AS plays
+         FROM listens l LEFT JOIN tracks t ON t.id = l.track_id
+         WHERE l.played_at >= ?1 AND name <> ''
+         GROUP BY name
+         ORDER BY plays DESC, name LIMIT ?2"
+    ))?;
+    let rows = stmt.query_map([since, limit as i64], |row| {
+        Ok(NamePlays {
+            name: row.get(0)?,
+            sub: row.get(1)?,
+            plays: row.get::<_, i64>(2)? as u64,
+        })
+    })?;
+    rows.collect()
+}
+
+/// When the first listen landed (unix seconds); None before any has.
+/// The all-time chart picks its span off this.
+pub fn earliest(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    conn.query_row("SELECT MIN(played_at) FROM listens", [], |row| row.get(0))
+}
+
+/// Listens bucketed over time for the chart: one count per `bucket`
+/// seconds from `since` up to `now`, empty buckets included, so the
+/// bars carry the quiet stretches too.
+pub fn histogram(
+    conn: &Connection,
+    since: i64,
+    bucket: i64,
+    now: i64,
+) -> rusqlite::Result<Vec<u64>> {
+    let n = ((now - since) / bucket).max(0) as usize + 1;
+    let mut counts = vec![0u64; n];
+    let mut stmt = conn.prepare_cached(
+        "SELECT (played_at - ?1) / ?2 AS bucket, COUNT(*) FROM listens
+         WHERE played_at >= ?1 GROUP BY bucket",
+    )?;
+    let rows = stmt.query_map([since, bucket], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? as u64))
+    })?;
+    for row in rows {
+        let (index, count) = row?;
+        // A listen stamped past `now` (clock skew) lands in the last bar
+        // rather than out of bounds.
+        let index = (index.max(0) as usize).min(n - 1);
+        counts[index] += count;
+    }
+    Ok(counts)
+}
+
+/// Resolve one rollup name back to its library tracks in the canonical
+/// browse order, so a stats row can queue what it counts. Live catalog
+/// only: a deleted track's snapshot keeps its rows in the rollup, but
+/// there is no file left to play.
+pub fn ids_for_name(
+    conn: &Connection,
+    by: Rollup,
+    name: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<i64>> {
     let column = match by {
         Rollup::Artist => "artist",
         Rollup::Album => "album",
         Rollup::Genre => "genre",
     };
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT COALESCE(t.{column}, l.{column}) AS name, COUNT(*) AS plays
-         FROM listens l LEFT JOIN tracks t ON t.id = l.track_id
-         WHERE name <> ''
-         GROUP BY name
-         ORDER BY plays DESC, name LIMIT ?1"
+        "SELECT id FROM tracks WHERE {column} = ?1
+         ORDER BY album_artist, album, disc_no, track_no LIMIT ?2"
     ))?;
-    let rows = stmt.query_map([limit as i64], |row| {
-        Ok(NamePlays {
-            name: row.get(0)?,
-            plays: row.get::<_, i64>(1)? as u64,
-        })
-    })?;
+    let rows = stmt.query_map(rusqlite::params![name, limit as i64], |row| row.get(0))?;
     rows.collect()
 }
 
@@ -246,11 +324,16 @@ mod tests {
         listen(&conn, "/m/1.mp3", 300);
         listen(&conn, "/m/3.mp3", 200);
 
-        let recent = recent(&conn, 10).unwrap();
+        let all = recent(&conn, 0, 10).unwrap();
         assert_eq!(
-            recent.iter().map(|r| r.last_played).collect::<Vec<_>>(),
+            all.iter().map(|r| r.last_played).collect::<Vec<_>>(),
             [300, 200, 100],
             "recent runs newest first"
+        );
+        assert_eq!(
+            recent(&conn, 200, 10).unwrap().len(),
+            2,
+            "a range bound drops older events"
         );
 
         let most = most_played(&conn, 10).unwrap();
@@ -260,7 +343,7 @@ mod tests {
         assert_eq!(never.len(), 1);
         assert_eq!(never[0].title, "Two");
 
-        let genres = rollup(&conn, Rollup::Genre, 10).unwrap();
+        let genres = rollup(&conn, Rollup::Genre, 0, 10).unwrap();
         assert_eq!(
             genres
                 .iter()
@@ -268,9 +351,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("rock", 2), ("jazz", 1)]
         );
+        let albums = rollup(&conn, Rollup::Album, 0, 10).unwrap();
+        assert_eq!(
+            (albums[0].name.as_str(), albums[0].sub.as_str()),
+            ("First", "A"),
+            "the album rollup carries the album artist"
+        );
+
+        let recent_genres = rollup(&conn, Rollup::Genre, 200, 10).unwrap();
+        assert_eq!(
+            recent_genres
+                .iter()
+                .map(|g| (g.name.as_str(), g.plays))
+                .collect::<Vec<_>>(),
+            [("jazz", 1), ("rock", 1)],
+            "a range bound re-counts the rollup"
+        );
 
         assert_eq!(count_since(&conn, 0).unwrap(), 3);
         assert_eq!(count_since(&conn, 200).unwrap(), 2);
+
+        assert_eq!(
+            ids_for_name(&conn, Rollup::Artist, "A", 10).unwrap().len(),
+            2,
+            "a rollup name resolves to its library tracks"
+        );
+        assert_eq!(ids_for_name(&conn, Rollup::Genre, "jazz", 10).unwrap().len(), 1);
+
+        assert_eq!(earliest(&conn).unwrap(), Some(100));
+        assert_eq!(
+            histogram(&conn, 100, 100, 400).unwrap(),
+            [1, 1, 1, 0],
+            "one count per bucket, empty buckets included"
+        );
+        assert_eq!(
+            histogram(&conn, 0, 1000, 400).unwrap(),
+            [3],
+            "one bucket swallows everything"
+        );
     }
 
     #[test]
@@ -282,9 +400,9 @@ mod tests {
         listen(&conn, "/m/1.mp3", 100);
         conn.execute("DELETE FROM tracks", []).unwrap();
 
-        let recent = recent(&conn, 10).unwrap();
+        let recent = recent(&conn, 0, 10).unwrap();
         assert_eq!(recent[0].title, "Gone", "the snapshot keeps the row readable");
-        let artists = rollup(&conn, Rollup::Artist, 10).unwrap();
+        let artists = rollup(&conn, Rollup::Artist, 0, 10).unwrap();
         assert_eq!(artists[0].name, "A");
     }
 }

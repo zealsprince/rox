@@ -324,8 +324,8 @@ impl Library {
     /// The history views' reads, on the UI-side connection: SQL over the
     /// indexed events table at panel-open and listen-append cadence, per
     /// ADR 11, never per keystroke or frame.
-    pub fn recent_listens(&self, limit: usize) -> Vec<listens::TrackPlays> {
-        self.listen_query(|conn| listens::recent(conn, limit))
+    pub fn recent_listens(&self, since: i64, limit: usize) -> Vec<listens::TrackPlays> {
+        self.listen_query(|conn| listens::recent(conn, since, limit))
     }
 
     pub fn most_played(&self, limit: usize) -> Vec<listens::TrackPlays> {
@@ -336,9 +336,15 @@ impl Library {
         self.listen_query(|conn| listens::never_played(conn, limit))
     }
 
-    /// Play counts grouped under one tag, the stats window's rollups.
-    pub fn listen_rollup(&self, by: listens::Rollup, limit: usize) -> Vec<listens::NamePlays> {
-        self.listen_query(|conn| listens::rollup(conn, by, limit))
+    /// Play counts grouped under one tag over a trailing range, the
+    /// stats panel's rollups; `since` 0 counts every event.
+    pub fn listen_rollup(
+        &self,
+        by: listens::Rollup,
+        since: i64,
+        limit: usize,
+    ) -> Vec<listens::NamePlays> {
+        self.listen_query(|conn| listens::rollup(conn, by, since, limit))
     }
 
     /// How many listens landed at or after `since` (unix seconds).
@@ -347,6 +353,25 @@ impl Library {
             .as_ref()
             .and_then(|conn| listens::count_since(conn, since).ok())
             .unwrap_or_default()
+    }
+
+    /// When the first listen landed; None before any has.
+    pub fn first_listen(&self) -> Option<i64> {
+        self.conn
+            .as_ref()
+            .and_then(|conn| listens::earliest(conn).ok())
+            .flatten()
+    }
+
+    /// Listens bucketed over time, the stats chart's bars.
+    pub fn listen_histogram(&self, since: i64, bucket: i64, now: i64) -> Vec<u64> {
+        self.listen_query(|conn| listens::histogram(conn, since, bucket, now))
+    }
+
+    /// Resolve a rollup name to its library tracks in browse order, so
+    /// a stats row can queue what it counts.
+    pub fn ids_for_rollup(&self, by: listens::Rollup, name: &str, limit: usize) -> Vec<i64> {
+        self.listen_query(|conn| listens::ids_for_name(conn, by, name, limit))
     }
 
     fn listen_query<T>(

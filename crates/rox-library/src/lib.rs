@@ -6,6 +6,8 @@
 
 pub mod art;
 pub mod listens;
+pub mod lyrics;
+pub mod playlists;
 pub mod projection;
 pub mod rating;
 pub mod scanner;

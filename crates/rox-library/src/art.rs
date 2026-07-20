@@ -205,7 +205,7 @@ pub(crate) fn synchsafe(bytes: &[u8]) -> Option<u32> {
 }
 
 /// The mime type off an image's magic bytes.
-fn sniff(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn sniff(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         Some("image/png")
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {

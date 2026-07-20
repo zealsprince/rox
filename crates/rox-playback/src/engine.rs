@@ -26,7 +26,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Time, TimeBase, Timestamp};
 
 use crate::resample::Resampler;
-use crate::shared::{Segment, Shared, TrackInfo};
+use crate::shared::{QueueEntry, QueueSnapshot, Segment, Shared, TrackInfo};
 
 pub enum Cmd {
     TogglePause,
@@ -36,6 +36,24 @@ pub enum Cmd {
     Volume(f32),
     SetLoop(LoopMode),
     SetShuffle(bool),
+    /// Splice tracks into the queue right after entry `after` (its stable id),
+    /// or at the end when `after` is None. `explicit` marks them as user-queued
+    /// (Play Next, Add to Queue) rather than part of the playing context, so
+    /// the queue widgets can show them apart from the album or library that
+    /// plays on around them.
+    Insert {
+        after: Option<u64>,
+        paths: Vec<PathBuf>,
+        explicit: bool,
+    },
+    /// Drop the entry with this id from the queue. Removing the playing entry
+    /// is ignored; the UI never offers it.
+    Remove { id: u64 },
+    /// Move the entry with this id to just after entry `after`, or to the
+    /// front when `after` is None.
+    Move { id: u64, after: Option<u64> },
+    /// Jump straight to the entry with this id and play it now.
+    Jump { id: u64 },
     Quit,
 }
 
@@ -65,15 +83,34 @@ struct Source {
     scratch: Vec<f32>,
 }
 
+/// One slot in the play order: a stable id the UI addresses it by, and the
+/// index of the file in the append-only `queue` pool. The pool never shrinks,
+/// so this index stays valid for the position mapping no matter how the order
+/// is reshuffled or trimmed.
+struct OrderEntry {
+    id: u64,
+    idx: usize,
+    /// User-queued (Play Next, Add to Queue) rather than part of the playing
+    /// context. The queue widgets list only these.
+    explicit: bool,
+}
+
 pub struct Engine {
+    /// Append-only pool of file paths. Order entries index into it; nothing is
+    /// ever removed so `Segment.track` indices stay valid.
     queue: Vec<PathBuf>,
     idx: usize,
-    /// The play order as queue indices: identity until shuffle swaps in a
-    /// permutation. All navigation walks this, so `order[pos]` is the
-    /// playing track and Prev retraces the shuffled path.
-    order: Vec<usize>,
+    /// The play order. All navigation walks this, so `order[pos]` is the
+    /// playing entry and Prev retraces the path. Editable in place: insert,
+    /// remove, move, reshuffle.
+    order: Vec<OrderEntry>,
     /// Position within `order`; kept in sync with `idx` on every open.
     pos: usize,
+    /// Where the first open lands, so playback can start partway into a
+    /// seeded context with history sitting behind the cursor.
+    start: usize,
+    /// Next stable id to hand out to a new order entry.
+    next_id: u64,
     shared: Arc<Shared>,
     producer: Producer<f32>,
     device_rate: u32,
@@ -89,14 +126,30 @@ pub struct Engine {
 impl Engine {
     pub fn new(
         queue: Vec<PathBuf>,
+        start: usize,
         shared: Arc<Shared>,
         producer: Producer<f32>,
         device_rate: u32,
         rx: Receiver<Cmd>,
+        explicit: Vec<bool>,
     ) -> Self {
+        // The starting queue is the playing context: an album, a library run,
+        // whatever the caller handed over. A fresh context passes an empty
+        // `explicit`, so every entry is context; a launch restore passes the
+        // saved flags so the up-next queue comes back marked. Later Play Next
+        // and Add to Queue splice in more explicit entries through Insert.
+        let order = (0..queue.len())
+            .map(|idx| OrderEntry {
+                id: idx as u64,
+                idx,
+                explicit: explicit.get(idx).copied().unwrap_or(false),
+            })
+            .collect();
         Engine {
-            order: (0..queue.len()).collect(),
+            order,
             pos: 0,
+            start: start.min(queue.len().saturating_sub(1)),
+            next_id: queue.len() as u64,
             queue,
             idx: 0,
             shared,
@@ -111,12 +164,18 @@ impl Engine {
     }
 
     pub fn run(mut self) {
-        let mut source = self.open_at(0);
+        self.publish_queue();
+        let mut source = self.open_at(self.start);
 
         loop {
             // Commands first so pause/seek stay responsive even when the
             // ring is full and decode is idle.
             let mut flush_to: Option<FlushAction> = None;
+            // Running navigation target across this drain, so back-to-back
+            // Next/Prev each step from the last intended position instead of
+            // all recomputing off the stale self.pos. Two Next presses in one
+            // drain otherwise collapse into a single advance.
+            let mut nav_pos: Option<usize> = None;
             while let Ok(cmd) = self.rx.try_recv() {
                 match cmd {
                     Cmd::TogglePause => {
@@ -129,26 +188,78 @@ impl Engine {
                             .volume_bits
                             .store(v.to_bits(), Ordering::Relaxed);
                     }
-                    Cmd::Seek(secs) => flush_to = Some(FlushAction::Seek(secs.max(0.0))),
+                    Cmd::Seek(secs) => {
+                        flush_to = Some(FlushAction::Seek(secs.max(0.0)));
+                        nav_pos = None;
+                    }
                     Cmd::Next => {
-                        if self.pos + 1 < self.order.len() {
-                            flush_to = Some(FlushAction::Track(self.pos + 1));
+                        // Off the audible track, not the decode cursor, which
+                        // has run a track ahead for the gapless boundary; from
+                        // there Next would skip two near the end of a track.
+                        let from = nav_pos.unwrap_or_else(|| self.audible_pos());
+                        if from + 1 < self.order.len() {
+                            nav_pos = Some(from + 1);
                         } else if self.loop_mode == LoopMode::All && !self.order.is_empty() {
-                            flush_to = Some(FlushAction::Track(0));
+                            nav_pos = Some(0);
                         }
+                        flush_to = None;
                     }
                     Cmd::Prev => {
-                        let target = if self.pos == 0 && self.loop_mode == LoopMode::All {
+                        let from = nav_pos.unwrap_or_else(|| self.audible_pos());
+                        let target = if from == 0 && self.loop_mode == LoopMode::All {
                             self.order.len().saturating_sub(1)
                         } else {
-                            self.pos.saturating_sub(1)
+                            from.saturating_sub(1)
                         };
-                        flush_to = Some(FlushAction::Track(target));
+                        nav_pos = Some(target);
+                        flush_to = None;
                     }
-                    Cmd::SetLoop(mode) => self.loop_mode = mode,
+                    Cmd::SetLoop(mode) => {
+                        self.loop_mode = mode;
+                        // From the ended state the source is None, so just
+                        // storing the mode leaves playback dead. Route through
+                        // the nav path: a wrapping mode reopens and resumes,
+                        // clearing ended on the way.
+                        if source.is_none() {
+                            nav_pos = match mode {
+                                LoopMode::One => Some(self.pos),
+                                LoopMode::All if !self.order.is_empty() => Some(0),
+                                _ => None,
+                            };
+                        }
+                    }
                     Cmd::SetShuffle(on) => self.set_shuffle(on),
+                    Cmd::Insert {
+                        after,
+                        paths,
+                        explicit,
+                    } => {
+                        let at = self.insert(after, paths, explicit);
+                        // From the ended state the source is None, so the new
+                        // entries land in order but nothing opens them and we
+                        // stay silent. Route the first of the batch through the
+                        // nav path so it reopens and resumes, clearing ended on
+                        // the way. A live session must not jump, so only wake
+                        // when we were actually idle.
+                        if source.is_none() {
+                            nav_pos = at;
+                        }
+                    }
+                    Cmd::Remove { id } => self.remove(id),
+                    Cmd::Move { id, after } => self.move_entry(id, after),
+                    // Reuse the nav path: setting the target flushes and opens
+                    // it just like a Next would.
+                    Cmd::Jump { id } => {
+                        if let Some(p) = self.find(id) {
+                            nav_pos = Some(p);
+                        }
+                        flush_to = None;
+                    }
                     Cmd::Quit => return,
                 }
+            }
+            if let Some(p) = nav_pos {
+                flush_to = Some(FlushAction::Track(p));
             }
 
             if let Some(action) = flush_to {
@@ -221,7 +332,7 @@ impl Engine {
     /// the new track.
     fn open_at(&mut self, mut p: usize) -> Option<Source> {
         while p < self.order.len() {
-            let i = self.order[p];
+            let i = self.order[p].idx;
             match Source::open(&self.queue[i], self.device_rate) {
                 Ok((src, info)) => {
                     self.pos = p;
@@ -244,20 +355,156 @@ impl Engine {
         None
     }
 
-    /// Swap the play order: a fresh permutation with the playing track
-    /// pinned first, or back to queue order at the current track. Only
-    /// future navigation changes; nothing flushes.
-    fn set_shuffle(&mut self, on: bool) {
-        if on {
-            self.order = shuffled(self.queue.len());
-            if let Some(p) = self.order.iter().position(|&i| i == self.idx) {
-                self.order.swap(0, p);
-            }
-            self.pos = 0;
-        } else {
-            self.order = (0..self.queue.len()).collect();
-            self.pos = self.idx;
+    /// Rewrite the UI's queue view from the live order. Called when the
+    /// entries change, not on a plain advance: the UI resolves the playing
+    /// entry off the position clock, so the cursor here is only a hint for
+    /// before audio starts. Bumps the revision so the UI knows to re-read.
+    fn publish_queue(&self) {
+        let entries = self
+            .order
+            .iter()
+            .map(|e| QueueEntry {
+                id: e.id,
+                path: self.queue[e.idx].clone(),
+                explicit: e.explicit,
+            })
+            .collect();
+        *self.shared.queue.lock().unwrap() = QueueSnapshot {
+            entries,
+            cursor: self.pos,
+        };
+        self.shared
+            .queue_rev
+            .fetch_add(1, Ordering::Release);
+    }
+
+    /// Order position of the entry with this id, if it is still queued.
+    fn find(&self, id: u64) -> Option<usize> {
+        self.order.iter().position(|e| e.id == id)
+    }
+
+    /// The order position of the track actually coming out of the speakers,
+    /// resolved off the output clock like `Shared::position`. Navigation
+    /// anchors on this rather than `pos`, the decode cursor, which leads by up
+    /// to a ring near a track boundary once the next track has opened for the
+    /// gapless handoff. Each entry has a distinct pool index, so the lookup is
+    /// unambiguous. Falls back to the decode cursor before any frame plays.
+    fn audible_pos(&self) -> usize {
+        let consumed = self.shared.frames_consumed.load(Ordering::Relaxed);
+        let track = {
+            let segments = self.shared.segments.lock().unwrap();
+            segments
+                .iter()
+                .rev()
+                .find(|s| s.at_frame <= consumed)
+                .map(|s| s.track)
+        };
+        match track {
+            Some(pool_idx) => self
+                .order
+                .iter()
+                .position(|e| e.idx == pool_idx)
+                .unwrap_or(self.pos),
+            None => self.pos,
         }
+    }
+
+    /// Splice paths into the pool and order right after entry `after` (or at
+    /// the end). Never flushes: the current track keeps playing, only the
+    /// future changes. If the splice lands before the cursor the cursor rides
+    /// along so the playing entry stays put. Returns the order position of the
+    /// first appended entry, or None when nothing was inserted, so a revive
+    /// from the ended state can navigate to it.
+    fn insert(&mut self, after: Option<u64>, paths: Vec<PathBuf>, explicit: bool) -> Option<usize> {
+        if paths.is_empty() {
+            return None;
+        }
+        let at = match after {
+            Some(id) => match self.find(id) {
+                Some(p) => p + 1,
+                None => self.order.len(),
+            },
+            None => self.order.len(),
+        };
+        let mut new = Vec::with_capacity(paths.len());
+        for path in paths {
+            let idx = self.queue.len();
+            self.queue.push(path);
+            self.shared.tracks.lock().unwrap().push(None);
+            new.push(OrderEntry {
+                id: self.next_id,
+                idx,
+                explicit,
+            });
+            self.next_id += 1;
+        }
+        let count = new.len();
+        self.order.splice(at..at, new);
+        if at <= self.pos {
+            self.pos += count;
+        }
+        self.publish_queue();
+        Some(at)
+    }
+
+    /// Drop an entry from the order. Removing the audibly playing entry is
+    /// refused; skipping is a separate action. The check is on the audible
+    /// position, not the decode cursor, which has run ahead to the next entry
+    /// near a boundary and would otherwise refuse removing the very item the
+    /// queue is about to play.
+    fn remove(&mut self, id: u64) {
+        let Some(p) = self.find(id) else {
+            return;
+        };
+        if p == self.audible_pos() {
+            return;
+        }
+        self.order.remove(p);
+        if p < self.pos {
+            self.pos -= 1;
+        }
+        self.publish_queue();
+    }
+
+    /// Move an entry to just after `after` (or to the front). The cursor is
+    /// re-found by id so the playing entry stays current through any shuffle
+    /// of indices around it.
+    fn move_entry(&mut self, id: u64, after: Option<u64>) {
+        let Some(from) = self.find(id) else {
+            return;
+        };
+        let cur_id = self.order[self.pos].id;
+        let entry = self.order.remove(from);
+        let at = match after {
+            Some(a) => match self.find(a) {
+                Some(p) => p + 1,
+                None => self.order.len(),
+            },
+            None => 0,
+        };
+        self.order.insert(at, entry);
+        self.pos = self.find(cur_id).unwrap_or(self.pos);
+        self.publish_queue();
+    }
+
+    /// Reorder only the upcoming portion, `order[pos + 1..]`. History and the
+    /// playing entry stay put, so shuffle never scrambles what already played
+    /// and the current track keeps playing. Nothing flushes. Off restores
+    /// pool order (ascending idx), which is library order for a fresh context;
+    /// play-next inserts, being later pool entries, settle at the tail.
+    fn set_shuffle(&mut self, on: bool) {
+        let start = self.pos + 1;
+        if start >= self.order.len() {
+            self.publish_queue();
+            return;
+        }
+        let tail = &mut self.order[start..];
+        if on {
+            shuffle_slice(tail);
+        } else {
+            tail.sort_by_key(|e| e.idx);
+        }
+        self.publish_queue();
     }
 
     /// Have the callback discard everything queued, wait for the ring to
@@ -293,23 +540,21 @@ enum FlushAction {
     Track(usize),
 }
 
-/// A Fisher-Yates permutation of `0..len`, xorshift64 off the std hasher's
+/// Fisher-Yates over a slice in place, xorshift64 off the std hasher's
 /// per-process random keys; a play order does not need a rand dependency.
-fn shuffled(len: usize) -> Vec<usize> {
+fn shuffle_slice<T>(slice: &mut [T]) {
     use std::hash::{BuildHasher, Hasher};
     let mut state = std::collections::hash_map::RandomState::new()
         .build_hasher()
         .finish()
         | 1;
-    let mut order: Vec<usize> = (0..len).collect();
-    for i in (1..len).rev() {
+    for i in (1..slice.len()).rev() {
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
         let j = (state % (i as u64 + 1)) as usize;
-        order.swap(i, j);
+        slice.swap(i, j);
     }
-    order
 }
 
 /// Decode a whole file through the same path playback uses and report
@@ -411,6 +656,38 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<(f32, f32)>, Stri
         }
     }
     Ok(peaks)
+}
+
+/// Decode one window of audio starting at `position_secs`, resampled to
+/// `device_rate` and interleaved stereo, at least `frames` frames when the
+/// track has them. This is the paused-load prime for the spectrum: playback
+/// only feeds the visualizer's tap while it renders, so a track loaded paused
+/// has nothing to show. Decoding a single window off-thread gives the frozen
+/// bars a real frame to stand on. No audio device involved; run it on a
+/// background thread.
+pub fn decode_window(
+    path: &PathBuf,
+    position_secs: f64,
+    device_rate: u32,
+    frames: usize,
+) -> Result<Vec<f32>, String> {
+    let (mut src, _) = Source::open(path, device_rate)?;
+    if position_secs > 0.0 {
+        src.seek(position_secs);
+    }
+    let mut out = Vec::with_capacity(frames * 2);
+    let mut chunk = Vec::new();
+    while out.len() < frames * 2 {
+        chunk.clear();
+        if !src.next_chunk(device_rate, &mut chunk) {
+            break;
+        }
+        out.extend_from_slice(&chunk);
+    }
+    if out.is_empty() {
+        return Err("no decodable audio".into());
+    }
+    Ok(out)
 }
 
 impl Source {

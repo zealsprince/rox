@@ -20,7 +20,9 @@ use gpui::{
 use gpui_component::input::{
     CompletionProvider, Enter, IndentInline, Input, InputEvent, InputState,
 };
-use gpui_component::Sizable;
+use gpui_component::{ActiveTheme, Icon, Sizable};
+
+use crate::assets::icons;
 
 /// What the box tells its host; the host reads the query back through
 /// [`SearchBox::query`].
@@ -43,6 +45,15 @@ pub struct SearchBox {
     query: String,
     /// Render the compact input, the title-row fit.
     small: bool,
+    /// Render the input at the extra-small size, a single font line tall,
+    /// for a host that wants the thinnest possible bar (the search panel).
+    xsmall: bool,
+    /// Drop the input's border, rounding, and background, for a host that
+    /// frames the box itself (the search panel filling its body).
+    bare: bool,
+    /// Show a magnifier glyph as the input's prefix, so the box reads as
+    /// search at a glance.
+    icon: bool,
     _input_events: Subscription,
 }
 
@@ -75,6 +86,9 @@ impl SearchBox {
             input,
             query: initial.to_string(),
             small: false,
+            xsmall: false,
+            bare: false,
+            icon: false,
             _input_events,
         }
     }
@@ -82,6 +96,26 @@ impl SearchBox {
     /// Use the compact input size, for title-bar hosts.
     pub fn small(mut self) -> Self {
         self.small = true;
+        self
+    }
+
+    /// Use the extra-small input size, a single font line tall.
+    pub fn xsmall(mut self) -> Self {
+        self.xsmall = true;
+        self
+    }
+
+    /// Drop the input's border, rounding, and background: the host frames
+    /// the box, like the search panel filling its whole body.
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+
+    /// Lead the box with a magnifier glyph, so a bare box still reads as
+    /// search without its own label.
+    pub fn icon(mut self) -> Self {
+        self.icon = true;
         self
     }
 
@@ -94,6 +128,17 @@ impl SearchBox {
     ) {
         self.input
             .update(cx, |input, _| input.lsp.completion_provider = provider);
+    }
+
+    /// Replace the box's text, cursor to the end. Used to mirror an
+    /// external query in - a global-following panel pushing the shared
+    /// query - so the change still fires and the host reconciles as if
+    /// typed; the host guards its own echo. Guard on drift before calling,
+    /// so the box the user is typing in keeps its cursor.
+    pub fn set_value(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| {
+            input.set_value(value.to_string(), window, cx)
+        });
     }
 
     /// Append a term to the query - a hint chip's `artist:` - space
@@ -149,9 +194,25 @@ impl SearchBox {
     /// through the entity so the key handler can reach the state:
     /// `search.update(cx, |search, cx| search.element(cx))`.
     pub fn element(&self, cx: &mut Context<Self>) -> Div {
-        let mut input = Input::new(&self.input).w_full();
-        if self.small {
+        // A clear glyph at the tail once there's text: clicking it empties the
+        // box, which fires Change like a keystroke, so followers and the shared
+        // query reset the same way an escape-to-clear does.
+        let mut input = Input::new(&self.input).w_full().cleanable(true);
+        if self.xsmall {
+            input = input.xsmall();
+        } else if self.small {
             input = input.small();
+        }
+        if self.bare {
+            input = input.appearance(false);
+        }
+        if self.icon {
+            input = input.prefix(
+                Icon::default()
+                    .path(icons::SEARCH)
+                    .small()
+                    .text_color(cx.theme().muted_foreground),
+            );
         }
         div()
             // Scopes the workspace's playback key bindings out while the

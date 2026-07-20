@@ -122,10 +122,7 @@ impl CompletionProvider for FieldSuggestions {
         if typed.is_empty() {
             return Task::ready(Ok(CompletionResponse::Array(Vec::new())));
         }
-        let whole = lsp_types::Range::new(
-            Position::new(0, 0),
-            text.offset_to_position(text.len()),
-        );
+        let whole = lsp_types::Range::new(Position::new(0, 0), text.offset_to_position(text.len()));
         let items = ranked(self.table(), &typed)
             .into_iter()
             .map(|value| CompletionItem {
@@ -272,10 +269,8 @@ impl CompletionProvider for QuerySuggestions {
             if typed.len() < 2 || raw.contains(':') {
                 return none();
             }
-            let span = lsp_types::Range::new(
-                text.offset_to_position(start),
-                text.offset_to_position(end),
-            );
+            let span =
+                lsp_types::Range::new(text.offset_to_position(start), text.offset_to_position(end));
             QUERY_FIELDS
                 .iter()
                 .filter(|(name, _)| name.starts_with(&typed))

@@ -289,7 +289,7 @@ fn apply(command: TrayCommand, cx: &mut App) -> bool {
 
 /// Push play state to the icon's menu, gated on change. The push blocks
 /// until the tray thread acks, which the prototype measured as effectively
-/// instant; the menu closures never call back into GPUI, so the two
+/// instant; the menu closures never call back into gpui, so the two
 /// threads cannot wait on each other.
 #[cfg(target_os = "linux")]
 pub(crate) fn set_playing(has_track: bool, playing: bool, cx: &mut App) {

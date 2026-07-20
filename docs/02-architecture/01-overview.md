@@ -19,7 +19,7 @@ The requirements this structure has to honor, from [scope](../01-product/03-scop
 - Visualizers as a first-class surface.
 - Local-first and fully offline: playback, browse, search, and tag editing never depend
   on the network. Enrichment (scrobbling, tag lookup, lyrics) is allowed on top. Built
-  on GPUI.
+  on gpui.
 - Streaming sources are extensions, so track identity is source-qualified and playback
   keeps a command-in, state-out seam a second source engine can sit behind. See
   [source extensibility](#source-extensibility).
@@ -35,7 +35,7 @@ locks. The split follows the hard constraint that the audio output callback runs
 OS real-time thread and must never block, allocate, or touch the database or UI.
 
 ```
-        ┌─────────────────────────── UI domain (GPUI main thread) ───────────────────────────┐
+        ┌─────────────────────────── UI domain (gpui main thread) ───────────────────────────┐
         │  panel shell + dock + pop-out windows   theming   all views (Render)                │
         │  holds Entity handles to shared state, pulls state, never blocks                    │
         └───▲─────────────▲──────────────────▲──────────────────▲──────────────────▲──────────┘
@@ -58,9 +58,9 @@ OS real-time thread and must never block, allocate, or touch the database or UI.
 
 The four domains:
 
-- **UI** owns every view and the panel system. It holds GPUI `Entity` handles to shared
+- **UI** owns every view and the panel system. It holds gpui `Entity` handles to shared
   state (current track, playback position, library projection) and re-renders when told.
-  It runs on the GPUI main thread and must stay responsive, so anything slow is a message
+  It runs on the gpui main thread and must stay responsive, so anything slow is a message
   to another domain, never a blocking call.
 - **Playback** owns the audio pipeline end to end: a decode thread feeding a real-time
   output callback, the gapless queue, ReplayGain application, and the PCM tap that drives
@@ -104,14 +104,14 @@ Each ADR records the call, the alternatives weighed, and what it costs. They liv
 
 | ADR | Call | Status |
 |-----|------|--------|
-| [1 - GPUI](decisions/01-adr-gpui.md) | GPUI as the UI framework | Decided |
+| [1 - gpui](decisions/01-adr-gpui.md) | gpui as the UI framework | Decided |
 | [2 - Audio stack](decisions/02-adr-audio-stack.md) | cpal + Symphonia directly, not rodio | Decided |
 | [3 - Gapless](decisions/03-adr-gapless.md) | Single-stream, swap-decoder queue | Decided |
 | [4 - Tagging](decisions/04-adr-tagging.md) | lofty plus an atomic-write layer we own | Decided |
 | [5 - Library store](decisions/05-adr-library-store.md) | SQLite source of truth plus in-memory projection | Decided |
 | [6 - Search](decisions/06-adr-search.md) | In-memory substring first, FTS5 next, tantivy only if needed | Decided |
-| [7 - Panels](decisions/07-adr-panels.md) | GPUI primitives with gpui-component as the widget baseline | Decided |
-| [8 - Visualizer rendering](decisions/08-adr-visualizer-rendering.md) | Spectrum and waveform on GPUI primitives, no generative visual | Decided |
+| [7 - Panels](decisions/07-adr-panels.md) | gpui primitives with gpui-component as the widget baseline | Decided |
+| [8 - Visualizer rendering](decisions/08-adr-visualizer-rendering.md) | Spectrum and waveform on gpui primitives, no generative visual | Decided |
 | [9 - Audio output](decisions/09-adr-audio-output.md) | Output layer swappable, bit-perfect deferred | Decided |
 | [10 - Theming](decisions/10-adr-theming.md) | Palette as data behind one setter, CPU-baked backdrop | Decided |
 | [11 - Play history](decisions/11-adr-play-history.md) | Append-only listen events in the library store | Decided |

@@ -1,5 +1,5 @@
 //! Research prototype for quit to tray
-//! (docs/0R-research/03-quit-to-tray.md): a minimal GPUI app with one
+//! (docs/0R-research/03-quit-to-tray.md): a minimal gpui app with one
 //! window, a ksni tray on its own thread, and a channel into the foreground
 //! executor. It exists to answer the writeup's open questions on the Wayland
 //! daily driver:
@@ -174,10 +174,8 @@ fn open_window(shared: Arc<Shared>, cx: &mut App) {
         }),
         ..Default::default()
     };
-    cx.open_window(options, |_, cx| {
-        cx.new(|cx| ProtoView::new(shared, cx))
-    })
-    .expect("failed to open the prototype window");
+    cx.open_window(options, |_, cx| cx.new(|cx| ProtoView::new(shared, cx)))
+        .expect("failed to open the prototype window");
 }
 
 fn main() {

@@ -20,7 +20,7 @@
 //! whole derived mode sits behind the
 //! [`set_art_theming`] switch, off by default; the backdrop layers read
 //! the same switch. Changes ease componentwise from wherever the
-//! palette visibly is to the new target. The static sits outside GPUI's
+//! palette visibly is to the new target. The static sits outside gpui's
 //! reactivity, so the setters repaint explicitly - one choke point for
 //! every writer. On top of all of it, per ADR 13 a panel can carry a
 //! [`PanelTheme`]: a sparse override the accessors answer with while
@@ -647,7 +647,7 @@ impl Tint {
 
 /// The app-wide palette inputs: the user's base palette, the two
 /// transparency scalars, and the song-theming switch. One for the whole
-/// app. A static rather than a GPUI global so the accessors keep their
+/// app. A static rather than a gpui global so the accessors keep their
 /// plain signatures and paint closures can read them without a context.
 static BASE: LazyLock<RwLock<Base>> = LazyLock::new(|| {
     RwLock::new(Base {
@@ -1193,7 +1193,7 @@ fn apply(cx: &mut App) {
     ] {
         *token = mix((*token).into(), palette.text_bright, lift).into();
     }
-    // The static sits outside GPUI's reactivity, so the repaint is
+    // The static sits outside gpui's reactivity, so the repaint is
     // explicit: wake every window, whichever entities they host.
     for window in cx.windows() {
         window.update(cx, |_, window, _| window.refresh()).ok();

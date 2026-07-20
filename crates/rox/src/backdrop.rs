@@ -1,5 +1,5 @@
 //! The window backdrop per ADR 10: the playing track's art, downscaled and
-//! gaussian-blurred once per track change, never per frame. GPUI has no
+//! gaussian-blurred once per track change, never per frame. gpui has no
 //! runtime blur (`blur_radius` is shadow-only), so the blur is baked into a
 //! small [`RenderImage`] on the background executor and the bilinear
 //! upscale to window size multiplies it. The shared [`NowPlayingArt`]

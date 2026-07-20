@@ -110,5 +110,5 @@ swap in without the UI noticing.
 - Search ranking. Results come back in row order; a search box wants relevance, which
   is where ADR 6's FTS5-next step comes in. Latency headroom says ranking can afford
   to cost something.
-- GPUI rendering. Window resolution is microseconds, but nobody has scrolled a
+- gpui rendering. Window resolution is microseconds, but nobody has scrolled a
   `uniform_list` bound to a 10M-row index vector yet.

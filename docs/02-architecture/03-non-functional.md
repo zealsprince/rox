@@ -7,7 +7,7 @@ what it costs to run and maintain.
 
 The requirement maps to specific structure, not hope:
 
-- Browse and scroll: GPUI `uniform_list` virtualizes fixed-height rows, so a 100k-track
+- Browse and scroll: gpui `uniform_list` virtualizes fixed-height rows, so a 100k-track
   view renders only what's visible. Library rows are designed to a fixed height to stay on
   that fast path.
 - Sort and filter: the in-memory projection interns repeated strings (artist, album,
@@ -57,10 +57,10 @@ The requirement maps to specific structure, not hope:
   action so this stays exercised); the exposure that remains is pop-out behavior once
   panels exist, window placement and cross-window drag, where Wayland gives clients the
   least control.
-- GPUI renders through Vulkan on Linux and Windows, so a Vulkan-capable driver is a hard
+- gpui renders through Vulkan on Linux and Windows, so a Vulkan-capable driver is a hard
   runtime dependency worth stating to users.
-- GPUI's pre-1.0 churn is a standing tax: pin the exact version, treat upgrades as work,
-  and keep the three GPUI distributions straight (upstream `gpui`, the CE fork, and
+- gpui's pre-1.0 churn is a standing tax: pin the exact version, treat upgrades as work,
+  and keep the three gpui distributions straight (upstream `gpui`, the CE fork, and
   `gpui-component`), since API snippets circulating online often come from the forks.
 
 ## Cost and operability
@@ -68,6 +68,6 @@ The requirement maps to specific structure, not hope:
 No server, so cost is the desktop footprint and the maintenance tax. The footprint is
 modest: tens of MB for the library projection at 100k tracks (about 1 GB at the 10M
 extreme), a bounded texture cache, playback buffers.
-The maintenance tax is the real cost, several pre-1.0 dependencies (GPUI, gpui-component,
+The maintenance tax is the real cost, several pre-1.0 dependencies (gpui, gpui-component,
 parts of the audio stack) that will break across upgrades. That's the price of building on
 the cutting edge, and it's a standing line item, not a one-time setup.

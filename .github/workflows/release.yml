@@ -59,7 +59,7 @@ jobs:
             libxkbcommon-x11-dev libx11-dev libxcb1-dev libvulkan-dev \
             libssl-dev
 
-      # GPUI's build script compiles Metal shaders with `xcrun metal`. Xcode 26
+      # gpui's build script compiles Metal shaders with `xcrun metal`. Xcode 26
       # ships that toolchain as a separate download, so fetch it if missing.
       - name: Ensure Metal toolchain
         if: runner.os == 'macOS'
@@ -70,6 +70,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # vendor/ is gitignored; [patch.crates-io] points at it, so rebuild it
+      # from crates.io + patches/ before the build.
+      - name: Vendor patched crates
+        shell: bash
+        run: scripts/vendor-gpui.sh
 
       - name: Build
         run: cargo build --release --package rox

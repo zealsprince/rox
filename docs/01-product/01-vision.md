@@ -24,7 +24,7 @@ Nothing on Linux or Mac fills the gap. The alternatives each drop one of the thr
   composable, and not themeable in any real sense.
 - **Quod Libet** is strong on tags and querying but ugly, and the interface isn't
   something you compose or theme.
-- **The new GPU-native crop**, all on GPUI:
+- **The new GPU-native crop**, all on gpui:
   [Hummingbird](https://github.com/hummingbird-player/hummingbird),
   [Pawse](https://github.com/popovpsk/pawse), and
   [vleer](https://github.com/vleerapp/vleer). Hummingbird is the closest: active,

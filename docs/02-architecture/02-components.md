@@ -117,7 +117,7 @@ Responsibility: the spectrum analyzer and the waveform seekbar. Consumes the pla
 PCM tap, owns the FFT analysis and the per-track waveform cache. The generative visual
 is gated on a real GPU shader ([ADR 8](decisions/08-adr-visualizer-rendering.md)).
 
-Boundary: analysis runs off the UI thread; rendering is GPUI primitives in a paint
+Boundary: analysis runs off the UI thread; rendering is gpui primitives in a paint
 callback.
 
 Contract:

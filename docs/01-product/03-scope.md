@@ -83,7 +83,7 @@ Deliberately, not by oversight:
 
 Requirements product owns, structure is the architect's call:
 
-- **All three desktop platforms, first-class.** Linux, Mac, and Windows. GPUI is
+- **All three desktop platforms, first-class.** Linux, Mac, and Windows. gpui is
   cross-platform, so there's no reason to treat any of them as a second citizen. A Foobar
   user on Windows should be able to try rox without leaving their OS first.
 - **Fast on a huge library.** Tens of thousands of tracks with no felt lag on scan,

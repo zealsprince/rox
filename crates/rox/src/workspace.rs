@@ -1,4 +1,4 @@
-//! The main window: an in-window menubar over the dock area. GPUI only
+//! The main window: an in-window menubar over the dock area. gpui only
 //! surfaces `set_menus` in the macOS system bar, so the bar is drawn
 //! in-window to behave the same on every platform. The dock, tabs, splits,
 //! and resize come from gpui-component per ADR 7; duplicate and pop-out

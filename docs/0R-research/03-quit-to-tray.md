@@ -1,9 +1,9 @@
 # Quit to tray
 
 Can rox keep playing with no windows open and come back through a tray icon?
-This entry surveys what GPUI 0.2.2 and the crate ecosystem offer, and records
+This entry surveys what gpui 0.2.2 and the crate ecosystem offer, and records
 what the prototype (`crates/rox-prototype-tray`) found on the Plasma 6 Wayland
-daily driver. Short version: the ksni side all works, but stock GPUI 0.2.2
+daily driver. Short version: the ksni side all works, but stock gpui 0.2.2
 kills the Linux event loop when the last window closes, so windowless
 residency waits on the QuitMode policy upstream has already merged.
 
@@ -12,7 +12,7 @@ residency waits on the QuitMode policy upstream has already merged.
 The app has two exits and they disagree. Quit (menu, cmd-q) persists and calls
 `cx.quit()`, tearing down every window (`workspace.rs`). Closing the main
 window's X only removes that window: the `on_window_should_close` hook persists
-the layout and returns true, and nothing checks what's left. GPUI's Linux event
+the layout and returns true, and nothing checks what's left. gpui's Linux event
 loop only exits on an explicit quit, so a settings window, popout, or customize
 window keeps a headless process alive with no way back to a workspace. That's
 today's bug, and it's worth fixing on its own before any tray work: when the
@@ -22,7 +22,7 @@ The same loop behavior is what background residency needs. The process already
 survives with zero windows; what's missing is on purpose instead of by
 accident, plus a handle back in.
 
-## What GPUI gives us
+## What gpui gives us
 
 Nothing tray-shaped in public API. The mac backend ships a `status_item.rs`
 that wraps `NSStatusItem` as a platform window, but nothing exports it; it's
@@ -39,7 +39,7 @@ The lifecycle primitives are there, though:
 - `cx.open_window` works from a windowless app; the compositor connection
   outlives the windows. The prototype should confirm this on Wayland.
 
-macOS barely needs a tray at all. GPUI doesn't implement
+macOS barely needs a tray at all. gpui doesn't implement
 `applicationShouldTerminateAfterLastWindowClosed`, so the AppKit default
 holds: the process stays, the dock icon stays, and `on_reopen` brings a
 workspace back. That's the platform's native quit-to-tray. A menu bar status
@@ -63,9 +63,9 @@ acceptable; it's the same one every SNI app carries.
 [tray-icon](https://docs.rs/tray-icon/latest/tray_icon/) 0.24.1, the Tauri
 project's cross-platform crate. On Linux it wants a GTK event loop running on
 the tray's thread, which means pulling gtk3 and libappindicator as system
-dependencies and running a dedicated `gtk::main()` thread next to GPUI's
+dependencies and running a dedicated `gtk::main()` thread next to gpui's
 calloop. On macOS it must create the icon on the main thread with the event
-loop already running; that loop is GPUI's NSApp, so the interleaving is on us.
+loop already running; that loop is gpui's NSApp, so the interleaving is on us.
 Cross-platform in name, but on Linux it's the heavier path for no gain over
 ksni, and on macOS the dock already does the job.
 
@@ -74,7 +74,7 @@ becomes a daily driver (an `NSStatusItem`-style story exists there through
 either crate).
 
 Either way the tray's callbacks land on the tray's own thread. Getting them
-into GPUI means a channel drained by a task on the foreground executor, the
+into gpui means a channel drained by a task on the foreground executor, the
 same marshalling MPRIS will need.
 
 ## What the tray is for
@@ -91,11 +91,11 @@ MVP.
 Ran July 2026 on Plasma 6 Wayland, KDE being SNI-native so no AppIndicator
 extension in the way. The tray was driven over D-Bus (`busctl` on the item
 and its dbusmenu, KWin scripting for window close), same events the shell
-sends. `crates/rox-prototype-tray` is the harness: one GPUI window, ksni on
+sends. `crates/rox-prototype-tray` is the harness: one gpui window, ksni on
 its blocking thread, an `async_channel` drained on the foreground executor,
 a ticker thread standing in for the audio engine.
 
-The blocker first: **stock GPUI 0.2.2 cannot run windowless on Linux.** Both
+The blocker first: **stock gpui 0.2.2 cannot run windowless on Linux.** Both
 backends stop the event loop when the last window drops
 (`wayland/client.rs:387` and `x11/client.rs:250`,
 `if state.windows.is_empty() { signal.stop() }`), so the process exits
@@ -119,7 +119,7 @@ With the patch in, every question came back yes:
   Pause or Play to match. `Handle::update` blocks its caller until the
   service thread acks; called from the foreground executor it returns
   effectively instantly and cannot deadlock as long as menu closures never
-  call back into GPUI, which the channel design guarantees.
+  call back into gpui, which the channel design guarantees.
 - A windowless app reopens fine. `cx.open_window` from the drain loop puts a
   window up, and KWin focuses it without any xdg-activation work on our side.
   Other compositors may apply focus-stealing prevention here; that stays a
@@ -158,10 +158,10 @@ calling `cx.quit` when the toggle is on; the dock is the tray, no crate
 involved. The mac backend's `status_item.rs` turns out to be dead gpui1-era
 code - it imports `geometry::rect`, which no longer exists, and isn't in the
 module tree - so a menu bar status item would be hand-rolled NSStatusItem
-via objc, or tray-icon on the main thread (GPUI's main thread is the running
+via objc, or tray-icon on the main thread (gpui's main thread is the running
 NSApp loop it wants). Still additive polish, not the mechanism.
 
-Windows has the same 0.2.2 disease as Linux: `WM_GPUI_CLOSE_ONE_WINDOW`
+Windows has the same 0.2.2 disease as Linux: `WM_gpui_CLOSE_ONE_WINDOW`
 posts `WM_QUIT` once the window list empties
 (`platform/windows/platform.rs:718`), and upstream removed that in the same
 QuitMode work, so the one gpui bump unlocks all three platforms. For the

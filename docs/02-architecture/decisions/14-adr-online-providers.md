@@ -27,7 +27,7 @@ the host would expose anyway.
 
 HTTP is one shared blocking agent (ureq, already in the tree for scrobbling) with an
 app User-Agent on every request, which MusicBrainz requires and every service
-appreciates. An async client would add a second runtime beside GPUI's executor to no
+appreciates. An async client would add a second runtime beside gpui's executor to no
 end; enrichment traffic is a handful of requests on user action. Rate limiting lives
 inside the service module (MusicBrainz's 1 req/s is the forcing case) so callers and
 the trait never see it. Caching starts in-memory per session, keyed by query,

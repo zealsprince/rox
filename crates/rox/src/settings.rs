@@ -266,7 +266,7 @@ pub fn rating_style() -> RatingStyle {
 }
 
 /// Flip the live style and repaint every window: the static sits outside
-/// GPUI's reactivity, so nothing else would notice. Persisting is the
+/// gpui's reactivity, so nothing else would notice. Persisting is the
 /// caller's, startup seeds from the file through here too.
 pub fn set_rating_style(style: RatingStyle, cx: &mut App) {
     RATING_NUMERIC.store(style == RatingStyle::Numeric, Ordering::Relaxed);
@@ -285,7 +285,7 @@ pub fn hide_menubar() -> bool {
 }
 
 /// Flip the live flag and repaint every window: the static sits outside
-/// GPUI's reactivity, so nothing else would notice. Persisting is the
+/// gpui's reactivity, so nothing else would notice. Persisting is the
 /// caller's, startup seeds from the file through here too.
 pub fn set_hide_menubar(on: bool, cx: &mut App) {
     HIDE_MENUBAR.store(on, Ordering::Relaxed);
@@ -347,7 +347,7 @@ pub fn app_font() -> Option<SharedString> {
 }
 
 /// Set the live app font and repaint every window: the static sits outside
-/// GPUI's reactivity, so nothing else would notice. Persisting is the
+/// gpui's reactivity, so nothing else would notice. Persisting is the
 /// caller's, startup seeds from the file through here too.
 pub fn set_app_font(font: Option<String>, cx: &mut App) {
     *APP_FONT.write().unwrap() = font.map(SharedString::from);

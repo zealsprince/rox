@@ -23,7 +23,7 @@
         let
           inherit (pkgs) lib stdenv;
 
-          # GPUI dlopens these at runtime on Linux (blade renders via Vulkan,
+          # gpui dlopens these at runtime on Linux (blade renders via Vulkan,
           # windowing via Wayland or X11). They have to be on the library path
           # because nothing links them at build time.
           runtimeLibs = lib.optionals stdenv.isLinux (
@@ -75,7 +75,7 @@
             shellHook = ''
               ./scripts/vendor-gpui.sh
             ''
-            # GPUI's build script compiles Metal shaders with `xcrun metal`,
+            # gpui's build script compiles Metal shaders with `xcrun metal`,
             # and nix can't ship Apple's Metal toolchain. Undo the SDK env
             # mkShell sets, drop the stub xcrun nixpkgs puts on PATH, and
             # lean on real Xcode instead. Xcode 26 users need to grab the

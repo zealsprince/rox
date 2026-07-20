@@ -2,7 +2,7 @@
 
 Answers the question [ADR 8](../02-architecture/decisions/08-adr-visualizer-rendering.md)
 left open: does a curl-noise flow field driven by spectrum bands hold a frame budget
-with CPU-side rendering, and does it draw better as GPUI polylines or as a per-frame
+with CPU-side rendering, and does it draw better as gpui polylines or as a per-frame
 image blit?
 
 The prototype lived in `crates/rox-prototype-viz` (git history, commit bd22dc1). It ran the sim on a worker thread the

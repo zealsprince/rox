@@ -1,0 +1,18 @@
+[package]
+name = "rox-prototype-tray"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+gpui = { workspace = true }
+# Runtime-agnostic (async-io) instead of the default tokio, matching the
+# zbus stack souvlaki already runs on. The blocking feature gives the
+# thread-and-handle API the research writeup frames.
+ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
+# Same channel the media-keys path uses to cross from a foreign thread into
+# the foreground executor.
+async-channel = "2"
+# Icon decode only. Same major as the main crate.
+image = "0.25"

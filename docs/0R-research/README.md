@@ -14,5 +14,8 @@ writeup before any decision leans on it.
   search 31 ms, filters single-digit ms, ~1 GB of projection, 1.9 s cold open with
   sharded readers.
 - [03 - Quit to tray](03-quit-to-tray.md) - can rox keep playing with no windows
-  and come back through a tray icon. The GPUI lifecycle and crate survey is in;
-  the ksni-on-Wayland prototype it frames hasn't run yet.
+  and come back through a tray icon, prototyped in `crates/rox-prototype-tray`.
+  The ksni tray, reopen, idle, and quit paths all hold on Plasma Wayland, but
+  stock GPUI 0.2.2 stops the Linux and Windows event loops on last window
+  close; windowless residency waits on the QuitMode policy already merged
+  upstream. macOS needs nothing, the dock is the tray.

@@ -12,11 +12,11 @@
 //! to land.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    div, img, prelude::*, AnyElement, App, Context, Entity, EntityId, ObjectFit, RenderImage, Rgba,
+    div, img, prelude::*, AnyElement, App, Context, Entity, ObjectFit, RenderImage, Rgba,
     Subscription, Window,
 };
 use image::{Frame, RgbaImage};
@@ -32,12 +32,6 @@ const BAKE_SIZE: u32 = 128;
 /// The gaussian sigma at bake size, a heavy blur so no cover detail
 /// survives into the backdrop.
 const BLUR_SIGMA: f32 = 8.0;
-
-/// Who set the palette seed last, by entity. Windows race on the global
-/// seed (the ADR's most-recently-started rule, approximated by bake
-/// completion order), and only the owner may clear it: one window
-/// stopping must not strip the tint another window's play owns.
-static SEED_OWNER: Mutex<Option<EntityId>> = Mutex::new(None);
 
 /// The playing track's art resolved once per track change and baked into
 /// the backdrop. One per workspace through
@@ -99,11 +93,10 @@ impl NowPlayingArt {
             if self.backdrop.take().is_some() {
                 cx.notify();
             }
-            // Fall back to the plain palette, unless the tint belongs to
+            // Fall back to the plain palette for this player's windows; the
+            // tint is keyed by the player, so clearing it never touches
             // another window's play.
-            if *SEED_OWNER.lock().unwrap() == Some(cx.entity().entity_id()) {
-                palette::set_seed(None, cx);
-            }
+            palette::set_seed(self.player.entity_id(), None, cx);
             return;
         };
         cx.spawn(async move |this, cx| {
@@ -125,8 +118,7 @@ impl NowPlayingArt {
                     None => (None, None),
                 };
                 this.backdrop = backdrop;
-                *SEED_OWNER.lock().unwrap() = Some(cx.entity().entity_id());
-                palette::set_seed(seed, cx);
+                palette::set_seed(this.player.entity_id(), seed, cx);
                 cx.notify();
             })
             .ok();

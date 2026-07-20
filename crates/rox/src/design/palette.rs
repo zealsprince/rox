@@ -1,14 +1,20 @@
 //! The app palette per ADR 10: every color the UI draws, one token per
-//! role, held as data in a process-global [`Palette`] behind one setter.
-//! Panels keep pulling from the plain accessors instead of inlining hex
-//! values; the accessors read the current palette, so a swap through
-//! [`set`] recolors the whole app. ADR 10's transparency pair rides the
-//! same pipe: surface opacity applies inside the background accessors at
-//! read time, backdrop strength inside [`backdrop_wash`], neither stored
-//! per token. While a track plays, [`set_seed`] layers the derived mode
-//! on top: every role's hue and chroma move toward a seed color pulled
-//! from the cover art while its lightness holds, so the contrast ladder
-//! survives any album. A bright cover swaps the dark ladder for the
+//! role, held as data behind the plain accessors. The base palette and
+//! the transparency scalars are app-wide; the art tint that rides on top
+//! is per playback, keyed by the player entity, so a second window's
+//! track tints only its own windows and a popped-out panel shares its
+//! parent's run. Panels keep pulling from the plain accessors instead of
+//! inlining hex values; the accessors answer from the window tint in
+//! scope, so a swap through [`set`] recolors the whole app and a track
+//! change recolors one playback's windows. ADR 10's transparency pair
+//! rides the same pipe: surface opacity applies inside the background
+//! accessors at read time, backdrop strength inside [`backdrop_wash`],
+//! neither stored per token. While a track plays, [`set_seed`] layers the
+//! derived mode on top of that player's tint: every role's hue and chroma
+//! move toward a seed color pulled from the cover art while its lightness
+//! holds, so the contrast ladder survives any album. The one
+//! gpui-component widget theme is a single global, so it can carry only
+//! one tint; it follows the focused window's playback. A bright cover swaps the dark ladder for the
 //! designed light one before tinting, and when a second cover color
 //! stands apart from the first it takes the highlight role whole. The
 //! whole derived mode sits behind the
@@ -23,12 +29,12 @@
 //! keep following the app palette.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, Instant};
 
-use gpui::{rgb, App, Rgba};
+use gpui::{rgb, App, EntityId, Rgba};
 use gpui_component::{Theme, ThemeColor, ThemeMode};
 use serde::{Deserialize, Serialize};
 
@@ -237,7 +243,7 @@ macro_rules! tokens {
             #[allow(dead_code)]
             pub fn $role() -> Rgba {
                 scope_color(stringify!($role))
-                    .unwrap_or_else(|| CURRENT.read().unwrap().role(|p| p.$role))
+                    .unwrap_or_else(|| active_role(|p| p.$role))
             }
         )*
 
@@ -245,10 +251,9 @@ macro_rules! tokens {
             $(#[$sdoc])*
             #[allow(dead_code)]
             pub fn $srole() -> Rgba {
-                let current = CURRENT.read().unwrap();
                 let color = scope_color(stringify!($srole))
-                    .unwrap_or_else(|| current.role(|p| p.$srole));
-                let opacity = scope_opacity().unwrap_or(current.surface_opacity);
+                    .unwrap_or_else(|| active_role(|p| p.$srole));
+                let opacity = scope_opacity().unwrap_or_else(base_surface_opacity);
                 scaled(color, opacity)
             }
         )*
@@ -257,10 +262,9 @@ macro_rules! tokens {
             $(#[$tdoc])*
             #[allow(dead_code)]
             pub fn $trole() -> Rgba {
-                let current = CURRENT.read().unwrap();
                 let color = scope_color(stringify!($trole))
-                    .unwrap_or_else(|| current.role(|p| p.$trole));
-                let opacity = scope_opacity().unwrap_or(current.surface_opacity);
+                    .unwrap_or_else(|| active_role(|p| p.$trole));
+                let opacity = scope_opacity().unwrap_or_else(base_surface_opacity);
                 scaled(color, opacity * opacity)
             }
         )*
@@ -269,12 +273,11 @@ macro_rules! tokens {
             $(#[$idoc])*
             #[allow(dead_code)]
             pub fn $irole() -> Rgba {
-                let current = CURRENT.read().unwrap();
                 let color = scope_color(stringify!($irole))
-                    .unwrap_or_else(|| current.role(|p| p.$irole));
+                    .unwrap_or_else(|| active_role(|p| p.$irole));
                 let bright = scope_color("text_bright")
-                    .unwrap_or_else(|| current.role(|p| p.text_bright));
-                let opacity = scope_opacity().unwrap_or(current.surface_opacity);
+                    .unwrap_or_else(|| active_role(|p| p.text_bright));
+                let opacity = scope_opacity().unwrap_or_else(base_surface_opacity);
                 mix(color, bright, 1.0 - opacity)
             }
         )*
@@ -420,6 +423,11 @@ pub struct PanelTheme {
     /// A border around the panel, in px of width.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<f32>,
+    /// The panel's font family, overriding the app font just here. None
+    /// follows the app font. A name that is not installed falls back at
+    /// render, so a config moved between machines still shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
 }
 
 impl PanelTheme {
@@ -433,6 +441,7 @@ impl PanelTheme {
             && self.padding.is_none()
             && self.rounding.is_none()
             && self.border.is_none()
+            && self.font.is_none()
     }
 
     /// A role's override, when one is set and parses.
@@ -504,7 +513,12 @@ fn scope_color(role: &str) -> Option<Rgba> {
 
 /// The innermost scope's surface opacity, if it carries one.
 fn scope_opacity() -> Option<f32> {
-    SCOPES.with(|scopes| scopes.borrow().last().and_then(|scope| scope.surface_opacity))
+    SCOPES.with(|scopes| {
+        scopes
+            .borrow()
+            .last()
+            .and_then(|scope| scope.surface_opacity)
+    })
 }
 
 /// Run `f` with a panel scope active: every accessor answers with the
@@ -553,25 +567,46 @@ impl Seed {
 
 /// What the accessors read: the base palette and its writers' inputs,
 /// plus the easing run the reads actually sample.
-struct Current {
+#[derive(Clone, Copy)]
+struct Base {
     /// The user palette. [`set`] writes it, editing targets it,
     /// derivation layers on top without touching it.
     base: Palette,
-    /// The cover-art seed while a track plays; None reads as the plain
-    /// base palette.
-    seed: Option<Seed>,
-    /// The song-theming switch: whether the seed may derive at all.
-    /// Off, the seed is only remembered for a later enable.
+    /// The song-theming switch: whether a seed may derive at all. Off,
+    /// each tint's seed is only remembered for a later enable.
     art_theming: bool,
-    /// The easing run: reads sample between these two by elapsed time.
-    from: Palette,
-    target: Palette,
-    eased_at: Instant,
     surface_opacity: f32,
     backdrop_strength: f32,
 }
 
-impl Current {
+/// One playback's art tint: the easing run between the palette where it
+/// visibly sat and where its current seed lands it. Held per player, so a
+/// second window's playback tints only its own windows while a popped-out
+/// panel shares its parent player's run. The seed rides along so a base
+/// or song-theming change can re-derive without the caller replaying it.
+#[derive(Clone, Copy)]
+pub struct Tint {
+    /// The cover-art seed while a track plays; None reads as the plain
+    /// base palette.
+    seed: Option<Seed>,
+    /// The easing run: reads sample between these two by elapsed time.
+    from: Palette,
+    target: Palette,
+    eased_at: Instant,
+}
+
+impl Tint {
+    /// A settled run sitting on a palette, nothing easing. What a window
+    /// reads when its player has never seeded.
+    fn settled(palette: Palette) -> Tint {
+        Tint {
+            seed: None,
+            from: palette,
+            target: palette,
+            eased_at: Instant::now(),
+        }
+    }
+
     /// Where the easing run sits, 0 fresh, 1 settled, smoothstepped so
     /// changes ease out instead of stopping dead.
     fn progress(&self) -> f32 {
@@ -599,54 +634,91 @@ impl Current {
         }
     }
 
-    /// Aim a fresh easing run at the current base and seed. Interrupting
+    /// Aim a fresh easing run at the base and this tint's seed. Interrupting
     /// a run starts from wherever it visibly is, the waveform's rule, so
     /// nothing snaps.
-    fn retarget(&mut self) {
+    fn retarget(&mut self, base: &Base) {
         self.from = self.snapshot();
-        let seed = if self.art_theming { self.seed } else { None };
-        self.target = derive(&self.base, seed);
+        let seed = if base.art_theming { self.seed } else { None };
+        self.target = derive(&base.base, seed);
         self.eased_at = Instant::now();
     }
 }
 
-/// The current palette and scalars. A static rather than a GPUI global so
-/// the accessors keep their plain signatures and paint closures can read
-/// them without a context.
-static CURRENT: LazyLock<RwLock<Current>> = LazyLock::new(|| {
-    let palette = Palette::default();
-    RwLock::new(Current {
-        base: palette,
-        seed: None,
+/// The app-wide palette inputs: the user's base palette, the two
+/// transparency scalars, and the song-theming switch. One for the whole
+/// app. A static rather than a GPUI global so the accessors keep their
+/// plain signatures and paint closures can read them without a context.
+static BASE: LazyLock<RwLock<Base>> = LazyLock::new(|| {
+    RwLock::new(Base {
+        base: Palette::default(),
         art_theming: false,
-        from: palette,
-        target: palette,
-        eased_at: Instant::now(),
         surface_opacity: 1.0,
         backdrop_strength: 1.0,
     })
 });
 
+/// The art tints, one per player entity. A window resolves its own by
+/// pushing [`window_tint`] before it renders; a player with no entry
+/// reads the plain base palette.
+static TINTS: LazyLock<RwLock<HashMap<EntityId, Tint>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// The player whose tint the app-wide widget theme follows. The
+/// gpui-component theme is one global, so it can only carry one tint at a
+/// time; it tracks the focused window's playback.
+static FOCUSED: LazyLock<RwLock<Option<EntityId>>> = LazyLock::new(|| RwLock::new(None));
+
+thread_local! {
+    /// The active window tint, innermost last, mirroring [`SCOPES`]. The
+    /// role accessors fall back to the top of this stack, and to the base
+    /// palette when it is empty.
+    static TINT_STACK: RefCell<Vec<Tint>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A role off the active window tint, or the base palette when no window
+/// tint is in scope: the accessors' fallback once a panel scope misses.
+fn active_role(pick: impl Fn(&Palette) -> Rgba) -> Rgba {
+    TINT_STACK.with(|stack| match stack.borrow().last() {
+        Some(tint) => tint.role(&pick),
+        None => pick(&BASE.read().unwrap().base),
+    })
+}
+
+/// The app surface opacity, the accessors' scale when no panel scope
+/// overrides it.
+fn base_surface_opacity() -> f32 {
+    BASE.read().unwrap().surface_opacity
+}
+
 /// The wash the backdrop layer paints over the baked image: the floor
 /// color at the inverse of backdrop strength. Strength 1 shows the bake
 /// bare, 0 sinks it back into the floor.
 pub fn backdrop_wash() -> Rgba {
-    let current = CURRENT.read().unwrap();
     Rgba {
-        a: 1.0 - current.backdrop_strength,
-        ..current.role(|p| p.bg_elevated)
+        a: 1.0 - BASE.read().unwrap().backdrop_strength,
+        ..active_role(|p| p.bg_elevated)
+    }
+}
+
+/// Every tint re-aimed at the base and its own seed. The choke point for
+/// an app-wide change: a base swap or a song-theming toggle moves the
+/// target every window's playback eases toward, without the callers
+/// replaying their seeds.
+fn retarget_all() {
+    let base = *BASE.read().unwrap();
+    let mut tints = TINTS.write().unwrap();
+    for tint in tints.values_mut() {
+        tint.retarget(&base);
     }
 }
 
 /// The one setter every palette change goes through: swap the base
-/// palette and ease toward it. User edits land here; derivation layers
-/// over whatever this holds.
+/// palette and ease every window toward it. User edits land here;
+/// derivation layers over whatever this holds.
 pub fn set(palette: Palette, cx: &mut App) {
-    {
-        let mut current = CURRENT.write().unwrap();
-        current.base = palette;
-        current.retarget();
-    }
+    BASE.write().unwrap().base = palette;
+    retarget_all();
     drive(cx);
 }
 
@@ -655,23 +727,28 @@ pub fn set(palette: Palette, cx: &mut App) {
 /// values only; persisting them stays with the settings' writers.
 pub fn set_scalars(surface_opacity: f32, backdrop_strength: f32, cx: &mut App) {
     {
-        let mut current = CURRENT.write().unwrap();
-        current.surface_opacity = surface_opacity.clamp(0.0, 1.0);
-        current.backdrop_strength = backdrop_strength.clamp(0.0, 1.0);
+        let mut base = BASE.write().unwrap();
+        base.surface_opacity = surface_opacity.clamp(0.0, 1.0);
+        base.backdrop_strength = backdrop_strength.clamp(0.0, 1.0);
     }
     apply(cx);
 }
 
-/// The derived mode's writer: the playing track's seed color in, None
-/// when playback stops or the cover is achromatic. Eases like any other
-/// palette change, so a track change washes the tint across instead of
-/// snapping it.
-pub fn set_seed(seed: Option<Seed>, cx: &mut App) {
+/// The derived mode's writer, one playback at a time: the playing track's
+/// seed color in, None when playback stops or the cover is achromatic.
+/// Keyed by the player so a track change tints only that player's windows.
+/// Eases like any other palette change, so a track change washes the tint
+/// across instead of snapping it.
+pub fn set_seed(player: EntityId, seed: Option<Seed>, cx: &mut App) {
+    let base = *BASE.read().unwrap();
     {
-        let mut current = CURRENT.write().unwrap();
+        let mut tints = TINTS.write().unwrap();
+        let tint = tints
+            .entry(player)
+            .or_insert_with(|| Tint::settled(base.base));
         // Consecutive tracks off one album carry identical art; don't
         // restart the ease for a seed that isn't going anywhere.
-        let unchanged = match (&current.seed, &seed) {
+        let unchanged = match (&tint.seed, &seed) {
             (None, None) => true,
             (Some(a), Some(b)) => a.same(b),
             _ => false,
@@ -679,50 +756,131 @@ pub fn set_seed(seed: Option<Seed>, cx: &mut App) {
         if unchanged {
             return;
         }
-        current.seed = seed;
+        tint.seed = seed;
         // With song theming off the seed is only remembered, so a later
         // enable picks up the playing track; nothing repaints.
-        if !current.art_theming {
+        if !base.art_theming {
             return;
         }
-        current.retarget();
+        tint.retarget(&base);
     }
     drive(cx);
 }
 
 /// The song-theming switch: whether the playing track's art re-tints the
-/// palette and backs the windows. Toggling eases like any other palette
-/// change, so the tint washes in or out instead of snapping.
+/// palette and backs the windows. Toggling eases every window like any
+/// other palette change, so the tint washes in or out instead of snapping.
 pub fn set_art_theming(on: bool, cx: &mut App) {
     {
-        let mut current = CURRENT.write().unwrap();
-        if current.art_theming == on {
+        let mut base = BASE.write().unwrap();
+        if base.art_theming == on {
             return;
         }
-        current.art_theming = on;
-        current.retarget();
+        base.art_theming = on;
     }
+    retarget_all();
     drive(cx);
 }
 
 /// Whether song theming is on, for the backdrop layers that paint outside
 /// the palette's own pipe.
 pub fn art_theming() -> bool {
-    CURRENT.read().unwrap().art_theming
+    BASE.read().unwrap().art_theming
 }
 
 /// The app's surface opacity as it currently stands: what a panel's own
 /// override starts from when it forks off.
 pub fn app_surface_opacity() -> f32 {
-    CURRENT.read().unwrap().surface_opacity
+    BASE.read().unwrap().surface_opacity
 }
 
-/// The palette as the current derivation lands it: the easing run's
-/// target, the base itself while nothing derives. What the locked editor
-/// swatches show and what export saves while song theming drives the
-/// colors, so a look a track built can leave as a theme.
+/// The palette as the current derivation lands it: the active window
+/// tint's easing target, the focused window's while none is in scope, the
+/// base itself when nothing derives. What the locked editor swatches show
+/// and what export saves while song theming drives the colors, so a look a
+/// track built can leave as a theme.
 pub fn resolved() -> Palette {
-    CURRENT.read().unwrap().target
+    if let Some(tint) = TINT_STACK.with(|stack| stack.borrow().last().copied()) {
+        return tint.target;
+    }
+    let tints = TINTS.read().unwrap();
+    if let Some(tint) = FOCUSED
+        .read()
+        .unwrap()
+        .and_then(|id| tints.get(&id).copied())
+    {
+        return tint.target;
+    }
+    BASE.read().unwrap().base
+}
+
+/// The tint a window should render under: its player's easing run, or a
+/// settled base run when that player has never seeded. Snapshotted for the
+/// frame; the easing reads live off the carried `eased_at`, so a window
+/// wraps its body once per render and paint stays smooth from it.
+pub fn window_tint(player: EntityId) -> Tint {
+    match TINTS.read().unwrap().get(&player) {
+        Some(tint) => *tint,
+        None => Tint::settled(BASE.read().unwrap().base),
+    }
+}
+
+/// Push a window tint for the duration of `f`, mirroring [`scoped`]. The
+/// accessors' base fallback answers from it while it is active, and a
+/// panel scope still layers on top. The pop rides a drop guard so an
+/// unwinding `f` can't leave the tint stuck on the stack.
+pub fn tinted<R>(tint: Tint, f: impl FnOnce() -> R) -> R {
+    TINT_STACK.with(|stack| stack.borrow_mut().push(tint));
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            TINT_STACK.with(|stack| {
+                stack.borrow_mut().pop();
+            });
+        }
+    }
+    let _pop = Pop;
+    f()
+}
+
+/// Note which window holds focus so the one app-wide widget theme follows
+/// its playback's tint. Called from a workspace root's render with the
+/// window's active flag; a change reprojects the theme once, deferred out
+/// of the render pass.
+pub fn note_focus(player: EntityId, active: bool, cx: &mut App) {
+    if !active {
+        return;
+    }
+    let changed = {
+        let mut focused = FOCUSED.write().unwrap();
+        if *focused == Some(player) {
+            false
+        } else {
+            *focused = Some(player);
+            true
+        }
+    };
+    if changed {
+        cx.defer(apply);
+    }
+}
+
+/// Drop a player's art tint when its last window closes, so a closed
+/// window's seed stops feeding the focused-theme projection.
+pub fn forget(player: EntityId, cx: &mut App) {
+    let removed = TINTS.write().unwrap().remove(&player).is_some();
+    let unfocused = {
+        let mut focused = FOCUSED.write().unwrap();
+        if *focused == Some(player) {
+            *focused = None;
+            true
+        } else {
+            false
+        }
+    };
+    if removed || unfocused {
+        apply(cx);
+    }
 }
 
 // The menu overlays read their fill and row hover opaque. A floating
@@ -733,11 +891,19 @@ pub fn resolved() -> Palette {
 // the gpui-component context menus already read.
 
 pub fn bg_menu_opaque() -> Rgba {
-    CURRENT.read().unwrap().role(|p| p.bg_menu)
+    active_role(|p| p.bg_menu)
+}
+
+/// The root surface read opaque, the surface-opacity scale left off. For a
+/// panel that lays text over an image of its own (the biography panel's
+/// dimmed artist background): the floor has to hide the window backdrop
+/// bleeding up from behind, or two images fight under the words.
+pub fn bg_root_opaque() -> Rgba {
+    active_role(|p| p.bg_root)
 }
 
 pub fn bg_control_hover_opaque() -> Rgba {
-    CURRENT.read().unwrap().role(|p| p.bg_control_hover)
+    active_role(|p| p.bg_control_hover)
 }
 
 /// How far the near-gray roles' chroma moves toward the seed's, and the
@@ -860,8 +1026,7 @@ fn derive(base: &Palette, seed: Option<Seed>) -> Palette {
         } else {
             HIGHLIGHT_DARK_BAND
         };
-        derived.highlight =
-            oklch_to_rgba(lightness.clamp(lo, hi), chroma, hue, ladder.highlight.a);
+        derived.highlight = oklch_to_rgba(lightness.clamp(lo, hi), chroma, hue, ladder.highlight.a);
     }
     derived
 }
@@ -871,8 +1036,15 @@ fn derive(base: &Palette, seed: Option<Seed>) -> Palette {
 /// takes the loop over and the old pump dies on its next tick.
 static PUMP: AtomicU64 = AtomicU64::new(0);
 
+/// Whether any window's tint is still mid-ease, the signal the pump keeps
+/// painting on. A base or theming change retargets every tint at once, so
+/// one run can carry several windows.
+fn any_tint_easing() -> bool {
+    TINTS.read().unwrap().values().any(|t| t.progress() < 1.0)
+}
+
 /// Land a palette change: paint it once right away, then keep painting
-/// while the easing run moves.
+/// while any window's easing run moves.
 fn drive(cx: &mut App) {
     apply(cx);
     let generation = PUMP.fetch_add(1, Ordering::Relaxed) + 1;
@@ -884,7 +1056,7 @@ fn drive(cx: &mut App) {
             if PUMP.load(Ordering::Relaxed) != generation {
                 return;
             }
-            let settled = CURRENT.read().unwrap().progress() >= 1.0;
+            let settled = !any_tint_easing();
             if cx.update(apply).is_err() {
                 return;
             }
@@ -904,11 +1076,32 @@ fn drive(cx: &mut App) {
 /// projection of our tokens, never the source; everything not projected
 /// here keeps the stock dark set.
 fn apply(cx: &mut App) {
-    let (palette, opacity, light) = {
-        let current = CURRENT.read().unwrap();
-        let light = current.art_theming
-            && current.seed.is_some_and(|seed| seed.lightness > LIGHT_COVER);
-        (current.snapshot(), current.surface_opacity, light)
+    let base = *BASE.read().unwrap();
+    // A settled seedless tint reads the same as no entry, so drop those
+    // rather than let idle windows accumulate slots. Runs on the UI thread
+    // between reads, so the write never races a paint.
+    TINTS
+        .write()
+        .unwrap()
+        .retain(|_, tint| tint.seed.is_some() || tint.progress() < 1.0);
+    // The one widget theme follows the focused window's playback, the
+    // gpui-component theme being a single global. Its own windows' panels
+    // still tint per player through the accessors; this is only the dock
+    // chrome, tables, and inputs the widget theme reaches.
+    let focused_tint = {
+        let tints = TINTS.read().unwrap();
+        FOCUSED
+            .read()
+            .unwrap()
+            .and_then(|id| tints.get(&id).copied())
+    };
+    let (palette, opacity, light) = match focused_tint {
+        Some(tint) => {
+            let light =
+                base.art_theming && tint.seed.is_some_and(|seed| seed.lightness > LIGHT_COVER);
+            (tint.snapshot(), base.surface_opacity, light)
+        }
+        None => (base.base, base.surface_opacity, false),
     };
     // Start over from the stock baseline so repeated feeds project onto
     // pristine values instead of compounding. The baseline follows the
@@ -1105,7 +1298,10 @@ mod tests {
     fn achromatic_cover_neutralizes_accent() {
         let base = Palette::default();
         let (accent_l, accent_c, _) = rgba_to_oklch(base.accent);
-        assert!(accent_c > CHROMATIC, "premise: the default accent is colorful");
+        assert!(
+            accent_c > CHROMATIC,
+            "premise: the default accent is colorful"
+        );
         let derived = derive(
             &base,
             Some(Seed {
@@ -1199,11 +1395,7 @@ mod tests {
             // opacity - a surface thins, ink lifts halfway to bright.
             let root = bg_root();
             assert!((root.a - 0.5).abs() < 0.001, "surface kept app opacity");
-            assert_rgb_eq(
-                text(),
-                mix(outside_text, text_bright(), 0.5),
-                "lifted ink",
-            );
+            assert_rgb_eq(text(), mix(outside_text, text_bright(), 0.5), "lifted ink");
         });
         assert_rgb_eq(accent(), outside_accent, "accent after the scope");
         assert!((bg_root().a - 1.0).abs() < 0.001, "opacity after the scope");

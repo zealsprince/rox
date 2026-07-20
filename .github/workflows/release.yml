@@ -1,0 +1,132 @@
+# Builds and publishes a release when a push to main bumps the workspace
+# version. The gate is tag existence, not commit diffing: if v<version> is
+# already tagged, nothing runs, so re-pushes and non-bump commits are no-ops
+# and a failed run can be retried safely.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide whether this version needs a release
+        id: version
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: linux-x86_64
+          - os: macos-latest
+            artifact: macos-aarch64
+          - os: windows-latest
+            artifact: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config libasound2-dev libfontconfig1-dev libwayland-dev \
+            libxkbcommon-x11-dev libx11-dev libxcb1-dev libvulkan-dev \
+            libssl-dev
+
+      # GPUI's build script compiles Metal shaders with `xcrun metal`. Xcode 26
+      # ships that toolchain as a separate download, so fetch it if missing.
+      - name: Ensure Metal toolchain
+        if: runner.os == 'macOS'
+        run: |
+          if ! xcrun -f metal >/dev/null 2>&1; then
+            sudo xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --package rox
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          staging="rox-v$VERSION-${{ matrix.artifact }}"
+          mkdir -p "$staging"
+          cp target/release/rox "$staging/"
+          cp crates/rox/assets/app/rox.desktop "$staging/"
+          cp crates/rox/assets/app/rox.svg "$staging/"
+          cp crates/rox/assets/app/rox.png "$staging/"
+          cp LICENSE "$staging/"
+          tar czf "$staging.tar.gz" "$staging"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p rox.app/Contents/MacOS rox.app/Contents/Resources
+          cp target/release/rox rox.app/Contents/MacOS/
+          cp crates/rox/assets/app/rox.icns rox.app/Contents/Resources/
+          sed "s/__VERSION__/$VERSION/" crates/rox/assets/app/Info.plist \
+            > rox.app/Contents/Info.plist
+          codesign --force --deep -s - rox.app
+          ditto -c -k --keepParent rox.app "rox-v$VERSION-${{ matrix.artifact }}.zip"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/release/rox.exe, LICENSE `
+            -DestinationPath "rox-v$env:VERSION-${{ matrix.artifact }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            rox-v*.tar.gz
+            rox-v*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ needs.check.outputs.version }}" \
+            --target "$GITHUB_SHA" \
+            --title "rox v${{ needs.check.outputs.version }}" \
+            --generate-notes \
+            artifacts/*

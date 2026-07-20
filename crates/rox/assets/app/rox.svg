@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 2048 2048" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+    <g transform="matrix(1,0,0,1,-2237.727815,-4580.115508)">
+        <g id="Foobar" transform="matrix(0.936911,0,0,0.890833,4991.460586,4176.390346)">
+            <rect x="-2939.162" y="453.199" width="2185.907" height="2298.971" style="fill:none;"/>
+            <g transform="matrix(4.40043,0,0,4.677268,-3122.397451,460.853866)">
+                <path d="M257.04,474.529C122.391,341.297 61.981,140.351 211.128,59C210.725,59.398 186.275,141.334 216.699,154.869C240.286,131.53 265.432,114.675 294.001,131.714C318.245,131.714 372.072,52.549 370.363,13.718C399.153,42.205 552.677,168.191 361.83,355.767C361.177,356.409 277.04,454.74 257.04,474.529Z" style="fill:white;fill-rule:nonzero;"/>
+            </g>
+        </g>
+    </g>
+</svg>

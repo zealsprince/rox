@@ -36,6 +36,8 @@ a separate one-time download: `xcodebuild -downloadComponent MetalToolchain`.
 
 Without Nix you need stable Rust and GPUI's system libraries from your distro (Wayland,
 X11, Vulkan, xkbcommon, fontconfig, alsa); every Rust dependency comes from crates.io.
+Run `./scripts/vendor-gpui.sh` once before building: it fetches GPUI and gpui-component
+and applies the small patches under `patches/` (the nix shell does this on entry).
 
 ## Docs
 

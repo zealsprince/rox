@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=rox
+Comment=A desktop music player for large, carefully tagged local libraries
+Exec=rox
+Icon=rox
+Terminal=false
+Categories=Audio;AudioVideo;Player;
+StartupWMClass=rox

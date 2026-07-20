@@ -26,16 +26,31 @@ use crate::backdrop::WindowBackdrop;
 use crate::design::palette::{self, PanelTheme, ROLES};
 use crate::design::tokens;
 use crate::panel::{self, AppState, PanelSettings, ScrubState};
+use crate::panels::art::ArtPanel;
+use crate::panels::biography::BiographyPanel;
 use crate::panels::cover::CoverArtPanel;
+use crate::panels::depth::DepthPanel;
+use crate::panels::drag_anchor::DragAnchorPanel;
+use crate::panels::filter::FilterPanel;
 use crate::panels::grid::GridPanel;
+use crate::panels::group::GroupPanel;
 use crate::panels::history::HistoryPanel;
 use crate::panels::library::LibraryPanel;
+use crate::panels::lyrics::LyricsPanel;
+use crate::panels::menu::MenuPanel;
 use crate::panels::metadata::MetadataPanel;
+use crate::panels::playlists::PlaylistsPanel;
+use crate::panels::queue::QueuePanel;
+use crate::panels::queue_widget::QueueWidgetPanel;
+use crate::panels::search::SearchPanel;
+use crate::panels::slide::SlidePanel;
 use crate::panels::spectrum::SpectrumPanel;
 use crate::panels::transport::{SeekStripPanel, TrackInfoPanel, TransportPanel, VolumePanel};
 use crate::panels::waveform::WaveformPanel;
+use crate::panels::window_controls::WindowControlsPanel;
+use crate::settings;
 use crate::settings_ui::{self, grid_columns, section, sidebar, small_button, SECTION_GAP};
-use rox_dock::PanelView;
+use rox_dock::{PanelView, TabPanel};
 
 /// The open panel settings windows, keyed by the panel they edit:
 /// opening a panel's settings again focuses its window instead of
@@ -83,8 +98,19 @@ pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
             return;
         }
     }
-    let title = SharedString::from(format!("rox - {} settings", panel.read(cx).panel_name()));
-    let bounds = Bounds::centered(None, size(px(640.), px(480.)), cx);
+    let title = SharedString::from(format!(
+        "rox - {} settings",
+        panel::display_name(panel.read(cx).panel_name())
+    ));
+    // The last closed panel settings window's size, floored at MIN_SIZE so a
+    // stale small frame never opens under the layout's minimum.
+    let min = settings_ui::MIN_SIZE;
+    let (width, height) = settings::Settings::load()
+        .panel_settings_window
+        .filter(|s| s.width >= f32::from(min.width) && s.height >= f32::from(min.height))
+        .map(|s| (s.width, s.height))
+        .unwrap_or((640., 480.));
+    let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(settings_ui::MIN_SIZE),
@@ -101,42 +127,75 @@ pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
             // The Wayland backend ignores the creation-time titlebar title;
             // only set_window_title reaches the compositor.
             window.set_window_title(&title);
-            let view =
-                cx.new(|cx| PanelSettingsWindow::new(panel.downgrade(), state, window, cx));
+            let view = cx.new(|cx| PanelSettingsWindow::new(panel.downgrade(), state, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         })
         .expect("failed to open the panel settings window");
-    cx.default_global::<OpenPanelSettings>().0.insert(id, handle);
+    cx.default_global::<OpenPanelSettings>()
+        .0
+        .insert(id, handle);
+}
+
+/// Dispatch a type-erased panel view to its concrete settings-capable
+/// type: try each downcast until one lands and run the body with the
+/// typed entity bound. The type list mirrors the workspace's panel
+/// registry; a type missing here just no-ops on the type-erased routes
+/// (the layout tree's gear and lock).
+macro_rules! with_settings_panel {
+    ($view:expr, |$panel:ident| $body:expr) => {
+        with_settings_panel!(
+            @try $view, $panel, $body,
+            LibraryPanel,
+            SearchPanel,
+            FilterPanel,
+            GridPanel,
+            ArtPanel,
+            PlaylistsPanel,
+            QueuePanel,
+            HistoryPanel,
+            CoverArtPanel,
+            MetadataPanel,
+            LyricsPanel,
+            BiographyPanel,
+            TrackInfoPanel,
+            TransportPanel,
+            SeekStripPanel,
+            VolumePanel,
+            QueueWidgetPanel,
+            SpectrumPanel,
+            WaveformPanel,
+            MenuPanel,
+            DragAnchorPanel,
+            WindowControlsPanel,
+            GroupPanel,
+            DepthPanel,
+            SlidePanel,
+        )
+    };
+    (@try $view:expr, $panel:ident, $body:expr, $($ty:ty),+ $(,)?) => {
+        $(
+            if let Ok($panel) = $view.view().downcast::<$ty>() {
+                $body;
+                return;
+            }
+        )+
+    };
 }
 
 /// Open the settings window for a type-erased panel, the settings
-/// window's layout tree route in: try each settings-capable type until
-/// the view downcasts. The list mirrors the workspace's panel registry;
-/// a type missing here just has no settings entry from the tree.
+/// window's layout tree route in.
 pub fn open_for_view(panel: &Arc<dyn PanelView>, cx: &mut App) {
-    macro_rules! try_open {
-        ($($ty:ty),+ $(,)?) => {
-            $(
-                if let Ok(panel) = panel.view().downcast::<$ty>() {
-                    open(panel, cx);
-                    return;
-                }
-            )+
-        };
-    }
-    try_open!(
-        LibraryPanel,
-        GridPanel,
-        CoverArtPanel,
-        MetadataPanel,
-        HistoryPanel,
-        TrackInfoPanel,
-        TransportPanel,
-        SeekStripPanel,
-        VolumePanel,
-        SpectrumPanel,
-        WaveformPanel,
-    );
+    with_settings_panel!(panel, |panel| open(panel, cx));
+}
+
+/// Flip a type-erased panel's placement lock, the layout tree's lock
+/// toggle. The dock reads the flag through `Panel::locked` on its next
+/// paint, so the flip settles on its own.
+pub fn toggle_locked_for_view(panel: &Arc<dyn PanelView>, cx: &mut App) {
+    with_settings_panel!(panel, |panel| panel.update(cx, |panel, cx| {
+        let on = !panel.chrome().locked;
+        panel.set_locked(on, cx);
+    }));
 }
 
 /// The open rename windows, keyed by the panel they rename; the same
@@ -146,11 +205,23 @@ struct OpenRenames(HashMap<EntityId, WindowHandle<Root>>);
 
 impl Global for OpenRenames {}
 
-/// The Rename entry for a panel's dropdown menu: opens the panel's rename
-/// window. Sits in the panel section, above Panel Settings.
-pub fn rename_item<P: PanelSettings>(menu: PopupMenu, panel: &Entity<P>) -> PopupMenu {
+/// The head of a panel's dropdown tail: the Add Panel flyout above the
+/// Panel-section divider, then the section's "Panel" header, then Rename.
+/// Every panel routes into its tail through here, so this one call opens
+/// the section for all of them - which is why it owns the leading
+/// separator (callers pass their content items straight in, no separator
+/// of their own) and why Add Panel, a sibling into this group rather than
+/// an op on this panel, sits above the divider that starts the section.
+pub fn rename_item<P: PanelSettings>(
+    menu: PopupMenu,
+    panel: &Entity<P>,
+    tab_panel: Option<WeakEntity<TabPanel>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> PopupMenu {
+    let menu = crate::workspace::add_panel_submenu(menu, tab_panel, window, cx);
     let panel = panel.clone();
-    menu.item(
+    menu.separator().label("Panel").item(
         PopupMenuItem::new("Rename")
             .icon(Icon::default().path(icons::PENCIL))
             .on_click(move |_, _, cx| {
@@ -174,7 +245,10 @@ fn open_rename<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
             return;
         }
     }
-    let title = SharedString::from(format!("rox - rename {}", panel.read(cx).panel_name()));
+    let title = SharedString::from(format!(
+        "rox - rename {}",
+        panel::display_name(panel.read(cx).panel_name())
+    ));
     let bounds = Bounds::centered(None, size(px(380.), px(112.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -214,19 +288,14 @@ struct RenameWindow<P: PanelSettings> {
 }
 
 impl<P: PanelSettings> RenameWindow<P> {
-    fn new(
-        panel: Entity<P>,
-        state: AppState,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    fn new(panel: Entity<P>, state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // The built-in name sits as the placeholder, so an empty field
         // reads as what it does: fall back to that name.
         let (current, placeholder) = {
             let panel = panel.read(cx);
             (
                 panel.custom_title().unwrap_or_default().to_owned(),
-                panel.panel_name(),
+                panel::display_name(panel.panel_name()),
             )
         };
         let input = cx.new(|cx| {
@@ -281,7 +350,7 @@ impl<P: PanelSettings> Render for RenameWindow<P> {
                 div()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child("shown as the panel's tab; empty goes back to the built-in name"),
+                    .child("Shown as the panel's tab; empty goes back to the built-in name"),
             )
     }
 }
@@ -331,6 +400,19 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .upgrade()
             .map(|panel| cx.observe(&panel, |_, _, cx| cx.notify()));
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        // The OS close button never runs a teardown of ours, so save the
+        // frame through the should-close hook. Shared across panels, so the
+        // last closed window wins.
+        window.on_window_should_close(cx, move |window, _| {
+            let frame = window.window_bounds().get_bounds();
+            settings::Settings::update(move |s| {
+                s.panel_settings_window = Some(settings::LayoutSize {
+                    width: frame.size.width.into(),
+                    height: frame.size.height.into(),
+                });
+            });
+            true
+        });
         let mut pickers = Vec::with_capacity(ROLES.len());
         let mut _picker_changes = Vec::with_capacity(ROLES.len());
         for (index, role) in ROLES.iter().enumerate() {
@@ -363,6 +445,21 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             _picker_changes,
             _panel_changed,
             _backdrop_changed,
+        }
+    }
+
+    /// Pin or unpin the panel in the dock, through the same panel entity
+    /// the theme edits flow through.
+    fn set_panel_locked(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Some(panel) = self.panel.upgrade() {
+            panel.update(cx, |panel, cx| panel.set_locked(on, cx));
+        }
+    }
+
+    /// Turn the panel's window-move handle on or off.
+    fn set_panel_anchor(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Some(panel) = self.panel.upgrade() {
+            panel.update(cx, |panel, cx| panel.set_anchor(on, cx));
         }
     }
 
@@ -483,6 +580,39 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         );
     }
 
+    /// The shared Behavior page: the lock and anchor toggles every panel
+    /// carries, then the panel's own behavior rows when it has any. Sits
+    /// second in the nav on every panel, so how a panel acts always lives
+    /// in the same spot.
+    fn behavior_page(
+        &mut self,
+        locked: bool,
+        anchor: bool,
+        extra: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let placement = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(panel::setting_row(
+                "Locked",
+                Some("Pin the panel in place; the dock won't let it be dragged or rearranged"),
+                panel::toggle(locked, Self::set_panel_locked, cx),
+            ))
+            .child(panel::setting_row(
+                "Drag Anchor",
+                Some("A drag anywhere on the panel moves the window, for decorations-off layouts"),
+                panel::toggle(anchor, Self::set_panel_anchor, cx),
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .gap(SECTION_GAP)
+            .child(section("Placement", None, placement))
+            .children(extra)
+    }
+
     /// The shared Appearance page: the panel's opacity fork, the frame
     /// knobs, the panel's own appearance section when it has one, and
     /// the override grid, the app palette editor's shape with inherit
@@ -491,6 +621,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         &mut self,
         theme: &PanelTheme,
         extra: Option<AnyElement>,
+        own_font: bool,
         columns: usize,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -499,8 +630,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "own surface opacity",
-                Some("give this panel its own opacity over the backdrop instead of the app's"),
+                "Own Surface Opacity",
+                Some("Give this panel its own opacity over the backdrop instead of the app's"),
                 panel::toggle(
                     theme.surface_opacity.is_some(),
                     Self::set_opacity_override,
@@ -509,7 +640,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             ))
             .when_some(theme.surface_opacity, |d, value| {
                 d.child(panel::setting_row(
-                    "surface opacity",
+                    "Surface Opacity",
                     None,
                     settings_ui::slider(&self.opacity_scrub, value, Self::set_opacity, cx),
                 ))
@@ -520,8 +651,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "margin",
-                Some("pull the panel in from its cell, the backdrop showing through the gap"),
+                "Margin",
+                Some("Pull the panel in from its cell, the backdrop showing through the gap"),
                 self.frame_slider(
                     &self.margin_scrub,
                     theme.margin,
@@ -531,8 +662,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ),
             ))
             .child(panel::setting_row(
-                "padding",
-                Some("space inside the panel's edge, kept in its own background"),
+                "Padding",
+                Some("Space inside the panel's edge, kept in its own background"),
                 self.frame_slider(
                     &self.padding_scrub,
                     theme.padding,
@@ -542,8 +673,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ),
             ))
             .child(panel::setting_row(
-                "rounding",
-                Some("round the panel's corners off into the backdrop"),
+                "Rounding",
+                Some("Round the panel's corners off into the backdrop"),
                 self.frame_slider(
                     &self.rounding_scrub,
                     theme.rounding,
@@ -553,8 +684,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ),
             ))
             .child(panel::setting_row(
-                "border",
-                Some("a line around the panel's edge, in the Border role's color"),
+                "Border",
+                Some("A line around the panel's edge, in the Border role's color"),
                 self.frame_slider(
                     &self.border_scrub,
                     theme.border,
@@ -592,7 +723,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex_col()
             .gap(tokens::SPACE_XS)
             .child(div().text_xs().text_color(palette::text_muted()).child(
-                "overrides recolor just this panel and hold still under song \
+                "Overrides recolor just this panel and hold still under song \
                  theming; reset a swatch or clear its hex field to follow \
                  the app palette again",
             ))
@@ -600,30 +731,65 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         // Each section resets its own knobs: recoloring can start over
         // without flattening the frame, and the other way around.
         let frame_controls = small_button(
-            "reset",
+            "Reset",
             icons::REFRESH_CW,
             false,
             cx.listener(|this, _, _, cx| this.reset_frame(cx)),
         );
         let color_controls = small_button(
-            "reset",
+            "Reset",
             icons::REFRESH_CW,
             false,
             cx.listener(|this, _, window, cx| this.reset_colors(window, cx)),
         );
 
+        // The generic font override: any panel that does not draw its own
+        // font control gets a family picker here, resolving to the app font
+        // when unset. Panels with their own (the lyrics panel) opt out
+        // through `has_own_font` so the page never shows two.
+        let font_section = (!own_font).then(|| {
+            let reset = small_button(
+                "Reset",
+                icons::REFRESH_CW,
+                theme.font.is_none(),
+                cx.listener(|this, _, _, cx| this.update_theme(|theme| theme.font = None, cx)),
+            );
+            section(
+                "Font",
+                Some(reset.into_any_element()),
+                panel::setting_row(
+                    "Font",
+                    Some("The panel's typeface; default follows the app font"),
+                    panel::font_picker(
+                        "panel-font",
+                        theme.font.clone(),
+                        |this: &mut Self, font, cx| {
+                            this.update_theme(|theme| theme.font = font, cx)
+                        },
+                        cx,
+                    ),
+                ),
+            )
+            .into_any_element()
+        });
+
         div()
             .flex()
             .flex_col()
             .gap(SECTION_GAP)
-            .child(section("opacity", None, opacity))
-            .child(section("frame", Some(frame_controls.into_any_element()), frame))
+            .child(section("Opacity", None, opacity))
+            .child(section(
+                "Frame",
+                Some(frame_controls.into_any_element()),
+                frame,
+            ))
+            .children(font_section)
             // The panel's own appearance rows, when it has any: knobs
             // that live on its config rather than its theme, like the
             // grid's art rounding.
             .children(extra)
             .child(section(
-                "colors",
+                "Colors",
                 Some(color_controls.into_any_element()),
                 body,
             ))
@@ -639,43 +805,70 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                 sidebar(),
                 div()
                     .text_color(palette::text_muted())
-                    .child("the panel was closed")
+                    .child("The panel was closed")
                     .into_any_element(),
             ),
             Some(panel) => {
                 let pages = panel.read(cx).pages();
-                let appearance = pages.len();
-                let picked = self.page.min(appearance);
-                let mut nav = sidebar();
+                // Appearance and Behavior lead the nav on every panel, the
+                // app settings window's order, so how a panel looks and how
+                // it acts always sit in the same two spots no matter what
+                // pages it brings. `page` 0 is Appearance, 1 is Behavior,
+                // and the panel's own pages follow at 2..
+                let picked = self.page.min(pages.len() + 1);
+                let mut nav = sidebar()
+                    .child(settings_ui::nav_item(
+                        "Appearance",
+                        icons::PALETTE,
+                        picked == 0,
+                        move |this: &mut Self, cx| {
+                            this.page = 0;
+                            cx.notify();
+                        },
+                        cx,
+                    ))
+                    .child(settings_ui::nav_item(
+                        "Behavior",
+                        icons::SLIDERS,
+                        picked == 1,
+                        move |this: &mut Self, cx| {
+                            this.page = 1;
+                            cx.notify();
+                        },
+                        cx,
+                    ));
                 for (i, &(label, icon)) in pages.iter().enumerate() {
+                    let page = i + 2;
                     nav = nav.child(settings_ui::nav_item(
                         label,
                         icon,
-                        picked == i,
+                        picked == page,
                         move |this: &mut Self, cx| {
-                            this.page = i;
+                            this.page = page;
                             cx.notify();
                         },
                         cx,
                     ));
                 }
-                nav = nav.child(settings_ui::nav_item(
-                    "Appearance",
-                    icons::PALETTE,
-                    picked == appearance,
-                    move |this: &mut Self, cx| {
-                        this.page = appearance;
-                        cx.notify();
-                    },
-                    cx,
-                ));
-                let body = if picked < appearance {
-                    panel.update(cx, |panel, cx| panel.page(pages[picked].0, window, cx))
-                } else {
-                    let theme = panel.read(cx).theme();
-                    let extra = panel.update(cx, |panel, cx| panel.appearance(window, cx));
-                    self.appearance_page(&theme, extra, columns, cx)
-                        .into_any_element()
+                let body = match picked {
+                    0 => {
+                        let theme = panel.read(cx).theme();
+                        let own_font = panel.read(cx).has_own_font();
+                        let extra = panel.update(cx, |panel, cx| panel.appearance(window, cx));
+                        self.appearance_page(&theme, extra, own_font, columns, cx)
+                            .into_any_element()
+                    }
+                    1 => {
+                        // Read through chrome() so the call isn't ambiguous
+                        // between PanelSettings::locked and the dock's
+                        // Panel::locked, which share the name.
+                        let locked = panel.read(cx).chrome().locked;
+                        let anchor = panel.read(cx).chrome().anchor;
+                        let extra = panel.update(cx, |panel, cx| panel.behavior(window, cx));
+                        self.behavior_page(locked, anchor, extra, cx)
+                            .into_any_element()
+                    }
+                    _ => panel.update(cx, |panel, cx| panel.page(pages[picked - 2].0, window, cx)),
                 };
                 (nav, body)
             }
@@ -688,6 +881,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
+            .when_some(settings::app_font(), |d, font| d.font_family(font))
             // The backdrop paints first, under the pages; without it
             // translucent surfaces would sink into the window's own
             // black instead of the playing track's art.

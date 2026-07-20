@@ -8,18 +8,19 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::{
-    anchored, canvas, deferred, div, fill, point, prelude::*, px, size, svg, AbsoluteLength,
-    AnyElement, App, Bounds,
-    Context, DismissEvent, Div, Element, Entity, Focusable as _, GlobalElementId,
-    InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, Rgba, SharedString, Subscription, TitlebarOptions, UniformListScrollHandle,
-    WeakEntity, Window, WindowBounds, WindowOptions,
+    anchored, canvas, deferred, div, fill, point, prelude::*, px, relative, size, svg,
+    AbsoluteLength, Along, AnyElement, App, Axis, Bounds, Context, DismissEvent, Div, Element,
+    Entity, FocusHandle, Focusable as _, GlobalElementId, InspectorElementId, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollHandle, SharedString,
+    Stateful, Subscription, TitlebarOptions, UniformListScrollHandle, WeakEntity, Window,
+    WindowBounds, WindowOptions,
 };
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use gpui_component::{Icon, Root};
+use gpui_component::button::Button;
+use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_component::{h_flex, Icon, IconName, Root, Sizable};
 use rox_dock::{Panel, PanelInfo, PanelView, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -30,9 +31,11 @@ use crate::design::{palette, tokens};
 use crate::history::History;
 use crate::lastfm::Scrobbler;
 use crate::panels::library::Library;
-use crate::player::Player;
+use crate::player::{fmt_time, Player};
 use crate::selection::Selection;
+use crate::shared_query::SharedQuery;
 use crate::thumbs::Thumbs;
+use crate::workspace::{SeekBackward, SeekForward, TogglePlayback};
 
 /// The shared entities every panel renders over: one player, one catalog,
 /// and one selection per workspace. Cloning shares the handles, not the
@@ -42,6 +45,8 @@ pub struct AppState {
     pub library: Entity<Library>,
     pub player: Entity<Player>,
     pub selection: Entity<Selection>,
+    /// The app-wide search query the global-following panels share.
+    pub query: Entity<SharedQuery>,
     pub tab_hosts: Entity<TabHosts>,
     /// The playing track's art baked into the window backdrop, one bake
     /// shared by every window over this player.
@@ -125,6 +130,10 @@ pub fn icon_control_sized<V: 'static>(
 pub struct ScrubState {
     bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
     dragging: Arc<AtomicBool>,
+    /// The pointer's fraction along the strip while hovering, None with the
+    /// pointer off it. Drives the seek preview label, kept apart from the
+    /// drag state so a plain hover shows the readout without seeking.
+    hover: Arc<Mutex<Option<f32>>>,
 }
 
 impl ScrubState {
@@ -155,6 +164,23 @@ impl ScrubState {
             return None;
         }
         Some((f32::from(x - bounds.origin.x) / w).clamp(0.0, 1.0))
+    }
+
+    /// Remember where the pointer hovers, 0 to 1, or None off the strip.
+    /// Returns whether it changed, so the caller only notifies on a real
+    /// move.
+    pub fn set_hover(&self, fraction: Option<f32>) -> bool {
+        let mut current = self.hover.lock().unwrap();
+        if *current == fraction {
+            return false;
+        }
+        *current = fraction;
+        true
+    }
+
+    /// The hovered fraction, None with the pointer off the strip.
+    pub fn hover(&self) -> Option<f32> {
+        *self.hover.lock().unwrap()
     }
 }
 
@@ -212,6 +238,58 @@ pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window:
         )
         .corner_radii(px(knob / 2.0)),
     );
+}
+
+/// How long a browse panel waits after the last interaction before it
+/// slides back to the playing track, when the resume behavior is on.
+pub const RESUME_IDLE: Duration = Duration::from_secs(12);
+
+/// The idle-resume clock a browse panel keeps so it can drift back to the
+/// playing track once the user has left it alone. Panels with the behavior
+/// off never touch it. Behind an Arc like [`FlickState`] so the wake task
+/// can read the last-interaction stamp without bouncing through the panel
+/// each tick. A single wake stays in flight at a time: a scroll fires a
+/// burst of events, but only the first arms the task, the rest just push
+/// the stamp forward and the one task re-sleeps until a full window has
+/// passed since the last of them.
+#[derive(Clone, Default)]
+pub struct ResumeIdle {
+    /// When the panel was last scrolled, dragged, or keyed. None until the
+    /// first interaction, so the resume never fires before then.
+    at: Arc<Mutex<Option<Instant>>>,
+    /// A wake task is already counting down; keeps a burst of interactions
+    /// from arming one apiece.
+    armed: Arc<AtomicBool>,
+}
+
+impl ResumeIdle {
+    /// Note an interaction and, unless one is already counting down, arm a
+    /// wake. The wake sleeps until a full window has passed since the last
+    /// interaction, then calls `resume` once on the panel.
+    pub fn touch<P: 'static>(&self, cx: &mut Context<P>, resume: fn(&mut P, &mut Context<P>)) {
+        *self.at.lock().unwrap() = Some(Instant::now());
+        if self.armed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let at = self.at.clone();
+        let armed = self.armed.clone();
+        cx.spawn(async move |this, cx| {
+            // Re-sleep for whatever is left of the window after the newest
+            // interaction, so a gesture mid-countdown pushes the wake out
+            // instead of stacking a second task.
+            loop {
+                let Some(last) = *at.lock().unwrap() else { break };
+                let remaining = RESUME_IDLE.saturating_sub(last.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                cx.background_executor().timer(remaining).await;
+            }
+            armed.store(false, Ordering::Release);
+            this.update(cx, resume).ok();
+        })
+        .detach();
+    }
 }
 
 /// The shared state of a drag-to-scroll surface: press, drag past a dead
@@ -338,13 +416,14 @@ impl FlickState {
     }
 }
 
-/// Keep a live drag-scroll following the pointer: scroll by the pointer's
-/// delta on every move, end the drag on release. Call from the surface's
-/// paint pass, the [`scrub_on_paint`] idiom - window handlers only live
-/// one frame. Applying must notify an entity so the next frame re-arms
+/// Keep a live drag-scroll following the pointer along `axis`: scroll by the
+/// pointer's travel on every move, end the drag on release. Call from the
+/// surface's paint pass, the [`scrub_on_paint`] idiom - window handlers only
+/// live one frame. Applying must notify an entity so the next frame re-arms
 /// the handlers.
-pub fn flick_on_paint(
+pub fn flick_on_paint_axis(
     flick: &FlickState,
+    axis: Axis,
     window: &mut Window,
     apply: impl Fn(f32, &mut App) + 'static,
 ) {
@@ -363,9 +442,9 @@ pub fn flick_on_paint(
                 flick.end();
                 return;
             }
-            let dy = flick.track(event.position.y);
-            if dy != 0.0 {
-                apply(dy, cx);
+            let d = flick.track(event.position.along(axis));
+            if d != 0.0 {
+                apply(d, cx);
             }
         }
     });
@@ -399,21 +478,6 @@ pub fn glide_target(handle: &UniformListScrollHandle, ix: usize, count: usize) -
     Some(y.clamp(px(0.), max))
 }
 
-/// Pin a uniform list's offset to `target` in one move. Returns true once
-/// already there - callers keep re-pinning until the target holds still,
-/// which rides out the stale first layouts around a launch, where item
-/// extents shift as the measured width lands.
-pub fn glide_snap(handle: &UniformListScrollHandle, target: Pixels) -> bool {
-    let base = handle.0.borrow().base_handle.clone();
-    let mut offset = base.offset();
-    if (-offset.y - target).abs() < px(1.) {
-        return true;
-    }
-    offset.y = -target;
-    base.set_offset(offset);
-    false
-}
-
 /// One glide step toward `target`: an exponential approach, done inside
 /// a pixel. Returns whether another frame is needed; the caller requests
 /// it and re-renders.
@@ -431,6 +495,61 @@ pub fn glide_step(handle: &UniformListScrollHandle, target: Pixels, dt: f32) -> 
     let step = 1.0 - (0.08_f32).powf(dt * 10.0);
     offset.y = -(current + diff * step.clamp(0.0, 1.0));
     base.set_offset(offset);
+    true
+}
+
+/// [`glide_target`] for a virtual list's plain scroll handle: where the
+/// offset should sit to center item `ix` of `count` along `axis`. The
+/// viewport and content extents come off the handle rather than a uniform
+/// list's item size, so it fits either scroll axis. None before the list's
+/// first layout gives it a viewport.
+pub fn glide_target_axis(
+    handle: &ScrollHandle,
+    axis: Axis,
+    ix: usize,
+    count: usize,
+) -> Option<Pixels> {
+    if count == 0 {
+        return None;
+    }
+    let viewport = handle.bounds().size.along(axis);
+    if viewport <= px(0.) {
+        return None;
+    }
+    // max_offset is content minus viewport, so content is the two summed;
+    // the item extent is that content over the item count.
+    let max = handle.max_offset().along(axis);
+    let item = (max + viewport) / count as f32;
+    let target = item * ix as f32 - (viewport - item) * 0.5;
+    Some(target.clamp(px(0.), max))
+}
+
+/// [`glide_snap`] on a plain scroll handle along `axis`: pin the offset to
+/// `target` in one move, true once already there. Offsets run negative as
+/// the list scrolls, so the stored position is the negated axis component.
+pub fn glide_snap_axis(handle: &ScrollHandle, axis: Axis, target: Pixels) -> bool {
+    let offset = handle.offset();
+    if (-offset.along(axis) - target).abs() < px(1.) {
+        return true;
+    }
+    handle.set_offset(offset.apply_along(axis, |_| -target));
+    false
+}
+
+/// [`glide_step`] on a plain scroll handle along `axis`: one eased step
+/// toward `target`, returning whether another frame is still needed.
+pub fn glide_step_axis(handle: &ScrollHandle, axis: Axis, target: Pixels, dt: f32) -> bool {
+    let offset = handle.offset();
+    let current = -offset.along(axis);
+    let diff = target - current;
+    if diff.abs() < px(1.) {
+        handle.set_offset(offset.apply_along(axis, |_| -target));
+        return false;
+    }
+    // Cover 92% of the remaining distance every tenth of a second.
+    let step = 1.0 - (0.08_f32).powf(dt * 10.0);
+    let next = current + diff * step.clamp(0.0, 1.0);
+    handle.set_offset(offset.apply_along(axis, |_| -next));
     true
 }
 
@@ -487,6 +606,73 @@ pub fn seek_fraction(player: &Entity<Player>, fraction: f32, cx: &App) {
     player.seek_to(fraction as f64 * duration);
 }
 
+/// A seek preview for a scrub strip: the time under the pointer as a small
+/// pill that follows the cursor while hovering. Tracks the pointer across
+/// `scrub`'s painted bounds and maps it against `duration`. Drop it as a
+/// child over the strip's relative container - it covers the strip to catch
+/// every move, and a click through it bubbles to the strip's own seek
+/// handler underneath.
+pub fn seek_hover<V: 'static>(
+    scrub: &ScrubState,
+    duration: f64,
+    cx: &mut Context<V>,
+) -> Stateful<Div> {
+    let moved = scrub.clone();
+    let left = scrub.clone();
+    let hover = scrub.hover();
+    div()
+        // The id makes the element stateful, which the hover-leave catch
+        // below needs.
+        .id("seek-hover")
+        .absolute()
+        .inset_0()
+        .cursor_pointer()
+        .on_mouse_move(cx.listener(move |_, event: &MouseMoveEvent, _, cx| {
+            if moved.set_hover(moved.fraction(event.position.x)) {
+                cx.notify();
+            }
+        }))
+        .on_hover(cx.listener(move |_, hovered: &bool, _, cx| {
+            // The pointer left the strip: no more move events fire, so the
+            // leave has to clear the readout itself.
+            if !hovered && left.set_hover(None) {
+                cx.notify();
+            }
+        }))
+        .when_some(hover, |d, fraction| d.child(seek_pill(fraction, duration)))
+}
+
+/// The seek preview label: the time at `fraction` along the track, a pill
+/// centered over that point near the top of the strip. A zero-width column
+/// at the fraction centers the pill on the cursor line.
+fn seek_pill(fraction: f32, duration: f64) -> Div {
+    div()
+        .absolute()
+        .top(tokens::SPACE_XS)
+        .left(relative(fraction))
+        .w_0()
+        .flex()
+        .flex_col()
+        .items_center()
+        .child(
+            div()
+                .flex_none()
+                // The zero-width column above gives the text no room, so a
+                // multi-digit time would wrap to one glyph per line without
+                // this.
+                .whitespace_nowrap()
+                .px(tokens::SPACE_SM)
+                .py(px(2.))
+                .rounded(tokens::RADIUS)
+                .bg(palette::bg_menu_opaque())
+                .border_1()
+                .border_color(palette::border())
+                .text_sm()
+                .text_color(palette::text())
+                .child(fmt_time(fraction as f64 * duration)),
+        )
+}
+
 /// A panel's tab and title text: the rename when one is set, the built-in
 /// name otherwise.
 pub fn title_text(custom: Option<&str>, default: &'static str) -> SharedString {
@@ -494,6 +680,23 @@ pub fn title_text(custom: Option<&str>, default: &'static str) -> SharedString {
         Some(name) => SharedString::from(name.to_owned()),
         None => default.into(),
     }
+}
+
+/// Title-case a panel's built-in name for display. The name is a
+/// serialized identifier (lowercase, space separated); tab and window
+/// titles want it capitalized. No panel name contains "rox" or an
+/// acronym, so a plain per-word capitalize is right here.
+pub fn display_name(name: &str) -> String {
+    name.split(' ')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Repaint the tab panel hosting a renamed panel. The tab bar draws the
@@ -514,22 +717,56 @@ pub fn config_from_info<C: Default + serde::de::DeserializeOwned>(info: &PanelIn
     }
 }
 
-/// The Pop Out entry for a panel's dropdown menu: moves the panel out of its
-/// dock into an OS window. Pass the tab panel the panel currently sits in
-/// (from `on_added_to`); the state is what Dock Back later reaches the
-/// workspace through.
+/// The Pop Out and Close tail of a panel's dropdown menu: out of the dock
+/// into an OS window, or out of the layout entirely. Pass the tab panel
+/// the panel currently sits in (from `on_added_to`); the state is what
+/// Dock Back later reaches the workspace through.
+///
+/// Close lives on this tail rather than the dock's menus so every panel
+/// carries it everywhere its menu shows - for a solo content panel (no
+/// tab chrome, and its content's own context menu replaces the dock's
+/// body menu) this is the only close there is, and the empty window it
+/// can leave behind offers the way back in. Popped out there is no Close:
+/// closing the OS window is the close. Pinned panels keep the dock menus'
+/// guard and the click no-ops.
 pub fn popout_item<P: Panel>(
     menu: PopupMenu,
     panel: &Entity<P>,
     tab_panel: Option<WeakEntity<TabPanel>>,
     state: AppState,
 ) -> PopupMenu {
-    let panel = panel.clone();
-    menu.item(
+    let pop_panel = panel.clone();
+    let pop_tabs = tab_panel.clone();
+    let menu = menu.item(
         PopupMenuItem::new("Pop Out")
             .icon(Icon::default().path(icons::EXTERNAL_LINK))
             .on_click(move |_, window, cx| {
-                pop_out(panel.clone(), tab_panel.clone(), state.clone(), window, cx);
+                pop_out(
+                    pop_panel.clone(),
+                    pop_tabs.clone(),
+                    state.clone(),
+                    window,
+                    cx,
+                );
+            }),
+    );
+    let Some(tabs) = tab_panel else {
+        return menu;
+    };
+    let panel = panel.clone();
+    menu.item(
+        PopupMenuItem::new("Close")
+            .icon(Icon::default().path(icons::CLOSE))
+            .on_click(move |_, window, cx| {
+                let Some(tabs) = tabs.upgrade() else {
+                    return;
+                };
+                if panel.read(cx).locked(cx) {
+                    return;
+                }
+                tabs.update(cx, |tabs, cx| {
+                    tabs.remove_panel(Arc::new(panel.clone()), window, cx);
+                });
             }),
     )
 }
@@ -560,6 +797,219 @@ pub fn reveal_item(menu: PopupMenu, state: AppState, id: Option<i64>) -> PopupMe
     )
 }
 
+/// A checkable flyout row whose tick tracks the live panel value instead of
+/// one baked in when the menu was built. Pair it with [`follow_panel`] in the
+/// submenu builder: the flyout re-renders on the click, this row re-reads the
+/// value, and the tick swaps in place.
+///
+/// Plain `.checked(..)` rows go stale in an open flyout, our hand-built
+/// submenus never dismiss on click (they carry no link back to the root menu,
+/// so there is no reopen to rebuild them), so a static tick would sit wrong
+/// until the whole menu is closed and reopened.
+///
+/// `is_on` reads the state each render, `toggle` flips it. A left `icon`
+/// keeps the row looking like its plain sibling, with the tick pushed to the
+/// right so the icon is not replaced. Without an icon the tick takes the left
+/// slot, matching the default check side.
+pub fn check_row<P: 'static>(
+    label: impl Into<SharedString>,
+    icon: Option<&'static str>,
+    is_on: impl Fn(&P) -> bool + 'static,
+    toggle: impl Fn(&mut P, &mut Context<P>) + 'static,
+    panel: &Entity<P>,
+) -> PopupMenuItem {
+    let label: SharedString = label.into();
+    let read = panel.clone();
+    let weak = panel.downgrade();
+    PopupMenuItem::element(move |_, cx| {
+        let on = is_on(read.read(cx));
+        if let Some(icon) = icon {
+            h_flex()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .child(
+                    h_flex()
+                        .gap_x_1()
+                        .items_center()
+                        .child(Icon::default().path(icon).xsmall())
+                        .child(label.clone()),
+                )
+                .when(on, |row| row.child(Icon::new(IconName::Check).xsmall()))
+        } else {
+            h_flex()
+                .gap_x_1()
+                .items_center()
+                .child(if on {
+                    Icon::new(IconName::Check).xsmall().into_any_element()
+                } else {
+                    Icon::empty().xsmall().into_any_element()
+                })
+                .child(label.clone())
+        }
+    })
+    .on_click(move |_, _, cx| {
+        let Some(this) = weak.upgrade() else { return };
+        this.update(cx, |this, cx| {
+            toggle(this, cx);
+            cx.notify();
+        });
+    })
+}
+
+/// Re-render an open flyout whenever `panel` changes, so its [`check_row`]s
+/// pick up the flip without the menu closing. Call once in the submenu
+/// builder, where `cx` is the submenu's own context.
+pub fn follow_panel<P: 'static>(panel: &Entity<P>, cx: &mut Context<PopupMenu>) {
+    cx.observe(panel, |_, _, cx| cx.notify()).detach();
+}
+
+/// Resolve track ids to paths and hand them to the player: after the playing
+/// track when `next`, at the tail otherwise. Shared by the context-menu
+/// actions across every song surface.
+pub fn queue_tracks(state: &AppState, ids: &[i64], next: bool, cx: &mut App) {
+    let paths = match state.library.read(cx).paths_for(ids) {
+        Ok(paths) if !paths.is_empty() => paths,
+        _ => return,
+    };
+    state.player.update(cx, |player, cx| {
+        if next {
+            player.play_next(paths, cx);
+        } else {
+            player.enqueue(paths, cx);
+        }
+    });
+}
+
+/// The track actions every song surface's right-click shares: Play under
+/// the caller's label, the selection into the tag and cover editors, and
+/// Reveal in File Browser. What playing queues differs per panel (the
+/// view from a row, the highlighted set, whole albums), so the caller
+/// hands the click over; everything after acts on the ids, resolved at
+/// build time so the editors get this set even if another panel
+/// publishes over the shared selection before the click lands. Reveal
+/// follows the first id; empty ids appends no Reveal.
+pub fn track_actions(
+    menu: PopupMenu,
+    state: AppState,
+    ids: Vec<i64>,
+    play_label: impl Into<SharedString>,
+    window: &mut Window,
+    cx: &mut App,
+    on_play: impl Fn(&mut Window, &mut App) + 'static,
+) -> PopupMenu {
+    let reveal = ids.first().copied();
+    let tag_ids = ids.clone();
+    let tag_state = state.clone();
+    let cover_state = state.clone();
+    let next_state = state.clone();
+    let next_ids = ids.clone();
+    let queue_state = state.clone();
+    let queue_ids = ids.clone();
+    let playlist_state = state.clone();
+    let playlist_ids = ids.clone();
+    let menu = menu
+        .item(
+            PopupMenuItem::new(play_label)
+                .icon(Icon::default().path(icons::PLAY))
+                .on_click(move |_, window, cx| on_play(window, cx)),
+        )
+        // Queue the selection right after the playing track, or start it when
+        // nothing plays. Paths resolve here so the queue holds the same set
+        // even if the selection moves before the click lands.
+        .item(
+            PopupMenuItem::new("Play Next")
+                .icon(Icon::default().path(icons::SKIP_FORWARD))
+                .on_click(move |_, _, cx| {
+                    queue_tracks(&next_state, &next_ids, true, cx);
+                }),
+        )
+        .item(
+            PopupMenuItem::new("Add to Queue")
+                .icon(Icon::default().path(icons::LIST_MUSIC))
+                .on_click(move |_, _, cx| {
+                    queue_tracks(&queue_state, &queue_ids, false, cx);
+                }),
+        );
+    // The favourites toggle: off to on when any of the set is not favourited,
+    // on to off only when the whole set already is, so a mixed selection lands
+    // everything in favourites first. Reads its state at open time.
+    let favourites = state.library.read(cx).favourite_ids();
+    let all_fav = !ids.is_empty() && ids.iter().all(|id| favourites.contains(id));
+    let fav_state = state.clone();
+    let fav_ids = ids.clone();
+    let (fav_label, fav_icon) = if all_fav {
+        ("Remove from Favourites", icons::HEART_FILLED)
+    } else {
+        ("Add to Favourites", icons::HEART)
+    };
+    let menu = menu.item(
+        PopupMenuItem::new(fav_label)
+            .icon(Icon::default().path(fav_icon))
+            .on_click(move |_, _, cx| {
+                let ids = fav_ids.clone();
+                fav_state
+                    .library
+                    .update(cx, |library, cx| library.set_favourites(&ids, !all_fav, cx));
+            }),
+    );
+    // Add to Playlist flies out the existing playlists with Create New at the
+    // top. Built at open time, so it reflects playlists made this session.
+    let submenu = PopupMenu::build(window, cx, move |mut submenu, _window, cx| {
+        let new_state = playlist_state.clone();
+        let new_ids = playlist_ids.clone();
+        submenu = submenu.item(
+            PopupMenuItem::new("New Playlist...")
+                .icon(Icon::default().path(icons::PLUS))
+                .on_click(move |_, _, cx| {
+                    crate::playlist_create::open(new_state.clone(), new_ids.clone(), cx);
+                }),
+        );
+        let playlists = playlist_state.library.read(cx).playlists();
+        if !playlists.is_empty() {
+            submenu = submenu.separator();
+        }
+        for playlist in playlists {
+            let add_state = playlist_state.clone();
+            let add_ids = playlist_ids.clone();
+            let id = playlist.id;
+            submenu = submenu.item(
+                PopupMenuItem::new(SharedString::from(playlist.name)).on_click(move |_, _, cx| {
+                    let add_ids = add_ids.clone();
+                    add_state.library.update(cx, |library, cx| {
+                        library.add_to_playlist(id, &add_ids, cx);
+                    });
+                }),
+            );
+        }
+        submenu
+    });
+    let menu = menu.item(
+        PopupMenuItem::submenu("Add to Playlist", submenu)
+            .icon(Icon::default().path(icons::LIST_MUSIC)),
+    );
+    let menu = menu
+        // The primary editing flow: the selection into the tag editor
+        // window; the metadata panel's inline pencil stays the quick path.
+        .item(
+            PopupMenuItem::new("Edit Tags...")
+                .icon(Icon::default().path(icons::PENCIL))
+                .on_click(move |_, _, cx| {
+                    crate::tag_editor::open(tag_state.clone(), tag_ids.clone(), cx);
+                }),
+        )
+        // Covers get their own window: the tag editor edits text per
+        // track, this stamps one image across the selection.
+        .item(
+            PopupMenuItem::new("Edit Cover Art...")
+                .icon(Icon::default().path(icons::IMAGE))
+                .on_click(move |_, _, cx| {
+                    crate::cover_editor::open(cover_state.clone(), ids.clone(), cx);
+                }),
+        );
+    reveal_item(menu, state, reveal)
+}
+
 /// Move a docked panel into its own OS window. The panel entity itself moves,
 /// so it keeps rendering the same shared state; closing the window drops it.
 pub fn pop_out<P: Panel>(
@@ -586,7 +1036,7 @@ pub fn pop_out<P: Panel>(
 pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
     let name = panel
         .tab_name(cx)
-        .unwrap_or_else(|| panel.panel_name(cx).into());
+        .unwrap_or_else(|| display_name(panel.panel_name(cx)).into());
     let title = SharedString::from(format!("rox - {name}"));
     let bounds = Bounds::centered(None, size(px(900.), px(600.)), cx);
     let options = WindowOptions {
@@ -611,12 +1061,49 @@ pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
                 state,
                 backdrop: WindowBackdrop::default(),
                 context_menu: None,
+                focus: cx.focus_handle(),
                 _backdrop_changed,
             }
         });
+        // Anchor the window on the fallback focus so the Workspace-scoped
+        // playback bindings have a dispatch path before the panel grabs
+        // focus, same as the main workspace's fallback.
+        host.read(cx).focus.clone().focus(window);
         cx.new(|cx| Root::new(host, window, cx))
     })
     .expect("failed to open the panel window");
+}
+
+/// The frame-level config every panel carries, flattened into each
+/// panel's own config struct with `#[serde(flatten)]`. These are the
+/// knobs that mean the same thing on any panel: the rename, the palette
+/// override, and the two placement locks. Panel-specific fields (a
+/// grid's tile size, a spectrum's bands) stay on the panel's own config;
+/// `align` lives there too since only some panels lay out along a row.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct PanelChrome {
+    /// The rename shown as the tab and title text; None shows the
+    /// built-in name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The panel's palette and frame override.
+    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
+    pub theme: PanelTheme,
+    /// Pin the panel in place: the dock won't let it be dragged to
+    /// another spot or rearranged. Off by default. Resizing is a separate
+    /// concern the dock handles at the split level.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub locked: bool,
+    /// Turn the panel body into a window-move handle: a drag anywhere on
+    /// it moves the OS window, so a decorations-off layout can be moved by
+    /// a toolbar strip. Off by default; meant for the quiet panels, since
+    /// on an interactive one it competes with the controls.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub anchor: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A panel whose per-view config is edited in its own settings window
@@ -648,29 +1135,78 @@ pub trait PanelSettings: Panel {
         div().into_any_element()
     }
 
+    /// The panel's frame-level config. Every panel stores a
+    /// [`PanelChrome`] on its own config (flattened into the layout dump),
+    /// so the shared knobs - rename, theme, the placement locks - read and
+    /// write through here rather than a method per field.
+    fn chrome(&self) -> &PanelChrome;
+
+    /// The mutable frame config, so the settings window and quick toggles
+    /// edit the shared knobs in place.
+    fn chrome_mut(&mut self) -> &mut PanelChrome;
+
     /// The rename override, shown as the tab and title text in place of
-    /// the panel's built-in name. Lives on the panel's config, so the
-    /// layout dump persists it and Duplicate copies it.
-    fn custom_title(&self) -> Option<&str>;
+    /// the panel's built-in name.
+    fn custom_title(&self) -> Option<&str> {
+        self.chrome().title.as_deref()
+    }
 
     /// Store an edited rename: the next render shows it, the layout dump
     /// persists it. None goes back to the built-in name. Implementations
     /// must repaint their hosting tab panel ([`refresh_tab_panel`]), which
-    /// is what draws the title.
+    /// is what draws the title, so this stays panel-provided.
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>);
 
+    /// Whether the panel draws its own font control on its pages, so the
+    /// shared Appearance page leaves off the generic theme-font row rather
+    /// than showing a second family picker. The lyrics panel does, pairing
+    /// the family with its own weight and size knobs.
+    fn has_own_font(&self) -> bool {
+        false
+    }
+
     /// The panel's palette override, the Appearance page's subject.
-    fn theme(&self) -> PanelTheme;
+    fn theme(&self) -> PanelTheme {
+        self.chrome().theme.clone()
+    }
 
     /// Store an edited override: the next render picks it up, the layout
     /// dump persists it.
-    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>);
+    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
+        self.chrome_mut().theme = theme;
+        cx.notify();
+    }
+
+    /// Pin or unpin the panel in the dock (no drag or rearrange). The dock
+    /// reads the flag through [`Panel::locked`] on its next paint, so a
+    /// repaint settles the toggle. The current value reads off
+    /// `chrome().locked` directly, which also sidesteps the name clash
+    /// with the dock trait's own `locked`.
+    fn set_locked(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.chrome_mut().locked = on;
+        cx.notify();
+    }
+
+    /// Turn the window-move handle on or off; `chrome().anchor` reads it.
+    fn set_anchor(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.chrome_mut().anchor = on;
+        cx.notify();
+    }
 
     /// The panel's own rows for the shared Appearance page, rendered as
     /// a section between the frame and the colors: looks that live on
     /// the panel's config rather than its theme, like the grid's art
     /// rounding. None keeps the page to the shared knobs.
     fn appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let _ = (window, cx);
+        None
+    }
+
+    /// The panel's own rows for the shared Behavior page, rendered under
+    /// the shared lock and anchor toggles: knobs about how the panel acts
+    /// rather than how it looks, like the grid's follow-playing. None
+    /// keeps the page to the shared knobs.
+    fn behavior(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let _ = (window, cx);
         None
     }
@@ -688,12 +1224,20 @@ pub trait PanelSettings: Panel {
 /// painted over, and padding on the body keeps the gap in the panel's
 /// own background - while margin wraps outside it, so the backdrop
 /// shows through that gap. An empty theme skips all of it.
-pub fn themed(theme: &PanelTheme, build: impl FnOnce() -> Div) -> AnyElement {
+pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
+    let theme = &chrome.theme;
+    let anchor = chrome.anchor;
     let frame = {
         let (margin, padding, rounding, border) =
             (theme.margin, theme.padding, theme.rounding, theme.border);
+        let font = theme.font.clone();
         move || {
             let mut body = build();
+            // The panel's own font layers over the app font the window root
+            // cascades in; unset leaves the app font showing through.
+            if let Some(font) = font {
+                body = body.font_family(font);
+            }
             if let Some(padding) = padding {
                 body = body.p(px(padding));
             }
@@ -709,14 +1253,19 @@ pub fn themed(theme: &PanelTheme, build: impl FnOnce() -> Div) -> AnyElement {
                 widths.left = Some(width);
                 body = body.border_color(palette::border());
             }
-            match margin {
-                Some(margin) => div()
-                    .size_full()
-                    .p(px(margin))
-                    .child(body)
-                    .into_any_element(),
-                None => body.into_any_element(),
+            // The outer element takes layout and, when the panel is an
+            // anchor, the window-move drag. A margin wraps the body in an
+            // outer cell; without one the body itself is the root.
+            let mut root = match margin {
+                Some(margin) => div().size_full().p(px(margin)).child(body),
+                None => body,
+            };
+            if anchor {
+                root = root
+                    .cursor_grab()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move());
             }
+            root.into_any_element()
         }
     };
     let Some(scope) = theme.scope() else {
@@ -793,6 +1342,84 @@ impl IntoElement for Themed {
     }
 }
 
+/// Wraps a window's whole body in its player's art tint, the mirror of
+/// [`Themed`] one level up: the palette accessors answer from the tint
+/// while the tree is built and again through every paint phase, so a
+/// window's panels and canvases read its own playback's colors. Built with
+/// [`window_body`], which snapshots the tint and runs the body inside it.
+pub struct WindowTint {
+    tint: palette::Tint,
+    child: AnyElement,
+}
+
+/// Build a window body under its player's art tint. The body closure runs
+/// with the tint pushed so render-time color reads see it, and the tint
+/// rides along into the paint phases through the returned element.
+pub fn window_body(player: gpui::EntityId, body: impl FnOnce() -> AnyElement) -> WindowTint {
+    let tint = palette::window_tint(player);
+    let child = palette::tinted(tint, body);
+    WindowTint { tint, child }
+}
+
+impl Element for WindowTint {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let layout_id = palette::tinted(self.tint, || self.child.request_layout(window, cx));
+        (layout_id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        palette::tinted(self.tint, || {
+            self.child.prepaint(window, cx);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        palette::tinted(self.tint, || self.child.paint(window, cx));
+    }
+}
+
+impl IntoElement for WindowTint {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
 /// One labeled row of a customize window: the setting's name and its
 /// control on one line, an optional dimmed description wrapping below.
 pub fn setting_row(
@@ -828,17 +1455,30 @@ pub fn setting_row(
 /// control spans the full width below the description instead of sitting
 /// inline. Wrapping controls need this - the row's control slot is
 /// content-sized, and a wrap container without a definite width collapses
-/// to one item per line.
+/// to one item per line. An optional trailing control rides the label
+/// row's right edge, where a section's reset button lives.
 pub fn setting_block(
     label: &'static str,
     description: Option<&'static str>,
+    trailing: Option<AnyElement>,
     control: impl IntoElement,
 ) -> Div {
     div()
         .flex()
         .flex_col()
         .gap(px(2.))
-        .child(label)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(tokens::SPACE_MD)
+                .child(label)
+                .when_some(trailing, |d, trailing| {
+                    d.child(div().flex_none().child(trailing))
+                }),
+        )
         .when_some(description, |d, description| {
             d.child(
                 div()
@@ -952,6 +1592,107 @@ pub fn toggle<P: 'static>(
         }))
 }
 
+/// The shared "tracking" section for a panel's Behavior page: the
+/// follow-playing toggle and, while it is on, the smooth-scrolling toggle,
+/// under one header so the library, the grids, and the art shelf all read
+/// the same. The wording of what it follows (a row, an album, the center)
+/// differs per panel, so both descriptions are passed in; the toggles carry
+/// each panel's own follow and glide handlers.
+#[allow(clippy::too_many_arguments)]
+pub fn tracking_section<P: 'static>(
+    follow: bool,
+    follow_desc: &'static str,
+    on_follow: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
+    resume: bool,
+    resume_desc: &'static str,
+    on_resume: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
+    smooth: bool,
+    smooth_desc: &'static str,
+    on_smooth: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
+    cx: &mut Context<P>,
+) -> AnyElement {
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_MD)
+        .child(setting_row(
+            "Follow Playing",
+            Some(follow_desc),
+            toggle(follow, on_follow, cx),
+        ))
+        .child(setting_row(
+            "Resume When Idle",
+            Some(resume_desc),
+            toggle(resume, on_resume, cx),
+        ));
+    // Both the follow and the resume ride the same glide, so the motion
+    // toggle earns its place the moment either is on.
+    if follow || resume {
+        body = body.child(setting_row(
+            "Smooth Scrolling",
+            Some(smooth_desc),
+            toggle(smooth, on_smooth, cx),
+        ));
+    }
+    crate::settings_ui::section("Tracking", None, body).into_any_element()
+}
+
+/// A font-family picker: a small dropdown labeled with the current
+/// choice, its menu the installed families over a Default that clears the
+/// override back to the app font. `current` is the panel's stored family,
+/// None meaning inherit; `apply` stores the pick. Shared so any panel that
+/// carries a font override draws the same control - the lyrics panel's
+/// typeface knob is the first.
+pub fn font_picker<P: 'static>(
+    id: &'static str,
+    current: Option<String>,
+    apply: impl Fn(&mut P, Option<String>, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> impl IntoElement {
+    let label: SharedString = current
+        .clone()
+        .map(SharedString::from)
+        .unwrap_or_else(|| "Default".into());
+    let mut fonts = cx.text_system().all_font_names();
+    fonts.sort();
+    fonts.dedup();
+    let weak = cx.entity().downgrade();
+    Button::new(id)
+        .label(label)
+        .small()
+        .outline()
+        .dropdown_menu(move |menu, _, _| {
+            let clear = weak.clone();
+            let clear_apply = apply.clone();
+            let mut menu = menu.item(
+                PopupMenuItem::new("Default")
+                    .checked(current.is_none())
+                    .on_click(move |_, _, cx| {
+                        if let Some(this) = clear.upgrade() {
+                            let apply = clear_apply.clone();
+                            this.update(cx, |this, cx| apply(this, None, cx));
+                        }
+                    }),
+            );
+            for name in &fonts {
+                let name = name.clone();
+                let checked = current.as_deref() == Some(name.as_str());
+                let pick = weak.clone();
+                let apply = apply.clone();
+                menu = menu.item(PopupMenuItem::new(name.clone()).checked(checked).on_click(
+                    move |_, _, cx| {
+                        let name = name.clone();
+                        let apply = apply.clone();
+                        if let Some(this) = pick.upgrade() {
+                            this.update(cx, |this, cx| apply(this, Some(name), cx));
+                        }
+                    },
+                ));
+            }
+            menu
+        })
+}
+
 /// The chrome shared by the segmented pickers: a joined group of segments,
 /// the picked one filled with the accent, hairline gaps between the rest.
 fn segments<P: 'static, V: PartialEq + Copy + 'static>(
@@ -1063,6 +1804,16 @@ pub fn justify(d: Div, align: Align) -> Div {
     }
 }
 
+/// Apply an alignment along the cross axis, so a column's children sit
+/// left, center, or right the way `justify` places a row's.
+pub fn items(d: Div, align: Align) -> Div {
+    match align {
+        Align::Left => d.items_start(),
+        Align::Center => d.items_center(),
+        Align::Right => d.items_end(),
+    }
+}
+
 /// The alignment setting row the panels' customize windows share.
 pub fn align_row<P: 'static>(
     current: Align,
@@ -1070,8 +1821,8 @@ pub fn align_row<P: 'static>(
     cx: &mut Context<P>,
 ) -> Div {
     setting_row(
-        "alignment",
-        Some("where the content sits when the panel has room to spare"),
+        "Alignment",
+        Some("Where the content sits when the panel has room to spare"),
         icon_choices(
             &[
                 (icons::ALIGN_LEFT, Align::Left),
@@ -1097,6 +1848,10 @@ struct PopoutHost {
     /// The open right-click menu: its anchor position, the menu, and the
     /// dismiss subscription that clears it.
     context_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
+    /// Fallback focus so the Workspace-scoped playback bindings keep a
+    /// dispatch path in this window even before the hosted panel takes
+    /// focus. Mirrors the main workspace's fallback focus.
+    focus: FocusHandle,
     _backdrop_changed: Subscription,
 }
 
@@ -1136,44 +1891,69 @@ impl PopoutHost {
 
 impl Render for PopoutHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(palette::bg_elevated())
-            .text_color(palette::text_bright())
-            .text_sm()
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    this.open_menu(event.position, window, cx);
-                }),
-            )
-            // The backdrop paints first, under the panel; how much shows
-            // through is the surfaces' call (ADR 10's strength scalar).
-            .children(self.backdrop.layer(&self.state.now_art, window, cx))
-            .child(self.panel_view.view())
-            // Same overlay structure as the dock's context menu: an
-            // occluding layer swallows the dismissing click, the anchored
-            // child pins the menu to the pointer.
-            .when_some(self.context_menu.as_ref(), |this, (position, menu, _)| {
-                this.child(
-                    deferred(
-                        anchored().child(
-                            div()
-                                .w(window.bounds().size.width)
-                                .h(window.bounds().size.height)
-                                .occlude()
-                                .child(
-                                    anchored()
-                                        .position(*position)
-                                        .snap_to_window_with_margin(px(8.))
-                                        .child(menu.clone()),
-                                ),
-                        ),
-                    )
-                    .with_priority(1),
+        // A popped-out window shares its parent's player, so it renders
+        // under that playback's tint, and claims the widget theme while it
+        // holds focus.
+        let player = self.state.player.entity_id();
+        palette::note_focus(player, window.is_window_active(), cx);
+        window_body(player, || {
+            div()
+                .flex()
+                .flex_col()
+                .size_full()
+                // Same Workspace context and playback actions as the main
+                // window, so space and the seek arrows work in a popout too.
+                // The panel's own SearchInput context still carves the keys
+                // back for its search box.
+                .track_focus(&self.focus)
+                .key_context("Workspace")
+                .on_action(cx.listener(|this, _: &TogglePlayback, _, cx| {
+                    this.state
+                        .player
+                        .update(cx, |player, _| player.toggle_pause());
+                }))
+                .on_action(cx.listener(|this, _: &SeekBackward, _, cx| {
+                    this.state.player.update(cx, |player, _| player.seek_by(-5.0));
+                }))
+                .on_action(cx.listener(|this, _: &SeekForward, _, cx| {
+                    this.state.player.update(cx, |player, _| player.seek_by(5.0));
+                }))
+                .bg(palette::bg_elevated())
+                .text_color(palette::text_bright())
+                .text_sm()
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        this.open_menu(event.position, window, cx);
+                    }),
                 )
-            })
+                // The backdrop paints first, under the panel; how much shows
+                // through is the surfaces' call (ADR 10's strength scalar).
+                .children(self.backdrop.layer(&self.state.now_art, window, cx))
+                .child(self.panel_view.view())
+                // Same overlay structure as the dock's context menu: an
+                // occluding layer swallows the dismissing click, the anchored
+                // child pins the menu to the pointer.
+                .when_some(self.context_menu.as_ref(), |this, (position, menu, _)| {
+                    this.child(
+                        deferred(
+                            anchored().child(
+                                div()
+                                    .w(window.bounds().size.width)
+                                    .h(window.bounds().size.height)
+                                    .occlude()
+                                    .child(
+                                        anchored()
+                                            .position(*position)
+                                            .snap_to_window_with_margin(px(8.))
+                                            .child(menu.clone()),
+                                    ),
+                            ),
+                        )
+                        .with_priority(1),
+                    )
+                })
+                .into_any_element()
+        })
     }
 }

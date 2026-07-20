@@ -221,6 +221,25 @@ impl PanelState {
 
                 DockItem::tabs(items, &dock_area, window, cx).active_index(active_index)
             }
+            // An empty container that an older build dumped with the default
+            // `Panel(Null)` info instead of its own tabs/stack info (the bug
+            // only hit empty containers, so there are no children to carry).
+            // Rebuild it as the empty container it was, rather than routing the
+            // container name through the registry and coming back as an
+            // InvalidPanel.
+            PanelInfo::Panel(_) if self.panel_name == "TabPanel" => {
+                DockItem::tabs(Vec::new(), &dock_area, window, cx)
+            }
+            PanelInfo::Panel(_) if self.panel_name == "StackPanel" => {
+                DockItem::split_with_sizes(
+                    Axis::Horizontal,
+                    Vec::new(),
+                    Vec::new(),
+                    &dock_area,
+                    window,
+                    cx,
+                )
+            }
             PanelInfo::Panel(_) => {
                 let view = PanelRegistry::build_panel(
                     &self.panel_name,

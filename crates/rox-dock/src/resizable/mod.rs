@@ -144,6 +144,20 @@ impl ResizableState {
         cx.notify();
     }
 
+    /// Move a panel's state to another index, its size riding along, so
+    /// an app-level reorder of a stack's children keeps every split width
+    /// with its panel.
+    pub(crate) fn move_panel(&mut self, from_ix: usize, to_ix: usize, cx: &mut Context<Self>) {
+        if from_ix == to_ix || from_ix >= self.panels.len() || to_ix >= self.panels.len() {
+            return;
+        }
+        let panel = self.panels.remove(from_ix);
+        self.panels.insert(to_ix, panel);
+        let size = self.sizes.remove(from_ix);
+        self.sizes.insert(to_ix, size);
+        cx.notify();
+    }
+
     pub(crate) fn remove_panel(&mut self, panel_ix: usize, cx: &mut Context<Self>) {
         self.panels.remove(panel_ix);
         self.sizes.remove(panel_ix);

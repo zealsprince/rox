@@ -63,11 +63,13 @@ impl Panel for StackPanel {
     fn dump(&self, cx: &App) -> PanelState {
         let sizes = self.state.read(cx).sizes().clone();
         let mut state = PanelState::new(self);
+        // Set the stack info up front, not inside the loop: same reason as
+        // TabPanel::dump, an empty stack left on the `Panel(Null)` default
+        // restores as an unregistered "StackPanel" InvalidPanel.
+        state.info = PanelInfo::stack(sizes, self.axis);
         for panel in &self.panels {
             state.add_child(panel.dump(cx));
-            state.info = PanelInfo::stack(sizes.clone(), self.axis);
         }
-
         state
     }
 }
@@ -120,6 +122,11 @@ impl StackPanel {
     /// The stack's axis, for app-level walks over the live layout.
     pub fn axis(&self) -> Axis {
         self.axis
+    }
+
+    /// The stack this one sits in, for app-level walks; None at the root.
+    pub fn parent(&self) -> Option<Entity<StackPanel>> {
+        self.parent.as_ref().and_then(|parent| parent.upgrade())
     }
 
     /// The children in stack order, for app-level walks over the live
@@ -297,6 +304,56 @@ impl StackPanel {
             state.insert_panel(Some(size), Some(ix), cx);
         });
         cx.emit(PanelEvent::LayoutChanged);
+        cx.notify();
+    }
+
+    /// Move a child to another index, the app-level reorder route (the
+    /// settings window's layout tree). Sizes travel with their panels, so
+    /// the split widths hold through the shuffle. Out-of-range indices do
+    /// nothing.
+    pub fn move_panel(&mut self, from_ix: usize, to_ix: usize, cx: &mut Context<Self>) {
+        if from_ix == to_ix || from_ix >= self.panels.len() || to_ix >= self.panels.len() {
+            return;
+        }
+        let panel = self.panels.remove(from_ix);
+        self.panels.insert(to_ix, panel);
+        self.state.update(cx, |state, cx| {
+            state.move_panel(from_ix, to_ix, cx);
+        });
+        cx.emit(PanelEvent::LayoutChanged);
+        cx.notify();
+    }
+
+    /// Lift the child at `ix` out into the parent stack, landing right
+    /// after this stack, so a nested arrangement flattens one level (the
+    /// settings window's layout tree route). No-op at the root and for
+    /// out-of-range indices.
+    pub fn lift_panel(
+        &mut self,
+        ix: usize,
+        dock_area: WeakEntity<DockArea>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(parent) = self.parent() else {
+            return;
+        };
+        let Some(panel) = self.panels.get(ix).cloned() else {
+            return;
+        };
+        let this: Arc<dyn PanelView> = Arc::new(cx.entity().clone());
+        let Some(parent_ix) = parent.read(cx).index_of_panel(this) else {
+            return;
+        };
+        self.panels.remove(ix);
+        self.state.update(cx, |state, cx| state.remove_panel(ix, cx));
+        // insert_panel's deferred hookup repoints the lifted panel's
+        // parent at the stack it lands in.
+        parent.update(cx, |parent, cx| {
+            parent.insert_panel_after(panel, parent_ix, None, dock_area, window, cx);
+        });
+        cx.emit(PanelEvent::LayoutChanged);
+        self.remove_self_if_empty(window, cx);
         cx.notify();
     }
 

@@ -3,7 +3,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::PanelInfo;
-use crate::resizable::PANEL_MIN_SIZE;
 use crate::tab::{Tab, TabBar};
 use gpui::{
     App, AppContext, Bounds, Context, Corner, DismissEvent, Div, DragMoveEvent, Empty, Entity,
@@ -28,7 +27,6 @@ use super::{
 
 #[derive(Clone)]
 struct TabState {
-    closable: bool,
     zoomable: Option<PanelControl>,
     draggable: bool,
     droppable: bool,
@@ -150,9 +148,11 @@ impl Panel for TabPanel {
 
     fn min_size(&self, cx: &App) -> Size<Pixels> {
         // As demanding as the most demanding visible tab; any of them can
-        // become the active one.
+        // become the active one. Seed at zero, not the global floor, so a
+        // panel that opts into a smaller min (the search bar) is honored;
+        // panels keep the 40px floor by default through `Panel::min_size`.
         self.visible_panels(cx)
-            .fold(gpui::size(PANEL_MIN_SIZE, PANEL_MIN_SIZE), |acc, panel| {
+            .fold(gpui::size(px(0.), px(0.)), |acc, panel| {
                 let min = panel.min_size(cx);
                 gpui::size(acc.width.max(min.width), acc.height.max(min.height))
             })
@@ -182,9 +182,13 @@ impl Panel for TabPanel {
 
     fn dump(&self, cx: &App) -> PanelState {
         let mut state = PanelState::new(self);
+        // Set the tabs info up front, not inside the loop: an empty tab panel
+        // still has to dump as tabs. Left on the PanelState default of
+        // `Panel(Null)`, restore routes "TabPanel" through the registry, which
+        // has no builder for it, and the window comes back as an InvalidPanel.
+        state.info = PanelInfo::tabs(self.active_ix);
         for panel in self.panels.iter() {
             state.add_child(panel.dump(cx));
-            state.info = PanelInfo::tabs(self.active_ix);
         }
         state
     }
@@ -382,6 +386,56 @@ impl TabPanel {
         panel.closable(cx)
     }
 
+    /// Move a tab to another index, the app-level reorder route (the
+    /// settings window's layout tree). The active index follows its
+    /// panel, so the shown surface and focus never change. Out-of-range
+    /// indices do nothing.
+    pub fn move_panel(&mut self, from_ix: usize, to_ix: usize, cx: &mut Context<Self>) {
+        if from_ix == to_ix || from_ix >= self.panels.len() || to_ix >= self.panels.len() {
+            return;
+        }
+        let panel = self.panels.remove(from_ix);
+        self.panels.insert(to_ix, panel);
+        if self.active_ix == from_ix {
+            self.active_ix = to_ix;
+        } else if from_ix < self.active_ix && to_ix >= self.active_ix {
+            self.active_ix -= 1;
+        } else if from_ix > self.active_ix && to_ix <= self.active_ix {
+            self.active_ix += 1;
+        }
+        cx.emit(PanelEvent::LayoutChanged);
+        cx.notify();
+    }
+
+    /// Lift the tab at `ix` out of this group into a group of its own,
+    /// landing right after this one in the parent stack (the settings
+    /// window's layout tree route). A solo tab already is its own group,
+    /// so that and out-of-range indices do nothing.
+    pub fn lift_panel(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panels.len() <= 1 {
+            return;
+        }
+        let Some(panel) = self.panels.get(ix).cloned() else {
+            return;
+        };
+        let Some(stack) = self.stack_panel.as_ref().and_then(|stack| stack.upgrade()) else {
+            return;
+        };
+        let this: Arc<dyn PanelView> = Arc::new(cx.entity().clone());
+        let Some(stack_ix) = stack.read(cx).index_of_panel(this) else {
+            return;
+        };
+        let dock_area = self.dock_area.clone();
+        self.detach_panel(panel.clone(), window, cx);
+        let new_tabs = cx.new(|cx| Self::new(None, dock_area.clone(), window, cx));
+        new_tabs.update(cx, |tabs, cx| tabs.add_panel(panel, window, cx));
+        stack.update(cx, |stack, cx| {
+            stack.insert_panel_after(Arc::new(new_tabs), stack_ix, None, dock_area, window, cx);
+        });
+        cx.emit(PanelEvent::LayoutChanged);
+        cx.notify();
+    }
+
     /// Remove a panel from the tab panel
     pub fn remove_panel(
         &mut self,
@@ -455,6 +509,14 @@ impl TabPanel {
             return true;
         }
 
+        // A panel that asked to be pinned locks its group: no dragging it
+        // out, no rearranging, nothing dropped in. rox builds one panel
+        // per group, so this reads as per-panel; a mixed group locks as a
+        // whole, the conservative call.
+        if self.panels.iter().any(|panel| panel.locked(cx)) {
+            return true;
+        }
+
         self.stack_panel.is_none()
     }
 
@@ -517,9 +579,10 @@ impl TabPanel {
         !self.is_locked(cx)
     }
 
-    /// Open the right-click menu for a panel: the panel's own dropdown items,
-    /// then zoom and close, all acting on that panel rather than the active
-    /// one. One menu per tab panel; opening replaces any open one.
+    /// Open the right-click menu for a panel: the panel's own dropdown
+    /// items (which carry their own close), then zoom, all acting on that
+    /// panel rather than the active one. One menu per tab panel; opening
+    /// replaces any open one.
     fn open_panel_menu(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -530,7 +593,6 @@ impl TabPanel {
         let view = cx.entity().clone();
         let zoomed = self.zoomed;
         let zoomable = self.zoomable(cx).map_or(false, |v| v.menu_visible());
-        let closable = self.can_close_panel(&panel, cx);
         // Hands focus back to the panel when the menu dismisses.
         let focus_handle = self.focus_handle(cx);
 
@@ -541,6 +603,10 @@ impl TabPanel {
                 .item(
                     PopupMenuItem::new(if zoomed { "Zoom Out" } else { "Zoom In" })
                         .disabled(!zoomable)
+                        // Carries the action only so the row shows its chord;
+                        // the on_click below is what actually runs (a menu
+                        // item with a handler ignores the action on click).
+                        .action(Box::new(ToggleZoom))
                         .on_click({
                             let view = view.clone();
                             move |_, window, cx| {
@@ -550,17 +616,6 @@ impl TabPanel {
                             }
                         }),
                 )
-                .separator()
-                .item(PopupMenuItem::new("Close").disabled(!closable).on_click({
-                    let view = view.clone();
-                    move |_, window, cx| {
-                        view.update(cx, |this, cx| {
-                            if this.can_close_panel(&panel, cx) {
-                                this.remove_panel(panel.clone(), window, cx);
-                            }
-                        });
-                    }
-                }))
         });
 
         menu.focus_handle(cx).focus(window);
@@ -570,6 +625,21 @@ impl TabPanel {
         });
         self.context_menu = Some((position, menu, subscription));
         cx.notify();
+    }
+
+    /// Tears down the open context menu and hands focus back to the panel,
+    /// the same way the menu's own dismiss would. Wired to the occluding
+    /// backdrop so an outside press always closes the menu.
+    fn dismiss_context_menu(
+        &mut self,
+        _: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.context_menu.take().is_some() {
+            window.focus(&self.focus_handle(cx));
+            cx.notify();
+        }
     }
 
     fn render_toolbar(
@@ -630,8 +700,9 @@ impl TabPanel {
                     .tab_stop(false)
                     .dropdown_menu({
                         let zoomable = state.zoomable.map_or(false, |v| v.menu_visible());
-                        let closable = state.closable;
 
+                        // The panel's own dropdown carries close on its
+                        // tail, so only zoom joins it here.
                         move |menu, window, cx| {
                             view.update(cx, |this, cx| {
                                 this.dropdown_menu(menu, window, cx)
@@ -641,9 +712,6 @@ impl TabPanel {
                                         Box::new(ToggleZoom),
                                         !zoomable,
                                     )
-                                    .when(closable, |this| {
-                                        this.separator().menu("Close", Box::new(ClosePanel))
-                                    })
                             })
                         }
                     })
@@ -1567,10 +1635,15 @@ impl TabPanel {
     }
 
     // Bind actions to the tab panel, only when the tab panel is not collapsed.
+    //
+    // ToggleZoom deliberately isn't bound here: rox routes the zoom chord
+    // through the dock's toggle_zoom_active so it acts on the last-clicked
+    // group, not the focused one. Handling it here too would double-toggle
+    // it back to a no-op. The zoom button and menu items call
+    // on_action_toggle_zoom directly, so they don't need the binding.
     fn bind_actions(&self, cx: &mut Context<Self>) -> Div {
         v_flex().when(!self.collapsed, |this| {
-            this.on_action(cx.listener(Self::on_action_toggle_zoom))
-                .on_action(cx.listener(Self::on_action_close_panel))
+            this.on_action(cx.listener(Self::on_action_close_panel))
         })
     }
 }
@@ -1591,7 +1664,6 @@ impl Render for TabPanel {
         let focus_handle = self.focus_handle(cx);
         let active_panel = self.active_panel(cx);
         let state = TabState {
-            closable: self.closable(cx),
             draggable: self.draggable(cx),
             droppable: self.droppable(cx),
             zoomable: self.zoomable(cx),
@@ -1673,7 +1745,13 @@ impl Render for TabPanel {
             .child(self.render_active_panel(&state, window, cx))
             // Same structure as gpui-component's ContextMenu element: a
             // window-sized occluding layer swallows the dismissing click,
-            // the inner anchored pins the menu to the pointer.
+            // the inner anchored pins the menu to the pointer. The layer also
+            // dismisses on its own press: the menu's on_mouse_down_out is
+            // unreliable through the deferred overlay (and the root menu skips
+            // its own dismiss while a submenu is open), so an outside click
+            // would otherwise leave the menu stuck open, holding focus. A
+            // press on the menu or an open submenu hits their occluding
+            // hitbox first, so only genuine outside presses reach this.
             .when_some(self.context_menu.as_ref(), |this, (position, menu, _)| {
                 this.child(
                     deferred(
@@ -1682,6 +1760,18 @@ impl Render for TabPanel {
                                 .w(window.bounds().size.width)
                                 .h(window.bounds().size.height)
                                 .occlude()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(Self::dismiss_context_menu),
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Right,
+                                    cx.listener(Self::dismiss_context_menu),
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Middle,
+                                    cx.listener(Self::dismiss_context_menu),
+                                )
                                 .child(
                                     anchored()
                                         .position(*position)

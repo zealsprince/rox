@@ -88,6 +88,13 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
         None::<gpui::Div>
     }
 
+    /// Whether the panel is pinned in place: the tab holding it can't be
+    /// dragged out or rearranged, and nothing drops onto it. Default is
+    /// `false`. Read on the tab panel's render, so keep it fast.
+    fn locked(&self, cx: &App) -> bool {
+        false
+    }
+
     /// Whether the panel can be closed, default is `true`.
     ///
     /// This method called in Panel render, we should make sure it is fast.
@@ -190,6 +197,7 @@ pub trait PanelView: 'static + Send + Sync {
     fn title(&self, window: &mut Window, cx: &mut App) -> AnyElement;
     fn title_suffix(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement>;
     fn title_style(&self, cx: &App) -> Option<TitleStyle>;
+    fn locked(&self, cx: &App) -> bool;
     fn closable(&self, cx: &App) -> bool;
     fn zoomable(&self, cx: &App) -> Option<PanelControl>;
     fn visible(&self, cx: &App) -> bool;
@@ -233,6 +241,10 @@ impl<T: Panel> PanelView for Entity<T> {
 
     fn title_style(&self, cx: &App) -> Option<TitleStyle> {
         self.read(cx).title_style(cx)
+    }
+
+    fn locked(&self, cx: &App) -> bool {
+        self.read(cx).locked(cx)
     }
 
     fn closable(&self, cx: &App) -> bool {

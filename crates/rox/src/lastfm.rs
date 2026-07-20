@@ -38,8 +38,18 @@ const API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 /// scrobbling agree on what counts.
 const MIN_TRACK_SECS: f64 = 30.0;
 
-/// A play crossed the listen threshold: the one "real listen" signal.
-/// History records it always; the scrobble follows only while armed.
+/// The fixed listen rule that feeds history, the scrobble standard: a
+/// track counts once half of it has sounded. The user's scrobble
+/// threshold is a separate knob and doesn't move this line.
+const LISTEN_FRACTION: f64 = 0.5;
+
+/// The cap on the listen rule: four minutes of playback counts even when
+/// that's less than half a long track, whichever comes first.
+const LISTEN_CAP_SECS: f64 = 240.0;
+
+/// A play crossed the listen rule: the one "real listen" signal.
+/// History records it always; the scrobble follows its own threshold
+/// while armed.
 pub struct Listened {
     pub path: PathBuf,
     /// When the play began, unix seconds.
@@ -126,7 +136,7 @@ struct Watch {
     played: f64,
     last_pos: f64,
     now_playing_sent: bool,
-    /// The listen signal fired for this watch; set on the threshold
+    /// The listen signal fired for this watch; set on the listen-rule
     /// crossing whether or not scrobbling is armed.
     listened: bool,
     scrobbled: bool,
@@ -147,11 +157,7 @@ pub struct Scrobbler {
 impl EventEmitter<Listened> for Scrobbler {}
 
 impl Scrobbler {
-    pub fn new(
-        player: &Entity<Player>,
-        library: &Entity<Library>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(player: &Entity<Player>, library: &Entity<Library>, cx: &mut Context<Self>) -> Self {
         // The player's pump notifies every tick while a session runs, so
         // observing it is the scrobbler's whole clock.
         let _player_changed = cx.observe(player, |this: &mut Self, player, cx| {
@@ -274,7 +280,9 @@ impl Scrobbler {
                         ));
                         this.phase = AuthPhase::Waiting(token);
                     }
-                    Err(e) => this.phase = AuthPhase::Failed(format!("getting a token: {e}").into()),
+                    Err(e) => {
+                        this.phase = AuthPhase::Failed(format!("getting a token: {e}").into())
+                    }
                 }
                 cx.notify();
             })
@@ -323,9 +331,7 @@ impl Scrobbler {
                         this.phase = AuthPhase::Idle;
                         this.persist();
                     }
-                    Err(e) => {
-                        this.phase = AuthPhase::Failed(format!("confirming: {e}").into())
-                    }
+                    Err(e) => this.phase = AuthPhase::Failed(format!("confirming: {e}").into()),
                 }
                 cx.notify();
             })
@@ -380,12 +386,16 @@ impl Scrobbler {
             watch.last_pos = now.position_secs;
         }
 
-        // The listen signal fires on the threshold crossing no matter
-        // where scrobbling stands: history records every real listen,
-        // the scrobble below reuses the same crossing while armed.
-        let qualifies = self.watch.as_ref().is_some_and(|w| self.qualifies(w));
+        // Evaluate both rules once against the current watch: the fixed
+        // listen rule drives history, the user's threshold drives the
+        // scrobble. They accrue off the same clock but cross apart.
+        let listens = self.watch.as_ref().is_some_and(Self::qualifies_listen);
+        let scrobbles = self.watch.as_ref().is_some_and(|w| self.qualifies_scrobble(w));
+
+        // The listen signal fires on the listen-rule crossing no matter
+        // where scrobbling stands: history records every real listen.
         if let Some(watch) = self.watch.as_mut() {
-            if qualifies && !watch.listened {
+            if listens && !watch.listened {
                 watch.listened = true;
                 cx.emit(Listened {
                     path: watch.path.clone(),
@@ -411,16 +421,25 @@ impl Scrobbler {
         let Some(watch) = self.watch.as_mut() else {
             return;
         };
-        if !watch.scrobbled && qualifies {
+        if !watch.scrobbled && scrobbles {
             watch.scrobbled = true;
             self.submit("track.scrobble", cx);
         }
     }
 
-    /// The one "real listen" rule, shared by the scrobble and the
-    /// history recorder's [`Listened`] signal: the track is long enough
-    /// to count and enough of it has actually sounded.
-    fn qualifies(&self, watch: &Watch) -> bool {
+    /// The listen rule that feeds history, the scrobble standard: the
+    /// track is long enough to count and enough of it has sounded, half
+    /// its length or four minutes, whichever comes first.
+    fn qualifies_listen(watch: &Watch) -> bool {
+        watch
+            .duration
+            .filter(|d| *d > MIN_TRACK_SECS)
+            .is_some_and(|d| watch.played >= (d * LISTEN_FRACTION).min(LISTEN_CAP_SECS))
+    }
+
+    /// The scrobble rule: the user's threshold knob against the duration,
+    /// deliberately its own line, not the fixed listen rule above.
+    fn qualifies_scrobble(&self, watch: &Watch) -> bool {
         watch
             .duration
             .filter(|d| *d > MIN_TRACK_SECS)
@@ -478,7 +497,10 @@ impl Scrobbler {
             params.insert("album".to_string(), meta.album.clone());
         }
         if let Some(duration) = watch.duration {
-            params.insert("duration".to_string(), (duration.round() as u64).to_string());
+            params.insert(
+                "duration".to_string(),
+                (duration.round() as u64).to_string(),
+            );
         }
         if method == "track.scrobble" {
             params.insert("timestamp".to_string(), watch.started.to_string());

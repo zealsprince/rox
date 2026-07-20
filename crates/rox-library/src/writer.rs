@@ -33,7 +33,8 @@ use lofty::file::{AudioFile, FileType};
 use lofty::flac::FlacFile;
 use lofty::id3::v2::Frame;
 use lofty::mpeg::MpegFile;
-use lofty::picture::{MimeType, Picture, PictureType};
+use lofty::ogg::OggPictureStorage;
+use lofty::picture::{MimeType, Picture, PictureInformation, PictureType};
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, Tag};
@@ -60,6 +61,10 @@ pub enum Field {
     DiscNo,
     Comment,
     Composer,
+    /// The unsynchronised lyrics blob (USLT on ID3v2, UNSYNCEDLYRICS on
+    /// Vorbis). Free text, newlines and all, including LRC timestamps a
+    /// player can sync against; the tag frame never times them itself.
+    Lyrics,
     Rating,
     Custom(String),
 }
@@ -71,10 +76,68 @@ pub struct Change {
     pub value: Option<String>,
 }
 
-/// One file's pending changes, the unit `commit_batch` takes.
+/// A picture slot the cover editor addresses. The curated set a music
+/// library actually carries; lofty's full `PictureType` list is larger,
+/// and any type outside this set rides every commit untouched, the same
+/// as an unmapped text frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PicKind {
+    Front,
+    Back,
+    Media,
+    Artist,
+}
+
+impl PicKind {
+    /// The lofty type a set writes to.
+    fn primary_type(self) -> PictureType {
+        match self {
+            PicKind::Front => PictureType::CoverFront,
+            PicKind::Back => PictureType::CoverBack,
+            PicKind::Media => PictureType::Media,
+            PicKind::Artist => PictureType::Artist,
+        }
+    }
+
+    /// Every lofty type this slot owns: what a read folds into it and a
+    /// write clears before setting. The front slot also owns the untyped
+    /// `Other` picture, since a lot of taggers (Windows Media Player among
+    /// them) store the album cover there rather than as a typed front, and
+    /// an editor that ignored it would show a covered album as empty.
+    fn owned_types(self) -> &'static [PictureType] {
+        match self {
+            PicKind::Front => &[PictureType::CoverFront, PictureType::Other],
+            PicKind::Back => &[PictureType::CoverBack],
+            PicKind::Media => &[PictureType::Media],
+            PicKind::Artist => &[PictureType::Artist],
+        }
+    }
+
+    /// The slot a lofty picture type maps back to, `None` for the types the
+    /// editor leaves alone. Derived from [`Self::owned_types`], so the read
+    /// and write agree on which slot a type belongs to.
+    fn from_type(kind: PictureType) -> Option<Self> {
+        [PicKind::Front, PicKind::Back, PicKind::Media, PicKind::Artist]
+            .into_iter()
+            .find(|slot| slot.owned_types().contains(&kind))
+    }
+}
+
+/// One picture write, addressed by slot. `data` `None` removes any
+/// picture in that slot; `Some` sets it, replacing an existing picture of
+/// the same type. The bytes are the encoded image, the string its mime.
+#[derive(Clone, Debug)]
+pub struct PicChange {
+    pub kind: PicKind,
+    pub data: Option<(Vec<u8>, String)>,
+}
+
+/// One file's pending edits, the unit `commit_batch` takes: field changes
+/// and picture changes, either of which may be empty.
 pub struct Edit {
     pub path: PathBuf,
     pub changes: Vec<Change>,
+    pub pictures: Vec<PicChange>,
 }
 
 /// The named fields' generic keys. `Year` writes the recording date key
@@ -92,6 +155,10 @@ fn item_key(field: &Field) -> Option<ItemKey> {
         Field::DiscNo => ItemKey::DiscNumber,
         Field::Comment => ItemKey::Comment,
         Field::Composer => ItemKey::Composer,
+        // Always the unsynchronised key on both formats: lofty refuses
+        // ItemKey::Lyrics on ID3v2, and UnsyncLyrics carries LRC text
+        // through USLT and UNSYNCEDLYRICS the same way.
+        Field::Lyrics => ItemKey::UnsyncLyrics,
         // The rating never writes as plain text; `apply_rating` puts its
         // popularimeter form on the generic tag itself.
         Field::Rating | Field::Custom(_) => return None,
@@ -112,6 +179,9 @@ fn field_of(key: ItemKey) -> Option<Field> {
         ItemKey::DiscNumber => Field::DiscNo,
         ItemKey::Comment => Field::Comment,
         ItemKey::Composer => Field::Composer,
+        // A file may carry either key (or both, if two apps wrote it);
+        // both read back as the one lyrics field, the first wins.
+        ItemKey::UnsyncLyrics | ItemKey::Lyrics => Field::Lyrics,
         _ => return None,
     })
 }
@@ -178,14 +248,98 @@ fn named_fields(generic: Tag, out: &mut Vec<(Field, String)>) {
     }
 }
 
+/// A file's embedded pictures as (type, bytes, mime), read through the
+/// source each format actually stores them in.
+fn embedded_pictures(
+    path: &Path,
+    kind: FileType,
+) -> Result<Vec<(PictureType, Vec<u8>, String)>, String> {
+    Ok(match kind {
+        // MP3 keeps its pictures as APIC frames on the ID3v2 tag, which
+        // the split moves into the generic picture list.
+        FileType::Mpeg => parse_mpeg(path)?
+            .id3v2()
+            .cloned()
+            .unwrap_or_default()
+            .split_tag()
+            .1
+            .pictures()
+            .iter()
+            .map(pic_tuple)
+            .collect(),
+        // FLAC keeps its pictures as dedicated PICTURE blocks on the file
+        // itself, off the vorbis comments - lofty parses them back there
+        // no matter which tag wrote them, so the read and the write both
+        // go through the file's own picture store.
+        FileType::Flac => parse_flac(path)?
+            .pictures()
+            .iter()
+            .map(|(picture, _)| pic_tuple(picture))
+            .collect(),
+        _ => unreachable!("file_type only passes writable formats"),
+    })
+}
+
+/// One picture as (type, bytes, mime), the mime rescued off the magic
+/// bytes when the tag declares none or an unknown one, the art module's
+/// rule.
+fn pic_tuple(picture: &Picture) -> (PictureType, Vec<u8>, String) {
+    let mime = match picture.mime_type() {
+        Some(MimeType::Unknown(_)) | None => {
+            art::sniff(picture.data()).unwrap_or_default().to_string()
+        }
+        Some(mime) => mime.as_str().to_string(),
+    };
+    (picture.pic_type(), picture.data().to_vec(), mime)
+}
+
+/// A file's embedded pictures at the slots the cover editor addresses,
+/// each with its encoded bytes and mime. Exotic-type pictures the editor
+/// does not slot are left out here but ride every commit untouched.
+/// Isolated like [`read`]: a parser panic costs an error, not the process.
+pub fn read_pictures(path: &Path) -> Result<Vec<(PicKind, Vec<u8>, String)>, String> {
+    catch_unwind(AssertUnwindSafe(|| read_pictures_inner(path)))
+        .unwrap_or_else(|_| Err(format!("tag parser panicked on {}", path.display())))
+}
+
+fn read_pictures_inner(path: &Path) -> Result<Vec<(PicKind, Vec<u8>, String)>, String> {
+    let kind = file_type(path)?;
+    let mut out: Vec<(PicKind, Vec<u8>, String)> = embedded_pictures(path, kind)?
+        .into_iter()
+        .filter_map(|(pic_type, data, mime)| {
+            PicKind::from_type(pic_type).map(|slot| (slot, data, mime))
+        })
+        .collect();
+    // The front cover lofty mangles on an unsync MP3 reads clean through
+    // the art module's raw path; show that so the diff and the preview see
+    // the real image, not the corruption the write itself would repair.
+    if kind == FileType::Mpeg {
+        if let Some(front) = out.iter_mut().find(|(k, _, _)| *k == PicKind::Front) {
+            if let Some((data, mime)) = art::unsync_apic(path) {
+                front.1 = data;
+                front.2 = mime;
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Commit changes to one file through the atomic layer: clone, write the
 /// clone, verify it (every change reads back, pictures byte-identical,
 /// the audio stream hash unchanged), rename it over the original. Any
 /// failure, including a parser panic, unlinks the clone and leaves the
 /// original byte-identical.
 pub fn commit(path: &Path, changes: &[Change]) -> Result<(), String> {
+    commit_with(path, changes, &[])
+}
+
+/// [`commit`] with picture edits alongside the field changes: the cover
+/// editor's path, wrapped in the same atomic layer. Either slice may be
+/// empty; a picture-only commit still verifies the fields (a no-op) and
+/// the audio hash.
+pub fn commit_with(path: &Path, changes: &[Change], pictures: &[PicChange]) -> Result<(), String> {
     let tmp = tmp_path(path);
-    let result = catch_unwind(AssertUnwindSafe(|| commit_inner(path, &tmp, changes)))
+    let result = catch_unwind(AssertUnwindSafe(|| commit_inner(path, &tmp, changes, pictures)))
         .unwrap_or_else(|_| Err(format!("tag parser panicked on {}", path.display())));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -198,36 +352,49 @@ pub fn commit(path: &Path, changes: &[Change]) -> Result<(), String> {
 pub fn commit_batch(edits: &[Edit]) -> Vec<(PathBuf, Result<(), String>)> {
     edits
         .iter()
-        .map(|edit| (edit.path.clone(), commit(&edit.path, &edit.changes)))
+        .map(|edit| {
+            (
+                edit.path.clone(),
+                commit_with(&edit.path, &edit.changes, &edit.pictures),
+            )
+        })
         .collect()
 }
 
-fn commit_inner(path: &Path, tmp: &Path, changes: &[Change]) -> Result<(), String> {
+fn commit_inner(
+    path: &Path,
+    tmp: &Path,
+    changes: &[Change],
+    pictures: &[PicChange],
+) -> Result<(), String> {
     let changes = expand_rating(changes);
     let changes = changes.as_slice();
     let kind = file_type(path)?;
     // What must hold after the write: the audio stream untouched and the
-    // pictures byte-identical, with the raw re-read standing in for the
-    // picture lofty mangles.
+    // pictures the edits leave byte-identical, with the raw re-read
+    // standing in for the front cover lofty mangles.
     let audio_hash = hash_span(path, audio_span(path, kind)?)?;
     let rescue = if kind == FileType::Mpeg {
         art::unsync_apic(path)
     } else {
         None
     };
-    let expected_pictures = match kind {
-        FileType::Mpeg => expected_pictures(path, rescue.as_ref())?,
-        // FLAC pictures live in their own metadata blocks, outside the
-        // unsync hazard; lofty carries them through whole.
-        _ => Vec::new(),
+    // MP3 always verifies its pictures (the unsync hazard); FLAC only when
+    // an edit touches them, since lofty otherwise carries its picture
+    // blocks through whole.
+    let check_pictures = kind == FileType::Mpeg || !pictures.is_empty();
+    let expected_pictures = if check_pictures {
+        expected_pictures(path, kind, rescue.as_ref(), pictures)?
+    } else {
+        Vec::new()
     };
 
     fs::copy(path, tmp).map_err(|e| format!("copy for write: {e}"))?;
-    write_tags(tmp, kind, changes, rescue)?;
+    write_tags(tmp, kind, changes, rescue, pictures)?;
 
     verify_fields(tmp, kind, changes)?;
-    if kind == FileType::Mpeg {
-        verify_pictures(tmp, &expected_pictures)?;
+    if check_pictures {
+        verify_pictures(tmp, kind, &expected_pictures)?;
     }
     if hash_span(tmp, audio_span(tmp, kind)?)? != audio_hash {
         return Err("audio stream changed across the write".into());
@@ -244,6 +411,7 @@ fn write_tags(
     kind: FileType,
     changes: &[Change],
     rescue: Option<(Vec<u8>, String)>,
+    pictures: &[PicChange],
 ) -> Result<(), String> {
     let mut file = fs::OpenOptions::new()
         .read(true)
@@ -269,6 +437,9 @@ fn write_tags(
             if let Some((data, mime)) = rescue {
                 set_front_picture(&mut generic, data, &mime);
             }
+            // After the rescue so a front-cover edit overrides the raw
+            // re-read of the mangled one rather than the reverse.
+            apply_pictures(&mut generic, pictures);
             let mut tag = remainder.merge_tag(generic);
             // lofty writes frame content raw but carries the read tag's
             // header flags along, so a tag read off an unsynchronised
@@ -300,6 +471,7 @@ fn write_tags(
             apply_named(&mut generic, changes);
             apply_rating(&mut generic, changes);
             flac.set_vorbis_comments(remainder.merge_tag(generic));
+            apply_pictures_flac(&mut flac, pictures);
             file.rewind().map_err(|e| format!("rewind: {e}"))?;
             flac.save_to(&mut file, WriteOptions::default())
                 .map_err(|e| format!("write: {e}"))
@@ -415,6 +587,51 @@ fn set_front_picture(generic: &mut Tag, data: Vec<u8>, mime: &str) {
     }
 }
 
+/// The picture edits onto the generic tag, addressed by slot type: a set
+/// replaces the picture of that type or pushes a new one, a remove drops
+/// every picture of that type. [`expected_pictures`] mirrors this exactly,
+/// so the verify step compares the write against the same transformation.
+fn apply_pictures(generic: &mut Tag, pictures: &[PicChange]) {
+    for change in pictures {
+        // Drop every type the slot owns first, so a set leaves one and a
+        // remove leaves none; [`expected_pictures`] does the same.
+        for &pic_type in change.kind.owned_types() {
+            generic.remove_picture_type(pic_type);
+        }
+        if let Some((data, mime)) = &change.data {
+            let picture = Picture::unchecked(data.clone())
+                .pic_type(change.kind.primary_type())
+                .mime_type(MimeType::from_str(mime))
+                .build();
+            generic.push_picture(picture);
+        }
+    }
+}
+
+/// The picture edits onto a FLAC file, through its own picture store: a
+/// set drops the slot's type and inserts the new picture, a remove drops
+/// it. Kept apart from [`apply_pictures`] because lofty holds FLAC
+/// pictures off the vorbis comments the generic tag round-trips.
+fn apply_pictures_flac(flac: &mut FlacFile, pictures: &[PicChange]) {
+    for change in pictures {
+        for &pic_type in change.kind.owned_types() {
+            flac.remove_picture_type(pic_type);
+        }
+        if let Some((data, mime)) = &change.data {
+            let picture = Picture::unchecked(data.clone())
+                .pic_type(change.kind.primary_type())
+                .mime_type(MimeType::from_str(mime))
+                .build();
+            // The information block is a read-time convenience; real
+            // players size off the image itself, so a picture that will
+            // not parse still writes with a zeroed block rather than
+            // failing the commit.
+            let info = PictureInformation::from_picture(&picture).unwrap_or_default();
+            let _ = flac.insert_picture(picture, Some(info));
+        }
+    }
+}
+
 /// Every change read back off the clone, checked against what was asked.
 /// Customs read through the format tag, the named set through a fresh
 /// split, so the check exercises the same path the next scan will.
@@ -489,42 +706,51 @@ fn verify_fields(tmp: &Path, kind: FileType, changes: &[Change]) -> Result<(), S
 }
 
 /// The pictures the clone must carry: what lofty reads off the original,
-/// with the rescued raw bytes standing in for the front cover it mangles.
+/// the rescued raw bytes standing in for the front cover it mangles, then
+/// the picture edits applied. The rescue substitution and the edit
+/// application mirror [`set_front_picture`] and [`apply_pictures`] step
+/// for step (both formats through their own picture store), so a clean
+/// write reads back exactly this multiset.
 fn expected_pictures(
     path: &Path,
+    kind: FileType,
     rescue: Option<&(Vec<u8>, String)>,
+    pictures: &[PicChange],
 ) -> Result<Vec<Vec<u8>>, String> {
-    let tag = parse_mpeg(path)?.id3v2().cloned().unwrap_or_default();
-    let generic = tag.split_tag().1;
-    let mut datas: Vec<Vec<u8>> = generic
-        .pictures()
-        .iter()
-        .map(|p| p.data().to_vec())
+    let mut items: Vec<(PictureType, Vec<u8>)> = embedded_pictures(path, kind)?
+        .into_iter()
+        .map(|(pic_type, data, _)| (pic_type, data))
         .collect();
+    // The rescue swaps the front cover (or the first picture failing that),
+    // keeping the slot's type; an empty tag gains a front.
     if let Some((data, _)) = rescue {
-        let ix = generic
-            .pictures()
+        let ix = items
             .iter()
-            .position(|p| p.pic_type() == PictureType::CoverFront)
+            .position(|(t, _)| *t == PictureType::CoverFront)
             .unwrap_or(0);
-        match datas.get_mut(ix) {
-            Some(slot) => *slot = data.clone(),
-            None => datas.push(data.clone()),
+        match items.get_mut(ix) {
+            Some(slot) => slot.1 = data.clone(),
+            None => items.push((PictureType::CoverFront, data.clone())),
         }
     }
-    Ok(datas)
+    for change in pictures {
+        for &pic_type in change.kind.owned_types() {
+            items.retain(|(t, _)| *t != pic_type);
+        }
+        if let Some((data, _)) = &change.data {
+            items.push((change.kind.primary_type(), data.clone()));
+        }
+    }
+    Ok(items.into_iter().map(|(_, data)| data).collect())
 }
 
 /// The clone's pictures against the expected set, compared as byte
-/// multisets: the write may reorder frames, it may not touch an image.
-fn verify_pictures(tmp: &Path, expected: &[Vec<u8>]) -> Result<(), String> {
-    let tag = parse_mpeg(tmp)?.id3v2().cloned().unwrap_or_default();
-    let mut got: Vec<Vec<u8>> = tag
-        .split_tag()
-        .1
-        .pictures()
-        .iter()
-        .map(|p| p.data().to_vec())
+/// multisets: the write may reorder frames, it may only touch an image an
+/// edit named.
+fn verify_pictures(tmp: &Path, kind: FileType, expected: &[Vec<u8>]) -> Result<(), String> {
+    let mut got: Vec<Vec<u8>> = embedded_pictures(tmp, kind)?
+        .into_iter()
+        .map(|(_, data, _)| data)
         .collect();
     let mut want = expected.to_vec();
     got.sort();
@@ -891,10 +1117,12 @@ mod tests {
             Edit {
                 path: good.clone(),
                 changes: vec![set(Field::Title, "Made it")],
+                pictures: Vec::new(),
             },
             Edit {
                 path: bad,
                 changes: vec![set(Field::Title, "Nope")],
+                pictures: Vec::new(),
             },
         ];
         let results = commit_batch(&edits);
@@ -1004,5 +1232,146 @@ mod tests {
             value_of(&read(&path).unwrap(), &Field::Title).as_deref(),
             Some("Fixed")
         );
+    }
+
+    /// A minimal JPEG-shaped blob: the magic the art sniffer keys on, so
+    /// the mime rescues to image/jpeg no matter what the tag declares.
+    fn jpeg(marker: u8) -> Vec<u8> {
+        vec![0xFF, 0xD8, 0xFF, 0xE0, marker, 0x2A, 0xFF, 0xD9]
+    }
+
+    fn set_pic(kind: PicKind, bytes: Vec<u8>) -> PicChange {
+        PicChange {
+            kind,
+            data: Some((bytes, "image/jpeg".into())),
+        }
+    }
+
+    /// A cover set, read back, then replaced and removed, on both formats:
+    /// the write lands the picture at its slot, a second write swaps it,
+    /// and a remove clears it, all over untouched audio.
+    #[test]
+    fn cover_set_replace_remove_round_trips() {
+        let dir = scratch("covers");
+        for (path, audio) in [
+            (mp3_file(&dir, "track.mp3"), mpeg_audio()),
+            (
+                flac_file(&dir, "track.flac"),
+                (0..600u32).map(|i| (i * 11 % 253) as u8).collect(),
+            ),
+        ] {
+            let front = jpeg(0x11);
+            commit_with(&path, &[], &[set_pic(PicKind::Front, front.clone())]).unwrap();
+            let pics = read_pictures(&path).unwrap();
+            assert_eq!(pics.len(), 1);
+            assert_eq!(pics[0].0, PicKind::Front);
+            assert_eq!(pics[0].1, front);
+            assert!(fs::read(&path).unwrap().ends_with(&audio), "audio survives");
+
+            // A back cover joins it, then the front is swapped.
+            let back = jpeg(0x22);
+            let front2 = jpeg(0x33);
+            commit_with(
+                &path,
+                &[],
+                &[set_pic(PicKind::Back, back.clone()), set_pic(PicKind::Front, front2.clone())],
+            )
+            .unwrap();
+            let pics = read_pictures(&path).unwrap();
+            assert_eq!(pics.len(), 2);
+            let of = |kind| pics.iter().find(|(k, _, _)| *k == kind).map(|(_, d, _)| d.clone());
+            assert_eq!(of(PicKind::Front).as_deref(), Some(front2.as_slice()));
+            assert_eq!(of(PicKind::Back).as_deref(), Some(back.as_slice()));
+
+            // The front comes off, the back stays.
+            commit_with(
+                &path,
+                &[],
+                &[PicChange { kind: PicKind::Front, data: None }],
+            )
+            .unwrap();
+            let pics = read_pictures(&path).unwrap();
+            assert_eq!(pics.len(), 1);
+            assert_eq!(pics[0].0, PicKind::Back);
+            assert!(fs::read(&path).unwrap().ends_with(&audio), "audio survives");
+        }
+    }
+
+    /// A cover replace on the Bandcamp unsync shape: the mangled front is
+    /// what the edit overwrites, so this is the repair the rescue path
+    /// makes explicit, and the new bytes read back clean.
+    #[test]
+    fn cover_replace_on_unsync_mp3() {
+        let image = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0xFF, 0x00, 0x59, 0xFF, 0xFF, 0xD9,
+        ];
+        let mut body = vec![0x00];
+        body.extend(b"image/jpeg\0");
+        body.push(3); // front cover
+        body.extend(b"c\0");
+        body.extend(image);
+        let stored = stuff(&body);
+        let mut frame = b"APIC".to_vec();
+        frame.extend(synch(stored.len() as u32 + 4));
+        frame.extend([0x00, 0x03]);
+        frame.extend(synch(body.len() as u32));
+        frame.extend(&stored);
+        let mut tag = b"ID3\x04\x00\x80".to_vec();
+        tag.extend(synch(frame.len() as u32));
+        tag.extend(&frame);
+
+        let dir = scratch("unsync-cover");
+        let path = dir.join("track.mp3");
+        let mut bytes = tag;
+        bytes.extend(mpeg_audio());
+        fs::write(&path, bytes).unwrap();
+
+        let new = jpeg(0x44);
+        commit_with(&path, &[], &[set_pic(PicKind::Front, new.clone())]).unwrap();
+        let (cover, mime) = crate::art::cover_art(&path).expect("the new cover resolves");
+        assert_eq!(cover, new);
+        assert_eq!(mime, "image/jpeg");
+        assert!(fs::read(&path).unwrap().ends_with(&mpeg_audio()));
+    }
+
+    /// The untyped-cover shape a lot of taggers (Windows Media Player among
+    /// them) write: an ID3v2.3 APIC typed `Other` (0), not front. The front
+    /// slot must fold it in, and replacing the front must consolidate onto
+    /// one typed cover rather than orphan the untyped one beside it.
+    #[test]
+    fn front_slot_owns_an_untyped_cover() {
+        let image = jpeg(0x55);
+        let mut body = vec![0x00];
+        body.extend(b"image/jpeg\0");
+        body.push(0); // picture type Other
+        body.push(0); // empty description
+        body.extend(&image);
+        let mut frame = b"APIC".to_vec();
+        frame.extend((body.len() as u32).to_be_bytes()); // v2.3: plain size
+        frame.extend([0x00, 0x00]);
+        frame.extend(&body);
+        let mut tag = b"ID3\x03\x00\x00".to_vec();
+        tag.extend(synch(frame.len() as u32));
+        tag.extend(&frame);
+
+        let dir = scratch("untyped-cover");
+        let path = dir.join("track.mp3");
+        let mut bytes = tag;
+        bytes.extend(mpeg_audio());
+        fs::write(&path, bytes).unwrap();
+
+        // The untyped picture reads back as the front slot.
+        let pics = read_pictures(&path).unwrap();
+        assert_eq!(pics.len(), 1);
+        assert_eq!(pics[0].0, PicKind::Front);
+        assert_eq!(pics[0].1, image);
+
+        // Replacing the front leaves exactly one cover, the new typed one.
+        let new = jpeg(0x66);
+        commit_with(&path, &[], &[set_pic(PicKind::Front, new.clone())]).unwrap();
+        let pics = read_pictures(&path).unwrap();
+        assert_eq!(pics.len(), 1, "the untyped cover must not orphan");
+        assert_eq!(pics[0].1, new);
+        assert_eq!(crate::art::cover_art(&path).unwrap().0, new);
     }
 }

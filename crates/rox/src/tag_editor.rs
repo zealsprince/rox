@@ -36,6 +36,7 @@ use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
 use crate::panel::AppState;
 use crate::panels::library::{fmt_ms, Library};
+use crate::providers;
 use crate::settings::{rating_style, RatingStyle, Settings};
 use crate::settings_ui::{self, section, SECTION_GAP};
 use crate::suggest;
@@ -44,7 +45,7 @@ use crate::suggest;
 /// whether the field is per-track by nature. Per-track fields only edit
 /// while a single track is selected; a batch would stamp one title or
 /// track number over every file.
-const FIELDS: &[(Field, &'static str, bool)] = &[
+const FIELDS: &[(Field, &str, bool)] = &[
     (Field::Title, "title", true),
     (Field::Artist, "artist", false),
     (Field::AlbumArtist, "album artist", false),
@@ -99,15 +100,29 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
-/// Take the open suggestion, then move focus to `target`. With the menu
-/// up, the input's enter accepts it and emits no PressEnter; with it
-/// closed, enter is a no-op for an editor field.
-fn accept_then_focus(field: &FocusHandle, target: &FocusHandle, window: &mut Window, cx: &mut App) {
-    field.dispatch_action(&Enter { secondary: false }, window, cx);
+/// Take the open suggestion off `input` without firing its own enter.
+/// Routing the enter straight to the completion menu accepts a suggestion
+/// when one is up and does nothing when it is not. Dispatching the input's
+/// Enter action instead would, with no menu open, emit PressEnter, which
+/// the save subscription reads as a save and closes the window - that is
+/// the tab-closes-the-window bug.
+fn take_suggestion(input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
+    input.update(cx, |state, cx| {
+        state.handle_action_for_context_menu(Box::new(Enter { secondary: false }), window, cx);
+    });
+}
+
+/// Take the open suggestion, then move focus to `target`.
+fn accept_then_focus(
+    input: &Entity<InputState>,
+    target: &FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    take_suggestion(input, window, cx);
     window.focus(target);
-    // The nested enter dispatch turns event propagation back on (the
-    // input propagates an enter it took no menu from), which would hand
-    // the keystroke on to the window root's own tab binding for a second
+    // Accepting a suggestion calls propagate on the menu, which would let
+    // the keystroke reach the window root's own tab binding for a second
     // focus move. Stop it explicitly.
     cx.stop_propagation();
 }
@@ -167,7 +182,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(settings_ui::MIN_SIZE),
         titlebar: Some(TitlebarOptions {
-            title: Some("rox - tag editor".into()),
+            title: Some("rox - Tag Editor".into()),
             ..Default::default()
         }),
         app_id: Some(crate::APP_ID.into()),
@@ -177,7 +192,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
         .open_window(options, |window, cx| {
             // The Wayland backend ignores the creation-time titlebar
             // title; only set_window_title reaches the compositor.
-            window.set_window_title("rox - tag editor");
+            window.set_window_title("rox - Tag Editor");
             let view = cx.new(|cx| TagEditor::new(state, ids, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         })
@@ -198,7 +213,7 @@ struct TrackRow {
     duration_ms: u32,
 }
 
-struct TagEditor {
+pub struct TagEditor {
     library: Entity<Library>,
     tracks: Vec<TrackRow>,
     /// Each file's fields as the writer read them, parallel to `tracks`:
@@ -335,12 +350,10 @@ impl TagEditor {
                 cx.subscribe_in(
                     input,
                     window,
-                    |this: &mut Self, _, event: &InputEvent, window, cx| {
-                        match event {
-                            InputEvent::PressEnter { .. } => this.save(window, cx),
-                            InputEvent::Change => cx.notify(),
-                            _ => {}
-                        }
+                    |this: &mut Self, _, event: &InputEvent, window, cx| match event {
+                        InputEvent::PressEnter { .. } => this.save(window, cx),
+                        InputEvent::Change => cx.notify(),
+                        _ => {}
                     },
                 )
             })
@@ -392,7 +405,12 @@ impl TagEditor {
         cx.spawn_in(window, async move |this, cx| {
             let reads = cx
                 .background_executor()
-                .spawn(async move { paths.iter().map(|path| writer::read(path)).collect::<Vec<_>>() })
+                .spawn(async move {
+                    paths
+                        .iter()
+                        .map(|path| writer::read(path))
+                        .collect::<Vec<_>>()
+                })
                 .await;
             this.update_in(cx, |this, window, cx| {
                 let mut baselines = Vec::with_capacity(reads.len());
@@ -440,7 +458,7 @@ impl TagEditor {
             };
             input.update(cx, |input, cx| {
                 if mixed {
-                    input.set_placeholder("multiple values", window, cx);
+                    input.set_placeholder("Multiple values", window, cx);
                 }
                 input.set_value(value.clone(), window, cx);
             });
@@ -623,18 +641,62 @@ impl TagEditor {
                     let mut values = cells.iter().map(|row| row[i].read(cx).value().clone());
                     let first = values.next().unwrap_or_default();
                     let mixed = values.any(|v| v != first);
-                    (if mixed { SharedString::default() } else { first }, mixed)
+                    (
+                        if mixed {
+                            SharedString::default()
+                        } else {
+                            first
+                        },
+                        mixed,
+                    )
                 })
                 .collect()
         };
         for (i, (value, mixed)) in fills.into_iter().enumerate() {
             self.inputs[i].update(cx, |input, cx| {
-                input.set_placeholder(if mixed { "multiple values" } else { "" }, window, cx);
+                input.set_placeholder(if mixed { "Multiple values" } else { "" }, window, cx);
                 input.set_value(value.clone(), window, cx);
             });
             self.filled[i] = value;
             self.mixed[i] = mixed;
         }
+    }
+
+    /// Open the metadata compare on the single edited track. The window
+    /// searches, ranks matches, and on apply calls back into
+    /// [`Self::fill_fields`] rather than writing, so this editor stays the
+    /// one writer. Single-track only, the button its gate.
+    fn look_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(track) = self.tracks.first() else {
+            return;
+        };
+        let path = track.path.clone();
+        let library = self.library.clone();
+        let now_art = self.now_art.clone();
+        let weak = cx.entity().downgrade();
+        let handle = window.window_handle();
+        crate::tag_match::open_fill(library, now_art, path, weak, handle, cx);
+    }
+
+    /// Fill the form from a looked-up match, one field at a time: each set
+    /// input drifts from its fill and arms as a pending edit, so the
+    /// normal save writes it and nothing lands until the user saves.
+    /// Fields the match does not carry are left untouched. The compare
+    /// calls this on its own apply, on this editor's window.
+    pub fn fill_fields(
+        &mut self,
+        values: &[(Field, String)],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for (field, value) in values {
+            let Some(i) = FIELDS.iter().position(|(f, _, _)| f == field) else {
+                continue;
+            };
+            let value = value.clone();
+            self.inputs[i].update(cx, |input, cx| input.set_value(value, window, cx));
+        }
+        cx.notify();
     }
 
     /// Commit the armed fields: each input that drifted from its fill
@@ -693,6 +755,7 @@ impl TagEditor {
                 edits.push(Edit {
                     path: track.path.clone(),
                     changes,
+                    pictures: Vec::new(),
                 });
             }
         }
@@ -739,9 +802,7 @@ impl TagEditor {
                     let Some(ix) = this.tracks.iter().position(|t| t.path == edit.path) else {
                         continue;
                     };
-                    let Some(baseline) =
-                        this.baselines.as_mut().and_then(|b| b.get_mut(ix))
-                    else {
+                    let Some(baseline) = this.baselines.as_mut().and_then(|b| b.get_mut(ix)) else {
                         continue;
                     };
                     for change in &edit.changes {
@@ -798,10 +859,12 @@ impl TagEditor {
                     .border_b_1()
                     .border_color(palette::border())
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&track.line).small().appearance(false).disabled(true)),
+                        div().flex_1().min_w_0().child(
+                            Input::new(&track.line)
+                                .small()
+                                .appearance(false)
+                                .disabled(true),
+                        ),
                     )
                     .when(track.duration_ms > 0, |d| {
                         d.child(
@@ -813,7 +876,7 @@ impl TagEditor {
                     }),
             );
         }
-        section("tracks", None, body)
+        section("Tracks", None, body)
     }
 
     /// The tags section: the shared form, or in table mode the per-track
@@ -821,24 +884,36 @@ impl TagEditor {
     /// the error inline under the fields per the metadata panel's edit
     /// face.
     fn tags_section(&self, cx: &mut Context<Self>) -> Div {
+        // The online lookup rides the header, single-track only: the
+        // compare matches on one track's tags, so a batch has no query.
+        // Gated on the provider toggle like the metadata panel's.
+        let single = self.tracks.len() == 1;
         let buttons = div()
             .flex()
             .flex_row()
             .gap(tokens::SPACE_SM)
+            .when(single && providers::metadata_online(), |d| {
+                d.child(settings_ui::small_button(
+                    "Look Up",
+                    icons::DOWNLOAD,
+                    self.saving || self.baselines.is_none(),
+                    cx.listener(|this, _, window, cx| this.look_up(window, cx)),
+                ))
+            })
             .child(settings_ui::small_button(
-                if self.table { "form" } else { "table" },
+                if self.table { "Form" } else { "Table" },
                 icons::ROWS_3,
                 self.saving || self.baselines.is_none(),
                 cx.listener(|this, _, window, cx| this.toggle_table(window, cx)),
             ))
             .child(settings_ui::small_button(
-                "save",
+                "Save",
                 icons::CHECK,
                 self.saving || self.baselines.is_none(),
                 cx.listener(|this, _, window, cx| this.save(window, cx)),
             ))
             .child(settings_ui::small_button(
-                "cancel",
+                "Cancel",
                 icons::CLOSE,
                 self.saving,
                 cx.listener(|this, _, window, cx| {
@@ -853,7 +928,7 @@ impl TagEditor {
             self.form_body(cx).into_any_element()
         };
         section(
-            "tags",
+            "Tags",
             Some(buttons),
             div()
                 .flex()
@@ -883,7 +958,7 @@ impl TagEditor {
                 let field: gpui::AnyElement = if *per_track && !single {
                     let value = self.inputs[i].read(cx).value();
                     let (text, faded) = if self.mixed.get(i).copied().unwrap_or(false) {
-                        (SharedString::from("multiple values"), true)
+                        (SharedString::from("Multiple values"), true)
                     } else if value.is_empty() {
                         (SharedString::from("-"), true)
                     } else {
@@ -902,22 +977,22 @@ impl TagEditor {
                     // Tab out of a field takes its open suggestion along
                     // the way; the walk itself is the stock next stop,
                     // which already runs down the form.
-                    let handle = self.inputs[i].read(cx).focus_handle(cx);
+                    let input = self.inputs[i].clone();
                     div()
                         .key_context("TagField")
                         .on_action({
-                            let handle = handle.clone();
+                            let input = input.clone();
                             move |_: &FieldTab, window, cx| {
-                                handle.dispatch_action(&Enter { secondary: false }, window, cx);
+                                take_suggestion(&input, window, cx);
                                 window.focus_next();
-                                // Same nested-dispatch hazard as
+                                // Same propagation hazard as
                                 // accept_then_focus: without this the
                                 // root's tab binding moves a second time.
                                 cx.stop_propagation();
                             }
                         })
                         .on_action(move |_: &FieldTabPrev, window, cx| {
-                            handle.dispatch_action(&Enter { secondary: false }, window, cx);
+                            take_suggestion(&input, window, cx);
                             window.focus_prev();
                             cx.stop_propagation();
                         })
@@ -980,7 +1055,11 @@ fn grid_columns(saved: &[f32]) -> Vec<Column> {
                 Field::Rating => 96.,
                 _ => 150.,
             };
-            let width = saved.get(i).copied().filter(|w| *w >= 24.).unwrap_or(default);
+            let width = saved
+                .get(i)
+                .copied()
+                .filter(|w| *w >= 24.)
+                .unwrap_or(default);
             Column::new(*label, *label).width(px(width)).sortable()
         })
         .collect()
@@ -1010,7 +1089,11 @@ impl TableDelegate for CellGrid {
         cx: &mut Context<TableState<Self>>,
     ) {
         for (ix, column) in self.columns.iter_mut().enumerate() {
-            column.sort = Some(if ix == col_ix { sort } else { ColumnSort::Default });
+            column.sort = Some(if ix == col_ix {
+                sort
+            } else {
+                ColumnSort::Default
+            });
         }
         if matches!(sort, ColumnSort::Default) {
             self.order = (0..self.cells.len()).collect();
@@ -1058,7 +1141,6 @@ impl TableDelegate for CellGrid {
                 .child(rating_field(&cell, cx))
                 .into_any_element();
         }
-        let handle = cell.read(cx).focus_handle(cx);
         // The neighbors down and up the column, wrapping into the next
         // and previous column at the ends and skipping unfocusable
         // rating columns.
@@ -1084,11 +1166,12 @@ impl TableDelegate for CellGrid {
         div()
             .key_context("TagField")
             .on_action({
-                let handle = handle.clone();
-                move |_: &FieldTab, window, cx| accept_then_focus(&handle, &next, window, cx)
+                let cell = cell.clone();
+                move |_: &FieldTab, window, cx| accept_then_focus(&cell, &next, window, cx)
             })
-            .on_action(move |_: &FieldTabPrev, window, cx| {
-                accept_then_focus(&handle, &prev, window, cx)
+            .on_action({
+                let cell = cell.clone();
+                move |_: &FieldTabPrev, window, cx| accept_then_focus(&cell, &prev, window, cx)
             })
             .child(Input::new(&cell).small().appearance(false))
             .into_any_element()

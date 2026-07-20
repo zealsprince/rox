@@ -28,12 +28,12 @@ use rox_library::writer::{self, Change, Field};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
-use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, align_row, justify, Align, AppState, PanelSettings};
+use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
 use crate::player::fmt_time;
+use crate::providers;
 use crate::selection::SelectionEvent;
 use crate::settings_ui;
 use crate::source::{self, ResolvedTrack, TrackSource};
@@ -44,27 +44,23 @@ use crate::source::{self, ResolvedTrack, TrackSource};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MetadataConfig {
-    /// The rename shown as the tab and title text; None shows the
-    /// built-in name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    /// The rename, theme override, and placement locks shared by every
+    /// panel.
+    #[serde(flatten)]
+    pub chrome: PanelChrome,
     pub source: TrackSource,
     pub align: Align,
     /// The track's cover art behind the fields, dimmed under a scrim.
     pub cover: bool,
-    /// The panel's palette override.
-    #[serde(skip_serializing_if = "PanelTheme::is_empty")]
-    pub theme: PanelTheme,
 }
 
 impl Default for MetadataConfig {
     fn default() -> Self {
         MetadataConfig {
-            title: None,
+            chrome: PanelChrome::default(),
             source: TrackSource::default(),
             align: Align::default(),
             cover: true,
-            theme: PanelTheme::default(),
         }
     }
 }
@@ -90,16 +86,16 @@ struct Details {
 /// the tags the panel shows plus the comment, which only lives in the
 /// file. Duration, codec, and bitrate stay display-only, they describe
 /// the stream.
-const EDIT_FIELDS: &[(Field, &'static str)] = &[
-    (Field::Title, "title"),
-    (Field::Artist, "artist"),
-    (Field::Album, "album"),
-    (Field::AlbumArtist, "album artist"),
-    (Field::DiscNo, "disc"),
-    (Field::TrackNo, "track"),
-    (Field::Genre, "genre"),
-    (Field::Year, "year"),
-    (Field::Comment, "comment"),
+const EDIT_FIELDS: &[(Field, &str)] = &[
+    (Field::Title, "Title"),
+    (Field::Artist, "Artist"),
+    (Field::Album, "Album"),
+    (Field::AlbumArtist, "Album Artist"),
+    (Field::DiscNo, "Disc"),
+    (Field::TrackNo, "Track"),
+    (Field::Genre, "Genre"),
+    (Field::Year, "Year"),
+    (Field::Comment, "Comment"),
 ];
 
 /// One in-progress edit: the pinned track, the baseline read off its
@@ -149,7 +145,9 @@ pub struct MetadataPanel {
 
 impl MetadataPanel {
     pub fn new(state: AppState, config: MetadataConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        // The tags and details turn over with the track, not as it plays,
+        // so the gated observe skips the pump's per-tick repaints.
+        let _player_changed = crate::player::observe_view(&state.player, cx);
         let _selection_changed = cx.subscribe(
             &state.selection,
             |this: &mut Self, _, _: &SelectionEvent, cx| {
@@ -215,7 +213,9 @@ impl MetadataPanel {
             });
             self.details = Some((path.to_path_buf(), details));
         }
-        self.details.as_ref().and_then(|(_, details)| details.as_ref())
+        self.details
+            .as_ref()
+            .and_then(|(_, details)| details.as_ref())
     }
 
     /// Make sure the background art for `path` is cached or on its way:
@@ -274,15 +274,22 @@ impl MetadataPanel {
 
     /// The panel's own dropdown entries: the source pick and the cover
     /// background toggle, the same knobs the customize window edits.
-    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
-        let menu = source::source_menu(
+    fn config_menu(
+        &self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let menu = source::source_flyout(
             menu,
-            self.config.source,
+            |this: &Self| this.config.source,
             &cx.entity(),
             |this, source, cx| {
                 this.config.source = source;
                 cx.notify();
             },
+            window,
+            cx,
         );
         let weak = cx.entity().downgrade();
         menu.separator().item(
@@ -465,12 +472,16 @@ impl PanelSettings for MetadataPanel {
         self.state.clone()
     }
 
-    fn custom_title(&self) -> Option<&str> {
-        self.config.title.as_deref()
+    fn chrome(&self) -> &PanelChrome {
+        &self.config.chrome
+    }
+
+    fn chrome_mut(&mut self) -> &mut PanelChrome {
+        &mut self.config.chrome
     }
 
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
-        self.config.title = title;
+        self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
@@ -506,8 +517,8 @@ impl PanelSettings for MetadataPanel {
                 cx,
             ))
             .child(panel::setting_row(
-                "cover background",
-                Some("the track's cover art behind the fields"),
+                "Cover Background",
+                Some("The track's cover art behind the fields"),
                 panel::toggle(
                     self.config.cover,
                     |this: &mut Self, on, cx| {
@@ -518,15 +529,6 @@ impl PanelSettings for MetadataPanel {
                 ),
             ))
             .into_any_element()
-    }
-
-    fn theme(&self) -> PanelTheme {
-        self.config.theme.clone()
-    }
-
-    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
-        self.config.theme = theme;
-        cx.notify();
     }
 }
 
@@ -544,11 +546,11 @@ impl Panel for MetadataPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.title.as_deref(), "metadata")
+        panel::title_text(self.config.chrome.title.as_deref(), "Metadata")
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        self.config.title.clone().map(SharedString::from)
+        self.config.chrome.title.clone().map(SharedString::from)
     }
 
     /// The edit toggle shares the title bar row, the library's move.
@@ -559,7 +561,12 @@ impl Panel for MetadataPanel {
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
         let editing = self.edit.is_some();
-        if !editing && self.resolved.get(self.config.source, &self.state, cx).is_none() {
+        if !editing
+            && self
+                .resolved
+                .get(self.config.source, &self.state, cx)
+                .is_none()
+        {
             return None;
         }
         let weak = cx.entity().downgrade();
@@ -570,6 +577,10 @@ impl Panel for MetadataPanel {
             })
             .when(editing, |d| d.bg(palette::bg_control_active())),
         )
+    }
+
+    fn locked(&self, _cx: &App) -> bool {
+        self.config.chrome.locked
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
@@ -605,14 +616,38 @@ impl Panel for MetadataPanel {
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         // The config block: the panel's quick entries and the settings
         // window, apart from the core panel items.
-        let menu = self.config_menu(menu, cx);
-        let menu = menu.separator();
-        let menu = panel_settings::rename_item(menu, &cx.entity());
+        let menu = self.config_menu(menu, window, cx);
+        // The online lookup, gated with the provider toggle so the menu
+        // never offers a search that can't run. Opens the compare window;
+        // the write waits for a confirmed, field-by-field pick.
+        let menu = match (
+            providers::metadata_online(),
+            self.resolved.get(self.config.source, &self.state, cx),
+        ) {
+            (true, Some(path)) => {
+                let library = self.state.library.clone();
+                let now_art = self.state.now_art.clone();
+                menu.separator().item(
+                    PopupMenuItem::new("Find Metadata Online...")
+                        .icon(Icon::default().path(icons::DOWNLOAD))
+                        .on_click(move |_, _, cx| {
+                            crate::tag_match::open(
+                                library.clone(),
+                                now_art.clone(),
+                                path.clone(),
+                                cx,
+                            );
+                        }),
+                )
+            }
+            _ => menu,
+        };
+        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
         // because the copy takes the config along, like the transports'.
@@ -665,8 +700,8 @@ fn field(label: &'static str, value: String) -> Div {
 
 impl Render for MetadataPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(cx))
+        let chrome = self.config.chrome.clone();
+        panel::themed(&chrome, || self.body(cx))
     }
 }
 
@@ -740,12 +775,9 @@ impl MetadataPanel {
             // The source points at no track: a quiet line where the sheet
             // would sit.
             return root.child(
-                justify(
-                    div().absolute().inset_0().flex().items_center(),
-                    align,
-                )
-                .p(tokens::SPACE_MD)
-                .child(div().text_color(palette::text_faint()).child("no track")),
+                justify(div().absolute().inset_0().flex().items_center(), align)
+                    .p(tokens::SPACE_MD)
+                    .child(div().text_color(palette::text_faint()).child("No track")),
             );
         };
 
@@ -803,31 +835,31 @@ impl MetadataPanel {
         let mut fields: Vec<(&'static str, String)> = Vec::new();
         if let Some(d) = &details {
             if !d.album.is_empty() {
-                fields.push(("album", d.album.clone()));
+                fields.push(("Album", d.album.clone()));
             }
             if !d.album_artist.is_empty() && d.album_artist != d.artist {
-                fields.push(("album artist", d.album_artist.clone()));
+                fields.push(("Album Artist", d.album_artist.clone()));
             }
             if d.disc_no > 0 {
-                fields.push(("disc", d.disc_no.to_string()));
+                fields.push(("Disc", d.disc_no.to_string()));
             }
             if d.track_no > 0 {
-                fields.push(("track", format!("{:02}", d.track_no)));
+                fields.push(("Track", format!("{:02}", d.track_no)));
             }
             if !d.genre.is_empty() {
-                fields.push(("genre", d.genre.clone()));
+                fields.push(("Genre", d.genre.clone()));
             }
             if d.year > 0 {
-                fields.push(("year", d.year.to_string()));
+                fields.push(("Year", d.year.to_string()));
             }
             if d.duration_ms > 0 {
-                fields.push(("duration", fmt_time(d.duration_ms as f64 / 1000.0)));
+                fields.push(("Duration", fmt_time(d.duration_ms as f64 / 1000.0)));
             }
             if !d.codec.is_empty() {
-                fields.push(("codec", d.codec.clone()));
+                fields.push(("Codec", d.codec.clone()));
             }
             if d.bitrate_kbps > 0 {
-                fields.push(("bitrate", format!("{} kbps", d.bitrate_kbps)));
+                fields.push(("Bitrate", format!("{} kbps", d.bitrate_kbps)));
             }
         }
         let artist = details
@@ -872,13 +904,7 @@ impl MetadataPanel {
                 )
             });
 
-        root.child(
-            justify(
-                div().absolute().inset_0().flex().items_center(),
-                align,
-            )
-            .child(sheet),
-        )
+        root.child(justify(div().absolute().inset_0().flex().items_center(), align).child(sheet))
     }
 
     /// The sheet's edit face: one input per editable field, the save and
@@ -940,13 +966,13 @@ impl MetadataPanel {
                     .flex_row()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "save",
+                        "Save",
                         icons::CHECK,
                         edit.saving || edit.baseline.is_none(),
                         cx.listener(|this, _, _, cx| this.save_edit(cx)),
                     ))
                     .child(settings_ui::small_button(
-                        "cancel",
+                        "Cancel",
                         icons::CLOSE,
                         edit.saving,
                         cx.listener(|this, _, _, cx| this.close_edit(cx)),

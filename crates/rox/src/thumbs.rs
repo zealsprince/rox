@@ -78,14 +78,16 @@ impl Thumbs {
         // drop the textures so the next paints re-read through the
         // store's (path, mtime, size) identity check. A settled catalog
         // also kicks the sweep that warms the store for the whole wall.
-        let _library_changed =
-            cx.subscribe(library, |this: &mut Self, library, event: &LibraryEvent, cx| {
+        let _library_changed = cx.subscribe(
+            library,
+            |this: &mut Self, library, event: &LibraryEvent, cx| {
                 if !matches!(event, LibraryEvent::Updated) {
                     return;
                 }
                 this.invalidate(cx);
                 this.sweep(&library, cx);
-            });
+            },
+        );
         let conn = rox_library::thumbs::open(&crate::settings::data_dir().join("thumbs.db"))
             .ok()
             .map(|conn| Arc::new(Mutex::new(conn)));

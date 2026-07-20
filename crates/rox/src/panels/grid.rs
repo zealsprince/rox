@@ -1,8 +1,10 @@
 //! The album grid panel: the catalog as a wall of cover tiles, NekoRoX's
 //! grid gallery. One tile per album in the library's canonical order,
-//! square, the columns splitting the panel width evenly so the wall runs
-//! edge to edge, textures through the shared artwork service.
-//! Rows virtualize through a uniform_list, so a huge library costs only
+//! square, the lanes splitting the panel's cross extent evenly so the wall
+//! runs edge to edge, textures through the shared artwork service. It scrolls
+//! vertically by default, rows filling the width, or horizontally by a
+//! setting, columns filling the height.
+//! Lines virtualize through a virtual_list, so a huge library costs only
 //! the tiles on screen. Clicking a tile publishes the album's tracks on
 //! the shared selection; a double click queues the album on the player.
 //! A per-view query narrows the wall to albums containing a matching
@@ -16,25 +18,31 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use std::rc::Rc;
+
 use gpui::{
-    canvas, div, img, prelude::*, px, svg, uniform_list, AnyElement, App, Context, Div, Entity,
-    EventEmitter, FocusHandle, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
-    ObjectFit, Pixels, SharedString, Subscription, UniformListScrollHandle, WeakEntity, Window,
+    canvas, div, img, prelude::*, px, size, svg, Along, AnyElement, App, Axis, Context, Div,
+    Entity, EventEmitter, FocusHandle, Focusable, Modifiers, MouseButton, MouseDownEvent,
+    MouseUpEvent, ObjectFit, Pixels, ScrollStrategy, ScrollWheelEvent, SharedString, Size,
+    Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
-use gpui_component::Icon;
+use gpui_component::{h_virtual_list, v_virtual_list, Icon, Side, VirtualListScrollHandle};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
-use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, setting_row, toggle, AppState, FlickState, PanelSettings, ScrubState};
+use crate::panel::{
+    self, setting_row, toggle, AppState, FlickState, PanelChrome, PanelSettings, ResumeIdle,
+    ScrubState,
+};
 use crate::panel_settings;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
 use crate::search::{SearchBox, SearchEvent};
 use crate::settings_ui;
+use crate::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::thumbs::Thumb;
 
 /// The tile size knob's range: how wide a tile wants to be, in px. The
@@ -68,25 +76,45 @@ fn default_true() -> bool {
     true
 }
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 /// The grid panel's per-view config: what a saved layout restores, and
 /// what the settings window edits.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GridConfig {
-    /// The rename shown as the tab and title text; None shows the
-    /// built-in name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    /// The rename, theme override, and placement locks shared by every
+    /// panel.
+    #[serde(flatten)]
+    pub chrome: PanelChrome,
     #[serde(default)]
     pub query: String,
-    /// Show the search box; the query only applies while it shows.
-    #[serde(default = "default_true")]
+    /// Show the search box; the query only applies while it shows. Off by
+    /// default; the per-view filter is opt-in, not always on.
+    #[serde(default)]
     pub search: bool,
+    /// Whether this wall filters by its own query or follows the shared
+    /// app-wide one. Shared by default; switch a duplicated grid to its own
+    /// query for an independent filter.
+    #[serde(default)]
+    pub query_source: QuerySource,
+    /// Scroll the wall vertically, rows filling the width; off scrolls it
+    /// horizontally, columns filling the height. On by default, the wall's
+    /// long-standing shape.
+    #[serde(default = "default_true")]
+    pub vertical: bool,
     /// The preferred tile edge in px, within [`TILE_MIN`]..[`TILE_MAX`].
     #[serde(default = "default_tile")]
     pub tile: f32,
     /// Scroll to the playing album when the track changes.
     #[serde(default)]
     pub follow_playing: bool,
+    /// After the wall sits untouched for a spell, slide back to the playing
+    /// album on its own. Off by default; a browse surface only chases the
+    /// player once you ask it to.
+    #[serde(default)]
+    pub resume_playing: bool,
     /// Glide there instead of jumping.
     #[serde(default)]
     pub smooth_follow: bool,
@@ -104,25 +132,31 @@ pub struct GridConfig {
     /// The space between tiles, in px; zero keeps the wall seamless.
     #[serde(default)]
     pub gap: f32,
-    /// The panel's palette override.
-    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
-    pub theme: PanelTheme,
+    /// The top-left album shown when the layout was saved, so a relaunch
+    /// reopens the wall where it was left. A cell index, not pixels or a
+    /// row: it survives a tile-size or width change, landing back on the
+    /// same album whatever the column count works out to.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub scroll: usize,
 }
 
 impl Default for GridConfig {
     fn default() -> Self {
         GridConfig {
-            title: None,
+            chrome: PanelChrome::default(),
             query: String::new(),
-            search: true,
+            search: false,
+            query_source: QuerySource::default(),
+            vertical: true,
             tile: default_tile(),
             follow_playing: false,
+            resume_playing: false,
             smooth_follow: false,
             dim_playing: false,
             dim: default_dim(),
             rounding: 0.,
             gap: 0.,
-            theme: PanelTheme::default(),
+            scroll: 0,
         }
     }
 }
@@ -169,11 +203,13 @@ pub struct GridPanel {
     anchor: Option<usize>,
     /// The tile under the pointer, wearing the label overlay.
     hovered: Option<usize>,
-    /// The width the grid last laid out for. The dock hosts panels cached,
-    /// so a resize repaints without re-rendering; the list closure compares
-    /// the painted width against this and notifies on drift.
-    width: Pixels,
-    scroll: UniformListScrollHandle,
+    /// The cross-axis extent the grid last laid out for: the width while it
+    /// scrolls vertically, the height while it scrolls horizontally. The
+    /// dock hosts panels cached, so a resize repaints without re-rendering;
+    /// the list closure compares the painted extent against this and
+    /// notifies on drift.
+    cross: Pixels,
+    scroll: VirtualListScrollHandle,
     /// The drag-to-scroll state: press anywhere on the wall, drag to
     /// scroll, release to coast. A drag past its dead zone swallows the
     /// tile click.
@@ -181,8 +217,17 @@ pub struct GridPanel {
     /// The list row the follow-playing glide is headed to; stepped every
     /// frame in `body` and cleared on arrival or on a user drag.
     glide_to: Option<usize>,
+    /// The saved top-left album waiting to be scrolled back into place on a
+    /// relaunch. A cell index, held until the wall has both albums and a
+    /// measured width, then applied once in `body` and cleared. A user drag
+    /// clears it too, so a hand on the wall wins over the restore.
+    restore: Option<usize>,
     /// The last animation tick, the coast's and the glide's dt.
     last_tick: Instant,
+    /// The idle-resume clock: stamped on every scroll or press, it wakes
+    /// the wall back to the playing album once `resume_playing` is on and
+    /// the user has stepped away.
+    resume_idle: ResumeIdle,
     /// The playing track's path, the change detector for follow-playing.
     playing_path: Option<PathBuf>,
     /// The playing album's cell in the current view, kept fresh by
@@ -200,12 +245,16 @@ pub struct GridPanel {
     dim_scrub: ScrubState,
     /// A failed play, shown in a strip until the next one lands.
     error: Option<SharedString>,
+    /// A pending box reset from a source toggle or a shared-query change;
+    /// applied on the next render, where a window exists to set the input.
+    resync_box: bool,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
     _thumbs_changed: Subscription,
     _search_events: Subscription,
+    _query_changed: Subscription,
     _player_changed: Subscription,
 }
 
@@ -235,11 +284,28 @@ impl GridPanel {
         );
         // Landing thumbnails notify the service; repaint so tiles fill in.
         let _thumbs_changed = cx.observe(&state.thumbs, |_, _, cx| cx.notify());
-        let search = cx.new(|cx| SearchBox::new("search", &config.query, window, cx).small());
+        // A grid restored as global opens showing the shared query; a local
+        // one shows its own.
+        let initial = match config.query_source {
+            QuerySource::Global => state.query.read(cx).text().to_string(),
+            QuerySource::Local => config.query.clone(),
+        };
+        let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
+        // Follow the shared query while global: rebuild the wall and reset
+        // the box to it on the next render.
+        let _query_changed = cx.subscribe(
+            &state.query,
+            |this: &mut Self, _, _: &SharedQueryEvent, cx| {
+                this.on_shared_query_changed(cx);
+            },
+        );
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| {
             this.sync_playing(cx)
         });
+        // Follow-playing owns the position on launch, so it skips the saved
+        // scroll; every other panel restores where it was left.
+        let restore = (!config.follow_playing && config.scroll > 0).then_some(config.scroll);
         let mut this = GridPanel {
             state,
             config,
@@ -249,11 +315,13 @@ impl GridPanel {
             selected: HashSet::new(),
             anchor: None,
             hovered: None,
-            width: px(0.),
-            scroll: UniformListScrollHandle::new(),
+            cross: px(0.),
+            scroll: VirtualListScrollHandle::new(),
             flick: FlickState::default(),
             glide_to: None,
+            restore,
             last_tick: Instant::now(),
+            resume_idle: ResumeIdle::default(),
             playing_path: None,
             playing_ix: None,
             playing: false,
@@ -262,11 +330,13 @@ impl GridPanel {
             gap_scrub: ScrubState::default(),
             dim_scrub: ScrubState::default(),
             error: None,
+            resync_box: false,
             focus: cx.focus_handle(),
             tab_panel: None,
             _library_changed,
             _thumbs_changed,
             _search_events,
+            _query_changed,
             _player_changed,
         };
         this.rebuild(cx);
@@ -329,11 +399,11 @@ impl GridPanel {
         let Some(cell_ix) = self.playing_ix else {
             return;
         };
-        // Both modes head for the same row through the per-frame stepping
-        // in `body`: the row is the stable fact, its offset depends on a
+        // Both modes head for the same line through the per-frame stepping
+        // in `body`: the line is the stable fact, its offset depends on a
         // layout that may still be settling (a launch's first frames), so
         // even the jump re-pins until the target holds still.
-        self.glide_to = Some(cell_ix / self.cols());
+        self.glide_to = Some(cell_ix / self.lanes());
         cx.notify();
     }
 
@@ -350,6 +420,51 @@ impl GridPanel {
         self.follow_playing(cx);
     }
 
+    /// A scroll, drag, or press: restart the idle clock and arm a wake, so
+    /// the wall drifts back to the playing album once the user steps away.
+    /// A no-op unless the resume behavior is on, so an off panel spends
+    /// nothing per gesture.
+    fn touch_resume(&mut self, cx: &mut Context<Self>) {
+        if self.config.resume_playing {
+            self.resume_idle.touch(cx, Self::resume_to_playing);
+        }
+    }
+
+    /// The idle wake's landing: slide back to the playing album, so long as
+    /// the resume is still on. The clock only fires this once the wall has
+    /// sat untouched a full window, a gesture in between having pushed it
+    /// out, so no extra idle check is needed here.
+    fn resume_to_playing(&mut self, cx: &mut Context<Self>) {
+        if self.config.resume_playing {
+            self.follow_playing(cx);
+        }
+    }
+
+    /// The menu's follow toggle: flip the follow state and catch up right
+    /// away when turning it on, the same move as the settings switch.
+    fn toggle_follow_playing(&mut self, cx: &mut Context<Self>) {
+        self.config.follow_playing = !self.config.follow_playing;
+        if self.config.follow_playing {
+            self.follow_playing(cx);
+        }
+        cx.notify();
+    }
+
+    /// Flip the scroll axis, from the context menu or the settings toggle.
+    /// The lane count and tile edge both key off the cross extent, so drop
+    /// the measured one and let the next paint re-measure; any coast or
+    /// pending restore aimed at the old axis is stale, so clear them too.
+    fn set_orientation(&mut self, vertical: bool, cx: &mut Context<Self>) {
+        if self.config.vertical == vertical {
+            return;
+        }
+        self.config.vertical = vertical;
+        self.glide_to = None;
+        self.restore = None;
+        self.cross = px(0.);
+        cx.notify();
+    }
+
     /// Recompute the view and its album runs: the canonical order, cut to
     /// the query's hits when one is set. Search hits come back in
     /// projection row order, so they filter the canonical order rather
@@ -363,23 +478,36 @@ impl GridPanel {
         self.anchor = None;
         self.hovered = None;
         self.view = {
+            let query = self.effective_query(cx);
+            let filter = self.effective_filter(cx);
             let library = self.state.library.read(cx);
             match library.projection() {
-                Some(projection) if self.searching() => {
-                    let mut hit = vec![false; projection.len()];
-                    for row in projection.search(&self.config.query) {
-                        hit[row as usize] = true;
+                Some(projection) => {
+                    let mask = projection.filter_mask(&filter);
+                    if query.is_empty() && mask.is_none() {
+                        library.order()
+                    } else {
+                        let mut hit = vec![query.is_empty(); projection.len()];
+                        if !query.is_empty() {
+                            for row in projection.search(&query) {
+                                hit[row as usize] = true;
+                            }
+                        }
+                        if let Some(mask) = mask {
+                            for (hit, ok) in hit.iter_mut().zip(&mask) {
+                                *hit = *hit && *ok;
+                            }
+                        }
+                        Arc::new(
+                            library
+                                .order()
+                                .iter()
+                                .copied()
+                                .filter(|&row| hit[row as usize])
+                                .collect(),
+                        )
                     }
-                    Arc::new(
-                        library
-                            .order()
-                            .iter()
-                            .copied()
-                            .filter(|&row| hit[row as usize])
-                            .collect(),
-                    )
                 }
-                Some(_) => library.order(),
                 None => Arc::new(Vec::new()),
             }
         };
@@ -406,28 +534,18 @@ impl GridPanel {
         cx.notify();
     }
 
-    /// Whether the query narrows the wall: it only applies while the
-    /// search box shows.
-    fn searching(&self) -> bool {
-        self.config.search && !self.config.query.is_empty()
-    }
-
     /// Map the shared box's events onto the grid: a changed query rebuilds
     /// the view, and every visual change also repaints the title row,
     /// which only updates when the tab panel is notified.
     fn on_search_event(
         &mut self,
-        search: &Entity<SearchBox>,
+        _search: &Entity<SearchBox>,
         event: &SearchEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            SearchEvent::Changed => {
-                self.config.query = search.read(cx).query().to_string();
-                self.rebuild(cx);
-                self.refresh_title_bar(cx);
-            }
+            SearchEvent::Changed => self.on_query_box_changed(cx),
             SearchEvent::FocusChanged => {
                 cx.notify();
                 self.refresh_title_bar(cx);
@@ -464,6 +582,16 @@ impl GridPanel {
             .take((cell.len as usize).min(QUEUE_CAP))
             .map(|&row| projection.db_id[row as usize])
             .collect()
+    }
+
+    /// The artist a tile filters by: its first track's, the album grid's
+    /// stand-in for the album's shelf. None off the end of the cells.
+    fn cell_artist(&self, ix: usize, cx: &App) -> Option<String> {
+        let cell = self.cells.get(ix)?;
+        let row = *self.view.get(cell.start)?;
+        let library = self.state.library.read(cx);
+        let projection = library.projection()?;
+        Some(projection.resolve(row).artist.to_string())
     }
 
     /// The path a tile's thumbnail loads by: the album's first track,
@@ -558,25 +686,55 @@ impl GridPanel {
     /// configured edge covers it. The ceil keeps the actual edge at or
     /// under the configured one, so nothing upscales past the stored
     /// thumbnail.
-    fn cols(&self) -> usize {
-        let width = f32::from(self.width);
-        if width <= 0. {
+    fn lanes(&self) -> usize {
+        let cross = f32::from(self.cross);
+        if cross <= 0. {
             return FALLBACK_COLS;
         }
         let gap = self.config.gap;
-        (((width + gap) / (self.config.tile + gap)).ceil() as usize).max(1)
+        (((cross + gap) / (self.config.tile + gap)).ceil() as usize).max(1)
     }
 
-    /// A tile's edge: the panel width split evenly over the columns with
-    /// the gaps taken out, so the last column lands on the panel edge
-    /// instead of bleeding past it.
+    /// The scroll axis: down the rows while vertical, across the columns
+    /// otherwise.
+    fn axis(&self) -> Axis {
+        if self.config.vertical {
+            Axis::Vertical
+        } else {
+            Axis::Horizontal
+        }
+    }
+
+    /// The leading album currently in view, for the saved layout: the list's
+    /// first line spread back over the lanes. A restore still pending (the
+    /// panel never painted) reports its own target, so an unshown panel
+    /// round-trips its position instead of dropping to zero.
+    fn first_cell(&self) -> usize {
+        if let Some(cell) = self.restore {
+            return cell;
+        }
+        let lanes = self.lanes();
+        let extent = f32::from(self.tile_side()) + self.config.gap;
+        if extent <= 0. {
+            return 0;
+        }
+        // The leading line is the scroll offset over one line's pitch; the
+        // offset runs negative as the list scrolls.
+        let offset = f32::from(-self.scroll.base_handle().offset().along(self.axis()));
+        let line = (offset / extent).floor().max(0.) as usize;
+        (line * lanes).min(self.cells.len().saturating_sub(1))
+    }
+
+    /// A tile's edge: the cross extent split evenly over the lanes with the
+    /// gaps taken out, so the last lane lands on the panel edge instead of
+    /// bleeding past it.
     fn tile_side(&self) -> Pixels {
-        let width = f32::from(self.width);
-        if width <= 0. {
+        let cross = f32::from(self.cross);
+        if cross <= 0. {
             return px(self.config.tile);
         }
-        let cols = self.cols() as f32;
-        px(((width - self.config.gap * (cols - 1.)) / cols).max(1.))
+        let lanes = self.lanes() as f32;
+        px(((cross - self.config.gap * (lanes - 1.)) / lanes).max(1.))
     }
 
     /// A tile's resting opacity under the dim mode: full for the playing
@@ -772,32 +930,41 @@ impl GridPanel {
     /// painted width reconciles: the dock hosts panels cached, so a resize
     /// repaints this closure without re-running render, and a notify here
     /// is what recomputes the column count next frame.
-    fn rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<Div> {
-        let measured = self.scroll.0.borrow().base_handle.bounds().size.width;
-        if measured > px(0.) && measured != self.width {
-            self.width = measured;
+    fn lines(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<Div> {
+        let axis = self.axis();
+        let measured = self.scroll.base_handle().bounds().size.along(axis.invert());
+        if measured > px(0.) && measured != self.cross {
+            self.cross = measured;
             cx.notify();
         }
-        let cols = self.cols();
+        let lanes = self.lanes();
         let side = self.tile_side();
         let gap = px(self.config.gap);
-        let rows = range
+        let vertical = self.config.vertical;
+        let lines = range
             .clone()
-            .map(|r| {
-                // The bottom padding is the vertical gap; on every row so
-                // the list's heights stay uniform.
-                let mut row = div().flex().flex_row().gap(gap).pb(gap);
-                for ix in (r * cols)..((r + 1) * cols).min(self.cells.len()) {
-                    row = row.child(self.tile(ix, side, cx));
+            .map(|line| {
+                // A line is a row of tiles filling the width while vertical,
+                // a column filling the height otherwise; the cross gap sits
+                // between the tiles, the scroll gap between the lines through
+                // the list's own spacing.
+                let mut lane = if vertical {
+                    div().flex().flex_row().gap(gap)
+                } else {
+                    div().flex().flex_col().gap(gap)
+                };
+                for ix in (line * lanes)..((line + 1) * lanes).min(self.cells.len()) {
+                    lane = lane.child(self.tile(ix, side, cx));
                 }
-                row
+                lane
             })
             .collect();
         // Warm the margin: ask for the covers just past both edges so a
-        // scroll reveals loaded tiles. Asked after the visible tiles,
-        // which keeps those first in line for the load pool's slots.
-        let above = (range.start * cols).saturating_sub(PREFETCH_ROWS * cols)..range.start * cols;
-        let below = range.end * cols..((range.end + PREFETCH_ROWS) * cols).min(self.cells.len());
+        // scroll reveals loaded tiles. Asked after the visible tiles, which
+        // keeps those first in line for the load pool's slots.
+        let above =
+            (range.start * lanes).saturating_sub(PREFETCH_ROWS * lanes)..range.start * lanes;
+        let below = range.end * lanes..((range.end + PREFETCH_ROWS) * lanes).min(self.cells.len());
         for ix in above.chain(below) {
             if let Some(path) = self.art_path(ix, cx) {
                 self.state.thumbs.update(cx, |thumbs, cx| {
@@ -805,7 +972,7 @@ impl GridPanel {
                 });
             }
         }
-        rows
+        lines
     }
 }
 
@@ -814,34 +981,42 @@ impl PanelSettings for GridPanel {
         self.state.clone()
     }
 
-    fn custom_title(&self) -> Option<&str> {
-        self.config.title.as_deref()
+    fn chrome(&self) -> &PanelChrome {
+        &self.config.chrome
+    }
+
+    fn chrome_mut(&mut self) -> &mut PanelChrome {
+        &mut self.config.chrome
     }
 
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
-        self.config.title = title;
+        self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
 
-    fn pages(&self) -> &'static [(&'static str, &'static str)] {
-        &[("Behavior", icons::SLIDERS)]
-    }
-
-    fn page(
-        &mut self,
-        _page: &'static str,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(setting_row(
-                "search",
-                Some("show the search box; the query only applies while it shows"),
-                toggle(
+    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(settings_ui::SECTION_GAP)
+                .child(settings_ui::section(
+                    "Orientation",
+                    None,
+                    setting_row(
+                        "Vertical Layout",
+                        Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height"),
+                        toggle(
+                            self.config.vertical,
+                            |this: &mut Self, on, cx| {
+                                this.set_orientation(on, cx);
+                            },
+                            cx,
+                        ),
+                    ),
+                ))
+                .child(crate::shared_query::search_section(
                     self.config.search,
                     |this: &mut Self, on, cx| {
                         this.config.search = on;
@@ -851,14 +1026,13 @@ impl PanelSettings for GridPanel {
                         this.rebuild(cx);
                         this.refresh_title_bar(cx);
                     },
+                    self.config.query_source,
+                    |this: &mut Self, source, cx| this.pick_query_source(source, cx),
                     cx,
-                ),
-            ))
-            .child(setting_row(
-                "follow playing",
-                Some("scroll to the playing album whenever the track changes"),
-                toggle(
+                ))
+                .child(panel::tracking_section(
                     self.config.follow_playing,
+                    "Scroll to the playing album whenever the track changes",
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
                         // Catch up right away instead of waiting for
@@ -868,61 +1042,58 @@ impl PanelSettings for GridPanel {
                         }
                         cx.notify();
                     },
-                    cx,
-                ),
-            ))
-            .when(self.config.follow_playing, |d| {
-                d.child(setting_row(
-                    "smooth scrolling",
-                    Some("glide to the album instead of jumping"),
-                    toggle(
-                        self.config.smooth_follow,
-                        |this: &mut Self, on, cx| {
-                            this.config.smooth_follow = on;
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-            })
-            .child(setting_row(
-                "dim while playing",
-                Some("fade every cover but the playing album's; hovering lights a tile back up"),
-                toggle(
-                    self.config.dim_playing,
+                    self.config.resume_playing,
+                    "Slide back to the playing album after you stop browsing",
                     |this: &mut Self, on, cx| {
-                        this.config.dim_playing = on;
+                        this.config.resume_playing = on;
+                        cx.notify();
+                    },
+                    self.config.smooth_follow,
+                    "Glide to the album instead of jumping",
+                    |this: &mut Self, on, cx| {
+                        this.config.smooth_follow = on;
                         cx.notify();
                     },
                     cx,
-                ),
-            ))
-            .when(self.config.dim_playing, |d| {
-                d.child(setting_row(
-                    "dim amount",
-                    Some("how far the other covers fade; 100% hides them"),
-                    settings_ui::slider_labeled(
-                        &self.dim_scrub,
-                        (self.config.dim / TILE_DIM_MAX).clamp(0., 1.),
-                        format!("{:.0} %", self.config.dim),
-                        |this: &mut Self, fraction, cx| {
-                            this.config.dim = (fraction * TILE_DIM_MAX).round();
-                            cx.notify();
-                        },
-                        cx,
-                    ),
                 ))
-            })
-            .into_any_element()
-    }
-
-    fn theme(&self) -> PanelTheme {
-        self.config.theme.clone()
-    }
-
-    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
-        self.config.theme = theme;
-        cx.notify();
+                .child(settings_ui::section(
+                    "Dimming",
+                    None,
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens::SPACE_MD)
+                        .child(setting_row(
+                            "Dim While Playing",
+                            Some("Fade every cover but the playing album's; hovering lights a tile back up"),
+                            toggle(
+                                self.config.dim_playing,
+                                |this: &mut Self, on, cx| {
+                                    this.config.dim_playing = on;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                        .when(self.config.dim_playing, |d| {
+                            d.child(setting_row(
+                                "Dim Amount",
+                                Some("How far the other covers fade; 100% hides them"),
+                                settings_ui::slider_labeled(
+                                    &self.dim_scrub,
+                                    (self.config.dim / TILE_DIM_MAX).clamp(0., 1.),
+                                    format!("{:.0} %", self.config.dim),
+                                    |this: &mut Self, fraction, cx| {
+                                        this.config.dim = (fraction * TILE_DIM_MAX).round();
+                                        cx.notify();
+                                    },
+                                    cx,
+                                ),
+                            ))
+                        }),
+                ))
+                .into_any_element(),
+        )
     }
 
     /// The grid's own appearance rows on the shared page: the tiles'
@@ -935,15 +1106,15 @@ impl PanelSettings for GridPanel {
         let rounding_fraction = (rounding / TILE_ROUNDING_MAX).clamp(0., 1.);
         Some(
             settings_ui::section(
-                "tiles",
+                "Tiles",
                 None,
                 div()
                     .flex()
                     .flex_col()
                     .gap(tokens::SPACE_MD)
                     .child(setting_row(
-                        "tile size",
-                        Some("the cover tiles' widest edge; columns split the panel width evenly"),
+                        "Tile Size",
+                        Some("The cover tiles' widest edge; columns split the panel width evenly"),
                         settings_ui::slider_labeled(
                             &self.tile_scrub,
                             tile_fraction,
@@ -956,8 +1127,8 @@ impl PanelSettings for GridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "gap",
-                        Some("space between the covers; zero keeps the wall seamless"),
+                        "Gap",
+                        Some("Space between the covers; zero keeps the wall seamless"),
                         settings_ui::slider_labeled(
                             &self.gap_scrub,
                             (self.config.gap / TILE_GAP_MAX).clamp(0., 1.),
@@ -970,8 +1141,8 @@ impl PanelSettings for GridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "art rounding",
-                        Some("round each cover's corners; 100% is a circle"),
+                        "Art Rounding",
+                        Some("Round each cover's corners; 100% is a circle"),
                         settings_ui::slider_labeled(
                             &self.rounding_scrub,
                             rounding_fraction,
@@ -997,17 +1168,53 @@ impl Focusable for GridPanel {
     }
 }
 
+impl QueryFilter for GridPanel {
+    fn shared_query(&self) -> &Entity<crate::shared_query::SharedQuery> {
+        &self.state.query
+    }
+    fn query_box(&self) -> &Entity<SearchBox> {
+        &self.search
+    }
+    fn query_source(&self) -> QuerySource {
+        self.config.query_source
+    }
+    fn set_query_source_value(&mut self, source: QuerySource) {
+        self.config.query_source = source;
+    }
+    fn local_query(&self) -> String {
+        self.config.query.clone()
+    }
+    fn set_local_query(&mut self, query: String) {
+        self.config.query = query;
+    }
+    fn query_box_shown(&self) -> bool {
+        self.config.search
+    }
+    fn set_query_box_shown(&mut self, shown: bool) {
+        self.config.search = shown;
+    }
+    fn rebuild_query_view(&mut self, cx: &mut Context<Self>) {
+        self.rebuild(cx);
+    }
+    fn set_query_resync(&mut self, pending: bool) {
+        self.resync_box = pending;
+    }
+    fn after_query_change(&mut self, cx: &mut Context<Self>) {
+        self.refresh_title_bar(cx);
+    }
+}
+
 impl Panel for GridPanel {
     fn panel_name(&self) -> &'static str {
         "album grid"
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.title.as_deref(), "album grid")
+        panel::title_text(self.config.chrome.title.as_deref(), "Album Grid")
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        self.config.title.clone().map(SharedString::from)
+        self.config.chrome.title.clone().map(SharedString::from)
     }
 
     /// The search box shares the title bar row, the library's move.
@@ -1026,6 +1233,10 @@ impl Panel for GridPanel {
         )
     }
 
+    fn locked(&self, _cx: &App) -> bool {
+        self.config.chrome.locked
+    }
+
     fn inner_padding(&self, _cx: &App) -> bool {
         false
     }
@@ -1041,8 +1252,10 @@ impl Panel for GridPanel {
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
+        let mut config = self.config.clone();
+        config.scroll = self.first_cell();
         state.info = rox_dock::PanelInfo::panel(
-            serde_json::to_value(self.config.clone()).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(config).unwrap_or(serde_json::Value::Null),
         );
         state
     }
@@ -1066,11 +1279,16 @@ impl Panel for GridPanel {
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let weak = cx.entity().downgrade();
+        let weak_f = cx.entity().downgrade();
+        let follow = self.config.follow_playing;
+        // Checks on the right so the orientation pair keeps its icons; the
+        // default left side would swap them out for the checkmark.
         let menu = menu
+            .check_side(Side::Right)
             .item(
                 PopupMenuItem::new("Jump to Playing")
                     .icon(Icon::default().path(icons::DISC))
@@ -1080,8 +1298,60 @@ impl Panel for GridPanel {
                         }
                     }),
             )
-            .separator();
-        let menu = panel_settings::rename_item(menu, &cx.entity());
+            .item(
+                PopupMenuItem::new("Follow Playing")
+                    .icon(Icon::default().path(icons::LOCATE))
+                    .checked(follow)
+                    .on_click(move |_, _, cx| {
+                        if let Some(this) = weak_f.upgrade() {
+                            this.update(cx, |this, cx| this.toggle_follow_playing(cx));
+                        }
+                    }),
+            );
+
+        // Display section: the view knobs group under flyouts so the menu
+        // stays short, the same shape as the library's.
+        let menu = menu.separator().label("Display");
+        // The scroll direction, a checked pair so the current axis reads at
+        // a glance.
+        let panel = cx.entity();
+        let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
+            panel::follow_panel(&panel, cx);
+            submenu = submenu.check_side(Side::Right);
+            for (name, icon, is_vertical) in [
+                ("Vertical Scroll", icons::MOVE_VERTICAL, true),
+                ("Horizontal Scroll", icons::MOVE_HORIZONTAL, false),
+            ] {
+                submenu = submenu.item(panel::check_row(
+                    name,
+                    Some(icon),
+                    move |this: &Self| this.config.vertical == is_vertical,
+                    move |this, cx| this.set_orientation(is_vertical, cx),
+                    &panel,
+                ));
+            }
+            submenu
+        });
+        let menu = menu.item(PopupMenuItem::submenu("Scroll", submenu));
+        // Follow the shared search query, or filter by this wall's own box.
+        let menu = crate::shared_query::search_flyout(
+            menu,
+            |this: &Self| this.config.query_source,
+            |this: &Self| this.config.search,
+            &cx.entity(),
+            |this, source, cx| this.pick_query_source(source, cx),
+            |this, on, cx| {
+                this.config.search = on;
+                // The box keeps its text; the view snaps to the full catalog
+                // while hidden. Rebuild notifies, the tab panel repaints the
+                // vanishing suffix.
+                this.rebuild(cx);
+                this.refresh_title_bar(cx);
+            },
+            window,
+            cx,
+        );
+        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
         // because the copy takes the config along, like the cover panel's.
@@ -1117,35 +1387,43 @@ impl Panel for GridPanel {
 
 impl Render for GridPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(window, cx))
+        let chrome = self.config.chrome.clone();
+        panel::themed(&chrome, || self.body(window, cx))
     }
 }
 
 impl GridPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let cols = self.cols();
-        let row_count = self.cells.len().div_ceil(cols);
+        // A pending box reset (a source toggle or a shared-query change)
+        // lands here, where a window exists to set the input's text.
+        if self.resync_box {
+            self.resync_box = false;
+            self.sync_query_box(window, cx);
+        }
+        let axis = self.axis();
+        let lanes = self.lanes();
+        let line_count = self.cells.len().div_ceil(lanes);
+        let side = self.tile_side();
 
-        // The frame-by-frame motion: a released flick coasts down, a
-        // follow glide eases toward its row. Both step here in render
-        // (the cover panel's fade idiom) and request the next frame only
-        // while something still moves.
+        // The frame-by-frame motion: a released flick coasts on, a follow
+        // glide eases toward its line. Both step here in render (the cover
+        // panel's fade idiom) and request the next frame only while
+        // something still moves.
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.05);
         self.last_tick = Instant::now();
-        if let Some(dy) = self.flick.coast(dt) {
-            let base = self.scroll.0.borrow().base_handle.clone();
-            let mut offset = base.offset();
-            offset.y += px(dy);
+        if let Some(d) = self.flick.coast(dt) {
+            let base = self.scroll.base_handle().clone();
+            let offset = base.offset().apply_along(axis, |v| v + px(d));
             base.set_offset(offset);
             window.request_animation_frame();
         }
-        if let Some(row) = self.glide_to {
-            let arrived = match panel::glide_target(&self.scroll, row, row_count) {
+        if let Some(line) = self.glide_to {
+            let handle = self.scroll.base_handle().clone();
+            let arrived = match panel::glide_target_axis(&handle, axis, line, line_count) {
                 Some(target) if self.config.smooth_follow => {
-                    !panel::glide_step(&self.scroll, target, dt)
+                    !panel::glide_step_axis(&handle, axis, target, dt)
                 }
-                Some(target) => panel::glide_snap(&self.scroll, target),
+                Some(target) => panel::glide_snap_axis(&handle, axis, target),
                 // Not laid out yet; wait for the list's first paint.
                 None => false,
             };
@@ -1153,6 +1431,18 @@ impl GridPanel {
                 self.glide_to = None;
             } else {
                 window.request_animation_frame();
+            }
+        }
+        // Restore the saved scroll once the wall has albums and a measured
+        // extent: the lane count only lands after the first paint, and the
+        // cell -> line map rides on it, so restoring any earlier would aim at
+        // the fallback grid. Skipped while a follow glide runs, which owns
+        // the position.
+        if let Some(cell) = self.restore {
+            if self.glide_to.is_none() && !self.cells.is_empty() && self.cross > px(0.) {
+                let line = (cell / lanes).min(line_count.saturating_sub(1));
+                self.scroll.scroll_to_item(line, ScrollStrategy::Top);
+                self.restore = None;
             }
         }
         // The dim fade: every painted tile's opacity eases toward its
@@ -1201,41 +1491,86 @@ impl GridPanel {
                 .items_center()
                 .justify_center()
                 .text_color(palette::text_muted())
-                .child(if self.searching() {
-                    "no matches"
-                } else {
-                    "the library is empty"
-                })
+                .child(
+                    if self.effective_query(cx).is_empty()
+                        && self.effective_filter(cx).is_empty()
+                    {
+                        "The library is empty"
+                    } else {
+                        "No matches"
+                    },
+                )
                 .into_any_element()
         } else {
-            let this = cx.entity().downgrade();
+            let entity = cx.entity();
+            let item_sizes: Rc<Vec<Size<Pixels>>> = Rc::new(vec![size(side, side); line_count]);
+            let list = match axis {
+                Axis::Vertical => {
+                    v_virtual_list(entity, "album-grid", item_sizes, |this, range, _, cx| {
+                        this.lines(range, cx)
+                    })
+                }
+                Axis::Horizontal => {
+                    h_virtual_list(entity, "album-grid", item_sizes, |this, range, _, cx| {
+                        this.lines(range, cx)
+                    })
+                }
+            }
+            .track_scroll(&self.scroll)
+            .gap(px(self.config.gap))
+            .size_full();
+            let scrollbar = match axis {
+                Axis::Vertical => Scrollbar::vertical(&self.scroll),
+                Axis::Horizontal => Scrollbar::horizontal(&self.scroll),
+            };
             div()
                 .flex_1()
                 .min_h_0()
+                .min_w_0()
                 .relative()
                 // Any press on the wall might be a drag-scroll; the tiles'
                 // own actions moved to release so both can tell. It also
                 // interrupts a running glide, the user wins.
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                         this.glide_to = None;
-                        this.flick.begin(event.position.y);
+                        this.restore = None;
+                        this.flick.begin(event.position.along(axis));
+                        this.touch_resume(cx);
                         cx.notify();
                     }),
                 )
-                .child(
-                    uniform_list("album-grid", row_count, move |range, _, cx| {
-                        this.upgrade()
-                            .map(|this| this.update(cx, |this, cx| this.rows(range, cx)))
-                            .unwrap_or_default()
-                    })
-                    .track_scroll(self.scroll.clone())
-                    .size_full(),
-                )
+                // Every wheel over the wall, whichever axis the list scrolls,
+                // counts as browsing; this stamp only restarts the idle clock
+                // and leaves the scroll itself to the list and the gap-filler
+                // below, so nothing scrolls twice.
+                .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
+                    this.touch_resume(cx);
+                }))
+                // A plain wheel only carries a vertical delta, and the list
+                // ignores it while it scrolls horizontally: both its overflow
+                // axes are Scroll, so gpui never cross-maps y onto x. Fill
+                // exactly that gap here; a trackpad's real x deltas stay with
+                // the list's own handler, so nothing applies twice.
+                .when(axis == Axis::Horizontal, |d| {
+                    d.on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                        let delta = event.delta.pixel_delta(window.line_height());
+                        if delta.x != px(0.) || delta.y == px(0.) {
+                            return;
+                        }
+                        this.glide_to = None;
+                        this.restore = None;
+                        let base = this.scroll.base_handle().clone();
+                        let offset = base.offset().apply_along(Axis::Horizontal, |x| x + delta.y);
+                        base.set_offset(offset);
+                        cx.notify();
+                    }))
+                })
+                .child(list)
                 // A live drag-scroll follows the pointer through window
                 // handlers armed in a paint pass, the scrub strips' idiom.
-                // The canvas exists for that paint hook; the list's rows
+                // The canvas exists for that paint hook; the list's lines
                 // closure can't arm them, it also runs during layout.
                 .child(
                     canvas(|_, _, _| (), {
@@ -1245,10 +1580,9 @@ impl GridPanel {
                         move |_, _, window, _| {
                             let scroll = scroll.clone();
                             let weak = weak.clone();
-                            panel::flick_on_paint(&flick, window, move |dy, cx| {
-                                let base = scroll.0.borrow().base_handle.clone();
-                                let mut offset = base.offset();
-                                offset.y += px(dy);
+                            panel::flick_on_paint_axis(&flick, axis, window, move |d, cx| {
+                                let base = scroll.base_handle().clone();
+                                let offset = base.offset().apply_along(axis, |v| v + px(d));
                                 base.set_offset(offset);
                                 if let Some(this) = weak.upgrade() {
                                     this.update(cx, |_, cx| cx.notify());
@@ -1259,12 +1593,7 @@ impl GridPanel {
                     .absolute()
                     .size_full(),
                 )
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .child(Scrollbar::vertical(&self.scroll)),
-                )
+                .child(div().absolute().inset_0().child(scrollbar))
                 // The wall's right-click menu, keyed off the hovered tile
                 // since the builder gets no position: a click inside the
                 // selection acts on the whole set, outside it the click
@@ -1292,6 +1621,7 @@ impl GridPanel {
                             ixs.sort_unstable();
                             ixs
                         });
+                        let single_tile = ixs.len() == 1;
                         let label = if ixs.len() > 1 {
                             format!("Play {} Albums", ixs.len())
                         } else {
@@ -1303,32 +1633,47 @@ impl GridPanel {
                             ixs.iter().flat_map(|&ix| this.ids_for(ix, cx)).collect()
                         });
                         let panel = weak.clone();
-                        let menu = menu.item(
-                            PopupMenuItem::new(label)
-                                .icon(Icon::default().path(icons::PLAY))
-                                .on_click(move |_, _, cx| {
-                                    if let Some(this) = panel.upgrade() {
-                                        this.update(cx, |this, cx| {
-                                            this.play_many(ixs.clone(), cx)
-                                        });
-                                    }
-                                }),
-                        );
-                        // The primary editing flow: the selection into the
-                        // tag editor window.
                         let state = this.read(cx).state.clone();
-                        let reveal = ids.first().copied();
-                        let menu = menu.item(
-                            PopupMenuItem::new("Edit Tags...")
-                                .icon(Icon::default().path(icons::PENCIL))
-                                .on_click(move |_, _, cx| {
-                                    crate::tag_editor::open(state.clone(), ids.clone(), cx);
-                                }),
+                        let menu = panel::track_actions(
+                            menu,
+                            state,
+                            ids,
+                            label,
+                            window,
+                            cx,
+                            move |_, cx| {
+                                if let Some(this) = panel.upgrade() {
+                                    this.update(cx, |this, cx| this.play_many(ixs.clone(), cx));
+                                }
+                            },
                         );
-                        // Reveal follows the first album's first track,
-                        // landing in that album's folder.
-                        let menu =
-                            panel::reveal_item(menu, this.read(cx).state.clone(), reveal);
+                        // Faceted browse: pin the search to the tile's artist,
+                        // the album grid's stand-in for the artist's shelf.
+                        // Only a single tile has one artist to pin.
+                        let menu = match this
+                            .read(cx)
+                            .cell_artist(ix, cx)
+                            .filter(|_| single_tile)
+                            .filter(|artist| !artist.is_empty())
+                        {
+                            Some(artist) => {
+                                let artist_panel = weak.clone();
+                                menu.separator().item(
+                                    PopupMenuItem::new("Filter by Artist")
+                                        .icon(Icon::default().path(icons::MIC))
+                                        .on_click(move |_, _, cx| {
+                                            let Some(this) = artist_panel.upgrade() else {
+                                                return;
+                                            };
+                                            let artist = artist.clone();
+                                            this.update(cx, |this, cx| {
+                                                this.jump_to_query("artist", &artist, cx)
+                                            });
+                                        }),
+                                )
+                            }
+                            None => menu,
+                        };
                         this.update(cx, |this, cx| {
                             this.dropdown_menu(menu.separator(), window, cx)
                         })

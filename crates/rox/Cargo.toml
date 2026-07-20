@@ -32,3 +32,25 @@ md5 = "0.7"
 # through gpui-component.
 lsp-types = "0.97"
 anyhow = "1"
+# OS media controls: MPRIS on Linux, SMTC on Windows, the remote command
+# center on macOS. Answers the hardware media keys and shows the now-playing
+# track in the desktop's media widget. The zbus backend is pure Rust, so a
+# build needs no system libdbus.
+souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
+# Carries media-key events from souvlaki's callback thread to the UI without a
+# poll; already in the tree through gpui, same 2.x line.
+async-channel = "2"
+# Builds the file:// URL for the now-playing cover souvlaki hands the OS
+# transport; percent-encodes the path so spaces and unicode survive. Already
+# in the tree, same 2.x line.
+url = "2"
+
+# The quit-to-tray icon: StatusNotifierItem over D-Bus, pure Rust on the
+# same zbus 5 line souvlaki brought in. Runtime-agnostic via async-io
+# instead of the default tokio; blocking gives the thread-and-handle API.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
+
+# Embeds assets/app/rox.ico into the exe as the application icon.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

@@ -29,8 +29,8 @@ here or the rest doesn't matter to this user.
 **It knows what you actually listen to.** Every real listen lands on disk: play counts,
 first and last played, rolled up by artist, album, and genre. A skip ten seconds in
 doesn't count; an album on repeat all week does. A history panel leans on it: most
-played, never played, what you haven't touched in a year. A stats panel makes the
-history something to look at, composed and themed like any other panel. The record is yours and
+played, never played, what you haven't touched in a year. A stats view makes the
+history something to look at, rolled up and charted over a range you pick. The record is yours and
 local: fix a genre tag and your history re-buckets with it, and scrobbling becomes a
 copy sent out, not the only record you have.
 

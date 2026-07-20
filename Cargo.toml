@@ -6,6 +6,7 @@ members = [
     "crates/rox-playback",
     "crates/rox-library",
     "crates/rox-viz",
+    "crates/rox-prototype-tray",
 ]
 default-members = ["crates/rox"]
 
@@ -31,3 +32,27 @@ gpui = "=0.2.2"
 # crate bundles the icon SVGs the widgets reference.
 gpui-component = "=0.5.1"
 gpui-component-assets = "=0.5.1"
+
+# The 0.2.2 crates.io source with two patches applied. One: the Linux and
+# Windows backends no longer stop the event loop when the last window
+# closes, which is what upstream's QuitMode work does (zed #42391) and what
+# quit-to-tray needs. Two: the Wayland programmatic resize declares xdg
+# window geometry in surface-local logical coordinates instead of a screen
+# origin and device pixels, which collapsed the window to zero size on the
+# next compositor move after a layout switch. vendor/gpui is generated, not
+# checked in: scripts/vendor-gpui.sh (run by the nix shellHook) fetches the
+# crate and applies patches/gpui/*.patch. Both are fixed on zed main (quit
+# mode: zed #42391, resize geometry: zed #45153, merged 2025-12-17) but no
+# crates.io release after 0.2.2 exists yet, so the first gpui bump should
+# carry both and the patches go away with it.
+#
+# gpui-component gets the same treatment for one patch: its ContextMenuExt
+# host (the right-click content menus) leans on the menu's own dismiss, which
+# no-ops while a submenu is open, so an outside click can't close a content
+# menu that has a submenu open. The patch adds a force-dismiss occluder,
+# matching what rox-dock's tab_panel already does for the panel menu. Same
+# vendor script, patches/gpui-component/*.patch. Drop it if upstream fixes the
+# dismiss and the bump carries the fix.
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }
+gpui-component = { path = "vendor/gpui-component" }

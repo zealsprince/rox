@@ -47,9 +47,10 @@ Contract to the UI:
 - Out: the projection, shared read-only, that browse order, search, filter, and sort
   derive from, and a change event per swap so open views refresh together.
 
-Contract to the metadata writer: after a successful tag write, the writer sends a reindex
-request for those paths, and the library re-reads them and emits change events. A tag edit
-and the browse view converge without a full rescan.
+Contract to the metadata writer: after a successful tag write, the library applies the
+committed changes to its rows and reloads the projection, so a tag edit and the browse view
+converge without a full rescan. Fields the projection carries update at once; fields it
+doesn't (comment, composer) reflect on the next rescan.
 
 ## Play history
 
@@ -65,7 +66,7 @@ side, applies the listen rule, and appends to the store off the UI thread. The l
 rule matches the scrobble standard, half the track or four minutes of it, whichever
 comes first. Storage is the library database per
 [ADR 11](decisions/11-adr-play-history.md); aggregates are derived from events, and
-stats read at panel-open cadence, not per keystroke, so they stay in SQL rather than
+stats read at open cadence, not per keystroke, so they stay in SQL rather than
 the projection.
 
 Contract:
@@ -91,8 +92,8 @@ lofty's parser takes down one worker, not the batch.
 
 Contract:
 - In: `read(path)`, `commit(path, changes)`, `commit_batch(edits)`.
-- Out: per-file success or failure, never a partial corrupt file. On success, a reindex
-  request to the library service.
+- Out: per-file success or failure, never a partial corrupt file. The library service
+  applies the committed changes to its rows on success.
 - Custom and arbitrary tag fields go through lofty's format-specific tag types (ID3v2
   TXXX, MP4 freeform atoms, Vorbis keys), not the generic key abstraction, which has no
   slot for unknown keys and can drop them.
@@ -153,14 +154,17 @@ network never blocks the UI, the audio path, or a browse query.
 
 - **Offline-first.** Every enrichment feature degrades to nothing when there's no network.
   Playback, browse, search, and manual tagging never depend on it.
-- **Off the hot paths.** Enrichment runs on its own workers behind channels. It never touches
+- **Off the hot paths.** Enrichment runs on the background executor, off the UI and audio
+  threads. It never touches
   the real-time audio callback, and it reaches the library and metadata writer through their
   existing contracts (the scrobbler reads the same position clock the listen rule does, an
   auto-tag result goes through the same atomic tag-write path as a manual edit).
-- **The pieces exist.** Last.fm scrobbling is a straightforward HTTP client. Auto-tagging is
-  `rusty-chromaprint` (pure-Rust fingerprint) plus `musicbrainz_rs`, with a hand-rolled AcoustID
-  call. Lyrics is a fetch-or-read-local panel. None of this is load-bearing for the core, so it
-  stays a thin, well-isolated domain rather than growing into the system.
+- **The pieces exist.** Last.fm scrobbling is a straightforward HTTP client. The rest are
+  per-domain providers per [ADR 14](decisions/14-adr-online-providers.md): lyrics, tag lookup,
+  and cover art, each matching the track's own tags against a service, ranking the results, and
+  writing the picked one through the existing paths. Fingerprint auto-tagging (`rusty-chromaprint`
+  plus an AcoustID call) is a possible future, not built. None of this is load-bearing for the
+  core, so it stays a thin, well-isolated domain rather than growing into the system.
 
 These are peripheral, so this section fixes the boundary and the offline-first rule, not the
 detail. The point is that enrichment can't be allowed to leak into the domains that must stay

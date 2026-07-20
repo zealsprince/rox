@@ -117,3 +117,7 @@ Each ADR records the call, the alternatives weighed, and what it costs. They liv
 | [11 - Play history](decisions/11-adr-play-history.md) | Append-only listen events in the library store | Decided |
 | [12 - Design tokens](decisions/12-adr-design-tokens.md) | Non-color tokens as consts beside the palette | Decided |
 | [13 - Panel theming](decisions/13-adr-panel-theming.md) | Sparse palette override per panel in config | Decided |
+| [14 - Online providers](decisions/14-adr-online-providers.md) | Per-domain provider traits for online enrichment | Decided |
+| [15 - Shared query](decisions/15-adr-global-filter.md) | App-wide search entity panels follow by default, opt out per view | Decided |
+| [16 - Play queue](decisions/16-adr-play-queue.md) | Mutable timeline the engine owns, playlists in the library store | Decided |
+| [17 - Tag editor](decisions/17-adr-tag-editor.md) | Shared batch form plus a per-file table, not foobar's per-field step-in | Decided |

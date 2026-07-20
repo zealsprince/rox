@@ -1,4 +1,4 @@
-# ADR 17: Tag editor as a shared batch form plus a per-file table
+# ADR 18: Tag editor as a shared batch form plus a per-file table
 
 **Status:** Decided
 

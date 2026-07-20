@@ -69,12 +69,18 @@
               LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
             };
 
+            # Regenerate the patched gpui copy Cargo's [patch.crates-io]
+            # points at (see patches/gpui). Stamped, so it's a no-op on
+            # every shell entry after the first.
+            shellHook = ''
+              ./scripts/vendor-gpui.sh
+            ''
             # GPUI's build script compiles Metal shaders with `xcrun metal`,
             # and nix can't ship Apple's Metal toolchain. Undo the SDK env
             # mkShell sets, drop the stub xcrun nixpkgs puts on PATH, and
             # lean on real Xcode instead. Xcode 26 users need to grab the
             # toolchain once: xcodebuild -downloadComponent MetalToolchain
-            shellHook = lib.optionalString stdenv.isDarwin ''
+            + lib.optionalString stdenv.isDarwin ''
               unset SDKROOT
               export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
               export PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v xcbuild | paste -sd: -)

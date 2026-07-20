@@ -1,0 +1,49 @@
+--- a/src/platform/linux/wayland/client.rs
++++ b/src/platform/linux/wayland/client.rs
+@@ -384,9 +384,11 @@
+         {
+             state.keyboard_focused_window = Some(window);
+         }
+-        if state.windows.is_empty() {
+-            state.common.signal.stop();
+-        }
++        // rox patch: upstream removed the loop stop on last-window close in
++        // favor of an app-level QuitMode policy (zed #42391). rox quits
++        // itself from close_workspace_window, so the auto-stop only breaks
++        // quit-to-tray. Drop this vendored copy once a crates.io release
++        // carries with_quit_mode.
+     }
+ }
+ 
+--- a/src/platform/linux/x11/client.rs
++++ b/src/platform/linux/x11/client.rs
+@@ -247,9 +247,11 @@
+         }
+         state.cursor_styles.remove(&x_window);
+ 
+-        if state.windows.is_empty() {
+-            state.common.signal.stop();
+-        }
++        // rox patch: upstream removed the loop stop on last-window close in
++        // favor of an app-level QuitMode policy (zed #42391). rox quits
++        // itself from close_workspace_window, so the auto-stop only breaks
++        // quit-to-tray. Drop this vendored copy once a crates.io release
++        // carries with_quit_mode.
+     }
+ 
+     pub fn update_ime_position(&self, bounds: Bounds<Pixels>) {
+--- a/src/platform/windows/platform.rs
++++ b/src/platform/windows/platform.rs
+@@ -716,9 +716,9 @@
+         }
+         match message {
+             WM_GPUI_CLOSE_ONE_WINDOW => {
+-                if self.close_one_window(HWND(lparam.0 as _)) {
+-                    unsafe { PostQuitMessage(0) };
+-                }
++                // rox patch: no quit on last-window close, see the linux
++                // backends. Upstream: zed #42391 (QuitMode).
++                self.close_one_window(HWND(lparam.0 as _));
+                 Some(0)
+             }
+             WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD => self.run_foreground_task(),

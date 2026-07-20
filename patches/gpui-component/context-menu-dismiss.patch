@@ -1,0 +1,46 @@
+--- a/src/menu/context_menu.rs
++++ b/src/menu/context_menu.rs
+@@ -166,6 +166,15 @@
+                         .unwrap_or(false);
+
+                     if has_menu_item {
++                        // rox patch: force-dismiss on an outside press. Upstream
++                        // leans on the menu's own on_mouse_down_out -> dismiss(),
++                        // which no-ops while a submenu is open (popup_menu.rs), so
++                        // a content menu with an open submenu can't be closed by
++                        // clicking away. Mirror rox-dock's tab_panel occluder and
++                        // drop the open flag on any press that reaches the layer;
++                        // presses on the menu or an open submenu hit their own
++                        // occluding hitbox first, so only outside presses land here.
++                        let dismiss = state.shared_state.clone();
+                         menu_element = Some(
+                             deferred(
+                                 anchored().child(
+@@ -173,6 +182,27 @@
+                                         .w(window.bounds().size.width)
+                                         .h(window.bounds().size.height)
+                                         .occlude()
++                                        .on_mouse_down(MouseButton::Left, {
++                                            let dismiss = dismiss.clone();
++                                            move |_, window, _| {
++                                                dismiss.borrow_mut().open = false;
++                                                window.refresh();
++                                            }
++                                        })
++                                        .on_mouse_down(MouseButton::Right, {
++                                            let dismiss = dismiss.clone();
++                                            move |_, window, _| {
++                                                dismiss.borrow_mut().open = false;
++                                                window.refresh();
++                                            }
++                                        })
++                                        .on_mouse_down(MouseButton::Middle, {
++                                            let dismiss = dismiss.clone();
++                                            move |_, window, _| {
++                                                dismiss.borrow_mut().open = false;
++                                                window.refresh();
++                                            }
++                                        })
+                                         .child(
+                                             anchored()
+                                                 .position(position)

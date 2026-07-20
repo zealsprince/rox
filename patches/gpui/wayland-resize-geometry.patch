@@ -1,0 +1,38 @@
+--- a/src/platform/linux/wayland/window.rs
++++ b/src/platform/linux/wayland/window.rs
+@@ -841,13 +841,30 @@
+     fn resize(&mut self, size: Size<Pixels>) {
+         let state = self.borrow();
+         let state_ptr = self.0.clone();
+-        let dp_size = size.to_device_pixels(self.scale_factor());
++
++        // rox patch: window geometry is surface-local logical coordinates,
++        // but this passed the screen-space origin kept from creation-time
++        // bounds, plus a device-pixel size. Compositors clip geometry to the
++        // surface, so with a restored window position the effective geometry
++        // came out empty and KWin collapsed the window to zero size on the
++        // next interactive move. Declare it the way the configure ack path
++        // does: zeroed origin, tiling insets, logical pixels.
++        let geometry = inset_by_tiling(
++            Bounds {
++                origin: Point::default(),
++                size,
++            },
++            state.inset(),
++            state.tiling,
++        )
++        .map(|v| v.0 as i32)
++        .map_size(|v| if v <= 0 { 1 } else { v });
+ 
+         state.xdg_surface.set_window_geometry(
+-            state.bounds.origin.x.0 as i32,
+-            state.bounds.origin.y.0 as i32,
+-            dp_size.width.0,
+-            dp_size.height.0,
++            geometry.origin.x,
++            geometry.origin.y,
++            geometry.size.width,
++            geometry.size.height,
+         );
+ 
+         state

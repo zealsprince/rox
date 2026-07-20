@@ -70,7 +70,7 @@ impl Focusable for QuickPlay {
 
 impl QuickPlay {
     pub fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| SearchBox::new("search the library", "", window, cx));
+        let search = cx.new(|cx| SearchBox::new("Search the library", "", window, cx));
         let _input_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // A scan finishing mid-search would leave the hits pointing into
         // the old projection; recompute over the new one, suggestions
@@ -340,7 +340,7 @@ impl QuickPlay {
             .gap(tokens::SPACE_XS)
             .text_xs()
             .text_color(palette::text_muted())
-            .child("narrow by")
+            .child("Narrow By")
             .children(QUERY_FIELDS.iter().map(|(name, _)| {
                 let term = SharedString::from(format!("{name}:"));
                 div()
@@ -354,9 +354,8 @@ impl QuickPlay {
                         cx.listener({
                             let term = term.clone();
                             move |this, _, window, cx| {
-                                this.search.update(cx, |search, cx| {
-                                    search.append_term(&term, window, cx)
-                                });
+                                this.search
+                                    .update(cx, |search, cx| search.append_term(&term, window, cx));
                             }
                         }),
                     )
@@ -379,16 +378,11 @@ impl QuickPlay {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.toggle_config(cx)),
             )
-            .child(
-                svg()
-                    .path(icons::SLIDERS)
-                    .size(px(16.))
-                    .text_color(if on {
-                        palette::text()
-                    } else {
-                        palette::text_muted()
-                    }),
-            )
+            .child(svg().path(icons::SLIDERS).size(px(16.)).text_color(if on {
+                palette::text()
+            } else {
+                palette::text_muted()
+            }))
     }
 
     /// The inline config panel that drops under the search row when the
@@ -404,8 +398,8 @@ impl QuickPlay {
             .border_t_1()
             .border_color(palette::border())
             .child(panel::setting_row(
-                "subtitle",
-                Some("show the artist and album under each result"),
+                "Subtitle",
+                Some("Show the artist and album under each result"),
                 panel::toggle(
                     self.config.show_subtitle,
                     |this: &mut Self, on, cx| {
@@ -415,8 +409,8 @@ impl QuickPlay {
                 ),
             ))
             .child(panel::setting_row(
-                "duration",
-                Some("show each result's length on the right"),
+                "Duration",
+                Some("Show each result's length on the right"),
                 panel::toggle(
                     self.config.show_duration,
                     |this: &mut Self, on, cx| {
@@ -426,8 +420,8 @@ impl QuickPlay {
                 ),
             ))
             .child(panel::setting_row(
-                "comfortable rows",
-                Some("give each result more height"),
+                "Comfortable Rows",
+                Some("Give each result more height"),
                 panel::toggle(
                     self.config.comfortable,
                     |this: &mut Self, on, cx| {
@@ -452,9 +446,9 @@ impl Render for QuickPlay {
                 .justify_center()
                 .text_color(palette::text_muted())
                 .child(if self.query.is_empty() {
-                    "the library is empty"
+                    "The library is empty"
                 } else {
-                    "no matches"
+                    "No matches"
                 })
                 .into_any_element()
         } else {
@@ -497,12 +491,12 @@ impl Render for QuickPlay {
                     this.move_selected(1, cx);
                 }
             }))
-            .capture_action(cx.listener(|this, _: &MovePageUp, _, cx| {
-                this.move_selected(-PAGE_ROWS, cx)
-            }))
-            .capture_action(cx.listener(|this, _: &MovePageDown, _, cx| {
-                this.move_selected(PAGE_ROWS, cx)
-            }))
+            .capture_action(
+                cx.listener(|this, _: &MovePageUp, _, cx| this.move_selected(-PAGE_ROWS, cx)),
+            )
+            .capture_action(
+                cx.listener(|this, _: &MovePageDown, _, cx| this.move_selected(PAGE_ROWS, cx)),
+            )
             // The search box handles escape while it has focus (its clear
             // then dismiss ladder); this catches an escape from anywhere
             // else in the modal.

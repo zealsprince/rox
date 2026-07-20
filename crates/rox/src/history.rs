@@ -1,8 +1,9 @@
 //! Listening history recording per ADR 11: the scrobbler's listen
 //! signal lands as an append-only event row in the library database.
-//! The recorder shares the scrobbler's qualification (played-time
-//! threshold, minimum length, seeks don't count) by riding its
-//! [`Listened`] event rather than watching the player itself. Appends
+//! The recorder rides the scrobbler's [`Listened`] event rather than
+//! watching the player itself, so it inherits the fixed listen rule
+//! (half the track or four minutes, minimum length, seeks and pauses
+//! don't count) without re-deriving it from the position clock. Appends
 //! run on the background executor over their own connection, like the
 //! scans, so recording never touches the audio path or holds up a
 //! frame; history views and the stats window subscribe for the refresh.

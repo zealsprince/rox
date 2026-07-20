@@ -24,10 +24,7 @@ pub fn fmt(value: u8) -> SharedString {
 
 /// The control over `current`, calling `set` with the clicked value - or
 /// zero when the click lands on the value already held, the clear.
-pub fn control(
-    current: u8,
-    set: impl Fn(u8, &mut Window, &mut App) + Clone + 'static,
-) -> Div {
+pub fn control(current: u8, set: impl Fn(u8, &mut Window, &mut App) + Clone + 'static) -> Div {
     let set = move |value: u8, window: &mut Window, cx: &mut App| {
         set(if value == current { 0 } else { value }, window, cx);
     };
@@ -49,7 +46,11 @@ pub fn control(
                         })
                         .child(
                             svg()
-                                .path(if filled { icons::STAR_FILLED } else { icons::STAR })
+                                .path(if filled {
+                                    icons::STAR_FILLED
+                                } else {
+                                    icons::STAR
+                                })
                                 .size(px(14.))
                                 .text_color(if filled {
                                     palette::accent()

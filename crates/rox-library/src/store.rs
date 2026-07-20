@@ -37,6 +37,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             codec        TEXT NOT NULL DEFAULT '',
             bitrate      INTEGER NOT NULL DEFAULT 0,
             rating       INTEGER NOT NULL DEFAULT 0,
+            added        INTEGER NOT NULL DEFAULT 0,
             size         INTEGER NOT NULL,
             mtime        INTEGER NOT NULL,
             UNIQUE (source, path)
@@ -79,8 +80,22 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     if !stmt.exists([])? {
         conn.execute_batch("ALTER TABLE tracks ADD COLUMN rating INTEGER NOT NULL DEFAULT 0;")?;
     }
+    // And for a library from before the added timestamp: add it and
+    // backfill every row to now, so tracks scanned in after the upgrade
+    // sort newer while the existing catalog clusters at the upgrade time.
+    // No mtime reset: the timestamp is the app's own, never read from tags.
+    let mut stmt =
+        conn.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name = 'added'")?;
+    if !stmt.exists([])? {
+        conn.execute_batch(
+            "ALTER TABLE tracks ADD COLUMN added INTEGER NOT NULL DEFAULT 0;
+             UPDATE tracks SET added = CAST(strftime('%s', 'now') AS INTEGER);",
+        )?;
+    }
     // The listen events ride the same database and schema setup (ADR 11).
     crate::listens::init_schema(conn)?;
+    // Playlists share the database too (ADR 16).
+    crate::playlists::init_schema(conn)?;
     Ok(())
 }
 
@@ -95,13 +110,20 @@ pub fn count(conn: &Connection) -> rusqlite::Result<u64> {
 /// zero keeps the stored one: a rating the writer could not land in the
 /// file (wav, read-only media) must not vanish because the file changed.
 pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Result<()> {
+    // The scan time stamps first-seen rows only: the conflict update below
+    // leaves `added` alone, so a rescan of an unchanged or edited file keeps
+    // the moment it entered the library.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let tx = conn.transaction()?;
     {
         let mut stmt = tx.prepare_cached(
             "INSERT INTO tracks
              (path, title, artist, album_artist, album, genre, year, disc_no, track_no,
-              duration_ms, codec, bitrate, rating, size, mtime)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+              duration_ms, codec, bitrate, rating, added, size, mtime)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT (source, path) DO UPDATE SET
                 title = excluded.title, artist = excluded.artist,
                 album_artist = excluded.album_artist,
@@ -129,6 +151,7 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 r.codec,
                 r.bitrate_kbps,
                 r.rating,
+                now,
                 r.size as i64,
                 r.mtime,
             ])?;
@@ -380,11 +403,11 @@ pub fn scan_range(
     conn: &Connection,
     lo: i64,
     hi: i64,
-    mut sink: impl FnMut(i64, &str, &str, &str, &str, &str, u16, u16, u16, u32, &str, u16, u8),
+    mut sink: impl FnMut(i64, &str, &str, &str, &str, &str, u16, u16, u16, u32, &str, u16, u8, i64),
 ) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, title, artist, album_artist, album, genre, year, disc_no, track_no,
-                duration_ms, codec, bitrate, rating
+                duration_ms, codec, bitrate, rating, added
          FROM tracks WHERE id > ?1 AND id <= ?2 ORDER BY id",
     )?;
     let mut rows = stmt.query(rusqlite::params![lo, hi])?;
@@ -403,6 +426,7 @@ pub fn scan_range(
             row.get_ref(10)?.as_str().unwrap_or(""),
             row.get::<_, i64>(11)? as u16,
             row.get::<_, i64>(12)? as u8,
+            row.get::<_, i64>(13)?,
         );
     }
     Ok(())
@@ -476,6 +500,36 @@ mod tests {
 
         let p = crate::projection::Projection::load_serial(&conn).unwrap();
         assert_eq!(p.resolve(0).rating, 75);
+    }
+
+    /// The scan timestamp stamps a row when it first lands and a rescan's
+    /// upsert leaves it alone, so a re-read file keeps the moment it
+    /// entered the library.
+    #[test]
+    fn added_stamps_once_and_survives_a_rescan() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let track = || row("/m/a/1.mp3", "X", "Album", 100);
+        insert_batch(&mut conn, &[track()]).unwrap();
+        let id = id_for_path(&conn, "/m/a/1.mp3").unwrap().unwrap();
+
+        let added: i64 = conn
+            .query_row("SELECT added FROM tracks WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert!(added > 0, "a first insert stamps the scan time");
+
+        // Pin it to a known past value, then rescan: the upsert must not
+        // move it.
+        conn.execute("UPDATE tracks SET added = 123 WHERE id = ?1", [id])
+            .unwrap();
+        insert_batch(&mut conn, &[track()]).unwrap();
+        let after: i64 = conn
+            .query_row("SELECT added FROM tracks WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, 123, "a rescan keeps the first-seen scan time");
+
+        let p = crate::projection::Projection::load_serial(&conn).unwrap();
+        assert_eq!(p.resolve(0).added, 123, "the projection carries it through");
     }
 
     /// The edit path's landing half: committed changes move exactly their

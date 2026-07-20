@@ -127,6 +127,7 @@ pub struct Builder {
     codec: Vec<u32>,
     bitrate_kbps: Vec<u16>,
     rating: Vec<u8>,
+    added: Vec<i64>,
     artists: Interner,
     album_artists: Interner,
     albums: Interner,
@@ -151,6 +152,7 @@ impl Builder {
         codec: &str,
         bitrate_kbps: u16,
         rating: u8,
+        added: i64,
     ) {
         self.db_id.push(id);
         self.title.push(title);
@@ -167,6 +169,7 @@ impl Builder {
         self.codec.push(self.codecs.intern(codec));
         self.bitrate_kbps.push(bitrate_kbps);
         self.rating.push(rating);
+        self.added.push(added);
     }
 }
 
@@ -184,6 +187,10 @@ pub struct Projection {
     pub duration_ms: Vec<u32>,
     pub codec: Vec<u32>,
     pub bitrate_kbps: Vec<u16>,
+    /// When each row was first scanned into the library, in unix seconds.
+    /// Set on first insert and preserved across rescans, so a descending
+    /// sort surfaces newly added tracks.
+    pub added: Vec<i64>,
     /// Ratings on the app's 0-100 scale, 0 unrated. Atomics, unlike every
     /// other column: a rating click writes through the shared Arc in
     /// place, so rating a track never pays a projection reload.
@@ -214,6 +221,7 @@ pub struct RowView<'a> {
     pub bitrate_kbps: u16,
     pub rating: u8,
     pub plays: u32,
+    pub added: i64,
 }
 
 /// A field a query term can be pinned to with `field:value` syntax.
@@ -298,6 +306,62 @@ pub fn parse_query(query: &str) -> Vec<Term> {
         .collect()
 }
 
+/// A field the structured filter can pin exact values to: the interned
+/// columns plus the year. Titles stay out; a text term already reaches
+/// them, and a filter over ten million distinct titles filters nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilterField {
+    Artist,
+    AlbumArtist,
+    Album,
+    Genre,
+    Year,
+}
+
+/// A structured filter over exact field values, the filter panel's state:
+/// values OR within a field, fields AND across. Unlike [`parse_query`]'s
+/// terms these match whole values, never substrings, so picking "Air"
+/// leaves "Airborne" out. Years ride as their decimal strings ("0" for
+/// untagged) to keep the value lists one shape.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FilterSet {
+    pub fields: Vec<(FilterField, Vec<String>)>,
+}
+
+impl FilterSet {
+    pub fn is_empty(&self) -> bool {
+        self.fields.iter().all(|(_, values)| values.is_empty())
+    }
+
+    /// The picked values for one field; empty means the field passes all.
+    pub fn values(&self, field: FilterField) -> &[String] {
+        self.fields
+            .iter()
+            .find(|(f, _)| *f == field)
+            .map(|(_, values)| values.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Add the value to the field's picks, or drop it if already picked.
+    pub fn toggle(&mut self, field: FilterField, value: &str) {
+        match self.fields.iter_mut().find(|(f, _)| *f == field) {
+            Some((_, values)) => match values.iter().position(|v| v == value) {
+                Some(i) => {
+                    values.remove(i);
+                }
+                None => values.push(value.to_string()),
+            },
+            None => self.fields.push((field, vec![value.to_string()])),
+        }
+        self.fields.retain(|(_, values)| !values.is_empty());
+    }
+
+    /// Drop every pick for one field.
+    pub fn clear(&mut self, field: FilterField) {
+        self.fields.retain(|(f, _)| *f != field);
+    }
+}
+
 /// A sortable column of the projection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortKey {
@@ -313,6 +377,7 @@ pub enum SortKey {
     Bitrate,
     Rating,
     Plays,
+    Added,
 }
 
 impl Projection {
@@ -332,7 +397,7 @@ impl Projection {
             conn,
             0,
             max,
-            |id, title, artist, album_artist, album, genre, year, dn, tn, dur, codec, kbps, rating| {
+            |id, title, artist, album_artist, album, genre, year, dn, tn, dur, codec, kbps, rating, added| {
                 b.push(
                     id,
                     title,
@@ -347,6 +412,7 @@ impl Projection {
                     codec,
                     kbps,
                     rating,
+                    added,
                 );
             },
         )?;
@@ -387,7 +453,8 @@ impl Projection {
                              dur,
                              codec,
                              kbps,
-                             rating| {
+                             rating,
+                             added| {
                                 b.push(
                                     id,
                                     title,
@@ -402,6 +469,7 @@ impl Projection {
                                     codec,
                                     kbps,
                                     rating,
+                                    added,
                                 );
                             },
                         )?;
@@ -458,6 +526,7 @@ impl Projection {
         out.codec.reserve(total);
         out.bitrate_kbps.reserve(total);
         out.rating.reserve(total);
+        out.added.reserve(total);
 
         for shard in shards {
             let map_a: Vec<u32> = shard
@@ -509,6 +578,7 @@ impl Projection {
                 .extend(shard.codec.iter().map(|&s| map_c[s as usize]));
             out.bitrate_kbps.extend_from_slice(&shard.bitrate_kbps);
             out.rating.extend_from_slice(&shard.rating);
+            out.added.extend_from_slice(&shard.added);
         }
 
         let plays = (0..out.db_id.len()).map(|_| AtomicU32::new(0)).collect();
@@ -526,6 +596,7 @@ impl Projection {
             duration_ms: out.duration_ms,
             codec: out.codec,
             bitrate_kbps: out.bitrate_kbps,
+            added: out.added,
             rating: out.rating.into_iter().map(AtomicU8::new).collect(),
             plays,
             artists: SymTable::from(artists),
@@ -552,6 +623,7 @@ impl Projection {
             bitrate_kbps: self.bitrate_kbps[i],
             rating: self.rating[i].load(Ordering::Relaxed),
             plays: self.plays[i].load(Ordering::Relaxed),
+            added: self.added[i],
         }
     }
 
@@ -648,6 +720,76 @@ impl Projection {
                 Hits::Year(mask) => mask[self.year[i] as usize],
             })
         })
+    }
+
+    /// Row mask for a structured filter: a row passes when, for every
+    /// filtered field, its value is one of that field's picks - values OR
+    /// within a field, fields AND across. Exact matches against the symbol
+    /// tables, never substrings. None when the filter is empty, so callers
+    /// skip the scan and the intersection.
+    pub fn filter_mask(&self, filter: &FilterSet) -> Option<Vec<bool>> {
+        if filter.is_empty() {
+            return None;
+        }
+
+        /// One field's row check: picked symbols for an interned column,
+        /// picked years over every u16 once (the search's year trick).
+        enum Check<'a> {
+            Sym { column: &'a [u32], ok: Vec<bool> },
+            Year(Vec<bool>),
+        }
+
+        let sym_ok = |table: &SymTable, values: &[String]| -> Vec<bool> {
+            table
+                .strings
+                .iter()
+                .map(|s| values.iter().any(|v| v == s))
+                .collect()
+        };
+        let checks: Vec<Check> = filter
+            .fields
+            .iter()
+            .filter(|(_, values)| !values.is_empty())
+            .map(|(field, values)| match field {
+                FilterField::Artist => Check::Sym {
+                    column: &self.artist,
+                    ok: sym_ok(&self.artists, values),
+                },
+                FilterField::AlbumArtist => Check::Sym {
+                    column: &self.album_artist,
+                    ok: sym_ok(&self.album_artists, values),
+                },
+                FilterField::Album => Check::Sym {
+                    column: &self.album,
+                    ok: sym_ok(&self.albums, values),
+                },
+                FilterField::Genre => Check::Sym {
+                    column: &self.genre,
+                    ok: sym_ok(&self.genres, values),
+                },
+                FilterField::Year => {
+                    let mut ok = vec![false; usize::from(u16::MAX) + 1];
+                    for v in values {
+                        if let Ok(y) = v.parse::<u16>() {
+                            ok[y as usize] = true;
+                        }
+                    }
+                    Check::Year(ok)
+                }
+            })
+            .collect();
+
+        Some(
+            (0..self.len())
+                .into_par_iter()
+                .map(|i| {
+                    checks.iter().all(|c| match c {
+                        Check::Sym { column, ok } => ok[column[i] as usize],
+                        Check::Year(ok) => ok[self.year[i] as usize],
+                    })
+                })
+                .collect(),
+        )
     }
 
     pub fn filter_genre(&self, genre: &str) -> Vec<u32> {
@@ -778,6 +920,7 @@ impl Projection {
             SortKey::Plays => {
                 self.order_view(view, descending, |i| self.plays[i].load(Ordering::Relaxed))
             }
+            SortKey::Added => self.order_view(view, descending, |i| self.added[i]),
         }
     }
 
@@ -931,6 +1074,55 @@ mod tests {
         // A year needle matches on the digits.
         assert_eq!(titles_for(&p, "year:200").len(), 2);
         assert_eq!(titles_for(&p, "stronger year:2007").len(), 1);
+    }
+
+    /// The structured filter matches whole values only - "Air" leaves
+    /// "Airborne" out where the text search would take both - values OR
+    /// within a field, and fields AND across.
+    #[test]
+    fn filter_mask_matches_exact_values() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "Air", 1998),
+                track("/m/2.mp3", "Two", "Airborne", 1998),
+                track("/m/3.mp3", "Three", "Air", 2001),
+                track("/m/4.mp3", "Four", "Moby", 1999),
+            ],
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn).unwrap();
+
+        let hits = |filter: &FilterSet| -> Vec<&str> {
+            let mask = p.filter_mask(filter).unwrap();
+            (0..p.len() as u32)
+                .filter(|&i| mask[i as usize])
+                .map(|i| p.resolve(i).title)
+                .collect()
+        };
+
+        // Empty means no filtering; callers skip the scan.
+        assert!(p.filter_mask(&FilterSet::default()).is_none());
+
+        // Exact, so the substring neighbor stays out.
+        let mut f = FilterSet::default();
+        f.toggle(FilterField::Artist, "Air");
+        assert_eq!(hits(&f), ["One", "Three"]);
+
+        // A second value in the same field ORs in.
+        f.toggle(FilterField::Artist, "Moby");
+        assert_eq!(hits(&f), ["One", "Three", "Four"]);
+
+        // Another field ANDs across.
+        f.toggle(FilterField::Year, "1998");
+        assert_eq!(hits(&f), ["One"]);
+
+        // Toggling a picked value back off drops it.
+        f.toggle(FilterField::Year, "1998");
+        f.toggle(FilterField::Artist, "Moby");
+        assert_eq!(hits(&f), ["One", "Three"]);
     }
 
     /// The plays column loads the listens aggregate and sorts like any

@@ -135,6 +135,10 @@ pub struct PlayerView {
     pub error: Option<SharedString>,
 }
 
+/// A queue snapshot for the close-time persist: every entry's path and
+/// explicit flag, the audible cursor, and the position clock in seconds.
+pub type QueueStatePersist = (Vec<(PathBuf, bool)>, usize, f64);
+
 pub struct Player {
     session: Option<Session>,
     error: Option<SharedString>,
@@ -265,7 +269,7 @@ impl Player {
     /// clock sits. The cursor rides off the position clock, not the decode
     /// cursor, so it names the track you hear rather than the one already
     /// opened for the gapless boundary. None when no session runs.
-    pub fn queue_state(&self) -> Option<(Vec<(PathBuf, bool)>, usize, f64)> {
+    pub fn queue_state(&self) -> Option<QueueStatePersist> {
         let session = self.session.as_ref()?;
         let snap = session.shared.queue_snapshot();
         if snap.entries.is_empty() {

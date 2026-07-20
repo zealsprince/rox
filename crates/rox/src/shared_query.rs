@@ -250,6 +250,7 @@ fn source_items<P: 'static>(
 
 /// The query-source knob as a "Search" flyout on a panel's Display menu, so
 /// the box toggle and source rows only show on hover.
+#[allow(clippy::too_many_arguments)]
 pub fn search_flyout<P: 'static>(
     menu: PopupMenu,
     get: impl Fn(&P) -> QuerySource + Clone + 'static,

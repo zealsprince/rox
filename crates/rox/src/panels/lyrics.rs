@@ -526,10 +526,7 @@ impl LyricsPanel {
     /// would run off the top during the intro before the first line lights.
     fn walk_lines(&self, steps: i32) -> Option<f64> {
         // The woven sheet, so a step lands on the rests too.
-        let lyrics = match self.display_arc() {
-            Some(lyrics) => lyrics,
-            None => return None,
-        };
+        let lyrics = self.display_arc()?;
         // Only the timed lines can be seeked to; blanks and section marks
         // fall between them.
         let timed: Vec<f64> = lyrics.lines.iter().filter_map(|line| line.at).collect();
@@ -987,13 +984,7 @@ impl Panel for LyricsPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
-        if self
-            .resolved
-            .get(self.config.source, &self.state, cx)
-            .is_none()
-        {
-            return None;
-        }
+        self.resolved.get(self.config.source, &self.state, cx)?;
         let weak = cx.entity().downgrade();
         Some(settings_ui::icon_button(
             icons::PENCIL,

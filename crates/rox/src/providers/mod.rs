@@ -332,7 +332,7 @@ pub fn search_art(query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
                 return Err(e);
             }
         }
-        found.sort_by(|a, b| (b.width * b.height).cmp(&(a.width * a.height)));
+        found.sort_by_key(|b| std::cmp::Reverse(b.width * b.height));
         Ok(found)
     })
 }

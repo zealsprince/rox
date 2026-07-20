@@ -601,6 +601,10 @@ fn labels_overlay(freq_lo: f32, freq_hi: f32) -> Div {
     overlay
 }
 
+/// A labelled config toggle for the Display menu: the row label, a getter for
+/// its current state, and a setter that flips it.
+type ConfigToggle = (&'static str, fn(&SpectrumPanel) -> bool, fn(&mut SpectrumPanel));
+
 pub struct SpectrumPanel {
     state: AppState,
     config: SpectrumConfig,
@@ -709,7 +713,7 @@ impl SpectrumPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let toggles: [(&str, fn(&Self) -> bool, fn(&mut Self)); 4] = [
+        let toggles: [ConfigToggle; 4] = [
             (
                 "Intensity Color",
                 |this| this.config.gradient,

@@ -7,7 +7,7 @@
 //! panel, never a mode of the library.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
@@ -805,7 +805,7 @@ impl QueuePanel {
 
 /// A queued file's last path component as a fallback label, when the track
 /// is not in the library to give a title.
-fn file_label(path: &PathBuf) -> String {
+fn file_label(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())

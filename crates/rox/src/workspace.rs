@@ -1827,7 +1827,7 @@ impl Workspace {
                         });
                     }
                 }
-                (!tracks.is_empty()).then(|| QueueState {
+                (!tracks.is_empty()).then_some(QueueState {
                     entries: tracks,
                     cursor: new_cursor,
                     position_secs,

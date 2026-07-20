@@ -27,9 +27,8 @@ use serde::{Deserialize, Serialize};
 use rox_playback::engine;
 
 use crate::assets::icons;
-use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, setting_row, toggle, AppState, PanelSettings, ScrubState};
+use crate::panel::{self, setting_row, toggle, AppState, PanelChrome, PanelSettings, ScrubState};
 use crate::panel_settings;
 use crate::peaks;
 
@@ -49,10 +48,10 @@ const BAR_GAP_MAX: f32 = 8.0;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WaveformConfig {
-    /// The rename shown as the tab and title text; None shows the
-    /// built-in name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    /// The rename, theme override, and placement locks shared by every
+    /// panel.
+    #[serde(flatten)]
+    pub chrome: PanelChrome,
     /// Bar thickness, px: the sampling step follows it, so thicker bars
     /// mean fewer of them.
     pub bar_width: f32,
@@ -65,20 +64,16 @@ pub struct WaveformConfig {
     /// counts as listened for last.fm. Only draws while scrobbling is
     /// connected and on.
     pub scrobble_marker: bool,
-    /// The panel's palette override.
-    #[serde(skip_serializing_if = "PanelTheme::is_empty")]
-    pub theme: PanelTheme,
 }
 
 impl Default for WaveformConfig {
     fn default() -> Self {
         WaveformConfig {
-            title: None,
+            chrome: PanelChrome::default(),
             bar_width: tokens::BAR_W,
             bar_gap: tokens::BAR_GAP,
             outline: false,
             scrobble_marker: false,
-            theme: PanelTheme::default(),
         }
     }
 }
@@ -416,7 +411,10 @@ fn paint_morph(
             // one continuous outlined shape.
             for y in [top, bottom - 1.0] {
                 window.paint_quad(fill(
-                    Bounds::new(point(x0, bounds.origin.y + px(y)), size(px(draw_w), px(1.0))),
+                    Bounds::new(
+                        point(x0, bounds.origin.y + px(y)),
+                        size(px(draw_w), px(1.0)),
+                    ),
                     color,
                 ));
             }
@@ -478,12 +476,16 @@ impl PanelSettings for WaveformPanel {
         self.state.clone()
     }
 
-    fn custom_title(&self) -> Option<&str> {
-        self.config.title.as_deref()
+    fn chrome(&self) -> &PanelChrome {
+        &self.config.chrome
+    }
+
+    fn chrome_mut(&mut self) -> &mut PanelChrome {
+        &mut self.config.chrome
     }
 
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
-        self.config.title = title;
+        self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
@@ -504,8 +506,8 @@ impl PanelSettings for WaveformPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(setting_row(
-                "bar width",
-                Some("how thick each bar draws"),
+                "Bar Width",
+                Some("How thick each bar draws"),
                 panel::value_slider(
                     &self.bar_w_scrub,
                     (bar_w - BAR_W_MIN) / (BAR_W_MAX - BAR_W_MIN),
@@ -515,8 +517,8 @@ impl PanelSettings for WaveformPanel {
                 ),
             ))
             .child(setting_row(
-                "bar gap",
-                Some("space between bars, zero merges them into a solid shape"),
+                "Bar Gap",
+                Some("Space between bars, zero merges them into a solid shape"),
                 panel::value_slider(
                     &self.gap_scrub,
                     gap / BAR_GAP_MAX,
@@ -526,8 +528,8 @@ impl PanelSettings for WaveformPanel {
                 ),
             ))
             .child(setting_row(
-                "outline",
-                Some("trace the bars instead of filling them; merged bars read as one shape"),
+                "Outline",
+                Some("Trace the bars instead of filling them; merged bars read as one shape"),
                 toggle(
                     self.config.outline,
                     |this: &mut Self, on, cx| {
@@ -538,8 +540,8 @@ impl PanelSettings for WaveformPanel {
                 ),
             ))
             .child(setting_row(
-                "scrobble marker",
-                Some("a thin line where the track counts as scrobbled to last.fm"),
+                "Scrobble Marker",
+                Some("A thin line where the track counts as scrobbled to last.fm"),
                 toggle(
                     self.config.scrobble_marker,
                     |this: &mut Self, on, cx| {
@@ -550,15 +552,6 @@ impl PanelSettings for WaveformPanel {
                 ),
             ))
             .into_any_element()
-    }
-
-    fn theme(&self) -> PanelTheme {
-        self.config.theme.clone()
-    }
-
-    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
-        self.config.theme = theme;
-        cx.notify();
     }
 }
 
@@ -576,11 +569,15 @@ impl Panel for WaveformPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.title.as_deref(), "waveform")
+        panel::title_text(self.config.chrome.title.as_deref(), "Waveform")
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        self.config.title.clone().map(SharedString::from)
+        self.config.chrome.title.clone().map(SharedString::from)
+    }
+
+    fn locked(&self, _cx: &App) -> bool {
+        self.config.chrome.locked
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
@@ -633,8 +630,7 @@ impl Panel for WaveformPanel {
                     });
                 }),
         );
-        let menu = menu.separator();
-        let menu = panel_settings::rename_item(menu, &cx.entity());
+        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than shared: the copy takes the
         // config along, like every configured panel's.
@@ -670,8 +666,8 @@ impl Panel for WaveformPanel {
 
 impl Render for WaveformPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(window, cx))
+        let chrome = self.config.chrome.clone();
+        panel::themed(&chrome, || self.body(window, cx))
     }
 }
 
@@ -681,6 +677,7 @@ impl WaveformPanel {
         // A played-out queue counts as nothing playing: the strip clears
         // instead of sitting there fully lit.
         let now = player.now_playing().filter(|_| !player.queue_ended());
+        let playing = player.is_playing();
         // The engine's position clock blinks off for a moment between
         // tracks and while a fresh queue opens, with the session very much
         // alive (the backdrop holds through the same blink). Snapping blank
@@ -695,13 +692,6 @@ impl WaveformPanel {
                 self.start_decode(path, cx);
             }
         }
-        // The position clock only moves while a session runs, and pause
-        // and track skips do not notify; poll by frame like the player
-        // bar does (the morphs and the generating animation ride these
-        // frames too, and through the blink). No track up: fully parked.
-        if now.is_some() || between_tracks {
-            window.request_animation_frame();
-        }
 
         // The marker only shows where a scrobble could actually land: the
         // toggle on and the scrobbler armed.
@@ -709,6 +699,9 @@ impl WaveformPanel {
             .then(|| self.state.scrobbler.read(cx).marker())
             .flatten();
 
+        // The seek preview rides on real peaks only: the placeholder and
+        // the unavailable message have no track shape to point along.
+        let mut hover_duration: Option<f64> = None;
         let body = match (&now, &self.peaks) {
             // Hold the strip through the blink: whatever it shows stays up,
             // and the next track's shape morphs from it instead of popping
@@ -722,7 +715,7 @@ impl WaveformPanel {
                 div().into_any_element()
             }
             (Some(_), Peaks::Failed) => self
-                .message("waveform unavailable for this track")
+                .message("Waveform unavailable for this track")
                 .into_any_element(),
             (Some(_), Peaks::Decoding) => {
                 self.retarget(Shape::Placeholder);
@@ -734,14 +727,27 @@ impl WaveformPanel {
                     .filter(|d| *d > 0.0)
                     .map(|d| (now.position_secs / d) as f32)
                     .unwrap_or(0.0);
+                hover_duration = now.duration_secs.filter(|d| *d > 0.0);
                 self.retarget(Shape::Peaks(peaks.clone(), progress));
                 self.strip(marker).into_any_element()
             }
         };
 
+        // Frames while the playhead moves, while a morph runs, while the
+        // generating stand-in animates, and through the between-tracks blink.
+        // A paused strip with a settled shape parks; the pump's play-state
+        // notify wakes it on resume. Pause and skips do not notify on their
+        // own, so the blink and morph windows carry those transitions.
+        let morphing = self.morph_at.elapsed().as_secs_f32() < tokens::EASE_SECS;
+        let generating = matches!(self.to, Shape::Placeholder);
+        if playing || between_tracks || morphing || generating {
+            window.request_animation_frame();
+        }
+
         div()
             .size_full()
             .bg(palette::bg_root())
+            .relative()
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -754,5 +760,8 @@ impl WaveformPanel {
                 }),
             )
             .child(body)
+            .when_some(hover_duration, |d, duration| {
+                d.child(panel::seek_hover(&self.scrub, duration, cx))
+            })
     }
 }

@@ -23,9 +23,8 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
-use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, align_row, justify, Align, AppState, PanelSettings};
+use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
 use crate::selection::SelectionEvent;
@@ -35,17 +34,18 @@ use crate::source::{self, ResolvedTrack, TrackSource};
 /// what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct CoverConfig {
-    /// The rename shown as the tab and title text; None shows the
-    /// built-in name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    /// The rename, theme override, and placement locks shared by every
+    /// panel.
+    #[serde(flatten)]
+    pub chrome: PanelChrome,
     #[serde(default)]
     pub source: TrackSource,
     #[serde(default)]
     pub align: Align,
-    /// The panel's palette override.
-    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
-    pub theme: PanelTheme,
+    /// Stretch the art to fill the panel, ignoring its aspect ratio,
+    /// instead of letterboxing it to fit.
+    #[serde(default)]
+    pub stretch: bool,
 }
 
 /// One thing the panel can show. The fade runs between two of these.
@@ -108,7 +108,10 @@ pub struct CoverArtPanel {
 
 impl CoverArtPanel {
     pub fn new(state: AppState, config: CoverConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        // The cover only turns over when the playing track does; the fade
+        // between them drives its own frames. Gated so the pump's per-tick
+        // notify does not rebuild the panel behind a settled cover.
+        let _player_changed = crate::player::observe_view(&state.player, cx);
         let _selection_changed = cx.subscribe(
             &state.selection,
             |this: &mut Self, _, _: &SelectionEvent, cx| {
@@ -237,15 +240,35 @@ impl CoverArtPanel {
 
     /// The panel's own dropdown entries: the source pick, the same knob the
     /// customize window edits.
-    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
-        source::source_menu(
+    fn config_menu(
+        &self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let menu = source::source_flyout(
             menu,
-            self.config.source,
+            |this: &Self| this.config.source,
             &cx.entity(),
             |this, source, cx| {
                 this.config.source = source;
                 cx.notify();
             },
+            window,
+            cx,
+        );
+        let weak = cx.entity().downgrade();
+        menu.separator().item(
+            PopupMenuItem::new("Stretch to Fill")
+                .icon(Icon::default().path(icons::MAXIMIZE))
+                .checked(self.config.stretch)
+                .on_click(move |_, _, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    this.update(cx, |this, cx| {
+                        this.config.stretch = !this.config.stretch;
+                        cx.notify();
+                    });
+                }),
         )
     }
 }
@@ -255,12 +278,16 @@ impl PanelSettings for CoverArtPanel {
         self.state.clone()
     }
 
-    fn custom_title(&self) -> Option<&str> {
-        self.config.title.as_deref()
+    fn chrome(&self) -> &PanelChrome {
+        &self.config.chrome
+    }
+
+    fn chrome_mut(&mut self) -> &mut PanelChrome {
+        &mut self.config.chrome
     }
 
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
-        self.config.title = title;
+        self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
@@ -295,16 +322,19 @@ impl PanelSettings for CoverArtPanel {
                 },
                 cx,
             ))
+            .child(panel::setting_row(
+                "Stretch",
+                Some("Fill the panel, ignoring the artwork aspect ratio"),
+                panel::toggle(
+                    self.config.stretch,
+                    |this: &mut Self, on, cx| {
+                        this.config.stretch = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
             .into_any_element()
-    }
-
-    fn theme(&self) -> PanelTheme {
-        self.config.theme.clone()
-    }
-
-    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
-        self.config.theme = theme;
-        cx.notify();
     }
 }
 
@@ -322,11 +352,15 @@ impl Panel for CoverArtPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.title.as_deref(), "cover art")
+        panel::title_text(self.config.chrome.title.as_deref(), "Cover Art")
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        self.config.title.clone().map(SharedString::from)
+        self.config.chrome.title.clone().map(SharedString::from)
+    }
+
+    fn locked(&self, _cx: &App) -> bool {
+        self.config.chrome.locked
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
@@ -362,14 +396,13 @@ impl Panel for CoverArtPanel {
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         // The config block: the panel's quick entries and the settings
         // window, apart from the core panel items.
-        let menu = self.config_menu(menu, cx);
-        let menu = menu.separator();
-        let menu = panel_settings::rename_item(menu, &cx.entity());
+        let menu = self.config_menu(menu, window, cx);
+        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
         // because the copy takes the config along, like the transports'.
@@ -409,7 +442,13 @@ impl Panel for CoverArtPanel {
 /// panel theme's rounding itself: gpui content masks stay rectangular,
 /// so the body's rounded corners would otherwise be painted square over
 /// by a cover running edge to edge.
-fn layer(slide: &Slide, opacity: f32, align: Align, rounding: Option<f32>) -> AnyElement {
+fn layer(
+    slide: &Slide,
+    opacity: f32,
+    align: Align,
+    rounding: Option<f32>,
+    stretch: bool,
+) -> AnyElement {
     let base = justify(
         div()
             .absolute()
@@ -457,6 +496,14 @@ fn layer(slide: &Slide, opacity: f32, align: Align, rounding: Option<f32>) -> An
         // The frame hugs the letterboxed fit instead of filling the panel -
         // full width, the height cap transferring back through the art's
         // own ratio - so the alignment above has something to place.
+        // Stretch fills the panel edge to edge, dropping the aspect ratio
+        // and the alignment along with it; the letterboxed fit keeps both.
+        Slide::Art(image, _) if stretch => base.child(
+            img(image.clone())
+                .object_fit(ObjectFit::Fill)
+                .size_full()
+                .when_some(rounding, |d, radius| d.rounded(px(radius))),
+        ),
         Slide::Art(image, ratio) => {
             let mut frame = div().w_full().max_h_full();
             frame.style().aspect_ratio = Some(*ratio);
@@ -475,8 +522,8 @@ fn layer(slide: &Slide, opacity: f32, align: Align, rounding: Option<f32>) -> An
 
 impl Render for CoverArtPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(window, cx))
+        let chrome = self.config.chrome.clone();
+        panel::themed(&chrome, || self.body(window, cx))
     }
 }
 
@@ -511,10 +558,11 @@ impl CoverArtPanel {
         let u = u * u * (3.0 - 2.0 * u);
 
         let align = self.config.align;
-        let rounding = self.config.theme.rounding;
+        let rounding = self.config.chrome.theme.rounding;
+        let stretch = self.config.stretch;
         let root = div().size_full().bg(palette::bg_root()).relative();
         if u >= 1.0 {
-            root.child(layer(&self.to, 1.0, align, rounding))
+            root.child(layer(&self.to, 1.0, align, rounding, stretch))
         } else {
             // Hold the outgoing cover at full under an incoming one so a
             // same-art track change never dips toward the background, the
@@ -525,8 +573,8 @@ impl CoverArtPanel {
             } else {
                 1.0 - u
             };
-            root.child(layer(&self.from, floor, align, rounding))
-                .child(layer(&self.to, u, align, rounding))
+            root.child(layer(&self.from, floor, align, rounding, stretch))
+                .child(layer(&self.to, u, align, rounding, stretch))
         }
     }
 }

@@ -26,9 +26,10 @@ use rox_viz::analysis::{log_bands, Analyzer, MAX_FFT_SIZE, MIN_FFT_SIZE};
 use rox_viz::AudioFeed;
 
 use crate::assets::icons;
-use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, choices, setting_row, toggle, AppState, PanelSettings, ScrubState};
+use crate::panel::{
+    self, choices, setting_row, toggle, AppState, PanelChrome, PanelSettings, ScrubState,
+};
 use crate::panel_settings;
 
 // Bars follow the visualizer rhythm at the configured width over the shared
@@ -42,6 +43,11 @@ const MAX_BARS: usize = 512;
 /// width, thick ones read chunky. Values snap to whole pixels.
 const BAR_W_MIN: f32 = 1.0;
 const BAR_W_MAX: f32 = 12.0;
+
+/// The bar gap slider's span, px: zero packs the bars edge to edge, the top
+/// leaves a wide channel between them. Values snap to whole pixels.
+const BAR_GAP_MIN: f32 = 0.0;
+const BAR_GAP_MAX: f32 = 8.0;
 
 /// The outline stroke slider's span, px: hairline up to a chunky frame.
 /// Values snap to whole pixels; a stroke past half the bar width reads
@@ -113,10 +119,10 @@ const SILENT_AFTER: f32 = 0.15;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SpectrumConfig {
-    /// The rename shown as the tab and title text; None shows the
-    /// built-in name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    /// The rename, theme override, and placement locks shared by every
+    /// panel.
+    #[serde(flatten)]
+    pub chrome: PanelChrome,
     /// Low bound of the analyzed range, Hz: the bars span log-spaced from
     /// here up to `freq_hi`.
     pub freq_lo: f32,
@@ -126,6 +132,9 @@ pub struct SpectrumConfig {
     /// Bar thickness, px: thinner bars pack more bands into the width for
     /// a more detailed spectrum.
     pub bar_width: f32,
+    /// Gap between bars, px: zero packs them edge to edge, wider spreads
+    /// them out. Also feeds the bar count, so a wider gap fits fewer bars.
+    pub bar_gap: f32,
     /// FFT window size: short windows react fast, long ones resolve finer.
     /// With split zoning on this covers the bands below `split_hz`.
     pub fft_size: usize,
@@ -154,18 +163,16 @@ pub struct SpectrumConfig {
     pub cap_gravity: f32,
     /// Draw octave pitch markers (C1, C2, ...) across the analyzed range.
     pub labels: bool,
-    /// The panel's palette override.
-    #[serde(skip_serializing_if = "PanelTheme::is_empty")]
-    pub theme: PanelTheme,
 }
 
 impl Default for SpectrumConfig {
     fn default() -> Self {
         SpectrumConfig {
-            title: None,
+            chrome: PanelChrome::default(),
             freq_lo: 30.0,
             freq_hi: 16_000.0,
             bar_width: tokens::BAR_W,
+            bar_gap: tokens::BAR_GAP,
             fft_size: 8192,
             split: false,
             split_hz: 1_000.0,
@@ -177,7 +184,6 @@ impl Default for SpectrumConfig {
             freeze: false,
             cap_gravity: HOLD_GRAVITY,
             labels: false,
-            theme: PanelTheme::default(),
         }
     }
 }
@@ -199,6 +205,10 @@ impl SpectrumConfig {
     /// their slider spans like [`Self::range`] clamps the bounds.
     fn bar_w(&self) -> f32 {
         self.bar_width.clamp(BAR_W_MIN, BAR_W_MAX)
+    }
+
+    fn bar_gap(&self) -> f32 {
+        self.bar_gap.clamp(BAR_GAP_MIN, BAR_GAP_MAX)
     }
 
     fn outline_w(&self) -> f32 {
@@ -290,8 +300,8 @@ impl Mapping {
         if split_bar == self.count {
             return vec![zone(self.count, self.fft_lo, self.freq_lo, self.freq_hi)];
         }
-        let edge = self.freq_lo
-            * (self.freq_hi / self.freq_lo).powf(split_bar as f32 / self.count as f32);
+        let edge =
+            self.freq_lo * (self.freq_hi / self.freq_lo).powf(split_bar as f32 / self.count as f32);
         vec![
             zone(split_bar, self.fft_lo, self.freq_lo, edge),
             zone(self.count - split_bar, self.fft_hi, edge, self.freq_hi),
@@ -354,7 +364,7 @@ impl Bars {
         self.last_written = written;
 
         let count =
-            ((width / (config.bar_w() + tokens::BAR_GAP)) as usize).clamp(MIN_BARS, MAX_BARS);
+            ((width / (config.bar_w() + config.bar_gap())) as usize).clamp(MIN_BARS, MAX_BARS);
         let mapping = Mapping {
             count,
             rate: feed.sample_rate(),
@@ -468,7 +478,7 @@ impl Bars {
 
         let max_h = h * 0.94;
         let step = w / count as f32;
-        let bar_w = (step - tokens::BAR_GAP).max(1.0);
+        let bar_w = (step - config.bar_gap()).max(1.0);
 
         // dB gridlines behind the bars.
         for db in DB_MARKS {
@@ -601,6 +611,7 @@ pub struct SpectrumPanel {
     lo_scrub: ScrubState,
     hi_scrub: ScrubState,
     bar_w_scrub: ScrubState,
+    bar_gap_scrub: ScrubState,
     outline_w_scrub: ScrubState,
     gravity_scrub: ScrubState,
     split_scrub: ScrubState,
@@ -623,6 +634,7 @@ impl SpectrumPanel {
             lo_scrub: ScrubState::default(),
             hi_scrub: ScrubState::default(),
             bar_w_scrub: ScrubState::default(),
+            bar_gap_scrub: ScrubState::default(),
             outline_w_scrub: ScrubState::default(),
             gravity_scrub: ScrubState::default(),
             split_scrub: ScrubState::default(),
@@ -655,6 +667,11 @@ impl SpectrumPanel {
         cx.notify();
     }
 
+    fn set_bar_gap(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.config.bar_gap = (BAR_GAP_MIN + fraction * (BAR_GAP_MAX - BAR_GAP_MIN)).round();
+        cx.notify();
+    }
+
     fn set_outline_width(&mut self, fraction: f32, cx: &mut Context<Self>) {
         self.config.outline_width =
             (OUTLINE_W_MIN + fraction * (OUTLINE_W_MAX - OUTLINE_W_MIN)).round();
@@ -684,46 +701,51 @@ impl SpectrumPanel {
         panel::value_slider(scrub, hz_to_frac(hz), fmt_hz(hz), apply, cx)
     }
 
-    /// The panel's own dropdown entries: the display toggles the customize
-    /// window also holds, for a quick flip without opening it.
-    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
-        let mut menu = menu;
-        for (label, on, set) in [
+    /// The panel's own dropdown entries: a Display flyout of the toggles the
+    /// customize window also holds, for a quick flip without opening it.
+    fn config_menu(
+        &self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let toggles: [(&str, fn(&Self) -> bool, fn(&mut Self)); 4] = [
             (
                 "Intensity Color",
-                self.config.gradient,
-                (|this: &mut Self| this.config.gradient = !this.config.gradient) as fn(&mut Self),
+                |this| this.config.gradient,
+                |this| this.config.gradient = !this.config.gradient,
             ),
             (
                 "Outline Bars",
-                self.config.outline,
-                (|this: &mut Self| this.config.outline = !this.config.outline) as fn(&mut Self),
+                |this| this.config.outline,
+                |this| this.config.outline = !this.config.outline,
             ),
             (
                 "Peak Caps",
-                self.config.caps,
-                (|this: &mut Self| this.config.caps = !this.config.caps) as fn(&mut Self),
+                |this| this.config.caps,
+                |this| this.config.caps = !this.config.caps,
             ),
             (
                 "Pitch Labels",
-                self.config.labels,
-                (|this: &mut Self| this.config.labels = !this.config.labels) as fn(&mut Self),
+                |this| this.config.labels,
+                |this| this.config.labels = !this.config.labels,
             ),
-        ] {
-            let weak = cx.entity().downgrade();
-            menu = menu.item(
-                PopupMenuItem::new(label)
-                    .checked(on)
-                    .on_click(move |_, _, cx| {
-                        let Some(this) = weak.upgrade() else { return };
-                        this.update(cx, |this, cx| {
-                            set(this);
-                            cx.notify();
-                        });
-                    }),
-            );
-        }
-        menu
+        ];
+        let panel = cx.entity();
+        let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
+            panel::follow_panel(&panel, cx);
+            for (label, is_on, set) in toggles {
+                submenu = submenu.item(panel::check_row(
+                    label,
+                    None,
+                    is_on,
+                    move |this, _| set(this),
+                    &panel,
+                ));
+            }
+            submenu
+        });
+        menu.item(PopupMenuItem::submenu("Display", submenu))
     }
 }
 
@@ -732,12 +754,16 @@ impl PanelSettings for SpectrumPanel {
         self.state.clone()
     }
 
-    fn custom_title(&self) -> Option<&str> {
-        self.config.title.as_deref()
+    fn chrome(&self) -> &PanelChrome {
+        &self.config.chrome
+    }
+
+    fn chrome_mut(&mut self) -> &mut PanelChrome {
+        &mut self.config.chrome
     }
 
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
-        self.config.title = title;
+        self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
@@ -753,6 +779,7 @@ impl PanelSettings for SpectrumPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let bar_w = self.config.bar_w();
+        let bar_gap = self.config.bar_gap();
         let outline_w = self.config.outline_w();
         let gravity = self.config.gravity();
         div()
@@ -760,18 +787,18 @@ impl PanelSettings for SpectrumPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(setting_row(
-                "low bound",
-                Some("lowest frequency the bars analyze"),
+                "Low Bound",
+                Some("Lowest frequency the bars analyze"),
                 self.freq_slider(&self.lo_scrub, self.config.freq_lo, Self::set_freq_lo, cx),
             ))
             .child(setting_row(
-                "high bound",
-                Some("highest frequency the bars analyze"),
+                "High Bound",
+                Some("Highest frequency the bars analyze"),
                 self.freq_slider(&self.hi_scrub, self.config.freq_hi, Self::set_freq_hi, cx),
             ))
             .child(setting_row(
-                "bar width",
-                Some("how thick each bar draws, thinner bars fit more bands"),
+                "Bar Width",
+                Some("How thick each bar draws, thinner bars fit more bands"),
                 panel::value_slider(
                     &self.bar_w_scrub,
                     (bar_w - BAR_W_MIN) / (BAR_W_MAX - BAR_W_MIN),
@@ -781,8 +808,19 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "fft size",
-                Some("analysis window; short reacts fast, long resolves finer"),
+                "Bar Gap",
+                Some("Space between bars, wider gaps fit fewer bars"),
+                panel::value_slider(
+                    &self.bar_gap_scrub,
+                    (bar_gap - BAR_GAP_MIN) / (BAR_GAP_MAX - BAR_GAP_MIN),
+                    format!("{bar_gap:.0} px"),
+                    Self::set_bar_gap,
+                    cx,
+                ),
+            ))
+            .child(setting_row(
+                "FFT Size",
+                Some("Analysis window; short reacts fast, long resolves finer"),
                 choices(
                     FFT_CHOICES,
                     self.config.fft_lo(),
@@ -794,8 +832,8 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "split zones",
-                Some("analyze below and above a split frequency at different window sizes"),
+                "Split Zones",
+                Some("Analyze below and above a split frequency at different window sizes"),
                 toggle(
                     self.config.split,
                     |this: &mut Self, on, cx| {
@@ -807,8 +845,8 @@ impl PanelSettings for SpectrumPanel {
             ))
             .when(self.config.split, |d| {
                 d.child(setting_row(
-                    "split at",
-                    Some("where the zones meet, snapped to the nearest bar"),
+                    "Split At",
+                    Some("Where the zones meet, snapped to the nearest bar"),
                     self.freq_slider(
                         &self.split_scrub,
                         self.config.split_hz,
@@ -817,8 +855,8 @@ impl PanelSettings for SpectrumPanel {
                     ),
                 ))
                 .child(setting_row(
-                    "high fft size",
-                    Some("analysis window for the bands above the split"),
+                    "High FFT Size",
+                    Some("Analysis window for the bands above the split"),
                     choices(
                         FFT_CHOICES,
                         self.config.fft_hi(),
@@ -831,8 +869,8 @@ impl PanelSettings for SpectrumPanel {
                 ))
             })
             .child(setting_row(
-                "intensity color",
-                Some("color bars by loudness so only the peaks light up, instead of a flat fill"),
+                "Intensity Color",
+                Some("Color bars by loudness so only the peaks light up, instead of a flat fill"),
                 toggle(
                     self.config.gradient,
                     |this: &mut Self, on, cx| {
@@ -843,8 +881,8 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "outline bars",
-                Some("draw each bar as a hollow outline instead of a filled ramp"),
+                "Outline Bars",
+                Some("Draw each bar as a hollow outline instead of a filled ramp"),
                 toggle(
                     self.config.outline,
                     |this: &mut Self, on, cx| {
@@ -856,8 +894,8 @@ impl PanelSettings for SpectrumPanel {
             ))
             .when(self.config.outline, |d| {
                 d.child(setting_row(
-                    "outline width",
-                    Some("stroke thickness of the hollow bars"),
+                    "Outline Width",
+                    Some("Stroke thickness of the hollow bars"),
                     panel::value_slider(
                         &self.outline_w_scrub,
                         (outline_w - OUTLINE_W_MIN) / (OUTLINE_W_MAX - OUTLINE_W_MIN),
@@ -868,8 +906,8 @@ impl PanelSettings for SpectrumPanel {
                 ))
             })
             .child(setting_row(
-                "peak caps",
-                Some("hold a mark at each band's recent peak"),
+                "Peak Caps",
+                Some("Hold a mark at each band's recent peak"),
                 toggle(
                     self.config.caps,
                     |this: &mut Self, on, cx| {
@@ -880,8 +918,8 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "hold on pause",
-                Some("freeze the bars while paused instead of letting them fall to silence"),
+                "Hold on Pause",
+                Some("Freeze the bars while paused instead of letting them fall to silence"),
                 toggle(
                     self.config.freeze,
                     |this: &mut Self, on, cx| {
@@ -892,8 +930,8 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "cap gravity",
-                Some("how hard the peak marks fall once the band drops away"),
+                "Cap Gravity",
+                Some("How hard the peak marks fall once the band drops away"),
                 panel::value_slider(
                     &self.gravity_scrub,
                     (gravity / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
@@ -903,8 +941,8 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "pitch labels",
-                Some("mark the octaves (C1, C2, ...) across the range"),
+                "Pitch Labels",
+                Some("Mark the octaves (C1, C2, ...) across the range"),
                 toggle(
                     self.config.labels,
                     |this: &mut Self, on, cx| {
@@ -915,15 +953,6 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .into_any_element()
-    }
-
-    fn theme(&self) -> PanelTheme {
-        self.config.theme.clone()
-    }
-
-    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
-        self.config.theme = theme;
-        cx.notify();
     }
 }
 
@@ -941,11 +970,15 @@ impl Panel for SpectrumPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.title.as_deref(), "spectrum")
+        panel::title_text(self.config.chrome.title.as_deref(), "Spectrum")
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        self.config.title.clone().map(SharedString::from)
+        self.config.chrome.title.clone().map(SharedString::from)
+    }
+
+    fn locked(&self, _cx: &App) -> bool {
+        self.config.chrome.locked
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
@@ -981,14 +1014,13 @@ impl Panel for SpectrumPanel {
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         // The config block: the panel's quick toggles and the settings
         // window, apart from the core panel items.
-        let menu = self.config_menu(menu, cx);
-        let menu = menu.separator();
-        let menu = panel_settings::rename_item(menu, &cx.entity());
+        let menu = self.config_menu(menu, window, cx);
+        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
         // because the copy takes the config along, like the cover panel's.
@@ -1024,23 +1056,24 @@ impl Panel for SpectrumPanel {
 
 impl Render for SpectrumPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(window, cx))
+        let chrome = self.config.chrome.clone();
+        panel::themed(&chrome, || self.body(window, cx))
     }
 }
 
 impl SpectrumPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // Keep frames coming while a session runs (the tap only moves while
-        // the player pumps it, but the position and pause state do not
-        // notify) and while the bars are still falling. Otherwise: parked.
+        // Keep frames coming while audio moves (the tap only fills while the
+        // player pumps it) and while the bars are still falling. A paused or
+        // idle panel parks; a resume wakes it through the pump's play-state
+        // notify and the bars pick back up from there.
         let player = self.state.player.read(cx);
         let session = player.now_playing().is_some();
+        let playing = player.is_playing();
         // Freeze on pause holds the standing frame: paused mid-session, not
         // a played-out queue.
-        let hold =
-            self.config.freeze && session && !player.is_playing() && !player.queue_ended();
-        if session || self.bars.lock().unwrap().alive {
+        let hold = self.config.freeze && session && !playing && !player.queue_ended();
+        if playing || self.bars.lock().unwrap().alive {
             window.request_animation_frame();
         }
 

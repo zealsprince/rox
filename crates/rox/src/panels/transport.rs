@@ -21,21 +21,22 @@ use rox_library::store::TrackMeta;
 use rox_playback::engine::LoopMode;
 
 use crate::assets::icons;
-use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
-use crate::panel::{self, align_row, justify, Align, AppState, PanelSettings, ScrubState};
+use crate::panel::{
+    self, align_row, justify, Align, AppState, PanelChrome, PanelSettings, ScrubState,
+};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
-use crate::player::{fmt_time, fmt_time_padded};
+use crate::player::{fmt_time, fmt_time_padded, observe_view};
 
 /// The playback panel's per-view config: what a saved layout restores,
 /// and what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct TransportConfig {
-    /// The rename shown as the tab and title text; None shows the
-    /// built-in name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    /// The rename, theme override, and placement locks shared by every
+    /// panel.
+    #[serde(flatten)]
+    pub chrome: PanelChrome,
     #[serde(default)]
     pub align: Align,
     /// The stop button that ejects the playing track.
@@ -44,9 +45,6 @@ pub struct TransportConfig {
     /// The random button that plays one track from anywhere in the library.
     #[serde(default)]
     pub random: bool,
-    /// The panel's palette override.
-    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
-    pub theme: PanelTheme,
 }
 
 /// The playback controls: prev, the seek nudges around play/pause, next,
@@ -66,7 +64,9 @@ pub struct TransportPanel {
 
 impl TransportPanel {
     pub fn new(state: AppState, config: TransportConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        // Play state, loop, and shuffle change on a user action, never on
+        // the position tick, so ride the gated observe.
+        let _player_changed = observe_view(&state.player, cx);
         TransportPanel {
             state,
             config,
@@ -141,12 +141,16 @@ impl PanelSettings for TransportPanel {
         self.state.clone()
     }
 
-    fn custom_title(&self) -> Option<&str> {
-        self.config.title.as_deref()
+    fn chrome(&self) -> &PanelChrome {
+        &self.config.chrome
+    }
+
+    fn chrome_mut(&mut self) -> &mut PanelChrome {
+        &mut self.config.chrome
     }
 
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
-        self.config.title = title;
+        self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
@@ -174,8 +178,8 @@ impl PanelSettings for TransportPanel {
                 cx,
             ))
             .child(panel::setting_row(
-                "stop",
-                Some("the stop button that ejects the playing track"),
+                "Stop",
+                Some("The stop button that ejects the playing track"),
                 panel::toggle(
                     self.config.stop,
                     |this: &mut Self, stop, cx| {
@@ -186,8 +190,8 @@ impl PanelSettings for TransportPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "random",
-                Some("the random button that plays one track from anywhere in the library"),
+                "Random",
+                Some("The random button that plays one track from anywhere in the library"),
                 panel::toggle(
                     self.config.random,
                     |this: &mut Self, random, cx| {
@@ -199,21 +203,12 @@ impl PanelSettings for TransportPanel {
             ))
             .into_any_element()
     }
-
-    fn theme(&self) -> PanelTheme {
-        self.config.theme.clone()
-    }
-
-    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
-        self.config.theme = theme;
-        cx.notify();
-    }
 }
 
 impl Render for TransportPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(cx))
+        let chrome = self.config.chrome.clone();
+        panel::themed(&chrome, || self.body(cx))
     }
 }
 
@@ -335,15 +330,12 @@ impl TransportPanel {
 /// and what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct TrackInfoConfig {
-    /// The rename shown as the tab and title text; None shows the
-    /// built-in name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    /// The rename, theme override, and placement locks shared by every
+    /// panel.
+    #[serde(flatten)]
+    pub chrome: PanelChrome,
     #[serde(default)]
     pub align: Align,
-    /// The panel's palette override.
-    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
-    pub theme: PanelTheme,
 }
 
 /// The track info readout the playback panel's status line grew into: one
@@ -366,7 +358,9 @@ pub struct TrackInfoPanel {
 
 impl TrackInfoPanel {
     pub fn new(state: AppState, config: TrackInfoConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        // The track line changes when the track does, not as it plays
+        // through, so the gated observe skips the per-tick repaints.
+        let _player_changed = observe_view(&state.player, cx);
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -409,12 +403,16 @@ impl PanelSettings for TrackInfoPanel {
         self.state.clone()
     }
 
-    fn custom_title(&self) -> Option<&str> {
-        self.config.title.as_deref()
+    fn chrome(&self) -> &PanelChrome {
+        &self.config.chrome
+    }
+
+    fn chrome_mut(&mut self) -> &mut PanelChrome {
+        &mut self.config.chrome
     }
 
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
-        self.config.title = title;
+        self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
@@ -439,21 +437,12 @@ impl PanelSettings for TrackInfoPanel {
         )
         .into_any_element()
     }
-
-    fn theme(&self) -> PanelTheme {
-        self.config.theme.clone()
-    }
-
-    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
-        self.config.theme = theme;
-        cx.notify();
-    }
 }
 
 impl Render for TrackInfoPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(cx))
+        let chrome = self.config.chrome.clone();
+        panel::themed(&chrome, || self.body(cx))
     }
 }
 
@@ -545,19 +534,16 @@ impl TrackInfoPanel {
 /// what the settings window edits.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct VolumeConfig {
-    /// The rename shown as the tab and title text; None shows the
-    /// built-in name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    /// The rename, theme override, and placement locks shared by every
+    /// panel.
+    #[serde(flatten)]
+    pub chrome: PanelChrome,
     #[serde(default)]
     pub align: Align,
     /// Let the slider fill whatever width the panel has instead of capping
     /// at its natural size.
     #[serde(default)]
     pub stretch: bool,
-    /// The panel's palette override.
-    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
-    pub theme: PanelTheme,
 }
 
 /// The volume strip: the speaker button that toggles mute, and the volume
@@ -575,7 +561,9 @@ pub struct VolumePanel {
 
 impl VolumePanel {
     pub fn new(state: AppState, config: VolumeConfig, cx: &mut Context<Self>) -> Self {
-        let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        // Volume and mute are not on the pump at all; the gated observe
+        // still catches changes from a keyboard shortcut or elsewhere.
+        let _player_changed = observe_view(&state.player, cx);
         VolumePanel {
             state,
             config,
@@ -609,12 +597,16 @@ impl PanelSettings for VolumePanel {
         self.state.clone()
     }
 
-    fn custom_title(&self) -> Option<&str> {
-        self.config.title.as_deref()
+    fn chrome(&self) -> &PanelChrome {
+        &self.config.chrome
+    }
+
+    fn chrome_mut(&mut self) -> &mut PanelChrome {
+        &mut self.config.chrome
     }
 
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
-        self.config.title = title;
+        self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
@@ -642,8 +634,8 @@ impl PanelSettings for VolumePanel {
                 cx,
             ))
             .child(panel::setting_row(
-                "stretch",
-                Some("let the slider fill the panel instead of capping its width"),
+                "Stretch",
+                Some("Let the slider fill the panel instead of capping its width"),
                 panel::toggle(
                     self.config.stretch,
                     |this: &mut Self, stretch, cx| {
@@ -655,21 +647,12 @@ impl PanelSettings for VolumePanel {
             ))
             .into_any_element()
     }
-
-    fn theme(&self) -> PanelTheme {
-        self.config.theme.clone()
-    }
-
-    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
-        self.config.theme = theme;
-        cx.notify();
-    }
 }
 
 impl Render for VolumePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(cx))
+        let chrome = self.config.chrome.clone();
+        panel::themed(&chrome, || self.body(cx))
     }
 }
 
@@ -780,10 +763,10 @@ impl VolumePanel {
 /// as the library's.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SeekConfig {
-    /// The rename shown as the tab and title text; None shows the
-    /// built-in name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    /// The rename, theme override, and placement locks shared by every
+    /// panel.
+    #[serde(flatten)]
+    pub chrome: PanelChrome,
     /// The elapsed and remaining clocks around the strip.
     #[serde(default = "default_true")]
     pub timings: bool,
@@ -796,9 +779,6 @@ pub struct SeekConfig {
     /// connected and on.
     #[serde(default)]
     pub scrobble_marker: bool,
-    /// The panel's palette override.
-    #[serde(default, skip_serializing_if = "PanelTheme::is_empty")]
-    pub theme: PanelTheme,
 }
 
 fn default_true() -> bool {
@@ -808,11 +788,10 @@ fn default_true() -> bool {
 impl Default for SeekConfig {
     fn default() -> Self {
         SeekConfig {
-            title: None,
+            chrome: PanelChrome::default(),
             timings: true,
             show_total: false,
             scrobble_marker: false,
-            theme: PanelTheme::default(),
         }
     }
 }
@@ -834,6 +813,8 @@ pub struct SeekStripPanel {
 
 impl SeekStripPanel {
     pub fn new(state: AppState, config: SeekConfig, cx: &mut Context<Self>) -> Self {
+        // The clock and the playhead move every tick, so this one wants the
+        // raw per-pump notify, not the gated observe the other panels ride.
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
         SeekStripPanel {
             state,
@@ -880,12 +861,16 @@ impl PanelSettings for SeekStripPanel {
         self.state.clone()
     }
 
-    fn custom_title(&self) -> Option<&str> {
-        self.config.title.as_deref()
+    fn chrome(&self) -> &PanelChrome {
+        &self.config.chrome
+    }
+
+    fn chrome_mut(&mut self) -> &mut PanelChrome {
+        &mut self.config.chrome
     }
 
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
-        self.config.title = title;
+        self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
@@ -905,8 +890,8 @@ impl PanelSettings for SeekStripPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "timings",
-                Some("the elapsed and ending clocks around the strip"),
+                "Timings",
+                Some("The elapsed and ending clocks around the strip"),
                 panel::toggle(
                     self.config.timings,
                     |this: &mut Self, timings, cx| {
@@ -917,10 +902,10 @@ impl PanelSettings for SeekStripPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "ending",
-                Some("count down the time left or show the full length"),
+                "Ending",
+                Some("Count down the time left or show the full length"),
                 panel::choices(
-                    &[("remaining", false), ("total", true)],
+                    &[("Remaining", false), ("Total", true)],
                     self.config.show_total,
                     |this: &mut Self, show_total, cx| {
                         this.config.show_total = show_total;
@@ -930,8 +915,8 @@ impl PanelSettings for SeekStripPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "scrobble marker",
-                Some("a thin line where the track counts as scrobbled to last.fm"),
+                "Scrobble Marker",
+                Some("A thin line where the track counts as scrobbled to last.fm"),
                 panel::toggle(
                     self.config.scrobble_marker,
                     |this: &mut Self, on, cx| {
@@ -942,15 +927,6 @@ impl PanelSettings for SeekStripPanel {
                 ),
             ))
             .into_any_element()
-    }
-
-    fn theme(&self) -> PanelTheme {
-        self.config.theme.clone()
-    }
-
-    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
-        self.config.theme = theme;
-        cx.notify();
     }
 }
 
@@ -1017,8 +993,8 @@ fn clock(text: String) -> Div {
 
 impl Render for SeekStripPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(window, cx))
+        let chrome = self.config.chrome.clone();
+        panel::themed(&chrome, || self.body(window, cx))
     }
 }
 
@@ -1055,12 +1031,16 @@ impl SeekStripPanel {
             .flatten();
         // The seek click lives on the track alone so the clocks beside it
         // stay inert.
+        // The seek preview shows once the duration resolves; before that a
+        // fraction maps to nothing.
+        let hover_duration = now.duration_secs.filter(|d| *d > 0.0);
         let scrub = self.scrub.clone();
         let player = self.state.player.clone();
         let track = div()
             .flex_1()
             .min_w_0()
             .h_full()
+            .relative()
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -1087,7 +1067,10 @@ impl SeekStripPanel {
                     },
                 )
                 .size_full(),
-            );
+            )
+            .when_some(hover_duration, |d, duration| {
+                d.child(panel::seek_hover(&self.scrub, duration, cx))
+            });
 
         if !self.config.timings {
             return root.child(track);
@@ -1134,10 +1117,10 @@ impl SeekStripPanel {
 /// never slide off screen; a panel whose controls depend on its config
 /// passes a closure over `&self` instead of a literal.
 macro_rules! transport_panel {
-    ($panel:ty, $name:literal, min_w = $min_w:literal) => {
-        transport_panel!($panel, $name, min_w = |_: &$panel| px($min_w));
+    ($panel:ty, $name:literal, $title:literal, min_w = $min_w:literal) => {
+        transport_panel!($panel, $name, $title, min_w = |_: &$panel| px($min_w));
     };
-    ($panel:ty, $name:literal, min_w = $min_w:expr) => {
+    ($panel:ty, $name:literal, $title:literal, min_w = $min_w:expr) => {
         impl EventEmitter<PanelEvent> for $panel {}
 
         impl Focusable for $panel {
@@ -1152,11 +1135,19 @@ macro_rules! transport_panel {
             }
 
             fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-                panel::title_text(self.config.title.as_deref(), $name)
+                panel::title_text(self.config.chrome.title.as_deref(), $title)
             }
 
             fn tab_name(&self, _cx: &App) -> Option<gpui::SharedString> {
-                self.config.title.clone().map(gpui::SharedString::from)
+                self.config
+                    .chrome
+                    .title
+                    .clone()
+                    .map(gpui::SharedString::from)
+            }
+
+            fn locked(&self, _cx: &App) -> bool {
+                self.config.chrome.locked
             }
 
             fn inner_padding(&self, _cx: &App) -> bool {
@@ -1202,8 +1193,7 @@ macro_rules! transport_panel {
                 // The config block: the panel's quick entries and the
                 // settings window, apart from the core panel items.
                 let menu = self.config_menu(menu, cx);
-                let menu = menu.separator();
-                let menu = panel_settings::rename_item(menu, &cx.entity());
+                let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
                 let menu = panel_settings::settings_item(menu, &cx.entity());
                 // Duplicate hand-rolled rather than through
                 // `panel::duplicate_item` because the copy takes the config
@@ -1248,11 +1238,12 @@ macro_rules! transport_panel {
 transport_panel!(
     TransportPanel,
     "playback",
+    "Playback",
     min_w = |this: &TransportPanel| {
         let extras = this.config.stop as u8 + this.config.random as u8;
         px(242. + f32::from(extras) * 32.)
     }
 );
-transport_panel!(VolumePanel, "volume", min_w = 200.);
-transport_panel!(SeekStripPanel, "seek", min_w = 160.);
-transport_panel!(TrackInfoPanel, "track info", min_w = 120.);
+transport_panel!(VolumePanel, "volume", "Volume", min_w = 200.);
+transport_panel!(SeekStripPanel, "seek", "Seek", min_w = 160.);
+transport_panel!(TrackInfoPanel, "track info", "Track Info", min_w = 120.);

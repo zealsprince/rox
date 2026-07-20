@@ -75,11 +75,14 @@ pub fn bars<V: 'static>(
             }
         }))
         .child(
-            canvas(|_, _, _| {}, move |bounds, _, window, _| {
-                *paint.bounds.lock().unwrap() = Some(bounds);
-                let picked = *paint.index.lock().unwrap();
-                paint_bars(&values, picked, lo, hi, pick, bounds, window);
-            })
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    *paint.bounds.lock().unwrap() = Some(bounds);
+                    let picked = *paint.index.lock().unwrap();
+                    paint_bars(&values, picked, lo, hi, pick, bounds, window);
+                },
+            )
             .size_full(),
         )
 }
@@ -143,9 +146,12 @@ fn paint_bars(
 /// stretching.
 pub fn donut(slices: Vec<(f32, Rgba)>) -> Div {
     div().size_full().child(
-        canvas(|_, _, _| {}, move |bounds, _, window, _| {
-            paint_donut(&slices, bounds, window);
-        })
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                paint_donut(&slices, bounds, window);
+            },
+        )
         .size_full(),
     )
 }

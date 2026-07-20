@@ -7,6 +7,7 @@
 //! clicks queue from the row, the library panel's moves. Its own panel,
 //! never a mode of the library.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,17 +16,16 @@ use gpui::{
     MouseButton, MouseDownEvent, SharedString, Subscription, UniformListScrollHandle, WeakEntity,
     Window,
 };
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::listens::TrackPlays;
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
-use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
 use crate::history::HistoryEvent;
-use crate::panel::{self, AppState, PanelSettings};
+use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
 
@@ -49,9 +49,9 @@ pub enum HistoryView {
 impl HistoryView {
     fn label(self) -> &'static str {
         match self {
-            HistoryView::Recent => "recently played",
-            HistoryView::Most => "most played",
-            HistoryView::Never => "never played",
+            HistoryView::Recent => "Recently Played",
+            HistoryView::Most => "Most Played",
+            HistoryView::Never => "Never Played",
         }
     }
 }
@@ -59,27 +59,14 @@ impl HistoryView {
 /// The history panel's per-view config: what a saved layout restores,
 /// and what the settings window edits. Missing fields take the defaults,
 /// so a layout dumped before a knob existed still loads.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HistoryConfig {
-    /// The rename shown as the tab and title text; None shows the
-    /// built-in name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    /// The rename, theme override, and placement locks shared by every
+    /// panel.
+    #[serde(flatten)]
+    pub chrome: PanelChrome,
     pub view: HistoryView,
-    /// The panel's palette override.
-    #[serde(skip_serializing_if = "PanelTheme::is_empty")]
-    pub theme: PanelTheme,
-}
-
-impl Default for HistoryConfig {
-    fn default() -> Self {
-        HistoryConfig {
-            title: None,
-            view: HistoryView::default(),
-            theme: PanelTheme::default(),
-        }
-    }
 }
 
 pub struct HistoryPanel {
@@ -90,12 +77,22 @@ pub struct HistoryPanel {
     rows: Vec<TrackPlays>,
     /// The clicked row, for the selection highlight.
     selected: Option<usize>,
+    /// The playing track's path, the change detector for the highlight;
+    /// the player notifies every pump, so the compare keeps sync cheap.
+    playing_path: Option<PathBuf>,
+    /// The playing track as its library id, the rows' key.
+    playing: Option<i64>,
+    /// The row under the last right press, for the context menu: the
+    /// builder gets no position, so the press records it (the grid keys
+    /// off hover for the same reason).
+    menu_row: Option<usize>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _history_changed: Subscription,
     _library_changed: Subscription,
+    _player_changed: Subscription,
 }
 
 impl HistoryPanel {
@@ -113,19 +110,46 @@ impl HistoryPanel {
                 }
             },
         );
+        let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| {
+            this.sync_playing(cx)
+        });
         let mut this = HistoryPanel {
             state,
             config,
             rows: Vec::new(),
             selected: None,
+            playing_path: None,
+            playing: None,
+            menu_row: None,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             tab_panel: None,
             _history_changed,
             _library_changed,
+            _player_changed,
         };
         this.refresh(cx);
+        // A duplicate opens with a track already playing; pick it up now
+        // instead of waiting for the next track change.
+        this.sync_playing(cx);
         this
+    }
+
+    /// Follow the player: on a track change, resolve the playing path to
+    /// its id (one store lookup), the library panel's move. The highlight
+    /// matches rows by that id, so in the recent view every listen of the
+    /// playing track carries it.
+    fn sync_playing(&mut self, cx: &mut Context<Self>) {
+        let path = self.state.player.read(cx).now_playing().map(|now| now.path);
+        if path == self.playing_path {
+            return;
+        }
+        self.playing_path = path;
+        self.playing = self
+            .playing_path
+            .as_ref()
+            .and_then(|path| self.state.library.read(cx).id_for(path));
+        cx.notify();
     }
 
     /// Re-read the current view's rows off the events table.
@@ -137,6 +161,7 @@ impl HistoryPanel {
             HistoryView::Never => library.never_played(ROWS_CAP),
         };
         self.selected = None;
+        self.menu_row = None;
         cx.notify();
     }
 
@@ -160,24 +185,27 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    /// A double click queues the row and what follows it in the view's
-    /// order, the library panel's move. A track deleted since its event
+    /// A double click queues the row with the surrounding view as its
+    /// timeline: earlier rows seed behind the cursor for Prev, later rows
+    /// carry Next, the clicked row plays. Bounded to a window around the
+    /// click with a share kept for history. A track deleted since its event
     /// resolves to no path and drops out of the queue quietly.
     fn play_from(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let ids: Vec<i64> = self.rows[ix..]
-            .iter()
-            .take(QUEUE_CAP)
-            .map(|row| row.track_id)
-            .collect();
+        let lo = ix
+            .saturating_sub(QUEUE_CAP / 2)
+            .min(self.rows.len().saturating_sub(QUEUE_CAP));
+        let hi = (lo + QUEUE_CAP).min(self.rows.len());
+        let ids: Vec<i64> = self.rows[lo..hi].iter().map(|row| row.track_id).collect();
         let Ok(paths) = self.state.library.read(cx).paths_for(&ids) else {
             return;
         };
         if paths.is_empty() {
             return;
         }
+        let start = ix - lo;
         self.state
             .player
-            .update(cx, |player, cx| player.play(paths, cx));
+            .update(cx, |player, cx| player.play_at(paths, start, cx));
     }
 
     /// The visible slice of the list.
@@ -203,6 +231,7 @@ impl HistoryPanel {
                     HistoryView::Most => Some(format!("{} plays", row.plays)),
                     HistoryView::Never => None,
                 };
+                let playing = self.playing == Some(row.track_id);
                 Some(
                     div()
                         .w_full()
@@ -216,6 +245,12 @@ impl HistoryPanel {
                         .when(self.selected == Some(ix), |d| {
                             d.bg(palette::alpha(palette::accent(), 0x26))
                         })
+                        // The playing track's rows wear the highlight
+                        // role, a faint cut apart from the accent-washed
+                        // selection, the library's look.
+                        .when(playing && self.selected != Some(ix), |d| {
+                            d.bg(palette::alpha(palette::highlight(), 0x12))
+                        })
                         .hover(|d| d.bg(palette::bg_control_hover()))
                         .on_mouse_down(
                             MouseButton::Left,
@@ -227,11 +262,25 @@ impl HistoryPanel {
                                 }
                             }),
                         )
+                        // The right press records its row for the context
+                        // menu and, outside the selection, reselects just
+                        // this row first, so the menu always acts on what
+                        // is highlighted - the library's rule.
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                this.menu_row = Some(ix);
+                                if this.selected != Some(ix) {
+                                    this.select(ix, cx);
+                                }
+                            }),
+                        )
                         .child(
                             div()
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
+                                .when(playing, |d| d.text_color(palette::accent()))
                                 .child(SharedString::from(row.title.clone())),
                         )
                         .when(!sub.is_empty(), |d| {
@@ -259,23 +308,31 @@ impl HistoryPanel {
 
     /// The panel's own dropdown entries: the view pick, the same knob
     /// the settings window edits.
-    fn config_menu(&self, mut menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
-        for view in [HistoryView::Recent, HistoryView::Most, HistoryView::Never] {
-            let weak = cx.entity().downgrade();
-            menu = menu.item(
-                PopupMenuItem::new(match view {
-                    HistoryView::Recent => "Recently Played",
-                    HistoryView::Most => "Most Played",
-                    HistoryView::Never => "Never Played",
-                })
-                .checked(self.config.view == view)
-                .on_click(move |_, _, cx| {
-                    let Some(this) = weak.upgrade() else { return };
-                    this.update(cx, |this, cx| this.set_view(view, cx));
-                }),
-            );
-        }
-        menu
+    fn config_menu(
+        &self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let panel = cx.entity();
+        let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
+            panel::follow_panel(&panel, cx);
+            for view in [HistoryView::Recent, HistoryView::Most, HistoryView::Never] {
+                submenu = submenu.item(panel::check_row(
+                    match view {
+                        HistoryView::Recent => "Recently Played",
+                        HistoryView::Most => "Most Played",
+                        HistoryView::Never => "Never Played",
+                    },
+                    None,
+                    move |this: &Self| this.config.view == view,
+                    move |this, cx| this.set_view(view, cx),
+                    &panel,
+                ));
+            }
+            submenu
+        });
+        menu.item(PopupMenuItem::submenu("View", submenu))
     }
 }
 
@@ -284,12 +341,16 @@ impl PanelSettings for HistoryPanel {
         self.state.clone()
     }
 
-    fn custom_title(&self) -> Option<&str> {
-        self.config.title.as_deref()
+    fn chrome(&self) -> &PanelChrome {
+        &self.config.chrome
+    }
+
+    fn chrome_mut(&mut self) -> &mut PanelChrome {
+        &mut self.config.chrome
     }
 
     fn set_custom_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
-        self.config.title = title;
+        self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
@@ -309,13 +370,13 @@ impl PanelSettings for HistoryPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "view",
-                Some("which cut of the listen record the panel shows"),
+                "View",
+                Some("Which cut of the listen record the panel shows"),
                 panel::choices(
                     &[
-                        ("recent", HistoryView::Recent),
-                        ("most played", HistoryView::Most),
-                        ("never played", HistoryView::Never),
+                        ("Recent", HistoryView::Recent),
+                        ("Most Played", HistoryView::Most),
+                        ("Never Played", HistoryView::Never),
                     ],
                     self.config.view,
                     |this: &mut Self, view, cx| this.set_view(view, cx),
@@ -323,15 +384,6 @@ impl PanelSettings for HistoryPanel {
                 ),
             ))
             .into_any_element()
-    }
-
-    fn theme(&self) -> PanelTheme {
-        self.config.theme.clone()
-    }
-
-    fn set_theme(&mut self, theme: PanelTheme, cx: &mut Context<Self>) {
-        self.config.theme = theme;
-        cx.notify();
     }
 }
 
@@ -349,15 +401,26 @@ impl Panel for HistoryPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.title.as_deref(), "history")
+        panel::title_text(self.config.chrome.title.as_deref(), "History")
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        self.config.title.clone().map(SharedString::from)
+        self.config.chrome.title.clone().map(SharedString::from)
+    }
+
+    fn locked(&self, _cx: &App) -> bool {
+        self.config.chrome.locked
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
         false
+    }
+
+    /// The body serves its own row context menus, so the tab panel's body
+    /// right-click stays out; the panel dropdown lives on the tab and
+    /// rides along after the track actions.
+    fn content_context_menu(&self, _cx: &App) -> bool {
+        true
     }
 
     /// The layout dump carries the panel's config; the builder registered
@@ -389,14 +452,13 @@ impl Panel for HistoryPanel {
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         // The config block: the panel's quick entries and the settings
         // window, apart from the core panel items.
-        let menu = self.config_menu(menu, cx);
-        let menu = menu.separator();
-        let menu = panel_settings::rename_item(menu, &cx.entity());
+        let menu = self.config_menu(menu, window, cx);
+        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // Duplicate hand-rolled rather than through `panel::duplicate_item`
         // because the copy takes the config along, like the metadata's.
@@ -432,16 +494,16 @@ impl Panel for HistoryPanel {
 
 impl Render for HistoryPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.config.theme.clone();
-        panel::themed(&theme, || self.body(cx))
+        let chrome = self.config.chrome.clone();
+        panel::themed(&chrome, || self.body(cx))
     }
 }
 
 impl HistoryPanel {
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
         let root = div().size_full().flex().flex_col().bg(palette::bg_root());
-        if self.rows.is_empty() {
-            return root.child(
+        let content = if self.rows.is_empty() {
+            div().flex_1().min_h_0().flex().flex_col().child(
                 div()
                     .flex_1()
                     .flex()
@@ -449,33 +511,79 @@ impl HistoryPanel {
                     .justify_center()
                     .text_color(palette::text_faint())
                     .child(match self.config.view {
-                        HistoryView::Never => "every track has been played",
-                        _ => "no listens yet",
+                        HistoryView::Never => "Every track has been played",
+                        _ => "No listens yet",
                     }),
-            );
-        }
-        let this = cx.entity().downgrade();
-        root.child(
+            )
+        } else {
+            let this = cx.entity().downgrade();
             div()
-                .flex_none()
-                .px(tokens::SPACE_SM)
-                .py(tokens::SPACE_XS)
-                .border_b_1()
-                .border_color(palette::border())
-                .text_xs()
-                .text_color(palette::text_muted())
-                .child(self.config.view.label()),
-        )
-        .child(
-            uniform_list("history-rows", self.rows.len(), move |range, _, cx| {
-                this.upgrade()
-                    .map(|this| this.update(cx, |this, cx| this.list_rows(range, cx)))
-                    .unwrap_or_default()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex_none()
+                        .px(tokens::SPACE_SM)
+                        .py(tokens::SPACE_XS)
+                        .border_b_1()
+                        .border_color(palette::border())
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(self.config.view.label()),
+                )
+                .child(
+                    uniform_list("history-rows", self.rows.len(), move |range, _, cx| {
+                        this.upgrade()
+                            .map(|this| this.update(cx, |this, cx| this.list_rows(range, cx)))
+                            .unwrap_or_default()
+                    })
+                    .track_scroll(self.scroll.clone())
+                    .flex_1()
+                    .w_full(),
+                )
+        };
+        // A right press lands here in the capture phase, before any row's
+        // bubble handler records itself, so a press off the rows leaves
+        // no target and the menu below falls back to the panel's own.
+        let content =
+            content.capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
+                if event.button == MouseButton::Right {
+                    this.menu_row = None;
+                }
+            }));
+        // The row context menu: the track actions every song surface
+        // shares, then the panel menu riding along after, so a click
+        // over the list never dead-ends at Play.
+        let weak = cx.entity().downgrade();
+        root.child(content.context_menu(move |menu, window, cx| {
+            let Some(this) = weak.upgrade() else {
+                return menu;
+            };
+            let target = {
+                let panel = this.read(cx);
+                panel
+                    .menu_row
+                    .and_then(|ix| panel.rows.get(ix).map(|row| (ix, row.track_id)))
+            };
+            let Some((ix, id)) = target else {
+                return this.update(cx, |this, cx| this.dropdown_menu(menu, window, cx));
+            };
+            let state = this.read(cx).state.clone();
+            let panel = weak.clone();
+            // Play queues the row and what follows in the view's order,
+            // the double click's move.
+            let menu =
+                panel::track_actions(menu, state, vec![id], "Play", window, cx, move |_, cx| {
+                    if let Some(this) = panel.upgrade() {
+                        this.update(cx, |this, cx| this.play_from(ix, cx));
+                    }
+                });
+            this.update(cx, |this, cx| {
+                this.dropdown_menu(menu.separator(), window, cx)
             })
-            .track_scroll(self.scroll.clone())
-            .flex_1()
-            .w_full(),
-        )
+        }))
     }
 }
 

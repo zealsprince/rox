@@ -11,9 +11,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, Div, Global, Rgba, ScrollHandle,
-    SharedString, Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle,
-    WindowOptions,
+    div, prelude::*, px, size, App, Bounds, Context, Div, Global, Rgba, ScrollHandle, SharedString,
+    Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::Root;
@@ -98,9 +97,9 @@ impl StatsRange {
 
 /// The range picker's options, the segmented control's labels.
 const RANGES: &[(&str, StatsRange)] = &[
-    ("all time", StatsRange::All),
-    ("this year", StatsRange::Year),
-    ("this month", StatsRange::Month),
+    ("All Time", StatsRange::All),
+    ("This Year", StatsRange::Year),
+    ("This Month", StatsRange::Month),
 ];
 
 /// The open stats window, if any: opening again focuses it instead of
@@ -134,7 +133,7 @@ pub fn open(state: AppState, cx: &mut App) {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(settings_ui::MIN_SIZE),
         titlebar: Some(TitlebarOptions {
-            title: Some("rox - stats".into()),
+            title: Some("rox - Stats".into()),
             ..Default::default()
         }),
         app_id: Some(crate::APP_ID.into()),
@@ -144,7 +143,7 @@ pub fn open(state: AppState, cx: &mut App) {
         .open_window(options, |window, cx| {
             // The Wayland backend ignores the creation-time titlebar
             // title; only set_window_title reaches the compositor.
-            window.set_window_title("rox - stats");
+            window.set_window_title("rox - Stats");
             let view = cx.new(|cx| StatsWindow::new(state, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         })
@@ -302,7 +301,11 @@ impl StatsWindow {
     /// browse order under the queue cap. A name whose tracks are all
     /// gone resolves to nothing and queues nothing, quietly.
     fn play_name(&mut self, by: Rollup, name: &str, cx: &mut Context<Self>) {
-        let ids = self.state.library.read(cx).ids_for_rollup(by, name, QUEUE_CAP);
+        let ids = self
+            .state
+            .library
+            .read(cx)
+            .ids_for_rollup(by, name, QUEUE_CAP);
         let Ok(paths) = self.state.library.read(cx).paths_for(&ids) else {
             return;
         };
@@ -338,19 +341,23 @@ impl StatsWindow {
     /// range knob says.
     fn listens_section(&self) -> Div {
         let rows = [
-            ("this week", self.data.week),
-            ("this month", self.data.month),
-            ("this year", self.data.year),
-            ("all time", self.data.total),
+            ("This Week", self.data.week),
+            ("This Month", self.data.month),
+            ("This Year", self.data.year),
+            ("All Time", self.data.total),
         ];
         section(
-            "listens",
+            "Listens",
             None,
             div()
                 .flex()
                 .flex_col()
                 .children(rows.into_iter().map(|(label, count)| {
-                    stat_row(div().child(label).into_any_element(), count.to_string(), None)
+                    stat_row(
+                        div().child(label).into_any_element(),
+                        count.to_string(),
+                        None,
+                    )
                 })),
         )
     }
@@ -361,11 +368,11 @@ impl StatsWindow {
     /// ends.
     fn chart_section(&self, cx: &mut Context<Self>) -> Div {
         if self.data.range_total == 0 {
-            return section("listens over time", None, empty_note(self.range));
+            return section("Listens Over Time", None, empty_note(self.range));
         }
         let start = match self.range {
-            StatsRange::All => "first listen",
-            StatsRange::Year => "a year ago",
+            StatsRange::All => "First listen",
+            StatsRange::Year => "A year ago",
             StatsRange::Month => "30 days ago",
         };
         // The hovered bucket's readout: its count and how long ago the
@@ -408,9 +415,9 @@ impl StatsWindow {
                                 .child(SharedString::from(picked)),
                         )
                     })
-                    .child("now"),
+                    .child("Now"),
             );
-        section("listens over time", None, body)
+        section("Listens Over Time", None, body)
     }
 
     /// One donut breakdown: the top names' share of the range's listens
@@ -463,7 +470,7 @@ impl StatsWindow {
         }
         if other > 0 {
             legend = legend.child(stat_row(
-                legend_label(other_color, "other".into()),
+                legend_label(other_color, "Other".into()),
                 other.to_string(),
                 Some(play_spacer()),
             ));
@@ -579,13 +586,10 @@ impl StatsWindow {
             body = body.child(stat_row(
                 label.into_any_element(),
                 fmt_ago(now - row.last_played),
-                Some(play_button(
-                    move |this, cx| this.play_recent(ix, cx),
-                    cx,
-                )),
+                Some(play_button(move |this, cx| this.play_recent(ix, cx), cx)),
             ));
         }
-        section("recent listens", None, body)
+        section("Recent Listens", None, body)
     }
 }
 
@@ -650,12 +654,7 @@ fn legend_label(color: Rgba, name: String) -> gpui::AnyElement {
         .items_center()
         .gap(tokens::SPACE_SM)
         .child(div().flex_none().size(px(10.)).rounded(px(2.)).bg(color))
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .child(SharedString::from(name)),
-        )
+        .child(div().min_w_0().truncate().child(SharedString::from(name)))
         .into_any_element()
 }
 
@@ -665,8 +664,8 @@ fn empty_note(range: StatsRange) -> Div {
         .py(tokens::SPACE_XS)
         .text_color(palette::text_muted())
         .child(match range {
-            StatsRange::All => "no listens yet",
-            _ => "no listens in this range",
+            StatsRange::All => "No listens yet",
+            _ => "No listens in this range",
         })
 }
 
@@ -677,7 +676,7 @@ impl Render for StatsWindow {
             .flex_col()
             .gap(SECTION_GAP)
             .child(panel::setting_row(
-                "range",
+                "Range",
                 None,
                 panel::choices(
                     RANGES,
@@ -688,9 +687,9 @@ impl Render for StatsWindow {
             ))
             .child(self.listens_section())
             .child(self.chart_section(cx))
-            .child(self.donut_section("top artists", Rollup::Artist, &self.data.artists, cx))
-            .child(self.name_section("top albums", Rollup::Album, &self.data.albums, cx))
-            .child(self.donut_section("top genres", Rollup::Genre, &self.data.genres, cx))
+            .child(self.donut_section("Top Artists", Rollup::Artist, &self.data.artists, cx))
+            .child(self.name_section("Top Albums", Rollup::Album, &self.data.albums, cx))
+            .child(self.donut_section("Top Genres", Rollup::Genre, &self.data.genres, cx))
             .child(self.recents_section(cx));
 
         div()

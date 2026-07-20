@@ -7,7 +7,7 @@
 
 use gpui::{
     canvas, div, prelude::*, px, svg, AnyElement, App, Context, Div, MouseButton, MouseDownEvent,
-    Pixels, Window,
+    Pixels, SharedString, Window,
 };
 
 use crate::design::palette::{self, ROLES};
@@ -126,7 +126,7 @@ pub fn section(label: &'static str, trailing: Option<AnyElement>, body: impl Int
 /// where every one of them rides: an icon leading its label; inert ones
 /// dim and drop the click.
 pub fn small_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: &'static str,
     inert: bool,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
@@ -152,7 +152,7 @@ pub fn small_button(
             }
         })
         .child(svg().path(icon).size(px(12.)).text_color(palette::text()))
-        .child(label)
+        .child(label.into())
 }
 
 /// A flat icon-only button for table rows: the glyph alone at rest, a

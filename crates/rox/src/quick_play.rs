@@ -5,6 +5,7 @@
 //! shared catalog and player the panels use, hosted as an overlay instead
 //! of a dock item; the workspace owns one at most and drops it on dismiss.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
@@ -13,7 +14,7 @@ use gpui::{
     Subscription, UniformListScrollHandle, Window,
 };
 use gpui_component::input::{MoveDown, MovePageDown, MovePageUp, MoveUp};
-use rox_library::projection::QUERY_FIELDS;
+use rox_library::projection::{Projection, QUERY_FIELDS};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
@@ -22,6 +23,8 @@ use crate::panels::library::{fmt_ms, LibraryEvent, QUEUE_CAP};
 use crate::search::{SearchBox, SearchEvent};
 use crate::settings::{QuickPlayConfig, Settings};
 use crate::suggest;
+use crate::thumbs::Thumb;
+use crate::track_columns;
 
 /// One result row's height; the list is a uniform_list, so every row must
 /// agree on it. Comfortable rows run taller.
@@ -34,8 +37,62 @@ const SUBTITLE_H: f32 = 14.;
 /// How many rows show before the list scrolls.
 const VISIBLE_ROWS: usize = 14;
 
+/// How many artist and album entries a search surfaces above the track
+/// hits, so a broad query can't bury the tracks under group rows.
+const MAX_ARTIST_HITS: usize = 6;
+const MAX_ALBUM_HITS: usize = 8;
+
 /// How far page up and page down step, most of a full view.
 const PAGE_ROWS: isize = 10;
+
+/// A group entry the search surfaces above the track hits: a whole artist
+/// or album, carrying the interned symbols to gather its tracks and a
+/// representative projection row for the cover. Playing one queues every
+/// track it holds instead of a single file.
+#[derive(Clone, Copy)]
+enum Head {
+    Artist { album_artist: u32, row: u32 },
+    Album { album_artist: u32, album: u32, row: u32 },
+}
+
+/// One resolved list row, ready to render: a track or a group head, already
+/// pulled through the projection so the render pass touches no library.
+struct RowInfo {
+    /// The combined-list index, for selection and the play click.
+    ix: usize,
+    title: SharedString,
+    sub: SharedString,
+    /// The right-hand cell: a track's duration (blank when unknown) or a
+    /// head's kind tag ("Album"/"Artist").
+    trailing: SharedString,
+    path: Option<PathBuf>,
+    /// A head shows its tag whatever the toggles; a track's duration cell
+    /// follows the show-duration switch and drops when blank.
+    is_head: bool,
+}
+
+impl Head {
+    /// The representative projection row, for the cover thumbnail.
+    fn row(&self) -> u32 {
+        match *self {
+            Head::Artist { row, .. } | Head::Album { row, .. } => row,
+        }
+    }
+
+    /// Whether a projection row belongs to this group, the play gather's
+    /// per-row test over the browse order.
+    fn contains(&self, projection: &Projection, row: u32) -> bool {
+        let i = row as usize;
+        match *self {
+            Head::Artist { album_artist, .. } => projection.album_artist[i] == album_artist,
+            Head::Album {
+                album_artist,
+                album,
+                ..
+            } => projection.album_artist[i] == album_artist && projection.album[i] == album,
+        }
+    }
+}
 
 pub struct QuickPlay {
     state: AppState,
@@ -43,10 +100,16 @@ pub struct QuickPlay {
     /// via change events.
     search: Entity<SearchBox>,
     query: String,
+    /// The album and artist entries a search surfaces above the tracks:
+    /// typing a name jumps to the whole album or artist, not just its
+    /// tracks. Empty while the query is, so browsing is tracks only.
+    heads: Vec<Head>,
     /// Projection rows matching the query, in the library panel's view
     /// order: canonical browse order while empty, search order otherwise.
+    /// The list shows [`heads`](Self::heads) first, then these.
     hits: Arc<Vec<u32>>,
-    /// The highlighted row, what enter plays.
+    /// The highlighted row, what enter plays. Indexes the combined list,
+    /// heads first.
     selected: usize,
     scroll: UniformListScrollHandle,
     /// A failed play, shown until the next query change.
@@ -58,6 +121,7 @@ pub struct QuickPlay {
     show_config: bool,
     _input_events: Subscription,
     _library_changed: Subscription,
+    _thumbs_changed: Subscription,
 }
 
 impl EventEmitter<DismissEvent> for QuickPlay {}
@@ -85,10 +149,13 @@ impl QuickPlay {
                 this.refresh(cx);
             },
         );
+        // A landing cover repaints the result rows.
+        let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut QuickPlay, _, cx| cx.notify());
         let mut this = QuickPlay {
             state,
             search,
             query: String::new(),
+            heads: Vec::new(),
             hits: Arc::new(Vec::new()),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
@@ -97,6 +164,7 @@ impl QuickPlay {
             show_config: false,
             _input_events,
             _library_changed,
+            _thumbs_changed,
         };
         this.attach_suggestions(cx);
         this.refresh(cx);
@@ -155,19 +223,49 @@ impl QuickPlay {
         cx.notify();
     }
 
+    /// The combined result count: the album and artist entries, then the
+    /// track hits. What selection and the list index against.
+    fn len(&self) -> usize {
+        self.heads.len() + self.hits.len()
+    }
+
     /// Recompute the hits for the current query and reset the highlight
-    /// to the top.
+    /// to the top. A non-empty query also gathers the matching artists and
+    /// albums to show above the tracks; browsing stays tracks only.
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        let hits = {
+        let (heads, hits) = {
             let library = self.state.library.read(cx);
             match library.projection() {
                 Some(projection) if !self.query.is_empty() => {
-                    Arc::new(projection.search(&self.query))
+                    let mut heads = Vec::new();
+                    for hit in projection
+                        .search_artists(&self.query)
+                        .into_iter()
+                        .take(MAX_ARTIST_HITS)
+                    {
+                        heads.push(Head::Artist {
+                            album_artist: hit.album_artist,
+                            row: hit.row,
+                        });
+                    }
+                    for hit in projection
+                        .search_albums(&self.query)
+                        .into_iter()
+                        .take(MAX_ALBUM_HITS)
+                    {
+                        heads.push(Head::Album {
+                            album_artist: hit.album_artist,
+                            album: hit.album,
+                            row: hit.row,
+                        });
+                    }
+                    (heads, Arc::new(projection.search(&self.query)))
                 }
-                Some(_) => library.order(),
-                None => Arc::new(Vec::new()),
+                Some(_) => (Vec::new(), library.order()),
+                None => (Vec::new(), Arc::new(Vec::new())),
             }
         };
+        self.heads = heads;
         self.hits = hits;
         self.selected = 0;
         self.error = None;
@@ -198,7 +296,7 @@ impl QuickPlay {
     /// Step the highlight, clamped to the list; the scroll follows only
     /// when the row leaves the view.
     fn move_selected(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let len = self.hits.len();
+        let len = self.len();
         if len == 0 {
             return;
         }
@@ -211,10 +309,12 @@ impl QuickPlay {
         cx.notify();
     }
 
-    /// Queue the picked hit and what follows it in the current result
-    /// order, same as a double click in the library, then dismiss.
+    /// Queue the picked entry, then dismiss. A track queues it and the
+    /// tracks after it in the result order, same as a double click in the
+    /// library; an album or artist head queues its whole run in browse
+    /// order instead of a single file.
     fn play(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if ix >= self.hits.len() {
+        if ix >= self.len() {
             return;
         }
         let result = {
@@ -222,11 +322,26 @@ impl QuickPlay {
             let Some(projection) = library.projection() else {
                 return;
             };
-            let ids: Vec<i64> = self.hits[ix..]
-                .iter()
-                .take(QUEUE_CAP)
-                .map(|&row| projection.db_id[row as usize])
-                .collect();
+            let ids: Vec<i64> = if ix < self.heads.len() {
+                // A head plays its whole album or artist, gathered from the
+                // canonical browse order so discs and tracks land in order.
+                let head = self.heads[ix];
+                library
+                    .order()
+                    .iter()
+                    .copied()
+                    .filter(|&row| head.contains(projection, row))
+                    .take(QUEUE_CAP)
+                    .map(|row| projection.db_id[row as usize])
+                    .collect()
+            } else {
+                let track_ix = ix - self.heads.len();
+                self.hits[track_ix..]
+                    .iter()
+                    .take(QUEUE_CAP)
+                    .map(|&row| projection.db_id[row as usize])
+                    .collect()
+            };
             library.paths_for(&ids)
         };
         match result {
@@ -247,14 +362,52 @@ impl QuickPlay {
     /// projection per visible row, so a huge library costs only what
     /// shows.
     fn hit_rows(&self, range: std::ops::Range<usize>, cx: &mut Context<Self>) -> Vec<Div> {
-        let rows: Vec<(usize, SharedString, SharedString, SharedString)> = {
+        let show_cover = self.config.show_cover;
+        let head_count = self.heads.len();
+        let rows: Vec<RowInfo> = {
             let library = self.state.library.read(cx);
             let Some(projection) = library.projection() else {
                 return Vec::new();
             };
+            // The cover's path, resolved only when the column shows.
+            let cover_path = |row: u32| {
+                show_cover
+                    .then(|| library.paths_for(&[projection.db_id[row as usize]]).ok())
+                    .flatten()
+                    .and_then(|mut paths| paths.pop())
+            };
             range
                 .filter_map(|ix| {
-                    let row = *self.hits.get(ix)?;
+                    // Heads lead the list, tracks follow; the index splits
+                    // on the head count.
+                    if ix < head_count {
+                        let head = *self.heads.get(ix)?;
+                        let (title, sub, tag) = match head {
+                            Head::Artist { album_artist, .. } => (
+                                projection.album_artists.strings[album_artist as usize].clone(),
+                                String::new(),
+                                "Artist",
+                            ),
+                            Head::Album {
+                                album_artist,
+                                album,
+                                ..
+                            } => (
+                                projection.albums.strings[album as usize].clone(),
+                                projection.album_artists.strings[album_artist as usize].clone(),
+                                "Album",
+                            ),
+                        };
+                        return Some(RowInfo {
+                            ix,
+                            title: SharedString::from(title),
+                            sub: SharedString::from(sub),
+                            trailing: SharedString::from(tag),
+                            path: cover_path(head.row()),
+                            is_head: true,
+                        });
+                    }
+                    let row = *self.hits.get(ix - head_count)?;
                     let v = projection.resolve(row);
                     let sub = match (v.artist.is_empty(), v.album.is_empty()) {
                         (false, false) => format!("{} - {}", v.artist, v.album),
@@ -262,18 +415,42 @@ impl QuickPlay {
                         (true, false) => v.album.to_string(),
                         (true, true) => String::new(),
                     };
-                    Some((
+                    // A zero length is unknown, not a real 0:00 (the
+                    // scanner leaves it zero when it can't read a file's
+                    // tags), so leave the time blank and drop the cell.
+                    let time = if v.duration_ms == 0 {
+                        SharedString::default()
+                    } else {
+                        SharedString::from(fmt_ms(v.duration_ms))
+                    };
+                    Some(RowInfo {
                         ix,
-                        SharedString::from(v.title.to_string()),
-                        SharedString::from(sub),
-                        SharedString::from(fmt_ms(v.duration_ms)),
-                    ))
+                        title: SharedString::from(v.title.to_string()),
+                        sub: SharedString::from(sub),
+                        trailing: time,
+                        path: cover_path(row),
+                        is_head: false,
+                    })
                 })
                 .collect()
         };
+        // Thumbnails, once the library borrow is dropped so the store updates.
+        let covers: Vec<Option<Thumb>> = rows
+            .iter()
+            .map(|info| track_columns::cover_thumb(&self.state, info.path.as_deref(), show_cover, cx))
+            .collect();
         let row_h = self.row_h();
         rows.into_iter()
-            .map(|(ix, title, sub, time)| {
+            .zip(covers)
+            .map(|(info, cover)| {
+                let RowInfo {
+                    ix,
+                    title,
+                    sub,
+                    trailing,
+                    path: _,
+                    is_head,
+                } = info;
                 div()
                     // Fills the list's width so a long title truncates
                     // inside the modal instead of running the row wide, and
@@ -294,6 +471,7 @@ impl QuickPlay {
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| this.play(ix, cx)),
                     )
+                    .when(show_cover, |d| d.child(track_columns::cover_cell(&cover)))
                     .child(
                         div()
                             .flex_1()
@@ -302,7 +480,11 @@ impl QuickPlay {
                             .flex_col()
                             .justify_center()
                             .child(div().w_full().truncate().child(title))
-                            .when(self.config.show_subtitle, |d| {
+                            // An empty subtitle drops out entirely rather
+                            // than reserving a blank line, so the column is
+                            // just the title and the row's items_center
+                            // lands it on the row's midline.
+                            .when(self.config.show_subtitle && !sub.is_empty(), |d| {
                                 d.child(
                                     div()
                                         .w_full()
@@ -313,14 +495,19 @@ impl QuickPlay {
                                 )
                             }),
                     )
-                    .when(self.config.show_duration, |d| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .text_color(palette::text_muted())
-                                .child(time),
-                        )
-                    })
+                    // A head always tags its kind on the right; a track's
+                    // duration follows the toggle and drops when unknown.
+                    .when(
+                        is_head || (self.config.show_duration && !trailing.is_empty()),
+                        |d| {
+                            d.child(
+                                div()
+                                    .flex_none()
+                                    .text_color(palette::text_muted())
+                                    .child(trailing),
+                            )
+                        },
+                    )
             })
             .collect()
     }
@@ -398,6 +585,17 @@ impl QuickPlay {
             .border_t_1()
             .border_color(palette::border())
             .child(panel::setting_row(
+                "Cover",
+                Some("Show a cover thumbnail at the left of each result"),
+                panel::toggle(
+                    self.config.show_cover,
+                    |this: &mut Self, on, cx| {
+                        this.edit_config(|c| c.show_cover = on, cx);
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
                 "Subtitle",
                 Some("Show the artist and album under each result"),
                 panel::toggle(
@@ -435,7 +633,7 @@ impl QuickPlay {
 
 impl Render for QuickPlay {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let len = self.hits.len();
+        let len = self.len();
         let list_h = px(self.row_h() * len.clamp(1, VISIBLE_ROWS) as f32);
         let this = cx.entity().downgrade();
         let list = if len == 0 {
@@ -467,6 +665,7 @@ impl Render for QuickPlay {
             .flex()
             .flex_col()
             .bg(palette::bg_menu_opaque())
+            .rounded(tokens::RADIUS)
             .border_1()
             .border_color(palette::border_light())
             .shadow_md()

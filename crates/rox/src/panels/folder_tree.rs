@@ -32,9 +32,9 @@ use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, PanelChrome, PanelSettings, ResumeIdle};
 use crate::panel_settings;
 use crate::panels::library::{fmt_ms, LibraryEvent, QUEUE_CAP};
-use crate::shared_query::SharedQueryEvent;
-use crate::track_columns;
-use crate::track_drag::{PlayDrag, PlayDragPreview};
+use crate::query::shared_query::SharedQueryEvent;
+use crate::track_ui::track_columns;
+use crate::track_ui::track_drag::{PlayDrag, PlayDragPreview};
 
 /// One row's height, the filter panel's, so the two read as one family.
 const ROW_H: f32 = 26.;

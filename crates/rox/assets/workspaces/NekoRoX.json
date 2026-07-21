@@ -227,7 +227,8 @@
                                   "smooth_follow": true,
                                   "dim_playing": false,
                                   "dim": 60.0,
-                                  "rounding": 0.0
+                                  "rounding": 0.0,
+                                  "center": 8
                                 }
                               }
                             },
@@ -249,7 +250,8 @@
                                   "rounding": 0.0,
                                   "gap": 0.0,
                                   "labels": false,
-                                  "label_align": "left"
+                                  "label_align": "left",
+                                  "scroll": 6
                                 }
                               }
                             }
@@ -339,7 +341,7 @@
                   "info": {
                     "stack": {
                       "sizes": [
-                        766.0
+                        687.0
                       ],
                       "axis": 1
                     }
@@ -391,7 +393,7 @@
                           ],
                           "sort_key": null,
                           "sort_desc": false,
-                          "scroll_row": 0,
+                          "scroll_row": 233,
                           "follow_playing": true,
                           "resume_playing": false,
                           "smooth_follow": true,
@@ -548,7 +550,7 @@
                 "stack": {
                   "sizes": [
                     1089.0,
-                    222.0
+                    221.99998474121097
                   ],
                   "axis": 0
                 }
@@ -619,8 +621,8 @@
                   "info": {
                     "stack": {
                       "sizes": [
-                        70.3509521484375,
-                        70.6490478515625
+                        109.76746368408205,
+                        110.23253631591795
                       ],
                       "axis": 1
                     }
@@ -635,7 +637,7 @@
                       "info": {
                         "panel": {
                           "source": "playing",
-                          "align": "left",
+                          "align": "right",
                           "stretch": false
                         }
                       }
@@ -702,9 +704,9 @@
               "sizes": [
                 40.0,
                 30.0,
-                765.8327026367188,
+                686.5,
                 40.0,
-                141.1673126220703,
+                220.5,
                 40.0
               ],
               "axis": 1
@@ -897,32 +899,6 @@
   ],
   "primary_layout": "NekoRoX",
   "mini_layout": "NekoRoX Mini",
-  "palette": {
-    "accent": "#ffb300",
-    "accent_hover": "#fed840",
-    "bg_control": "#2a2a2a",
-    "bg_control_active": "#333333",
-    "bg_control_hover": "#3a3a3a",
-    "bg_elevated": "#1c1c1c",
-    "bg_input": "#141414",
-    "bg_menu": "#262626",
-    "bg_menu_hover": "#2f2f2f",
-    "bg_menubar": "#242424",
-    "bg_panel": "#181818",
-    "bg_root": "#121212",
-    "bg_toolbar": "#1f1f1f",
-    "border": "#333333",
-    "border_light": "#3a3a3a",
-    "gridline": "#6e6e6e",
-    "highlight": "#facc15",
-    "text": "#c0c0c0",
-    "text_bright": "#e0e0e0",
-    "text_dim": "#9a9a9a",
-    "text_faint": "#707070",
-    "text_muted": "#808080",
-    "text_on_accent": "#121212",
-    "text_secondary": "#a0a0a0"
-  },
   "appearance": {
     "surface_opacity": 0.6035714,
     "backdrop_strength": 0.8,

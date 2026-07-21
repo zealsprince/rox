@@ -5,7 +5,7 @@
 //! no backend yet, so the close path ignores the setting there.
 //!
 //! The research entry (docs/0R-research/03-quit-to-tray.md) holds the
-//! findings this leans on. The shape matches [`crate::media_controls`]: the
+//! findings this leans on. The shape matches [`crate::integrations::media_controls`]: the
 //! tray's callbacks land on its own service thread and only send commands
 //! over an async channel; a drain task on the foreground executor does the
 //! work. State flows the other way through [`set_playing`], gated so player
@@ -134,7 +134,7 @@ impl ksni::Tray for RoxTray {
         // The app icon downscaled once: the pixmap travels over the session
         // bus, and the 2048 px source would be 16 MB of it.
         static ICON: std::sync::LazyLock<ksni::Icon> = std::sync::LazyLock::new(|| {
-            let img = image::load_from_memory(include_bytes!("../assets/app/rox.png"))
+            let img = image::load_from_memory(include_bytes!("../../assets/app/rox.png"))
                 .expect("bundled icon decodes")
                 .thumbnail(64, 64);
             let (width, height) = (img.width() as i32, img.height() as i32);

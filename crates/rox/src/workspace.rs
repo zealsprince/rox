@@ -32,10 +32,10 @@ use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::catalog::{self, PanelDef, PanelPlacement, PanelSection};
 use crate::composite;
 use crate::design::{palette, tokens};
-use crate::track_drag::PlayDrag;
+use crate::track_ui::track_drag::PlayDrag;
 use crate::history::{History, HistoryEvent};
 use crate::lastfm::Scrobbler;
-use crate::media_controls::{MediaCommand, MediaKeys, NowPlayingMeta};
+use crate::integrations::media_controls::{MediaCommand, MediaKeys, NowPlayingMeta};
 use crate::panel::{self, AppState, TabHosts};
 use crate::panels::art::{ArtConfig, ArtPanel};
 use crate::panels::biography::BiographyPanel;
@@ -71,9 +71,9 @@ use crate::settings::{
     self, LastTrack, LayoutEdit, LayoutSize, NamedLayout, QueueState, QueuedTrack, Settings,
     WindowState, WorkspaceBundle,
 };
-use crate::shared_query::SharedQuery;
+use crate::query::shared_query::SharedQuery;
 use crate::thumbs::Thumbs;
-use crate::tray;
+use crate::integrations::tray;
 
 const MENU_BAR_H: f32 = 30.0;
 
@@ -189,7 +189,7 @@ pub(crate) fn workspace_for_window(window: &Window, cx: &App) -> Option<WeakEnti
 /// pick
 /// opens the panel as a new tab of `tab_panel`, that very group, skipping
 /// the placement rules the menubar routes follow. Built as a real submenu
-/// the way [`crate::shared_query::search_flyout`] builds its Search flyout -
+/// the way [`crate::query::shared_query::search_flyout`] builds its Search flyout -
 /// a hand-built menu entity behind a submenu item - so it works from every
 /// host of the panel menu, the content context menus included. Leads with a
 /// divider so it reads as its own band rather than the tail of whatever
@@ -1098,7 +1098,7 @@ impl Workspace {
         if is_primary && settings::first_run() {
             cx.spawn(async move |this, cx| {
                 this.update(cx, |this, cx| {
-                    crate::welcome_window::open(this.state.clone(), cx);
+                    crate::startup::welcome_window::open(this.state.clone(), cx);
                 })
                 .ok();
             })
@@ -2006,7 +2006,7 @@ impl Workspace {
                 .background_executor()
                 .spawn(async move {
                     rox_library::art::cover_art(&resolved).and_then(|(bytes, mime)| {
-                        crate::media_controls::cache_now_playing_art(&resolved, &bytes, &mime)
+                        crate::integrations::media_controls::cache_now_playing_art(&resolved, &bytes, &mime)
                     })
                 })
                 .await;
@@ -2374,7 +2374,7 @@ impl Workspace {
                 }
             }
             MenuAction::OpenStats => crate::stats_window::open(self.state.clone(), cx),
-            MenuAction::OpenWelcome => crate::welcome_window::open(self.state.clone(), cx),
+            MenuAction::OpenWelcome => crate::startup::welcome_window::open(self.state.clone(), cx),
             MenuAction::ToggleMenubar => {
                 let on = !settings::hide_menubar();
                 settings::set_hide_menubar(on, cx);

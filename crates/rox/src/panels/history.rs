@@ -31,10 +31,10 @@ use crate::history::HistoryEvent;
 use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
-use crate::search::{SearchBox, SearchEvent};
-use crate::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
-use crate::track_cells;
-use crate::track_columns::{self, Column, ColumnHost, GroupTrack, HeadingHost};
+use crate::query::search::{SearchBox, SearchEvent};
+use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::track_ui::track_cells;
+use crate::track_ui::track_columns::{self, Column, ColumnHost, GroupTrack, HeadingHost};
 
 /// One row's height; the list is a uniform_list, so every row agrees.
 const ROW_H: f32 = 30.;
@@ -652,7 +652,7 @@ impl HeadingHost for HistoryPanel {
 }
 
 impl QueryFilter for HistoryPanel {
-    fn shared_query(&self) -> &Entity<crate::shared_query::SharedQuery> {
+    fn shared_query(&self) -> &Entity<crate::query::shared_query::SharedQuery> {
         &self.state.query
     }
     fn query_box(&self) -> &Entity<SearchBox> {
@@ -767,7 +767,7 @@ impl PanelSettings for HistoryPanel {
     /// The Behavior page's search section: show the box, and follow the
     /// shared query or filter by the panel's own.
     fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        Some(crate::shared_query::search_section(
+        Some(crate::query::shared_query::search_section(
             self.config.search,
             |this: &mut Self, on, cx| this.set_search(on, cx),
             self.config.query_source,
@@ -880,7 +880,7 @@ impl Panel for HistoryPanel {
         // window, apart from the core panel items.
         let menu = self.config_menu(menu, window, cx);
         // Follow the shared search query, or filter by this panel's own box.
-        let menu = crate::shared_query::search_flyout(
+        let menu = crate::query::shared_query::search_flyout(
             menu,
             |this: &Self| this.config.query_source,
             |this: &Self| this.config.search,

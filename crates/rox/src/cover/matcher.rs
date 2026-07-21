@@ -22,7 +22,7 @@ use gpui_component::{Root, Sizable as _};
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::cover_editor::{decode, sniff_mime, CoverEditor};
+use crate::cover::editor::{decode, sniff_mime, CoverEditor};
 use crate::design::{palette, tokens};
 use crate::providers::{self, ArtCandidate, TrackQuery};
 use crate::settings_ui::{self, section, SECTION_GAP};

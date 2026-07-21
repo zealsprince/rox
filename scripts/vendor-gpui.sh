@@ -8,6 +8,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # name version sha256-of-the-.crate-tarball (from Cargo.lock's checksum)
+# The nix package build duplicates this table in flake.nix (vendoredCrate
+# calls), bump both together.
 crates=(
     "gpui 0.2.2 979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707"
     "gpui-component 0.5.1 d021d46b4088d3d93a57ccdf443da85695a77272108caca2f6fe5369f584966a"

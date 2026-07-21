@@ -47,8 +47,8 @@ use crate::settings_ui::{
     self, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
 };
 use crate::thumbs::Thumbs;
-use crate::tray;
-use crate::updates;
+use crate::integrations::tray;
+use crate::startup::updates;
 use crate::workspace::Workspace;
 use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
 use rox_library::store::Stats;
@@ -919,7 +919,7 @@ impl SettingsWindow {
     /// author to edit, rides the header.
     fn icons_section(&self, cx: &mut Context<Self>) -> Div {
         let active = Settings::load().icon_pack;
-        let packs = crate::icon_packs::all();
+        let packs = crate::startup::icon_packs::all();
 
         // New-pack-from-name rides the header, so a pack is one name away
         // and lands pre-filled with the current icons.
@@ -1013,7 +1013,7 @@ impl SettingsWindow {
     /// the pick and points the resolver at it; icons already on screen keep
     /// their tiles until the next launch, so the switch reads as pending.
     fn set_icon_pack(&mut self, name: Option<String>, cx: &mut Context<Self>) {
-        crate::icon_packs::activate(name.as_deref());
+        crate::startup::icon_packs::activate(name.as_deref());
         let persist = name.clone();
         Settings::update(move |s| s.icon_pack = persist);
         // Repaint every window so any not-yet-cached icon picks up the pack.
@@ -1028,7 +1028,7 @@ impl SettingsWindow {
     /// takes a default, and a collision gets a numbered suffix.
     fn create_pack(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.pack_name.read(cx).value().trim().to_string();
-        match crate::icon_packs::create(&name) {
+        match crate::startup::icon_packs::create(&name) {
             Ok(created) => {
                 self.pack_name
                     .update(cx, |input, cx| input.set_value("", window, cx));
@@ -1044,14 +1044,14 @@ impl SettingsWindow {
         if Settings::load().icon_pack.as_deref() == Some(name) {
             self.set_icon_pack(None, cx);
         }
-        crate::icon_packs::delete(name);
+        crate::startup::icon_packs::delete(name);
         cx.notify();
     }
 
     /// Reveal a pack's folder in the OS file manager, so its SVGs can be
     /// swapped out with a text or vector editor.
     fn reveal_pack(&mut self, name: &str, cx: &mut Context<Self>) {
-        if let Some(dir) = crate::icon_packs::resolve_dir(name) {
+        if let Some(dir) = crate::startup::icon_packs::resolve_dir(name) {
             cx.reveal_path(&dir);
         }
     }
@@ -2609,7 +2609,7 @@ impl SettingsWindow {
                 cx.listener(|this, _, _, cx| {
                     let library = this.library.clone();
                     let now_art = this.now_art.clone();
-                    crate::tag_repair::open(library, now_art, cx);
+                    crate::tags::repair::open(library, now_art, cx);
                 }),
             ))
             // The duplicates window: find tracks the library carries more

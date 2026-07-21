@@ -20,7 +20,7 @@ use rust_embed::RustEmbed;
 static ACTIVE_PACK: RwLock<Option<PathBuf>> = RwLock::new(None);
 
 /// Point the resolver at an icon pack folder, or None for the built-in set.
-/// [`crate::icon_packs`] owns the name-to-folder mapping and calls this.
+/// [`crate::startup::icon_packs`] owns the name-to-folder mapping and calls this.
 pub fn set_active_pack(dir: Option<PathBuf>) {
     *ACTIVE_PACK.write().unwrap() = dir;
 }

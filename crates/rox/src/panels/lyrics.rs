@@ -6,7 +6,7 @@
 //! follow on, glides it to the middle the way the library's now-playing
 //! row does; clicking a timed line seeks to it.
 //!
-//! The pencil in the title row opens the edit window (see [`crate::lyrics_edit`]):
+//! The pencil in the title row opens the edit window (see [`crate::lyrics::edit`]):
 //! the raw text becomes a multi-line input over a baseline read off the
 //! file, and a save writes it back where it came from: the embedded tag
 //! through the writer's atomic layer, or the `.lrc` sidecar or app lyrics
@@ -517,7 +517,7 @@ impl LyricsPanel {
         let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
             return;
         };
-        crate::lyrics_edit::open(self.state.clone(), cx.entity().downgrade(), path, cx);
+        crate::lyrics::edit::open(self.state.clone(), cx.entity().downgrade(), path, cx);
     }
 
     /// The timestamp `steps` sung lines away from the active one: forward
@@ -603,7 +603,7 @@ impl LyricsPanel {
         let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
             return;
         };
-        crate::lyrics_match::open(self.state.clone(), cx.entity().downgrade(), path, cx);
+        crate::lyrics::matcher::open(self.state.clone(), cx.entity().downgrade(), path, cx);
     }
 
     /// Drop the cached sheet for `path` and repaint, so a save made
@@ -1282,7 +1282,7 @@ impl LyricsPanel {
             return;
         }
         self.auto_tried = Some(path.to_path_buf());
-        let query = crate::lyrics_match::query_for(&self.state, path, cx);
+        let query = crate::lyrics::matcher::query_for(&self.state, path, cx);
         if query.artist.is_empty() || query.title.is_empty() {
             return;
         }
@@ -1298,7 +1298,7 @@ impl LyricsPanel {
                         if best.confidence < AUTO_SAVE_CONFIDENCE {
                             return None;
                         }
-                        let target = crate::lyrics_match::save_target(&path);
+                        let target = crate::lyrics::matcher::save_target(&path);
                         lyrics::save(&path, &target, &best.text).ok()?;
                         Some(())
                     }

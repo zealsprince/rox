@@ -42,7 +42,7 @@ use crate::panels::library::{fmt_ms, Library};
 use crate::providers;
 use crate::settings::{rating_style, RatingStyle, Settings};
 use crate::settings_ui::{self, section, SECTION_GAP};
-use crate::suggest;
+use crate::tags::suggest;
 
 /// The form's fields in sheet order: the label each row wears, and
 /// whether the field is per-track by nature. Per-track fields only edit
@@ -713,7 +713,7 @@ impl TagEditor {
         let now_art = self.now_art.clone();
         let weak = cx.entity().downgrade();
         let handle = window.window_handle();
-        crate::tag_match::open_fill(library, now_art, path, weak, handle, cx);
+        crate::tags::matcher::open_fill(library, now_art, path, weak, handle, cx);
     }
 
     /// Fill the form from a looked-up match, one field at a time: each set

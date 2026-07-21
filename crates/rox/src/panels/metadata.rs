@@ -650,7 +650,7 @@ impl Panel for MetadataPanel {
                     PopupMenuItem::new("Find Metadata Online...")
                         .icon(Icon::default().path(icons::DOWNLOAD))
                         .on_click(move |_, _, cx| {
-                            crate::tag_match::open(
+                            crate::tags::matcher::open(
                                 library.clone(),
                                 now_art.clone(),
                                 path.clone(),

@@ -12,20 +12,16 @@ mod backdrop;
 mod catalog;
 mod charts;
 mod composite;
-mod cover_editor;
-mod cover_match;
+mod cover;
 mod design;
 mod duplicates;
 mod group_head;
 mod history;
-mod icon_packs;
+mod integrations;
 mod lastfm;
 mod layouts;
-mod library_watch;
-mod lyrics_edit;
-mod lyrics_match;
+mod lyrics;
 mod m3u;
-mod media_controls;
 mod open_files;
 mod panel;
 mod panel_settings;
@@ -34,27 +30,19 @@ mod peaks;
 mod player;
 mod playlist_create;
 mod providers;
+mod query;
 mod quick_play;
 mod rating_ui;
-mod search;
 mod selection;
 mod settings;
 mod settings_ui;
 mod settings_window;
-mod shared_query;
 mod source;
+mod startup;
 mod stats_window;
-mod suggest;
-mod tag_editor;
-mod tag_match;
-mod tag_repair;
+mod tags;
 mod thumbs;
-mod track_cells;
-mod track_columns;
-mod track_drag;
-mod tray;
-mod updates;
-mod welcome_window;
+mod track_ui;
 mod workspace;
 mod workspaces;
 
@@ -188,7 +176,7 @@ fn main() {
     // mac backend ever fires this.
     app.on_reopen(|cx| {
         if workspace::front_workspace(cx).is_none() {
-            tray::reopen(cx);
+            integrations::tray::reopen(cx);
         }
     });
     app.run(move |cx: &mut App| {
@@ -198,7 +186,7 @@ fn main() {
         gpui_component::init(cx);
         rox_dock::init(cx);
         workspace::init(cx);
-        tag_editor::init(cx);
+        tags::editor::init(cx);
         // Startup theme wiring runs through the palette pipeline - the
         // same choke point every later palette change goes through. The
         // setters set the dark baseline and feed the widget theme tokens.
@@ -213,10 +201,10 @@ fn main() {
         settings::set_hide_menubar(settings.hide_menubar, cx);
         settings::set_os_decorations(settings.os_decorations);
         settings::set_quit_to_tray(settings.quit_to_tray);
-        tray::sync(cx);
+        integrations::tray::sync(cx);
         // Point the icon resolver at the chosen pack before any window
         // opens, so the first frame already draws it.
-        icon_packs::activate(settings.icon_pack.as_deref());
+        startup::icon_packs::activate(settings.icon_pack.as_deref());
         providers::set_lyrics_online(settings.providers.lrclib);
         providers::set_metadata_online(settings.providers.musicbrainz);
         providers::set_itunes_online(settings.providers.itunes);
@@ -224,7 +212,7 @@ fn main() {
         providers::set_artist_online(settings.providers.artist);
         // The daily update check, off the UI thread; the toggle and the
         // one-day cache both gate it, so most launches do nothing here.
-        updates::check_on_launch(cx);
+        startup::updates::check_on_launch(cx);
         // Launch files ride into the first window; a plain launch (no files)
         // opens on the restored state as before.
         let open = (!launch_files.is_empty()).then_some((launch_mode, launch_files));

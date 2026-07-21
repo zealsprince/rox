@@ -20,11 +20,11 @@ use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::panel::{self, AppState};
 use crate::panels::library::{fmt_ms, LibraryEvent, QUEUE_CAP};
-use crate::search::{SearchBox, SearchEvent};
+use crate::query::search::{SearchBox, SearchEvent};
 use crate::settings::{QuickPlayConfig, Settings};
-use crate::suggest;
+use crate::tags::suggest;
 use crate::thumbs::Thumb;
-use crate::track_columns;
+use crate::track_ui::track_columns;
 
 /// One result row's height; the list is a uniform_list, so every row must
 /// agree on it. Comfortable rows run taller.

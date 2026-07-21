@@ -40,9 +40,9 @@ use crate::panel::{
 };
 use crate::panel_settings;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
-use crate::search::{SearchBox, SearchEvent};
+use crate::query::search::{SearchBox, SearchEvent};
 use crate::settings_ui;
-use crate::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::thumbs::Thumb;
 
 /// The tile size knob's range: how wide a tile wants to be, in px. The
@@ -1216,7 +1216,7 @@ impl PanelSettings for GridPanel {
                         ),
                     ),
                 ))
-                .child(crate::shared_query::search_section(
+                .child(crate::query::shared_query::search_section(
                     self.config.search,
                     |this: &mut Self, on, cx| {
                         this.config.search = on;
@@ -1400,7 +1400,7 @@ impl Focusable for GridPanel {
 }
 
 impl QueryFilter for GridPanel {
-    fn shared_query(&self) -> &Entity<crate::shared_query::SharedQuery> {
+    fn shared_query(&self) -> &Entity<crate::query::shared_query::SharedQuery> {
         &self.state.query
     }
     fn query_box(&self) -> &Entity<SearchBox> {
@@ -1579,7 +1579,7 @@ impl Panel for GridPanel {
         });
         let menu = menu.item(PopupMenuItem::submenu("Scroll", submenu));
         // Follow the shared search query, or filter by this wall's own box.
-        let menu = crate::shared_query::search_flyout(
+        let menu = crate::query::shared_query::search_flyout(
             menu,
             |this: &Self| this.config.query_source,
             |this: &Self| this.config.search,

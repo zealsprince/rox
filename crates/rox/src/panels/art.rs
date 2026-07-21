@@ -35,9 +35,9 @@ use crate::panel::{
 };
 use crate::panel_settings;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
-use crate::search::{SearchBox, SearchEvent};
+use crate::query::search::{SearchBox, SearchEvent};
 use crate::settings_ui;
-use crate::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::thumbs::Thumb;
 
 /// The tile rounding knob's ceiling, in percent of circular: 100 rounds a
@@ -1033,7 +1033,7 @@ impl PanelSettings for ArtPanel {
                         ),
                     ),
                 ))
-                .child(crate::shared_query::search_section(
+                .child(crate::query::shared_query::search_section(
                     self.config.search,
                     |this: &mut Self, on, cx| {
                         this.config.search = on;
@@ -1150,7 +1150,7 @@ impl PanelSettings for ArtPanel {
 }
 
 impl QueryFilter for ArtPanel {
-    fn shared_query(&self) -> &Entity<crate::shared_query::SharedQuery> {
+    fn shared_query(&self) -> &Entity<crate::query::shared_query::SharedQuery> {
         &self.state.query
     }
     fn query_box(&self) -> &Entity<SearchBox> {
@@ -1337,7 +1337,7 @@ impl Panel for ArtPanel {
         });
         let menu = menu.item(PopupMenuItem::submenu("Scroll", submenu));
         // Follow the shared search query, or filter by this shelf's own box.
-        let menu = crate::shared_query::search_flyout(
+        let menu = crate::query::shared_query::search_flyout(
             menu,
             |this: &Self| this.config.query_source,
             |this: &Self| this.config.search,
@@ -1666,7 +1666,7 @@ impl ArtPanel {
                             PopupMenuItem::new("Edit Tags...")
                                 .icon(Icon::default().path(icons::PENCIL))
                                 .on_click(move |_, _, cx| {
-                                    crate::tag_editor::open(state.clone(), ids.clone(), cx);
+                                    crate::tags::editor::open(state.clone(), ids.clone(), cx);
                                 }),
                         );
                         // Reveal follows the album's first track, landing in

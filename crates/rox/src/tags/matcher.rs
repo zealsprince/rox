@@ -29,7 +29,7 @@ use crate::panels::library::Library;
 use crate::player::fmt_time;
 use crate::providers::{self, MetadataCandidate, TrackQuery};
 use crate::settings_ui::{self, section, SECTION_GAP};
-use crate::tag_editor::TagEditor;
+use crate::tags::editor::TagEditor;
 
 /// What Apply does with the picked fields: write them to the file, or hand
 /// them to a tag editor's form. The fill keeps the editor the single

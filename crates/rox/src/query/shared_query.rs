@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::panel;
-use crate::search::SearchBox;
+use crate::query::search::SearchBox;
 
 /// The shared query changed; global-following panels re-read it.
 pub enum SharedQueryEvent {

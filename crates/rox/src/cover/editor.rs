@@ -381,7 +381,7 @@ impl CoverEditor {
             .meta_for(&track.path)
             .map(|m| (m.artist, m.album))
             .unwrap_or_default();
-        crate::cover_match::open(
+        crate::cover::matcher::open(
             self.now_art.clone(),
             cx.entity().downgrade(),
             artist,

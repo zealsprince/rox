@@ -29,7 +29,7 @@ use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
-use crate::shared_query::SharedQueryEvent;
+use crate::query::shared_query::SharedQueryEvent;
 
 /// One value row's height; the lists are uniform_lists, so every row
 /// agrees.

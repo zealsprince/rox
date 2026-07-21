@@ -119,8 +119,8 @@ pub fn cell(key: &str, c: &Cell, state: &AppState) -> Option<Div> {
             } else {
                 fmt_ms(c.duration_ms)
             })),
-        "rating" => crate::track_cells::rating(state.clone(), c.track_id, c.rating),
-        "favourite" => crate::track_cells::favourite(state.clone(), c.track_id, c.favourite),
+        "rating" => crate::track_ui::track_cells::rating(state.clone(), c.track_id, c.rating),
+        "favourite" => crate::track_ui::track_cells::favourite(state.clone(), c.track_id, c.favourite),
         _ => return None,
     })
 }

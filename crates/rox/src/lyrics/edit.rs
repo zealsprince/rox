@@ -134,7 +134,7 @@ impl LyricsEdit {
         window.focus(&input.read(cx).focus_handle(cx));
         // The header names the track off its library tags, so the window
         // says what it is even before the file read lands.
-        let query = crate::lyrics_match::query_for(&state, &path, cx);
+        let query = crate::lyrics::matcher::query_for(&state, &path, cx);
         let line = if query.artist.is_empty() {
             query.title.clone()
         } else {

@@ -1,5 +1,5 @@
 //! The search panel: a dockable box that drives the shared app-wide query
-//! ([`crate::shared_query`]). Its whole job is the box - typing here filters
+//! ([`crate::query::shared_query`]). Its whole job is the box - typing here filters
 //! every panel set to follow the shared query, so a library and a couple of
 //! grids can sit query-less and clean while this one controls them all. The
 //! query lives in the shared entity, not this panel's config, so two search
@@ -23,9 +23,9 @@ use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
-use crate::search::{SearchBox, SearchEvent};
-use crate::shared_query::SharedQueryEvent;
-use crate::suggest;
+use crate::query::search::{SearchBox, SearchEvent};
+use crate::query::shared_query::SharedQueryEvent;
+use crate::tags::suggest;
 
 /// Where the search panel shows the shared filter's chips: inline, trailing
 /// the box on the same line, or on their own row below it.
@@ -367,7 +367,7 @@ impl SearchPanel {
         }
         let input = self.search.update(cx, |search, cx| search.element(cx));
         // The active-filter chips, shown only when something is filtered.
-        let chips = crate::shared_query::filter_chips(&self.state.query, cx);
+        let chips = crate::query::shared_query::filter_chips(&self.state.query, cx);
         let base = div()
             .track_focus(&self.focus)
             .size_full()

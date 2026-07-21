@@ -34,16 +34,16 @@ use rox_library::writer;
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
-use crate::library_watch::{LibraryWatcher, WatchBatch};
+use crate::integrations::library_watch::{LibraryWatcher, WatchBatch};
 use crate::group_head::{self, Headers};
 use crate::panel::{self, AppState, PanelChrome, ResumeIdle, ScrubState};
 use crate::panel_settings;
-use crate::search::{SearchBox, SearchEvent};
+use crate::query::search::{SearchBox, SearchEvent};
 use crate::settings_ui;
-use crate::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::thumbs::Thumb;
-use crate::track_cells;
-use crate::track_drag::{PlayDrag, PlayDragPreview};
+use crate::track_ui::track_cells;
+use crate::track_ui::track_drag::{PlayDrag, PlayDragPreview};
 
 /// Play from a double-clicked row: at most this many tracks are queued
 /// behind it. The quick-play modal caps its queue the same way.
@@ -2521,8 +2521,8 @@ impl TableDelegate for TrackTable {
                     path
                 }
             };
-            let thumb = crate::track_columns::cover_thumb(&self.state, path.as_deref(), true, cx);
-            return crate::track_columns::cover_cell(&thumb).into_any_element();
+            let thumb = crate::track_ui::track_columns::cover_thumb(&self.state, path.as_deref(), true, cx);
+            return crate::track_ui::track_columns::cover_cell(&thumb).into_any_element();
         }
         let cell = match key.as_ref() {
             "track" => cell
@@ -3679,7 +3679,7 @@ impl panel::PanelSettings for LibraryPanel {
                 .flex()
                 .flex_col()
                 .gap(settings_ui::SECTION_GAP)
-                .child(crate::shared_query::search_section(
+                .child(crate::query::shared_query::search_section(
                     self.show_search,
                     |this: &mut Self, on, cx| {
                         this.show_search = on;
@@ -3892,7 +3892,7 @@ impl Focusable for LibraryPanel {
 }
 
 impl QueryFilter for LibraryPanel {
-    fn shared_query(&self) -> &Entity<crate::shared_query::SharedQuery> {
+    fn shared_query(&self) -> &Entity<crate::query::shared_query::SharedQuery> {
         &self.state.query
     }
     fn query_box(&self) -> &Entity<SearchBox> {
@@ -4165,7 +4165,7 @@ impl Panel for LibraryPanel {
         }
 
         // Follow the shared search query, or filter by this panel's own box.
-        let menu = crate::shared_query::search_flyout(
+        let menu = crate::query::shared_query::search_flyout(
             menu,
             |this: &Self| this.query_source,
             |this: &Self| this.show_search,

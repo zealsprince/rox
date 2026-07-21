@@ -33,7 +33,7 @@ use crate::lastfm::Scrobbler;
 use crate::panels::library::Library;
 use crate::player::{fmt_time, Player};
 use crate::selection::Selection;
-use crate::shared_query::SharedQuery;
+use crate::query::shared_query::SharedQuery;
 use crate::thumbs::Thumbs;
 use crate::workspace::{SeekBackward, SeekForward, TogglePlayback};
 
@@ -1023,7 +1023,7 @@ pub fn track_actions(
             PopupMenuItem::new("Edit Tags...")
                 .icon(Icon::default().path(icons::PENCIL))
                 .on_click(move |_, _, cx| {
-                    crate::tag_editor::open(tag_state.clone(), tag_ids.clone(), cx);
+                    crate::tags::editor::open(tag_state.clone(), tag_ids.clone(), cx);
                 }),
         )
         // Covers get their own window: the tag editor edits text per
@@ -1032,7 +1032,7 @@ pub fn track_actions(
             PopupMenuItem::new("Edit Cover Art...")
                 .icon(Icon::default().path(icons::IMAGE))
                 .on_click(move |_, _, cx| {
-                    crate::cover_editor::open(cover_state.clone(), ids.clone(), cx);
+                    crate::cover::editor::open(cover_state.clone(), ids.clone(), cx);
                 }),
         );
     reveal_item(menu, state, reveal)

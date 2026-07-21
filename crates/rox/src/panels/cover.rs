@@ -501,12 +501,27 @@ fn layer(
                 ),
             )
         }
-        Slide::Disc => base.p(tokens::SPACE_SM).child(
-            svg()
-                .path(crate::assets::icons::DISC)
-                .size(px(48.))
-                .text_color(palette::text_faint()),
-        ),
+        // Same square claim as the empty sleeve: a 1x1 box takes the space a
+        // cover would, so the disc centers itself no matter where the
+        // alignment pushes. Without it a right align presses the icon into
+        // the panel edge.
+        Slide::Disc => {
+            let mut frame = div()
+                .w_full()
+                .max_h_full()
+                .flex()
+                .items_center()
+                .justify_center();
+            frame.style().aspect_ratio = Some(1.0);
+            base.p(tokens::SPACE_SM).child(
+                frame.child(
+                    svg()
+                        .path(crate::assets::icons::DISC)
+                        .size(px(48.))
+                        .text_color(palette::text_faint()),
+                ),
+            )
+        }
         // The frame hugs the letterboxed fit instead of filling the panel -
         // full width, the height cap transferring back through the art's
         // own ratio - so the alignment above has something to place.

@@ -1010,7 +1010,14 @@ impl FolderTreePanel {
         if modifiers.shift {
             let anchor = self.anchor.unwrap_or(ix);
             let (lo, hi) = (anchor.min(ix), anchor.max(ix));
-            self.selected = (lo..=hi).filter_map(|i| self.song_id_at(i)).collect();
+            let range: Vec<_> = (lo..=hi).filter_map(|i| self.song_id_at(i)).collect();
+            // Ctrl+Shift stacks the range onto the selection so you can
+            // skip a run and grab a second block; plain shift replaces.
+            if modifiers.secondary() {
+                self.selected.extend(range);
+            } else {
+                self.selected = range.into_iter().collect();
+            }
             if self.anchor.is_none() {
                 self.anchor = Some(ix);
             }

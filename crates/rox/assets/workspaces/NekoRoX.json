@@ -227,8 +227,7 @@
                                   "smooth_follow": true,
                                   "dim_playing": false,
                                   "dim": 60.0,
-                                  "rounding": 0.0,
-                                  "center": 1057
+                                  "rounding": 0.0
                                 }
                               }
                             },
@@ -250,8 +249,7 @@
                                   "rounding": 0.0,
                                   "gap": 0.0,
                                   "labels": false,
-                                  "label_align": "left",
-                                  "scroll": 2883
+                                  "label_align": "left"
                                 }
                               }
                             }
@@ -341,7 +339,7 @@
                   "info": {
                     "stack": {
                       "sizes": [
-                        685.0
+                        766.0
                       ],
                       "axis": 1
                     }
@@ -393,7 +391,7 @@
                           ],
                           "sort_key": null,
                           "sort_desc": false,
-                          "scroll_row": 14171,
+                          "scroll_row": 0,
                           "follow_playing": true,
                           "resume_playing": false,
                           "smooth_follow": true,
@@ -492,7 +490,7 @@
                 "stack": {
                   "sizes": [
                     471.69140625,
-                    839.30859375
+                    839.3086547851562
                   ],
                   "axis": 0
                 }
@@ -621,8 +619,8 @@
                   "info": {
                     "stack": {
                       "sizes": [
-                        110.76535034179688,
-                        111.23464965820312
+                        70.3509521484375,
+                        70.6490478515625
                       ],
                       "axis": 1
                     }
@@ -704,9 +702,9 @@
               "sizes": [
                 40.0,
                 30.0,
-                685.0,
+                765.8327026367188,
                 40.0,
-                222.0,
+                141.1673126220703,
                 40.0
               ],
               "axis": 1
@@ -753,23 +751,58 @@
               "panel_name": "StackPanel",
               "children": [
                 {
-                  "panel_name": "TabPanel",
+                  "panel_name": "StackPanel",
                   "children": [
                     {
-                      "panel_name": "track info",
-                      "children": [],
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "track info",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "locked": true,
+                              "anchor": true,
+                              "align": "left"
+                            }
+                          }
+                        }
+                      ],
                       "info": {
-                        "panel": {
-                          "locked": true,
-                          "anchor": true,
-                          "align": "left"
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "mini toggle",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "locked": true,
+                              "max_width": 26.0,
+                              "align": "left"
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
                         }
                       }
                     }
                   ],
                   "info": {
-                    "tabs": {
-                      "active_index": 0
+                    "stack": {
+                      "sizes": [
+                        564.0,
+                        40.0
+                      ],
+                      "axis": 0
                     }
                   }
                 },
@@ -786,6 +819,7 @@
                           "freq_lo": 30.0,
                           "freq_hi": 16000.0,
                           "bar_width": 3.0,
+                          "bar_gap": 2.0,
                           "fft_size": 8192,
                           "split": false,
                           "split_hz": 1000.0,
@@ -835,9 +869,9 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    69.92443084716797,
-                    92.00582885742188,
-                    49.06974029541016
+                    0.0,
+                    120.6521987915039,
+                    64.34779357910156
                   ],
                   "axis": 1
                 }
@@ -847,8 +881,8 @@
           "info": {
             "stack": {
               "sizes": [
-                211.18438720703125,
-                623.8156127929688
+                204.6085968017578,
+                604.3914184570312
               ],
               "axis": 0
             }

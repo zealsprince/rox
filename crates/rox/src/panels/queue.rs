@@ -664,13 +664,20 @@ impl QueuePanel {
         if modifiers.shift {
             let anchor_ix = self.anchor.and_then(|a| self.index_of(a)).unwrap_or(ix);
             let (lo, hi) = (anchor_ix.min(ix), anchor_ix.max(ix));
-            self.selected = self.rows[lo..=hi]
+            let range: Vec<u64> = self.rows[lo..=hi]
                 .iter()
                 .filter_map(|row| match row {
                     QRow::Track(ti) => self.tracks.get(*ti as usize).map(|t| t.entry_id),
                     _ => None,
                 })
                 .collect();
+            // Ctrl+Shift stacks the range onto the selection so you can
+            // skip a run and grab a second block; plain shift replaces.
+            if modifiers.secondary() {
+                self.selected.extend(range);
+            } else {
+                self.selected = range.into_iter().collect();
+            }
             if self.anchor.is_none() {
                 self.anchor = Some(entry);
             }

@@ -3168,10 +3168,17 @@ impl LibraryPanel {
                         let (lo, hi) = (anchor.min(ix), anchor.max(ix));
                         // Tracks only across a group break, like the
                         // keyboard's shift-extend.
-                        let range = (lo..=hi)
+                        let range: Vec<usize> = (lo..=hi)
                             .filter(|&i| delegate.track_at(i).is_some())
                             .collect();
-                        delegate.selected = range;
+                        // Ctrl+Shift stacks the range onto the selection so
+                        // you can skip a run and grab a second block; plain
+                        // shift replaces.
+                        if modifiers.secondary() {
+                            delegate.selected.extend(range);
+                        } else {
+                            delegate.selected = range.into_iter().collect();
+                        }
                     } else if modifiers.secondary() {
                         if !delegate.selected.insert(ix) {
                             delegate.selected.remove(&ix);

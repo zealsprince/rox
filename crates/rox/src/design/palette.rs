@@ -294,14 +294,14 @@ macro_rules! tokens {
 
 tokens! {
     // The accent family: the one brand color and its hover shift.
-    accent: 0xfdcb00, "Accent";
+    accent: 0xffb300, "Accent";
     /// The accent blended a quarter toward white, the lift hover states use.
     accent_hover: 0xfed840, "Accent hover";
     /// The contrast mark riding over accent fills: the playheads, the
     /// slider knobs, the spectrum's peak caps. Sits at the bright text by
     /// default; under song theming the cover's runner-up color takes it
     /// when one stands apart from the seed.
-    highlight: 0xe0e0e0, "Highlight";
+    highlight: 0xfacc15, "Highlight";
 
     // Borders.
     border: 0x333333, "Border";

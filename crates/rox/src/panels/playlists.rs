@@ -643,13 +643,20 @@ impl PlaylistsPanel {
             let (lo, hi) = (anchor_ix.min(ix), anchor_ix.max(ix));
             // Only track rows in the span, so a header caught between two
             // playlists is skipped rather than selected.
-            self.selected = self.rows[lo..=hi]
+            let range: Vec<_> = self.rows[lo..=hi]
                 .iter()
                 .filter_map(|row| match row {
                     Row::Track(t) => Some(t.member_id),
                     _ => None,
                 })
                 .collect();
+            // Ctrl+Shift stacks the range onto the selection so you can
+            // skip a run and grab a second block; plain shift replaces.
+            if modifiers.secondary() {
+                self.selected.extend(range);
+            } else {
+                self.selected = range.into_iter().collect();
+            }
             if self.anchor.is_none() {
                 self.anchor = Some(member);
             }

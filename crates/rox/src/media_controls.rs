@@ -214,7 +214,9 @@ fn signed(dir: SeekDirection, secs: f64) -> f64 {
 #[cfg(target_os = "windows")]
 fn window_hwnd(window: &Window) -> Option<*mut std::ffi::c_void> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    match window.window_handle().ok()?.as_raw() {
+    // gpui's inherent Window::window_handle() returns AnyWindowHandle and
+    // shadows the trait, so reach for the raw handle through the trait directly.
+    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
         RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as *mut std::ffi::c_void),
         _ => None,
     }

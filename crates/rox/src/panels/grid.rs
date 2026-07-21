@@ -665,7 +665,13 @@ impl GridPanel {
         if modifiers.shift {
             let anchor = self.anchor.unwrap_or(ix);
             let (lo, hi) = (anchor.min(ix), anchor.max(ix));
-            self.selected = (lo..=hi).collect();
+            // Ctrl+Shift stacks the range onto the selection so you can
+            // skip a run and grab a second block; plain shift replaces.
+            if modifiers.secondary() {
+                self.selected.extend(lo..=hi);
+            } else {
+                self.selected = (lo..=hi).collect();
+            }
         } else if modifiers.secondary() {
             if !self.selected.insert(ix) {
                 self.selected.remove(&ix);

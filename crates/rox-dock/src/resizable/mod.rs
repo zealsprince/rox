@@ -213,90 +213,158 @@ impl ResizableState {
 
     /// The `ix`` is the index of the panel to resize,
     /// and the `size` is the new size for the panel.
+    ///
+    /// A drag moves the boundary between panel `ix` and `ix + 1`. The side it
+    /// moves into grows and the other side shrinks by the same amount, each
+    /// cascading outward from the handle: the panel nearest the handle takes
+    /// the change first, then the next, and so on. Growth respects every
+    /// panel's max and shrink respects every panel's min, so a pinned panel
+    /// (min == max) can't change size but is pushed along while the resizable
+    /// panels beyond it absorb the drag. The move is capped at whatever the
+    /// growing side can take and the shrinking side can give, so nothing ever
+    /// crosses a bound and the total stays put.
     fn resize_panel(&mut self, ix: usize, size: Pixels, _: &mut Window, cx: &mut Context<Self>) {
-        let old_sizes = self.sizes.clone();
-
-        let mut ix = ix;
-        // Only resize the left panels.
-        if ix >= old_sizes.len() - 1 {
+        if ix >= self.sizes.len().saturating_sub(1) {
             return;
         }
-        let container_size = self.container_size();
         self.sync_real_panel_sizes(cx);
+        let old = self.sizes.clone();
+        let n = old.len();
 
-        let move_changed = size - old_sizes[ix];
-        if move_changed == px(0.) {
+        let delta = size - old[ix];
+        if delta == px(0.) {
             return;
         }
 
-        let size_range = self.panel_size_range(ix);
-        let new_size = size.clamp(size_range.start, size_range.end);
-        let is_expand = move_changed > px(0.);
+        let min_of = |i: usize| self.panel_size_range(i).start;
+        let max_of = |i: usize| self.panel_size_range(i).end;
+        let grow_room = |i: usize| (max_of(i) - old[i]).max(px(0.));
+        let shrink_room = |i: usize| (old[i] - min_of(i)).max(px(0.));
 
-        let main_ix = ix;
-        let mut new_sizes = old_sizes.clone();
-
-        if is_expand {
-            let mut changed = new_size - old_sizes[ix];
-            new_sizes[ix] = new_size;
-
-            while changed > px(0.) && ix < old_sizes.len() - 1 {
-                ix += 1;
-                let size_range = self.panel_size_range(ix);
-                let available_size = (new_sizes[ix] - size_range.start).max(px(0.));
-                let to_reduce = changed.min(available_size);
-                new_sizes[ix] -= to_reduce;
-                changed -= to_reduce;
-            }
+        // The two clusters either side of the boundary, and which one grows.
+        // Positive delta drags the boundary toward the end: the left cluster
+        // (through `ix`) grows, the right cluster shrinks. Negative is the
+        // mirror. `grow` is ordered from the handle outward so the nearest
+        // panel moves first.
+        let (grow, shrink, want) = if delta > px(0.) {
+            let grow: Vec<usize> = (0..=ix).rev().collect();
+            let shrink: Vec<usize> = (ix + 1..n).collect();
+            (grow, shrink, delta)
         } else {
-            let mut changed = new_size - size;
-            new_sizes[ix] = new_size;
+            let grow: Vec<usize> = (ix + 1..n).collect();
+            let shrink: Vec<usize> = (0..=ix).rev().collect();
+            (grow, shrink, -delta)
+        };
 
-            while changed > px(0.) && ix > 0 {
-                ix -= 1;
-                let size_range = self.panel_size_range(ix);
-                let available_size = (new_sizes[ix] - size_range.start).max(px(0.));
-                let to_reduce = changed.min(available_size);
-                changed -= to_reduce;
-                new_sizes[ix] -= to_reduce;
+        let growable = grow.iter().fold(px(0.), |acc, &i| acc + grow_room(i));
+        let shrinkable = shrink.iter().fold(px(0.), |acc, &i| acc + shrink_room(i));
+        let applied = want.min(growable).min(shrinkable);
+        if applied <= px(0.) {
+            return;
+        }
+
+        let mut new = old.clone();
+        let mut remaining = applied;
+        for &i in &grow {
+            if remaining <= px(0.) {
+                break;
             }
-
-            new_sizes[main_ix + 1] += old_sizes[main_ix] - size - changed;
+            let take = remaining.min(grow_room(i));
+            new[i] += take;
+            remaining -= take;
+        }
+        let mut remaining = applied;
+        for &i in &shrink {
+            if remaining <= px(0.) {
+                break;
+            }
+            let take = remaining.min(shrink_room(i));
+            new[i] -= take;
+            remaining -= take;
         }
 
-        // If total size exceeds container size, adjust the main panel
-        let total_size: Pixels = new_sizes.iter().map(|s| s.as_f32()).sum::<f32>().into();
-        if total_size > container_size {
-            let overflow = total_size - container_size;
-            new_sizes[main_ix] = (new_sizes[main_ix] - overflow).max(size_range.start);
+        for (i, s) in new.iter().enumerate() {
+            self.panels[i].size = Some(*s);
         }
-
-        for (i, _) in old_sizes.iter().enumerate() {
-            let size = new_sizes[i];
-            self.panels[i].size = Some(size);
-        }
-        self.sizes = new_sizes;
+        self.sizes = new;
         cx.notify();
     }
 
     /// Adjust panel sizes according to the container size.
     ///
-    /// When the container size changes, the panels should take up the same percentage as they did before.
+    /// When the container size changes, the panels keep the same share of the
+    /// space, except that each panel's [`size_range`](ResizablePanelState::size_range)
+    /// is honored: a panel already at its cap doesn't grow when the window
+    /// grows, and the space it would have taken is handed to the panels that
+    /// can still use it. That's what pins a toolbar or footer to its size
+    /// while the content panels stretch. Panels that hit a bound drop out of
+    /// the split and the rest are redistributed, repeating until nothing new
+    /// clamps.
     fn adjust_to_container_size(&mut self, cx: &mut Context<Self>) {
         if self.container_size().is_zero() {
             return;
         }
 
-        let container_size = self.container_size();
-        let total_size = px(self.sizes.iter().map(|s| s.as_f32()).sum::<f32>());
+        let container = self.container_size().as_f32();
+        let n = self.panels.len();
+        if n == 0 {
+            return;
+        }
 
-        for i in 0..self.panels.len() {
-            let size = self.sizes[i];
-            let ratio = size / total_size;
-            let new_size = container_size * ratio;
+        // The current sizes act as the proportional weights; the ranges are
+        // the bounds each panel gets clamped to.
+        let weights: Vec<f32> = self.sizes.iter().map(|s| s.as_f32()).collect();
+        let ranges: Vec<Range<Pixels>> = (0..n).map(|i| self.panel_size_range(i)).collect();
 
-            self.sizes[i] = new_size;
-            self.panels[i].size = Some(new_size);
+        // None means "still flexible"; Some means the panel clamped to a
+        // bound and is fixed for the rest of the passes.
+        let mut fixed: Vec<Option<f32>> = vec![None; n];
+        loop {
+            let fixed_total: f32 = fixed.iter().flatten().sum();
+            let flex: Vec<usize> = (0..n).filter(|i| fixed[*i].is_none()).collect();
+            if flex.is_empty() {
+                break;
+            }
+            let remaining = (container - fixed_total).max(0.);
+            let flex_weight: f32 = flex.iter().map(|i| weights[*i]).sum();
+
+            let mut clamped_any = false;
+            for &i in &flex {
+                let ratio = if flex_weight > 0. {
+                    weights[i] / flex_weight
+                } else {
+                    1. / flex.len() as f32
+                };
+                let target = remaining * ratio;
+                let min = ranges[i].start.as_f32();
+                let max = ranges[i].end.as_f32();
+                if target < min {
+                    fixed[i] = Some(min);
+                    clamped_any = true;
+                } else if target > max {
+                    fixed[i] = Some(max);
+                    clamped_any = true;
+                }
+            }
+
+            if !clamped_any {
+                // Nothing else clamps: hand the flexible panels their share.
+                for &i in &flex {
+                    let ratio = if flex_weight > 0. {
+                        weights[i] / flex_weight
+                    } else {
+                        1. / flex.len() as f32
+                    };
+                    fixed[i] = Some(remaining * ratio);
+                }
+                break;
+            }
+        }
+
+        for i in 0..n {
+            let size = px(fixed[i].unwrap_or(weights[i]));
+            self.sizes[i] = size;
+            self.panels[i].size = Some(size);
         }
         cx.notify();
     }

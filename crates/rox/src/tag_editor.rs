@@ -257,8 +257,14 @@ pub struct TagEditor {
     projection: Option<Arc<Projection>>,
     /// A failed read or commit, shown inline over the buttons.
     error: Option<SharedString>,
-    /// A commit is in flight; the buttons hold still until it lands.
+    /// A commit is in flight; the fields lock and the buttons hold still
+    /// until it lands.
     saving: bool,
+    /// How many of the batch have committed and how many there are, for
+    /// the "Saving n/m" count. A file at a time advances this, so a slow
+    /// or stuck one shows where the batch is instead of a mute spinner.
+    save_done: usize,
+    save_total: usize,
     /// The page's scroll position, shared with the scrollbar.
     scroll: ScrollHandle,
     /// The shared art bake and this window's slice of the backdrop, so
@@ -396,6 +402,8 @@ impl TagEditor {
             projection,
             error: None,
             saving: false,
+            save_done: 0,
+            save_total: 0,
             scroll: ScrollHandle::new(),
             now_art: state.now_art,
             backdrop: WindowBackdrop::default(),
@@ -798,36 +806,54 @@ impl TagEditor {
             return;
         }
         self.saving = true;
+        self.save_done = 0;
+        self.save_total = edits.len();
         self.error = None;
         cx.notify();
         let library = self.library.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let (edits, results) = cx
-                .background_executor()
-                .spawn(async move {
-                    let results = writer::commit_batch(&edits);
-                    (edits, results)
-                })
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                let mut committed = Vec::new();
-                let mut failures = 0;
-                let mut first_error: Option<String> = None;
-                for (edit, (path, result)) in edits.into_iter().zip(results) {
-                    match result {
-                        Ok(()) => committed.push(edit),
-                        Err(e) => {
-                            failures += 1;
-                            if first_error.is_none() {
-                                let name = path
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| path.display().to_string());
-                                first_error = Some(format!("{name}: {e}"));
-                            }
+            // One file per background hop, not the whole batch behind a
+            // single await: the count moves as each lands, a slow file is
+            // visibly the one holding things up, and a cancel that closes
+            // the window ends the loop instead of grinding on unseen.
+            let mut committed: Vec<Edit> = Vec::new();
+            let mut failures = 0usize;
+            let mut first_error: Option<String> = None;
+            for edit in edits {
+                let (edit, result) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let r = writer::commit_with(&edit.path, &edit.changes, &edit.pictures);
+                        (edit, r)
+                    })
+                    .await;
+                match result {
+                    Ok(()) => committed.push(edit),
+                    Err(e) => {
+                        failures += 1;
+                        if first_error.is_none() {
+                            let name = edit
+                                .path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| edit.path.display().to_string());
+                            first_error = Some(format!("{name}: {e}"));
                         }
                     }
                 }
+                // A closed window (the user cancelled) drops the handle;
+                // stop rather than keep writing into nothing.
+                if this
+                    .update(cx, |this, cx| {
+                        this.save_done += 1;
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            this.update_in(cx, move |this, window, cx| {
                 // A written file's baseline follows the write, so a retry
                 // after a partial failure diffs against what is on disk
                 // now instead of re-committing the landed files.
@@ -926,10 +952,17 @@ impl TagEditor {
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_SM)
-            // A commit runs off the UI thread and the buttons only dim, so
-            // say it plainly: the spinner rides ahead of them until the
-            // write lands or fails.
+            // A commit runs off the UI thread, so say it plainly: the
+            // spinner and a running count ride ahead of the buttons until
+            // the write lands or fails. The count names how far a slow
+            // batch has got instead of freezing on a mute spinner.
             .when(self.saving, |d| {
+                let label = if self.save_total > 1 {
+                    let at = (self.save_done + 1).min(self.save_total);
+                    format!("Saving {}/{}...", at, self.save_total)
+                } else {
+                    "Saving...".to_string()
+                };
                 d.child(
                     div()
                         .flex()
@@ -939,7 +972,7 @@ impl TagEditor {
                         .text_xs()
                         .text_color(palette::text_muted())
                         .child(Spinner::new().with_size(Size::Small))
-                        .child("Saving..."),
+                        .child(label),
                 )
             })
             .when(single && providers::metadata_online(), |d| {
@@ -962,10 +995,13 @@ impl TagEditor {
                 self.saving || self.baselines.is_none(),
                 cx.listener(|this, _, window, cx| this.save(window, cx)),
             ))
+            // Cancel stays live through a save: a slow or wedged commit
+            // needs a way out, and the atomic writer leaves every original
+            // intact whether the batch finished or not.
             .child(settings_ui::small_button(
                 "Cancel",
                 icons::CLOSE,
-                self.saving,
+                false,
                 cx.listener(|this, _, window, cx| {
                     this.persist_frame(window, cx);
                     window.remove_window();
@@ -984,7 +1020,21 @@ impl TagEditor {
                 .flex()
                 .flex_col()
                 .when(self.table, |d| d.flex_1().min_h_0())
-                .child(body)
+                .child(
+                    // The fields and the grid lock while a commit is in
+                    // flight: a transparent occluder over them swallows
+                    // clicks and keystrokes so nothing edits out from under
+                    // the write. Cancel sits above it, on the header.
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .when(self.table, |d| d.flex_1().min_h_0())
+                        .child(body)
+                        .when(self.saving, |d| {
+                            d.child(div().absolute().inset_0().occlude())
+                        }),
+                )
                 .when_some(self.error.clone(), |d, error| {
                     d.child(
                         div()
@@ -1051,7 +1101,7 @@ impl TagEditor {
                             window.focus_prev();
                             cx.stop_propagation();
                         })
-                        .child(Input::new(&self.inputs[i]).small())
+                        .child(Input::new(&self.inputs[i]).small().disabled(self.saving))
                         .into_any_element()
                 };
                 div()

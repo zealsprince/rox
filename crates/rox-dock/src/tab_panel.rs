@@ -158,6 +158,25 @@ impl Panel for TabPanel {
             })
     }
 
+    fn max_size(&self, cx: &App) -> Size<Pixels> {
+        // A tab shows one panel at a time in the same slot, so the most
+        // permissive cap wins: a capped panel tabbed with an unbounded one
+        // stays unbounded. No visible panel means no slot to cap.
+        let mut any = false;
+        let max = self
+            .visible_panels(cx)
+            .fold(gpui::size(px(0.), px(0.)), |acc, panel| {
+                any = true;
+                let m = panel.max_size(cx);
+                gpui::size(acc.width.max(m.width), acc.height.max(m.height))
+            });
+        if any {
+            max
+        } else {
+            gpui::size(Pixels::MAX, Pixels::MAX)
+        }
+    }
+
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,

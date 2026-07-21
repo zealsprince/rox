@@ -269,10 +269,17 @@ impl Panel for SearchPanel {
     /// height instead of holding the global 40px floor: the xsmall control
     /// plus a hair of air top and bottom. Width keeps the global floor.
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
-        gpui::size(
-            rox_dock::resizable::PANEL_MIN_SIZE,
-            tokens::CONTROL_H + tokens::SPACE_XS + tokens::SPACE_XS,
+        crate::panel::chrome_min_size(
+            &self.config.chrome,
+            gpui::size(
+                rox_dock::resizable::PANEL_MIN_SIZE,
+                tokens::CONTROL_H + tokens::SPACE_XS + tokens::SPACE_XS,
+            ),
         )
+    }
+
+    fn max_size(&self, cx: &App) -> gpui::Size<gpui::Pixels> {
+        crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
     /// The layout dump carries the panel's config; the builder registered in

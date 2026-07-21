@@ -167,7 +167,7 @@ pub struct Settings {
     /// dock in `layout` instead; an explicit save folds a copy into its
     /// preset and clears it here.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub layout_edits: BTreeMap<String, serde_json::Value>,
+    pub layout_edits: BTreeMap<String, LayoutEdit>,
     /// The user's saved workspaces: full shareable bundles of layout presets,
     /// palette, and appearance, the sharing ecosystem's trade unit. Shipped
     /// bundles live in the app's assets and are not stored here; the settings
@@ -600,6 +600,18 @@ pub struct NamedLayout {
 pub struct LayoutSize {
     pub width: f32,
     pub height: f32,
+}
+
+/// A layout's unsaved working state: the dock dump plus the window size it
+/// was last at, kept in [`Settings::layout_edits`] so switching back restores
+/// both the arrangement and the size without touching the saved preset.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct LayoutEdit {
+    pub dump: serde_json::Value,
+    /// The window size when the edit was stashed. None for a copy from before
+    /// sizes rode along, which falls back to the preset's saved size on apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<LayoutSize>,
 }
 
 /// The workspace bundle format version, bumped when the bundle shape changes

@@ -68,8 +68,8 @@ use crate::player::{NowPlaying, Player};
 use crate::quick_play::QuickPlay;
 use crate::selection::Selection;
 use crate::settings::{
-    self, LastTrack, LayoutSize, NamedLayout, QueueState, QueuedTrack, Settings, WindowState,
-    WorkspaceBundle,
+    self, LastTrack, LayoutEdit, LayoutSize, NamedLayout, QueueState, QueuedTrack, Settings,
+    WindowState, WorkspaceBundle,
 };
 use crate::shared_query::SharedQuery;
 use crate::thumbs::Thumbs;
@@ -1279,7 +1279,7 @@ impl Workspace {
         // the swap, so switching away keeps its unsaved tweaks. Synchronous
         // on purpose: the debounced save below would otherwise be the only
         // writer, and it dumps the incoming layout, not this one.
-        self.stash_active_edits(cx);
+        self.stash_active_edits(window, cx);
         // The registry's builders capture one workspace's entities;
         // re-register so the rebuild lands on this one even after
         // another window registered over it.
@@ -1303,7 +1303,7 @@ impl Workspace {
     /// of a dump, so there is no registry rebuild to re-register for.
     fn apply_default_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Keep the outgoing layout's tweaks the same as any other swap.
-        self.stash_active_edits(cx);
+        self.stash_active_edits(window, cx);
         let weak_dock = self.dock.downgrade();
         let (center, stack, center_tabs, bottom_stack) =
             default_layout(&self.state, &weak_dock, window, cx);
@@ -1338,15 +1338,19 @@ impl Workspace {
     /// unnamed arrangement (the default build, a one-off import) has no name
     /// to key on, so this no-ops; its live dock rides in `settings.layout`
     /// for the launch restore instead.
-    fn stash_active_edits(&self, cx: &mut Context<Self>) {
+    fn stash_active_edits(&self, window: &Window, cx: &mut Context<Self>) {
         let Some(name) = self.active_layout.clone() else {
             return;
         };
         let Ok(dump) = serde_json::to_value(self.dock.read(cx).dump(cx)) else {
             return;
         };
+        // The current window size rides along, live off the window rather than
+        // the debounced `settings.window`, so a resize made just before the
+        // switch comes back with the layout.
+        let size = Some(window_size(window));
         Settings::update(move |s| {
-            s.layout_edits.insert(name, dump);
+            s.layout_edits.insert(name, LayoutEdit { dump, size });
         });
     }
 
@@ -1363,19 +1367,24 @@ impl Workspace {
         let Some(preset) = crate::layouts::resolve(&settings, name) else {
             return false;
         };
-        let size = preset.size;
+        // Size to the preset by default; a working copy with its own size
+        // overrides that below, so a resize made while editing comes back too.
+        let mut size = preset.size;
         // Prefer the layout's working copy, the unsaved tweaks kept from the
         // last time it was in front of you, over the pristine preset. A
         // missing copy, or one an older version can no longer load, falls
         // back to the saved dump.
-        let edited = settings
-            .layout_edits
-            .get(name)
-            .cloned()
-            .and_then(|edit| serde_json::from_value::<DockAreaState>(edit).ok());
+        let edited = settings.layout_edits.get(name).cloned();
         let mut applied = false;
-        if let Some(dump) = edited {
-            applied = self.apply_layout(dump, window, cx);
+        if let Some(edit) = &edited {
+            if let Ok(dump) = serde_json::from_value::<DockAreaState>(edit.dump.clone()) {
+                applied = self.apply_layout(dump, window, cx);
+                // The working copy's own size wins when it carries one; a copy
+                // from before sizes rode along keeps the preset's.
+                if applied && edit.size.is_some() {
+                    size = edit.size;
+                }
+            }
         }
         if !applied {
             let Ok(dump) = serde_json::from_value::<DockAreaState>(preset.dump) else {
@@ -1387,8 +1396,8 @@ impl Workspace {
             return false;
         }
         self.set_active_layout(Some(name.to_string()));
-        // Size the window to the preset when it carries one; a preset from
-        // before sizes were stored leaves the window as it is.
+        // Size the window to whichever source won above (the working copy's
+        // size, or the preset's); neither carrying one leaves the window as is.
         if let Some(size) = size {
             resize_clamped(window, size);
         }

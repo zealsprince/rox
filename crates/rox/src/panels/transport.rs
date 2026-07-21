@@ -1156,7 +1156,14 @@ macro_rules! transport_panel {
             }
 
             fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
-                gpui::size(($min_w)(self), rox_dock::resizable::PANEL_MIN_SIZE)
+                crate::panel::chrome_min_size(
+                    &self.config.chrome,
+                    gpui::size(($min_w)(self), rox_dock::resizable::PANEL_MIN_SIZE),
+                )
+            }
+
+            fn max_size(&self, cx: &App) -> gpui::Size<Pixels> {
+                crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
             }
 
             /// The layout dump carries the panel's config; the builder

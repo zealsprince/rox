@@ -3683,6 +3683,20 @@ impl Panel for LibraryPanel {
         true
     }
 
+    fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
+        crate::panel::chrome_min_size(
+            &self.chrome,
+            gpui::size(
+                rox_dock::resizable::PANEL_MIN_SIZE,
+                rox_dock::resizable::PANEL_MIN_SIZE,
+            ),
+        )
+    }
+
+    fn max_size(&self, cx: &App) -> gpui::Size<gpui::Pixels> {
+        crate::panel::chrome_max_size(&self.chrome, self.min_size(cx))
+    }
+
     /// The layout dump carries the panel's config; the builder registered
     /// in `workspace::register_panels` reads it back.
     fn dump(&self, cx: &App) -> PanelState {

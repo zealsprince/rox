@@ -352,6 +352,17 @@ impl<P: PanelSettings> Render for RenameWindow<P> {
     }
 }
 
+/// The panel's four optional size limits, read off its chrome to render the
+/// Behavior page's Size rows (each field's reset shows only when its limit is
+/// set). None means that edge is free.
+#[derive(Clone, Copy, Default)]
+struct SizeLimits {
+    min_width: Option<f32>,
+    min_height: Option<f32>,
+    max_width: Option<f32>,
+    max_height: Option<f32>,
+}
+
 /// The window content: the panel's own pages, then the shared Appearance
 /// page the window itself provides.
 struct PanelSettingsWindow<P: PanelSettings> {
@@ -368,6 +379,15 @@ struct PanelSettingsWindow<P: PanelSettings> {
     padding_scrub: ScrubState,
     rounding_scrub: ScrubState,
     border_scrub: ScrubState,
+    /// The size limit fields, typed in px; empty means no limit.
+    min_width_input: Entity<InputState>,
+    min_height_input: Entity<InputState>,
+    max_width_input: Entity<InputState>,
+    max_height_input: Entity<InputState>,
+    _min_width_events: Subscription,
+    _min_height_events: Subscription,
+    _max_width_events: Subscription,
+    _max_height_events: Subscription,
     /// The page body's scroll position, shared with the scrollbar so it
     /// can show how much page hangs below the fold.
     scroll: ScrollHandle,
@@ -427,6 +447,43 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             ));
             pickers.push(picker);
         }
+        // The size limit fields, seeded from the panel's current min and max.
+        // Empty reads as no limit; "Off" sits as the placeholder to say so.
+        let chrome = panel
+            .upgrade()
+            .map(|panel| panel.read(cx).chrome().clone())
+            .unwrap_or_default();
+        let field = |value: Option<f32>, window: &mut Window, cx: &mut Context<Self>| {
+            let seed = value.map(|n| format!("{n:.0}")).unwrap_or_default();
+            cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Off")
+                    .default_value(seed)
+            })
+        };
+        let min_width_input = field(chrome.min_width, window, cx);
+        let min_height_input = field(chrome.min_height, window, cx);
+        let max_width_input = field(chrome.max_width, window, cx);
+        let max_height_input = field(chrome.max_height, window, cx);
+        // Each field parses to px on edit and applies through its own setter.
+        let watch = |input: &Entity<InputState>,
+                     apply: fn(&mut Self, Option<f32>, &mut Context<Self>),
+                     window: &mut Window,
+                     cx: &mut Context<Self>| {
+            cx.subscribe_in(
+                input,
+                window,
+                move |this, input, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.size_limit_edited(input, apply, window, cx);
+                    }
+                },
+            )
+        };
+        let _min_width_events = watch(&min_width_input, Self::apply_min_width, window, cx);
+        let _min_height_events = watch(&min_height_input, Self::apply_min_height, window, cx);
+        let _max_width_events = watch(&max_width_input, Self::apply_max_width, window, cx);
+        let _max_height_events = watch(&max_height_input, Self::apply_max_height, window, cx);
         PanelSettingsWindow {
             panel,
             page: 0,
@@ -436,6 +493,14 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             padding_scrub: ScrubState::default(),
             rounding_scrub: ScrubState::default(),
             border_scrub: ScrubState::default(),
+            min_width_input,
+            min_height_input,
+            max_width_input,
+            max_height_input,
+            _min_width_events,
+            _min_height_events,
+            _max_width_events,
+            _max_height_events,
             scroll: ScrollHandle::new(),
             state,
             backdrop: WindowBackdrop::default(),
@@ -458,6 +523,77 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         if let Some(panel) = self.panel.upgrade() {
             panel.update(cx, |panel, cx| panel.set_anchor(on, cx));
         }
+    }
+
+    // The size limits, typed straight in px and stored on the panel's chrome.
+    // A field edit strips non-digits and parses what's left; empty or zero
+    // clears the limit so the axis is free again. Each field routes its
+    // parsed value through its own setter, passed in as `apply`.
+
+    fn size_limit_edited(
+        &mut self,
+        input: &Entity<InputState>,
+        apply: fn(&mut Self, Option<f32>, &mut Context<Self>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let raw = input.read(cx).value().to_string();
+        let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+        // Rewrite the field only when it held non-digits, so a stray letter
+        // vanishes; the follow-up Change lands on clean digits and stops.
+        if digits != raw {
+            input.update(cx, |state, cx| state.set_value(digits.clone(), window, cx));
+        }
+        let value = digits.parse::<f32>().ok().filter(|n| *n > 0.);
+        apply(self, value, cx);
+    }
+
+    fn apply_min_width(&mut self, value: Option<f32>, cx: &mut Context<Self>) {
+        if let Some(panel) = self.panel.upgrade() {
+            panel.update(cx, |panel, cx| panel.set_min_width(value, cx));
+        }
+    }
+
+    fn apply_min_height(&mut self, value: Option<f32>, cx: &mut Context<Self>) {
+        if let Some(panel) = self.panel.upgrade() {
+            panel.update(cx, |panel, cx| panel.set_min_height(value, cx));
+        }
+    }
+
+    fn apply_max_width(&mut self, value: Option<f32>, cx: &mut Context<Self>) {
+        if let Some(panel) = self.panel.upgrade() {
+            panel.update(cx, |panel, cx| panel.set_max_width(value, cx));
+        }
+    }
+
+    fn apply_max_height(&mut self, value: Option<f32>, cx: &mut Context<Self>) {
+        if let Some(panel) = self.panel.upgrade() {
+            panel.update(cx, |panel, cx| panel.set_max_height(value, cx));
+        }
+    }
+
+    fn reset_min_width(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.min_width_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.apply_min_width(None, cx);
+    }
+
+    fn reset_min_height(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.min_height_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.apply_min_height(None, cx);
+    }
+
+    fn reset_max_width(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.max_width_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.apply_max_width(None, cx);
+    }
+
+    fn reset_max_height(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.max_height_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.apply_max_height(None, cx);
     }
 
     /// Every theme edit goes through here: read the panel's override,
@@ -671,14 +807,47 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         );
     }
 
+    /// One size-limit field's row: the px input, a "px" tag, and a reset to
+    /// its left that clears the limit. The reset only rides the row once a
+    /// limit is set, matching the frame knobs' resets.
+    fn size_limit_row(
+        &self,
+        input: &Entity<InputState>,
+        has_limit: bool,
+        reset: fn(&mut Self, &mut Window, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .when(has_limit, |row| {
+                row.child(settings_ui::icon_button(
+                    icons::REFRESH_CW,
+                    false,
+                    cx.listener(move |this, _, window, cx| reset(this, window, cx)),
+                ))
+            })
+            .child(Input::new(input).small().w(px(64.)))
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(palette::text_muted())
+                    .child("px"),
+            )
+    }
+
     /// The shared Behavior page: the lock and anchor toggles every panel
-    /// carries, then the panel's own behavior rows when it has any. Sits
-    /// second in the nav on every panel, so how a panel acts always lives
-    /// in the same spot.
+    /// carries, the size limits, then the panel's own behavior rows when it
+    /// has any. Sits second in the nav on every panel, so how a panel acts
+    /// always lives in the same spot.
+    #[allow(clippy::too_many_arguments)]
     fn behavior_page(
         &mut self,
         locked: bool,
         anchor: bool,
+        limits: SizeLimits,
         extra: Option<AnyElement>,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -696,11 +865,60 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 Some("A drag anywhere on the panel moves the window, for decorations-off layouts"),
                 panel::toggle(anchor, Self::set_panel_anchor, cx),
             ));
+        // The size limits: type a px value to hold the panel to a floor or a
+        // cap, empty to leave it free. Only the axis the panel is resized
+        // along takes effect, but both are offered since a panel can sit in a
+        // row or a column. The min and max of each axis sit together.
+        let size = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(panel::setting_row(
+                "Min Width",
+                Some("Hold the panel's width so a resize can't squeeze it narrower"),
+                self.size_limit_row(
+                    &self.min_width_input,
+                    limits.min_width.is_some(),
+                    Self::reset_min_width,
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Max Width",
+                Some("Cap the panel's width so it doesn't stretch when the window widens"),
+                self.size_limit_row(
+                    &self.max_width_input,
+                    limits.max_width.is_some(),
+                    Self::reset_max_width,
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Min Height",
+                Some("Hold the panel's height so a resize can't squeeze it shorter"),
+                self.size_limit_row(
+                    &self.min_height_input,
+                    limits.min_height.is_some(),
+                    Self::reset_min_height,
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Max Height",
+                Some("Cap the panel's height so it doesn't stretch when the window grows taller"),
+                self.size_limit_row(
+                    &self.max_height_input,
+                    limits.max_height.is_some(),
+                    Self::reset_max_height,
+                    cx,
+                ),
+            ));
         div()
             .flex()
             .flex_col()
             .gap(SECTION_GAP)
             .child(section("Placement", None, placement))
+            .child(section("Size", None, size))
             .children(extra)
     }
 
@@ -982,10 +1200,21 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                         // Read through chrome() so the call isn't ambiguous
                         // between PanelSettings::locked and the dock's
                         // Panel::locked, which share the name.
-                        let locked = panel.read(cx).chrome().locked;
-                        let anchor = panel.read(cx).chrome().anchor;
+                        let (locked, anchor, limits) = {
+                            let chrome = panel.read(cx).chrome();
+                            (
+                                chrome.locked,
+                                chrome.anchor,
+                                SizeLimits {
+                                    min_width: chrome.min_width,
+                                    min_height: chrome.min_height,
+                                    max_width: chrome.max_width,
+                                    max_height: chrome.max_height,
+                                },
+                            )
+                        };
                         let extra = panel.update(cx, |panel, cx| panel.behavior(window, cx));
-                        self.behavior_page(locked, anchor, extra, cx)
+                        self.behavior_page(locked, anchor, limits, extra, cx)
                             .into_any_element()
                     }
                     _ => panel.update(cx, |panel, cx| panel.page(pages[picked - 2].0, window, cx)),

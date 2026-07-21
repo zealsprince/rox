@@ -60,6 +60,36 @@ impl Panel for StackPanel {
         min
     }
 
+    fn max_size(&self, cx: &App) -> Size<Pixels> {
+        // Mirror of min_size: along the stack axis the children's caps add
+        // (the stack can grow until every child is at its cap), across it
+        // the most permissive wins. Saturating so an unbounded child keeps
+        // the whole span unbounded.
+        let mut max: Size<Pixels> = Size::default();
+        let mut any = false;
+        for panel in self.panels.iter().filter(|p| p.visible(cx)) {
+            any = true;
+            let m = panel.max_size(cx);
+            match self.axis {
+                // Saturating add: an unbounded child (Pixels::MAX) keeps the
+                // whole span unbounded rather than wrapping.
+                Axis::Horizontal => {
+                    max.width = (max.width + m.width).min(Pixels::MAX);
+                    max.height = max.height.max(m.height);
+                }
+                Axis::Vertical => {
+                    max.height = (max.height + m.height).min(Pixels::MAX);
+                    max.width = max.width.max(m.width);
+                }
+            }
+        }
+        if any {
+            max
+        } else {
+            gpui::size(Pixels::MAX, Pixels::MAX)
+        }
+    }
+
     fn dump(&self, cx: &App) -> PanelState {
         let sizes = self.state.read(cx).sizes().clone();
         let mut state = PanelState::new(self);
@@ -521,7 +551,10 @@ impl Render for StackPanel {
                     .axis(self.axis)
                     .children(self.panels.clone().into_iter().map(|panel| {
                         resizable_panel()
-                            .size_range(panel.min_size(cx).along(self.axis)..Pixels::MAX)
+                            .size_range(
+                                panel.min_size(cx).along(self.axis)
+                                    ..panel.max_size(cx).along(self.axis),
+                            )
                             .child(panel.view())
                             .visible(panel.visible(cx))
                     })),

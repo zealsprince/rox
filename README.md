@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="crates/rox/assets/app/rox.png" alt="rox" width="64" />
+</p>
+
 # rox
 
-If Foobar2000 was made in the current year.
+*If Foobar2000 was made in the current year.*
 
 rox is a desktop music player for people with large, carefully tagged local libraries.
 The UI is panels you compose yourself, duplicate with independent configs, and pop out
@@ -8,6 +12,10 @@ into real OS windows. Themes are token sets a person can share. Tagging is deep 
 to trust with a real collection, and the whole thing stays fast at tens of thousands of
 tracks. Rust, built on gpui, with Linux, Mac, and Windows all first-class. If it doesn't
 start in under a second, it isn't rox.
+
+![rox](docs/0S-screenshots/nekorox.jpg)
+
+## Benchmarks
 
 Some quick benchmarks, taken against the same 50k-track library on the same
 Linux machine (Ryzen 9 5950X, Wayland), warm start, release build:
@@ -73,8 +81,6 @@ Without Nix you need stable Rust and gpui's system libraries from your distro (W
 X11, Vulkan, xkbcommon, fontconfig, alsa); every Rust dependency comes from crates.io.
 Run `./scripts/vendor-gpui.sh` once before building: it fetches gpui and gpui-component
 and applies the small patches under `patches/` (the nix shell does this on entry).
-
-## 
 
 ## Spec
 

@@ -1004,6 +1004,20 @@ impl Panel for LyricsPanel {
         false
     }
 
+    fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
+        crate::panel::chrome_min_size(
+            &self.config.chrome,
+            gpui::size(
+                rox_dock::resizable::PANEL_MIN_SIZE,
+                rox_dock::resizable::PANEL_MIN_SIZE,
+            ),
+        )
+    }
+
+    fn max_size(&self, cx: &App) -> gpui::Size<Pixels> {
+        crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
+    }
+
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {
         let mut state = rox_dock::PanelState::new(self);
         state.info = rox_dock::PanelInfo::panel(

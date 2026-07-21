@@ -214,8 +214,15 @@ impl Panel for MiniTogglePanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
-        // The button plus the strip's padding.
-        gpui::size(px(40.), rox_dock::resizable::PANEL_MIN_SIZE)
+        // The button plus the strip's padding, raised by any user floor.
+        crate::panel::chrome_min_size(
+            &self.config.chrome,
+            gpui::size(px(40.), rox_dock::resizable::PANEL_MIN_SIZE),
+        )
+    }
+
+    fn max_size(&self, cx: &App) -> gpui::Size<Pixels> {
+        crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
     /// The layout dump carries the panel's config; the builder registered

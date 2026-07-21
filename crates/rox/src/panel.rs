@@ -1128,6 +1128,58 @@ pub struct PanelChrome {
     /// on an interactive one it competes with the controls.
     #[serde(default, skip_serializing_if = "is_false")]
     pub anchor: bool,
+    /// Cap the panel's width in px. Set, the dock won't grow the panel wider
+    /// than this, and a growing window hands the extra room to its
+    /// neighbors instead, so a toolbar pinned narrow stays narrow. None
+    /// leaves the width free.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_width: Option<f32>,
+    /// Cap the panel's height in px, the vertical twin of
+    /// [`max_width`](Self::max_width): what keeps a menu bar or footer from
+    /// stretching when the window gets taller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_height: Option<f32>,
+    /// Hold the panel's width to at least this many px, so a resize can't
+    /// squeeze it narrower. Raised over the panel's built-in floor, never
+    /// below it. None leaves the width at that floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_width: Option<f32>,
+    /// Hold the panel's height to at least this many px, the vertical twin of
+    /// [`min_width`](Self::min_width).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_height: Option<f32>,
+}
+
+/// The panel's size cap as a [`Size`], reading the chrome's optional
+/// width/height limits over `floor` (the panel's minimum, so a cap can
+/// never drop below what the panel needs). An unset axis stays unbounded.
+/// Every panel returns this from its `Panel::max_size`, so the cap is a
+/// generic panel setting rather than a per-panel opt-in.
+pub fn chrome_max_size(chrome: &PanelChrome, floor: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
+    let axis = |cap: Option<f32>, floor: Pixels| match cap {
+        Some(px_value) => px(px_value).max(floor),
+        None => Pixels::MAX,
+    };
+    gpui::size(
+        axis(chrome.max_width, floor.width),
+        axis(chrome.max_height, floor.height),
+    )
+}
+
+/// The panel's minimum size as a [`Size`], the chrome's optional min
+/// width/height raised over `floor` (the panel's built-in minimum, what its
+/// controls need). A user min can only tighten the floor upward, never below
+/// it. An unset axis stays at the floor. Every panel returns this from its
+/// `Panel::min_size`, the mirror of [`chrome_max_size`].
+pub fn chrome_min_size(chrome: &PanelChrome, floor: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
+    let axis = |min: Option<f32>, floor: Pixels| match min {
+        Some(px_value) => px(px_value).max(floor),
+        None => floor,
+    };
+    gpui::size(
+        axis(chrome.min_width, floor.width),
+        axis(chrome.min_height, floor.height),
+    )
 }
 
 fn is_false(b: &bool) -> bool {
@@ -1218,6 +1270,36 @@ pub trait PanelSettings: Panel {
     /// Turn the window-move handle on or off; `chrome().anchor` reads it.
     fn set_anchor(&mut self, on: bool, cx: &mut Context<Self>) {
         self.chrome_mut().anchor = on;
+        cx.notify();
+    }
+
+    /// Store the panel's width cap in px (None clears it). Repainting the
+    /// dock re-reads the cap when it rebuilds the split's size range, so a
+    /// repaint settles the change.
+    fn set_max_width(&mut self, px: Option<f32>, cx: &mut Context<Self>) {
+        self.chrome_mut().max_width = px;
+        cx.notify();
+    }
+
+    /// Store the panel's height cap in px (None clears it), the twin of
+    /// [`set_max_width`](Self::set_max_width).
+    fn set_max_height(&mut self, px: Option<f32>, cx: &mut Context<Self>) {
+        self.chrome_mut().max_height = px;
+        cx.notify();
+    }
+
+    /// Store the panel's minimum width in px (None clears it), the floor a
+    /// resize can't squeeze it below. Same repaint-settles-it path as the
+    /// caps.
+    fn set_min_width(&mut self, px: Option<f32>, cx: &mut Context<Self>) {
+        self.chrome_mut().min_width = px;
+        cx.notify();
+    }
+
+    /// Store the panel's minimum height in px (None clears it), the twin of
+    /// [`set_min_width`](Self::set_min_width).
+    fn set_min_height(&mut self, px: Option<f32>, cx: &mut Context<Self>) {
+        self.chrome_mut().min_height = px;
         cx.notify();
     }
 

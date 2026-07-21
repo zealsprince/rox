@@ -123,6 +123,15 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
         gpui::size(PANEL_MIN_SIZE, PANEL_MIN_SIZE)
     }
 
+    /// The panel's maximum useful size along each axis. Resizable layouts
+    /// won't grow a split past it, and window growth stops handing space to
+    /// the panel once it's reached, so a toolbar or footer can be pinned so
+    /// it doesn't stretch when the window does. The default is unbounded.
+    fn max_size(&self, cx: &App) -> Size<Pixels> {
+        let _ = cx;
+        gpui::size(Pixels::MAX, Pixels::MAX)
+    }
+
     /// Set active state of the panel.
     ///
     /// This method will be called when the panel is active or inactive.
@@ -202,6 +211,7 @@ pub trait PanelView: 'static + Send + Sync {
     fn zoomable(&self, cx: &App) -> Option<PanelControl>;
     fn visible(&self, cx: &App) -> bool;
     fn min_size(&self, cx: &App) -> Size<Pixels>;
+    fn max_size(&self, cx: &App) -> Size<Pixels>;
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App);
     fn set_zoomed(&self, zoomed: bool, window: &mut Window, cx: &mut App);
     fn on_added_to(&self, tab_panel: WeakEntity<TabPanel>, window: &mut Window, cx: &mut App);
@@ -261,6 +271,10 @@ impl<T: Panel> PanelView for Entity<T> {
 
     fn min_size(&self, cx: &App) -> Size<Pixels> {
         self.read(cx).min_size(cx)
+    }
+
+    fn max_size(&self, cx: &App) -> Size<Pixels> {
+        self.read(cx).max_size(cx)
     }
 
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App) {

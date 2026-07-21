@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use gpui::{
     actions, deferred, div, prelude::*, px, svg, AnyElement, AnyWindowHandle, App, Axis, Context,
-    DismissEvent, Div, Entity, FocusHandle, Focusable as _, FontFeatures, Global, KeyBinding,
-    KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Subscription, Task, WeakEntity,
-    Window, WindowBounds,
+    DismissEvent, Div, Entity, ExternalPaths, FocusHandle, Focusable as _, FontFeatures, Global,
+    KeyBinding, KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Subscription, Task,
+    WeakEntity, Window, WindowBounds,
 };
 use rox_dock::{
     register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo, PanelView,
@@ -32,6 +32,7 @@ use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::catalog::{self, PanelDef, PanelPlacement, PanelSection};
 use crate::composite;
 use crate::design::{palette, tokens};
+use crate::track_drag::PlayDrag;
 use crate::history::{History, HistoryEvent};
 use crate::lastfm::Scrobbler;
 use crate::media_controls::{MediaCommand, MediaKeys, NowPlayingMeta};
@@ -42,6 +43,7 @@ use crate::panels::cover::CoverArtPanel;
 use crate::panels::depth::DepthPanel;
 use crate::panels::drag_anchor::DragAnchorPanel;
 use crate::panels::filter::{FilterConfig, FilterPanel};
+use crate::panels::folder_tree::FolderTreePanel;
 use crate::panels::grid::{GridConfig, GridPanel};
 use crate::panels::group::GroupPanel;
 use crate::panels::history::HistoryPanel;
@@ -398,6 +400,17 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
             });
         }};
     }
+    // The same, but the constructor takes a window: a searching panel spins up
+    // its search box's input state at build, like the library's and grid's.
+    macro_rules! configured_windowed {
+        ($name:literal, $panel:ty) => {{
+            let s = state.clone();
+            register_panel(cx, $name, move |_, _, info, window, cx| {
+                let config = panel::config_from_info(info);
+                Box::new(cx.new(|cx| <$panel>::new(s.clone(), config, window, cx)))
+            });
+        }};
+    }
     // Filter carries a window at build so its quick-search box can spin up
     // an input state, like the library panel's search.
     let s = state.clone();
@@ -405,16 +418,23 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
         let config: FilterConfig = panel::config_from_info(info);
         Box::new(cx.new(|cx| FilterPanel::new(s.clone(), config, window, cx)))
     });
+    // The folder tree takes a window at build to match its constructor,
+    // like the filter's.
+    let s = state.clone();
+    register_panel(cx, "folder tree", move |_, _, info, window, cx| {
+        let config = panel::config_from_info(info);
+        Box::new(cx.new(|cx| FolderTreePanel::new(s.clone(), config, window, cx)))
+    });
     configured!("seek", SeekStripPanel);
     configured!("track info", TrackInfoPanel);
     configured!("cover art", CoverArtPanel);
     configured!("metadata", MetadataPanel);
     configured!("lyrics", LyricsPanel);
     configured!("biography", BiographyPanel);
-    configured!("history", HistoryPanel);
-    configured!("queue", QueuePanel);
+    configured_windowed!("history", HistoryPanel);
+    configured_windowed!("queue", QueuePanel);
     configured!("queue widget", QueueWidgetPanel);
-    configured!("playlists", PlaylistsPanel);
+    configured_windowed!("playlists", PlaylistsPanel);
     // The composition hosts rebuild their children through this same
     // registry, and carry the workspace handle so their slot menus can
     // build replacements from the catalog.
@@ -1255,6 +1275,11 @@ impl Workspace {
         {
             return false;
         }
+        // Fold the outgoing layout's live dock into its working copy before
+        // the swap, so switching away keeps its unsaved tweaks. Synchronous
+        // on purpose: the debounced save below would otherwise be the only
+        // writer, and it dumps the incoming layout, not this one.
+        self.stash_active_edits(cx);
         // The registry's builders capture one workspace's entities;
         // re-register so the rebuild lands on this one even after
         // another window registered over it.
@@ -1277,6 +1302,8 @@ impl Workspace {
     /// [`apply_layout`], but the center comes from [`default_layout`] instead
     /// of a dump, so there is no registry rebuild to re-register for.
     fn apply_default_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Keep the outgoing layout's tweaks the same as any other swap.
+        self.stash_active_edits(cx);
         let weak_dock = self.dock.downgrade();
         let (center, stack, center_tabs, bottom_stack) =
             default_layout(&self.state, &weak_dock, window, cx);
@@ -1295,7 +1322,32 @@ impl Workspace {
     /// workspace save right after an apply captures the right layout.
     fn set_active_layout(&mut self, name: Option<String>) {
         self.active_layout = name.clone();
-        Settings::update(move |s| s.active_layout = name);
+        Settings::update(move |s| {
+            // The layout in front of you keeps its live dock in
+            // `settings.layout`, not the working-copy store, so clear any
+            // stale copy as it becomes active.
+            if let Some(name) = &name {
+                s.layout_edits.remove(name.as_str());
+            }
+            s.active_layout = name;
+        });
+    }
+
+    /// Fold this window's live dock into the active layout's working copy,
+    /// the unsaved-tweaks store a later switch reads back. A window on an
+    /// unnamed arrangement (the default build, a one-off import) has no name
+    /// to key on, so this no-ops; its live dock rides in `settings.layout`
+    /// for the launch restore instead.
+    fn stash_active_edits(&self, cx: &mut Context<Self>) {
+        let Some(name) = self.active_layout.clone() else {
+            return;
+        };
+        let Ok(dump) = serde_json::to_value(self.dock.read(cx).dump(cx)) else {
+            return;
+        };
+        Settings::update(move |s| {
+            s.layout_edits.insert(name, dump);
+        });
     }
 
     /// Apply a named preset, user or shipped, by name. Returns false when
@@ -1307,14 +1359,31 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(preset) = crate::layouts::resolve(&Settings::load(), name) else {
+        let settings = Settings::load();
+        let Some(preset) = crate::layouts::resolve(&settings, name) else {
             return false;
         };
         let size = preset.size;
-        let Ok(dump) = serde_json::from_value::<DockAreaState>(preset.dump) else {
-            return false;
-        };
-        if !self.apply_layout(dump, window, cx) {
+        // Prefer the layout's working copy, the unsaved tweaks kept from the
+        // last time it was in front of you, over the pristine preset. A
+        // missing copy, or one an older version can no longer load, falls
+        // back to the saved dump.
+        let edited = settings
+            .layout_edits
+            .get(name)
+            .cloned()
+            .and_then(|edit| serde_json::from_value::<DockAreaState>(edit).ok());
+        let mut applied = false;
+        if let Some(dump) = edited {
+            applied = self.apply_layout(dump, window, cx);
+        }
+        if !applied {
+            let Ok(dump) = serde_json::from_value::<DockAreaState>(preset.dump) else {
+                return false;
+            };
+            applied = self.apply_layout(dump, window, cx);
+        }
+        if !applied {
             return false;
         }
         self.set_active_layout(Some(name.to_string()));
@@ -1345,6 +1414,11 @@ impl Workspace {
             return;
         };
         crate::workspaces::apply_look(&bundle, cx);
+        // A whole-look swap drops the previous layout's unsaved edits along
+        // with the rest of the old look (apply_look cleared the store); forget
+        // the old active name too, so the apply below doesn't stash a stale
+        // copy back into the freshly cleared store.
+        self.active_layout = None;
         // The mini roles are cached off the file for the menubar; apply_look
         // already persisted them, this just moves the live copy.
         self.primary_layout = bundle.primary_layout.clone();
@@ -1577,6 +1651,9 @@ impl Workspace {
         };
         let size = Some(window_size(window));
         Settings::update(move |s| {
+            // Committing the edits clears the working copy; the saved preset
+            // is the state now.
+            s.layout_edits.remove(name.as_str());
             if let Some(existing) = s.layouts.iter_mut().find(|l| l.name == name) {
                 existing.dump = dump;
                 existing.size = size;
@@ -1597,6 +1674,9 @@ impl Workspace {
         };
         let size = Some(window_size(window));
         Settings::update(move |s| {
+            // Overwriting is a save under the pending name; the working copy
+            // it replaces is now the saved preset.
+            s.layout_edits.remove(name.as_str());
             if let Some(existing) = s.layouts.iter_mut().find(|l| l.name == name) {
                 existing.dump = dump;
                 existing.size = size;
@@ -1673,7 +1753,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let modal = cx.new(|cx| QueuePanel::windowed(self.state.clone(), cx));
+        let modal = cx.new(|cx| QueuePanel::windowed(self.state.clone(), window, cx));
         window.focus(&modal.read(cx).focus_handle(cx));
         self.queue_modal = Some(modal);
         cx.notify();
@@ -1713,6 +1793,134 @@ impl Workspace {
         };
         window.set_window_title(&title);
         self.titled_track = path;
+    }
+
+    /// Route OS-handed files into the shared player. The launch path
+    /// (`rox song.flac` and the .desktop actions) lands here after the
+    /// window's player exists; paths are already filtered to decodable audio.
+    /// Play replaces the restored session so double-clicking a file starts it;
+    /// enqueue appends. The player is path-based, so files outside the library
+    /// play fine.
+    pub fn open_paths(
+        &mut self,
+        mode: crate::open_files::LaunchMode,
+        paths: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+        self.state.player.update(cx, |player, cx| match mode {
+            crate::open_files::LaunchMode::Play => player.play(paths, cx),
+            crate::open_files::LaunchMode::Enqueue => player.enqueue(paths, cx),
+        });
+    }
+
+    /// Play files or tracks dropped onto the window body now, filtered to
+    /// decodable audio. A drop onto the window reads as "play this", so it
+    /// splices in right after the current track and jumps to it, keeping the
+    /// rest of the queue behind it. Dropping onto the queue panel adds to the
+    /// queue instead; that panel's own handler catches the drop first. An OS
+    /// file open (the .desktop default) still replaces the session, that path
+    /// runs through open_paths, not here.
+    fn play_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let paths = crate::open_files::resolve_audio_paths(paths);
+        if paths.is_empty() {
+            return;
+        }
+        self.state
+            .player
+            .update(cx, |player, cx| player.play_now(paths, cx));
+    }
+
+    /// Add dropped files or tracks to the up-next queue, filtered to decodable
+    /// audio. The Add to queue drop zone routes here.
+    fn queue_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let paths = crate::open_files::resolve_audio_paths(paths);
+        if paths.is_empty() {
+            return;
+        }
+        self.state
+            .player
+            .update(cx, |player, cx| player.enqueue(paths, cx));
+    }
+
+    /// The Play now / Add to queue drop zones, shown only while an audio
+    /// payload is dragged: a file from the OS (ExternalPaths) or a track from
+    /// the library (PlayDrag). Other drags (panel docking, queue reorder)
+    /// leave them hidden. Rendered as the top layer so the drop always lands
+    /// here - an occluded window-root target misses it because the panels
+    /// block the hit test.
+    fn drop_zones_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !cx.active_drag_is::<ExternalPaths>() && !cx.active_drag_is::<PlayDrag>() {
+            return None;
+        }
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .occlude()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_MD)
+                .p(tokens::SPACE_MD)
+                .bg(rgba(0x00000055))
+                .child(self.drop_zone("Play now", icons::PLAY, true, cx))
+                .child(self.drop_zone("Add to queue", icons::LIST_MUSIC, false, cx))
+                .into_any_element(),
+        )
+    }
+
+    /// One drop zone card. `play_now` true plays the drop after the current
+    /// track and jumps to it; false appends it to the queue. Both accept a
+    /// file from the OS and a track dragged from the library.
+    fn drop_zone(
+        &self,
+        label: &'static str,
+        icon: &'static str,
+        play_now: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let card = div()
+            .flex_1()
+            .w_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(tokens::SPACE_SM)
+            .rounded(tokens::RADIUS)
+            .border_2()
+            .border_color(palette::border_light())
+            .bg(palette::bg_menu_opaque())
+            .text_color(palette::text_muted())
+            .child(Icon::default().path(icon))
+            .child(div().text_lg().child(label))
+            .drag_over::<ExternalPaths>(|style, _, _, _| {
+                style
+                    .border_color(palette::accent())
+                    .bg(palette::bg_control_hover_opaque())
+            })
+            .drag_over::<PlayDrag>(|style, _, _, _| {
+                style
+                    .border_color(palette::accent())
+                    .bg(palette::bg_control_hover_opaque())
+            });
+        if play_now {
+            card.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.play_dropped(paths.paths().to_vec(), cx);
+            }))
+            .on_drop(cx.listener(|this, drag: &PlayDrag, _, cx| {
+                this.play_dropped(drag.paths.clone(), cx);
+            }))
+        } else {
+            card.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.queue_dropped(paths.paths().to_vec(), cx);
+            }))
+            .on_drop(cx.listener(|this, drag: &PlayDrag, _, cx| {
+                this.queue_dropped(drag.paths.clone(), cx);
+            }))
+        }
     }
 
     /// Apply one media-key press to the shared player. Play and Pause act on
@@ -3462,6 +3670,11 @@ impl Render for Workspace {
                 // The queue modal floats the same way, last so it paints over
                 // the dock.
                 .children(self.queue_modal_overlay(cx))
+                // The Play now / Add to queue drop zones. Last child so they
+                // sit on top of every panel, which also makes them the topmost
+                // hitbox: an occluded workspace-root drop target would miss the
+                // drop entirely (panels block the hit test).
+                .children(self.drop_zones_overlay(cx))
                 .into_any_element()
         })
     }

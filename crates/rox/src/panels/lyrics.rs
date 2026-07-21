@@ -1124,7 +1124,14 @@ impl LyricsPanel {
     /// sheet, or a quiet placeholder. Editing lives in its own window.
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
-            return placeholder("No track");
+            // With the name showing, a track stands in for the panel's face,
+            // so with none the panel reads as empty rather than flashing a
+            // "No track" notice.
+            return if self.config.show_name {
+                div().size_full()
+            } else {
+                placeholder("No track")
+            };
         };
 
         self.ensure_loaded(&path, cx);

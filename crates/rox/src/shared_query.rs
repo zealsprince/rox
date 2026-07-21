@@ -105,6 +105,7 @@ fn field_label(field: FilterField) -> &'static str {
         FilterField::Album => "Album",
         FilterField::Genre => "Genre",
         FilterField::Year => "Year",
+        FilterField::Folder => "Folder",
     }
 }
 

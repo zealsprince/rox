@@ -2,8 +2,14 @@
 Type=Application
 Name=rox
 Comment=A desktop music player for large, carefully tagged local libraries
-Exec=rox
+Exec=rox %F
 Icon=rox
 Terminal=false
 Categories=Audio;AudioVideo;Player;
+MimeType=audio/flac;audio/mpeg;audio/x-wav;audio/wav;audio/ogg;audio/x-vorbis+ogg;audio/mp4;audio/aac;audio/aiff;audio/x-aiff;audio/x-matroska;audio/x-caf;
 StartupWMClass=rox
+Actions=Enqueue;
+
+[Desktop Action Enqueue]
+Name=Add to Queue
+Exec=rox --enqueue %F

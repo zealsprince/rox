@@ -117,7 +117,7 @@ impl QueueWidgetPanel {
             workspace.update(cx, |ws, cx| ws.toggle_queue_modal(window, cx));
             return;
         }
-        let queue = cx.new(|cx| QueuePanel::windowed(state.clone(), cx));
+        let queue = cx.new(|cx| QueuePanel::windowed(state.clone(), window, cx));
         panel::pop_out_view(Arc::new(queue), state.clone(), cx);
     }
 

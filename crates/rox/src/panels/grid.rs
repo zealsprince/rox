@@ -16,13 +16,13 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use std::rc::Rc;
 
 use gpui::{
     canvas, div, img, prelude::*, px, size, svg, Along, AnyElement, App, Axis, Context, Div,
-    Entity, EventEmitter, FocusHandle, Focusable, Modifiers, MouseButton, MouseDownEvent,
+    Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent,
     MouseUpEvent, ObjectFit, Pixels, ScrollStrategy, ScrollWheelEvent, SharedString, Size,
     Subscription, WeakEntity, Window,
 };
@@ -208,6 +208,10 @@ const FALLBACK_COLS: usize = 4;
 /// reveals loaded tiles instead of placeholders.
 const PREFETCH_ROWS: usize = 2;
 
+/// How long a type-ahead phrase keeps growing before the next keystroke
+/// starts a fresh jump.
+const TYPE_AHEAD: Duration = Duration::from_millis(1000);
+
 pub struct GridPanel {
     state: AppState,
     config: GridConfig,
@@ -273,6 +277,11 @@ pub struct GridPanel {
     /// A pending box reset from a source toggle or a shared-query change;
     /// applied on the next render, where a window exists to set the input.
     resync_box: bool,
+    /// The type-ahead phrase and when its last keystroke landed, so typing
+    /// while the wall has focus jumps to the album by prefix, and a quick
+    /// run of keys grows one phrase instead of restarting each stroke.
+    type_ahead: String,
+    type_ahead_at: Option<Instant>,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -356,6 +365,8 @@ impl GridPanel {
             dim_scrub: ScrubState::default(),
             error: None,
             resync_box: false,
+            type_ahead: String::new(),
+            type_ahead_at: None,
             focus: cx.focus_handle(),
             tab_panel: None,
             _library_changed,
@@ -677,6 +688,85 @@ impl GridPanel {
         self.state
             .selection
             .update(cx, |selection, cx| selection.set(ids, cx));
+    }
+
+    /// Browse from the keyboard while the wall is focused: plain typing
+    /// jumps to the album whose name starts with the phrase. Modifiers pass
+    /// through so the workspace keeps its shortcuts, and a leading space
+    /// stays its play/pause instead of starting a phrase with a blank.
+    fn on_panel_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        if keystroke.modifiers.control || keystroke.modifiers.platform || keystroke.modifiers.alt {
+            return;
+        }
+        let Some(text) = &keystroke.key_char else {
+            return;
+        };
+        if self.type_ahead.is_empty() && text == " " {
+            return;
+        }
+        self.type_to(text.clone(), cx);
+    }
+
+    /// Grow or restart the type-ahead phrase and jump to the album it names.
+    /// A fresh phrase starts past the current selection, so the same letter
+    /// walks to the next match; a grown one re-tests the current album so
+    /// refining a match stays put. Matches album names by prefix, the
+    /// caption's own text.
+    fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let grown = self
+            .type_ahead_at
+            .is_some_and(|at| now.duration_since(at) < TYPE_AHEAD);
+        if grown {
+            self.type_ahead.push_str(&text);
+        } else {
+            self.type_ahead = text;
+        }
+        self.type_ahead_at = Some(now);
+        let len = self.cells.len();
+        if len == 0 {
+            return;
+        }
+        let needle = self.type_ahead.to_lowercase();
+        // A grown phrase re-tests the current album; a fresh one starts past
+        // it, so the same first letter steps to the next match.
+        let anchor = self.selected.iter().copied().min().or(self.anchor);
+        let start = match anchor {
+            Some(ix) if grown => ix,
+            Some(ix) => ix + 1,
+            None => 0,
+        };
+        let hit = {
+            let library = self.state.library.read(cx);
+            library.projection().and_then(|projection| {
+                (0..len).map(|off| (start + off) % len).find(|&ix| {
+                    self.cells
+                        .get(ix)
+                        .and_then(|cell| self.view.get(cell.start))
+                        .and_then(|&row| {
+                            projection.albums.lower.get(projection.album[row as usize] as usize)
+                        })
+                        .is_some_and(|album| album.starts_with(&needle))
+                })
+            })
+        };
+        if let Some(ix) = hit {
+            self.selected = HashSet::from([ix]);
+            self.anchor = Some(ix);
+            self.publish_selection(cx);
+            self.scroll_to_cell(ix, cx);
+        }
+    }
+
+    /// Bring an album's tile into view, centered on the scroll axis. Clears
+    /// any pending glide or restore so the jump wins over an automatic move.
+    fn scroll_to_cell(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.glide_to = None;
+        self.restore = None;
+        let line = ix / self.lanes();
+        self.scroll.scroll_to_item(line, ScrollStrategy::Center);
+        cx.notify();
     }
 
     /// Queue the album on the shared player.
@@ -1616,6 +1706,14 @@ impl GridPanel {
             .size_full()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
+            // Type-to-jump while the wall itself holds focus. The guard keeps
+            // it off while the search box is focused, whose keys bubble up
+            // through the toolbar child.
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.focus.is_focused(window) {
+                    this.on_panel_key(event, cx);
+                }
+            }))
             .when(headerless && self.config.search, |d| {
                 d.child(self.toolbar(cx))
             });
@@ -1678,7 +1776,10 @@ impl GridPanel {
                 // interrupts a running glide, the user wins.
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        // Take focus so the type-to-jump keys land on the wall
+                        // rather than whatever held focus before the press.
+                        window.focus(&this.focus);
                         this.glide_to = None;
                         this.restore = None;
                         this.flick.begin(event.position.along(axis));

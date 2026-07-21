@@ -24,8 +24,15 @@ use rusqlite::Connection;
 use crate::store;
 use crate::TrackRow;
 
-/// Formats the playback engine decodes today (ADR 2).
-const EXTENSIONS: &[&str] = &["flac", "mp3", "wav"];
+/// The audio extensions rox recognizes: what the scan indexes and what an
+/// external open accepts, one list so the two never drift. Tracks the codec
+/// set the engine is built with (ADR 2). Video containers (mp4, webm) stay
+/// off the list so a scan never vacuums up a film library, and Opus is out
+/// until symphonia ships a decoder for it.
+pub const EXTENSIONS: &[&str] = &[
+    "flac", "mp3", "wav", "ogg", "oga", "m4a", "m4b", "aac", "aif", "aiff",
+    "aifc", "mka", "caf",
+];
 const BATCH: usize = 512;
 
 #[derive(Default)]
@@ -170,6 +177,29 @@ fn process_file(path: &Path, known: &HashMap<String, (i64, u64)>) -> Outcome {
     }
 }
 
+/// Read one file that need not live in any scanned root - a drag-drop, a
+/// file association, a CLI open. Stats and reads it the same way the scan
+/// does, so the row carries real title/artist/album. None only when the
+/// file cannot be stat'd; a file with no readable tags still returns a
+/// fallback row (filename as title), matching how the scan degrades.
+pub fn read_one(path: &Path) -> Option<TrackRow> {
+    let meta = std::fs::metadata(path).ok()?;
+    let size = meta.len();
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let row = read_tags(path).unwrap_or_else(|| fallback_row(path));
+    Some(TrackRow {
+        path: path.to_string_lossy().into_owned(),
+        size,
+        mtime,
+        ..row
+    })
+}
+
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -199,11 +229,12 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Tag read isolated per file: a malformed file that errors or panics
 /// lofty's parser costs that one file its tags, never the scan.
 fn read_tags(path: &Path) -> Option<TrackRow> {
-    let file = catch_unwind(AssertUnwindSafe(|| {
-        lofty::probe::Probe::open(path).and_then(|p| p.options(crate::parse_opts()).read())
+    let source = crate::tag_source::open(path).ok()?;
+    let file = catch_unwind(AssertUnwindSafe(move || {
+        let probe = lofty::probe::Probe::new(source).guess_file_type().ok()?;
+        probe.options(crate::parse_opts()).read().ok()
     }))
-    .ok()?
-    .ok()?;
+    .ok()??;
     let mut row = fallback_row(path);
     row.duration_ms = file.properties().duration().as_millis() as u32;
     // The parsed type beats the extension a fallback row guesses from; a
@@ -212,6 +243,11 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         lofty::file::FileType::Flac => Some("flac"),
         lofty::file::FileType::Mpeg => Some("mp3"),
         lofty::file::FileType::Wav => Some("wav"),
+        lofty::file::FileType::Vorbis => Some("vorbis"),
+        lofty::file::FileType::Aiff => Some("aiff"),
+        lofty::file::FileType::Aac => Some("aac"),
+        // Mp4 (m4a/m4b) carries AAC or ALAC and lofty does not split them, so
+        // it keeps the extension guess rather than mislabel one as the other.
         _ => None,
     } {
         row.codec = codec.to_string();
@@ -349,5 +385,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rating, 75);
+    }
+
+    /// read_one on a loose file returns a row with path/size/mtime filled,
+    /// even when the file carries no readable tags - the filename stands in
+    /// as the title.
+    #[test]
+    fn read_one_fills_path_on_loose_file() {
+        let dir = std::env::temp_dir().join("rox-scanner-read-one");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("loose track.mp3");
+        // Not a valid stream, so the tag read fails and we fall through to
+        // the filename-title fallback.
+        std::fs::write(&path, b"not audio").unwrap();
+
+        let row = read_one(&path).unwrap();
+        assert_eq!(row.path, path.to_string_lossy());
+        assert_eq!(row.title, "loose track");
+        assert_eq!(row.codec, "mp3");
+        assert_eq!(row.size, 9);
+        assert!(row.mtime > 0);
+
+        // A path that does not exist cannot be stat'd, so None.
+        assert!(read_one(&dir.join("missing.mp3")).is_none());
     }
 }

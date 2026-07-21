@@ -49,6 +49,10 @@ use crate::panels::transport::{SeekStripPanel, TrackInfoPanel, TransportPanel, V
 use crate::panels::waveform::WaveformPanel;
 use crate::panels::window_controls::WindowControlsPanel;
 use crate::settings;
+// The frame sliders' ceilings live in settings, shared with the app
+// settings window so the per-panel and app-wide frames scrub the same
+// range, every knob running from zero (off) up to its own, in px.
+use crate::settings::{BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX};
 use crate::settings_ui::{self, grid_columns, section, sidebar, small_button, SECTION_GAP};
 use rox_dock::{PanelView, TabPanel};
 
@@ -57,13 +61,6 @@ use rox_dock::{PanelView, TabPanel};
 /// stacking a second editor over the same config. Closed windows leave a
 /// stale handle whose activate fails, so the next open falls through and
 /// replaces it, same as [`settings_window`](crate::settings_window).
-/// The frame sliders' ceilings; every knob runs from zero (off) up to
-/// its own, in px.
-const MARGIN_MAX: f32 = 24.0;
-const PADDING_MAX: f32 = 24.0;
-const ROUNDING_MAX: f32 = 24.0;
-const BORDER_MAX: f32 = 6.0;
-
 #[derive(Default)]
 struct OpenPanelSettings(HashMap<EntityId, WindowHandle<Root>>);
 
@@ -517,41 +514,82 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         self.update_theme(|theme| theme.surface_opacity = Some(value), cx);
     }
 
-    // The frame setters: the strip fraction mapped onto whole px, zero
-    // clearing the knob so an untouched frame serializes away.
+    // The frame setters: the strip fraction mapped onto whole px, forked
+    // as this panel's own override. Zero is a real override, not a clear -
+    // it squares the panel back off over a rounded app default; the reset
+    // button is the way back to following the app.
 
     fn set_margin(&mut self, fraction: f32, cx: &mut Context<Self>) {
         let value = (fraction * MARGIN_MAX).round();
-        self.update_theme(|theme| theme.margin = (value > 0.0).then_some(value), cx);
+        self.update_theme(|theme| theme.margin = Some(value), cx);
     }
 
     fn set_padding(&mut self, fraction: f32, cx: &mut Context<Self>) {
         let value = (fraction * PADDING_MAX).round();
-        self.update_theme(|theme| theme.padding = (value > 0.0).then_some(value), cx);
+        self.update_theme(|theme| theme.padding = Some(value), cx);
     }
 
     fn set_rounding(&mut self, fraction: f32, cx: &mut Context<Self>) {
         let value = (fraction * ROUNDING_MAX).round();
-        self.update_theme(|theme| theme.rounding = (value > 0.0).then_some(value), cx);
+        self.update_theme(|theme| theme.rounding = Some(value), cx);
     }
 
     fn set_border(&mut self, fraction: f32, cx: &mut Context<Self>) {
         let value = (fraction * BORDER_MAX).round();
-        self.update_theme(|theme| theme.border = (value > 0.0).then_some(value), cx);
+        self.update_theme(|theme| theme.border = Some(value), cx);
+    }
+
+    // The per-knob resets: drop just this knob's override so it follows
+    // the app frame again, the color cells' reset for geometry.
+
+    fn reset_margin(&mut self, cx: &mut Context<Self>) {
+        self.update_theme(|theme| theme.margin = None, cx);
+    }
+
+    fn reset_padding(&mut self, cx: &mut Context<Self>) {
+        self.update_theme(|theme| theme.padding = None, cx);
+    }
+
+    fn reset_rounding(&mut self, cx: &mut Context<Self>) {
+        self.update_theme(|theme| theme.rounding = None, cx);
+    }
+
+    fn reset_border(&mut self, cx: &mut Context<Self>) {
+        self.update_theme(|theme| theme.border = None, cx);
     }
 
     /// One frame knob's slider row: the value over its 0 to `max` range,
-    /// the px readout alongside, unset reading as zero.
+    /// the px readout alongside. Unset, the slider rests at the app-wide
+    /// default the panel inherits; once the panel forks its own, a reset
+    /// button rides the row to send it back to following the app.
+    #[allow(clippy::too_many_arguments)]
     fn frame_slider(
         &self,
         scrub: &ScrubState,
         value: Option<f32>,
+        inherited: f32,
         max: f32,
         apply: fn(&mut Self, f32, &mut Context<Self>),
+        reset: fn(&mut Self, &mut Context<Self>),
         cx: &mut Context<Self>,
     ) -> Div {
-        let value = value.unwrap_or(0.0);
-        panel::value_slider(scrub, value / max, format!("{value:.0} px"), apply, cx)
+        let shown = value.unwrap_or(inherited);
+        let slider = panel::value_slider(scrub, shown / max, format!("{shown:.0} px"), apply, cx);
+        let row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .child(slider);
+        if value.is_some() {
+            row.child(settings_ui::icon_button(
+                icons::REFRESH_CW,
+                false,
+                cx.listener(move |this, _, _, cx| reset(this, cx)),
+            ))
+        } else {
+            row
+        }
     }
 
     /// Drop every color override: the panel follows the app palette
@@ -699,6 +737,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ))
             });
 
+        let app = settings::app_frame();
         let frame = div()
             .flex()
             .flex_col()
@@ -709,8 +748,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 self.frame_slider(
                     &self.margin_scrub,
                     theme.margin,
+                    app.margin,
                     MARGIN_MAX,
                     Self::set_margin,
+                    Self::reset_margin,
                     cx,
                 ),
             ))
@@ -720,8 +761,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 self.frame_slider(
                     &self.padding_scrub,
                     theme.padding,
+                    app.padding,
                     PADDING_MAX,
                     Self::set_padding,
+                    Self::reset_padding,
                     cx,
                 ),
             ))
@@ -731,8 +774,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 self.frame_slider(
                     &self.rounding_scrub,
                     theme.rounding,
+                    app.rounding,
                     ROUNDING_MAX,
                     Self::set_rounding,
+                    Self::reset_rounding,
                     cx,
                 ),
             ))
@@ -742,8 +787,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 self.frame_slider(
                     &self.border_scrub,
                     theme.border,
+                    app.border,
                     BORDER_MAX,
                     Self::set_border,
+                    Self::reset_border,
                     cx,
                 ),
             ));

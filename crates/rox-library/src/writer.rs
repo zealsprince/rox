@@ -420,7 +420,11 @@ fn write_tags(
         .map_err(|e| format!("open for write: {e}"))?;
     match kind {
         FileType::Mpeg => {
-            let mut mpeg = MpegFile::read_from(&mut file, parse_opts())
+            // Read through the sanitiser so a tag lofty would de-unsync
+            // twice parses clean; the write below zeroes the header flag,
+            // so the saved clone no longer carries the shape at all.
+            let mut source = crate::tag_source::open(tmp).map_err(|e| format!("open: {e}"))?;
+            let mut mpeg = MpegFile::read_from(&mut source, parse_opts())
                 .map_err(|e| format!("parse: {e}"))?;
             let mut tag = mpeg.id3v2().cloned().unwrap_or_default();
             for change in changes {
@@ -455,7 +459,8 @@ fn write_tags(
                 .map_err(|e| format!("write: {e}"))
         }
         FileType::Flac => {
-            let mut flac = FlacFile::read_from(&mut file, parse_opts())
+            let mut source = crate::tag_source::open(tmp).map_err(|e| format!("open: {e}"))?;
+            let mut flac = FlacFile::read_from(&mut source, parse_opts())
                 .map_err(|e| format!("parse: {e}"))?;
             let mut tag = flac.vorbis_comments().cloned().unwrap_or_default();
             for change in changes {
@@ -788,13 +793,13 @@ fn parse_opts() -> ParseOptions {
 }
 
 fn parse_mpeg(path: &Path) -> Result<MpegFile, String> {
-    let mut file = fs::File::open(path).map_err(|e| format!("open: {e}"))?;
-    MpegFile::read_from(&mut file, parse_opts()).map_err(|e| format!("parse: {e}"))
+    let mut source = crate::tag_source::open(path).map_err(|e| format!("open: {e}"))?;
+    MpegFile::read_from(&mut source, parse_opts()).map_err(|e| format!("parse: {e}"))
 }
 
 fn parse_flac(path: &Path) -> Result<FlacFile, String> {
-    let mut file = fs::File::open(path).map_err(|e| format!("open: {e}"))?;
-    FlacFile::read_from(&mut file, parse_opts()).map_err(|e| format!("parse: {e}"))
+    let mut source = crate::tag_source::open(path).map_err(|e| format!("open: {e}"))?;
+    FlacFile::read_from(&mut source, parse_opts()).map_err(|e| format!("parse: {e}"))
 }
 
 /// The clone's path: a sibling in the same directory, so the final rename

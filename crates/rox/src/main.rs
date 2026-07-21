@@ -24,6 +24,7 @@ mod lyrics_edit;
 mod lyrics_match;
 mod m3u;
 mod media_controls;
+mod open_files;
 mod panel;
 mod panel_settings;
 mod panels;
@@ -47,6 +48,7 @@ mod tag_match;
 mod thumbs;
 mod track_cells;
 mod track_columns;
+mod track_drag;
 mod tray;
 mod welcome_window;
 mod workspace;
@@ -89,19 +91,24 @@ pub fn open_workspace(cx: &mut App) {
 /// New Window (restore), Empty Window, and New Window from Layout all land
 /// here.
 pub fn open_workspace_with(start: workspace::WorkspaceStart, cx: &mut App) {
-    open_workspace_window(start, None, cx);
+    open_workspace_window(start, None, None, cx);
 }
 
 /// Reopen from the tray or the macOS dock: a window on the saved working
 /// layout over the state the last close handed to the hold, so playback
 /// carries straight over.
 pub fn open_workspace_adopting(state: panel::AppState, cx: &mut App) {
-    open_workspace_window(workspace::WorkspaceStart::Restore, Some(state), cx);
+    open_workspace_window(workspace::WorkspaceStart::Restore, Some(state), None, cx);
 }
 
 fn open_workspace_window(
     start: workspace::WorkspaceStart,
     adopt: Option<panel::AppState>,
+    // Audio files handed to us on the command line (`rox song.flac`, or the
+    // .desktop actions), with the mode the launch asked for. Play overrides
+    // the restore so double-clicking a file starts it; enqueue appends to the
+    // up-next queue. None on every other open.
+    open: Option<(open_files::LaunchMode, Vec<std::path::PathBuf>)>,
     cx: &mut App,
 ) {
     // Windows open on the saved frame, so a restart, and every New Window,
@@ -150,6 +157,11 @@ fn open_workspace_window(
         // only set_window_title reaches the compositor.
         window.set_window_title("rox");
         let workspace = cx.new(|cx| Workspace::new(start, adopt, window, cx));
+        // Command-line files route into the fresh window's player. The player
+        // is path-based, so this works for files outside the library.
+        if let Some((mode, paths)) = open {
+            workspace.update(cx, |ws, cx| ws.open_paths(mode, paths, cx));
+        }
         // gpui-component windows layer sheets, dialogs, and dock drag
         // overlays through a Root at the top of the window.
         cx.new(|cx| Root::new(workspace, window, cx))
@@ -158,6 +170,14 @@ fn open_workspace_window(
 }
 
 fn main() {
+    // Files handed to us on the command line (`rox song.flac`, or the file
+    // manager's Open With). Collected before the app boots so a plausible-file
+    // filter runs off the real argv, not gpui's.
+    //
+    // Single-instance hook goes here: if a rox is already running, forward
+    // these paths to it over a socket and exit instead of opening a second
+    // window. Not wired yet - a second launch just spawns another instance.
+    let (launch_mode, launch_files) = open_files::from_args();
     let app = Application::new().with_assets(Assets);
     // macOS: clicking the dock icon while the app runs with no windows
     // brings a workspace back - the platform's own quit-to-tray. Only the
@@ -167,7 +187,7 @@ fn main() {
             tray::reopen(cx);
         }
     });
-    app.run(|cx: &mut App| {
+    app.run(move |cx: &mut App| {
         // Whether this launch found a settings file decides the welcome
         // window later; recorded before anything can write one.
         settings::note_first_run();
@@ -181,6 +201,7 @@ fn main() {
         let settings = Settings::load();
         palette::set(settings.palette(), cx);
         palette::set_scalars(settings.surface_opacity, settings.backdrop_strength, cx);
+        settings::set_app_frame(settings.frame, cx);
         palette::set_keep_dark(settings.keep_dark, cx);
         palette::set_art_theming(settings.art_theming, cx);
         settings::set_app_font(settings.app_font.clone(), cx);
@@ -197,7 +218,10 @@ fn main() {
         providers::set_itunes_online(settings.providers.itunes);
         providers::set_deezer_online(settings.providers.deezer);
         providers::set_artist_online(settings.providers.artist);
-        open_workspace(cx);
+        // Launch files ride into the first window; a plain launch (no files)
+        // opens on the restored state as before.
+        let open = (!launch_files.is_empty()).then_some((launch_mode, launch_files));
+        open_workspace_window(workspace::WorkspaceStart::Restore, None, open, cx);
         cx.activate(true);
     });
 }

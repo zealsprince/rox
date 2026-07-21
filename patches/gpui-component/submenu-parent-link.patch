@@ -1,0 +1,38 @@
+--- a/src/menu/popup_menu.rs
++++ b/src/menu/popup_menu.rs
+@@ -865,7 +865,13 @@
+     fn _select_submenu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+         if let Some(active_submenu) = self.active_submenu() {
+             // Focus the submenu, so that can be handle the action.
++            let parent = cx.entity().downgrade();
+             active_submenu.update(cx, |view, cx| {
++                // rox patch: same parent link as the hover path, for keyboard
++                // navigation into a submenu that skipped submenu_with_icon.
++                if view.parent_menu.is_none() {
++                    view.parent_menu = Some(parent);
++                }
+                 view.set_selected_index(0, cx);
+                 view.focus_handle.focus(window);
+             });
+@@ -1050,6 +1056,21 @@
+             .on_hover(cx.listener(move |this, hovered, _, cx| {
+                 if *hovered {
+                     this.selected_index = Some(ix);
++                    // rox patch: submenus built with PopupMenuItem::submenu (rather
++                    // than the submenu_with_icon builder) never get parent_menu set,
++                    // so dismissing the submenu after a click can't propagate up to
++                    // close the root menu and the context menu stays open. Link it
++                    // here, once, when the submenu is first hovered open.
++                    if is_submenu {
++                        if let Some(PopupMenuItem::Submenu { menu, .. }) =
++                            this.menu_items.get(ix)
++                        {
++                            if menu.read(cx).parent_menu.is_none() {
++                                let parent = cx.entity().downgrade();
++                                menu.update(cx, |view, _| view.parent_menu = Some(parent));
++                            }
++                        }
++                    }
+                 } else if !is_submenu && this.selected_index == Some(ix) {
+                     // TODO: Better handle the submenu unselection when hover out
+                     this.selected_index = None;

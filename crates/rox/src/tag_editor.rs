@@ -11,7 +11,9 @@
 //! through the writer's read,
 //! the metadata panel's convention, so every save diffs per file against
 //! what that file actually carries and commits through the atomic layer.
-//! A successful save lands in the catalog in one batch, no rescan.
+//! A successful save lands in the catalog in one batch, then re-reads the
+//! written files so their rows converge with what is on disk - duration and
+//! the rest the form never named included.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -24,8 +26,9 @@ use gpui::{
 };
 use gpui_component::input::{Enter, Input, InputEvent, InputState};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
+use gpui_component::spinner::Spinner;
 use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableEvent, TableState};
-use gpui_component::{Root, Sizable};
+use gpui_component::{Root, Sizable, Size};
 
 use rox_library::projection::Projection;
 use rox_library::rating;
@@ -228,6 +231,11 @@ pub struct TagEditor {
     /// Whether each field's files disagreed at the last fill; the
     /// read-only per-track rows say so instead of faking one value.
     mixed: Vec<bool>,
+    /// Whether the user armed a batch field to clear across every file.
+    /// A mixed field sits empty over its placeholder, so an empty input
+    /// alone can't say "wipe this tag on all of them" - this flag does,
+    /// and save writes the field empty even when nothing was typed.
+    cleared: Vec<bool>,
     /// One input per entry of [`FIELDS`].
     inputs: Vec<Entity<InputState>>,
     /// Table mode: the shared form swapped for one row of cells per
@@ -379,6 +387,7 @@ impl TagEditor {
             baselines: None,
             filled: Vec::new(),
             mixed: Vec::new(),
+            cleared: vec![false; FIELDS.len()],
             inputs,
             table,
             cells: None,
@@ -659,7 +668,28 @@ impl TagEditor {
             });
             self.filled[i] = value;
             self.mixed[i] = mixed;
+            // The table re-read is a fresh baseline, so any pending
+            // clear-all the form carried is off.
+            self.cleared[i] = false;
         }
+    }
+
+    /// Toggle a batch field's clear-all arm: on, the field wipes its tag
+    /// across every file in the selection on save; off, it goes back to
+    /// leaving the split values alone. Only the shared form's mixed fields
+    /// get this - a single track just empties its box.
+    fn toggle_clear(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let on = !self.cleared.get(i).copied().unwrap_or(false);
+        self.cleared[i] = on;
+        self.inputs[i].update(cx, |input, cx| {
+            if on {
+                input.set_value("", window, cx);
+                input.set_placeholder("Clear on save", window, cx);
+            } else {
+                input.set_placeholder("Multiple values", window, cx);
+            }
+        });
+        cx.notify();
     }
 
     /// Open the metadata compare on the single edited track. The window
@@ -719,7 +749,10 @@ impl TagEditor {
                 continue;
             }
             let value = self.inputs[i].read(cx).value().to_string();
-            if value == self.filled[i].as_ref() {
+            // An armed clear counts even when the input matches its fill:
+            // the empty box is the whole point, wiping the tag on every
+            // file in the batch.
+            if value == self.filled[i].as_ref() && !self.cleared[i] {
                 continue;
             }
             armed.push((i, value));
@@ -891,7 +924,24 @@ impl TagEditor {
         let buttons = div()
             .flex()
             .flex_row()
+            .items_center()
             .gap(tokens::SPACE_SM)
+            // A commit runs off the UI thread and the buttons only dim, so
+            // say it plainly: the spinner rides ahead of them until the
+            // write lands or fails.
+            .when(self.saving, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_XS)
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(Spinner::new().with_size(Size::Small))
+                        .child("Saving..."),
+                )
+            })
             .when(single && providers::metadata_online(), |d| {
                 d.child(settings_ui::small_button(
                     "Look Up",
@@ -949,12 +999,17 @@ impl TagEditor {
     /// The shared form: one bare field per row - no input chrome, the
     /// sheet look. Per-track fields have no single form value in a
     /// batch, so they read as plain text and the table edits them.
-    fn form_body(&self, cx: &App) -> Div {
+    fn form_body(&self, cx: &mut Context<Self>) -> Div {
         let single = self.tracks.len() == 1;
         let rows = FIELDS
             .iter()
             .enumerate()
             .map(|(i, (field_def, label, per_track))| {
+                // A mixed batch field can be wiped across every file: its
+                // box is empty over the placeholder, so typing can only add
+                // a value, never say "clear it everywhere". The toggle does.
+                let clearable = !single && !per_track && self.mixed.get(i).copied().unwrap_or(false);
+                let cleared = self.cleared.get(i).copied().unwrap_or(false);
                 let field: gpui::AnyElement = if *per_track && !single {
                     let value = self.inputs[i].read(cx).value();
                     let (text, faded) = if self.mixed.get(i).copied().unwrap_or(false) {
@@ -1013,6 +1068,30 @@ impl TagEditor {
                             .child(*label),
                     )
                     .child(div().flex_1().min_w_0().child(field))
+                    .when(clearable, |d| {
+                        d.child(
+                            div()
+                                .id(("clear-field", i))
+                                .flex_none()
+                                .px(tokens::SPACE_XS)
+                                .py(px(1.))
+                                .rounded(tokens::RADIUS)
+                                .text_xs()
+                                .cursor_pointer()
+                                .map(|d| {
+                                    if cleared {
+                                        d.text_color(palette::accent())
+                                    } else {
+                                        d.text_color(palette::text_muted())
+                                            .hover(|d| d.text_color(palette::text()))
+                                    }
+                                })
+                                .child(if cleared { "will clear" } else { "clear all" })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.toggle_clear(i, window, cx)
+                                })),
+                        )
+                    })
             });
         div().flex().flex_col().gap(px(2.)).children(rows)
     }

@@ -268,6 +268,7 @@ impl CompletionProvider for QuerySuggestions {
                 QueryField::AlbumArtist => &self.projection.album_artists,
                 QueryField::Album => &self.projection.albums,
                 QueryField::Genre => &self.projection.genres,
+                QueryField::Folder => &self.projection.folders,
                 // The year column has no symbol table; suggest from the
                 // distinct year list instead. Years never carry spaces, so
                 // they need no quoting.

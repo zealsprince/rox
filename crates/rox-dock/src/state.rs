@@ -219,7 +219,7 @@ impl PanelState {
                     })
                     .collect_vec();
 
-                DockItem::tabs(items, &dock_area, window, cx).active_index(active_index)
+                DockItem::tabs(items, &dock_area, window, cx).active_index(active_index, cx)
             }
             // An empty container that an older build dumped with the default
             // `Panel(Null)` info instead of its own tabs/stack info (the bug

@@ -1251,13 +1251,22 @@ pub trait PanelSettings: Panel {
 /// content masks stay rectangular and a wrapper's corners would be
 /// painted over, and padding on the body keeps the gap in the panel's
 /// own background - while margin wraps outside it, so the backdrop
-/// shows through that gap. An empty theme skips all of it.
+/// shows through that gap. Each knob the theme leaves unset falls back to
+/// the app-wide default; an app with no frame set draws none, the look an
+/// unthemed panel carried before the knobs were lifted.
 pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
     let theme = &chrome.theme;
     let anchor = chrome.anchor;
     let frame = {
-        let (margin, padding, rounding, border) =
-            (theme.margin, theme.padding, theme.rounding, theme.border);
+        // The panel's own knob wins where it sets one; unset, the panel
+        // takes the app-wide default. Zero reads as no knob either way, so
+        // an explicit zero over a rounded app default squares this one
+        // panel back off, the same as rounding's absence.
+        let app = crate::settings::app_frame();
+        let margin = theme.margin.unwrap_or(app.margin);
+        let padding = theme.padding.unwrap_or(app.padding);
+        let rounding = theme.rounding.unwrap_or(app.rounding);
+        let border = theme.border.unwrap_or(app.border);
         let font = theme.font.clone();
         move || {
             let mut body = build();
@@ -1266,14 +1275,14 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
             if let Some(font) = font {
                 body = body.font_family(font);
             }
-            if let Some(padding) = padding {
+            if padding > 0.0 {
                 body = body.p(px(padding));
             }
-            if let Some(radius) = rounding {
-                body = body.rounded(px(radius));
+            if rounding > 0.0 {
+                body = body.rounded(px(rounding));
             }
-            if let Some(width) = border {
-                let width: AbsoluteLength = px(width).into();
+            if border > 0.0 {
+                let width: AbsoluteLength = px(border).into();
                 let widths = &mut body.style().border_widths;
                 widths.top = Some(width);
                 widths.right = Some(width);
@@ -1284,9 +1293,10 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
             // The outer element takes layout and, when the panel is an
             // anchor, the window-move drag. A margin wraps the body in an
             // outer cell; without one the body itself is the root.
-            let mut root = match margin {
-                Some(margin) => div().size_full().p(px(margin)).child(body),
-                None => body,
+            let mut root = if margin > 0.0 {
+                div().size_full().p(px(margin)).child(body)
+            } else {
+                body
             };
             if anchor {
                 root = root

@@ -6,7 +6,6 @@
 //! those shapes, so the writer, the scanner, and the store agree on one
 //! set of thresholds - lofty's MusicBee mapping, the de-facto default.
 
-use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
@@ -117,8 +116,8 @@ fn read_inner(path: &Path, kind: FileType) -> Option<u8> {
     let opts = crate::parse_opts().read_properties(false);
     match kind {
         FileType::Mpeg => {
-            let mut file = fs::File::open(path).ok()?;
-            let tag = MpegFile::read_from(&mut file, opts).ok()?.id3v2().cloned()?;
+            let mut source = crate::tag_source::open(path).ok()?;
+            let tag = MpegFile::read_from(&mut source, opts).ok()?.id3v2().cloned()?;
             let mut popm = None;
             for frame in &tag {
                 match frame {
@@ -136,8 +135,8 @@ fn read_inner(path: &Path, kind: FileType) -> Option<u8> {
             popm
         }
         FileType::Flac => {
-            let mut file = fs::File::open(path).ok()?;
-            let tag = FlacFile::read_from(&mut file, opts)
+            let mut source = crate::tag_source::open(path).ok()?;
+            let tag = FlacFile::read_from(&mut source, opts)
                 .ok()?
                 .vorbis_comments()
                 .cloned()?;

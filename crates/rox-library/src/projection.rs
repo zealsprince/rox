@@ -128,11 +128,13 @@ pub struct Builder {
     bitrate_kbps: Vec<u16>,
     rating: Vec<u8>,
     added: Vec<i64>,
+    folder: Vec<u32>,
     artists: Interner,
     album_artists: Interner,
     albums: Interner,
     genres: Interner,
     codecs: Interner,
+    folders: Interner,
 }
 
 impl Builder {
@@ -140,6 +142,7 @@ impl Builder {
     fn push(
         &mut self,
         id: i64,
+        path: &str,
         title: &str,
         artist: &str,
         album_artist: &str,
@@ -170,6 +173,13 @@ impl Builder {
         self.bitrate_kbps.push(bitrate_kbps);
         self.rating.push(rating);
         self.added.push(added);
+        // Interned per album directory, so it stays cheap even at ten
+        // million rows; an empty parent (a bare filename) folds to "".
+        let folder = Path::new(path)
+            .parent()
+            .map(|p| p.to_string_lossy())
+            .unwrap_or_default();
+        self.folder.push(self.folders.intern(&folder));
     }
 }
 
@@ -200,11 +210,16 @@ pub struct Projection {
     /// so a play never pays a projection reload. Per ADR 11 the events
     /// stay the source; this column only caches their per-track count.
     pub plays: Vec<AtomicU32>,
+    /// Each track's parent directory, interned. Folders repeat once per
+    /// album directory, so interning keeps this a handful of symbols even
+    /// across a huge library. Searchable and filterable like artist/album.
+    pub folder: Vec<u32>,
     pub artists: SymTable,
     pub album_artists: SymTable,
     pub albums: SymTable,
     pub genres: SymTable,
     pub codecs: SymTable,
+    pub folders: SymTable,
 }
 
 pub struct RowView<'a> {
@@ -222,6 +237,7 @@ pub struct RowView<'a> {
     pub rating: u8,
     pub plays: u32,
     pub added: i64,
+    pub folder: &'a str,
 }
 
 /// One album-artist match from [`Projection::search_artists`]: the interned
@@ -250,6 +266,7 @@ pub enum QueryField {
     Album,
     Genre,
     Year,
+    Folder,
 }
 
 /// The `field:` prefixes the query syntax accepts, shared with the
@@ -261,6 +278,7 @@ pub const QUERY_FIELDS: &[(&str, QueryField)] = &[
     ("album", QueryField::Album),
     ("genre", QueryField::Genre),
     ("year", QueryField::Year),
+    ("folder", QueryField::Folder),
 ];
 
 /// One parsed query term: a lowercased needle, maybe pinned to one field.
@@ -333,13 +351,17 @@ pub enum FilterField {
     Album,
     Genre,
     Year,
+    Folder,
 }
 
 /// A structured filter over exact field values, the filter panel's state:
 /// values OR within a field, fields AND across. Unlike [`parse_query`]'s
 /// terms these match whole values, never substrings, so picking "Air"
 /// leaves "Airborne" out. Years ride as their decimal strings ("0" for
-/// untagged) to keep the value lists one shape.
+/// untagged) to keep the value lists one shape. Folder picks are the one
+/// exception to whole-value matching: a picked folder covers its whole
+/// subtree, so the folder tree scopes to a branch with a single value
+/// instead of enumerating every descendant.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FilterSet {
     pub fields: Vec<(FilterField, Vec<String>)>,
@@ -377,6 +399,98 @@ impl FilterSet {
     pub fn clear(&mut self, field: FilterField) {
         self.fields.retain(|(f, _)| *f != field);
     }
+
+    /// Whether one track's fields satisfy the filter: within a field its
+    /// value must be one of the picks, across fields all must pass. The
+    /// whole-value counterpart to [`Projection::filter_mask`], for a panel
+    /// filtering its own row list (the queue, history, playlists) instead of
+    /// the projection. Values match whole, never as substrings, the same as
+    /// the mask over the catalog.
+    pub fn matches(&self, fields: &TrackFields) -> bool {
+        self.fields.iter().all(|(field, values)| {
+            if values.is_empty() {
+                return true;
+            }
+            match field {
+                FilterField::Artist => values.iter().any(|v| v == fields.artist),
+                FilterField::AlbumArtist => values.iter().any(|v| v == fields.album_artist),
+                FilterField::Album => values.iter().any(|v| v == fields.album),
+                FilterField::Genre => values.iter().any(|v| v == fields.genre),
+                FilterField::Folder => {
+                    let folder = fields.folder();
+                    values.iter().any(|v| folder_in_subtree(&folder, v))
+                }
+                FilterField::Year => values.contains(&fields.year.to_string()),
+            }
+        })
+    }
+}
+
+/// The plain-string fields a query term or filter matches against, for a
+/// track list that isn't the projection - the queue, history, and playlists
+/// filter their own rows through [`track_matches`] and [`FilterSet::matches`]
+/// rather than the column-optimized [`Projection::search`] and
+/// [`Projection::filter_mask`] over the whole catalog.
+pub struct TrackFields<'a> {
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub album_artist: &'a str,
+    pub album: &'a str,
+    pub genre: &'a str,
+    pub year: u16,
+    /// The track's file path, for the `folder:` pin and the folder filter;
+    /// empty when there is none. The folder itself is the parent directory,
+    /// resolved the same way the projection interns it.
+    pub path: &'a str,
+}
+
+/// Whether a folder sits at or under a picked one: the pick itself, or a
+/// descendant by path prefix with a separator boundary, so "Music/Air"
+/// never pulls in "Music/Airborne".
+fn folder_in_subtree(folder: &str, pick: &str) -> bool {
+    folder
+        .strip_prefix(pick)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(std::path::MAIN_SEPARATOR))
+}
+
+impl TrackFields<'_> {
+    /// The file's parent directory, the projection's folder value; an empty
+    /// parent (a bare filename) folds to "".
+    fn folder(&self) -> String {
+        Path::new(self.path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
+/// Case-folded substring test with a needle already lowercased by
+/// [`parse_query`]. An empty needle matches everything.
+fn contains_fold(haystack: &str, needle_lower: &str) -> bool {
+    needle_lower.is_empty() || haystack.to_lowercase().contains(needle_lower)
+}
+
+/// Whether one track's fields satisfy every parsed query term. Free terms
+/// match title, artist, album artist, album, or genre; a pinned term only its
+/// field, the same rule [`Projection::search`] applies over the catalog.
+/// Terms AND together; needles come lowercased from [`parse_query`].
+pub fn track_matches(terms: &[Term], fields: &TrackFields) -> bool {
+    terms.iter().all(|t| match t.field {
+        None => {
+            contains_fold(fields.title, &t.needle)
+                || contains_fold(fields.artist, &t.needle)
+                || contains_fold(fields.album_artist, &t.needle)
+                || contains_fold(fields.album, &t.needle)
+                || contains_fold(fields.genre, &t.needle)
+        }
+        Some(QueryField::Title) => contains_fold(fields.title, &t.needle),
+        Some(QueryField::Artist) => contains_fold(fields.artist, &t.needle),
+        Some(QueryField::AlbumArtist) => contains_fold(fields.album_artist, &t.needle),
+        Some(QueryField::Album) => contains_fold(fields.album, &t.needle),
+        Some(QueryField::Genre) => contains_fold(fields.genre, &t.needle),
+        Some(QueryField::Folder) => contains_fold(&fields.folder(), &t.needle),
+        Some(QueryField::Year) => fields.year.to_string().contains(t.needle.as_str()),
+    })
 }
 
 /// A sortable column of the projection.
@@ -414,9 +528,10 @@ impl Projection {
             conn,
             0,
             max,
-            |id, title, artist, album_artist, album, genre, year, dn, tn, dur, codec, kbps, rating, added| {
+            |id, path, title, artist, album_artist, album, genre, year, dn, tn, dur, codec, kbps, rating, added| {
                 b.push(
                     id,
+                    path,
                     title,
                     artist,
                     album_artist,
@@ -459,6 +574,7 @@ impl Projection {
                             lo,
                             hi,
                             |id,
+                             path,
                              title,
                              artist,
                              album_artist,
@@ -474,6 +590,7 @@ impl Projection {
                              added| {
                                 b.push(
                                     id,
+                                    path,
                                     title,
                                     artist,
                                     album_artist,
@@ -528,6 +645,7 @@ impl Projection {
         let mut albums = Interner::default();
         let mut genres = Interner::default();
         let mut codecs = Interner::default();
+        let mut folders = Interner::default();
         let total: usize = shards.iter().map(|s| s.db_id.len()).sum();
 
         let mut out = Builder::default();
@@ -544,6 +662,7 @@ impl Projection {
         out.bitrate_kbps.reserve(total);
         out.rating.reserve(total);
         out.added.reserve(total);
+        out.folder.reserve(total);
 
         for shard in shards {
             let map_a: Vec<u32> = shard
@@ -576,6 +695,12 @@ impl Projection {
                 .iter()
                 .map(|s| codecs.intern(s))
                 .collect();
+            let map_f: Vec<u32> = shard
+                .folders
+                .table
+                .iter()
+                .map(|s| folders.intern(s))
+                .collect();
             out.db_id.extend_from_slice(&shard.db_id);
             out.title.append(&shard.title);
             out.title_lower.append(&shard.title_lower);
@@ -596,6 +721,8 @@ impl Projection {
             out.bitrate_kbps.extend_from_slice(&shard.bitrate_kbps);
             out.rating.extend_from_slice(&shard.rating);
             out.added.extend_from_slice(&shard.added);
+            out.folder
+                .extend(shard.folder.iter().map(|&s| map_f[s as usize]));
         }
 
         let plays = (0..out.db_id.len()).map(|_| AtomicU32::new(0)).collect();
@@ -616,11 +743,13 @@ impl Projection {
             added: out.added,
             rating: out.rating.into_iter().map(AtomicU8::new).collect(),
             plays,
+            folder: out.folder,
             artists: SymTable::from(artists),
             album_artists: SymTable::from(album_artists),
             albums: SymTable::from(albums),
             genres: SymTable::from(genres),
             codecs: SymTable::from(codecs),
+            folders: SymTable::from(folders),
         }
     }
 
@@ -641,6 +770,7 @@ impl Projection {
             rating: self.rating[i].load(Ordering::Relaxed),
             plays: self.plays[i].load(Ordering::Relaxed),
             added: self.added[i],
+            folder: &self.folders.strings[self.folder[i] as usize],
         }
     }
 
@@ -700,6 +830,12 @@ impl Projection {
                 Some(QueryField::Genre) => Hits::Sym {
                     column: &self.genre,
                     mask: hit(&self.genres, &t.needle),
+                },
+                // Folder pins only, never a free term: a bare word would
+                // else drag in every track whose path happens to hold it.
+                Some(QueryField::Folder) => Hits::Sym {
+                    column: &self.folder,
+                    mask: hit(&self.folders, &t.needle),
                 },
                 Some(QueryField::Title) => {
                     Hits::Title(memmem::Finder::new(t.needle.as_bytes()))
@@ -891,6 +1027,17 @@ impl Projection {
                 FilterField::Genre => Check::Sym {
                     column: &self.genre,
                     ok: sym_ok(&self.genres, values),
+                },
+                // Folder picks cover their subtree, so the per-symbol check
+                // is a prefix test instead of the exact match.
+                FilterField::Folder => Check::Sym {
+                    column: &self.folder,
+                    ok: self
+                        .folders
+                        .strings
+                        .iter()
+                        .map(|s| values.iter().any(|v| folder_in_subtree(s, v)))
+                        .collect(),
                 },
                 FilterField::Year => {
                     let mut ok = vec![false; usize::from(u16::MAX) + 1];
@@ -1086,7 +1233,8 @@ impl Projection {
                 + self.album_artist.capacity()
                 + self.album.capacity()
                 + self.genre.capacity()
-                + self.codec.capacity())
+                + self.codec.capacity()
+                + self.folder.capacity())
                 * 4
             + (self.year.capacity()
                 + self.disc_no.capacity()
@@ -1101,6 +1249,7 @@ impl Projection {
             + self.albums.heap_bytes()
             + self.genres.heap_bytes()
             + self.codecs.heap_bytes()
+            + self.folders.heap_bytes()
     }
 }
 
@@ -1199,6 +1348,127 @@ mod tests {
         // A year needle matches on the digits.
         assert_eq!(titles_for(&p, "year:200").len(), 2);
         assert_eq!(titles_for(&p, "stronger year:2007").len(), 1);
+    }
+
+    /// The per-track matcher the queue, history, and playlists filter their
+    /// own rows with agrees with `search` over the catalog: free terms sweep
+    /// the text fields, pins isolate one, and the structured filter matches
+    /// whole values.
+    #[test]
+    fn track_matcher_mirrors_search() {
+        let fields = TrackFields {
+            title: "Stronger",
+            artist: "Daft Punk",
+            album_artist: "Daft Punk",
+            album: "Discovery",
+            genre: "Electronic",
+            year: 2001,
+            path: "/music/Discovery/1.mp3",
+        };
+        // Free text sweeps title, artist, album, genre; case-folded.
+        assert!(track_matches(&parse_query("stronger"), &fields));
+        assert!(track_matches(&parse_query("DAFT"), &fields));
+        assert!(track_matches(&parse_query("electronic"), &fields));
+        assert!(!track_matches(&parse_query("kanye"), &fields));
+        // Every term must hit.
+        assert!(track_matches(&parse_query("stronger daft"), &fields));
+        assert!(!track_matches(&parse_query("stronger kanye"), &fields));
+        // Pins isolate their field; a title term never matches the artist.
+        assert!(track_matches(&parse_query(r#"artist:"daft punk""#), &fields));
+        assert!(!track_matches(&parse_query("title:discovery"), &fields));
+        // Year matches on the digits; folder pins to the parent directory.
+        assert!(track_matches(&parse_query("year:200"), &fields));
+        assert!(track_matches(&parse_query("folder:discovery"), &fields));
+        assert!(!track_matches(&parse_query("folder:other"), &fields));
+
+        // The structured filter matches whole values, never substrings.
+        let mut filter = FilterSet::default();
+        filter.toggle(FilterField::Artist, "Daft Punk");
+        assert!(filter.matches(&fields));
+        let mut narrower = filter.clone();
+        narrower.toggle(FilterField::Artist, "Air");
+        // Values OR within a field, so the extra pick still passes.
+        assert!(narrower.matches(&fields));
+        let mut year = FilterSet::default();
+        year.toggle(FilterField::Year, "2001");
+        assert!(year.matches(&fields));
+        year.clear(FilterField::Year);
+        year.toggle(FilterField::Year, "1999");
+        assert!(!year.matches(&fields));
+    }
+
+    /// `folder:` pins a term to the track's parent directory, case-folded
+    /// substring like the other pinned fields, so it isolates one album's
+    /// files. A bare word never reaches the folder, so the path text stays
+    /// out of free-term matches.
+    #[test]
+    fn search_pins_folder() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/music/Wrong Album/1.mp3", "One", "A", 2000),
+                track("/music/Wrong Album/2.mp3", "Two", "A", 2000),
+                track("/music/Other/3.mp3", "Three", "B", 2001),
+            ],
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn).unwrap();
+
+        // The pin isolates just the one folder's files, case-folded.
+        assert_eq!(titles_for(&p, r#"folder:"wrong album""#).len(), 2);
+        // The substring takes the folder, not the whole path, so "music"
+        // matches every track under the shared root.
+        assert_eq!(titles_for(&p, "folder:music").len(), 3);
+        // A folder pin ANDs with a free term like any other field.
+        assert_eq!(titles_for(&p, r#"one folder:"wrong album""#).len(), 1);
+        // A bare word never reaches the folder path.
+        assert!(titles_for(&p, "other").is_empty());
+    }
+
+    /// A folder pick covers its subtree: the folder itself and every
+    /// descendant, bounded at a separator so a sibling sharing the prefix
+    /// stays out. One value scopes a whole branch, which is what keeps the
+    /// folder tree's click cheap.
+    #[test]
+    fn folder_filter_scopes_subtree() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/music/Air/1.mp3", "One", "A", 2000),
+                track("/music/Air/Moon Safari/2.mp3", "Two", "A", 1998),
+                track("/music/Airborne/3.mp3", "Three", "B", 2001),
+            ],
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn).unwrap();
+
+        let mut filter = FilterSet::default();
+        filter.toggle(FilterField::Folder, "/music/Air");
+        let mask = p.filter_mask(&filter).unwrap();
+        // The folder and its nested album pass; the prefix-sharing sibling
+        // does not.
+        let hits: Vec<String> = (0..p.len())
+            .filter(|&i| mask[i])
+            .map(|i| p.title.get(i).to_string())
+            .collect();
+        assert_eq!(hits, ["One", "Two"]);
+
+        // The per-track matcher agrees.
+        let fields = |path| TrackFields {
+            title: "",
+            artist: "",
+            album_artist: "",
+            album: "",
+            genre: "",
+            year: 0,
+            path,
+        };
+        assert!(filter.matches(&fields("/music/Air/Moon Safari/2.mp3")));
+        assert!(!filter.matches(&fields("/music/Airborne/3.mp3")));
     }
 
     /// The search surfaces whole albums and artists whose name matches,

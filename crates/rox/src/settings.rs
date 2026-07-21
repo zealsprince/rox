@@ -159,6 +159,15 @@ pub struct Settings {
     /// which side it is on. None means an unnamed arrangement (the default
     /// build, an empty window, or a one-off import).
     pub active_layout: Option<String>,
+    /// Per-layout working copies: the unsaved dock tweaks for each named
+    /// layout that is not the one in front of you, keyed by layout name.
+    /// Switching layouts stashes the outgoing one here and restores the
+    /// incoming one's copy, so edits survive a switch and a relaunch without
+    /// touching the saved preset. The layout in front of you keeps its live
+    /// dock in `layout` instead; an explicit save folds a copy into its
+    /// preset and clears it here.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub layout_edits: BTreeMap<String, serde_json::Value>,
     /// The user's saved workspaces: full shareable bundles of layout presets,
     /// palette, and appearance, the sharing ecosystem's trade unit. Shipped
     /// bundles live in the app's assets and are not stored here; the settings
@@ -177,6 +186,10 @@ pub struct Settings {
     /// ...and how strongly the backdrop shows behind them, 1 the bare
     /// bake, 0 sunk into the floor.
     pub backdrop_strength: f32,
+    /// The app-wide frame defaults every panel inherits: margin, padding,
+    /// rounding, and border, all in px. A panel's own theme overrides any
+    /// of them; unset there, the panel takes these.
+    pub frame: Frame,
     /// The user palette as role-name-to-`#rrggbb` entries,
     /// [`Palette::to_map`]'s shape. Empty means the default palette;
     /// unknown roles fall away on load, like the file's own fields.
@@ -361,6 +374,86 @@ pub fn app_font() -> Option<SharedString> {
 /// caller's, startup seeds from the file through here too.
 pub fn set_app_font(font: Option<String>, cx: &mut App) {
     *APP_FONT.write().unwrap() = font.map(SharedString::from);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
+/// The frame knobs' ceilings, in px: every knob runs from 0 (off) up to
+/// its own. Shared by the app defaults' clamp and both settings windows'
+/// sliders, so the app-wide and per-panel frames scrub the same range.
+pub const MARGIN_MAX: f32 = 24.0;
+pub const PADDING_MAX: f32 = 24.0;
+pub const ROUNDING_MAX: f32 = 24.0;
+pub const BORDER_MAX: f32 = 6.0;
+
+fn clamp_knob(value: f32, max: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, max)
+    } else {
+        0.0
+    }
+}
+
+/// ADR 13's frame knobs lifted to the app: the cell margin, the inner
+/// padding, the corner rounding, and the border width, all in px. These
+/// are the defaults every panel inherits; a panel's own [`PanelTheme`]
+/// overrides any of them knob for knob. Zero each by default, so a fresh
+/// look carries no frame until asked, matching what an unthemed panel drew
+/// before the lift.
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Frame {
+    pub margin: f32,
+    pub padding: f32,
+    pub rounding: f32,
+    pub border: f32,
+}
+
+impl Frame {
+    /// Every knob off.
+    pub const DEFAULT: Frame = Frame {
+        margin: 0.0,
+        padding: 0.0,
+        rounding: 0.0,
+        border: 0.0,
+    };
+
+    /// The knobs held to their ceilings, a non-finite one reset to zero,
+    /// for a hand-edited file.
+    pub fn clamped(self) -> Frame {
+        Frame {
+            margin: clamp_knob(self.margin, MARGIN_MAX),
+            padding: clamp_knob(self.padding, PADDING_MAX),
+            rounding: clamp_knob(self.rounding, ROUNDING_MAX),
+            border: clamp_knob(self.border, BORDER_MAX),
+        }
+    }
+}
+
+impl Default for Frame {
+    fn default() -> Self {
+        Frame::DEFAULT
+    }
+}
+
+/// The live app-wide frame defaults, a static like the app font's: the
+/// themed wrapper reads it as it lays each panel's frame, in a render path
+/// where a settings-file load has no place. Seeded at startup, changed by
+/// the app settings window.
+static FRAME: RwLock<Frame> = RwLock::new(Frame::DEFAULT);
+
+/// The app-wide frame defaults as they currently stand, for the themed
+/// wrapper that lays a panel's frame and the app settings sliders.
+pub fn app_frame() -> Frame {
+    *FRAME.read().unwrap()
+}
+
+/// Set the live frame defaults and repaint every window: the static sits
+/// outside gpui's reactivity, so nothing else would notice. Persisting is
+/// the caller's, startup seeds from the file through here too.
+pub fn set_app_frame(frame: Frame, cx: &mut App) {
+    *FRAME.write().unwrap() = frame.clamped();
     for window in cx.windows() {
         window.update(cx, |_, window, _| window.refresh()).ok();
     }
@@ -570,6 +663,7 @@ impl Default for WorkspaceBundle {
 pub struct AppearanceBundle {
     pub surface_opacity: f32,
     pub backdrop_strength: f32,
+    pub frame: Frame,
     pub art_theming: bool,
     pub keep_dark: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -585,6 +679,7 @@ impl Default for AppearanceBundle {
         AppearanceBundle {
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
+            frame: Frame::DEFAULT,
             art_theming: false,
             keep_dark: false,
             app_font: None,
@@ -644,6 +739,7 @@ impl WorkspaceBundle {
             appearance: AppearanceBundle {
                 surface_opacity: s.surface_opacity,
                 backdrop_strength: s.backdrop_strength,
+                frame: s.frame,
                 art_theming: s.art_theming,
                 keep_dark: s.keep_dark,
                 app_font: s.app_font.clone(),
@@ -660,12 +756,16 @@ impl WorkspaceBundle {
     /// an `App` this layer doesn't reach.
     pub fn apply_to(self, s: &mut Settings) {
         s.layouts = self.layouts;
+        // A workspace brings its own presets; drop any working copies keyed to
+        // the old look so they can't shadow the incoming layouts.
+        s.layout_edits.clear();
         s.primary_layout = self.primary_layout;
         s.mini_layout = self.mini_layout;
         s.palette = self.palette;
         let a = self.appearance;
         s.surface_opacity = a.surface_opacity;
         s.backdrop_strength = a.backdrop_strength;
+        s.frame = a.frame;
         s.art_theming = a.art_theming;
         s.keep_dark = a.keep_dark;
         s.app_font = a.app_font;
@@ -761,11 +861,13 @@ impl Default for Settings {
             primary_layout: None,
             mini_layout: None,
             active_layout: None,
+            layout_edits: BTreeMap::new(),
             workspaces: Vec::new(),
             library_roots: Vec::new(),
             library_root: None,
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
+            frame: Frame::DEFAULT,
             palette: BTreeMap::new(),
             app_font: None,
             icon_pack: None,
@@ -819,6 +921,9 @@ impl Settings {
                 1.0
             };
         }
+        // The frame knobs feed div sizes straight, so a hand-edited file
+        // clamps each to its ceiling.
+        settings.frame = settings.frame.clamped();
         // The threshold reads straight into the scrobble math and the
         // marker paint, so a hand-edited value clamps to a sane band.
         settings.lastfm.threshold = if settings.lastfm.threshold.is_finite() {
@@ -889,6 +994,12 @@ mod tests {
     fn workspace_bundle_roundtrips() {
         let mut src = Settings::default();
         src.surface_opacity = 0.5;
+        src.frame = Frame {
+            margin: 4.0,
+            padding: 8.0,
+            rounding: 12.0,
+            border: 1.0,
+        };
         src.art_theming = true;
         src.keep_dark = true;
         src.rating_style = RatingStyle::Numeric;
@@ -908,6 +1019,8 @@ mod tests {
         let mut dst = Settings::default();
         back.apply_to(&mut dst);
         assert_eq!(dst.surface_opacity, 0.5);
+        assert_eq!(dst.frame.rounding, 12.0);
+        assert_eq!(dst.frame.padding, 8.0);
         assert!(dst.art_theming);
         assert!(dst.keep_dark);
         assert!(dst.rating_style == RatingStyle::Numeric);

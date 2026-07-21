@@ -40,8 +40,8 @@ use crate::panel_settings;
 use crate::panels::library::{Library, LibraryEvent};
 use crate::providers;
 use crate::settings::{
-    self, data_dir, settings_path, LayoutSize, LyricsSave, NamedLayout, Providers, RatingStyle,
-    Settings, WorkspaceBundle,
+    self, data_dir, settings_path, Frame, LayoutSize, LyricsSave, NamedLayout, Providers,
+    RatingStyle, Settings, WorkspaceBundle, BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
 };
 use crate::settings_ui::{
     self, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
@@ -181,6 +181,9 @@ struct SettingsWindow {
     keep_dark: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
+    /// The app-wide frame defaults' working copy: what the Frame sliders
+    /// show and write through [`settings::set_app_frame`].
+    frame: Frame,
     restore_last_track: bool,
     quit_to_tray: bool,
     /// The portable marker's presence, what the Behavior toggle shows;
@@ -201,6 +204,10 @@ struct SettingsWindow {
     pickers: Vec<Entity<ColorPickerState>>,
     surface_scrub: ScrubState,
     backdrop_scrub: ScrubState,
+    margin_scrub: ScrubState,
+    padding_scrub: ScrubState,
+    rounding_scrub: ScrubState,
+    border_scrub: ScrubState,
     /// The page body's scroll position, shared with the scrollbar so it
     /// can show how much page hangs below the fold.
     scroll: ScrollHandle,
@@ -378,6 +385,7 @@ impl SettingsWindow {
             keep_dark: settings.keep_dark,
             surface_opacity: settings.surface_opacity,
             backdrop_strength: settings.backdrop_strength,
+            frame: settings.frame,
             restore_last_track: settings.restore_last_track,
             quit_to_tray: settings.quit_to_tray,
             portable: settings::portable_marker().is_some_and(|marker| marker.exists()),
@@ -388,6 +396,10 @@ impl SettingsWindow {
             pickers,
             surface_scrub: ScrubState::default(),
             backdrop_scrub: ScrubState::default(),
+            margin_scrub: ScrubState::default(),
+            padding_scrub: ScrubState::default(),
+            rounding_scrub: ScrubState::default(),
+            border_scrub: ScrubState::default(),
             scroll: ScrollHandle::new(),
             library,
             workspace,
@@ -589,6 +601,51 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    // The app-wide frame setters: the strip fraction mapped onto whole px,
+    // the new default every panel that sets no override of its own takes.
+
+    fn set_margin(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.frame.margin = (fraction * MARGIN_MAX).round();
+        self.frame_edited(cx);
+    }
+
+    fn set_padding(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.frame.padding = (fraction * PADDING_MAX).round();
+        self.frame_edited(cx);
+    }
+
+    fn set_rounding(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.frame.rounding = (fraction * ROUNDING_MAX).round();
+        self.frame_edited(cx);
+    }
+
+    fn set_border(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.frame.border = (fraction * BORDER_MAX).round();
+        self.frame_edited(cx);
+    }
+
+    fn frame_edited(&mut self, cx: &mut Context<Self>) {
+        settings::set_app_frame(self.frame, cx);
+        let frame = self.frame;
+        Settings::update(move |s| s.frame = frame);
+        cx.notify();
+    }
+
+    /// One app-frame knob's slider row: the value over its 0 to `max`
+    /// range, the px readout alongside. Always set, since these are the
+    /// defaults themselves; a panel's own settings are where an override
+    /// forks off them.
+    fn frame_row(
+        &self,
+        scrub: &ScrubState,
+        value: f32,
+        max: f32,
+        apply: fn(&mut Self, f32, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> Div {
+        settings_ui::slider_labeled(scrub, value / max, format!("{value:.0} px"), apply, cx)
+    }
+
     /// A whole palette into the editor at once: the working copy, every
     /// picker, and the live palette. Persisting is the caller's, because
     /// reset writes an empty map where import writes a full one.
@@ -768,6 +825,34 @@ impl SettingsWindow {
                             Self::set_backdrop,
                             cx,
                         ),
+                    )),
+            ))
+            .child(section(
+                "Frame",
+                None,
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "Margin",
+                        Some("Pull every panel in from its cell; a panel can override this in its own settings"),
+                        self.frame_row(&self.margin_scrub, self.frame.margin, MARGIN_MAX, Self::set_margin, cx),
+                    ))
+                    .child(panel::setting_row(
+                        "Padding",
+                        Some("Space inside every panel's edge, kept in its own background"),
+                        self.frame_row(&self.padding_scrub, self.frame.padding, PADDING_MAX, Self::set_padding, cx),
+                    ))
+                    .child(panel::setting_row(
+                        "Rounding",
+                        Some("Round every panel's corners off into the backdrop"),
+                        self.frame_row(&self.rounding_scrub, self.frame.rounding, ROUNDING_MAX, Self::set_rounding, cx),
+                    ))
+                    .child(panel::setting_row(
+                        "Border",
+                        Some("A line around every panel's edge, in the Border role's color"),
+                        self.frame_row(&self.border_scrub, self.frame.border, BORDER_MAX, Self::set_border, cx),
                     )),
             ))
             .child(self.colors_section(columns, cx))
@@ -1368,6 +1453,7 @@ impl SettingsWindow {
             self.mini_layout = None;
         }
         Settings::update(|s| {
+            s.layout_edits.remove(name.as_str());
             s.layouts.retain(|l| l.name != name);
             if s.primary_layout.as_deref() == Some(name.as_str()) {
                 s.primary_layout = None;
@@ -1932,6 +2018,7 @@ impl SettingsWindow {
         let a = &bundle.appearance;
         self.surface_opacity = a.surface_opacity;
         self.backdrop_strength = a.backdrop_strength;
+        self.frame = a.frame;
         self.art_theming = a.art_theming;
         self.keep_dark = a.keep_dark;
         self.rating_style = a.rating_style;

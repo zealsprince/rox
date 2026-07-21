@@ -41,6 +41,7 @@ use crate::settings_ui;
 use crate::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::thumbs::Thumb;
 use crate::track_cells;
+use crate::track_drag::{PlayDrag, PlayDragPreview};
 
 /// Play from a double-clicked row: at most this many tracks are queued
 /// behind it. The quick-play modal caps its queue the same way.
@@ -113,6 +114,10 @@ enum Refresh {
     Scan(Vec<PathBuf>),
     /// Drop this folder's rows first.
     Remove(PathBuf),
+    /// Re-read exactly these files first, the tag editor's write-back:
+    /// their rows converge to what is on disk now, duration and codec
+    /// included, not just the columns the edit named.
+    Reindex(Vec<PathBuf>),
 }
 
 /// The shared catalog entity. Owns the database and the projection; every
@@ -563,26 +568,29 @@ impl Library {
         Some(id)
     }
 
-    /// A committed tag edit into the catalog: the changes onto the track's
-    /// row, then a projection reload, so every panel shows the edit without
-    /// a rescan. The file itself was already written and verified by the
-    /// caller. While a scan runs the reload is dropped, but the row update
-    /// still lands, so the scan's own final reload carries the edit.
+    /// A committed tag edit into the catalog: the named columns land first
+    /// on the UI connection, so a busy library that drops the reload still
+    /// shows the edit, then the file is re-read whole so the row converges
+    /// to what the writer put on disk. The optimistic patch alone left
+    /// duration, codec, and the like on their stale scan values; the
+    /// reindex behind it carries those too. The file was already written
+    /// and verified by the caller.
     pub fn apply_edit(&mut self, path: &Path, changes: &[writer::Change], cx: &mut Context<Self>) {
-        let Some(id) = self.id_for(path) else { return };
-        let Some(conn) = &self.conn else { return };
-        if let Err(e) = store::apply_changes(conn, id, changes) {
-            self.status = format!("library: {e}").into();
-            cx.notify();
-            return;
+        if let Some((id, conn)) = self.id_for(path).zip(self.conn.as_ref()) {
+            if let Err(e) = store::apply_changes(conn, id, changes) {
+                self.status = format!("library: {e}").into();
+                cx.notify();
+            }
         }
-        self.reload(Refresh::Load, cx);
+        self.reload(Refresh::Reindex(vec![path.to_path_buf()]), cx);
     }
 
     /// A batch of committed edits into the catalog, the tag editor's save:
-    /// every row update lands first, then one projection reload carries
-    /// them all. Calling [`Self::apply_edit`] per file would drop every
-    /// reload after the first on the busy guard.
+    /// every named column lands first on the UI connection, then one
+    /// reindex re-reads the whole batch off disk so duration, codec, and
+    /// every other scanner-derived field converge with the edit, not just
+    /// the columns the form named. A file the writer fixed or a filename
+    /// the user finally tagged both read back true here.
     pub fn apply_edits(&mut self, edits: &[writer::Edit], cx: &mut Context<Self>) {
         for edit in edits {
             let Some(id) = self.id_for(&edit.path) else {
@@ -594,7 +602,8 @@ impl Library {
                 cx.notify();
             }
         }
-        self.reload(Refresh::Load, cx);
+        let paths: Vec<PathBuf> = edits.iter().map(|edit| edit.path.clone()).collect();
+        self.reload(Refresh::Reindex(paths), cx);
     }
 
     /// A rating click into the catalog: onto the track's database row, and
@@ -730,6 +739,7 @@ impl Library {
             Refresh::Load => "loading library...".into(),
             Refresh::Scan(_) => "scanning...".into(),
             Refresh::Remove(_) => "removing...".into(),
+            Refresh::Reindex(_) => "refreshing...".into(),
         });
         let progress = Arc::new(ScanProgress::default());
         if matches!(refresh, Refresh::Scan(_)) {
@@ -1427,6 +1437,11 @@ struct TrackTable {
     /// cell's first paint so the thumbnail lookup does not re-query the
     /// catalog every frame. Paths are stable per id; cleared on reload.
     cover_paths: HashMap<i64, Option<PathBuf>>,
+    /// Resolved file paths for the drag payload, cached per track id. A row's
+    /// `on_drag` value is built eagerly every frame, so the id-to-path query
+    /// caches here or a scrolled list would hit the catalog per row per frame.
+    /// Same lifetime as `cover_paths`; cleared on reload.
+    drag_paths: HashMap<i64, Option<PathBuf>>,
 }
 
 impl TrackTable {
@@ -1436,6 +1451,60 @@ impl TrackTable {
             Some(&Row::Track(row)) => Some(row),
             _ => None,
         }
+    }
+
+    /// The drag payload for a grab on row `ix`. A grab inside a multi
+    /// selection carries the whole set in view order; outside it, just that
+    /// row - queue.rs's rule. Resolves to paths through the same `paths_for`
+    /// the play actions use, so a drop enqueues exactly what those queue, ids
+    /// aligned per path for the drop target that wants them. The value is
+    /// built eagerly every frame, so paths come from `drag_paths`, filled per
+    /// id on the first grab that needs it rather than a query per row per frame.
+    fn drag_payload(&mut self, ix: usize, cx: &App) -> Option<PlayDrag> {
+        let rows: Vec<usize> = if self.selected.len() > 1 && self.selected.contains(&ix) {
+            let mut rows: Vec<usize> = self.selected.iter().copied().collect();
+            rows.sort_unstable();
+            rows
+        } else {
+            vec![ix]
+        };
+        let projection = self.state.library.read(cx).projection().cloned()?;
+        let title = self
+            .track_at(ix)
+            .map(|row| projection.resolve(row).title.to_string())
+            .unwrap_or_default();
+        let ids: Vec<i64> = rows
+            .iter()
+            .filter_map(|&i| self.track_at(i))
+            .map(|row| projection.db_id[row as usize])
+            .collect();
+        let mut paths = Vec::with_capacity(ids.len());
+        for id in ids {
+            let path = match self.drag_paths.get(&id) {
+                Some(path) => path.clone(),
+                None => {
+                    let path = self
+                        .state
+                        .library
+                        .read(cx)
+                        .paths_for(&[id])
+                        .ok()
+                        .and_then(|mut paths| paths.pop());
+                    self.drag_paths.insert(id, path.clone());
+                    path
+                }
+            };
+            if let Some(path) = path {
+                paths.push(path);
+            }
+        }
+        if paths.is_empty() {
+            return None;
+        }
+        Some(PlayDrag {
+            paths,
+            title: title.into(),
+        })
     }
 
     /// The nearest track row from `ix` heading `forward`, bouncing off the
@@ -1954,6 +2023,10 @@ impl TableDelegate for TrackTable {
         // highlight role instead, a faint cut of it, so it stays apart
         // from the accent-washed selection.
         let selected = self.selected.contains(&row_ix);
+        // The row is a drag source: dragging carries the grabbed row, or the
+        // whole set when the grab lands inside a multi-selection, onto a drop
+        // target that queues it. Resolved here so the payload rides the frame.
+        let drag = self.drag_payload(row_ix, cx);
         div()
             // Group bounds resolve innermost-first, so one shared name
             // still scopes each cell's group_hover to its own row: the
@@ -1964,6 +2037,14 @@ impl TableDelegate for TrackTable {
             .when(selected, |d| d.bg(palette::alpha(palette::accent(), 0x26)))
             .when(self.playing_row == Some(row_ix) && !selected, |d| {
                 d.bg(palette::alpha(palette::highlight(), 0x12))
+            })
+            .when_some(drag, |d, drag| {
+                d.on_drag(drag, |drag, _pos, _window, cx| {
+                    cx.new(|_| PlayDragPreview {
+                        title: drag.title.clone(),
+                        extra: drag.len().saturating_sub(1),
+                    })
+                })
             })
     }
 
@@ -2399,6 +2480,7 @@ impl LibraryPanel {
             playing_row: None,
             favourites: state.library.read(cx).favourite_ids(),
             cover_paths: HashMap::new(),
+            drag_paths: HashMap::new(),
         };
         // Widths and order persist by column key, so a drag survives a
         // layout save; the delegate mirrors the widget's reorder.
@@ -3942,6 +4024,12 @@ fn load(
             let conn = store::open(db_path)?;
             store::init_schema(&conn)?;
             store::remove_under(&conn, &root)?;
+            None
+        }
+        Refresh::Reindex(paths) => {
+            let mut conn = store::open(db_path)?;
+            store::init_schema(&conn)?;
+            scanner::reindex(&mut conn, &paths)?;
             None
         }
     };

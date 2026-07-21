@@ -45,10 +45,19 @@ pub enum Cmd {
         after: Option<u64>,
         paths: Vec<PathBuf>,
         explicit: bool,
+        /// Jump to the first of the batch and play it now, keeping the rest of
+        /// the queue behind it. A drag onto Play now sets this; Play Next and
+        /// Add to Queue leave it off so the current track keeps playing.
+        and_play: bool,
     },
     /// Drop the entry with this id from the queue. Removing the playing entry
     /// is ignored; the UI never offers it.
     Remove { id: u64 },
+    /// Drop a whole set of entries in one pass, with a single queue publish at
+    /// the end. Clear Queue and multi-select delete route here so a big queue
+    /// empties in one O(n) sweep instead of one O(n) remove per id. The playing
+    /// entry is kept even if named.
+    RemoveMany { ids: Vec<u64> },
     /// Move the entry with this id to just after entry `after`, or to the
     /// front when `after` is None.
     Move { id: u64, after: Option<u64> },
@@ -233,19 +242,28 @@ impl Engine {
                         after,
                         paths,
                         explicit,
+                        and_play,
                     } => {
                         let at = self.insert(after, paths, explicit);
                         // From the ended state the source is None, so the new
                         // entries land in order but nothing opens them and we
                         // stay silent. Route the first of the batch through the
                         // nav path so it reopens and resumes, clearing ended on
-                        // the way. A live session must not jump, so only wake
-                        // when we were actually idle.
-                        if source.is_none() {
+                        // the way. Play now jumps the same way from a live
+                        // session; Play Next and Add to Queue leave the current
+                        // track playing.
+                        if and_play || source.is_none() {
                             nav_pos = at;
+                        }
+                        // Play now means play: resume if we were paused, so a
+                        // drop onto Play now starts audio instead of loading it
+                        // silent.
+                        if and_play {
+                            self.shared.playing.store(true, Ordering::Relaxed);
                         }
                     }
                     Cmd::Remove { id } => self.remove(id),
+                    Cmd::RemoveMany { ids } => self.remove_many(&ids),
                     Cmd::Move { id, after } => self.move_entry(id, after),
                     // Reuse the nav path: setting the target flushes and opens
                     // it just like a Next would.
@@ -464,6 +482,32 @@ impl Engine {
         if p < self.pos {
             self.pos -= 1;
         }
+        self.publish_queue();
+    }
+
+    /// Drop every entry named in `ids` in one sweep, keeping the audible one so
+    /// playback never cuts, then re-find the decode cursor by id and publish
+    /// once. One pass over the order rather than a find-and-remove per id, so
+    /// clearing a huge queue stays O(n) with a single UI wake instead of O(n^2)
+    /// with a wake per entry.
+    fn remove_many(&mut self, ids: &[u64]) {
+        if ids.is_empty() {
+            return;
+        }
+        let drop: std::collections::HashSet<u64> = ids.iter().copied().collect();
+        let keep = self.order.get(self.audible_pos()).map(|e| e.id);
+        let cursor = self.order.get(self.pos).map(|e| e.id);
+        let before = self.order.len();
+        self.order
+            .retain(|e| !drop.contains(&e.id) || Some(e.id) == keep);
+        if self.order.len() == before {
+            return;
+        }
+        // Re-anchor the decode cursor by id; if it was dropped, clamp so we
+        // never index past the shortened order.
+        self.pos = cursor
+            .and_then(|id| self.find(id))
+            .unwrap_or_else(|| self.pos.min(self.order.len().saturating_sub(1)));
         self.publish_queue();
     }
 

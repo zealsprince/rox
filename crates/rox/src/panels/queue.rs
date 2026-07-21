@@ -6,14 +6,14 @@
 //! click, drop from the right-click menu, and drag to reorder. Its own
 //! panel, never a mode of the library.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, svg, uniform_list, App, Context, Div, EventEmitter, FocusHandle,
-    Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, SharedString, Stateful,
-    Subscription, UniformListScrollHandle, WeakEntity, Window,
+    div, prelude::*, px, svg, uniform_list, App, Context, Div, Entity, EventEmitter, ExternalPaths,
+    FocusHandle, Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, SharedString,
+    Stateful, Subscription, UniformListScrollHandle, WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
@@ -21,15 +21,20 @@ use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
+use rox_library::projection::{parse_query, track_matches, FilterSet, TrackFields};
+
 use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::group_head::Headers;
 use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
+use crate::search::{SearchBox, SearchEvent};
 use crate::settings::Settings;
+use crate::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::track_cells;
 use crate::track_columns::{self, Column, ColumnHost, GroupTrack, HeadingHost};
+use crate::track_drag::PlayDrag;
 
 /// One row's height; the list is a uniform_list, so every row agrees.
 const ROW_H: f32 = 30.;
@@ -61,6 +66,16 @@ pub struct QueueConfig {
     pub headers: Headers,
     /// The shown column keys; defaults to the registry's default-on set.
     pub columns: Vec<String>,
+    /// Whether the search box shows; the query only filters while it does.
+    #[serde(default)]
+    pub search: bool,
+    /// Follow the shared query, or filter by this panel's own box.
+    #[serde(default)]
+    pub query_source: QuerySource,
+    /// The panel's own query, kept while following the shared one so the
+    /// switch back to own has something to restore.
+    #[serde(default)]
+    pub query: String,
 }
 
 /// Where a queue panel's view edits (columns, headings) are saved. A docked
@@ -82,6 +97,9 @@ impl Default for QueueConfig {
             chrome: PanelChrome::default(),
             headers: Headers::Off,
             columns: track_columns::default_columns(COLUMNS),
+            search: false,
+            query_source: QuerySource::default(),
+            query: String::new(),
         }
     }
 }
@@ -191,13 +209,28 @@ pub struct QueuePanel {
     persist: Persist,
     /// The resolved queue entries in order.
     tracks: Vec<TrackRow>,
-    /// The display rows over `tracks`: the entries flat, or broken by album
-    /// headings.
+    /// The search box, shared by every searching view; shown per config.
+    search: Entity<SearchBox>,
+    /// A pending box reset from a source toggle or a shared-query change,
+    /// applied on the next render where a window exists to set the input.
+    resync_box: bool,
+    /// The query and filter the rows are built for, snapshotted whenever the
+    /// query changes so `rebuild_rows` filters without a `cx`.
+    applied_query: String,
+    applied_filter: FilterSet,
+    /// The display rows over `tracks`: the matching entries flat, or broken
+    /// by album headings.
     rows: Vec<QRow>,
     /// The album runs the heading rows index, rebuilt with `rows`.
     albums: Vec<track_columns::AlbumGroup>,
     /// The favourited track ids, what each row's heart checks against.
     favourites: HashSet<i64>,
+    /// Loose tags for queued files the library does not know, read off the
+    /// file with `read_one` and cached per path so each is read at most once.
+    /// None marks a file that could not even be stat'd, so it is not retried;
+    /// the rebuild that resolves the rows runs off the pump, not per frame, so
+    /// this IO stays off the render path. Rev-keyed rebuilds reuse it.
+    loose_tags: HashMap<PathBuf, Option<rox_library::TrackRow>>,
     /// The playing track's title and artist, for the now-playing strip
     /// heading the list. Follows whatever plays, queued or context, so the
     /// panel always says where the queue picks up from.
@@ -222,10 +255,17 @@ pub struct QueuePanel {
     _player_changed: Subscription,
     _library_changed: Subscription,
     _thumbs_changed: Subscription,
+    _search_events: Subscription,
+    _query_changed: Subscription,
 }
 
 impl QueuePanel {
-    pub fn new(state: AppState, config: QueueConfig, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        state: AppState,
+        config: QueueConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| this.sync(cx));
         // A landing cover repaints the heading tiles and the cover column.
         let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
@@ -243,14 +283,33 @@ impl QueuePanel {
                 }
             },
         );
+        // A panel restored as global opens showing the shared query; a local
+        // one shows its own.
+        let initial = match config.query_source {
+            QuerySource::Global => state.query.read(cx).text().to_string(),
+            QuerySource::Local => config.query.clone(),
+        };
+        let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
+        let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
+        // Follow the shared query while global: re-filter and reset the box
+        // to it on the next render.
+        let _query_changed = cx.subscribe(
+            &state.query,
+            |this: &mut Self, _, _: &SharedQueryEvent, cx| this.on_shared_query_changed(cx),
+        );
         let mut this = QueuePanel {
             state,
             config,
             persist: Persist::Layout,
             tracks: Vec::new(),
+            search,
+            resync_box: false,
+            applied_query: String::new(),
+            applied_filter: FilterSet::default(),
             rows: Vec::new(),
             albums: Vec::new(),
             favourites: HashSet::new(),
+            loose_tags: HashMap::new(),
             playing: None,
             rev: None,
             playing_path: None,
@@ -263,6 +322,8 @@ impl QueuePanel {
             _player_changed,
             _library_changed,
             _thumbs_changed,
+            _search_events,
+            _query_changed,
         };
         this.sync(cx);
         this
@@ -272,12 +333,12 @@ impl QueuePanel {
     /// have no dock layout behind them. Reads its view from settings and
     /// writes edits back there, so its columns and headings survive a close
     /// and a relaunch the way a docked panel's ride the layout dump.
-    pub fn windowed(state: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn windowed(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let config = Settings::load()
             .queue_view
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default();
-        let mut this = Self::new(state, config, cx);
+        let mut this = Self::new(state, config, window, cx);
         this.persist = Persist::Settings;
         this
     }
@@ -325,6 +386,20 @@ impl QueuePanel {
             }
             library.plays_for(&ids)
         };
+        // Read loose tags for every queued or playing file the library does
+        // not know, once, before the resolve passes read the cache. Each
+        // read_one hits the disk, so it is gated on a rev-change rebuild here
+        // and cached per path; a steady queue reads nothing.
+        for path in queued
+            .iter()
+            .map(|e| &e.path)
+            .chain(self.playing_path.as_ref())
+        {
+            if library.meta_for(path).is_none() && !self.loose_tags.contains_key(path) {
+                self.loose_tags
+                    .insert(path.clone(), rox_library::scanner::read_one(path));
+            }
+        }
         self.playing = self.playing_path.as_ref().map(|path| {
             let track_id = library.id_for(path);
             let count = track_id.and_then(|id| plays.get(&id).copied()).unwrap_or(0);
@@ -341,17 +416,33 @@ impl QueuePanel {
                     plays: count,
                     path: path.clone(),
                 },
-                None => Playing {
-                    track_id,
-                    title: file_label(path),
-                    artist: String::new(),
-                    album: String::new(),
-                    year: 0,
-                    genre: String::new(),
-                    duration_ms: 0,
-                    rating: 0,
-                    plays: count,
-                    path: path.clone(),
+                // Out of library: the playing file's own tags, read and
+                // cached above; the file name alone when it could not be stat'd.
+                None => match self.loose_tags.get(path).and_then(Option::as_ref) {
+                    Some(r) => Playing {
+                        track_id,
+                        title: r.title.clone(),
+                        artist: r.artist.clone(),
+                        album: r.album.clone(),
+                        year: r.year,
+                        genre: r.genre.clone(),
+                        duration_ms: r.duration_ms,
+                        rating: 0,
+                        plays: count,
+                        path: path.clone(),
+                    },
+                    None => Playing {
+                        track_id,
+                        title: file_label(path),
+                        artist: String::new(),
+                        album: String::new(),
+                        year: 0,
+                        genre: String::new(),
+                        duration_ms: 0,
+                        rating: 0,
+                        plays: count,
+                        path: path.clone(),
+                    },
                 },
             }
         });
@@ -381,22 +472,44 @@ impl QueuePanel {
                         plays: count,
                         path: entry.path.clone(),
                     },
-                    None => TrackRow {
-                        entry_id: entry.id,
-                        track_id,
-                        pos,
-                        title: file_label(&entry.path),
-                        artist: String::new(),
-                        album: String::new(),
-                        album_artist: String::new(),
-                        year: 0,
-                        genre: String::new(),
-                        codec: String::new(),
-                        bitrate_kbps: 0,
-                        duration_ms: 0,
-                        rating: 0,
-                        plays: count,
-                        path: entry.path.clone(),
+                    // Out of library: draw the file's own tags, read off the
+                    // disk and cached above. Fall back to just the file name
+                    // only when the file could not be stat'd.
+                    None => match self.loose_tags.get(&entry.path).and_then(Option::as_ref) {
+                        Some(r) => TrackRow {
+                            entry_id: entry.id,
+                            track_id,
+                            pos,
+                            title: r.title.clone(),
+                            artist: r.artist.clone(),
+                            album: r.album.clone(),
+                            album_artist: r.album_artist.clone(),
+                            year: r.year,
+                            genre: r.genre.clone(),
+                            codec: r.codec.clone(),
+                            bitrate_kbps: r.bitrate_kbps,
+                            duration_ms: r.duration_ms,
+                            rating: 0,
+                            plays: count,
+                            path: entry.path.clone(),
+                        },
+                        None => TrackRow {
+                            entry_id: entry.id,
+                            track_id,
+                            pos,
+                            title: file_label(&entry.path),
+                            artist: String::new(),
+                            album: String::new(),
+                            album_artist: String::new(),
+                            year: 0,
+                            genre: String::new(),
+                            codec: String::new(),
+                            bitrate_kbps: 0,
+                            duration_ms: 0,
+                            rating: 0,
+                            plays: count,
+                            path: entry.path.clone(),
+                        },
                     },
                 }
             })
@@ -410,40 +523,104 @@ impl QueuePanel {
             self.anchor = None;
         }
         self.menu_row = None;
+        self.refresh_query(cx);
         self.rebuild_rows();
         cx.notify();
     }
 
-    /// Lay the display rows over `tracks`: flat, or broken into album runs
-    /// with a heading over each. A headings or column flip that leaves the
-    /// queue alone calls this, not `sync`.
+    /// Snapshot the active query and filter, so `rebuild_rows` filters the
+    /// entries without a `cx`. The shared query while following it, the box's
+    /// own text otherwise.
+    fn refresh_query(&mut self, cx: &Context<Self>) {
+        self.applied_query = self.effective_query(cx);
+        self.applied_filter = self.effective_filter(cx);
+    }
+
+    /// Whether a queue entry passes the active query and filter.
+    fn matches(&self, terms: &[rox_library::projection::Term], t: &TrackRow) -> bool {
+        let fields = TrackFields {
+            title: &t.title,
+            artist: &t.artist,
+            album_artist: &t.album_artist,
+            album: &t.album,
+            genre: &t.genre,
+            year: t.year,
+            path: t.path.to_str().unwrap_or_default(),
+        };
+        track_matches(terms, &fields) && self.applied_filter.matches(&fields)
+    }
+
+    /// Lay the display rows over the entries that pass the active query:
+    /// flat, or broken into album runs with a heading over each. A headings,
+    /// column, or query flip that leaves the queue itself alone calls this,
+    /// not `sync`.
     fn rebuild_rows(&mut self) {
+        let terms = parse_query(&self.applied_query);
+        let visible: Vec<u32> = (0..self.tracks.len() as u32)
+            .filter(|&i| self.matches(&terms, &self.tracks[i as usize]))
+            .collect();
         let mut rows = Vec::new();
         let mut albums = Vec::new();
         if self.config.headers == Headers::Off {
-            rows.extend((0..self.tracks.len() as u32).map(QRow::Track));
+            rows.extend(visible.into_iter().map(QRow::Track));
             self.rows = rows;
             self.albums = albums;
             return;
         }
         let mut i = 0;
-        while i < self.tracks.len() {
+        while i < visible.len() {
             let mut j = i + 1;
-            while j < self.tracks.len() && self.tracks[j].album == self.tracks[i].album {
+            let album = &self.tracks[visible[i] as usize].album;
+            while j < visible.len() && &self.tracks[visible[j] as usize].album == album {
                 j += 1;
             }
-            let group: Vec<GroupTrack> = self.tracks[i..j].iter().map(group_track).collect();
+            let group: Vec<GroupTrack> = visible[i..j]
+                .iter()
+                .map(|&ti| group_track(&self.tracks[ti as usize]))
+                .collect();
             albums.push(track_columns::album_group(&group));
             let g = (albums.len() - 1) as u32;
             rows.push(QRow::Album(g));
             if self.config.headers == Headers::Expanded {
                 rows.push(QRow::AlbumMeta(g));
             }
-            rows.extend((i..j).map(|ti| QRow::Track(ti as u32)));
+            rows.extend(visible[i..j].iter().copied().map(QRow::Track));
             i = j;
         }
         self.rows = rows;
         self.albums = albums;
+    }
+
+    /// Map the shared box's events onto the queue: a changed query re-filters,
+    /// and a focus or dismiss repaints the tab title row where the box lives.
+    fn on_search_event(
+        &mut self,
+        _search: &Entity<SearchBox>,
+        event: &SearchEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SearchEvent::Changed => self.on_query_box_changed(cx),
+            SearchEvent::FocusChanged => {
+                cx.notify();
+                panel::refresh_tab_panel(&self.tab_panel, cx);
+            }
+            SearchEvent::Dismissed => {
+                window.focus(&self.focus);
+                cx.notify();
+                panel::refresh_tab_panel(&self.tab_panel, cx);
+            }
+            SearchEvent::Submitted => {}
+        }
+    }
+
+    /// Show or hide the panel's own search box, re-filtering and persisting.
+    fn set_search(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.config.search = on;
+        self.save_config(cx);
+        self.rebuild_query_view(cx);
+        panel::refresh_tab_panel(&self.tab_panel, cx);
     }
 
     /// The entry id at a display row, if it is a track row.
@@ -565,12 +742,15 @@ impl QueuePanel {
         if ids.is_empty() {
             return;
         }
-        let player = self.state.player.read(cx);
-        for &id in ids {
-            player.remove_from_queue(id);
-        }
-        let landing = self.tracks.iter().position(|t| ids.contains(&t.entry_id));
-        self.tracks.retain(|t| !ids.contains(&t.entry_id));
+        self.state
+            .player
+            .read(cx)
+            .remove_many_from_queue(ids.to_vec());
+        // Set membership, not a linear scan per track: a full clear runs this
+        // over every row, so `contains` on a slice would be O(n^2).
+        let drop: HashSet<u64> = ids.iter().copied().collect();
+        let landing = self.tracks.iter().position(|t| drop.contains(&t.entry_id));
+        self.tracks.retain(|t| !drop.contains(&t.entry_id));
         for (i, t) in self.tracks.iter_mut().enumerate() {
             t.pos = (i + 1) as u32;
         }
@@ -648,6 +828,34 @@ impl QueuePanel {
         // entry-id selection rides the rebuild on its own.
         self.selected = dragged.iter().copied().collect();
         self.anchor = dragged.first().copied();
+    }
+
+    /// A track dragged in from the library (or another play-drag source)
+    /// enqueues on drop, appended after the queue, the Add to Queue
+    /// semantics. Enqueue, not Play Next, so a drop lands the tracks at the
+    /// back rather than jumping them ahead of what is already queued. The
+    /// paths ride bare through the player, which handles out-of-library files.
+    fn enqueue_dropped(&mut self, drag: &PlayDrag, cx: &mut Context<Self>) {
+        if drag.is_empty() {
+            return;
+        }
+        let paths = drag.paths.clone();
+        self.state
+            .player
+            .update(cx, |player, cx| player.enqueue(paths, cx));
+    }
+
+    /// An OS file dropped onto the queue panel enqueues, same as a track
+    /// dragged in from the library. The window body plays drops now, so the
+    /// queue panel stays the one surface that adds without interrupting.
+    fn enqueue_external(&mut self, paths: &ExternalPaths, cx: &mut Context<Self>) {
+        let paths = crate::open_files::resolve_audio_paths(paths.paths().to_vec());
+        if paths.is_empty() {
+            return;
+        }
+        self.state
+            .player
+            .update(cx, |player, cx| player.enqueue(paths, cx));
     }
 
     /// The visible slice of the list: album headings and queue entries, drawn
@@ -730,8 +938,17 @@ impl QueuePanel {
             .drag_over::<QueueDrag>(|style, _, _, _| {
                 style.bg(palette::alpha(palette::accent(), 0x1a))
             })
+            .drag_over::<PlayDrag>(|style, _, _, _| {
+                style.bg(palette::alpha(palette::accent(), 0x1a))
+            })
             .on_drop(cx.listener(move |this, drag: &QueueDrag, _, cx| {
                 this.reorder(&drag.ids, ix, cx);
+            }))
+            // A track dragged in from the library (or elsewhere) enqueues on
+            // drop. gpui dispatches on_drop by payload type, so this sits
+            // alongside the reorder drop above rather than replacing it.
+            .on_drop(cx.listener(move |this, drag: &PlayDrag, _, cx| {
+                this.enqueue_dropped(drag, cx);
             }))
             .on_mouse_down(
                 MouseButton::Left,
@@ -846,6 +1063,44 @@ impl HeadingHost for QueuePanel {
     }
 }
 
+impl QueryFilter for QueuePanel {
+    fn shared_query(&self) -> &Entity<crate::shared_query::SharedQuery> {
+        &self.state.query
+    }
+    fn query_box(&self) -> &Entity<SearchBox> {
+        &self.search
+    }
+    fn query_source(&self) -> QuerySource {
+        self.config.query_source
+    }
+    fn set_query_source_value(&mut self, source: QuerySource) {
+        self.config.query_source = source;
+    }
+    fn local_query(&self) -> String {
+        self.config.query.clone()
+    }
+    fn set_local_query(&mut self, query: String) {
+        self.config.query = query;
+    }
+    fn query_box_shown(&self) -> bool {
+        self.config.search
+    }
+    fn set_query_box_shown(&mut self, shown: bool) {
+        self.config.search = shown;
+    }
+    fn rebuild_query_view(&mut self, cx: &mut Context<Self>) {
+        self.refresh_query(cx);
+        self.rebuild_rows();
+        cx.notify();
+    }
+    fn set_query_resync(&mut self, pending: bool) {
+        self.resync_box = pending;
+    }
+    fn after_query_change(&mut self, cx: &mut Context<Self>) {
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+    }
+}
+
 impl PanelSettings for QueuePanel {
     fn state(&self) -> AppState {
         self.state.clone()
@@ -902,6 +1157,21 @@ impl PanelSettings for QueuePanel {
             ))
             .into_any_element()
     }
+
+    /// The Behavior page's search section: show the box, and follow the
+    /// shared query or filter by the panel's own, the searching views' knob.
+    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        Some(crate::shared_query::search_section(
+            self.config.search,
+            |this: &mut Self, on, cx| this.set_search(on, cx),
+            self.config.query_source,
+            |this: &mut Self, source, cx| {
+                this.pick_query_source(source, cx);
+                this.save_config(cx);
+            },
+            cx,
+        ))
+    }
 }
 
 impl EventEmitter<PanelEvent> for QueuePanel {}
@@ -923,6 +1193,23 @@ impl Panel for QueuePanel {
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
         self.config.chrome.title.clone().map(SharedString::from)
+    }
+
+    /// The search box shares the title bar row while the panel sits in a
+    /// group; solo or popped out the body hosts it instead.
+    fn title_suffix(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        if !self.config.search {
+            return None;
+        }
+        Some(
+            self.search
+                .update(cx, |search, cx| search.element(cx))
+                .w(px(180.)),
+        )
     }
 
     fn locked(&self, _cx: &App) -> bool {
@@ -990,6 +1277,20 @@ impl Panel for QueuePanel {
                 "Headings",
                 track_columns::headings_submenu(window, cx),
             ));
+        // Follow the shared search query, or filter by this panel's own box.
+        let menu = crate::shared_query::search_flyout(
+            menu,
+            |this: &Self| this.config.query_source,
+            |this: &Self| this.config.search,
+            &cx.entity(),
+            |this: &mut Self, source, cx| {
+                this.pick_query_source(source, cx);
+                this.save_config(cx);
+            },
+            |this: &mut Self, on, cx| this.set_search(on, cx),
+            window,
+            cx,
+        );
         let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         let weak = cx.entity().downgrade();
@@ -1009,7 +1310,7 @@ impl Panel for QueuePanel {
                     let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
                         return;
                     };
-                    let dup = cx.new(|cx| QueuePanel::new(state, config, cx));
+                    let dup = cx.new(|cx| QueuePanel::new(state, config, window, cx));
                     tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
                 }),
         );
@@ -1023,14 +1324,20 @@ impl Panel for QueuePanel {
 }
 
 impl Render for QueuePanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(cx))
+        panel::themed(&chrome, || self.body(window, cx))
     }
 }
 
 impl QueuePanel {
-    fn body(&mut self, cx: &mut Context<Self>) -> Div {
+    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        // A pending box reset (a source toggle or a shared-query change)
+        // lands here, where a window exists to set the input's text.
+        if self.resync_box {
+            self.resync_box = false;
+            self.sync_query_box(window, cx);
+        }
         let root = div()
             .size_full()
             .flex()
@@ -1113,7 +1420,13 @@ impl QueuePanel {
         } else {
             root
         };
-        let content = if self.tracks.is_empty() {
+        let content = if self.rows.is_empty() {
+            // Entries hidden by the query read differently from an empty queue.
+            let message = if !self.tracks.is_empty() {
+                "No matches"
+            } else {
+                "Queue is empty"
+            };
             div().flex_1().min_h_0().flex().flex_col().child(
                 div()
                     .flex_1()
@@ -1121,7 +1434,7 @@ impl QueuePanel {
                     .items_center()
                     .justify_center()
                     .text_color(palette::text_faint())
-                    .child("Queue is empty"),
+                    .child(message),
             )
         } else {
             let this = cx.entity().downgrade();
@@ -1145,6 +1458,20 @@ impl QueuePanel {
                         .child(Scrollbar::vertical(&self.scroll)),
                 )
         };
+        // A drop over the body, including the empty-queue message and the
+        // space below the rows, enqueues too, so a drag need not land on a
+        // row. A drop on a row is caught by the row's own handler first.
+        let content = content
+            .drag_over::<PlayDrag>(|style, _, _, _| style.bg(palette::alpha(palette::accent(), 0x0f)))
+            .on_drop(cx.listener(move |this, drag: &PlayDrag, _, cx| {
+                this.enqueue_dropped(drag, cx);
+            }))
+            .drag_over::<ExternalPaths>(|style, _, _, _| {
+                style.bg(palette::alpha(palette::accent(), 0x0f))
+            })
+            .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
+                this.enqueue_external(paths, cx);
+            }));
         let content =
             content.capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
                 if event.button == MouseButton::Right {

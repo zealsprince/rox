@@ -6,10 +6,16 @@ license.workspace = true
 
 [dependencies]
 cpal = "0.18"
-# Decode per ADR 2: FLAC by default, MP3 pure-Rust behind symphonia's feature.
+# Decode per ADR 2: every symphonia codec and container is pure Rust, so we
+# take the whole audio matrix (all-codecs + all-formats) without pulling a C
+# dependency. No Opus decoder ships in 0.6, so Ogg Opus stays unsupported.
 # The tag readers matter for probing, not just tags: without id3v2 the probe
 # cannot skip a leading ID3v2 tag, and a tag bigger than the 1 MB probe depth
 # (embedded cover art) makes the whole file unreadable.
-symphonia = { version = "0.6", default-features = false, features = ["flac", "mp3", "wav", "pcm", "id3v1", "id3v2", "ape"] }
+symphonia = { version = "0.6", default-features = false, features = [
+    "aac", "adpcm", "alac", "flac", "mp1", "mp2", "mp3", "pcm", "vorbis",
+    "aiff", "caf", "isomp4", "mkv", "ogg", "wav",
+    "id3v1", "id3v2", "ape",
+] }
 # Wait-free SPSC ring for the RT boundary (ADR 3), both the sample ring and the PCM tap.
 rtrb = "0.3"

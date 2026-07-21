@@ -8,6 +8,7 @@ pub mod cover;
 pub mod depth;
 pub mod drag_anchor;
 pub mod filter;
+pub mod folder_tree;
 pub mod grid;
 pub mod group;
 pub mod history;

@@ -18,6 +18,7 @@ use crate::panels::cover::{CoverArtPanel, CoverConfig};
 use crate::panels::depth::{DepthConfig, DepthPanel};
 use crate::panels::drag_anchor::{DragAnchorConfig, DragAnchorPanel};
 use crate::panels::filter::{FilterConfig, FilterPanel};
+use crate::panels::folder_tree::{FolderTreeConfig, FolderTreePanel};
 use crate::panels::grid::{GridConfig, GridPanel};
 use crate::panels::group::{GroupConfig, GroupPanel};
 use crate::panels::history::{HistoryConfig, HistoryPanel};
@@ -109,6 +110,16 @@ pub(crate) static CATALOGUE: PanelSection = PanelSection {
             },
         },
         PanelDef {
+            label: "Folder Tree",
+            icon: icons::FOLDER,
+            placement: PanelPlacement::Center,
+            build: |state, _, window, cx| {
+                Arc::new(cx.new(|cx| {
+                    FolderTreePanel::new(state.clone(), FolderTreeConfig::default(), window, cx)
+                }))
+            },
+        },
+        PanelDef {
             label: "Album Grid",
             icon: icons::LAYOUT_GRID,
             placement: PanelPlacement::Center,
@@ -132,28 +143,30 @@ pub(crate) static CATALOGUE: PanelSection = PanelSection {
             label: "Playlists",
             icon: icons::LIST_MUSIC,
             placement: PanelPlacement::Center,
-            build: |state, _, _, cx| {
-                Arc::new(
-                    cx.new(|cx| PlaylistsPanel::new(state.clone(), PlaylistsConfig::default(), cx)),
-                )
+            build: |state, _, window, cx| {
+                Arc::new(cx.new(|cx| {
+                    PlaylistsPanel::new(state.clone(), PlaylistsConfig::default(), window, cx)
+                }))
             },
         },
         PanelDef {
             label: "Queue",
             icon: icons::LIST_MUSIC,
             placement: PanelPlacement::Center,
-            build: |state, _, _, cx| {
-                Arc::new(cx.new(|cx| QueuePanel::new(state.clone(), QueueConfig::default(), cx)))
+            build: |state, _, window, cx| {
+                Arc::new(cx.new(|cx| {
+                    QueuePanel::new(state.clone(), QueueConfig::default(), window, cx)
+                }))
             },
         },
         PanelDef {
             label: "History",
             icon: icons::CLOCK,
             placement: PanelPlacement::Center,
-            build: |state, _, _, cx| {
-                Arc::new(
-                    cx.new(|cx| HistoryPanel::new(state.clone(), HistoryConfig::default(), cx)),
-                )
+            build: |state, _, window, cx| {
+                Arc::new(cx.new(|cx| {
+                    HistoryPanel::new(state.clone(), HistoryConfig::default(), window, cx)
+                }))
             },
         },
     ],

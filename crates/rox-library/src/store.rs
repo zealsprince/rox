@@ -414,17 +414,34 @@ pub fn max_rowid(conn: &Connection) -> rusqlite::Result<i64> {
 }
 
 /// Stream the projection columns for one rowid range, in id order. The
-/// sink's string order mirrors the SELECT: title, artist, album artist,
-/// album, genre, then codec after the numbers, the rating last.
+/// sink's string order mirrors the SELECT: path, title, artist, album
+/// artist, album, genre, then codec after the numbers, the rating last.
+/// The path rides so the projection can derive each track's folder.
 #[allow(clippy::type_complexity)]
 pub fn scan_range(
     conn: &Connection,
     lo: i64,
     hi: i64,
-    mut sink: impl FnMut(i64, &str, &str, &str, &str, &str, u16, u16, u16, u32, &str, u16, u8, i64),
+    mut sink: impl FnMut(
+        i64,
+        &str,
+        &str,
+        &str,
+        &str,
+        &str,
+        &str,
+        u16,
+        u16,
+        u16,
+        u32,
+        &str,
+        u16,
+        u8,
+        i64,
+    ),
 ) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, title, artist, album_artist, album, genre, year, disc_no, track_no,
+        "SELECT id, path, title, artist, album_artist, album, genre, year, disc_no, track_no,
                 duration_ms, codec, bitrate, rating, added
          FROM tracks WHERE id > ?1 AND id <= ?2 ORDER BY id",
     )?;
@@ -437,14 +454,15 @@ pub fn scan_range(
             row.get_ref(3)?.as_str().unwrap_or(""),
             row.get_ref(4)?.as_str().unwrap_or(""),
             row.get_ref(5)?.as_str().unwrap_or(""),
-            row.get::<_, i64>(6)? as u16,
+            row.get_ref(6)?.as_str().unwrap_or(""),
             row.get::<_, i64>(7)? as u16,
             row.get::<_, i64>(8)? as u16,
-            row.get::<_, i64>(9)? as u32,
-            row.get_ref(10)?.as_str().unwrap_or(""),
-            row.get::<_, i64>(11)? as u16,
-            row.get::<_, i64>(12)? as u8,
-            row.get::<_, i64>(13)?,
+            row.get::<_, i64>(9)? as u16,
+            row.get::<_, i64>(10)? as u32,
+            row.get_ref(11)?.as_str().unwrap_or(""),
+            row.get::<_, i64>(12)? as u16,
+            row.get::<_, i64>(13)? as u8,
+            row.get::<_, i64>(14)?,
         );
     }
     Ok(())

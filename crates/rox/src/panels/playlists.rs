@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, svg, uniform_list, App, Context, Div, EventEmitter,
+    div, prelude::*, px, svg, uniform_list, App, Context, Div, Entity, EventEmitter,
     FocusHandle, Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent,
     PathPromptOptions, SharedString, Stateful, Subscription, UniformListScrollHandle, WeakEntity,
     Window,
@@ -27,9 +27,12 @@ use crate::group_head::Headers;
 use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
+use crate::search::{SearchBox, SearchEvent};
+use crate::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::track_cells;
 use crate::track_columns::{self, Column, ColumnHost, GroupTrack, HeadingHost};
 use rox_library::playlists::PlaylistTrack;
+use rox_library::projection::{parse_query, track_matches, FilterSet, Term, TrackFields};
 
 /// One row's height; the list is a uniform_list, so every row agrees.
 const ROW_H: f32 = 30.;
@@ -69,6 +72,15 @@ pub struct PlaylistsConfig {
     /// registry's). Defaults to the registry's default-on set, so a fresh
     /// panel and a pre-columns layout both open with the same fields.
     pub columns: Vec<String>,
+    /// Whether the search box shows; the query only filters while it does.
+    #[serde(default)]
+    pub search: bool,
+    /// Follow the shared query, or filter by this panel's own box.
+    #[serde(default)]
+    pub query_source: QuerySource,
+    /// The panel's own query, kept while following the shared one.
+    #[serde(default)]
+    pub query: String,
 }
 
 // Hand-written over derived so the columns default to the registry set and
@@ -82,6 +94,9 @@ impl Default for PlaylistsConfig {
             expanded: Vec::new(),
             headers: Headers::Off,
             columns: track_columns::default_columns(COLUMNS),
+            search: false,
+            query_source: QuerySource::default(),
+            query: String::new(),
         }
     }
 }
@@ -202,6 +217,15 @@ impl Render for TrackDragPreview {
 pub struct PlaylistsPanel {
     state: AppState,
     config: PlaylistsConfig,
+    /// The search box, shared by every searching view; shown per config.
+    search: Entity<SearchBox>,
+    /// A pending box reset from a source toggle or a shared-query change,
+    /// applied on the next render where a window exists to set the input.
+    resync_box: bool,
+    /// The query and filter the tree is built for, snapshotted whenever the
+    /// query changes; a searching tree surfaces matches from every list.
+    applied_query: String,
+    applied_filter: FilterSet,
     rows: Vec<Row>,
     /// The album runs the heading rows index, rebuilt with `rows` each
     /// refresh; empty when the headings are off.
@@ -229,10 +253,17 @@ pub struct PlaylistsPanel {
     _library_changed: Subscription,
     _player_changed: Subscription,
     _thumbs_changed: Subscription,
+    _search_events: Subscription,
+    _query_changed: Subscription,
 }
 
 impl PlaylistsPanel {
-    pub fn new(state: AppState, config: PlaylistsConfig, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        state: AppState,
+        config: PlaylistsConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let expanded: HashSet<i64> = config.expanded.iter().copied().collect();
         // Playlist edits and rescans both change what the tree shows.
         let _library_changed = cx.subscribe(
@@ -252,9 +283,27 @@ impl PlaylistsPanel {
         // A landing cover repaints the heading tiles; nothing to recompute.
         let _thumbs_changed =
             cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
+        // A panel restored as global opens showing the shared query; a local
+        // one shows its own.
+        let initial = match config.query_source {
+            QuerySource::Global => state.query.read(cx).text().to_string(),
+            QuerySource::Local => config.query.clone(),
+        };
+        let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
+        let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
+        // Follow the shared query while global: rebuild the tree and reset the
+        // box to it on the next render.
+        let _query_changed = cx.subscribe(
+            &state.query,
+            |this: &mut Self, _, _: &SharedQueryEvent, cx| this.on_shared_query_changed(cx),
+        );
         let mut this = PlaylistsPanel {
             state,
             config,
+            search,
+            resync_box: false,
+            applied_query: String::new(),
+            applied_filter: FilterSet::default(),
             rows: Vec::new(),
             albums: Vec::new(),
             expanded,
@@ -269,6 +318,8 @@ impl PlaylistsPanel {
             _library_changed,
             _player_changed,
             _thumbs_changed,
+            _search_events,
+            _query_changed,
         };
         this.refresh(cx);
         this.sync_playing(cx);
@@ -276,69 +327,95 @@ impl PlaylistsPanel {
     }
 
     /// Rebuild the flattened tree from the catalog: a header per playlist, its
-    /// tracks under it when expanded.
+    /// tracks under it when expanded. While a query is active every list opens
+    /// and only its matching tracks show, so a search surfaces hits from
+    /// collapsed lists too; a list with no match drops out entirely.
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.refresh_query(cx);
+        let terms = parse_query(&self.applied_query);
+        let searching = !self.applied_query.is_empty() || !self.applied_filter.is_empty();
         let library = self.state.library.read(cx);
         let favourites = library.favourite_ids();
         let mut rows = Vec::new();
         let mut albums = Vec::new();
         for playlist in library.playlists() {
             let expanded = self.expanded.contains(&playlist.id);
+            // A searching tree loads every list to filter it; otherwise only
+            // the expanded ones, which is what's on screen.
+            let show_tracks = expanded || searching;
+            let all = if show_tracks {
+                library.playlist_tracks(playlist.id)
+            } else {
+                Vec::new()
+            };
+            // The original play-order index of each track that shows; a search
+            // keeps only matches, so positions stay the playlist's, not the
+            // filtered run's.
+            let visible: Vec<usize> = if searching {
+                (0..all.len())
+                    .filter(|&i| self.track_visible(&terms, &all[i]))
+                    .collect()
+            } else {
+                (0..all.len()).collect()
+            };
+            if searching && visible.is_empty() {
+                continue;
+            }
             rows.push(Row::Head {
                 id: playlist.id,
                 name: playlist.name,
                 count: playlist.tracks,
-                expanded,
+                expanded: show_tracks,
                 favourite: playlist.favourite,
             });
-            if !expanded {
+            if !show_tracks {
                 continue;
             }
-            let tracks = library.playlist_tracks(playlist.id);
-            // Total play counts for this playlist's tracks, one projection
-            // pass, for the plays column.
-            let ids: Vec<i64> = tracks.iter().map(|t| t.track_id).collect();
+            // Total play counts for the shown tracks, one projection pass, for
+            // the plays column.
+            let ids: Vec<i64> = visible.iter().map(|&i| all[i].track_id).collect();
             let plays = library.plays_for(&ids);
             let plays_of = |t: &PlaylistTrack| plays.get(&t.track_id).copied().unwrap_or(0);
             if self.config.headers == Headers::Off {
-                for (i, track) in tracks.iter().enumerate() {
+                for &i in &visible {
                     rows.push(Row::Track(TrackRow::new(
                         playlist.id,
                         (i + 1) as u32,
-                        track,
-                        plays_of(track),
+                        &all[i],
+                        plays_of(&all[i]),
                     )));
                 }
                 continue;
             }
-            // A heading block opens each run of tracks that share an album, in
-            // play order - no re-sort, so a playlist's own order stays put and
-            // a mixed list just breaks more often. Consecutive empty albums
-            // merge into one Unknown run, the library's rule. Compact draws
-            // the name line alone, Expanded adds the meta line under it.
-            let mut i = 0;
-            while i < tracks.len() {
-                let mut j = i + 1;
-                while j < tracks.len() && tracks[j].album == tracks[i].album {
-                    j += 1;
+            // A heading block opens each run of shown tracks that share an
+            // album, in play order - no re-sort, so a playlist's own order
+            // stays put and a mixed list just breaks more often. Consecutive
+            // empty albums merge into one Unknown run, the library's rule.
+            // Compact draws the name line alone, Expanded adds the meta line.
+            let mut k = 0;
+            while k < visible.len() {
+                let mut m = k + 1;
+                let album = &all[visible[k]].album;
+                while m < visible.len() && &all[visible[m]].album == album {
+                    m += 1;
                 }
-                let run = &tracks[i..j];
-                let group: Vec<GroupTrack> = run.iter().map(group_track).collect();
+                let group: Vec<GroupTrack> =
+                    visible[k..m].iter().map(|&i| group_track(&all[i])).collect();
                 albums.push(track_columns::album_group(&group));
                 let g = (albums.len() - 1) as u32;
                 rows.push(Row::Album(g));
                 if self.config.headers == Headers::Expanded {
                     rows.push(Row::AlbumMeta(g));
                 }
-                for (k, track) in run.iter().enumerate() {
+                for &i in &visible[k..m] {
                     rows.push(Row::Track(TrackRow::new(
                         playlist.id,
-                        (i + k + 1) as u32,
-                        track,
-                        plays_of(track),
+                        (i + 1) as u32,
+                        &all[i],
+                        plays_of(&all[i]),
                     )));
                 }
-                i = j;
+                k = m;
             }
         }
         self.rows = rows;
@@ -362,6 +439,28 @@ impl PlaylistsPanel {
         cx.notify();
     }
 
+    /// Snapshot the active query and filter, so `refresh` filters the tree
+    /// without a `cx`. The shared query while following it, the box's own
+    /// text otherwise.
+    fn refresh_query(&mut self, cx: &Context<Self>) {
+        self.applied_query = self.effective_query(cx);
+        self.applied_filter = self.effective_filter(cx);
+    }
+
+    /// Whether a playlist track passes the active query and filter.
+    fn track_visible(&self, terms: &[Term], t: &PlaylistTrack) -> bool {
+        let fields = TrackFields {
+            title: &t.title,
+            artist: &t.artist,
+            album_artist: &t.album_artist,
+            album: &t.album,
+            genre: &t.genre,
+            year: t.year,
+            path: &t.path,
+        };
+        track_matches(terms, &fields) && self.applied_filter.matches(&fields)
+    }
+
     /// Follow the player: resolve the playing path to its track id, so every
     /// row of that track across playlists carries the highlight.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
@@ -375,6 +474,39 @@ impl PlaylistsPanel {
             self.playing = playing;
             cx.notify();
         }
+    }
+
+    /// Map the shared box's events onto the panel: a changed query rebuilds
+    /// the tree, and a focus or dismiss repaints the tab title row where the
+    /// box lives.
+    fn on_search_event(
+        &mut self,
+        _search: &Entity<SearchBox>,
+        event: &SearchEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SearchEvent::Changed => self.on_query_box_changed(cx),
+            SearchEvent::FocusChanged => {
+                cx.notify();
+                panel::refresh_tab_panel(&self.tab_panel, cx);
+            }
+            SearchEvent::Dismissed => {
+                window.focus(&self.focus);
+                cx.notify();
+                panel::refresh_tab_panel(&self.tab_panel, cx);
+            }
+            SearchEvent::Submitted => {}
+        }
+    }
+
+    /// Show or hide the panel's own search box, rebuilding the tree. The
+    /// config rides the layout dump, so the tab-panel repaint carries it out.
+    fn set_search(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.config.search = on;
+        self.rebuild_query_view(cx);
+        panel::refresh_tab_panel(&self.tab_panel, cx);
     }
 
     /// Expand or collapse a playlist, mirroring the set into the config so a
@@ -952,6 +1084,42 @@ impl HeadingHost for PlaylistsPanel {
     }
 }
 
+impl QueryFilter for PlaylistsPanel {
+    fn shared_query(&self) -> &Entity<crate::shared_query::SharedQuery> {
+        &self.state.query
+    }
+    fn query_box(&self) -> &Entity<SearchBox> {
+        &self.search
+    }
+    fn query_source(&self) -> QuerySource {
+        self.config.query_source
+    }
+    fn set_query_source_value(&mut self, source: QuerySource) {
+        self.config.query_source = source;
+    }
+    fn local_query(&self) -> String {
+        self.config.query.clone()
+    }
+    fn set_local_query(&mut self, query: String) {
+        self.config.query = query;
+    }
+    fn query_box_shown(&self) -> bool {
+        self.config.search
+    }
+    fn set_query_box_shown(&mut self, shown: bool) {
+        self.config.search = shown;
+    }
+    fn rebuild_query_view(&mut self, cx: &mut Context<Self>) {
+        self.refresh(cx);
+    }
+    fn set_query_resync(&mut self, pending: bool) {
+        self.resync_box = pending;
+    }
+    fn after_query_change(&mut self, cx: &mut Context<Self>) {
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+    }
+}
+
 impl PanelSettings for PlaylistsPanel {
     fn state(&self) -> AppState {
         self.state.clone()
@@ -1010,6 +1178,18 @@ impl PanelSettings for PlaylistsPanel {
             ))
             .into_any_element()
     }
+
+    /// The Behavior page's search section: show the box, and follow the
+    /// shared query or filter by the panel's own.
+    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        Some(crate::shared_query::search_section(
+            self.config.search,
+            |this: &mut Self, on, cx| this.set_search(on, cx),
+            self.config.query_source,
+            |this: &mut Self, source, cx| this.pick_query_source(source, cx),
+            cx,
+        ))
+    }
 }
 
 impl EventEmitter<PanelEvent> for PlaylistsPanel {}
@@ -1031,6 +1211,23 @@ impl Panel for PlaylistsPanel {
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
         self.config.chrome.title.clone().map(SharedString::from)
+    }
+
+    /// The search box shares the title bar row while the panel sits in a
+    /// group; solo or popped out the body hosts it instead.
+    fn title_suffix(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        if !self.config.search {
+            return None;
+        }
+        Some(
+            self.search
+                .update(cx, |search, cx| search.element(cx))
+                .w(px(180.)),
+        )
     }
 
     fn locked(&self, _cx: &App) -> bool {
@@ -1085,6 +1282,17 @@ impl Panel for PlaylistsPanel {
         let menu = menu.item(PopupMenuItem::submenu("Columns", columns));
         let headings = track_columns::headings_submenu(window, cx);
         let menu = menu.item(PopupMenuItem::submenu("Headings", headings));
+        // Follow the shared search query, or filter by this panel's own box.
+        let menu = crate::shared_query::search_flyout(
+            menu,
+            |this: &Self| this.config.query_source,
+            |this: &Self| this.config.search,
+            &cx.entity(),
+            |this: &mut Self, source, cx| this.pick_query_source(source, cx),
+            |this: &mut Self, on, cx| this.set_search(on, cx),
+            window,
+            cx,
+        );
 
         // Panel section: rename_item opens it with its own "Panel" label.
         let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
@@ -1106,7 +1314,7 @@ impl Panel for PlaylistsPanel {
                     let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
                         return;
                     };
-                    let dup = cx.new(|cx| PlaylistsPanel::new(state, config, cx));
+                    let dup = cx.new(|cx| PlaylistsPanel::new(state, config, window, cx));
                     tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
                 }),
         );
@@ -1136,14 +1344,20 @@ impl Panel for PlaylistsPanel {
 }
 
 impl Render for PlaylistsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(cx))
+        panel::themed(&chrome, || self.body(window, cx))
     }
 }
 
 impl PlaylistsPanel {
-    fn body(&mut self, cx: &mut Context<Self>) -> Div {
+    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        // A pending box reset (a source toggle or a shared-query change)
+        // lands here, where a window exists to set the input's text.
+        if self.resync_box {
+            self.resync_box = false;
+            self.sync_query_box(window, cx);
+        }
         let root = div()
             .size_full()
             .flex()
@@ -1151,7 +1365,14 @@ impl PlaylistsPanel {
             .bg(palette::bg_root())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)));
+        let searching = !self.applied_query.is_empty() || !self.applied_filter.is_empty();
         let content = if self.rows.is_empty() {
+            // A search that hit nothing reads differently from an empty tree.
+            let message = if searching {
+                "No matches"
+            } else {
+                "No playlists yet, add tracks or use New Playlist"
+            };
             div().flex_1().min_h_0().flex().flex_col().child(
                 div()
                     .flex_1()
@@ -1159,7 +1380,7 @@ impl PlaylistsPanel {
                     .items_center()
                     .justify_center()
                     .text_color(palette::text_faint())
-                    .child("No playlists yet, add tracks or use New Playlist"),
+                    .child(message),
             )
         } else {
             let this = cx.entity().downgrade();

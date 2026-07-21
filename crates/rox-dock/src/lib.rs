@@ -206,17 +206,28 @@ impl DockItem {
     }
 
     /// Set active index for the DockItem, only valid for [`DockItem::Tabs`].
-    pub fn active_index(mut self, new_active_ix: usize) -> Self {
+    ///
+    /// Pushes the index into the live `TabPanel` too, not just the enum field,
+    /// so a restored layout opens on the tab that was active when it was saved
+    /// instead of always falling back to the first tab.
+    pub fn active_index(mut self, new_active_ix: usize, cx: &mut App) -> Self {
         debug_assert!(
             matches!(self, Self::Tabs { .. }),
             "active_ix can only be set for DockItem::Tabs"
         );
 
         if let Self::Tabs {
-            ref mut active_ix, ..
+            ref mut active_ix,
+            ref view,
+            ..
         } = self
         {
             *active_ix = new_active_ix;
+            view.update(cx, |tab_panel, _| {
+                if new_active_ix < tab_panel.panels.len() {
+                    tab_panel.active_ix = new_active_ix;
+                }
+            });
         }
         self
     }

@@ -294,7 +294,16 @@ impl Player {
     /// after the playing track. With nothing loaded this just starts them.
     pub fn play_next(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         let after = self.playing_after();
-        self.insert(after, paths, cx);
+        self.insert(after, paths, false, cx);
+    }
+
+    /// Play these now without discarding the queue: splice them right after the
+    /// playing track and jump to the first, so the rest of the queue plays on
+    /// behind them. With nothing loaded this just starts them. The drop's Play
+    /// now zone routes here; an OS file open replaces the session instead.
+    pub fn play_now(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let after = self.playing_after();
+        self.insert(after, paths, true, cx);
     }
 
     /// Queue tracks at the end of the explicit queue, after anything already
@@ -302,7 +311,7 @@ impl Player {
     /// them.
     pub fn enqueue(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         let after = self.enqueue_after();
-        self.insert(after, paths, cx);
+        self.insert(after, paths, false, cx);
     }
 
     /// The queue entry index of the playing track, matched by pool index off
@@ -352,7 +361,13 @@ impl Player {
     /// mirroring the pool growth on our side so `now_playing` can still resolve
     /// a freshly queued track back to its file. With no session, fall back to
     /// starting playback (a context, not a queue).
-    fn insert(&mut self, after: Option<u64>, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    fn insert(
+        &mut self,
+        after: Option<u64>,
+        paths: Vec<PathBuf>,
+        and_play: bool,
+        cx: &mut Context<Self>,
+    ) {
         if paths.is_empty() {
             return;
         }
@@ -365,6 +380,7 @@ impl Player {
             after,
             paths,
             explicit: true,
+            and_play,
         });
         cx.notify();
     }
@@ -375,12 +391,21 @@ impl Player {
         self.send(Cmd::Remove { id });
     }
 
+    /// Drop a set of queued entries in one engine pass. One command and one
+    /// queue publish for the whole batch, so clearing or multi-deleting a big
+    /// queue does not fire an O(n) remove and a UI wake per id.
+    pub fn remove_many_from_queue(&self, ids: Vec<u64>) {
+        if ids.is_empty() {
+            return;
+        }
+        self.send(Cmd::RemoveMany { ids });
+    }
+
     /// Drop every up-next explicit entry. The playing track and the context
     /// around it stay; only the hand-picked queue empties.
     pub fn clear_queue(&self) {
-        for entry in self.queued() {
-            self.remove_from_queue(entry.id);
-        }
+        let ids: Vec<u64> = self.queued().iter().map(|e| e.id).collect();
+        self.remove_many_from_queue(ids);
     }
 
     /// Play a queued entry now without consuming the rest of the queue: the

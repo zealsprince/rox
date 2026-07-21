@@ -1,0 +1,20 @@
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -1940,6 +1940,17 @@
+         self.active_drag.is_some()
+     }
+ 
++    /// Is the active drag carrying a value of type `T`? A drop target reads
++    /// this to show type-specific affordances only for the right payload, so
++    /// an audio drop-zone overlay stays hidden while a panel or list row is
++    /// dragged. rox patch: active_drag is crate-private upstream, so this
++    /// typed check has to live in gpui.
++    pub fn active_drag_is<T: std::any::Any>(&self) -> bool {
++        self.active_drag
++            .as_ref()
++            .is_some_and(|drag| drag.value.as_ref().is::<T>())
++    }
++
+     /// Gets the cursor style of the currently active drag operation.
+     pub fn active_drag_cursor_style(&self) -> Option<CursorStyle> {
+         self.active_drag.as_ref().and_then(|drag| drag.cursor_style)

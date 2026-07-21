@@ -158,12 +158,12 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    47.84953308105469,
-                    39.87461471557617,
-                    687.8370361328125,
-                    67.78684997558594,
-                    307.03448486328125,
-                    121.61756896972656
+                    47.84952926635742,
+                    39.874610900878906,
+                    687.8369750976562,
+                    67.7868423461914,
+                    307.0344543457031,
+                    121.61756134033205
                   ],
                   "axis": 0
                 }
@@ -214,8 +214,7 @@
                                   "smooth_follow": true,
                                   "dim_playing": false,
                                   "dim": 60.0,
-                                  "rounding": 0.0,
-                                  "center": 1687
+                                  "rounding": 0.0
                                 }
                               }
                             },
@@ -237,8 +236,7 @@
                                   "rounding": 0.0,
                                   "gap": 0.0,
                                   "labels": false,
-                                  "label_align": "left",
-                                  "scroll": 1677
+                                  "label_align": "left"
                                 }
                               }
                             }
@@ -247,7 +245,7 @@
                             "panel": {
                               "title": "Art",
                               "stacked": true,
-                              "ratio": 0.25023430585861206
+                              "ratio": 0.34292036294937134
                             }
                           }
                         },
@@ -328,7 +326,7 @@
                   "info": {
                     "stack": {
                       "sizes": [
-                        1077.0
+                        709.0
                       ],
                       "axis": 1
                     }
@@ -380,7 +378,7 @@
                           ],
                           "sort_key": null,
                           "sort_desc": false,
-                          "scroll_row": 22271,
+                          "scroll_row": 321,
                           "follow_playing": true,
                           "resume_playing": false,
                           "smooth_follow": true,
@@ -406,7 +404,10 @@
                             "artist",
                             "rating",
                             "favourite"
-                          ]
+                          ],
+                          "search": false,
+                          "query_source": "global",
+                          "query": ""
                         }
                       }
                     },
@@ -421,7 +422,10 @@
                             "name",
                             "artist",
                             "cover"
-                          ]
+                          ],
+                          "search": false,
+                          "query_source": "global",
+                          "query": ""
                         }
                       }
                     },
@@ -440,7 +444,24 @@
                             "rating",
                             "favourite",
                             "cover"
-                          ]
+                          ],
+                          "search": false,
+                          "query_source": "global",
+                          "query": ""
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "folder tree",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "cover": "folders",
+                          "folders": "hide",
+                          "songs": "dim",
+                          "follow_playing": true,
+                          "resume_playing": false,
+                          "smooth_follow": true
                         }
                       }
                     }
@@ -455,8 +476,8 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    447.5000305175781,
-                    824.5
+                    504.5,
+                    767.5
                   ],
                   "axis": 0
                 }
@@ -511,7 +532,7 @@
                 "stack": {
                   "sizes": [
                     1064.153564453125,
-                    207.8464202880859
+                    207.846435546875
                   ],
                   "axis": 0
                 }
@@ -582,8 +603,8 @@
                   "info": {
                     "stack": {
                       "sizes": [
-                        136.29209899902344,
-                        70.70790100097656
+                        137.6089324951172,
+                        71.39105987548828
                       ],
                       "axis": 1
                     }
@@ -614,8 +635,8 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    1064.6519775390625,
-                    207.3480224609375
+                    1064.0,
+                    208.00001525878903
                   ],
                   "axis": 0
                 }
@@ -664,9 +685,9 @@
               "sizes": [
                 40.0,
                 30.0,
-                1076.5,
-                40.5,
-                207.0,
+                709.0,
+                40.0,
+                209.0,
                 40.0
               ],
               "axis": 1
@@ -676,7 +697,7 @@
       },
       "size": {
         "width": 1298.0,
-        "height": 1460.0
+        "height": 1094.0
       }
     },
     {
@@ -852,6 +873,12 @@
   "appearance": {
     "surface_opacity": 0.6035714,
     "backdrop_strength": 0.8,
+    "frame": {
+      "margin": 0.0,
+      "padding": 0.0,
+      "rounding": 0.0,
+      "border": 0.0
+    },
     "art_theming": false,
     "keep_dark": false,
     "rating_style": "stars",

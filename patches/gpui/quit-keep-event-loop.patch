@@ -37,7 +37,7 @@
 @@ -716,9 +716,9 @@
          }
          match message {
-             WM_gpui_CLOSE_ONE_WINDOW => {
+             WM_GPUI_CLOSE_ONE_WINDOW => {
 -                if self.close_one_window(HWND(lparam.0 as _)) {
 -                    unsafe { PostQuitMessage(0) };
 -                }
@@ -46,4 +46,4 @@
 +                self.close_one_window(HWND(lparam.0 as _));
                  Some(0)
              }
-             WM_gpui_TASK_DISPATCHED_ON_MAIN_THREAD => self.run_foreground_task(),
+             WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD => self.run_foreground_task(),

@@ -2,9 +2,9 @@
   <img src="crates/rox/assets/app/rox.png" alt="rox" width="64" />
 </p>
 
-# rox
+<h1 align="center">rox</h1>
 
-*If Foobar2000 was made in the current year.*
+<p align="center"><em>If Foobar2000 was made in the current year.</em></p>
 
 rox is a desktop music player for people with large, carefully tagged local libraries.
 The UI is panels you compose yourself, duplicate with independent configs, and pop out
@@ -85,6 +85,13 @@ and applies the small patches under `patches/` (the nix shell does this on entry
 ## Spec
 
 Check out the [docs index](docs/README.md) which lists the altitude spec for how `rox` is built.
+
+## Bugs & Feature Requests
+
+Something broke, or rox is missing the thing that would make it yours?
+[Open an issue](https://github.com/zealsprince/rox/issues/new/choose). The forms only ask
+for the essentials; repro steps, recordings, or a file that triggers the problem are all
+welcome extras. If neither form fits, a blank issue is fine too.
 
 ## AI
 

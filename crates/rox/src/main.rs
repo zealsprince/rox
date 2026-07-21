@@ -15,11 +15,13 @@ mod composite;
 mod cover_editor;
 mod cover_match;
 mod design;
+mod duplicates;
 mod group_head;
 mod history;
 mod icon_packs;
 mod lastfm;
 mod layouts;
+mod library_watch;
 mod lyrics_edit;
 mod lyrics_match;
 mod m3u;
@@ -45,11 +47,13 @@ mod stats_window;
 mod suggest;
 mod tag_editor;
 mod tag_match;
+mod tag_repair;
 mod thumbs;
 mod track_cells;
 mod track_columns;
 mod track_drag;
 mod tray;
+mod updates;
 mod welcome_window;
 mod workspace;
 mod workspaces;
@@ -218,6 +222,9 @@ fn main() {
         providers::set_itunes_online(settings.providers.itunes);
         providers::set_deezer_online(settings.providers.deezer);
         providers::set_artist_online(settings.providers.artist);
+        // The daily update check, off the UI thread; the toggle and the
+        // one-day cache both gate it, so most launches do nothing here.
+        updates::check_on_launch(cx);
         // Launch files ride into the first window; a plain launch (no files)
         // opens on the restored state as before.
         let open = (!launch_files.is_empty()).then_some((launch_mode, launch_files));

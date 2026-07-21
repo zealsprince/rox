@@ -87,6 +87,35 @@ pub(crate) fn open(path: &Path) -> io::Result<TagSource> {
     Ok(TagSource::Patched(Cursor::new(buf)))
 }
 
+/// Whether `path` carries the ID3v2.4 double-unsync shape this module
+/// works around: a v2.4 header with the unsynchronisation flag set and at
+/// least one frame carrying its own unsync flag. That is the exact shape
+/// [`open`] clears the header flag for and the writer repairs on commit, so
+/// a repair pass uses it to find the files worth rewriting. Cheap on the
+/// common file: the ten-byte header rules out anything that is not a v2.4
+/// unsynchronised tag, and only a real candidate is read in full. Any read
+/// or open error reads as "no repair needed", the same tolerance the scan
+/// gives a file it cannot open.
+pub fn needs_unsync_repair(path: &Path) -> bool {
+    needs_unsync_repair_inner(path).unwrap_or(false)
+}
+
+fn needs_unsync_repair_inner(path: &Path) -> io::Result<bool> {
+    let mut file = File::open(path)?;
+    let mut header = [0u8; 10];
+    if file.read_exact(&mut header).is_err()
+        || &header[..3] != b"ID3"
+        || header[3] != 4
+        || header[5] & HEADER_UNSYNC == 0
+    {
+        return Ok(false);
+    }
+    file.rewind()?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    Ok(frames_flagged(&buf))
+}
+
 /// Whether any frame carries the per-frame unsync flag, the signal lofty
 /// will de-unsynchronise it a second time. Walks the stored bytes: v2.4
 /// frame sizes count the stuffing, so the walk stays aligned without a
@@ -222,5 +251,24 @@ mod tests {
         let id3 = parsed.id3v2().expect("the tag survives");
         assert_eq!(id3.title().as_deref(), Some("Back from the Edge"));
         assert_eq!(id3.artist().as_deref(), Some("Lord Huron"));
+    }
+
+    /// The repair gate: the double-unsync shape flags for repair, a file
+    /// with no ID3 tag does not. The same gate `open` clears the header
+    /// flag for, so the repair pass rewrites exactly the files it patches.
+    #[test]
+    fn needs_repair_flags_only_the_broken_shape() {
+        let dir = std::env::temp_dir().join("rox-tag-source-needs-repair");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let broken = dir.join("broken.mp3");
+        std::fs::write(&broken, vide_noir_file("Ends of the Earth")).unwrap();
+        assert!(needs_unsync_repair(&broken), "the broken shape flags");
+
+        let plain = dir.join("plain.mp3");
+        std::fs::write(&plain, mpeg_audio()).unwrap();
+        assert!(!needs_unsync_repair(&plain), "a plain file is left alone");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

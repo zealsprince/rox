@@ -990,23 +990,51 @@ impl Palette {
         }
     }
 
-    /// The palette flipped light for dark, or dark for light: every
-    /// neutral role's lightness mirrored around the middle of the scale
-    /// while the colorful roles hold. Surfaces and ink swap ends so a
-    /// dark ladder comes back light and a light one comes back dark, but
-    /// the accents keep their color, so an edited palette flips without
-    /// losing its character. The [`CHROMATIC`] line splits neutral from
-    /// colorful, the same cut derivation makes when it strips a grayscale
-    /// cover's accents.
+    /// Mean perceptual lightness across the surface roles: the read that
+    /// tells a dark palette from a light one, the same lightness cut
+    /// derivation makes on a cover.
+    fn mean_surface_lightness(&self) -> f32 {
+        let (sum, count) = ROLES
+            .iter()
+            .filter(|role| role.group == "Surfaces")
+            .map(|role| rgba_to_oklch((role.get)(self)).0)
+            .fold((0.0, 0), |(sum, count), lightness| (sum + lightness, count + 1));
+        sum / count.max(1) as f32
+    }
+
+    /// The palette flipped light for dark, or dark for light. Not a raw
+    /// lightness mirror: the two designed ladders ([`Palette::default`]
+    /// dark, [`Palette::light`] bright) are the anchors, and inverse lands
+    /// the palette's own edits on the opposite one. Each role's oklch
+    /// distance from the anchor it started nearest to is re-applied over
+    /// the far anchor, so an untouched palette returns the hand-tuned
+    /// counterpart exactly, and a recolored one carries that character
+    /// across without inheriting the near ladder's spacing or its
+    /// backdrop-eaten hairline contrast. Reading the far anchor also fixes
+    /// the pinned pairs a mirror broke: text over the held accent flips
+    /// with the accent instead of turning unreadable.
     pub fn inverse(&self) -> Palette {
-        self.map(|color| {
-            let (lightness, chroma, hue) = rgba_to_oklch(color);
-            if chroma > CHROMATIC {
-                color
-            } else {
-                oklch_to_rgba(1.0 - lightness, chroma, hue, color.a)
-            }
-        })
+        let dark = Palette::default();
+        let light = Palette::light();
+        let midpoint =
+            (dark.mean_surface_lightness() + light.mean_surface_lightness()) / 2.0;
+        let (near, far) = if self.mean_surface_lightness() <= midpoint {
+            (&dark, &light)
+        } else {
+            (&light, &dark)
+        };
+        let mut out = *far;
+        for role in ROLES {
+            let color = (role.get)(self);
+            let (self_l, self_c, self_h) = rgba_to_oklch(color);
+            let (near_l, near_c, near_h) = rgba_to_oklch((role.get)(near));
+            let (far_l, far_c, far_h) = rgba_to_oklch((role.get)(far));
+            let lightness = (far_l + (self_l - near_l)).clamp(0.0, 1.0);
+            let chroma = (far_c + (self_c - near_c)).max(0.0);
+            let hue = far_h + (self_h - near_h);
+            (role.set)(&mut out, oklch_to_rgba(lightness, chroma, hue, color.a));
+        }
+        out
     }
 }
 
@@ -1416,29 +1444,57 @@ mod tests {
         );
     }
 
-    /// Inverse flips the neutral ladder light for dark while the accents
-    /// hold: the dark surfaces come back light, the light ink comes back
-    /// dark, and the brand accent keeps its color.
+    /// Inverse lands on the designed ladder, not a raw mirror: an
+    /// untouched dark palette comes back as the hand-tuned light one,
+    /// flipping again returns the original, and a role the user edited
+    /// carries its oklch delta onto the far anchor.
     #[test]
-    fn inverse_flips_neutrals_keeps_accents() {
-        let base = Palette::default();
-        let flipped = base.inverse();
-        // Surfaces and ink mirror around the middle of the lightness scale.
-        for (role, orig) in [(flipped.bg_root, base.bg_root), (flipped.text, base.text)] {
-            let (l, ..) = rgba_to_oklch(role);
-            let (l_orig, ..) = rgba_to_oklch(orig);
+    fn inverse_lands_on_designed_ladder() {
+        let dark = Palette::default();
+        let light = Palette::light();
+        let flipped = dark.inverse();
+
+        // Every role of an untouched dark palette resolves to its light
+        // counterpart, within an oklch round-trip's slack. Compared in
+        // sRGB, since the near-gray roles have no meaningful hue to match.
+        for role in ROLES {
+            let flip = (role.get)(&flipped);
+            let want = (role.get)(&light);
             assert!(
-                (l - (1.0 - l_orig)).abs() < 0.02,
-                "neutral role didn't mirror: {l} vs {}",
-                1.0 - l_orig
+                (flip.r - want.r).abs() < 0.02
+                    && (flip.g - want.g).abs() < 0.02
+                    && (flip.b - want.b).abs() < 0.02,
+                "role {} didn't land on the light ladder",
+                role.name
             );
         }
-        // The accent keeps its exact color, no lightness flip.
-        let (l, c, h) = rgba_to_oklch(flipped.accent);
-        let (l_orig, c_orig, h_orig) = rgba_to_oklch(base.accent);
-        assert!((l - l_orig).abs() < 0.02, "accent lightness moved");
-        assert!((c - c_orig).abs() < 0.02, "accent chroma moved");
-        assert!((h - h_orig).abs() < 0.05, "accent hue moved");
+
+        // The flip changed mode, not just hue: surfaces brighten, ink darkens.
+        assert!(rgba_to_oklch(flipped.bg_root).0 > rgba_to_oklch(dark.bg_root).0);
+        assert!(rgba_to_oklch(flipped.text).0 < rgba_to_oklch(dark.text).0);
+
+        // Flipping the light result returns to the original dark ladder.
+        let round = flipped.inverse();
+        for role in ROLES {
+            let (rl, ..) = rgba_to_oklch((role.get)(&round));
+            let (dl, ..) = rgba_to_oklch((role.get)(&dark));
+            assert!((rl - dl).abs() < 0.02, "round trip drifted on {}", role.name);
+        }
+
+        // A user edit rides across: recolor a neutral role, and its oklch
+        // delta from the dark anchor reappears on the light one.
+        let mut edited = dark;
+        edited.bg_panel = rgb(0x0a1a2e);
+        let flipped = edited.inverse();
+        let (edited_l, ..) = rgba_to_oklch(edited.bg_panel);
+        let (dark_l, ..) = rgba_to_oklch(dark.bg_panel);
+        let (light_l, light_c, _) = rgba_to_oklch(light.bg_panel);
+        let (flip_l, flip_c, _) = rgba_to_oklch(flipped.bg_panel);
+        assert!(
+            (flip_l - (light_l + (edited_l - dark_l))).abs() < 0.02,
+            "edit lightness didn't carry"
+        );
+        assert!(flip_c > light_c, "edit chroma didn't carry");
     }
 
     /// The runner-up cover color takes the highlight role as itself:

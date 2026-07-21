@@ -133,6 +133,6 @@ jobs:
         run: |
           gh release create "v${{ needs.check.outputs.version }}" \
             --target "$GITHUB_SHA" \
-            --title "rox v${{ needs.check.outputs.version }}" \
+            --title "v${{ needs.check.outputs.version }}" \
             --generate-notes \
             artifacts/*

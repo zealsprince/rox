@@ -1,0 +1,39 @@
+name: Bug report
+description: Something crashed, glitched, or isn't doing what it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Tell it like you'd tell a friend. What were you doing, and what did rox do instead?
+      placeholder: I dragged an album onto the queue and playback stopped...
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Where are you running rox?
+      options:
+        - Linux (Wayland)
+        - Linux (X11)
+        - macOS
+        - Windows
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: rox version
+      description: Settings > About shows it. If you built from source, the commit hash works too.
+      placeholder: 1.X.X
+  - type: textarea
+    id: extra
+    attributes:
+      label: Going the extra mile
+      description: >
+        All optional, but any of these can turn a maybe-fix into a definite one:
+        steps to reproduce, a screenshot or recording, output from running rox in
+        a terminal, or details about a specific file that triggers it (format,
+        where it came from, how it was tagged).

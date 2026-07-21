@@ -40,6 +40,13 @@ souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] 
 # Carries media-key events from souvlaki's callback thread to the UI without a
 # poll; already in the tree through gpui, same 2.x line.
 async-channel = "2"
+# Filesystem watching for the library roots: notify is the cross-platform
+# layer, the debouncer coalesces a bulk copy's burst into batches and folds a
+# directory deletion into one remove instead of a flood.
+notify-debouncer-full = "0.7"
+# The duplicates window's delete: files go to the OS trash, never unlinked,
+# so a wrong pick comes back.
+trash = "5"
 # Builds the file:// URL for the now-playing cover souvlaki hands the OS
 # transport; percent-encodes the path so spaces and unicode survive. Already
 # in the tree, same 2.x line.
@@ -50,6 +57,11 @@ url = "2"
 # instead of the default tokio; blocking gives the thread-and-handle API.
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
+
+# The Win32 HWND souvlaki's SMTC backend binds to, pulled off the gpui window.
+# Already in the tree through gpui, same 0.6 line.
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
 
 # Embeds assets/app/rox.ico into the exe as the application icon.
 [target.'cfg(windows)'.build-dependencies]

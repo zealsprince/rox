@@ -228,6 +228,101 @@ pub fn remove_under(conn: &Connection, root: &Path) -> rusqlite::Result<usize> {
     )
 }
 
+/// Drop the row for one path and, if it was a directory, every row beneath
+/// it, for a file or folder the watcher saw deleted. This is the delete that
+/// never walks the disk: the vanished path is already the range, so a removed
+/// artist folder is one bytewise sweep over the index, not a rescan of what
+/// is left. Returns the number of rows removed.
+pub fn remove_subtree(conn: &Connection, path: &Path) -> rusqlite::Result<usize> {
+    let exact = path.to_string_lossy();
+    let (lo, hi) = path_range(path);
+    conn.execute(
+        "DELETE FROM tracks
+         WHERE source = 'local' AND (path = ?1 OR (path >= ?2 AND path < ?3))",
+        rusqlite::params![exact, lo, hi],
+    )
+}
+
+/// Move the row for one path and, if it was a directory, every row beneath
+/// it, for a file or folder the watcher saw renamed. Ids stay put, so the
+/// `added` timestamp, the db-only rating, and the playlist and listen joins
+/// all ride along instead of dying with the old path and landing fresh on
+/// the new one. Like the delete, this never walks the disk: the old path is
+/// already the range, so a renamed artist folder is one bytewise prefix
+/// rewrite over the index. Returns the number of rows moved.
+pub fn rename_within(conn: &mut Connection, from: &Path, to: &Path) -> rusqlite::Result<usize> {
+    let from_exact = from.to_string_lossy().into_owned();
+    let to_exact = to.to_string_lossy().into_owned();
+    let (lo, hi) = path_range(from);
+    // The rows to move: the exact path and its subtree, collected first so the
+    // rewrite runs off a plain list, not a live cursor over the table.
+    let moving: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, path FROM tracks
+             WHERE source = 'local' AND (path = ?1 OR (path >= ?2 AND path < ?3))",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![from_exact, lo, hi], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.filter_map(Result::ok).collect()
+    };
+    if moving.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    {
+        let mut upd = tx.prepare_cached("UPDATE tracks SET path = ?2 WHERE id = ?1")?;
+        for (id, old) in &moving {
+            // Swap the `from` prefix for `to`, bytewise; the exact-path row
+            // has no suffix, a subtree row keeps its remainder under the new
+            // root.
+            let rest = &old[from_exact.len()..];
+            let new = format!("{to_exact}{rest}");
+            upd.execute(rusqlite::params![id, new])?;
+        }
+    }
+    tx.commit()?;
+    Ok(moving.len())
+}
+
+/// Drop the local rows under `root` whose path is not in `present`, the set
+/// of files the walk actually found on disk. This is the rescan's delete
+/// half: a file removed from disk loses its row so the rebuilt projection
+/// drops it. Rows outside `root` are untouched, so scanning one folder never
+/// prunes another's. The listen history and playlist entries keep their own
+/// snapshot columns and only lose the join back to the track, by design.
+/// Returns the number of rows removed.
+pub fn prune_missing(
+    conn: &mut Connection,
+    root: &Path,
+    present: &std::collections::HashSet<String>,
+) -> rusqlite::Result<usize> {
+    let (lo, hi) = path_range(root);
+    // The stored paths under root the walk did not find. Collected first so
+    // the delete runs off a plain list, not a live cursor over the table.
+    let gone: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT path FROM tracks WHERE source = 'local' AND path >= ?1 AND path < ?2")?;
+        let rows = stmt.query_map(rusqlite::params![lo, hi], |r| r.get::<_, String>(0))?;
+        rows.filter_map(Result::ok)
+            .filter(|path| !present.contains(path))
+            .collect()
+    };
+    if gone.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    {
+        let mut del =
+            tx.prepare_cached("DELETE FROM tracks WHERE source = 'local' AND path = ?1")?;
+        for path in &gone {
+            del.execute([path])?;
+        }
+    }
+    tx.commit()?;
+    Ok(gone.len())
+}
+
 /// Every local path with its (mtime, size), so a rescan can skip files that
 /// have not changed without reading their tags.
 pub fn local_files(conn: &Connection) -> rusqlite::Result<HashMap<String, (i64, u64)>> {
@@ -566,6 +661,135 @@ mod tests {
 
         let p = crate::projection::Projection::load_serial(&conn).unwrap();
         assert_eq!(p.resolve(0).added, 123, "the projection carries it through");
+    }
+
+    /// Pruning drops the stored rows under a root that the walk no longer
+    /// found, leaves the ones it did, and never touches another root.
+    #[test]
+    fn prune_removes_only_missing_rows_under_root() {
+        use std::collections::HashSet;
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        insert_batch(
+            &mut conn,
+            &[
+                row("/m/a/1.mp3", "X", "Album", 100),
+                row("/m/a/2.mp3", "X", "Album", 200),
+                row("/m/b/1.mp3", "Y", "Album", 300),
+                row("/n/d/1.mp3", "W", "Other", 400),
+            ],
+        )
+        .unwrap();
+
+        // The walk under /m found only a/1; a/2 and b/1 are gone. /n is a
+        // different root and out of range, so it stays regardless.
+        let present: HashSet<String> = ["/m/a/1.mp3".to_string()].into_iter().collect();
+        let removed = prune_missing(&mut conn, Path::new("/m"), &present).unwrap();
+        assert_eq!(removed, 2);
+
+        let mut paths: Vec<String> = local_files(&conn).unwrap().into_keys().collect();
+        paths.sort();
+        assert_eq!(paths, ["/m/a/1.mp3", "/n/d/1.mp3"]);
+
+        // A pass that found everything removes nothing.
+        let present: HashSet<String> =
+            ["/m/a/1.mp3".to_string(), "/n/d/1.mp3".to_string()].into_iter().collect();
+        assert_eq!(prune_missing(&mut conn, Path::new("/m"), &present).unwrap(), 0);
+    }
+
+    /// A deleted file drops just its row; a deleted folder drops the whole
+    /// subtree, and a sibling folder that shares a name prefix is left alone.
+    #[test]
+    fn remove_subtree_drops_a_file_or_a_whole_folder() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        insert_batch(
+            &mut conn,
+            &[
+                row("/m/Artist/Album/1.mp3", "Artist", "Album", 100),
+                row("/m/Artist/Album/2.mp3", "Artist", "Album", 200),
+                row("/m/Artist/Live/1.mp3", "Artist", "Live", 300),
+                // A sibling whose name is a prefix of "Album": the range must
+                // not reach across the separator into it.
+                row("/m/Artist/Album Two/1.mp3", "Artist", "Album Two", 400),
+            ],
+        )
+        .unwrap();
+
+        // One deleted file: just its row.
+        assert_eq!(
+            remove_subtree(&conn, Path::new("/m/Artist/Album/2.mp3")).unwrap(),
+            1
+        );
+        assert_eq!(count(&conn).unwrap(), 3);
+
+        // The deleted album folder: its remaining track, and nothing from the
+        // "Album Two" sibling or the "Live" folder.
+        assert_eq!(remove_subtree(&conn, Path::new("/m/Artist/Album")).unwrap(), 1);
+        let mut paths: Vec<String> = local_files(&conn).unwrap().into_keys().collect();
+        paths.sort();
+        assert_eq!(paths, ["/m/Artist/Album Two/1.mp3", "/m/Artist/Live/1.mp3"]);
+    }
+
+    /// A renamed file and a renamed folder both keep their ids, so the
+    /// `added` stamp, rating, and joins survive the move; a sibling folder
+    /// that shares a name prefix is left where it was.
+    #[test]
+    fn rename_within_moves_the_subtree_and_keeps_ids() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        insert_batch(
+            &mut conn,
+            &[
+                row("/m/Artist/Album/1.mp3", "Artist", "Album", 100),
+                row("/m/Artist/Album/2.mp3", "Artist", "Album", 200),
+                // A sibling whose name is a prefix of "Album": the range must
+                // not reach across the separator into it.
+                row("/m/Artist/Album Two/1.mp3", "Artist", "Album Two", 400),
+            ],
+        )
+        .unwrap();
+
+        // A single file rename keeps the row's id.
+        let file_id = id_for_path(&conn, "/m/Artist/Album/1.mp3").unwrap().unwrap();
+        assert_eq!(
+            rename_within(
+                &mut conn,
+                Path::new("/m/Artist/Album/1.mp3"),
+                Path::new("/m/Artist/Album/one.mp3"),
+            )
+            .unwrap(),
+            1
+        );
+        assert!(id_for_path(&conn, "/m/Artist/Album/1.mp3").unwrap().is_none());
+        assert_eq!(
+            id_for_path(&conn, "/m/Artist/Album/one.mp3").unwrap(),
+            Some(file_id),
+            "a renamed file keeps its id"
+        );
+
+        // A folder rename moves the whole subtree, each row keeping its id,
+        // and leaves the prefix-sibling folder untouched.
+        let sibling_id = id_for_path(&conn, "/m/Artist/Album Two/1.mp3").unwrap().unwrap();
+        let two_id = id_for_path(&conn, "/m/Artist/Album/2.mp3").unwrap().unwrap();
+        assert_eq!(
+            rename_within(&mut conn, Path::new("/m/Artist/Album"), Path::new("/m/Artist/Record"))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            id_for_path(&conn, "/m/Artist/Record/one.mp3").unwrap(),
+            Some(file_id)
+        );
+        assert_eq!(
+            id_for_path(&conn, "/m/Artist/Record/2.mp3").unwrap(),
+            Some(two_id)
+        );
+        assert_eq!(
+            id_for_path(&conn, "/m/Artist/Album Two/1.mp3").unwrap(),
+            Some(sibling_id),
+            "a name-prefix sibling folder is not swept up"
+        );
     }
 
     /// The edit path's landing half: committed changes move exactly their

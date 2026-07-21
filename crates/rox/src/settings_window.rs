@@ -48,6 +48,7 @@ use crate::settings_ui::{
 };
 use crate::thumbs::Thumbs;
 use crate::tray;
+use crate::updates;
 use crate::workspace::Workspace;
 use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
 use rox_library::store::Stats;
@@ -132,6 +133,7 @@ enum Page {
     Providers,
     Scrobbling,
     Storage,
+    About,
 }
 
 const PAGES: &[(Page, &str, &str)] = &[
@@ -142,7 +144,41 @@ const PAGES: &[(Page, &str, &str)] = &[
     (Page::Providers, "Providers", icons::DOWNLOAD),
     (Page::Scrobbling, "Scrobbling", icons::RADIO),
     (Page::Storage, "Storage", icons::DATABASE),
+    (Page::About, "About", icons::INFO),
 ];
+
+/// The About page's update check as it moves along: nothing asked yet,
+/// the request in flight, or a landed result. The result variants carry
+/// what the status line beside the button shows.
+enum UpdateCheck {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(updates::Release),
+    Failed,
+}
+
+impl UpdateCheck {
+    /// What a freshly opened About page shows: the last cached check mapped
+    /// to up-to-date or an available release against the running build, or
+    /// Idle when nothing has been checked yet.
+    fn from_cache(settings: &Settings) -> Self {
+        match &settings.update_cache {
+            Some(cache) => {
+                let release = updates::Release {
+                    version: cache.latest.clone(),
+                    url: cache.url.clone(),
+                };
+                if release.is_new() {
+                    UpdateCheck::Available(release)
+                } else {
+                    UpdateCheck::UpToDate
+                }
+            }
+            None => UpdateCheck::Idle,
+        }
+    }
+}
 
 /// The storage page's measurements, taken entering the page and after a
 /// clear rather than per frame: the stats and the cache walk are cheap
@@ -186,6 +222,10 @@ struct SettingsWindow {
     frame: Frame,
     restore_last_track: bool,
     quit_to_tray: bool,
+    /// Whether the library watches its folders for changes, the Folders page
+    /// toggle. Mirrors the setting; flipping it arms or drops the watcher on
+    /// the shared library.
+    watch_library: bool,
     /// The portable marker's presence, what the Behavior toggle shows;
     /// the running app stays on the data folder it started with either
     /// way, so a flip only lands on the next launch.
@@ -255,6 +295,10 @@ struct SettingsWindow {
     /// The confirm dialog waiting on the user, if any: an overwrite or a
     /// workspace apply. None when no dialog is up.
     pending: Option<Pending>,
+    /// The About page's update check, its status line's subject.
+    update_check: UpdateCheck,
+    /// Whether launch runs the daily update check, the About page toggle.
+    check_updates: bool,
     _picker_changes: Vec<Subscription>,
     _lastfm_changes: Vec<Subscription>,
     /// The connect flow's phases land through here, so the page's status
@@ -388,6 +432,7 @@ impl SettingsWindow {
             frame: settings.frame,
             restore_last_track: settings.restore_last_track,
             quit_to_tray: settings.quit_to_tray,
+            watch_library: settings.watch_library,
             portable: settings::portable_marker().is_some_and(|marker| marker.exists()),
             portable_writable: settings::portable_available(),
             portable_busy: false,
@@ -419,6 +464,8 @@ impl SettingsWindow {
             primary_layout: settings.primary_layout.clone(),
             mini_layout: settings.mini_layout.clone(),
             pending: None,
+            update_check: UpdateCheck::from_cache(&settings),
+            check_updates: settings.check_updates,
             _picker_changes,
             _lastfm_changes,
             _scrobbler_changed,
@@ -477,6 +524,14 @@ impl SettingsWindow {
     fn set_restore_last_track(&mut self, on: bool, cx: &mut Context<Self>) {
         self.restore_last_track = on;
         Settings::update(move |s| s.restore_last_track = on);
+        cx.notify();
+    }
+
+    /// The watch-folders switch: flip the mirror and hand it to the shared
+    /// library, which persists it and arms or drops the watcher on the spot.
+    fn set_watch_library(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.watch_library = on;
+        self.library.update(cx, |library, cx| library.set_watch(on, cx));
         cx.notify();
     }
 
@@ -2442,12 +2497,24 @@ impl SettingsWindow {
     fn library_page(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.library.read(cx).busy();
         let scanning = busy.is_some();
-        let mut body = div().flex().flex_col().gap(tokens::SPACE_SM).child(
-            div().text_xs().text_color(palette::text_muted()).child(
-                "Folders scanned into the library; removing one drops its \
-                 tracks from the catalog and leaves the files alone",
-            ),
-        );
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_SM)
+            .child(
+                div().text_xs().text_color(palette::text_muted()).child(
+                    "Folders scanned into the library; removing one drops its \
+                     tracks from the catalog and leaves the files alone",
+                ),
+            )
+            .child(panel::setting_row(
+                "Watch folders",
+                Some(
+                    "Fold added, edited, and deleted files into the library as \
+                     they happen, without a manual rescan",
+                ),
+                panel::toggle(self.watch_library, Self::set_watch_library, cx),
+            ));
         // The folder table: a column header line, then a hairlined row
         // per folder.
         let mut table = div().flex().flex_col().child(
@@ -2530,6 +2597,32 @@ impl SettingsWindow {
                 scanning || self.root_stats.is_empty(),
                 cx.listener(|this, _, _, cx| {
                     this.library.update(cx, |library, cx| library.rescan(cx));
+                }),
+            ))
+            // The tag repair window: find and rewrite files carrying the
+            // broken ID3v2.4 tag shape lofty reads mangled, where a user
+            // lands after seeing garbled tags.
+            .child(small_button(
+                "Repair Tags...",
+                icons::FILE_TEXT,
+                scanning,
+                cx.listener(|this, _, _, cx| {
+                    let library = this.library.clone();
+                    let now_art = this.now_art.clone();
+                    crate::tag_repair::open(library, now_art, cx);
+                }),
+            ))
+            // The duplicates window: find tracks the library carries more
+            // than once and move the spare copies to the trash.
+            .child(small_button(
+                "Duplicates...",
+                icons::COPY,
+                scanning,
+                cx.listener(|this, _, _, cx| {
+                    let library = this.library.clone();
+                    let thumbs = this.thumbs.clone();
+                    let now_art = this.now_art.clone();
+                    crate::duplicates::open(library, thumbs, now_art, cx);
                 }),
             ));
         section("Folders", Some(controls.into_any_element()), body)
@@ -2652,6 +2745,131 @@ impl SettingsWindow {
                             )),
                     )),
             ))
+    }
+
+    /// The About page: the running version and the update check. The check
+    /// is notify only - it reports a newer release and links to its page,
+    /// it never downloads or installs.
+    fn about_page(&self, cx: &mut Context<Self>) -> Div {
+        let checking = matches!(self.update_check, UpdateCheck::Checking);
+
+        // The status line beside the button, one wording per check state.
+        // The available state hangs a link to the release page off its tail.
+        let status: Option<AnyElement> = match &self.update_check {
+            UpdateCheck::Idle => None,
+            UpdateCheck::Checking => Some(readout("Checking...".into()).into_any_element()),
+            UpdateCheck::UpToDate => {
+                Some(readout("You're on the latest version".into()).into_any_element())
+            }
+            UpdateCheck::Failed => {
+                Some(readout("Couldn't reach GitHub".into()).into_any_element())
+            }
+            UpdateCheck::Available(release) => {
+                let url = release.url.clone();
+                Some(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_SM)
+                        .child(readout(format!("Version {} is available", release.version)))
+                        .child(small_button(
+                            "Get It",
+                            icons::EXTERNAL_LINK,
+                            false,
+                            cx.listener(move |_, _, _, cx| cx.open_url(&url)),
+                        ))
+                        .into_any_element(),
+                )
+            }
+        };
+
+        let control = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .child(small_button(
+                "Check for Updates",
+                icons::REFRESH_CW,
+                checking,
+                cx.listener(|this, _, _, cx| this.check_for_updates(cx)),
+            ))
+            .when_some(status, |d, status| d.child(status));
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(SECTION_GAP)
+            .child(section(
+                "About",
+                None,
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "Version",
+                        Some("The build you're running"),
+                        readout(format!("rox {}", updates::CURRENT)),
+                    ))
+                    .child(panel::setting_row(
+                        "Check on Launch",
+                        Some("Look for a newer release once a day when rox starts; the button below checks now either way"),
+                        panel::toggle(self.check_updates, Self::set_check_updates, cx),
+                    ))
+                    .child(panel::setting_row(
+                        "Updates",
+                        Some("Check GitHub for a newer release; installing it is still up to you"),
+                        control,
+                    )),
+            ))
+    }
+
+    /// The launch-check toggle: into the file, so the next start reads the
+    /// new setting. This run is already past its launch check either way.
+    fn set_check_updates(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.check_updates = on;
+        Settings::update(move |s| s.check_updates = on);
+        cx.notify();
+    }
+
+    /// Kick off the update check on the background executor, landing the
+    /// result on the About page's status line and refreshing the cache so
+    /// it persists and a launch treats it as recent. Ignored while one is
+    /// already in flight.
+    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.update_check, UpdateCheck::Checking) {
+            return;
+        }
+        self.update_check = UpdateCheck::Checking;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { updates::fetch_latest() })
+                .await;
+            this.update(cx, |this, cx| {
+                this.update_check = match result {
+                    Ok(release) => {
+                        let entry = updates::cache(&release);
+                        Settings::update(move |s| s.update_cache = Some(entry));
+                        if release.is_new() {
+                            UpdateCheck::Available(release)
+                        } else {
+                            UpdateCheck::UpToDate
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("update check: {e}");
+                        UpdateCheck::Failed
+                    }
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     /// A sidebar footer row: hands something to the system - the raw
@@ -2933,6 +3151,7 @@ impl Render for SettingsWindow {
             Page::Providers => self.providers_page(cx),
             Page::Scrobbling => self.scrobbling_page(cx),
             Page::Storage => self.storage_page(cx),
+            Page::About => self.about_page(cx),
         };
 
         div()

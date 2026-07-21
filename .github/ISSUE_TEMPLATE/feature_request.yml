@@ -1,0 +1,22 @@
+name: Feature request
+description: Something rox should do that it doesn't yet
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What's the idea?
+      description: What should rox do?
+      placeholder: I'd love to be able to...
+    validations:
+      required: true
+  - type: textarea
+    id: itch
+    attributes:
+      label: What's the itch?
+      description: The moment you reached for this and it wasn't there. Knowing the situation helps us build the right version of it.
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: Prior art
+      description: If Foobar2000 or another player already does this well, name it. Screenshots of theirs welcome.

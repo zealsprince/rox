@@ -1239,6 +1239,51 @@ mod tests {
         );
     }
 
+    /// The repair path the tag repair window drives: a file in the
+    /// double-unsync shape flags for repair, a no-op commit rewrites it
+    /// clean through the atomic layer, and the same file no longer flags -
+    /// with its cover carried through byte-identical.
+    #[test]
+    fn no_op_commit_repairs_the_unsync_shape() {
+        let image = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0xFF, 0x00, 0x59, 0xFF, 0xFF, 0xD9,
+        ];
+        let mut body = vec![0x00];
+        body.extend(b"image/jpeg\0");
+        body.push(3); // front cover
+        body.extend(b"c\0");
+        body.extend(image);
+        let stored = stuff(&body);
+        let mut frame = b"APIC".to_vec();
+        frame.extend(synch(stored.len() as u32 + 4));
+        frame.extend([0x00, 0x03]); // unsynchronised, data length indicator
+        frame.extend(synch(body.len() as u32));
+        frame.extend(&stored);
+        let mut tag = b"ID3\x04\x00\x80".to_vec();
+        tag.extend(synch(frame.len() as u32));
+        tag.extend(&frame);
+
+        let dir = scratch("no-op-repair");
+        let path = dir.join("track.mp3");
+        let mut bytes = tag;
+        bytes.extend(mpeg_audio());
+        fs::write(&path, bytes).unwrap();
+
+        assert!(
+            crate::tag_source::needs_unsync_repair(&path),
+            "the shape flags before repair"
+        );
+        commit(&path, &[]).unwrap();
+        assert!(
+            !crate::tag_source::needs_unsync_repair(&path),
+            "the rewrite clears the shape"
+        );
+        let (cover, mime) = crate::art::cover_art(&path).expect("the cover survives the repair");
+        assert_eq!(cover, image);
+        assert_eq!(mime, "image/jpeg");
+        assert!(fs::read(&path).unwrap().ends_with(&mpeg_audio()));
+    }
+
     /// A minimal JPEG-shaped blob: the magic the art sniffer keys on, so
     /// the mime rescues to image/jpeg no matter what the tag declares.
     fn jpeg(marker: u8) -> Vec<u8> {

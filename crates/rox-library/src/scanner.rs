@@ -43,6 +43,8 @@ pub struct ScanSummary {
     pub unchanged: usize,
     /// Files indexed by filename because their tags would not read.
     pub untagged: usize,
+    /// Rows dropped because their files are gone from disk this pass.
+    pub removed: usize,
     /// The scan stopped early because `progress` said to. Everything
     /// counted above is in the store; the rest of the walk never ran.
     pub aborted: bool,
@@ -64,6 +66,13 @@ pub fn scan(
     collect(root, &mut files);
     files.sort();
     let total = files.len();
+    // The walk is the ground truth for what lives under the root this pass:
+    // an unreadable file (permissions, transient IO) still lands here from
+    // its parent's directory entry, so it never counts as gone. Built before
+    // the batch loop consumes `files`, keyed the same way process_file keys a
+    // stored row so the two sets compare byte for byte.
+    let present: std::collections::HashSet<String> =
+        files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
 
     let mut summary = ScanSummary::default();
     let scanned = AtomicUsize::new(0);
@@ -107,6 +116,16 @@ pub fn scan(
             summary.aborted = true;
             break;
         }
+    }
+
+    // Diff the stored rows under root against what the walk found and drop
+    // the rows whose files are gone. Skipped on two counts, both to keep a
+    // bad pass from wiping the library: an aborted scan never finished the
+    // walk, and a root that will not even list its entries (unplugged drive,
+    // dropped network mount) reads as empty when the files are really still
+    // there. A genuinely emptied but readable root still prunes.
+    if !summary.aborted && std::fs::read_dir(root).is_ok() {
+        summary.removed = store::prune_missing(conn, root, &present)?;
     }
     Ok(summary)
 }
@@ -200,6 +219,25 @@ pub fn read_one(path: &Path) -> Option<TrackRow> {
     })
 }
 
+/// Every audio file under `root`, recursively, the same walk a scan runs
+/// but without touching the store: a maintenance pass (the tag repair
+/// window) needs the on-disk paths to inspect, indexed or not. Blocking IO;
+/// run it off the UI thread.
+pub fn audio_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect(root, &mut out);
+    out
+}
+
+/// Whether a path carries one of the audio extensions the scan indexes, the
+/// one filter that decides what becomes a track. Same test the walk runs, so
+/// a watched change and a full scan agree on what counts.
+pub fn is_audio(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -216,11 +254,7 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
         };
         if is_dir {
             collect(&path, out);
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
-        {
+        } else if is_audio(&path) {
             out.push(path);
         }
     }
@@ -385,6 +419,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rating, 75);
+    }
+
+    /// A rescan drops the rows for files deleted from disk, keeps the ones
+    /// still there, and never prunes when the root itself cannot be listed.
+    #[test]
+    fn rescan_prunes_deleted_files() {
+        let dir = std::env::temp_dir().join("rox-scanner-prune");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        // Dummy bytes: the tags will not read, so each indexes under its
+        // filename. That is enough to exercise the walk-versus-store diff.
+        let files = ["a/1.mp3", "a/2.mp3", "b/1.mp3"];
+        for name in files {
+            std::fs::write(dir.join(name), b"not audio").unwrap();
+        }
+
+        let mut conn = store::open(&dir.join("library.db")).unwrap();
+        store::init_schema(&conn).unwrap();
+        let scan = |conn: &mut Connection| scan(conn, &dir, |_, _, _| true).unwrap();
+
+        let s = scan(&mut conn);
+        assert_eq!(s.indexed, 3);
+        assert_eq!(s.removed, 0);
+        assert_eq!(store::count(&conn).unwrap(), 3);
+
+        // Delete one file, rescan: its row goes, the survivors stay.
+        std::fs::remove_file(dir.join("a/2.mp3")).unwrap();
+        let s = scan(&mut conn);
+        assert_eq!(s.removed, 1);
+        assert_eq!(store::count(&conn).unwrap(), 2);
+        assert!(store::id_for_path(&conn, dir.join("a/2.mp3").to_str().unwrap())
+            .unwrap()
+            .is_none());
+        assert!(store::id_for_path(&conn, dir.join("a/1.mp3").to_str().unwrap())
+            .unwrap()
+            .is_some());
+
+        // The whole root gone (unplugged drive, dropped mount): the walk
+        // reads empty, but the guard keeps the rows rather than wipe them.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let s = scan(&mut conn);
+        assert_eq!(s.removed, 0);
+        assert_eq!(store::count(&conn).unwrap(), 2);
     }
 
     /// read_one on a loose file returns a row with path/size/mtime filled,

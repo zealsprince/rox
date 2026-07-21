@@ -180,6 +180,16 @@ pub struct Settings {
     /// seed the list, never written back.
     #[serde(skip_serializing)]
     library_root: Option<PathBuf>,
+    /// Whether the library watches its roots for filesystem changes and
+    /// folds adds, edits, and deletes in without a manual rescan. On by
+    /// default; the settings toggle turns it off for network mounts or when
+    /// the watch load is not wanted.
+    pub watch_library: bool,
+    /// When the library last reconciled with disk through a full scan, unix
+    /// seconds. Launch catches up on edits made while the app was closed by
+    /// scanning, but only when this is stale, so a quick restart does not walk
+    /// the whole library again. 0 means never, which always catches up.
+    pub last_scan: i64,
     /// ADR 10's transparency pair, both 0 to 1. How opaque the app's
     /// surfaces read, 1 fully opaque...
     pub surface_opacity: f32,
@@ -243,6 +253,15 @@ pub struct Settings {
     pub quick_play: QuickPlayConfig,
     /// How ratings read and click everywhere they show.
     pub rating_style: RatingStyle,
+    /// Whether launch checks GitHub for a newer release, at most once a
+    /// day. The About page's toggle flips it; off leaves only the manual
+    /// button.
+    pub check_updates: bool,
+    /// The last update check that landed, so the About page shows an answer
+    /// without hitting the network and a launch can tell a fresh check from
+    /// a recent one. None until the first check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_cache: Option<UpdateCache>,
     /// The tag editor's last window size and column widths, restored on
     /// the next open. None until an editor closes.
     pub tag_editor: Option<TagEditorState>,
@@ -273,6 +292,20 @@ pub enum RatingStyle {
     #[default]
     Stars,
     Numeric,
+}
+
+/// A landed update check, cached in the settings file. Holds the latest
+/// release GitHub reported rather than a yes/no, so the About page derives
+/// up-to-date from the running build - a cached "available" turns to
+/// up-to-date on its own once the user updates.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct UpdateCache {
+    /// Unix seconds of the check, for the once-a-day spacing.
+    pub checked_at: u64,
+    /// The latest release's version, the leading v stripped.
+    pub latest: String,
+    /// That release's page on GitHub.
+    pub url: String,
 }
 
 /// The live rating style, a static like the palette's: rating cells read
@@ -877,6 +910,8 @@ impl Default for Settings {
             workspaces: Vec::new(),
             library_roots: Vec::new(),
             library_root: None,
+            watch_library: true,
+            last_scan: 0,
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
             frame: Frame::DEFAULT,
@@ -893,6 +928,8 @@ impl Default for Settings {
             providers: Providers::default(),
             quick_play: QuickPlayConfig::default(),
             rating_style: RatingStyle::default(),
+            check_updates: true,
+            update_cache: None,
             tag_editor: None,
             stats_window: None,
             settings_window: None,

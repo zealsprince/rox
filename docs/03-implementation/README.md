@@ -19,10 +19,12 @@ speculated ahead of the code. The set, one per domain:
   mapping (ID3v2 / Vorbis), batch semantics and failure shapes
 - `04-artwork.md` - thumbnail DB schema and content-addressed keying, worker pool and
   texture LRU budgets, cancellation
-- `05-visualizer.md` - PCM tap ring format, FFT configuration, the waveform cache file
-  format, frame pacing between worker and paint callback
-- `06-panels.md` - the layout and theme file formats, the panel config model,
-  pop-out window mechanics and entity sharing
+- [05-visualizer.md](05-visualizer.md) - the PCM tap and the analysis feed, the FFT and
+  band mapping, the binary peaks cache format, and the frame pacing between the feed and
+  the paint callback
+- [06-panels.md](06-panels.md) - the layout tree and its JSON serialization, the panel
+  config model and shared chrome, the customize windows, pop-out mechanics and entity
+  sharing, and how workspaces bundle it
 - `07-workspace.md` - crate layout, build commands, CI, the gpui version pin policy
 - `08-play-history.md` - the events schema and tag snapshot, listen-rule wiring against
   the position clock, rollup queries and their indexes

@@ -12,7 +12,7 @@ pub mod projection;
 pub mod rating;
 pub mod scanner;
 pub mod store;
-pub(crate) mod tag_source;
+pub mod tag_source;
 pub mod thumbs;
 pub mod writer;
 

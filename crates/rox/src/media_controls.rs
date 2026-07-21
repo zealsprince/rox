@@ -3,6 +3,9 @@
 //! now-playing track in the desktop's media widget. The D-Bus name is
 //! per-process, so this is wired to the primary workspace only.
 //!
+//! Windows' SMTC binds to a window, so [`MediaKeys::new`] takes the primary
+//! workspace window and hands its HWND down; the other two backends ignore it.
+//!
 //! Two directions cross the thread boundary here. Key presses arrive on
 //! souvlaki's own event-loop thread; the attach callback maps each one to a
 //! [`MediaCommand`] and hands it to the UI over an async channel the workspace
@@ -14,6 +17,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use gpui::Window;
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
     SeekDirection,
@@ -78,14 +82,22 @@ pub struct NowPlayingMeta {
 impl MediaKeys {
     /// Register the media service and start listening. `None` when the
     /// platform backend won't come up (no session bus, say), so the app runs
-    /// on without media keys rather than failing to launch.
-    pub fn new() -> Option<MediaKeys> {
+    /// on without media keys rather than failing to launch. Takes the primary
+    /// window because Windows' SMTC binds to its HWND.
+    pub fn new(window: &Window) -> Option<MediaKeys> {
+        let hwnd = window_hwnd(window);
+        // souvlaki's SMTC backend panics without an HWND, so if we couldn't
+        // pull one, skip the service and run on rather than crash the launch.
+        // Off Windows this never trips: the field is ignored and stays `None`.
+        #[cfg(target_os = "windows")]
+        if hwnd.is_none() {
+            return None;
+        }
         let config = PlatformConfig {
             dbus_name: APP_ID,
             display_name: "rox",
-            // Windows SMTC needs the window handle; wiring it up is a
-            // follow-up. Linux and macOS ignore this.
-            hwnd: None,
+            // Windows SMTC binds to this window; Linux and macOS ignore it.
+            hwnd,
         };
         let mut controls = MediaControls::new(config).ok()?;
         let (tx, events) = async_channel::unbounded();
@@ -194,6 +206,23 @@ fn signed(dir: SeekDirection, secs: f64) -> f64 {
         SeekDirection::Forward => secs,
         SeekDirection::Backward => -secs,
     }
+}
+
+/// The Win32 HWND souvlaki's SMTC backend binds to, pulled off the gpui
+/// window. Windows needs it; every other backend ignores the field, so this
+/// is `None` off Windows and the window goes unread there.
+#[cfg(target_os = "windows")]
+fn window_hwnd(window: &Window) -> Option<*mut std::ffi::c_void> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as *mut std::ffi::c_void),
+        _ => None,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn window_hwnd(_window: &Window) -> Option<*mut std::ffi::c_void> {
+    None
 }
 
 /// Stash the now-playing cover to a scratch file and hand back its `file://`

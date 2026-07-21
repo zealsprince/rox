@@ -1204,7 +1204,11 @@ impl Workspace {
         // key presses on an await loop. A press maps to a transport verb and
         // lands on the shared player; the publish keeps the widget's state in
         // step, both on launch and after each press.
-        let media = if is_primary { MediaKeys::new() } else { None };
+        let media = if is_primary {
+            MediaKeys::new(window)
+        } else {
+            None
+        };
         let _media_events = media.as_ref().map(|keys| {
             let events = keys.events();
             cx.spawn(async move |this, cx| {

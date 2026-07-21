@@ -355,6 +355,16 @@ impl TagRepair {
             let mut failures = 0usize;
             let mut first_error: Option<String> = None;
             for path in targets {
+                // Note the write before it lands so the watch batch it
+                // triggers is suppressed, not reindexed. The apply_edits at
+                // the end notes too, but by then the suppression window has
+                // long passed for all but the last few files of a big run.
+                if library
+                    .update(cx, |library, _| library.note_self_write([path.clone()]))
+                    .is_err()
+                {
+                    return;
+                }
                 let (path, result) = cx
                     .background_executor()
                     .spawn(async move {

@@ -14,6 +14,8 @@ use notify_debouncer_full::notify::event::{ModifyKind, RenameMode};
 use notify_debouncer_full::notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
 
+use rox_library::writer;
+
 /// How long a path has to sit quiet before the debouncer flushes it. Long
 /// enough that a bulk copy's writes fold together, short enough that a single
 /// edit lands in the library within a couple of seconds.
@@ -73,11 +75,30 @@ impl LibraryWatcher {
                     // falls back into the plain path list.
                     if matches!(event.kind, EventKind::Modify(ModifyKind::Name(RenameMode::Both))) {
                         if let [from, to] = event.paths.as_slice() {
-                            renames.push((from.clone(), to.clone()));
+                            // The writer's commit renames its working clone
+                            // over the original. That pair is a modify of the
+                            // target, not a real rename, so it rides `paths`
+                            // where the library's self-write filter can drop
+                            // it; carried as a rename it would slip past the
+                            // filter and force a reload per written file.
+                            if writer::is_clone_path(from) {
+                                paths.push(to.clone());
+                            } else {
+                                renames.push((from.clone(), to.clone()));
+                            }
                             continue;
                         }
                     }
-                    paths.extend(event.paths.iter().cloned());
+                    // The writer's clones themselves (created, written,
+                    // removed on a failed commit) are never library rows;
+                    // drop them here so they cannot pump empty syncs.
+                    paths.extend(
+                        event
+                            .paths
+                            .iter()
+                            .filter(|p| !writer::is_clone_path(p))
+                            .cloned(),
+                    );
                 }
                 if !paths.is_empty() || !renames.is_empty() {
                     let _ = tx.try_send(WatchBatch { paths, renames });

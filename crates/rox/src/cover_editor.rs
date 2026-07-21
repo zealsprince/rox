@@ -484,6 +484,16 @@ impl CoverEditor {
             let mut failures = 0usize;
             let mut first_error: Option<String> = None;
             for edit in edits {
+                // Note the write before it lands so the watch batch it
+                // triggers is suppressed, not reindexed. The apply_edits at
+                // the end notes too, but by then the suppression window has
+                // long passed for all but the last few files of a big batch.
+                if library
+                    .update(cx, |library, _| library.note_self_write([edit.path.clone()]))
+                    .is_err()
+                {
+                    return;
+                }
                 let (edit, result) = cx
                     .background_executor()
                     .spawn(async move {

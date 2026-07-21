@@ -802,11 +802,23 @@ fn parse_flac(path: &Path) -> Result<FlacFile, String> {
     FlacFile::read_from(&mut source, parse_opts()).map_err(|e| format!("parse: {e}"))
 }
 
+/// The suffix the writer's working clone carries beside the original while
+/// a commit runs. Public so the library watcher can tell the writer's own
+/// clone-and-rename traffic from real changes.
+pub const CLONE_SUFFIX: &str = ".rox-write";
+
+/// Whether a path is the writer's working clone.
+pub fn is_clone_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(CLONE_SUFFIX))
+}
+
 /// The clone's path: a sibling in the same directory, so the final rename
 /// never crosses a filesystem, with an extension the scanner ignores.
 fn tmp_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".rox-write");
+    name.push(CLONE_SUFFIX);
     path.with_file_name(name)
 }
 

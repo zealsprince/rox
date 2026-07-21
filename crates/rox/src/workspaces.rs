@@ -82,6 +82,7 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     palette::set(Palette::from_map(&bundle.palette), cx);
     let a = &bundle.appearance;
     palette::set_scalars(a.surface_opacity, a.backdrop_strength, cx);
+    palette::set_keep_dark(a.keep_dark, cx);
     palette::set_art_theming(a.art_theming, cx);
     settings::set_app_font(a.app_font.clone(), cx);
     settings::set_rating_style(a.rating_style, cx);

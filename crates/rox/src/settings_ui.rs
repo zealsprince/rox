@@ -10,9 +10,42 @@ use gpui::{
     Pixels, SharedString, Window,
 };
 
+use crate::assets::icons;
 use crate::design::palette::{self, ROLES};
 use crate::design::tokens;
 use crate::panel::{self, ScrubState};
+
+/// A checklist tick box: a square that fills with the accent and shows a
+/// check while on, an empty control-colored box while off. The caller wires
+/// the click on the surrounding row.
+pub fn checkbox(on: bool) -> Div {
+    div()
+        .size(px(16.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(tokens::RADIUS)
+        .border_1()
+        .border_color(if on {
+            palette::accent()
+        } else {
+            palette::border()
+        })
+        .bg(if on {
+            palette::accent()
+        } else {
+            palette::bg_control()
+        })
+        .when(on, |d| {
+            d.child(
+                svg()
+                    .path(icons::CHECK)
+                    .size(px(11.))
+                    .text_color(palette::text_on_accent()),
+            )
+        })
+}
 
 /// The sidebar's width, room for a page name and no more.
 pub const SIDEBAR_W: Pixels = px(140.);

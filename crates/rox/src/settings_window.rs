@@ -178,6 +178,7 @@ struct SettingsWindow {
     /// what edits write through [`palette::set`].
     base: Palette,
     art_theming: bool,
+    keep_dark: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
     restore_last_track: bool,
@@ -374,6 +375,7 @@ impl SettingsWindow {
             page: Page::Appearance,
             base,
             art_theming: settings.art_theming,
+            keep_dark: settings.keep_dark,
             surface_opacity: settings.surface_opacity,
             backdrop_strength: settings.backdrop_strength,
             restore_last_track: settings.restore_last_track,
@@ -446,6 +448,15 @@ impl SettingsWindow {
         self.art_theming = on;
         palette::set_art_theming(on, cx);
         Settings::update(move |s| s.art_theming = on);
+        cx.notify();
+    }
+
+    /// The keep-dark switch: holds the dark ladder under a bright cover.
+    /// Through the palette pipe so open windows ease over, and into the file.
+    fn set_keep_dark(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.keep_dark = on;
+        palette::set_keep_dark(on, cx);
+        Settings::update(move |s| s.keep_dark = on);
         cx.notify();
     }
 
@@ -597,6 +608,28 @@ impl SettingsWindow {
         Settings::update(|s| s.palette.clear());
     }
 
+    /// Flip the working palette light for dark, the accents held: a dark
+    /// theme comes back light without redrawing every swatch by hand. The
+    /// map persists like any other edit, so the flip survives a restart.
+    fn inverse_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_palette(self.base.inverse(), window, cx);
+        let map = self.base.to_map();
+        Settings::update(move |s| s.palette = map);
+    }
+
+    /// Bake the song theme into the palette: the colors the playing track
+    /// derives become the working palette, then song theming turns off so
+    /// they hold. What a track dressed the app in leaves as a fixed theme.
+    /// The resolved palette is read before theming goes off, since turning
+    /// it off retargets the tint back to the base.
+    fn apply_song_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let themed = palette::resolved();
+        self.set_art_theming(false, cx);
+        self.apply_palette(themed, window, cx);
+        let map = self.base.to_map();
+        Settings::update(move |s| s.palette = map);
+    }
+
     /// Pick a palette file and load it: the same role-to-hex map the
     /// settings file holds, so exports, settings, and shared themes are
     /// one shape. Unknown roles and bad values fall away silently, a
@@ -679,11 +712,20 @@ impl SettingsWindow {
             .child(section(
                 "Theming",
                 None,
-                panel::setting_row(
-                    "Song Theming",
-                    Some("Tint the palette and back windows with the playing track's cover art"),
-                    panel::toggle(self.art_theming, Self::set_art_theming, cx),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "Song Theming",
+                        Some("Tint the palette and back windows with the playing track's cover art"),
+                        panel::toggle(self.art_theming, Self::set_art_theming, cx),
+                    ))
+                    .child(panel::setting_row(
+                        "Keep Dark",
+                        Some("Hold the dark surfaces even when a bright cover would flip the app light; song theming still tints the color"),
+                        panel::toggle(self.keep_dark, Self::set_keep_dark, cx),
+                    )),
             ))
             .child(section(
                 "Typography",
@@ -1051,7 +1093,8 @@ impl SettingsWindow {
     }
 
     /// One workspace's row: its name, a shipped tag when it comes from the
-    /// app's assets, apply and export, and for the user's own, delete.
+    /// app's assets, apply, and for the user's own, export, overwrite and
+    /// delete.
     fn workspace_row(
         &self,
         entry: crate::workspaces::Entry,
@@ -1082,15 +1125,17 @@ impl SettingsWindow {
                     cx.notify();
                 })
             }))
-            .child(small_button("Export", icons::UPLOAD, false, {
-                let name = name.clone();
-                cx.listener(move |this, _, _, cx| this.export_workspace(&name, cx))
-            }))
             .when(!entry.builtin, |d| {
-                // Overwrite the saved workspace with the current look; the
-                // dialog confirms before the replace, matching the presets
+                // Export, overwrite and delete are the user's own workspaces
+                // only; a shipped one already lives in the app's assets, so
+                // there's nothing to save back out. Overwrite routes through
+                // the confirm dialog before the replace, matching the presets
                 // list and unlike apply and delete which are their own undo.
-                d.child(small_button("Overwrite", icons::REFRESH_CW, !live, {
+                d.child(small_button("Export", icons::UPLOAD, false, {
+                    let name = name.clone();
+                    cx.listener(move |this, _, _, cx| this.export_workspace(&name, cx))
+                }))
+                .child(small_button("Overwrite", icons::REFRESH_CW, !live, {
                     let name = name.clone();
                     cx.listener(move |this, _, _, cx| {
                         this.pending = Some(Pending::OverwriteWorkspace(name.clone()));
@@ -1765,6 +1810,19 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Flush the workspace window's live dock to the settings file. Panel
+    /// config like the library's column arrangement only reaches disk on the
+    /// next layout dump, so without this a workspace save from here would
+    /// capture whatever's stale on disk instead of the current look.
+    fn flush_workspace_layout(&self, cx: &mut Context<Self>) {
+        let ws = self.workspace.clone();
+        let _ = self.workspace_window.update(cx, |_, window, cx| {
+            if let Some(ws) = ws.upgrade() {
+                ws.update(cx, |this, cx| this.persist(window, cx));
+            }
+        });
+    }
+
     /// Save the current state as a named workspace: layouts, palette, and
     /// appearance in one bundle. An empty name is ignored; a name that already
     /// exists routes through the confirm dialog. Clears the field on a fresh
@@ -1774,6 +1832,7 @@ impl SettingsWindow {
         if name.is_empty() {
             return;
         }
+        self.flush_workspace_layout(cx);
         if Settings::load().workspaces.iter().any(|w| w.name == name) {
             self.pending = Some(Pending::OverwriteWorkspace(name));
             cx.notify();
@@ -1789,6 +1848,7 @@ impl SettingsWindow {
     /// Replace a saved workspace with the current state, the confirm dialog's
     /// yes. Clears the name field.
     fn overwrite_workspace(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.flush_workspace_layout(cx);
         let bundle = WorkspaceBundle::from_settings(name.clone(), &Settings::load());
         Settings::update(move |s| {
             if let Some(existing) = s.workspaces.iter_mut().find(|w| w.name == name) {
@@ -1873,6 +1933,7 @@ impl SettingsWindow {
         self.surface_opacity = a.surface_opacity;
         self.backdrop_strength = a.backdrop_strength;
         self.art_theming = a.art_theming;
+        self.keep_dark = a.keep_dark;
         self.rating_style = a.rating_style;
         // The mini-player roles, and when the bundle names a primary layout,
         // the dock itself.
@@ -2222,14 +2283,28 @@ impl SettingsWindow {
                 .into_any_element()
         }));
 
-        // Import and reset lock with the rest of the editor: they change
-        // the palette too. Export stays live; unlocked it saves the base
-        // palette, locked the derived one the swatches show.
+        // Import, inverse, and reset lock with the rest of the editor:
+        // they change the palette too. Apply Song Theme is the opposite,
+        // live only while theming drives the colors it bakes in. Export
+        // stays live; unlocked it saves the base palette, locked the
+        // derived one the swatches show.
         let controls = div()
             .flex()
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_XS)
+            .child(small_button(
+                "Inverse",
+                icons::CONTRAST,
+                locked,
+                cx.listener(|this, _, window, cx| this.inverse_palette(window, cx)),
+            ))
+            .child(small_button(
+                "Apply Song Theme",
+                icons::DISC,
+                !locked,
+                cx.listener(|this, _, window, cx| this.apply_song_theme(window, cx)),
+            ))
             .child(small_button(
                 "Import",
                 icons::DOWNLOAD,

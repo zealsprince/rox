@@ -575,6 +575,10 @@ struct Base {
     /// The song-theming switch: whether a seed may derive at all. Off,
     /// each tint's seed is only remembered for a later enable.
     art_theming: bool,
+    /// Hold the dark ladder even under a bright cover: song theming still
+    /// tints hue and chroma toward the seed, but the surfaces never flip
+    /// light and the widget theme stays dark. Caps how far the look shifts.
+    keep_dark: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
 }
@@ -640,7 +644,7 @@ impl Tint {
     fn retarget(&mut self, base: &Base) {
         self.from = self.snapshot();
         let seed = if base.art_theming { self.seed } else { None };
-        self.target = derive(&base.base, seed);
+        self.target = derive(&base.base, seed, base.keep_dark);
         self.eased_at = Instant::now();
     }
 }
@@ -653,6 +657,7 @@ static BASE: LazyLock<RwLock<Base>> = LazyLock::new(|| {
     RwLock::new(Base {
         base: Palette::default(),
         art_theming: false,
+        keep_dark: false,
         surface_opacity: 1.0,
         backdrop_strength: 1.0,
     })
@@ -786,6 +791,22 @@ pub fn set_art_theming(on: bool, cx: &mut App) {
 /// the palette's own pipe.
 pub fn art_theming() -> bool {
     BASE.read().unwrap().art_theming
+}
+
+/// The keep-dark switch: whether a bright cover may flip the app light.
+/// On, song theming still tints, but the dark ladder holds. Toggling eases
+/// every window like any other palette change, so the surfaces wash between
+/// the light and dark ladders instead of snapping.
+pub fn set_keep_dark(on: bool, cx: &mut App) {
+    {
+        let mut base = BASE.write().unwrap();
+        if base.keep_dark == on {
+            return;
+        }
+        base.keep_dark = on;
+    }
+    retarget_all();
+    drive(cx);
 }
 
 /// The app's surface opacity as it currently stands: what a panel's own
@@ -968,6 +989,25 @@ impl Palette {
             gridline: rgb(0x919191),
         }
     }
+
+    /// The palette flipped light for dark, or dark for light: every
+    /// neutral role's lightness mirrored around the middle of the scale
+    /// while the colorful roles hold. Surfaces and ink swap ends so a
+    /// dark ladder comes back light and a light one comes back dark, but
+    /// the accents keep their color, so an edited palette flips without
+    /// losing its character. The [`CHROMATIC`] line splits neutral from
+    /// colorful, the same cut derivation makes when it strips a grayscale
+    /// cover's accents.
+    pub fn inverse(&self) -> Palette {
+        self.map(|color| {
+            let (lightness, chroma, hue) = rgba_to_oklch(color);
+            if chroma > CHROMATIC {
+                color
+            } else {
+                oklch_to_rgba(1.0 - lightness, chroma, hue, color.a)
+            }
+        })
+    }
 }
 
 /// The derived palette: the ladder the cover's lightness picks, every
@@ -975,9 +1015,9 @@ impl Palette {
 /// seeds. An achromatic cover picks the ladder by lightness, then strips
 /// the colorful roles to neutral so a black-and-white album gets a
 /// black-and-white app.
-fn derive(base: &Palette, seed: Option<Seed>) -> Palette {
+fn derive(base: &Palette, seed: Option<Seed>, keep_dark: bool) -> Palette {
     let Some(seed) = seed else { return *base };
-    let light = seed.lightness > LIGHT_COVER;
+    let light = !keep_dark && seed.lightness > LIGHT_COVER;
     let ladder = if light { Palette::light() } else { *base };
     let Some(primary) = seed.primary else {
         // No hue to derive toward. Leaving the ladder as-is would keep
@@ -1097,8 +1137,9 @@ fn apply(cx: &mut App) {
     };
     let (palette, opacity, light) = match focused_tint {
         Some(tint) => {
-            let light =
-                base.art_theming && tint.seed.is_some_and(|seed| seed.lightness > LIGHT_COVER);
+            let light = base.art_theming
+                && !base.keep_dark
+                && tint.seed.is_some_and(|seed| seed.lightness > LIGHT_COVER);
             (tint.snapshot(), base.surface_opacity, light)
         }
         None => (base.base, base.surface_opacity, false),
@@ -1254,7 +1295,7 @@ mod tests {
     fn derivation_preserves_lightness() {
         let base = Palette::default();
         for seed in [rgb(0xff2200), rgb(0x2244ff), rgb(0x88ff00), rgb(0xfdcb00)] {
-            let derived = derive(&base, Some(dark_seed(seed)));
+            let derived = derive(&base, Some(dark_seed(seed)), false);
             for (before, after) in [
                 (base.bg_root, derived.bg_root),
                 (base.bg_menu, derived.bg_menu),
@@ -1280,7 +1321,7 @@ mod tests {
         let base = Palette::default();
         let seed = rgb(0x88ff00);
         let (.., seed_h) = rgba_to_oklch(seed);
-        let derived = derive(&base, Some(dark_seed(seed)));
+        let derived = derive(&base, Some(dark_seed(seed)), false);
         let (l, c, h) = rgba_to_oklch(derived.border);
         let (base_l, ..) = rgba_to_oklch(base.border);
         assert!((l - base_l).abs() < 0.02, "border lightness drifted");
@@ -1309,6 +1350,7 @@ mod tests {
                 secondary: None,
                 lightness: 0.3,
             }),
+            false,
         );
         for role in [derived.accent, derived.accent_hover] {
             let (_, c, _) = rgba_to_oklch(role);
@@ -1336,12 +1378,67 @@ mod tests {
                     secondary: None,
                     lightness: 0.9,
                 }),
+                false,
             );
             let (root_l, ..) = rgba_to_oklch(derived.bg_root);
             let (text_l, ..) = rgba_to_oklch(derived.text);
             assert!(root_l > 0.8, "root stayed dark: {root_l}");
             assert!(text_l < 0.5, "text stayed light: {text_l}");
         }
+    }
+
+    /// Keep-dark holds the dark ladder under the same bright cover that
+    /// flips the app light: the surfaces stay dark, the ink stays light,
+    /// so the look never leaves the dark theme.
+    #[test]
+    fn keep_dark_holds_the_dark_ladder() {
+        let base = Palette::default();
+        let derived = derive(
+            &base,
+            Some(Seed {
+                primary: Some(rgb(0xff2200)),
+                secondary: None,
+                lightness: 0.9,
+            }),
+            true,
+        );
+        let (root_l, ..) = rgba_to_oklch(derived.bg_root);
+        let (text_l, ..) = rgba_to_oklch(derived.text);
+        let (base_root_l, ..) = rgba_to_oklch(base.bg_root);
+        let (base_text_l, ..) = rgba_to_oklch(base.text);
+        assert!(
+            (root_l - base_root_l).abs() < 0.02,
+            "root left the dark ladder: {root_l}"
+        );
+        assert!(
+            (text_l - base_text_l).abs() < 0.02,
+            "text left the dark ladder: {text_l}"
+        );
+    }
+
+    /// Inverse flips the neutral ladder light for dark while the accents
+    /// hold: the dark surfaces come back light, the light ink comes back
+    /// dark, and the brand accent keeps its color.
+    #[test]
+    fn inverse_flips_neutrals_keeps_accents() {
+        let base = Palette::default();
+        let flipped = base.inverse();
+        // Surfaces and ink mirror around the middle of the lightness scale.
+        for (role, orig) in [(flipped.bg_root, base.bg_root), (flipped.text, base.text)] {
+            let (l, ..) = rgba_to_oklch(role);
+            let (l_orig, ..) = rgba_to_oklch(orig);
+            assert!(
+                (l - (1.0 - l_orig)).abs() < 0.02,
+                "neutral role didn't mirror: {l} vs {}",
+                1.0 - l_orig
+            );
+        }
+        // The accent keeps its exact color, no lightness flip.
+        let (l, c, h) = rgba_to_oklch(flipped.accent);
+        let (l_orig, c_orig, h_orig) = rgba_to_oklch(base.accent);
+        assert!((l - l_orig).abs() < 0.02, "accent lightness moved");
+        assert!((c - c_orig).abs() < 0.02, "accent chroma moved");
+        assert!((h - h_orig).abs() < 0.05, "accent hue moved");
     }
 
     /// The runner-up cover color takes the highlight role as itself:
@@ -1359,6 +1456,7 @@ mod tests {
                 secondary: Some(blue),
                 ..dark_seed(rgb(0xff2200))
             }),
+            false,
         );
         let (l, c, h) = rgba_to_oklch(derived.highlight);
         let (lo, hi) = HIGHLIGHT_DARK_BAND;

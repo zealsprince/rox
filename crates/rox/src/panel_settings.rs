@@ -23,7 +23,7 @@ use gpui_component::{Icon, Root, Sizable as _};
 
 use crate::assets::icons;
 use crate::backdrop::WindowBackdrop;
-use crate::design::palette::{self, PanelTheme, ROLES};
+use crate::design::palette::{self, Palette, PanelTheme, ROLES};
 use crate::design::tokens;
 use crate::panel::{self, AppState, PanelSettings, ScrubState};
 use crate::panels::art::ArtPanel;
@@ -566,6 +566,59 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
+    /// The palette this panel currently shows: the app's resolved palette
+    /// with the panel's own overrides laid over it, role for role. What
+    /// the swatches read, so Inverse starts from what's on screen.
+    fn effective_palette(&self, cx: &Context<Self>) -> Palette {
+        let mut palette = palette::resolved();
+        let theme = self
+            .panel
+            .upgrade()
+            .map(|panel| panel.read(cx).theme())
+            .unwrap_or_default();
+        for role in ROLES {
+            if let Some(color) = theme.color(role.name) {
+                (role.set)(&mut palette, color);
+            }
+        }
+        palette
+    }
+
+    /// Pin a whole palette onto the panel as color overrides, every role,
+    /// and refresh the swatches to match. The shared tail of Inverse and
+    /// Apply Song Theme: both freeze a computed palette onto the panel so
+    /// it holds under song theming and app edits.
+    fn override_all(&mut self, palette: Palette, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_theme(
+            |theme| {
+                for role in ROLES {
+                    theme.set_color(role.name, Some((role.get)(&palette)));
+                }
+            },
+            cx,
+        );
+        for (role, picker) in ROLES.iter().zip(&self.pickers) {
+            let color = (role.get)(&palette);
+            picker.update(cx, |picker, cx| picker.set_value(color, window, cx));
+        }
+    }
+
+    /// Flip the panel's colors light for dark, the accents held: the
+    /// panel's current look inverted and frozen onto it as overrides.
+    fn inverse_colors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let inverted = self.effective_palette(cx).inverse();
+        self.override_all(inverted, window, cx);
+    }
+
+    /// Freeze the song theme onto the panel: the colors the playing track
+    /// derives become this panel's own overrides, so they hold after song
+    /// theming turns off or moves to another track. Only offered while
+    /// song theming drives the colors.
+    fn apply_song_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let themed = palette::resolved();
+        self.override_all(themed, window, cx);
+    }
+
     /// Drop the frame knobs: the panel sits flush in its cell again,
     /// square and borderless, colors untouched.
     fn reset_frame(&mut self, cx: &mut Context<Self>) {
@@ -736,12 +789,32 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             false,
             cx.listener(|this, _, _, cx| this.reset_frame(cx)),
         );
-        let color_controls = small_button(
-            "Reset",
-            icons::REFRESH_CW,
-            false,
-            cx.listener(|this, _, window, cx| this.reset_colors(window, cx)),
-        );
+        // Apply Song Theme lives only while song theming drives the colors
+        // it would freeze in; Inverse and Reset stay open.
+        let song_on = palette::art_theming();
+        let color_controls = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .child(small_button(
+                "Inverse",
+                icons::CONTRAST,
+                false,
+                cx.listener(|this, _, window, cx| this.inverse_colors(window, cx)),
+            ))
+            .child(small_button(
+                "Apply Song Theme",
+                icons::DISC,
+                !song_on,
+                cx.listener(|this, _, window, cx| this.apply_song_theme(window, cx)),
+            ))
+            .child(small_button(
+                "Reset",
+                icons::REFRESH_CW,
+                false,
+                cx.listener(|this, _, window, cx| this.reset_colors(window, cx)),
+            ));
 
         // The generic font override: any panel that does not draw its own
         // font control gets a family picker here, resolving to the app font

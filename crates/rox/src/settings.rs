@@ -197,6 +197,10 @@ pub struct Settings {
     /// the windows (ADR 10's derived mode). Off by default: the look
     /// only follows the music when asked to.
     pub art_theming: bool,
+    /// Whether a bright cover is held to the dark ladder. Song theming
+    /// still tints hue and chroma, but the surfaces never flip light. Off
+    /// by default: the app follows a bright album all the way.
+    pub keep_dark: bool,
     /// Whether launch loads the last playing track back up, paused where
     /// it left off. The track below is written either way; this only
     /// gates the restore.
@@ -238,6 +242,12 @@ pub struct Settings {
     /// The panel settings window's last size, shared across panels and
     /// restored on the next open. None until a window closes.
     pub panel_settings_window: Option<LayoutSize>,
+    /// The view for the queue window the widget opens (its columns and album
+    /// headings), so the modal and popped-out queue come back the way you
+    /// left them. A docked queue panel keeps its own view in the layout dump
+    /// instead. Kept as raw JSON, like the dock layout, so settings stay
+    /// readable when the queue's config schema moves. None until edited.
+    pub queue_view: Option<serde_json::Value>,
 }
 
 /// The rating scale: five stars for quick clicks, or a 0-10 number in
@@ -362,6 +372,8 @@ pub fn set_app_font(font: Option<String>, cx: &mut App) {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QuickPlayConfig {
+    /// Show a cover thumbnail at the left of each result.
+    pub show_cover: bool,
     /// Show the artist and album line under each result's title.
     pub show_subtitle: bool,
     /// Show each result's duration on the right.
@@ -373,6 +385,7 @@ pub struct QuickPlayConfig {
 impl Default for QuickPlayConfig {
     fn default() -> Self {
         QuickPlayConfig {
+            show_cover: false,
             show_subtitle: true,
             show_duration: true,
             comfortable: false,
@@ -558,6 +571,7 @@ pub struct AppearanceBundle {
     pub surface_opacity: f32,
     pub backdrop_strength: f32,
     pub art_theming: bool,
+    pub keep_dark: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_font: Option<String>,
     pub rating_style: RatingStyle,
@@ -572,6 +586,7 @@ impl Default for AppearanceBundle {
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
             art_theming: false,
+            keep_dark: false,
             app_font: None,
             rating_style: RatingStyle::default(),
             quick_play: QuickPlayConfig::default(),
@@ -630,6 +645,7 @@ impl WorkspaceBundle {
                 surface_opacity: s.surface_opacity,
                 backdrop_strength: s.backdrop_strength,
                 art_theming: s.art_theming,
+                keep_dark: s.keep_dark,
                 app_font: s.app_font.clone(),
                 rating_style: s.rating_style,
                 quick_play: s.quick_play.clone(),
@@ -651,6 +667,7 @@ impl WorkspaceBundle {
         s.surface_opacity = a.surface_opacity;
         s.backdrop_strength = a.backdrop_strength;
         s.art_theming = a.art_theming;
+        s.keep_dark = a.keep_dark;
         s.app_font = a.app_font;
         s.rating_style = a.rating_style;
         s.quick_play = a.quick_play;
@@ -753,6 +770,7 @@ impl Default for Settings {
             app_font: None,
             icon_pack: None,
             art_theming: false,
+            keep_dark: false,
             restore_last_track: true,
             quit_to_tray: false,
             last_track: None,
@@ -765,6 +783,7 @@ impl Default for Settings {
             stats_window: None,
             settings_window: None,
             panel_settings_window: None,
+            queue_view: None,
         }
     }
 }
@@ -871,6 +890,7 @@ mod tests {
         let mut src = Settings::default();
         src.surface_opacity = 0.5;
         src.art_theming = true;
+        src.keep_dark = true;
         src.rating_style = RatingStyle::Numeric;
         src.hide_menubar = true;
         src.palette.insert("accent".into(), "#336699".into());
@@ -889,6 +909,7 @@ mod tests {
         back.apply_to(&mut dst);
         assert_eq!(dst.surface_opacity, 0.5);
         assert!(dst.art_theming);
+        assert!(dst.keep_dark);
         assert!(dst.rating_style == RatingStyle::Numeric);
         assert!(dst.hide_menubar);
         assert_eq!(

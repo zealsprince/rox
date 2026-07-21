@@ -92,6 +92,7 @@ pub mod icons {
     pub const CLOCK: &str = "icons/clock.svg";
     pub const IMAGE: &str = "icons/image.svg";
     pub const PALETTE: &str = "icons/palette.svg";
+    pub const CONTRAST: &str = "icons/contrast.svg";
     pub const LAYOUT_DASHBOARD: &str = "icons/layout-dashboard.svg";
     pub const EYE: &str = "icons/eye.svg";
     /// These two resolve from the bundled widget set, no file of ours
@@ -200,6 +201,7 @@ pub mod icons {
         CLOCK,
         IMAGE,
         PALETTE,
+        CONTRAST,
         LAYOUT_DASHBOARD,
         EYE,
         CLOSE,

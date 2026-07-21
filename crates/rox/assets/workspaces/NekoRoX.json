@@ -84,7 +84,9 @@
                       "children": [],
                       "info": {
                         "panel": {
-                          "locked": true
+                          "locked": true,
+                          "open_on_click": true,
+                          "always_modal": true
                         }
                       }
                     }
@@ -156,12 +158,12 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    47.84952926635742,
-                    39.874610900878906,
-                    687.8369750976562,
-                    67.7868423461914,
+                    47.84953308105469,
+                    39.87461471557617,
+                    687.8370361328125,
+                    67.78684997558594,
                     307.03448486328125,
-                    121.6175537109375
+                    121.61756896972656
                   ],
                   "axis": 0
                 }
@@ -208,11 +210,12 @@
                                   "query_source": "global",
                                   "vertical": false,
                                   "follow_playing": true,
+                                  "resume_playing": false,
                                   "smooth_follow": true,
                                   "dim_playing": false,
                                   "dim": 60.0,
                                   "rounding": 0.0,
-                                  "center": 1797
+                                  "center": 1687
                                 }
                               }
                             },
@@ -227,12 +230,15 @@
                                   "vertical": true,
                                   "tile": 192.0,
                                   "follow_playing": true,
+                                  "resume_playing": false,
                                   "smooth_follow": true,
                                   "dim_playing": true,
                                   "dim": 60.0,
                                   "rounding": 0.0,
                                   "gap": 0.0,
-                                  "scroll": 1797
+                                  "labels": false,
+                                  "label_align": "left",
+                                  "scroll": 1677
                                 }
                               }
                             }
@@ -251,7 +257,7 @@
                           "info": {
                             "panel": {
                               "source": "playing",
-                              "portrait": false,
+                              "portrait": true,
                               "header_aspect": true,
                               "header_fill": true,
                               "background": true,
@@ -281,7 +287,7 @@
                               "source": "playing",
                               "align": "center",
                               "bold": false,
-                              "font_size": 18.0,
+                              "font_size": 14.12857151031494,
                               "line_spacing": 1.899999976158142,
                               "follow": true,
                               "pre_scroll": true,
@@ -290,8 +296,8 @@
                               "intro_rest": false,
                               "gap_rest": false,
                               "gap_secs": 5.0,
-                              "dim": 0.0,
-                              "dim_edge": "both",
+                              "dim": 0.15357142686843872,
+                              "dim_edge": "bottom",
                               "search_button": true,
                               "auto_search": false,
                               "show_name": false,
@@ -306,7 +312,7 @@
                           "info": {
                             "panel": {
                               "source": "playing",
-                              "align": "left",
+                              "align": "center",
                               "cover": true
                             }
                           }
@@ -349,23 +355,23 @@
                             },
                             {
                               "key": "title",
-                              "width": 226.0
+                              "width": 304.0
                             },
                             {
                               "key": "artist",
-                              "width": 168.0
-                            },
-                            {
-                              "key": "album",
-                              "width": 183.0
-                            },
-                            {
-                              "key": "bitrate",
-                              "width": 64.0
+                              "width": 179.0
                             },
                             {
                               "key": "duration",
-                              "width": 64.0
+                              "width": 97.0
+                            },
+                            {
+                              "key": "plays",
+                              "width": 56.0
+                            },
+                            {
+                              "key": "favourite",
+                              "width": 55.0
                             },
                             {
                               "key": "rating",
@@ -374,8 +380,9 @@
                           ],
                           "sort_key": null,
                           "sort_desc": false,
-                          "scroll_row": 23848,
+                          "scroll_row": 22271,
                           "follow_playing": true,
+                          "resume_playing": false,
                           "smooth_follow": true,
                           "art_rounding": 0.0,
                           "header_art": true,
@@ -385,18 +392,36 @@
                       }
                     },
                     {
-                      "panel_name": "queue",
-                      "children": [],
-                      "info": {
-                        "panel": {}
-                      }
-                    },
-                    {
                       "panel_name": "playlists",
                       "children": [],
                       "info": {
                         "panel": {
-                          "expanded": []
+                          "expanded": [
+                            2
+                          ],
+                          "headers": "expanded",
+                          "columns": [
+                            "number",
+                            "name",
+                            "artist",
+                            "rating",
+                            "favourite"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "queue",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "headers": "off",
+                          "columns": [
+                            "number",
+                            "name",
+                            "artist",
+                            "cover"
+                          ]
                         }
                       }
                     },
@@ -405,7 +430,17 @@
                       "children": [],
                       "info": {
                         "panel": {
-                          "view": "recent"
+                          "view": "recent",
+                          "headers": "off",
+                          "columns": [
+                            "name",
+                            "artist",
+                            "plays",
+                            "lastplayed",
+                            "rating",
+                            "favourite",
+                            "cover"
+                          ]
                         }
                       }
                     }
@@ -420,8 +455,8 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    411.2069091796875,
-                    860.7930908203125
+                    447.5000305175781,
+                    824.5
                   ],
                   "axis": 0
                 }
@@ -611,7 +646,7 @@
                       "search_button": false,
                       "auto_search": false,
                       "show_name": true,
-                      "show_title": false,
+                      "show_title": true,
                       "rest_mark": "none"
                     }
                   }
@@ -818,8 +853,10 @@
     "surface_opacity": 0.6035714,
     "backdrop_strength": 0.8,
     "art_theming": false,
+    "keep_dark": false,
     "rating_style": "stars",
     "quick_play": {
+      "show_cover": true,
       "show_subtitle": true,
       "show_duration": true,
       "comfortable": false

@@ -1068,6 +1068,67 @@ impl DockArea {
         self.remove_panel(panel.clone(), DockPlacement::Bottom, window, cx);
     }
 
+    /// Rox addition: focus the first panel with the given name, in tree
+    /// order - center first, then the left, bottom, and right docks. Its tab
+    /// is activated so it becomes the visible one, then it takes the keyboard.
+    /// Returns whether a panel was found. Walks the live view tree, so it
+    /// reflects drags the DockItem tree hasn't been rebuilt for.
+    pub fn focus_panel_named(
+        &self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut roots = vec![self.items.view()];
+        for dock in [&self.left_dock, &self.bottom_dock, &self.right_dock]
+            .into_iter()
+            .flatten()
+        {
+            roots.push(dock.read(cx).panel.view());
+        }
+        for root in roots {
+            if let Some((tabs, panel)) = Self::find_panel_named(&root, name, cx) {
+                tabs.update(cx, |tabs, cx| tabs.focus_panel(&panel, window, cx));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The first panel with the given name under this view, in tree order,
+    /// with the tab group holding it. Recurses splits and tiles; rox panels
+    /// are leaves inside tabs, so a tab match is a direct hit.
+    fn find_panel_named(
+        view: &Arc<dyn PanelView>,
+        name: &str,
+        cx: &App,
+    ) -> Option<(Entity<TabPanel>, Arc<dyn PanelView>)> {
+        let any = view.view();
+        if let Ok(stack) = any.clone().downcast::<StackPanel>() {
+            return stack
+                .read(cx)
+                .panels()
+                .iter()
+                .find_map(|child| Self::find_panel_named(child, name, cx));
+        }
+        if let Ok(tabs) = any.clone().downcast::<TabPanel>() {
+            return tabs
+                .read(cx)
+                .panels()
+                .iter()
+                .find(|panel| panel.panel_name(cx) == name)
+                .map(|panel| (tabs.clone(), panel.clone()));
+        }
+        if let Ok(tiles) = any.downcast::<Tiles>() {
+            return tiles
+                .read(cx)
+                .panels()
+                .iter()
+                .find_map(|item| Self::find_panel_named(&item.panel, name, cx));
+        }
+        None
+    }
+
     /// Load the state of the DockArea from the DockAreaState.
     ///
     /// See also [DockeArea::dump].

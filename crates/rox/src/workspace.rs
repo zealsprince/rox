@@ -169,6 +169,18 @@ pub(crate) fn is_workspace_window(window: &Window, cx: &mut App) -> bool {
         .any(|(h, _)| *h == handle)
 }
 
+/// The workspace hosting `window`, when it is a workspace window (not a
+/// popout, settings, or editor). The queue widget uses it to reach the
+/// workspace and open the queue modal there.
+pub(crate) fn workspace_for_window(window: &Window, cx: &App) -> Option<WeakEntity<Workspace>> {
+    let handle = window.window_handle();
+    cx.try_global::<WorkspaceWindows>()?
+        .0
+        .iter()
+        .find(|(h, _)| *h == handle)
+        .map(|(_, ws)| ws.clone())
+}
+
 /// Append the "Add Panel" flyout to a panel's dropdown as its own section:
 /// the whole catalog as a submenu, every group (Application, Arrangement,
 /// Controls, Catalogue, Details, Visualizers) as its own nested flyout. A
@@ -286,6 +298,7 @@ actions!(
         OpenSettings,
         OpenStats,
         OpenQuickPlay,
+        FocusSearch,
         Quit
     ]
 );
@@ -328,6 +341,13 @@ pub fn init(cx: &mut App) {
     } else {
         "ctrl-shift-s"
     };
+    // Jump to the search box, the browser's address-bar chord. Modified, so
+    // it stays out of the way of typing in the box itself.
+    let focus_search_keys = if cfg!(target_os = "macos") {
+        "cmd-l"
+    } else {
+        "ctrl-l"
+    };
     cx.bind_keys([
         KeyBinding::new("space", TogglePlayback, PLAYBACK_KEY_SCOPE),
         KeyBinding::new("left", SeekBackward, PLAYBACK_KEY_SCOPE),
@@ -337,6 +357,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(stats_keys, OpenStats, Some("Workspace")),
         KeyBinding::new(quick_play_p, OpenQuickPlay, Some("Workspace")),
         KeyBinding::new(quick_play_f, OpenQuickPlay, Some("Workspace")),
+        KeyBinding::new(focus_search_keys, FocusSearch, Some("Workspace")),
         // Fullscreens the last-clicked panel group over the whole dock
         // area; the same chord or a plain escape backs out. Shift keeps
         // it off the search boxes' bare-escape ladder. This is the dock's
@@ -512,10 +533,10 @@ pub(crate) enum LayoutTarget {
 }
 
 /// What picking a workspace in a workspaces flyout does.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorkspaceTarget {
-    /// Replace the bundle with the current look. On a shipped bundle this
-    /// saves a user bundle of the same name, which shadows it everywhere.
+    /// Replace the bundle with the current look. The Save flyout only offers
+    /// user bundles, so this never targets a shipped one.
     Overwrite,
     /// Apply the bundle's whole look to this window, after a confirm.
     Apply,
@@ -780,6 +801,9 @@ pub struct Workspace {
     quick_play: Option<Entity<QuickPlay>>,
     /// Clears `quick_play` and hands focus back when the modal dismisses.
     _quick_play_dismissed: Option<Subscription>,
+    /// The queue modal the queue widget opens when no queue panel is docked;
+    /// a throwaway queue panel floated over the workspace, dropped on close.
+    queue_modal: Option<Entity<QueuePanel>>,
     /// This window's slice of the backdrop: what it painted last, for
     /// retiring the texture on a new bake.
     backdrop: WindowBackdrop,
@@ -1197,6 +1221,7 @@ impl Workspace {
             _layout_input: None,
             quick_play: None,
             _quick_play_dismissed: None,
+            queue_modal: None,
             backdrop: WindowBackdrop::default(),
             titled_track: None,
             _layout_changed,
@@ -1428,6 +1453,10 @@ impl Workspace {
         if name.is_empty() {
             return;
         }
+        // Flush the live dock first. Panel config like the library's column
+        // arrangement only reaches the settings file on the next layout dump,
+        // so without this the bundle would capture whatever's stale on disk.
+        self.persist(window, cx);
         if Settings::load().workspaces.iter().any(|w| w.name == name) {
             self.layout_dialog = Some(LayoutDialog::ConfirmOverwriteWorkspace(name));
             self._layout_input = None;
@@ -1447,6 +1476,9 @@ impl Workspace {
             Some(LayoutDialog::ConfirmOverwriteWorkspace(name)) => name.clone(),
             _ => return,
         };
+        // Flush the live dock so the overwrite captures current panel config,
+        // not the stale disk copy. See commit_save_workspace.
+        self.persist(window, cx);
         let bundle = WorkspaceBundle::from_settings(name.clone(), &Settings::load());
         Settings::update(move |s| {
             if let Some(existing) = s.workspaces.iter_mut().find(|w| w.name == name) {
@@ -1630,6 +1662,32 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Open the queue modal, or close it when it is already up. The queue
+    /// widget calls this when no queue panel is docked, so a click always
+    /// lands somewhere. A fresh queue panel each open, dropped on close; its
+    /// view (columns, headings) rides settings, so it comes back the way it
+    /// was left.
+    pub(crate) fn toggle_queue_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.queue_modal.take().is_some() {
+            window.focus(&self.focus);
+            cx.notify();
+            return;
+        }
+        let modal = cx.new(|cx| QueuePanel::windowed(self.state.clone(), cx));
+        window.focus(&modal.read(cx).focus_handle(cx));
+        self.queue_modal = Some(modal);
+        cx.notify();
+    }
+
+    /// Drop the queue modal and hand focus back to the workspace, so the
+    /// playback keys keep working. The scrim's click-out and the card's
+    /// Escape both land here.
+    fn close_queue_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.queue_modal = None;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
     /// Keep the window title on the playing track: "artist - title - rox"
     /// while something plays, the plain app name otherwise. Untagged files
     /// fall back to their file name, same as the track info readout.
@@ -1783,7 +1841,7 @@ impl Workspace {
     /// Dump the dock layout and the window frame into the settings file.
     /// With several windows open the last writer wins; the file records the
     /// layout most recently touched.
-    fn persist(&mut self, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn persist(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.save_task = None;
         let layout = serde_json::to_value(self.dock.read(cx).dump(cx)).ok();
         let bounds = window.window_bounds();
@@ -2384,6 +2442,49 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .bg(rgba(0x00000066))
+                .child(card)
+                .into_any_element(),
+        )
+    }
+
+    /// The queue modal: the queue panel floated over the workspace on a
+    /// dimming scrim. The card occludes, so a click on it stays on the queue;
+    /// a click on the scrim outside it closes, as does Escape, which bubbles
+    /// up from the focused queue panel (its own key handler leaves Escape
+    /// alone). Sized fixed so the queue keeps a definite height off the dock.
+    fn queue_modal_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let queue = self.queue_modal.clone()?;
+        let card = div()
+            .w(px(640.))
+            .h(px(520.))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .rounded(tokens::RADIUS)
+            .bg(palette::bg_menu_opaque())
+            .border_1()
+            .border_color(palette::border_light())
+            .shadow_md()
+            .occlude()
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    this.close_queue_modal(window, cx);
+                }
+            }))
+            .child(queue);
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(0x00000066))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.close_queue_modal(window, cx)),
+                )
                 .child(card)
                 .into_any_element(),
         )
@@ -3227,6 +3328,11 @@ impl Render for Workspace {
                 .on_action(cx.listener(|this, _: &OpenQuickPlay, window, cx| {
                     this.toggle_quick_play(window, cx);
                 }))
+                .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
+                    this.dock.update(cx, |dock, cx| {
+                        dock.focus_panel_named("search", window, cx);
+                    });
+                }))
                 .on_action(cx.listener(|this, _: &ToggleZoom, window, cx| {
                     this.dock
                         .update(cx, |dock, cx| dock.toggle_zoom_active(window, cx));
@@ -3353,6 +3459,9 @@ impl Render for Workspace {
                 // The layout save/apply dialog floats over everything, same as
                 // quick-play and for the same reasons: last child, not deferred.
                 .children(self.layout_dialog_overlay(cx))
+                // The queue modal floats the same way, last so it paints over
+                // the dock.
+                .children(self.queue_modal_overlay(cx))
                 .into_any_element()
         })
     }

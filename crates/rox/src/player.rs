@@ -109,6 +109,10 @@ pub struct NowPlaying {
     pub path: PathBuf,
     pub position_secs: f64,
     pub duration_secs: Option<f64>,
+    /// Pool index of the audible track, off the position clock. The queue
+    /// resolver matches entries on this rather than the path, so a file that
+    /// sits in the order more than once lands on the occurrence playing now.
+    pub audible_idx: usize,
 }
 
 impl Drop for Session {
@@ -188,6 +192,7 @@ impl Player {
             path,
             position_secs: secs,
             duration_secs,
+            audible_idx: track,
         })
     }
 
@@ -300,12 +305,16 @@ impl Player {
         self.insert(after, paths, cx);
     }
 
-    /// The queue entry index of the playing track, matched by path off the
-    /// position clock, so a Play Next lands after what you hear rather than
+    /// The queue entry index of the playing track, matched by pool index off
+    /// the position clock, so a Play Next lands after what you hear rather than
     /// after a track the decoder has already opened for the gapless boundary.
+    /// Matching on the pool index rather than the path keeps a file that sits
+    /// in the order twice from resolving to the wrong occurrence, which would
+    /// otherwise leave the real playing entry inside `queued()` and refuse to
+    /// clear.
     fn audible_index(&self, snap: &QueueSnapshot) -> Option<usize> {
         let now = self.now_playing()?;
-        snap.entries.iter().position(|e| e.path == now.path)
+        snap.entries.iter().position(|e| e.idx == now.audible_idx)
     }
 
     /// The entry Play Next queues right after: the playing one. Falls back to
@@ -500,16 +509,21 @@ impl Player {
     }
 
     /// Take whatever the tap holds, never wait for more; the samples move
-    /// on to the audio views' feed.
+    /// on to the audio views' feed. Read as chunks straight off the ring's
+    /// two slices - this runs 60 times a second for the whole session, so
+    /// no per-sample pops and no temporary buffer.
     fn drain_tap(&mut self) {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let mut drained: Vec<f32> = Vec::new();
-        while let Ok(s) = session.tap.pop() {
-            drained.push(s);
-        }
-        self.feed.push(&drained);
+        let n = session.tap.slots();
+        let Ok(chunk) = session.tap.read_chunk(n) else {
+            return;
+        };
+        let (a, b) = chunk.as_slices();
+        self.feed.push(a);
+        self.feed.push(b);
+        chunk.commit_all();
     }
 
     /// Decode one window at the load position off-thread and push it into the

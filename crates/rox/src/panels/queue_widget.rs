@@ -4,9 +4,11 @@
 //! explicit queue as the queue panel, so the context (the album or library
 //! playing on) stays off the count.
 
+use std::sync::Arc;
+
 use gpui::{
-    div, prelude::*, px, svg, App, Context, EventEmitter, FocusHandle, Focusable, SharedString,
-    Subscription, WeakEntity, Window,
+    div, prelude::*, px, svg, AnyElement, App, Context, EventEmitter, FocusHandle, Focusable,
+    SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Icon;
@@ -15,18 +17,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings};
+use crate::panel::{self, setting_row, toggle, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
+use crate::panels::queue::QueuePanel;
+use crate::settings_ui;
 
 /// How many titles the hover tooltip lists before summarizing the rest.
 const TOOLTIP_ROWS: usize = 12;
 
-/// The widget's config: just the shared chrome, no knobs of its own.
-#[derive(Clone, Default, Serialize, Deserialize)]
+/// The widget's config: the shared chrome plus its one knob, whether a click
+/// opens the queue.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueueWidgetConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
+    /// Click the widget to jump to an open queue panel, or open the queue in
+    /// a window when none is up. On by default; off leaves it a plain badge.
+    pub open_on_click: bool,
+    /// Always open the modal on click, even when a queue panel is already
+    /// docked, instead of jumping to it. Off by default.
+    pub always_modal: bool,
+}
+
+impl Default for QueueWidgetConfig {
+    fn default() -> Self {
+        QueueWidgetConfig {
+            chrome: PanelChrome::default(),
+            open_on_click: true,
+            always_modal: false,
+        }
+    }
 }
 
 pub struct QueueWidgetPanel {
@@ -73,6 +94,31 @@ impl QueueWidgetPanel {
         self.playing_path = playing_path;
         self.count = self.state.player.read(cx).queued_count();
         cx.notify();
+    }
+
+    /// A click opens the queue: jump to an open queue panel when one is
+    /// docked, else open the queue modal on this window's workspace. A widget
+    /// that has been popped into its own window has no workspace behind it, so
+    /// there it falls back to floating the queue in a window of its own.
+    ///
+    /// Takes the state rather than `&self` so the click never holds the
+    /// widget's own borrow: `focus_panel_named` walks every docked panel and
+    /// reads it to match the name, this widget included, which would re-enter
+    /// its update and panic.
+    fn open_queue(state: &AppState, always_modal: bool, window: &mut Window, cx: &mut App) {
+        // Jump to a docked queue panel first, unless the widget is set to
+        // always open the modal.
+        if !always_modal && panel::focus_panel_named(&state.tab_hosts, "queue", window, cx) {
+            return;
+        }
+        if let Some(workspace) =
+            crate::workspace::workspace_for_window(window, cx).and_then(|ws| ws.upgrade())
+        {
+            workspace.update(cx, |ws, cx| ws.toggle_queue_modal(window, cx));
+            return;
+        }
+        let queue = cx.new(|cx| QueuePanel::windowed(state.clone(), cx));
+        panel::pop_out_view(Arc::new(queue), state.clone(), cx);
     }
 
     /// The tooltip's rows: the next titles with their artists, resolved
@@ -173,6 +219,37 @@ impl PanelSettings for QueueWidgetPanel {
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
     }
+
+    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let mut rows = div().flex().flex_col().gap(tokens::SPACE_MD).child(setting_row(
+            "Open Queue on Click",
+            Some("Click the widget to jump to an open queue panel, or open the queue in a window when none is up"),
+            toggle(
+                self.config.open_on_click,
+                |this: &mut Self, on, cx| {
+                    this.config.open_on_click = on;
+                    cx.notify();
+                },
+                cx,
+            ),
+        ));
+        // The modal-always knob only matters once clicking opens the queue.
+        if self.config.open_on_click {
+            rows = rows.child(setting_row(
+                "Always Open as a Modal",
+                Some("Open the queue in a modal every time, instead of jumping to a queue panel that is already open"),
+                toggle(
+                    self.config.always_modal,
+                    |this: &mut Self, on, cx| {
+                        this.config.always_modal = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ));
+        }
+        Some(settings_ui::section("Click", None, rows).into_any_element())
+    }
 }
 
 impl EventEmitter<PanelEvent> for QueueWidgetPanel {}
@@ -254,6 +331,7 @@ impl Render for QueueWidgetPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
         let count = self.count;
+        let open_on_click = self.config.open_on_click;
         let weak = cx.entity().downgrade();
         panel::themed(&chrome, move || {
             div().size_full().bg(palette::bg_root()).child(
@@ -265,6 +343,19 @@ impl Render for QueueWidgetPanel {
                     .justify_center()
                     .px(tokens::SPACE_SM)
                     .size_full()
+                    // Click to open the queue, when the behavior is on.
+                    .when(open_on_click, |d| {
+                        let weak = weak.clone();
+                        d.cursor_pointer().on_click(move |_, window, cx| {
+                            if let Some(this) = weak.upgrade() {
+                                let (state, always_modal) = {
+                                    let this = this.read(cx);
+                                    (this.state.clone(), this.config.always_modal)
+                                };
+                                Self::open_queue(&state, always_modal, window, cx);
+                            }
+                        })
+                    })
                     .child(
                         div()
                             .relative()

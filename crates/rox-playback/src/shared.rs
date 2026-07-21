@@ -30,6 +30,11 @@ pub struct QueueEntry {
     pub id: u64,
     pub path: PathBuf,
     pub explicit: bool,
+    /// The pool index this entry points at, distinct per entry even when two
+    /// entries share a path. The UI matches the audible track on this rather
+    /// than the path, so a file that sits in the order more than once resolves
+    /// to the right occurrence instead of the first one by path.
+    pub idx: usize,
 }
 
 /// The play queue published for the UI: the whole timeline in play order and

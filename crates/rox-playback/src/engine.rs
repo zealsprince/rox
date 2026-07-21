@@ -367,6 +367,7 @@ impl Engine {
                 id: e.id,
                 path: self.queue[e.idx].clone(),
                 explicit: e.explicit,
+                idx: e.idx,
             })
             .collect();
         *self.shared.queue.lock().unwrap() = QueueSnapshot {

@@ -249,6 +249,26 @@ impl TabPanel {
         }
     }
 
+    /// Rox addition: make a specific panel the active tab and hand it the
+    /// keyboard, whether or not it was already the active one. Used by the
+    /// dock's focus-by-name so a shortcut can jump straight to a panel that
+    /// sits behind other tabs. No-op if the panel isn't in this group.
+    pub fn focus_panel(
+        &mut self,
+        panel: &Arc<dyn PanelView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(ix) = self.panels.iter().position(|p| p == panel) else {
+            return false;
+        };
+        // set_active_ix focuses when the index changes; do it here too so an
+        // already-active tab still takes focus.
+        self.set_active_ix(ix, window, cx);
+        panel.focus_handle(cx).focus(window);
+        true
+    }
+
     fn set_active_ix(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix == self.active_ix {
             return;

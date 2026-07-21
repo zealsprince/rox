@@ -733,14 +733,17 @@ impl WaveformPanel {
             }
         };
 
-        // Frames while the playhead moves, while a morph runs, while the
-        // generating stand-in animates, and through the between-tracks blink.
-        // A paused strip with a settled shape parks; the pump's play-state
-        // notify wakes it on resume. Pause and skips do not notify on their
-        // own, so the blink and morph windows carry those transitions.
+        // While playing, the direct observe re-renders the strip on every
+        // pump tick - the rate the playhead actually moves at, so frame
+        // polling on top only redraws identical pixels. Frames are for the
+        // windows the pump does not notify through: the morph, the
+        // generating stand-in, and the between-tracks blink (pause and
+        // skips do not notify on their own, so those windows carry the
+        // transitions). A paused strip with a settled shape parks; the
+        // pump's play-state notify wakes it on resume.
         let morphing = self.morph_at.elapsed().as_secs_f32() < tokens::EASE_SECS;
         let generating = matches!(self.to, Shape::Placeholder);
-        if playing || between_tracks || morphing || generating {
+        if !playing && (between_tracks || morphing || generating) {
             window.request_animation_frame();
         }
 

@@ -1067,17 +1067,19 @@ impl Render for SpectrumPanel {
 
 impl SpectrumPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        // Keep frames coming while audio moves (the tap only fills while the
-        // player pumps it) and while the bars are still falling. A paused or
-        // idle panel parks; a resume wakes it through the pump's play-state
-        // notify and the bars pick back up from there.
+        // While audio moves the direct observe re-renders the panel on
+        // every pump tick - the only rate new samples arrive at, so frames
+        // past it re-analyze nothing. Frame polling is just for the falling
+        // bars after audio stops, when no more ticks come; once they settle
+        // the panel parks, and a resume wakes it through the pump's
+        // play-state notify.
         let player = self.state.player.read(cx);
         let session = player.now_playing().is_some();
         let playing = player.is_playing();
         // Freeze on pause holds the standing frame: paused mid-session, not
         // a played-out queue.
         let hold = self.config.freeze && session && !playing && !player.queue_ended();
-        if playing || self.bars.lock().unwrap().alive {
+        if !playing && self.bars.lock().unwrap().alive {
             window.request_animation_frame();
         }
 

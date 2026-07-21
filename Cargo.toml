@@ -23,6 +23,13 @@ license = "AGPL-3.0-only"
 [profile.dev.package."*"]
 opt-level = 3
 
+# The "*" override covers dependencies only, not workspace members, and
+# rox-viz's FFT is a hot loop on the UI thread every pump tick - unoptimized
+# it profiles an order of magnitude heavier than release, same story as
+# Symphonia above.
+[profile.dev.package.rox-viz]
+opt-level = 3
+
 # Debug symbols are a third of the binary (68 MB down to 54 MB) and release
 # builds aren't what we debug with.
 [profile.release]

@@ -404,8 +404,14 @@ impl MenuPanel {
             .child(label_with_icon(icon_path, label))
             .child(chevron())
             .when(open, |d| {
-                // Read the workspaces only once the flyout opens.
-                let entries = crate::workspaces::all(&Settings::load());
+                // Read the workspaces only once the flyout opens. The Save
+                // flyout can't overwrite shipped bundles, so it drops them,
+                // matching the settings window where shipped rows carry no
+                // Overwrite.
+                let mut entries = crate::workspaces::all(&Settings::load());
+                if target == WorkspaceTarget::Overwrite {
+                    entries.retain(|entry| !entry.builtin);
+                }
                 let mut flyout = dropdown(px(180.)).absolute().left_full().top(px(-5.));
                 if with_new {
                     flyout = flyout.child(self.new_workspace_row(cx));

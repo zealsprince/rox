@@ -992,21 +992,22 @@ fn clock(text: String) -> Div {
 }
 
 impl Render for SeekStripPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(window, cx))
+        panel::themed(&chrome, || self.body(cx))
     }
 }
 
 impl SeekStripPanel {
-    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn body(&mut self, cx: &mut Context<Self>) -> Div {
         let now = self.state.player.read(cx).now_playing();
 
-        // The position clock only moves while a session runs; poll by frame
-        // like the waveform does. No session: fully parked.
-        if now.is_some() {
-            window.request_animation_frame();
-        }
+        // No frame polling: the raw observe in `new` re-renders the strip
+        // on every pump tick while audio moves, which is the rate the clock
+        // and playhead actually change at. A per-frame request on top only
+        // redraws identical pixels - and kept the whole window repainting
+        // at refresh rate through a paused session. Scrub drags notify on
+        // their own through the mouse handlers.
 
         let root = div()
             .size_full()

@@ -352,10 +352,19 @@ impl Render for LyricsEdit {
                             .child(self.line.clone()),
                     )
                     .child(
+                        // The input frames itself transparent, and its
+                        // editor background thins to nothing under surface
+                        // opacity, so the sheet needs its own card to read
+                        // as a surface, the match window's preview idiom.
                         div()
                             .flex_1()
                             .min_h_0()
-                            .child(Input::new(&self.input).h_full().small()),
+                            .rounded(tokens::RADIUS)
+                            .border_1()
+                            .border_color(palette::border())
+                            .bg(palette::bg_root())
+                            .overflow_hidden()
+                            .child(Input::new(&self.input).appearance(false).h_full().small()),
                     )
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))

@@ -102,6 +102,21 @@ pub struct PlaylistTrack {
     pub title: String,
     pub artist: String,
     pub album: String,
+    /// Album grouping metadata, read live from the catalog for the panel's
+    /// album headings. A deleted track has no live row, so these fall back
+    /// to empty or zero; the snapshot only keeps title, artist, and album.
+    pub album_artist: String,
+    pub year: u16,
+    pub genre: String,
+    pub duration_ms: u32,
+    pub codec: String,
+    pub bitrate_kbps: u16,
+    /// The 0-5 star rating, 0 when unrated. Read live from the catalog for
+    /// the panel's rating cell, like the album grouping fields.
+    pub rating: u8,
+    /// The file path, for the cover column's thumbnail; empty for a deleted
+    /// track the snapshot keeps but the catalog no longer holds.
+    pub path: String,
 }
 
 /// Create an empty playlist, returning its id. `now` is unix seconds.
@@ -467,7 +482,15 @@ pub fn tracks(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<Playl
         "SELECT m.id, m.track_id,
                 COALESCE(t.title, m.title),
                 COALESCE(t.artist, m.artist),
-                COALESCE(t.album, m.album)
+                COALESCE(t.album, m.album),
+                COALESCE(t.album_artist, ''),
+                COALESCE(t.year, 0),
+                COALESCE(t.genre, ''),
+                COALESCE(t.duration_ms, 0),
+                COALESCE(t.codec, ''),
+                COALESCE(t.bitrate, 0),
+                COALESCE(t.rating, 0),
+                COALESCE(t.path, '')
          FROM playlist_tracks m LEFT JOIN tracks t ON t.id = m.track_id
          WHERE m.playlist_id = ?1
          ORDER BY m.position, m.id",
@@ -479,6 +502,14 @@ pub fn tracks(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<Playl
             title: row.get(2)?,
             artist: row.get(3)?,
             album: row.get(4)?,
+            album_artist: row.get(5)?,
+            year: row.get(6)?,
+            genre: row.get(7)?,
+            duration_ms: row.get(8)?,
+            codec: row.get(9)?,
+            bitrate_kbps: row.get(10)?,
+            rating: row.get(11)?,
+            path: row.get(12)?,
         })
     })?;
     rows.collect()

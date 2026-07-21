@@ -95,6 +95,19 @@ pub struct TrackPlays {
     pub title: String,
     pub artist: String,
     pub album: String,
+    /// The album grouping and column metadata, read live from the catalog;
+    /// empty or zero once the track is gone, since the snapshot keeps only
+    /// title, artist, and album.
+    pub album_artist: String,
+    pub year: u16,
+    pub genre: String,
+    pub duration_ms: u32,
+    pub codec: String,
+    pub bitrate_kbps: u16,
+    pub rating: u8,
+    /// The file path, for the cover column's thumbnail; empty once the track
+    /// is gone from the catalog.
+    pub path: String,
 }
 
 fn track_plays_row(row: &rusqlite::Row) -> rusqlite::Result<TrackPlays> {
@@ -105,13 +118,26 @@ fn track_plays_row(row: &rusqlite::Row) -> rusqlite::Result<TrackPlays> {
         title: row.get(3)?,
         artist: row.get(4)?,
         album: row.get(5)?,
+        album_artist: row.get(6)?,
+        year: row.get(7)?,
+        genre: row.get(8)?,
+        duration_ms: row.get(9)?,
+        codec: row.get(10)?,
+        bitrate_kbps: row.get(11)?,
+        rating: row.get(12)?,
+        path: row.get(13)?,
     })
 }
 
-/// The tag columns of a listen read: the live catalog's while the track
-/// exists, the snapshot's once it is gone.
+/// The tag columns of a listen read: title, artist, and album from the live
+/// catalog while the track exists, the snapshot once it is gone, then the
+/// album grouping and column metadata (and the file path) from the live
+/// catalog only.
 const SNAPSHOT_COLUMNS: &str = "COALESCE(t.title, l.title),
-     COALESCE(t.artist, l.artist), COALESCE(t.album, l.album)";
+     COALESCE(t.artist, l.artist), COALESCE(t.album, l.album),
+     COALESCE(t.album_artist, ''), COALESCE(t.year, 0), COALESCE(t.genre, ''),
+     COALESCE(t.duration_ms, 0), COALESCE(t.codec, ''), COALESCE(t.bitrate, 0),
+     COALESCE(t.rating, 0), COALESCE(t.path, '')";
 
 /// The newest events at or after `since` first, one row per event; 0
 /// reads them all.
@@ -144,7 +170,9 @@ pub fn most_played(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<Trac
 /// order.
 pub fn never_played(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<TrackPlays>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, 0, 0, title, artist, album FROM tracks
+        "SELECT id, 0, 0, title, artist, album,
+                album_artist, year, genre, duration_ms, codec, bitrate, rating, path
+         FROM tracks
          WHERE id NOT IN (SELECT track_id FROM listens)
          ORDER BY album_artist, album, disc_no, track_no LIMIT ?1",
     )?;

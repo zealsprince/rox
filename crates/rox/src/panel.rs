@@ -90,6 +90,34 @@ impl TabHosts {
     }
 }
 
+/// Jump to an open panel by its built-in name across every tab group that has
+/// hosted our panels: make the first live match the active, focused tab, and
+/// return whether one was found. The queue widget uses it to reach an open
+/// queue panel before falling back to a window. Popped-out panels live in
+/// their own windows rather than the dock, so they are not matched here.
+pub fn focus_panel_named(
+    hosts: &Entity<TabHosts>,
+    name: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    let groups = hosts.read(cx).hosts.clone();
+    for tabs in groups {
+        let Some(tabs) = tabs.upgrade() else { continue };
+        let target = tabs
+            .read(cx)
+            .panels()
+            .iter()
+            .find(|panel| panel.panel_name(cx) == name && panel.visible(cx))
+            .cloned();
+        if let Some(panel) = target {
+            tabs.update(cx, |tabs, cx| tabs.focus_panel(&panel, window, cx));
+            return true;
+        }
+    }
+    false
+}
+
 /// The flat icon button the transport panels share so the button style
 /// never forks: the icon alone at rest, a soft pill behind it on hover.
 /// Icon paths come from [`crate::assets::icons`].

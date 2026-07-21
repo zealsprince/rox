@@ -7,7 +7,7 @@
 //! cores in fixed chunks. A query is terms ANDed per [`parse_query`], each
 //! free or pinned to one field with `field:value` syntax.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
@@ -222,6 +222,23 @@ pub struct RowView<'a> {
     pub rating: u8,
     pub plays: u32,
     pub added: i64,
+}
+
+/// One album-artist match from [`Projection::search_artists`]: the interned
+/// album-artist symbol and a representative row for its cover.
+#[derive(Clone, Copy)]
+pub struct ArtistHit {
+    pub album_artist: u32,
+    pub row: u32,
+}
+
+/// One album match from [`Projection::search_albums`]: the (album artist,
+/// album) symbol pair and a representative row for its cover and year.
+#[derive(Clone, Copy)]
+pub struct AlbumHit {
+    pub album_artist: u32,
+    pub album: u32,
+    pub row: u32,
 }
 
 /// A field a query term can be pinned to with `field:value` syntax.
@@ -722,6 +739,114 @@ impl Projection {
         })
     }
 
+    /// The distinct album artists whose name matches the query, each with a
+    /// representative row for the cover and count. For the search's grouped
+    /// hits, so typing an artist's name surfaces the artist itself above the
+    /// tracks. A term pinned to a track-only field (title, album, genre,
+    /// year) excludes every artist, since it can't match an artist name.
+    /// Ordered by name; first-seen row per artist.
+    pub fn search_artists(&self, query: &str) -> Vec<ArtistHit> {
+        let terms = parse_query(query);
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let matches = |name_lower: &str| {
+            terms.iter().all(|t| match t.field {
+                None | Some(QueryField::Artist) | Some(QueryField::AlbumArtist) => {
+                    name_lower.contains(&t.needle)
+                }
+                _ => false,
+            })
+        };
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut hits: Vec<ArtistHit> = Vec::new();
+        for row in 0..self.len() as u32 {
+            let sym = self.album_artist[row as usize];
+            if !seen.insert(sym) {
+                continue;
+            }
+            let name = &self.album_artists.strings[sym as usize];
+            if name.is_empty() || !matches(&self.album_artists.lower[sym as usize]) {
+                continue;
+            }
+            hits.push(ArtistHit {
+                album_artist: sym,
+                row,
+            });
+        }
+        hits.sort_by(|a, b| {
+            self.album_artists.strings[a.album_artist as usize]
+                .cmp(&self.album_artists.strings[b.album_artist as usize])
+        });
+        hits
+    }
+
+    /// The distinct albums whose album or album-artist name matches the
+    /// query, each keyed by its (album artist, album) pair with a
+    /// representative row for the cover and year. A free term matches
+    /// either name; `album:` pins the album, `artist:`/`albumartist:` the
+    /// artist; a title, genre, or year term excludes every album. Ordered
+    /// by artist then album; first-seen row per pair.
+    pub fn search_albums(&self, query: &str) -> Vec<AlbumHit> {
+        let terms = parse_query(query);
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let matches = |artist_lower: &str, album_lower: &str| {
+            terms.iter().all(|t| match t.field {
+                None => artist_lower.contains(&t.needle) || album_lower.contains(&t.needle),
+                Some(QueryField::Album) => album_lower.contains(&t.needle),
+                Some(QueryField::Artist) | Some(QueryField::AlbumArtist) => {
+                    artist_lower.contains(&t.needle)
+                }
+                _ => false,
+            })
+        };
+        let mut seen: HashSet<u64> = HashSet::new();
+        let mut hits: Vec<AlbumHit> = Vec::new();
+        for row in 0..self.len() as u32 {
+            let i = row as usize;
+            let album_artist = self.album_artist[i];
+            let album = self.album[i];
+            let key = (album_artist as u64) << 32 | album as u64;
+            if !seen.insert(key) {
+                continue;
+            }
+            let album_name = &self.albums.strings[album as usize];
+            if album_name.is_empty()
+                || !matches(
+                    &self.album_artists.lower[album_artist as usize],
+                    &self.albums.lower[album as usize],
+                )
+            {
+                continue;
+            }
+            hits.push(AlbumHit {
+                album_artist,
+                album,
+                row,
+            });
+        }
+        hits.sort_by(|a, b| {
+            let artist = self.album_artists.strings[a.album_artist as usize]
+                .cmp(&self.album_artists.strings[b.album_artist as usize]);
+            artist.then_with(|| {
+                self.albums.strings[a.album as usize].cmp(&self.albums.strings[b.album as usize])
+            })
+        });
+        hits
+    }
+
+    /// The distinct release years present, newest first, zero (unknown)
+    /// dropped. The year field has no symbol table to suggest from, so its
+    /// value completions draw from this instead.
+    pub fn distinct_years(&self) -> Vec<u16> {
+        let mut years: Vec<u16> = self.year.iter().copied().filter(|&y| y != 0).collect();
+        years.sort_unstable_by(|a, b| b.cmp(a));
+        years.dedup();
+        years
+    }
+
     /// Row mask for a structured filter: a row passes when, for every
     /// filtered field, its value is one of that field's picks - values OR
     /// within a field, fields AND across. Exact matches against the symbol
@@ -1074,6 +1199,74 @@ mod tests {
         // A year needle matches on the digits.
         assert_eq!(titles_for(&p, "year:200").len(), 2);
         assert_eq!(titles_for(&p, "stronger year:2007").len(), 1);
+    }
+
+    /// The search surfaces whole albums and artists whose name matches,
+    /// above the tracks: a free term hits either name, `album:` and
+    /// `artist:` pin, and a track-only field (title) excludes both.
+    #[test]
+    fn search_surfaces_albums_and_artists() {
+        fn full(path: &str, album_artist: &str, album: &str, title: &str) -> TrackRow {
+            TrackRow {
+                path: path.into(),
+                title: title.into(),
+                artist: album_artist.into(),
+                album_artist: album_artist.into(),
+                album: album.into(),
+                genre: String::new(),
+                year: 0,
+                disc_no: 0,
+                track_no: 0,
+                duration_ms: 0,
+                codec: String::new(),
+                bitrate_kbps: 0,
+                rating: 0,
+                size: 0,
+                mtime: 0,
+            }
+        }
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                full("/m/1.mp3", "Fleet Foxes", "Fleet Foxes", "White Winter Hymnal"),
+                full("/m/2.mp3", "Fleet Foxes", "Helplessness Blues", "Montezuma"),
+                full("/m/3.mp3", "ODESZA", "A Moment Apart", "Line Of Sight"),
+            ],
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn).unwrap();
+
+        // A free term surfaces the one matching artist.
+        let artists = p.search_artists("fleet");
+        assert_eq!(artists.len(), 1);
+        assert_eq!(
+            p.album_artists.strings[artists[0].album_artist as usize],
+            "Fleet Foxes"
+        );
+
+        // The album artist matches, so both its albums surface, sorted by
+        // artist then album name.
+        let albums = p.search_albums("fleet");
+        assert_eq!(albums.len(), 2);
+        assert_eq!(p.albums.strings[albums[0].album as usize], "Fleet Foxes");
+        assert_eq!(
+            p.albums.strings[albums[1].album as usize],
+            "Helplessness Blues"
+        );
+
+        // A pin narrows to the album name.
+        let pinned = p.search_albums("album:helpless");
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(
+            p.albums.strings[pinned[0].album as usize],
+            "Helplessness Blues"
+        );
+
+        // A track-only field excludes every album and artist.
+        assert!(p.search_albums("title:montezuma").is_empty());
+        assert!(p.search_artists("title:montezuma").is_empty());
     }
 
     /// The structured filter matches whole values only - "Air" leaves

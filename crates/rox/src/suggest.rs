@@ -70,6 +70,29 @@ fn ranked<'a>(table: &'a SymTable, typed: &str) -> Vec<&'a String> {
     prefixed
 }
 
+/// Distinct years matching `typed`, prefix matches first, at most [`CAP`].
+/// The year column has no symbol table, so its completions rank a plain
+/// year list the way [`ranked`] ranks a table. An empty `typed` lists the
+/// years from the top, newest first, since the source is already sorted.
+fn ranked_years(years: &[u16], typed: &str) -> Vec<String> {
+    let mut prefixed = Vec::new();
+    let mut contained = Vec::new();
+    for &year in years {
+        let value = year.to_string();
+        if value.starts_with(typed) {
+            prefixed.push(value);
+            if prefixed.len() >= CAP {
+                break;
+            }
+        } else if contained.len() < CAP && value.contains(typed) {
+            contained.push(value);
+        }
+    }
+    prefixed.extend(contained);
+    prefixed.truncate(CAP);
+    prefixed
+}
+
 /// The provider for `field`, when it is a name field whose values recur
 /// across a library and there is a projection to draw them from. Free
 /// text and numeric fields get none.
@@ -157,13 +180,20 @@ impl CompletionProvider for FieldSuggestions {
 /// and the field prefixes themselves for a bare word that starts one.
 /// Anything else gets no menu, so plain title searches stay quiet.
 pub fn query_provider(projection: Option<&Arc<Projection>>) -> Option<Rc<dyn CompletionProvider>> {
+    let projection = projection?.clone();
     Some(Rc::new(QuerySuggestions {
-        projection: projection?.clone(),
+        // Snapshot the distinct years once per attach rather than scanning
+        // the year column on every keystroke.
+        years: projection.distinct_years(),
+        projection,
     }))
 }
 
 struct QuerySuggestions {
     projection: Arc<Projection>,
+    /// The library's distinct years, newest first, for the `year:` field's
+    /// value suggestions.
+    years: Vec<u16>,
 }
 
 /// The span of the query token covering `offset`. Tokens split on
@@ -226,14 +256,6 @@ impl CompletionProvider for QuerySuggestions {
                 .to_lowercase()
         };
         let items = if let Some((field, value)) = field_term(raw) {
-            let table = match field {
-                QueryField::Artist => &self.projection.artists,
-                QueryField::AlbumArtist => &self.projection.album_artists,
-                QueryField::Album => &self.projection.albums,
-                QueryField::Genre => &self.projection.genres,
-                // Free text and numbers have no table to suggest from.
-                QueryField::Title | QueryField::Year => return none(),
-            };
             let typed = strip(&raw[value..]);
             // Accepting rewrites the whole value span, quoted when the
             // value has spaces so it survives the tokenizer.
@@ -241,6 +263,35 @@ impl CompletionProvider for QuerySuggestions {
                 text.offset_to_position(start + value),
                 text.offset_to_position(end),
             );
+            let table = match field {
+                QueryField::Artist => &self.projection.artists,
+                QueryField::AlbumArtist => &self.projection.album_artists,
+                QueryField::Album => &self.projection.albums,
+                QueryField::Genre => &self.projection.genres,
+                // The year column has no symbol table; suggest from the
+                // distinct year list instead. Years never carry spaces, so
+                // they need no quoting.
+                QueryField::Year => {
+                    return Task::ready(Ok(CompletionResponse::Array(
+                        ranked_years(&self.years, &typed)
+                            .into_iter()
+                            .map(|value| CompletionItem {
+                                label: value.clone(),
+                                filter_text: Some(
+                                    value[..matched_prefix_len(&value, &typed)].to_string(),
+                                ),
+                                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                                    range: span,
+                                    new_text: value,
+                                })),
+                                ..Default::default()
+                            })
+                            .collect(),
+                    )));
+                }
+                // Free text has nothing to suggest from.
+                QueryField::Title => return none(),
+            };
             ranked(table, &typed)
                 .into_iter()
                 .map(|value| {
@@ -323,6 +374,23 @@ mod tests {
         assert_eq!(matched_prefix_len("Ólafur Arnalds", "x"), 0);
         // Nothing typed, nothing highlighted.
         assert_eq!(matched_prefix_len("Daft Punk", ""), 0);
+    }
+
+    /// Year suggestions keep the source's newest-first order, list all on
+    /// an empty prefix, and rank prefix matches ahead of contains ones.
+    #[test]
+    fn years_rank_prefix_first() {
+        let years = vec![2021u16, 2019, 2010, 1999, 1990];
+        // Nothing typed lists every year, newest first.
+        assert_eq!(
+            ranked_years(&years, ""),
+            vec!["2021", "2019", "2010", "1999", "1990"]
+        );
+        // A prefix takes only the years that start with it.
+        assert_eq!(ranked_years(&years, "20"), vec!["2021", "2019", "2010"]);
+        // Prefixes lead, then a contains match that isn't a prefix (2019
+        // holds "19" but doesn't start with it).
+        assert_eq!(ranked_years(&years, "19"), vec!["1999", "1990", "2019"]);
     }
 
     /// Tokens resolve under the cursor and classify into field terms

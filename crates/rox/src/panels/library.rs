@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    div, img, prelude::*, px, svg, AnyElement, App, Context, Div, Entity, EventEmitter,
-    FocusHandle, Focusable, KeyDownEvent, MouseButton, ObjectFit, PathPromptOptions,
+    div, prelude::*, px, AnyElement, App, Context, Div, Entity, EventEmitter,
+    FocusHandle, Focusable, KeyDownEvent, MouseButton, PathPromptOptions,
     ScrollStrategy, ScrollWheelEvent, SharedString, Stateful, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
@@ -33,12 +33,14 @@ use rox_library::writer;
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
+use crate::group_head::{self, Headers};
 use crate::panel::{self, AppState, PanelChrome, ResumeIdle, ScrubState};
 use crate::panel_settings;
 use crate::search::{SearchBox, SearchEvent};
 use crate::settings_ui;
 use crate::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::thumbs::Thumb;
+use crate::track_cells;
 
 /// Play from a double-clicked row: at most this many tracks are queued
 /// behind it. The quick-play modal caps its queue the same way.
@@ -602,6 +604,21 @@ impl Library {
     /// projection swapped between paint and click; when they disagree the
     /// database row still lands and the next reload shows it. The file's
     /// tags follow through the write queue below.
+    /// Rate a track by id, resolving its projection row for the in-place
+    /// atomic update. The library table already holds the row and calls
+    /// [`set_rating`](Self::set_rating) directly; surfaces that only know
+    /// the id (the playlists tree) come through here. A track not in the
+    /// projection still lands on disk and shows on the next reload.
+    pub fn rate(&mut self, id: i64, rating: u8, cx: &mut Context<Self>) {
+        let row = self
+            .projection
+            .as_ref()
+            .and_then(|p| p.db_id.iter().position(|&other| other == id))
+            .map(|r| r as u32)
+            .unwrap_or(u32::MAX);
+        self.set_rating(row, id, rating, cx);
+    }
+
     pub fn set_rating(&mut self, row: u32, id: i64, rating: u8, cx: &mut Context<Self>) {
         let Some(conn) = &self.conn else { return };
         if let Err(e) = store::set_rating(conn, id, rating) {
@@ -632,6 +649,23 @@ impl Library {
             projection.plays[row].fetch_add(1, Ordering::Relaxed);
             cx.emit(LibraryEvent::Played);
         }
+    }
+
+    /// The total play count for each of `ids`, off the in-memory projection,
+    /// in one pass. A track not in the catalog (a deleted playlist member) is
+    /// absent from the map. What the queue and playlists plays column reads.
+    pub fn plays_for(&self, ids: &[i64]) -> HashMap<i64, u32> {
+        let Some(projection) = &self.projection else {
+            return HashMap::new();
+        };
+        let wanted: HashSet<i64> = ids.iter().copied().collect();
+        projection
+            .db_id
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| wanted.contains(id))
+            .map(|(row, &id)| (id, projection.plays[row].load(Ordering::Relaxed)))
+            .collect()
     }
 
     /// Queue one track's rating for its tag write. The map holds the
@@ -853,6 +887,16 @@ struct ColumnDef {
 /// here plus its arm in [`TrackTable::render_td`].
 const COLUMNS: &[ColumnDef] = &[
     ColumnDef {
+        // The cover thumbnail. Not sortable (art is not a projection field),
+        // so `sort` here is never read; `sort_key` returns None for it.
+        key: "cover",
+        label: "Cover",
+        default_width: 36.,
+        right: false,
+        default_on: false,
+        sort: SortKey::TrackNo,
+    },
+    ColumnDef {
         key: "track",
         label: "#",
         default_width: 44.,
@@ -1005,19 +1049,6 @@ pub enum Density {
     Comfortable,
 }
 
-/// How the canonical browse order breaks into groups (what [`GroupBy`]
-/// keys). Compact spends one row per break, expanded two: the group's
-/// name line, then a meta line with its track count and total time (and,
-/// grouped by album, the album with its cover tile). Searching or
-/// sorting by a column always renders flat, whatever this says.
-#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Headers {
-    Off,
-    Compact,
-    #[default]
-    Expanded,
-}
 
 /// What the group headers break on. Album keys the album artist and
 /// album together over the canonical order as-is; the rest key one
@@ -1201,7 +1232,7 @@ fn track_columns(layout: &[ColumnSpec], sort: &Option<(SharedString, bool)>) -> 
 /// Map a column key to the projection's sort key. The favourite column has
 /// none - it toggles rather than sorts - so its header never triggers a sort.
 fn sort_key(key: &str) -> Option<SortKey> {
-    if key == "favourite" {
+    if key == "favourite" || key == "cover" {
         return None;
     }
     column_def(key).map(|def| def.sort)
@@ -1329,24 +1360,13 @@ fn group_rows(
     (rows, groups)
 }
 
-/// A group's codec and bitrate stat: "mp3 320 kbps" when everything
-/// agrees, the kbps a range when tracks spread, either half alone when
-/// the other is mixed or missing, empty when both are.
+/// A group's codec and bitrate stat, resolving the interned codec symbol
+/// before handing off to the shared [`group_head::quality`].
 fn group_quality(group: &Group, projection: &Projection) -> String {
     let codec = group
         .codec
-        .map(|sym| projection.codecs.strings[sym as usize].as_str())
-        .unwrap_or("");
-    let kbps = match (group.min_kbps, group.max_kbps) {
-        (0, _) => String::new(),
-        (min, max) if min == max => format!("{min} kbps"),
-        (min, max) => format!("{min}-{max} kbps"),
-    };
-    match (codec.is_empty(), kbps.is_empty()) {
-        (false, false) => format!("{codec} {kbps}"),
-        (false, true) => codec.to_string(),
-        _ => kbps,
-    }
+        .map(|sym| projection.codecs.strings[sym as usize].as_str());
+    group_head::quality(codec, group.min_kbps, group.max_kbps)
 }
 
 /// The table delegate: the column set and the rows one panel displays.
@@ -1403,6 +1423,10 @@ struct TrackTable {
     /// against. Refreshed off the library on a playlist change, so a toggle
     /// anywhere lights the same track here without a full view rebuild.
     favourites: HashSet<i64>,
+    /// Resolved file paths for the cover column, cached per track id on the
+    /// cell's first paint so the thumbnail lookup does not re-query the
+    /// catalog every frame. Paths are stable per id; cleared on reload.
+    cover_paths: HashMap<i64, Option<PathBuf>>,
 }
 
 impl TrackTable {
@@ -1453,6 +1477,17 @@ impl TrackTable {
         self.density.size().table_row_height() * 2.
     }
 
+    /// The heading look knobs packaged for the shared surface, mirrored
+    /// off the delegate the same way the tile side is.
+    fn head_look(&self) -> group_head::HeadLook {
+        group_head::HeadLook {
+            tile_side: self.tile_side(),
+            show_art: self.header_art,
+            show_year: self.header_year,
+            show_details: self.header_details,
+        }
+    }
+
     /// One half of an expanded header's cover tile. The table draws every
     /// row one fixed height with no spanning cell, so each of the block's
     /// two rows clips its own half of a two-row-tall square: the name row
@@ -1501,46 +1536,7 @@ impl TrackTable {
                 .update(cx, |thumbs, cx| thumbs.get(&path, cx)),
             None => Thumb::Missing,
         };
-        let side = self.tile_side();
-        // The knob's radius rides the cover itself: gpui content masks
-        // stay rectangular, so a rounded wrapper alone would leave the
-        // image's corners square.
-        let content: AnyElement = match thumb {
-            Thumb::Ready(image) => img(image)
-                .size_full()
-                .object_fit(ObjectFit::Cover)
-                .rounded(px(self.art_rounding))
-                .into_any_element(),
-            _ => div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    svg()
-                        .path(icons::MUSIC)
-                        .size(px(16.))
-                        .text_color(palette::text_faint()),
-                )
-                .into_any_element(),
-        };
-        div()
-            .absolute()
-            .left_0()
-            .top_0()
-            .bottom_0()
-            .w(side)
-            .overflow_hidden()
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .w(side)
-                    .h(side)
-                    .map(|d| if bottom { d.bottom_0() } else { d.top_0() })
-                    .child(content),
-            )
-            .into_any_element()
+        group_head::tile(thumb, self.tile_side(), self.art_rounding, bottom)
     }
 
     /// The group's name line. Grouped by album, compact packs the album
@@ -1560,7 +1556,6 @@ impl TrackTable {
         let by_album = self.group_by == GroupBy::Album;
         let has_tile = expanded && by_album && self.header_art;
         let tile = has_tile.then(|| self.group_tile(g, false, cx));
-        let indent = self.tile_side() + tokens::SPACE_SM;
         let (name, album, year) = match (
             self.groups.get(g as usize),
             self.state.library.read(cx).projection(),
@@ -1598,9 +1593,17 @@ impl TrackTable {
             }
             _ => Default::default(),
         };
-        let unknown = name.is_empty() && (expanded || album.is_empty());
-        let name = (!name.is_empty()).then(|| SharedString::from(name));
-        let album = (!expanded && !album.is_empty()).then(|| SharedString::from(album));
+        let head = group_head::GroupHead {
+            name: SharedString::from(name),
+            album: SharedString::from(album),
+            year,
+            genre: SharedString::default(),
+            quality: SharedString::default(),
+            tracks: 0,
+            total_ms: 0,
+            by_album,
+        };
+        let look = self.head_look();
         div()
             .id(("row", row_ix))
             .bg(palette::bg_elevated())
@@ -1611,62 +1614,7 @@ impl TrackTable {
             // and meta lines. The width stays, so rows keep their height.
             .when(expanded, |d| d.border_color(gpui::transparent_black()))
             .when_some(tile, |d, tile| d.child(tile))
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(tokens::SPACE_SM)
-                    .px(tokens::SPACE_SM)
-                    // Clear of the cover tile, which spans the block.
-                    .when(has_tile, |d| d.pl(indent))
-                    .overflow_hidden()
-                    .when(unknown, |d| {
-                        d.child(
-                            div()
-                                .flex_1()
-                                .text_color(palette::text_muted())
-                                .child("Unknown"),
-                        )
-                    })
-                    .when_some(name, |d, name| {
-                        d.child(
-                            div()
-                                .truncate()
-                                .text_color(palette::text_bright())
-                                .map(|d| {
-                                    if expanded {
-                                        d.flex_1().text_lg()
-                                    } else {
-                                        d.flex_none()
-                                    }
-                                })
-                                .child(name),
-                        )
-                    })
-                    .when_some(album, |d, album| {
-                        d.child(
-                            div()
-                                .truncate()
-                                .text_color(palette::text_secondary())
-                                .child(album),
-                        )
-                    })
-                    .when(year != 0 && self.header_year, |d| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .text_color(if expanded {
-                                    palette::text_secondary()
-                                } else {
-                                    palette::text_muted()
-                                })
-                                .child(fmt_num(year)),
-                        )
-                    }),
-            )
+            .child(group_head::name_content(&head, &look, expanded))
     }
 
     /// The expanded header's second line: the album, then the group's
@@ -1683,7 +1631,6 @@ impl TrackTable {
         let by_album = self.group_by == GroupBy::Album;
         let has_tile = by_album && self.header_art;
         let tile = has_tile.then(|| self.group_tile(g, true, cx));
-        let indent = self.tile_side() + tokens::SPACE_SM;
         let (album, genre, quality, tracks, total_ms) = match (
             self.groups.get(g as usize),
             self.state.library.read(cx).projection(),
@@ -1707,53 +1654,24 @@ impl TrackTable {
             ),
             _ => Default::default(),
         };
-        let mut stats = Vec::new();
-        if self.header_details {
-            if !genre.is_empty() {
-                stats.push(genre);
-            }
-            if !quality.is_empty() {
-                stats.push(quality);
-            }
-        }
-        stats.push(if tracks == 1 {
-            "1 track".to_string()
-        } else {
-            format!("{tracks} tracks")
-        });
-        stats.push(fmt_total(total_ms));
+        let head = group_head::GroupHead {
+            name: SharedString::default(),
+            album: SharedString::from(album),
+            year: 0,
+            genre: SharedString::from(genre),
+            quality: SharedString::from(quality),
+            tracks,
+            total_ms,
+            by_album,
+        };
+        let look = self.head_look();
         div()
             .id(("row", row_ix))
             .bg(palette::bg_elevated())
             // Part of the same clickable album block as the name line.
             .cursor_pointer()
             .when_some(tile, |d, tile| d.child(tile))
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(tokens::SPACE_SM)
-                    .px(tokens::SPACE_SM)
-                    // Clear of the cover tile, which spans the block.
-                    .when(has_tile, |d| d.pl(indent))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .flex_1()
-                            .truncate()
-                            .text_color(palette::text_secondary())
-                            .child(SharedString::from(album)),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(palette::text_muted())
-                            .child(SharedString::from(stats.join(" | "))),
-                    ),
-            )
+            .child(group_head::meta_content(&head, &look))
     }
 
     /// The slim strip opening one disc's run inside a multi-disc group,
@@ -2040,7 +1958,7 @@ impl TableDelegate for TrackTable {
             // Group bounds resolve innermost-first, so one shared name
             // still scopes each cell's group_hover to its own row: the
             // rating cell fades its unrated stars in on row hover.
-            .group(ROW_GROUP)
+            .group(track_cells::ROW_GROUP)
             .id(("row", row_ix))
             .cursor_pointer()
             .when(selected, |d| d.bg(palette::alpha(palette::accent(), 0x26)))
@@ -2206,7 +2124,29 @@ impl TableDelegate for TrackTable {
         let v = projection.resolve(row);
         let playing = self.playing_row == Some(row_ix);
         let cell = div().truncate();
-        let cell = match self.columns[col_ix].key.as_ref() {
+        // Copied out so the cover arm can borrow the delegate mutably (its
+        // path cache) without the match still holding `self.columns`.
+        let key = self.columns[col_ix].key.clone();
+        if key.as_ref() == "cover" {
+            let id = projection.db_id[row as usize];
+            let path = match self.cover_paths.get(&id) {
+                Some(path) => path.clone(),
+                None => {
+                    let path = self
+                        .state
+                        .library
+                        .read(cx)
+                        .paths_for(&[id])
+                        .ok()
+                        .and_then(|mut paths| paths.pop());
+                    self.cover_paths.insert(id, path.clone());
+                    path
+                }
+            };
+            let thumb = crate::track_columns::cover_thumb(&self.state, path.as_deref(), true, cx);
+            return crate::track_columns::cover_cell(&thumb).into_any_element();
+        }
+        let cell = match key.as_ref() {
             "track" => cell
                 .text_color(palette::text_muted())
                 .child(fmt_num(v.track_no)),
@@ -2237,15 +2177,14 @@ impl TableDelegate for TrackTable {
             "duration" => cell
                 .text_color(palette::text_muted())
                 .child(SharedString::from(fmt_ms(v.duration_ms))),
-            "rating" => rating_cell(
+            "rating" => track_cells::rating(
                 self.state.clone(),
-                row,
                 projection.db_id[row as usize],
                 v.rating,
             ),
             "favourite" => {
                 let id = projection.db_id[row as usize];
-                favourite_cell(self.state.clone(), id, self.favourites.contains(&id))
+                track_cells::favourite(self.state.clone(), id, self.favourites.contains(&id))
             }
             // Blank at zero like the track and year cells: never played
             // reads cleaner as absence than as a column of zeros.
@@ -2459,6 +2398,7 @@ impl LibraryPanel {
             playing_id: None,
             playing_row: None,
             favourites: state.library.read(cx).favourite_ids(),
+            cover_paths: HashMap::new(),
         };
         // Widths and order persist by column key, so a drag survives a
         // layout save; the delegate mirrors the widget's reorder.
@@ -2891,7 +2831,7 @@ impl LibraryPanel {
                 }
             }
             // Written back into the delegate's columns: refresh() re-reads
-            // them, and the layout dump persists them.
+            // them, and the save request persists them.
             TableEvent::ColumnWidthsChanged(widths) => {
                 let widths = widths.clone();
                 self.table.update(cx, |table, _| {
@@ -2900,7 +2840,11 @@ impl LibraryPanel {
                         column.width = width;
                     }
                 });
+                self.request_layout_save(cx);
             }
+            // The widget already reordered the delegate's columns; just get
+            // the new order onto disk.
+            TableEvent::MoveColumn(..) => self.request_layout_save(cx),
             _ => {}
         }
     }
@@ -3004,6 +2948,7 @@ impl LibraryPanel {
         });
         self.columns_shown = self.shown_columns(cx);
         self.refresh_title_bar(cx);
+        self.request_layout_save(cx);
     }
 
     /// The keys of the currently shown columns, for the settings checklist.
@@ -3041,7 +2986,7 @@ impl LibraryPanel {
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| this.toggle_column(key, cx)),
                     )
-                    .child(checkbox(on))
+                    .child(settings_ui::checkbox(on))
                     .child(
                         div()
                             .text_color(if on {
@@ -3065,6 +3010,19 @@ impl LibraryPanel {
         });
         self.columns_shown = self.shown_columns(cx);
         self.refresh_title_bar(cx);
+        self.request_layout_save(cx);
+    }
+
+    /// Nudge the dock to persist the layout after a column change it never
+    /// sees on its own - a resize, reorder, or toggle. The panel's own events
+    /// don't reach the dock, but its host tab panel's do, so bounce a
+    /// LayoutChanged through it and the workspace's debounced save picks the
+    /// new columns up. Without this the columns only reach disk on a clean
+    /// close or the next unrelated dock change, so a relaunch can lose them.
+    fn request_layout_save(&self, cx: &mut Context<Self>) {
+        if let Some(tabs) = self.tab_panel.as_ref().and_then(|w| w.upgrade()) {
+            tabs.update(cx, |_, cx| cx.emit(PanelEvent::LayoutChanged));
+        }
     }
 
     /// While docked, the panel's controls live in the tab panel's title bar,
@@ -4034,17 +3992,6 @@ pub(crate) fn fmt_ms(ms: u32) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
-/// A group's total time: like [`fmt_ms`], growing an hours place once it
-/// earns one.
-fn fmt_total(ms: u64) -> String {
-    let secs = ms / 1000;
-    if secs >= 3600 {
-        format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
-    } else {
-        format!("{}:{:02}", secs / 60, secs % 60)
-    }
-}
-
 /// A track number or year cell: blank when zero, since the scanner stores
 /// a missing tag as 0 and a bare 0 reads as data.
 fn fmt_num(n: u16) -> SharedString {
@@ -4055,96 +4002,4 @@ fn fmt_num(n: u16) -> SharedString {
     }
 }
 
-/// A checklist tick box: a square that fills with the accent and shows a
-/// check while on, an empty control-colored box while off. The caller wires
-/// the click on the surrounding row.
-fn checkbox(on: bool) -> Div {
-    div()
-        .size(px(16.))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(tokens::RADIUS)
-        .border_1()
-        .border_color(if on {
-            palette::accent()
-        } else {
-            palette::border()
-        })
-        .bg(if on {
-            palette::accent()
-        } else {
-            palette::bg_control()
-        })
-        .when(on, |d| {
-            d.child(
-                svg()
-                    .path(icons::CHECK)
-                    .size(px(11.))
-                    .text_color(palette::text_on_accent()),
-            )
-        })
-}
 
-/// The track rows' hover group, for cells that only show on the row
-/// under the mouse.
-const ROW_GROUP: &str = "library-row";
-
-/// The rating column's cell: the shared rating control over the
-/// library's value, writing a click straight into the catalog. An
-/// unrated track keeps the cell invisible until its row is hovered, so
-/// the empty affordance never reads as column-wide noise; the control
-/// stops the mouse-down itself, so rating never reselects the row.
-fn rating_cell(state: AppState, row: u32, id: i64, rating: u8) -> Div {
-    crate::rating_ui::control(rating, move |value, _, cx| {
-        state
-            .library
-            .update(cx, |library, cx| library.set_rating(row, id, value, cx));
-    })
-    // Fill the cell height so the control's own items_center lands the stars on
-    // the row centerline; the cell wrapper's text-sized top padding would
-    // otherwise ride them high.
-    .h_full()
-    .when(rating == 0, |d| {
-        d.opacity(0.).group_hover(ROW_GROUP, |s| s.opacity(1.))
-    })
-}
-
-/// The favourite column's cell: a heart that fills when the track is in the
-/// favourites playlist and toggles on click. An unfavourited track keeps the
-/// outline hidden until the row is hovered, the same restraint the rating
-/// column shows; the click stops its own mouse-down so it never reselects the
-/// row.
-fn favourite_cell(state: AppState, id: i64, on: bool) -> Div {
-    div()
-        // Fill the cell height and center the heart on the cross axis, so it
-        // sits on the row centerline instead of riding the top padding.
-        .h_full()
-        .flex()
-        .items_center()
-        .cursor_pointer()
-        .child(
-            svg()
-                .path(if on {
-                    icons::HEART_FILLED
-                } else {
-                    icons::HEART
-                })
-                .size(px(15.))
-                .text_color(if on {
-                    palette::accent()
-                } else {
-                    palette::text_faint()
-                }),
-        )
-        .when(!on, |d| {
-            d.opacity(0.).group_hover(ROW_GROUP, |s| s.opacity(1.))
-        })
-        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-            cx.stop_propagation();
-            state
-                .library
-                .update(cx, |library, cx| library.set_favourites(&[id], !on, cx));
-        })
-}

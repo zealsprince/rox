@@ -370,13 +370,24 @@ pub struct TrackMeta {
     pub artist: String,
     pub album: String,
     pub track_no: u16,
+    /// The album grouping and column metadata, for the queue's headings and
+    /// columns; the other callers read only the tags above.
+    pub album_artist: String,
+    pub year: u16,
+    pub genre: String,
+    pub duration_ms: u32,
+    pub codec: String,
+    pub bitrate_kbps: u16,
+    pub rating: u8,
 }
 
 /// Resolve a playable path back to its tags, for showing what is playing.
 /// Ok(None) when the path is not in the library.
 pub fn meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<TrackMeta>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT title, artist, album, track_no FROM tracks
+        "SELECT title, artist, album, track_no,
+                album_artist, year, genre, duration_ms, codec, bitrate, rating
+         FROM tracks
          WHERE source = 'local' AND path = ?1",
     )?;
     let mut rows = stmt.query([path])?;
@@ -386,6 +397,13 @@ pub fn meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<T
             artist: row.get(1)?,
             album: row.get(2)?,
             track_no: row.get::<_, i64>(3)? as u16,
+            album_artist: row.get(4)?,
+            year: row.get(5)?,
+            genre: row.get(6)?,
+            duration_ms: row.get(7)?,
+            codec: row.get(8)?,
+            bitrate_kbps: row.get(9)?,
+            rating: row.get(10)?,
         })),
         None => Ok(None),
     }

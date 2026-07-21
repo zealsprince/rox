@@ -9,9 +9,10 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, svg, uniform_list, App, Context, Div, EventEmitter, FocusHandle,
-    Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, PathPromptOptions,
-    SharedString, Stateful, Subscription, UniformListScrollHandle, WeakEntity, Window,
+    div, prelude::*, px, svg, uniform_list, App, Context, Div, EventEmitter,
+    FocusHandle, Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent,
+    PathPromptOptions, SharedString, Stateful, Subscription, UniformListScrollHandle, WeakEntity,
+    Window,
 };
 use gpui_component::button::Button;
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
@@ -22,21 +23,67 @@ use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
+use crate::group_head::Headers;
 use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
+use crate::track_cells;
+use crate::track_columns::{self, Column, ColumnHost, GroupTrack, HeadingHost};
+use rox_library::playlists::PlaylistTrack;
 
 /// One row's height; the list is a uniform_list, so every row agrees.
 const ROW_H: f32 = 30.;
 
-/// The playlists panel's config: just the shared chrome, and which playlists
-/// are expanded so a saved layout restores the open ones.
-#[derive(Clone, Default, Serialize, Deserialize)]
+/// The track columns, in render order. The number and name lead, the rating
+/// and favourite controls trail, the tag columns sit between. Which show is
+/// the config's call; this only fixes the order and the default set. Every
+/// key is one the shared [`track_columns::cell`] draws.
+const COLUMNS: &[Column] = &[
+    Column { key: "cover", label: "Cover", default_on: false },
+    Column { key: "number", label: "Number", default_on: true },
+    Column { key: "name", label: "Name", default_on: true },
+    Column { key: "artist", label: "Artist", default_on: true },
+    Column { key: "album", label: "Album", default_on: false },
+    Column { key: "year", label: "Year", default_on: false },
+    Column { key: "genre", label: "Genre", default_on: false },
+    Column { key: "duration", label: "Duration", default_on: false },
+    Column { key: "plays", label: "Plays", default_on: false },
+    Column { key: "rating", label: "Rating", default_on: true },
+    Column { key: "favourite", label: "Favourite", default_on: true },
+];
+
+/// The playlists panel's config: the shared chrome, which playlists are
+/// expanded so a saved layout restores the open ones, the album heading
+/// mode, and which per-track columns show.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlaylistsConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
     pub expanded: Vec<i64>,
+    /// The album heading mode over each expanded playlist, the library's
+    /// grouping brought to the tree. Off by default; a playlist stays a flat
+    /// list unless you ask for the headings.
+    pub headers: Headers,
+    /// The shown column keys, in no particular order (render order is the
+    /// registry's). Defaults to the registry's default-on set, so a fresh
+    /// panel and a pre-columns layout both open with the same fields.
+    pub columns: Vec<String>,
+}
+
+// Hand-written over derived so the columns default to the registry set and
+// the headings default off, both for a new panel and for a saved layout from
+// before these existed (the container's serde default fills a missing field
+// from here).
+impl Default for PlaylistsConfig {
+    fn default() -> Self {
+        PlaylistsConfig {
+            chrome: PanelChrome::default(),
+            expanded: Vec::new(),
+            headers: Headers::Off,
+            columns: track_columns::default_columns(COLUMNS),
+        }
+    }
 }
 
 /// A flattened tree row: a playlist header, or one of its tracks.
@@ -50,13 +97,72 @@ enum Row {
         /// heart, shielded from rename and delete.
         favourite: bool,
     },
-    Track {
-        playlist_id: i64,
-        member_id: i64,
-        track_id: i64,
-        title: String,
-        artist: String,
-    },
+    /// The name line of an album heading inside an expanded playlist,
+    /// indexing [`PlaylistsPanel::albums`]. Built only when album headings
+    /// are on, one block per run of tracks that share an album.
+    Album(u32),
+    /// The heading's second line, the stats under the name. Same index.
+    AlbumMeta(u32),
+    Track(TrackRow),
+}
+
+/// One track row's data, what its cells draw. Carries every column's value
+/// so the render only reads the shown ones; the favourite is looked up live
+/// off the panel's set, not stored here.
+struct TrackRow {
+    playlist_id: i64,
+    member_id: i64,
+    track_id: i64,
+    /// The track's 1-based spot in its playlist, its play order. Runs
+    /// unbroken through the album headings, so it counts the playlist, not
+    /// each album.
+    pos: u32,
+    title: String,
+    artist: String,
+    album: String,
+    year: u16,
+    genre: String,
+    duration_ms: u32,
+    rating: u8,
+    plays: u32,
+    path: String,
+}
+
+impl TrackRow {
+    /// Pull a member row's fields into a display row at a play-order spot,
+    /// with the total play count resolved from the catalog.
+    fn new(playlist_id: i64, pos: u32, t: &PlaylistTrack, plays: u32) -> TrackRow {
+        TrackRow {
+            playlist_id,
+            member_id: t.member_id,
+            track_id: t.track_id,
+            pos,
+            title: t.title.clone(),
+            artist: t.artist.clone(),
+            album: t.album.clone(),
+            year: t.year,
+            genre: t.genre.clone(),
+            duration_ms: t.duration_ms,
+            rating: t.rating,
+            plays,
+            path: t.path.clone(),
+        }
+    }
+}
+
+/// A member row's grouping inputs, borrowed for the album run aggregate.
+fn group_track(t: &PlaylistTrack) -> GroupTrack<'_> {
+    GroupTrack {
+        album: &t.album,
+        album_artist: &t.album_artist,
+        artist: &t.artist,
+        year: t.year,
+        genre: &t.genre,
+        codec: &t.codec,
+        bitrate_kbps: t.bitrate_kbps,
+        duration_ms: t.duration_ms,
+        track_id: t.track_id,
+    }
 }
 
 /// A dragged set of members, in view order, and the grabbed row's title for
@@ -97,8 +203,15 @@ pub struct PlaylistsPanel {
     state: AppState,
     config: PlaylistsConfig,
     rows: Vec<Row>,
+    /// The album runs the heading rows index, rebuilt with `rows` each
+    /// refresh; empty when the headings are off.
+    albums: Vec<track_columns::AlbumGroup>,
     /// The expanded playlist ids, mirrored into the config on every change.
     expanded: HashSet<i64>,
+    /// The favourited track ids, what each track row's heart checks against.
+    /// Reloaded on every refresh, since a favourite toggle emits the same
+    /// event a playlist edit does.
+    favourites: HashSet<i64>,
     /// The playing track's library id, for the row highlight.
     playing: Option<i64>,
     /// The selected members, by row id. Keyed on the member id, not the row
@@ -115,6 +228,7 @@ pub struct PlaylistsPanel {
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
     _player_changed: Subscription,
+    _thumbs_changed: Subscription,
 }
 
 impl PlaylistsPanel {
@@ -126,7 +240,7 @@ impl PlaylistsPanel {
             |this: &mut Self, _, event: &LibraryEvent, cx| {
                 if matches!(
                     event,
-                    LibraryEvent::PlaylistsChanged | LibraryEvent::Updated
+                    LibraryEvent::PlaylistsChanged | LibraryEvent::Updated | LibraryEvent::Rated
                 ) {
                     this.refresh(cx);
                 }
@@ -135,11 +249,16 @@ impl PlaylistsPanel {
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| {
             this.sync_playing(cx)
         });
+        // A landing cover repaints the heading tiles; nothing to recompute.
+        let _thumbs_changed =
+            cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
         let mut this = PlaylistsPanel {
             state,
             config,
             rows: Vec::new(),
+            albums: Vec::new(),
             expanded,
+            favourites: HashSet::new(),
             playing: None,
             selected: HashSet::new(),
             anchor: None,
@@ -149,6 +268,7 @@ impl PlaylistsPanel {
             tab_panel: None,
             _library_changed,
             _player_changed,
+            _thumbs_changed,
         };
         this.refresh(cx);
         this.sync_playing(cx);
@@ -159,7 +279,9 @@ impl PlaylistsPanel {
     /// tracks under it when expanded.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let library = self.state.library.read(cx);
+        let favourites = library.favourite_ids();
         let mut rows = Vec::new();
+        let mut albums = Vec::new();
         for playlist in library.playlists() {
             let expanded = self.expanded.contains(&playlist.id);
             rows.push(Row::Head {
@@ -169,26 +291,66 @@ impl PlaylistsPanel {
                 expanded,
                 favourite: playlist.favourite,
             });
-            if expanded {
-                for track in library.playlist_tracks(playlist.id) {
-                    rows.push(Row::Track {
-                        playlist_id: playlist.id,
-                        member_id: track.member_id,
-                        track_id: track.track_id,
-                        title: track.title,
-                        artist: track.artist,
-                    });
+            if !expanded {
+                continue;
+            }
+            let tracks = library.playlist_tracks(playlist.id);
+            // Total play counts for this playlist's tracks, one projection
+            // pass, for the plays column.
+            let ids: Vec<i64> = tracks.iter().map(|t| t.track_id).collect();
+            let plays = library.plays_for(&ids);
+            let plays_of = |t: &PlaylistTrack| plays.get(&t.track_id).copied().unwrap_or(0);
+            if self.config.headers == Headers::Off {
+                for (i, track) in tracks.iter().enumerate() {
+                    rows.push(Row::Track(TrackRow::new(
+                        playlist.id,
+                        (i + 1) as u32,
+                        track,
+                        plays_of(track),
+                    )));
                 }
+                continue;
+            }
+            // A heading block opens each run of tracks that share an album, in
+            // play order - no re-sort, so a playlist's own order stays put and
+            // a mixed list just breaks more often. Consecutive empty albums
+            // merge into one Unknown run, the library's rule. Compact draws
+            // the name line alone, Expanded adds the meta line under it.
+            let mut i = 0;
+            while i < tracks.len() {
+                let mut j = i + 1;
+                while j < tracks.len() && tracks[j].album == tracks[i].album {
+                    j += 1;
+                }
+                let run = &tracks[i..j];
+                let group: Vec<GroupTrack> = run.iter().map(group_track).collect();
+                albums.push(track_columns::album_group(&group));
+                let g = (albums.len() - 1) as u32;
+                rows.push(Row::Album(g));
+                if self.config.headers == Headers::Expanded {
+                    rows.push(Row::AlbumMeta(g));
+                }
+                for (k, track) in run.iter().enumerate() {
+                    rows.push(Row::Track(TrackRow::new(
+                        playlist.id,
+                        (i + k + 1) as u32,
+                        track,
+                        plays_of(track),
+                    )));
+                }
+                i = j;
             }
         }
         self.rows = rows;
+        self.albums = albums;
+        self.favourites = favourites;
         // Keep only members that still exist; a removed track drops out of the
         // selection, a moved one stays lit at its new spot.
         let live: HashSet<i64> = self
             .rows
             .iter()
             .filter_map(|row| match row {
-                Row::Track { member_id, .. } => Some(*member_id),
+                Row::Track(t) => Some(t.member_id),
                 _ => None,
             })
             .collect();
@@ -313,7 +475,7 @@ impl PlaylistsPanel {
     /// The member id at a row, if it is a track row.
     fn member_at(&self, ix: usize) -> Option<i64> {
         match self.rows.get(ix) {
-            Some(Row::Track { member_id, .. }) => Some(*member_id),
+            Some(Row::Track(t)) => Some(t.member_id),
             _ => None,
         }
     }
@@ -322,7 +484,7 @@ impl PlaylistsPanel {
     fn index_of(&self, member: i64) -> Option<usize> {
         self.rows
             .iter()
-            .position(|row| matches!(row, Row::Track { member_id, .. } if *member_id == member))
+            .position(|row| matches!(row, Row::Track(t) if t.member_id == member))
     }
 
     /// The selected members in view order, so a drag or remove keeps the order
@@ -331,9 +493,7 @@ impl PlaylistsPanel {
         self.rows
             .iter()
             .filter_map(|row| match row {
-                Row::Track { member_id, .. } if self.selected.contains(member_id) => {
-                    Some(*member_id)
-                }
+                Row::Track(t) if self.selected.contains(&t.member_id) => Some(t.member_id),
                 _ => None,
             })
             .collect()
@@ -354,7 +514,7 @@ impl PlaylistsPanel {
             self.selected = self.rows[lo..=hi]
                 .iter()
                 .filter_map(|row| match row {
-                    Row::Track { member_id, .. } => Some(*member_id),
+                    Row::Track(t) => Some(t.member_id),
                     _ => None,
                 })
                 .collect();
@@ -381,7 +541,7 @@ impl PlaylistsPanel {
             .rows
             .iter()
             .filter_map(|row| match row {
-                Row::Track { member_id, .. } => Some(*member_id),
+                Row::Track(t) => Some(t.member_id),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -401,11 +561,7 @@ impl PlaylistsPanel {
             .rows
             .iter()
             .filter_map(|row| match row {
-                Row::Track {
-                    member_id,
-                    track_id,
-                    ..
-                } if self.selected.contains(member_id) => Some(*track_id),
+                Row::Track(t) if self.selected.contains(&t.member_id) => Some(t.track_id),
                 _ => None,
             })
             .collect();
@@ -450,12 +606,10 @@ impl PlaylistsPanel {
     fn drop_on(&mut self, drag: &TrackDrag, target: usize, cx: &mut Context<Self>) {
         let (playlist_id, before) = match self.rows.get(target) {
             Some(Row::Head { id, .. }) => (*id, None),
-            Some(Row::Track {
-                playlist_id,
-                member_id,
-                ..
-            }) => (*playlist_id, Some(*member_id)),
-            None => return,
+            Some(Row::Track(t)) => (t.playlist_id, Some(t.member_id)),
+            // A heading is presentation, not a slot; drop on the tracks
+            // around it.
+            Some(Row::Album(_) | Row::AlbumMeta(_)) | None => return,
         };
         if before.is_some_and(|b| drag.members.contains(&b)) {
             return;
@@ -482,24 +636,17 @@ impl PlaylistsPanel {
                         favourite,
                         ..
                     } => self.head_row(ix, name.clone(), *count, *expanded, *favourite, cx),
-                    Row::Track {
-                        playlist_id,
-                        member_id,
-                        track_id,
-                        title,
-                        artist,
-                    } => {
-                        let selected = self.selected.contains(member_id);
-                        self.track_row(
-                            ix,
-                            *playlist_id,
-                            *member_id,
-                            *track_id,
-                            title.clone(),
-                            artist.clone(),
-                            selected,
-                            cx,
-                        )
+                    Row::Album(g) => {
+                        let g = *g;
+                        self.album_row(ix, g, cx)
+                    }
+                    Row::AlbumMeta(g) => {
+                        let g = *g;
+                        self.album_meta_row(ix, g, cx)
+                    }
+                    Row::Track(t) => {
+                        let selected = self.selected.contains(&t.member_id);
+                        self.track_row(ix, t, selected, cx)
                     }
                 })
             })
@@ -615,19 +762,28 @@ impl PlaylistsPanel {
             )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// An album run's name line, through the shared heading surface: Expanded
+    /// opens the cover tile, Compact packs the one line.
+    fn album_row(&mut self, ix: usize, g: u32, cx: &mut Context<Self>) -> Stateful<Div> {
+        let headers = self.config.headers;
+        track_columns::album_name_row(ix, &mut self.albums[g as usize], headers, &self.state, cx)
+    }
+
+    /// The run's meta line, the Expanded block's second row.
+    fn album_meta_row(&mut self, ix: usize, g: u32, cx: &mut Context<Self>) -> Stateful<Div> {
+        track_columns::album_meta_row(ix, &mut self.albums[g as usize], &self.state, cx)
+    }
+
     fn track_row(
         &self,
         ix: usize,
-        playlist_id: i64,
-        member_id: i64,
-        track_id: i64,
-        title: String,
-        artist: String,
+        t: &TrackRow,
         selected: bool,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let (playlist_id, member_id, track_id) = (t.playlist_id, t.member_id, t.track_id);
         let playing = self.playing == Some(track_id);
+        let favourite = self.favourites.contains(&track_id);
         // Dragging a row inside a multi-selection carries the whole set in view
         // order; outside it, just this row.
         let members = if self.selected.len() > 1 && self.selected.contains(&member_id) {
@@ -637,10 +793,13 @@ impl PlaylistsPanel {
         };
         let drag = TrackDrag {
             members,
-            title: SharedString::from(title.clone()),
+            title: SharedString::from(t.title.clone()),
         };
-        div()
+        let mut row = div()
             .id(("playlist-track", ix))
+            // The hover group the rating and favourite cells reveal on, the
+            // library table's route.
+            .group(track_cells::ROW_GROUP)
             .w_full()
             .h(px(ROW_H))
             // Indented under its header, past the chevron column.
@@ -713,25 +872,38 @@ impl PlaylistsPanel {
                     }
                     cx.notify();
                 }),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .when(playing, |d| d.text_color(palette::accent()))
-                    .child(SharedString::from(title)),
-            )
-            .when(!artist.is_empty(), |d| {
-                d.child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(palette::text_secondary())
-                        .child(SharedString::from(artist)),
-                )
-            })
+            );
+        // The cells, in registry order, only the shown ones. The shared
+        // surface draws every playlist column, so there is no panel fallback.
+        let cover = track_columns::cover_thumb(
+            &self.state,
+            (!t.path.is_empty()).then(|| std::path::Path::new(&t.path)),
+            self.column_shown("cover"),
+            cx,
+        );
+        let cell = track_columns::Cell {
+            pos: t.pos,
+            title: &t.title,
+            artist: &t.artist,
+            album: &t.album,
+            year: t.year,
+            genre: &t.genre,
+            duration_ms: t.duration_ms,
+            rating: t.rating,
+            track_id,
+            favourite,
+            playing,
+            plays: t.plays,
+            cover,
+        };
+        for col in COLUMNS {
+            if self.column_shown(col.key) {
+                if let Some(c) = track_columns::cell(col.key, &cell, &self.state) {
+                    row = row.child(c);
+                }
+            }
+        }
+        row
     }
 
     /// The panel menu's New Playlist entry, shared by the dropdown and the
@@ -745,6 +917,38 @@ impl PlaylistsPanel {
                     crate::playlist_create::open(state.clone(), Vec::new(), cx);
                 }),
         )
+    }
+}
+
+impl ColumnHost for PlaylistsPanel {
+    fn column_shown(&self, key: &str) -> bool {
+        self.config.columns.iter().any(|k| k == key)
+    }
+
+    fn set_column(&mut self, key: &'static str, on: bool, cx: &mut Context<Self>) {
+        let has = self.column_shown(key);
+        if on && !has {
+            self.config.columns.push(key.to_string());
+        } else if !on {
+            self.config.columns.retain(|k| k != key);
+        }
+        cx.notify();
+    }
+}
+
+impl HeadingHost for PlaylistsPanel {
+    fn headers(&self) -> Headers {
+        self.config.headers
+    }
+
+    /// Set the album heading mode and rebuild the tree, since Off, Compact,
+    /// and Expanded push different rows.
+    fn set_headers(&mut self, headers: Headers, cx: &mut Context<Self>) {
+        if self.config.headers == headers {
+            return;
+        }
+        self.config.headers = headers;
+        self.refresh(cx);
     }
 }
 
@@ -765,6 +969,46 @@ impl PanelSettings for PlaylistsPanel {
         self.config.chrome.title = title;
         panel::refresh_tab_panel(&self.tab_panel, cx);
         cx.notify();
+    }
+
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("View", icons::ROWS_3)]
+    }
+
+    /// The panel's own View page: the column checklist and the album heading
+    /// mode, the tree's view knobs, the library's own-page route rather than
+    /// the shared Appearance page.
+    fn page(
+        &mut self,
+        _page: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(panel::setting_block(
+                "Columns",
+                Some("Which track columns show beside the title"),
+                None,
+                track_columns::checklist(COLUMNS, self, cx),
+            ))
+            .child(panel::setting_row(
+                "Headings",
+                Some("Break each playlist's tracks into album runs; Expanded adds the cover and stats"),
+                panel::choices(
+                    &[
+                        ("Off", Headers::Off),
+                        ("Compact", Headers::Compact),
+                        ("Expanded", Headers::Expanded),
+                    ],
+                    self.config.headers,
+                    |this: &mut Self, headers, cx| this.set_headers(headers, cx),
+                    cx,
+                ),
+            ))
+            .into_any_element()
     }
 }
 
@@ -828,11 +1072,22 @@ impl Panel for PlaylistsPanel {
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let menu = self.new_playlist_item(menu);
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
+
+        // Display section: the view knobs under their own label, ahead of
+        // the Panel section, the library's shape. The same knobs the View
+        // settings page holds, one flyout each.
+        let menu = menu.separator().label("Display");
+        let columns = track_columns::columns_submenu(COLUMNS, window, cx);
+        let menu = menu.item(PopupMenuItem::submenu("Columns", columns));
+        let headings = track_columns::headings_submenu(window, cx);
+        let menu = menu.item(PopupMenuItem::submenu("Headings", headings));
+
+        // Panel section: rename_item opens it with its own "Panel" label.
+        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         let weak = cx.entity().downgrade();
         let menu = menu.item(
@@ -957,13 +1212,8 @@ impl PlaylistsPanel {
         };
         let weak = cx.entity().downgrade();
         match self.rows.get(ix) {
-            Some(Row::Track {
-                playlist_id,
-                member_id,
-                track_id,
-                ..
-            }) => {
-                let (playlist_id, member_id, track_id) = (*playlist_id, *member_id, *track_id);
+            Some(Row::Track(t)) => {
+                let (playlist_id, member_id, track_id) = (t.playlist_id, t.member_id, t.track_id);
                 let play_panel = weak.clone();
                 let menu = panel::track_actions(
                     menu,
@@ -1057,7 +1307,11 @@ impl PlaylistsPanel {
                 });
                 self.dropdown_menu(menu.separator(), window, cx)
             }
-            None => self.dropdown_menu(menu, window, cx),
+            // A right-click never lands on a heading (they set no menu row),
+            // but keep the match total: fall back to the panel menu.
+            Some(Row::Album(_) | Row::AlbumMeta(_)) | None => {
+                self.dropdown_menu(menu, window, cx)
+            }
         }
     }
 }

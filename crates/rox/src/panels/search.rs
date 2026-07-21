@@ -19,7 +19,7 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
-use crate::design::tokens;
+use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
@@ -364,6 +364,7 @@ impl SearchPanel {
         let base = div()
             .track_focus(&self.focus)
             .size_full()
+            .bg(palette::bg_root())
             .px(tokens::SPACE_SM);
         match self.config.chips {
             // Inline: the box takes the line, the chips trail it, so the

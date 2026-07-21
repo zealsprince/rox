@@ -64,6 +64,11 @@ const TILE_GAP_MAX: f32 = 24.;
 /// other covers out entirely.
 const TILE_DIM_MAX: f32 = 100.;
 
+/// The caption block's height under a cover while titles are on, in px:
+/// two truncated text lines plus a little top gap. Fixed so the tile's
+/// total extent stays predictable for the virtual list's item sizes.
+const TILE_LABEL_H: f32 = 40.;
+
 fn default_tile() -> f32 {
     192.
 }
@@ -78,6 +83,16 @@ fn default_true() -> bool {
 
 fn is_zero(n: &usize) -> bool {
     *n == 0
+}
+
+/// How the always-on caption lines up under its cover.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
 }
 
 /// The grid panel's per-view config: what a saved layout restores, and
@@ -132,6 +147,14 @@ pub struct GridConfig {
     /// The space between tiles, in px; zero keeps the wall seamless.
     #[serde(default)]
     pub gap: f32,
+    /// Show the album title and artist under every cover, iTunes style,
+    /// instead of only on hover. Off by default; the bare wall is the
+    /// grid's long-standing look.
+    #[serde(default)]
+    pub labels: bool,
+    /// How those captions line up under their covers. Left by default.
+    #[serde(default)]
+    pub label_align: TitleAlign,
     /// The top-left album shown when the layout was saved, so a relaunch
     /// reopens the wall where it was left. A cell index, not pixels or a
     /// row: it survives a tile-size or width change, landing back on the
@@ -156,6 +179,8 @@ impl Default for GridConfig {
             dim: default_dim(),
             rounding: 0.,
             gap: 0.,
+            labels: false,
+            label_align: TitleAlign::default(),
             scroll: 0,
         }
     }
@@ -692,7 +717,32 @@ impl GridPanel {
             return FALLBACK_COLS;
         }
         let gap = self.config.gap;
-        (((cross + gap) / (self.config.tile + gap)).ceil() as usize).max(1)
+        // The caption rides below the cover, so while the wall scrolls
+        // horizontally each tile's footprint along the height grows by it;
+        // vertical packing is unchanged, the caption extends the row down
+        // into the scroll instead of eating a lane.
+        let footprint = self.config.tile + self.cross_label();
+        (((cross + gap) / (footprint + gap)).ceil() as usize).max(1)
+    }
+
+    /// The caption's height when titles are on, else zero.
+    fn label_height(&self) -> f32 {
+        if self.config.labels {
+            TILE_LABEL_H
+        } else {
+            0.
+        }
+    }
+
+    /// The caption's take out of the cross extent: only horizontal walls
+    /// stack captions along the packing axis, a vertical wall sends them
+    /// into the scroll.
+    fn cross_label(&self) -> f32 {
+        if self.config.vertical {
+            0.
+        } else {
+            self.label_height()
+        }
     }
 
     /// The scroll axis: down the rows while vertical, across the columns
@@ -734,7 +784,7 @@ impl GridPanel {
             return px(self.config.tile);
         }
         let lanes = self.lanes() as f32;
-        px(((cross - self.config.gap * (lanes - 1.)) / lanes).max(1.))
+        px((((cross - self.config.gap * (lanes - 1.)) / lanes) - self.cross_label()).max(1.))
     }
 
     /// A tile's resting opacity under the dim mode: full for the playing
@@ -802,14 +852,36 @@ impl GridPanel {
                 )
                 .into_any_element(),
         };
-        div()
-            .id(ix)
+        let labels = self.config.labels;
+        // The cover square: the art, its hover overlay while captions are
+        // off, and the selection outline. The caption, when on, sits below
+        // it in the tile wrapper rather than over the art.
+        let cover = div()
             .w(side)
             .h(side)
             .relative()
             .overflow_hidden()
             .rounded(radius)
             .bg(palette::bg_elevated())
+            .child(content)
+            .when(!labels && self.hovered == Some(ix), |d| {
+                d.child(self.label(ix, cx))
+            })
+            .when(self.selected.contains(&ix), |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .border_2()
+                        .rounded(radius)
+                        .border_color(palette::accent()),
+                )
+            });
+        div()
+            .id(ix)
+            .w(side)
+            .flex()
+            .flex_col()
             .when(dim < 1., |d| d.opacity(dim))
             .cursor_pointer()
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -835,48 +907,43 @@ impl GridPanel {
                     }
                 }),
             )
-            .child(content)
-            .when(self.hovered == Some(ix), |d| d.child(self.label(ix, cx)))
-            .when(self.selected.contains(&ix), |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .border_2()
-                        .rounded(radius)
-                        .border_color(palette::accent()),
-                )
-            })
+            .child(cover)
+            .when(labels, |d| d.child(self.caption(ix, side, cx)))
             .into_any_element()
+    }
+
+    /// A tile's album and artist strings: the first track's, with the
+    /// album artist standing in when the row carries one. Empty off the
+    /// end of the cells or before a projection lands.
+    fn cell_labels(&self, ix: usize, cx: &App) -> (SharedString, SharedString) {
+        let library = self.state.library.read(cx);
+        match (self.cells.get(ix), library.projection()) {
+            (Some(cell), Some(projection)) => self
+                .view
+                .get(cell.start)
+                .map(|&row| {
+                    let v = projection.resolve(row);
+                    // Rows from before the album artist column carry an
+                    // empty one; the first track's artist stands in.
+                    let artist = if v.album_artist.is_empty() {
+                        v.artist
+                    } else {
+                        v.album_artist
+                    };
+                    (
+                        SharedString::from(v.album.to_string()),
+                        SharedString::from(artist.to_string()),
+                    )
+                })
+                .unwrap_or_default(),
+            _ => Default::default(),
+        }
     }
 
     /// The hover overlay: album over artist on a translucent strip along
     /// the tile's bottom edge.
     fn label(&self, ix: usize, cx: &App) -> Div {
-        let (album, artist) = {
-            let library = self.state.library.read(cx);
-            match (self.cells.get(ix), library.projection()) {
-                (Some(cell), Some(projection)) => self
-                    .view
-                    .get(cell.start)
-                    .map(|&row| {
-                        let v = projection.resolve(row);
-                        // Rows from before the album artist column carry an
-                        // empty one; the first track's artist stands in.
-                        let artist = if v.album_artist.is_empty() {
-                            v.artist
-                        } else {
-                            v.album_artist
-                        };
-                        (
-                            SharedString::from(v.album.to_string()),
-                            SharedString::from(artist.to_string()),
-                        )
-                    })
-                    .unwrap_or_default(),
-                _ => Default::default(),
-            }
-        };
+        let (album, artist) = self.cell_labels(ix, cx);
         div()
             .absolute()
             .left_0()
@@ -895,6 +962,43 @@ impl GridPanel {
                         .child(album),
                 )
             })
+            .when(!artist.is_empty(), |d| {
+                d.child(
+                    div()
+                        .truncate()
+                        .text_xs()
+                        .text_color(palette::text_secondary())
+                        .child(artist),
+                )
+            })
+    }
+
+    /// The always-on caption under a cover: album over artist in a fixed
+    /// block, so the tile's total height stays predictable for the virtual
+    /// list. Widths match the cover so long titles truncate at its edge.
+    fn caption(&self, ix: usize, side: Pixels, cx: &App) -> Div {
+        let (album, artist) = self.cell_labels(ix, cx);
+        let base = div()
+            .w(side)
+            .h(px(TILE_LABEL_H))
+            .pt(tokens::SPACE_XS)
+            .flex()
+            .flex_col()
+            .overflow_hidden();
+        // The text alignment cascades to both lines; each line truncates at
+        // the cover's edge, so a centered or right title stays under its art.
+        match self.config.label_align {
+            TitleAlign::Left => base.text_left(),
+            TitleAlign::Center => base.text_center(),
+            TitleAlign::Right => base.text_right(),
+        }
+            .child(
+                div()
+                    .truncate()
+                    .text_sm()
+                    .text_color(palette::text_bright())
+                    .child(album),
+            )
             .when(!artist.is_empty(), |d| {
                 d.child(
                     div()
@@ -1112,6 +1216,37 @@ impl PanelSettings for GridPanel {
                     .flex()
                     .flex_col()
                     .gap(tokens::SPACE_MD)
+                    .child(setting_row(
+                        "Show Titles",
+                        Some("Print the album and artist under every cover, iTunes style, instead of only on hover"),
+                        toggle(
+                            self.config.labels,
+                            |this: &mut Self, on, cx| {
+                                this.config.labels = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .when(self.config.labels, |d| {
+                        d.child(setting_row(
+                            "Title Alignment",
+                            Some("Line the captions up under their covers"),
+                            panel::icon_choices(
+                                &[
+                                    (icons::ALIGN_LEFT, TitleAlign::Left),
+                                    (icons::ALIGN_CENTER, TitleAlign::Center),
+                                    (icons::ALIGN_RIGHT, TitleAlign::Right),
+                                ],
+                                self.config.label_align,
+                                |this: &mut Self, align, cx| {
+                                    this.config.label_align = align;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                    })
                     .child(setting_row(
                         "Tile Size",
                         Some("The cover tiles' widest edge; columns split the panel width evenly"),
@@ -1503,7 +1638,17 @@ impl GridPanel {
                 .into_any_element()
         } else {
             let entity = cx.entity();
-            let item_sizes: Rc<Vec<Size<Pixels>>> = Rc::new(vec![size(side, side); line_count]);
+            // Each line spans the cover plus, on a vertical wall, the caption
+            // that trails it into the scroll; a horizontal wall stacks the
+            // caption inside the cross extent, so its scroll pitch stays the
+            // bare cover width.
+            let line_extent = if self.config.vertical {
+                side + px(self.label_height())
+            } else {
+                side
+            };
+            let item_sizes: Rc<Vec<Size<Pixels>>> =
+                Rc::new(vec![size(side, line_extent); line_count]);
             let list = match axis {
                 Axis::Vertical => {
                     v_virtual_list(entity, "album-grid", item_sizes, |this, range, _, cx| {

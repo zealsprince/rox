@@ -104,7 +104,7 @@ fn auto_check_due(settings: &Settings) -> bool {
         && settings
             .update_cache
             .as_ref()
-            .map_or(true, |c| now().saturating_sub(c.checked_at) >= CHECK_INTERVAL)
+            .is_none_or(|c| now().saturating_sub(c.checked_at) >= CHECK_INTERVAL)
 }
 
 /// Now as unix seconds, the cache's clock. Zero if the system clock sits

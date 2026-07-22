@@ -1233,8 +1233,8 @@ fn load(
 /// path (only audio files become rows, so cover art and stray files are
 /// skipped); one that is gone has its subtree pruned by a scoped delete, no
 /// folder walk. A rename or prune only touches endpoints strictly inside a
-/// root, so a root that momentarily reads gone - a rename in flight, a remount
-/// - never wipes the library. Returns the batch's rollup. Blocking; run it off
+/// root, so a root that momentarily reads gone (a rename in flight, a remount)
+/// never wipes the library. Returns the batch's rollup. Blocking; run it off
 /// the UI thread.
 fn watch_sync(
     conn: &mut Connection,
@@ -1340,7 +1340,6 @@ fn status_line(
 mod tests {
     use super::watch_sync;
     use rox_library::store;
-    use std::path::PathBuf;
 
     /// The watcher's per-change sync: a new file on disk lands as a row, a
     /// deleted one drops out, a deleted folder takes its subtree, and a path

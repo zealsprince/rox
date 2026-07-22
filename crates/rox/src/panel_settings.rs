@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use gpui::{
     div, prelude::*, px, size, AnyElement, App, Bounds, Context, Div, Entity, EntityId,
-    Focusable as _, Global, Hsla, ScrollHandle, SharedString, Subscription, TitlebarOptions,
-    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions,
+    Focusable as _, Global, Hsla, ScrollHandle, SharedString, Subscription,
+    WeakEntity, Window, WindowHandle,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -110,26 +110,10 @@ pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
         .map(|s| (s.width, s.height))
         .unwrap_or((640., 480.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(settings_ui::MIN_SIZE),
-        titlebar: Some(TitlebarOptions {
-            title: Some(title.clone()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
     let state = panel.read(cx).state();
-    let handle = cx
-        .open_window(options, move |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar title;
-            // only set_window_title reaches the compositor.
-            window.set_window_title(&title);
-            let view = cx.new(|cx| PanelSettingsWindow::new(panel.downgrade(), state, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the panel settings window");
+    let handle = crate::panel::open_child_window(cx, title, bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+        cx.new(|cx| PanelSettingsWindow::new(panel.downgrade(), state, window, cx))
+    });
     cx.default_global::<OpenPanelSettings>()
         .0
         .insert(id, handle);
@@ -251,25 +235,10 @@ fn open_rename<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
         panel::display_name(panel.read(cx).panel_name())
     ));
     let bounds = Bounds::centered(None, size(px(380.), px(112.)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: Some(TitlebarOptions {
-            title: Some(title.clone()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
     let state = panel.read(cx).state();
-    let handle = cx
-        .open_window(options, move |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar title;
-            // only set_window_title reaches the compositor.
-            window.set_window_title(&title);
-            let view = cx.new(|cx| RenameWindow::new(panel, state, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the rename window");
+    let handle = crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
+        cx.new(|cx| RenameWindow::new(panel, state, window, cx))
+    });
     cx.default_global::<OpenRenames>().0.insert(id, handle);
 }
 

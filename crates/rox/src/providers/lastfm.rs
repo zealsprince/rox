@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::settings::Settings;
 
-use super::agent;
+use super::{agent, string};
 
 const API: &str = "https://ws.audioscrobbler.com/2.0/";
 
@@ -103,15 +103,6 @@ pub fn artist_info(name: &str) -> Result<Option<ArtistInfo>, String> {
         tags: names(artist.get("tags"), "tag"),
         similar: names(artist.get("similar"), "artist"),
     }))
-}
-
-/// A JSON string field trimmed, or empty when absent.
-fn string(value: Option<&serde_json::Value>) -> String {
-    value
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string()
 }
 
 /// A count the API sends as a string ("1234"), or 0 when absent or odd.

@@ -15,8 +15,7 @@ use std::sync::Arc;
 
 use gpui::{
     div, img, prelude::*, px, size, App, Bounds, Context, Div, Entity, Global, Image, ImageFormat,
-    MouseButton, ObjectFit, PathPromptOptions, SharedString, Subscription, TitlebarOptions, Window,
-    WindowBounds, WindowHandle, WindowOptions,
+    MouseButton, ObjectFit, PathPromptOptions, SharedString, Subscription, Window, WindowHandle,
 };
 use gpui_component::spinner::Spinner;
 use gpui_component::{Root, Sizable, Size};
@@ -91,25 +90,9 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
         return;
     }
     let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(settings_ui::MIN_SIZE),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rox - Cover Art".into()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
-    let handle = cx
-        .open_window(options, |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar title;
-            // only set_window_title reaches the compositor.
-            window.set_window_title("rox - Cover Art");
-            let view = cx.new(|cx| CoverEditor::new(state, ids, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the cover editor window");
+    let handle = crate::panel::open_child_window(cx, "rox - Cover Art", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+        cx.new(|cx| CoverEditor::new(state, ids, window, cx))
+    });
     alive.push((key, handle));
     cx.set_global(OpenCoverEditors(alive));
 }

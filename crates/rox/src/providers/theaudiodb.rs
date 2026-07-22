@@ -10,7 +10,7 @@
 //! needs; a fork leaning on it harder registers for a supporter key and
 //! drops it in here, the last.fm identity's trade-off ([`crate::lastfm::keys`]).
 
-use super::{agent, normalize};
+use super::{agent, normalize, string};
 
 /// TheAudioDB's public test key. Enough for the biography panel's
 /// one-artist-at-a-time lookups; swap in a supporter key for heavier use.
@@ -79,16 +79,4 @@ pub fn artist_art(name: &str) -> Result<Option<ArtistArt>, String> {
         return Ok((!art.is_empty()).then_some(art));
     }
     Ok(None)
-}
-
-/// A JSON string field trimmed, or empty when absent. TheAudioDB sends a
-/// literal "null" string for empty image slots, folded to empty here.
-fn string(value: Option<&serde_json::Value>) -> String {
-    let s = value.and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
-    if s.eq_ignore_ascii_case("null") {
-        ""
-    } else {
-        s
-    }
-    .to_string()
 }

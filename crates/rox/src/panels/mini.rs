@@ -5,14 +5,12 @@
 //! mini one. With no mini layout assigned it sits faint and inert, the
 //! same gate every mini toggle shows behind.
 
-use std::sync::Arc;
 
 use gpui::{
     div, prelude::*, px, svg, AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable,
     MouseButton, Pixels, Subscription, WeakEntity, Window,
 };
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use gpui_component::Icon;
+use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -260,29 +258,17 @@ impl Panel for MiniTogglePanel {
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        // Duplicate takes the config along, like the window controls panel's.
-        let weak = cx.entity().downgrade();
-        let menu = menu.item(
-            PopupMenuItem::new("Duplicate")
-                .icon(Icon::default().path(icons::COPY))
-                .on_click(move |_, window, cx| {
-                    let Some(this) = weak.upgrade() else { return };
-                    let (state, workspace, config, tabs) = {
-                        let panel = this.read(cx);
-                        (
-                            panel.state.clone(),
-                            panel.workspace.clone(),
-                            panel.config.clone(),
-                            panel.tab_panel.clone(),
-                        )
-                    };
-                    let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                        return;
-                    };
-                    let dup = cx.new(|cx| MiniTogglePanel::new(state, workspace, config, cx));
-                    tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-                }),
-        );
+        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, _window, cx| {
+            let (state, workspace, config) = {
+                let panel = this.read(cx);
+                (
+                    panel.state.clone(),
+                    panel.workspace.clone(),
+                    panel.config.clone(),
+                )
+            };
+            MiniTogglePanel::new(state, workspace, config, cx)
+        });
         panel::popout_item(
             menu,
             &cx.entity(),

@@ -2,7 +2,7 @@
 //! URLs at fixed sizes. `cover_big` is the 500px preview, `cover_xl` the
 //! 1000px image a save embeds.
 
-use super::{agent, ArtCandidate, ArtProvider, TrackQuery};
+use super::{agent, string, ArtCandidate, ArtProvider, TrackQuery};
 
 const API: &str = "https://api.deezer.com/search/album";
 
@@ -111,13 +111,4 @@ pub fn artist_picture(name: &str) -> Result<Option<String>, String> {
         return Ok(Some(full));
     }
     Ok(None)
-}
-
-/// A JSON string field trimmed, or empty when absent.
-fn string(value: Option<&serde_json::Value>) -> String {
-    value
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string()
 }

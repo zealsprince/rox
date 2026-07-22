@@ -4,7 +4,7 @@
 //! preview and a large image off the same source, so one result yields
 //! both without a second lookup.
 
-use super::{agent, ArtCandidate, ArtProvider, TrackQuery};
+use super::{agent, string, ArtCandidate, ArtProvider, TrackQuery};
 
 const API: &str = "https://itunes.apple.com/search";
 
@@ -68,13 +68,4 @@ impl ArtProvider for Itunes {
 /// unexpected URL shape degrades to itself rather than a broken link.
 fn resize(url: &str, px: u32) -> String {
     url.replace("100x100bb", &format!("{px}x{px}bb"))
-}
-
-/// A JSON string field trimmed, or empty when absent.
-fn string(value: Option<&serde_json::Value>) -> String {
-    value
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string()
 }

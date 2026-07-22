@@ -4,14 +4,12 @@
 //! icon. The move is the compositor's, so it works wherever
 //! `start_window_move` does.
 
-use std::sync::Arc;
 
 use gpui::{
     div, prelude::*, px, svg, AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable,
     MouseButton, Pixels, WeakEntity, Window,
 };
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use gpui_component::Icon;
+use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -201,28 +199,13 @@ impl Panel for DragAnchorPanel {
     ) -> PopupMenu {
         let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        // Duplicate takes the config along, like the transport panels'.
-        let weak = cx.entity().downgrade();
-        let menu = menu.item(
-            PopupMenuItem::new("Duplicate")
-                .icon(Icon::default().path(icons::COPY))
-                .on_click(move |_, window, cx| {
-                    let Some(this) = weak.upgrade() else { return };
-                    let (state, config, tabs) = {
-                        let panel = this.read(cx);
-                        (
-                            panel.state.clone(),
-                            panel.config.clone(),
-                            panel.tab_panel.clone(),
-                        )
-                    };
-                    let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                        return;
-                    };
-                    let dup = cx.new(|cx| DragAnchorPanel::new(state, config, cx));
-                    tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-                }),
-        );
+        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, _window, cx| {
+            let (state, config) = {
+                let panel = this.read(cx);
+                (panel.state.clone(), panel.config.clone())
+            };
+            DragAnchorPanel::new(state, config, cx)
+        });
         panel::popout_item(
             menu,
             &cx.entity(),

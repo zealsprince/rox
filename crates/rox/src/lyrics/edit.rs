@@ -15,8 +15,7 @@ use std::path::PathBuf;
 
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, Entity, Focusable, Global, KeyDownEvent,
-    SharedString, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle,
-    WindowOptions,
+    SharedString, Subscription, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::input::{Input, InputState, Position};
 use gpui_component::{Root, Sizable};
@@ -73,26 +72,10 @@ pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: 
         return;
     }
     let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(settings_ui::MIN_SIZE),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rox - Edit Lyrics".into()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
     let opened = path.clone();
-    let handle = cx
-        .open_window(options, |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar title;
-            // only set_window_title reaches the compositor.
-            window.set_window_title("rox - Edit Lyrics");
-            let view = cx.new(|cx| LyricsEdit::new(state, panel, path, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the lyrics edit window");
+    let handle = crate::panel::open_child_window(cx, "rox - Edit Lyrics", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+        cx.new(|cx| LyricsEdit::new(state, panel, path, window, cx))
+    });
     alive.push((opened, handle));
     cx.set_global(OpenEditors(alive));
 }

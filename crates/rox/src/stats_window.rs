@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, Div, Global, Rgba, ScrollHandle, SharedString,
-    Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
+    Subscription, Window, WindowHandle,
 };
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::Root;
@@ -129,25 +129,9 @@ pub fn open(state: AppState, cx: &mut App) {
         .map(|s| (s.width, s.height))
         .unwrap_or((640., 720.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(settings_ui::MIN_SIZE),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rox - Stats".into()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
-    let handle = cx
-        .open_window(options, |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar
-            // title; only set_window_title reaches the compositor.
-            window.set_window_title("rox - Stats");
-            let view = cx.new(|cx| StatsWindow::new(state, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the stats window");
+    let handle = crate::panel::open_child_window(cx, "rox - Stats", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+        cx.new(|cx| StatsWindow::new(state, window, cx))
+    });
     cx.set_global(OpenStats(handle));
 }
 

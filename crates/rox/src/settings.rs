@@ -1065,25 +1065,27 @@ mod tests {
     /// intact, or a shared workspace drifts on every hop.
     #[test]
     fn workspace_bundle_roundtrips() {
-        let mut src = Settings::default();
-        src.surface_opacity = 0.5;
-        src.frame = Frame {
-            margin: 4.0,
-            padding: 8.0,
-            rounding: 12.0,
-            border: 1.0,
+        let mut src = Settings {
+            surface_opacity: 0.5,
+            frame: Frame {
+                margin: 4.0,
+                padding: 8.0,
+                rounding: 12.0,
+                border: 1.0,
+            },
+            art_theming: true,
+            keep_dark: true,
+            rating_style: RatingStyle::Numeric,
+            hide_menubar: true,
+            primary_layout: Some("one".into()),
+            ..Default::default()
         };
-        src.art_theming = true;
-        src.keep_dark = true;
-        src.rating_style = RatingStyle::Numeric;
-        src.hide_menubar = true;
         src.palette.insert("accent".into(), "#336699".into());
         src.layouts.push(NamedLayout {
             name: "one".into(),
             dump: serde_json::json!({ "k": "v" }),
             size: None,
         });
-        src.primary_layout = Some("one".into());
 
         let bundle = WorkspaceBundle::from_settings("mine".into(), &src);
         let json = serde_json::to_string(&bundle).unwrap();

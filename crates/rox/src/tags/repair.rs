@@ -21,8 +21,8 @@ use std::path::PathBuf;
 
 use gpui::{
     div, prelude::*, px, size, svg, uniform_list, App, Bounds, Context, Div, Entity, Global,
-    PathPromptOptions, SharedString, Stateful, Subscription, TitlebarOptions,
-    UniformListScrollHandle, Window, WindowBounds, WindowHandle, WindowOptions,
+    PathPromptOptions, SharedString, Stateful, Subscription,
+    UniformListScrollHandle, Window, WindowHandle,
 };
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
@@ -101,25 +101,9 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut A
         }
     }
     let bounds = Bounds::centered(None, size(px(720.), px(600.)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(MIN_SIZE),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rox - Tag Repair".into()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
-    let handle = cx
-        .open_window(options, |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar title;
-            // only set_window_title reaches the compositor.
-            window.set_window_title("rox - Tag Repair");
-            let view = cx.new(|cx| TagRepair::new(library, now_art, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the tag repair window");
+    let handle = crate::panel::open_child_window(cx, "rox - Tag Repair", bounds, Some(MIN_SIZE), move |_window, cx| {
+        cx.new(|cx| TagRepair::new(library, now_art, cx))
+    });
     cx.set_global(OpenTagRepair(Some(handle)));
 }
 

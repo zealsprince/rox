@@ -5,8 +5,7 @@
 //! quick-play chord, and where the look lives.
 
 use gpui::{
-    div, prelude::*, px, size, svg, App, Bounds, Context, Div, Global, SharedString, Subscription,
-    TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
+    div, prelude::*, px, size, svg, App, Bounds, Context, Div, Global, SharedString, Subscription, Window, WindowHandle,
 };
 use gpui_component::Root;
 
@@ -37,25 +36,9 @@ pub fn open(state: AppState, cx: &mut App) {
         }
     }
     let bounds = Bounds::centered(None, size(px(520.), px(560.)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(size(px(400.), px(400.))),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rox - Welcome".into()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
-    let handle = cx
-        .open_window(options, |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar
-            // title; only set_window_title reaches the compositor.
-            window.set_window_title("rox - Welcome");
-            let view = cx.new(|cx| WelcomeWindow::new(state, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the welcome window");
+    let handle = crate::panel::open_child_window(cx, "rox - Welcome", bounds, Some(size(px(400.), px(400.))), move |_window, cx| {
+        cx.new(|cx| WelcomeWindow::new(state, cx))
+    });
     cx.set_global(OpenWelcome(handle));
 }
 

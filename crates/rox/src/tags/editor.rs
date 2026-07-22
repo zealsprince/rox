@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 use gpui::{
     actions, div, prelude::*, px, size, App, Bounds, Context, Div, Entity, FocusHandle,
-    Focusable as _, Global, KeyBinding, ScrollHandle, SharedString, Subscription, TitlebarOptions,
-    Window, WindowBounds, WindowHandle, WindowOptions,
+    Focusable as _, Global, KeyBinding, ScrollHandle, SharedString, Subscription,
+    Window, WindowHandle,
 };
 use gpui_component::input::{Enter, Input, InputEvent, InputState};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
@@ -181,25 +181,9 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
         .map(|s| (s.width, s.height))
         .unwrap_or((1400., 680.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(settings_ui::MIN_SIZE),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rox - Tag Editor".into()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
-    let handle = cx
-        .open_window(options, |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar
-            // title; only set_window_title reaches the compositor.
-            window.set_window_title("rox - Tag Editor");
-            let view = cx.new(|cx| TagEditor::new(state, ids, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the tag editor window");
+    let handle = crate::panel::open_child_window(cx, "rox - Tag Editor", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+        cx.new(|cx| TagEditor::new(state, ids, window, cx))
+    });
     alive.push((key, handle));
     cx.set_global(OpenTagEditors(alive));
 }

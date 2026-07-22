@@ -22,8 +22,7 @@ use std::time::Duration;
 use gpui::{
     div, prelude::*, px, size, svg, AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, Div,
     Entity, Global, Hsla, MouseButton, MouseDownEvent, PathPromptOptions, Pixels, ScrollHandle,
-    SharedString, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle,
-    WindowOptions,
+    SharedString, Subscription, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -102,27 +101,15 @@ pub fn open(
         .map(|s| (s.width, s.height))
         .unwrap_or((720., 520.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(settings_ui::MIN_SIZE),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rox - Settings".into()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
-    let handle = cx
-        .open_window(options, |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar
-            // title; only set_window_title reaches the compositor.
-            window.set_window_title("rox - Settings");
-            let view = cx.new(|cx| {
-                SettingsWindow::new(state, workspace, workspace_window, dock, window, cx)
-            });
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the settings window");
+    let handle = crate::panel::open_child_window(
+        cx,
+        "rox - Settings",
+        bounds,
+        Some(settings_ui::MIN_SIZE),
+        move |window, cx| {
+            cx.new(|cx| SettingsWindow::new(state, workspace, workspace_window, dock, window, cx))
+        },
+    );
     cx.set_global(OpenSettings(handle));
 }
 

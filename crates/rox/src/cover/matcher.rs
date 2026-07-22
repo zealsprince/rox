@@ -14,8 +14,7 @@ use std::sync::Arc;
 
 use gpui::{
     div, img, prelude::*, px, size, App, Bounds, Context, Div, Entity, Global, Image, ObjectFit,
-    ScrollHandle, SharedString, Subscription, Task, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowHandle, WindowOptions,
+    ScrollHandle, SharedString, Subscription, Task, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Root, Sizable as _};
@@ -24,6 +23,7 @@ use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::cover::editor::{decode, sniff_mime, CoverEditor};
 use crate::design::{palette, tokens};
+use crate::matching::Phase;
 use crate::providers::{self, ArtCandidate, TrackQuery};
 use crate::settings_ui::{self, section, SECTION_GAP};
 
@@ -80,25 +80,9 @@ pub fn open(
         return;
     }
     let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(settings_ui::MIN_SIZE),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rox - Find Cover Art".into()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
-    let handle = cx
-        .open_window(options, |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar title;
-            // only set_window_title reaches the compositor.
-            window.set_window_title("rox - Find Cover Art");
-            let view = cx.new(|cx| CoverMatch::new(now_art, editor, artist, album, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the cover match window");
+    let handle = crate::panel::open_child_window(cx, "rox - Find Cover Art", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+        cx.new(|cx| CoverMatch::new(now_art, editor, artist, album, window, cx))
+    });
     alive.push((key, handle));
     cx.set_global(OpenMatchers(alive));
 }
@@ -108,13 +92,6 @@ pub fn open(
 struct Loaded {
     candidate: ArtCandidate,
     thumb: Option<Arc<Image>>,
-}
-
-/// Where the search stands: running, the results, or a failure.
-enum Phase {
-    Searching,
-    Ready(Vec<Loaded>),
-    Failed(SharedString),
 }
 
 struct CoverMatch {
@@ -127,7 +104,7 @@ struct CoverMatch {
     /// The pending debounced search; replacing it cancels the last timer
     /// and any request in flight.
     search_task: Option<Task<()>>,
-    phase: Phase,
+    phase: Phase<Loaded>,
     /// The highlighted tile, an index into the ready list.
     selected: Option<usize>,
     /// A full-image fetch is in flight for apply; the buttons hold still.

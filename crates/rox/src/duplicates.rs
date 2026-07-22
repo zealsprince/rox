@@ -23,8 +23,7 @@ use std::path::PathBuf;
 
 use gpui::{
     div, img, prelude::*, px, size, svg, App, Bounds, Context, Div, Entity, Global, ObjectFit,
-    SharedString, Stateful, Subscription, TitlebarOptions, UniformListScrollHandle, Window,
-    WindowBounds, WindowHandle, WindowOptions, uniform_list,
+    SharedString, Stateful, Subscription, UniformListScrollHandle, Window, WindowHandle, uniform_list,
 };
 use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -157,25 +156,9 @@ pub fn open(
         }
     }
     let bounds = Bounds::centered(None, size(px(760.), px(600.)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(MIN_SIZE),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rox - Duplicates".into()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
-    let handle = cx
-        .open_window(options, |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar title;
-            // only set_window_title reaches the compositor.
-            window.set_window_title("rox - Duplicates");
-            let view = cx.new(|cx| Duplicates::new(library, thumbs, now_art, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the duplicates window");
+    let handle = crate::panel::open_child_window(cx, "rox - Duplicates", bounds, Some(MIN_SIZE), move |window, cx| {
+        cx.new(|cx| Duplicates::new(library, thumbs, now_art, window, cx))
+    });
     cx.set_global(OpenDuplicates(Some(handle)));
 }
 

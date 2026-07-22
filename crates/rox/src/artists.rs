@@ -29,7 +29,7 @@ const TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
 /// A decoded image with its width-over-height ratio, so a panel can size
 /// a frame to it and letterbox instead of cropping.
-pub type Sized = (Arc<Image>, f32);
+pub type SizedImage = (Arc<Image>, f32);
 
 /// One artist as the panel shows them: the info sheet and the three
 /// images, decoded and shareable. Any image can be absent - a service
@@ -40,9 +40,9 @@ pub type Sized = (Arc<Image>, f32);
 pub struct Artist {
     pub info: ArtistInfo,
     /// The square deezer portrait, the header's fallback.
-    pub portrait: Option<Sized>,
+    pub portrait: Option<SizedImage>,
     /// The wide theaudiodb banner, the header's first choice.
-    pub banner: Option<Sized>,
+    pub banner: Option<SizedImage>,
     /// The theaudiodb fanart, the dimmed background behind the text.
     pub background: Option<Arc<Image>>,
 }
@@ -67,11 +67,7 @@ struct Files {
 }
 
 fn files_for(name: &str) -> Files {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in providers::normalize(name).as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
+    let hash = crate::hash::fnv1a(providers::normalize(name).as_bytes());
     let dir = artists_dir();
     let slot = |ext: &str| dir.join(format!("{hash:016x}.{ext}"));
     Files {
@@ -187,7 +183,7 @@ fn assemble(info: ArtistInfo, files: &Files) -> Artist {
 /// One image slot off disk, decoded with its aspect ratio; None when the
 /// slot is empty or gone. The ratio comes off the header alone, no full
 /// decode, the cover panel's move.
-fn decode(file: &Path) -> Option<Sized> {
+fn decode(file: &Path) -> Option<SizedImage> {
     let bytes = fs::read(file).ok().filter(|bytes| !bytes.is_empty())?;
     let ratio = image::ImageReader::new(std::io::Cursor::new(&bytes))
         .with_guessed_format()

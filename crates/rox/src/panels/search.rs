@@ -7,18 +7,15 @@
 //! come from the projection's tag values, reattached on each scan the way the
 //! play launcher does.
 
-use std::sync::Arc;
 
 use gpui::{
     div, prelude::*, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, SharedString,
     Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
@@ -317,30 +314,14 @@ impl Panel for SearchPanel {
         let menu = self.chips_menu(menu, window, cx);
         let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        // Duplicate hand-rolled rather than through `panel::duplicate_item`
-        // because the copy takes the config along, like the cover panel's; the
-        // two boxes then drive and mirror the one shared query.
-        let weak = cx.entity().downgrade();
-        let menu = menu.item(
-            PopupMenuItem::new("Duplicate")
-                .icon(Icon::default().path(icons::COPY))
-                .on_click(move |_, window, cx| {
-                    let Some(this) = weak.upgrade() else { return };
-                    let (state, config, tabs) = {
-                        let panel = this.read(cx);
-                        (
-                            panel.state.clone(),
-                            panel.config.clone(),
-                            panel.tab_panel.clone(),
-                        )
-                    };
-                    let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                        return;
-                    };
-                    let dup = cx.new(|cx| SearchPanel::new(state, config, window, cx));
-                    tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-                }),
-        );
+        // The copy carries the config; the two boxes then drive and mirror the one shared query.
+        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
+            let (state, config) = {
+                let panel = this.read(cx);
+                (panel.state.clone(), panel.config.clone())
+            };
+            SearchPanel::new(state, config, window, cx)
+        });
         panel::popout_item(
             menu,
             &cx.entity(),

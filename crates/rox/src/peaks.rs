@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use crate::hash::fnv1a;
 use crate::settings;
 
 /// Identifies the layout; bump it when the format changes and old entries
@@ -38,16 +39,6 @@ fn entry_path(dir: &Path, track: &Path) -> PathBuf {
         "{:016x}.peaks",
         fnv1a(track.as_os_str().as_encoded_bytes())
     ))
-}
-
-/// FNV-1a, stable across runs unlike the std hasher.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x100_0000_01b3);
-    }
-    hash
 }
 
 /// The source file's identity as entries store it: size and mtime in unix

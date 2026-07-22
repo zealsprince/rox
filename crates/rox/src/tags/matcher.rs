@@ -14,8 +14,7 @@ use std::path::PathBuf;
 
 use gpui::{
     div, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, Div, Entity, Global,
-    ScrollHandle, SharedString, Subscription, Task, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowHandle, WindowOptions,
+    ScrollHandle, SharedString, Subscription, Task, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Root, Sizable as _};
@@ -25,6 +24,7 @@ use rox_library::writer::{self, Change, Edit, Field};
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
+use crate::matching::{confidence_badge, confidence_bar, Phase};
 use crate::panels::library::Library;
 use crate::player::fmt_time;
 use crate::providers::{self, MetadataCandidate, TrackQuery};
@@ -136,35 +136,12 @@ fn open_with(
         return;
     }
     let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(settings_ui::MIN_SIZE),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rox - Find Metadata".into()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
     let opened = path.clone();
-    let handle = cx
-        .open_window(options, |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar title;
-            // only set_window_title reaches the compositor.
-            window.set_window_title("rox - Find Metadata");
-            let view = cx.new(|cx| TagMatch::new(library, now_art, path, sink, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the metadata match window");
+    let handle = crate::panel::open_child_window(cx, "rox - Find Metadata", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+        cx.new(|cx| TagMatch::new(library, now_art, path, sink, window, cx))
+    });
     alive.push((opened, handle));
     cx.set_global(OpenMatchers(alive));
-}
-
-/// Where the search stands: running, the ranked results, or a failure.
-enum Phase {
-    Searching,
-    Ready(Vec<MetadataCandidate>),
-    Failed(SharedString),
 }
 
 struct TagMatch {
@@ -191,7 +168,7 @@ struct TagMatch {
     /// The current tag values, one per [`FIELDS`], read off the file so
     /// the compare shows what a write would replace.
     current: Vec<String>,
-    phase: Phase,
+    phase: Phase<MetadataCandidate>,
     /// The highlighted candidate, an index into the ready list.
     selected: Option<usize>,
     /// Which fields to write, one per [`FIELDS`], reset when the selection
@@ -650,36 +627,6 @@ fn value_or_dash(value: &str) -> SharedString {
     } else {
         SharedString::from(value.to_string())
     }
-}
-
-/// A one-word confidence tag beside a candidate's title.
-fn confidence_badge(confidence: f32) -> Div {
-    let pct = (confidence * 100.0).round() as u32;
-    div()
-        .flex_none()
-        .text_xs()
-        .text_color(if confidence >= 0.75 {
-            palette::text_bright()
-        } else {
-            palette::text_muted()
-        })
-        .child(SharedString::from(format!("{pct}%")))
-}
-
-/// The confidence as a filled bar, so the list reads at a glance.
-fn confidence_bar(confidence: f32) -> Div {
-    div()
-        .h(px(3.))
-        .w_full()
-        .rounded(px(2.))
-        .bg(palette::bg_root())
-        .child(
-            div()
-                .h_full()
-                .rounded(px(2.))
-                .w(gpui::relative(confidence.clamp(0.0, 1.0)))
-                .bg(palette::accent()),
-        )
 }
 
 impl Render for TagMatch {

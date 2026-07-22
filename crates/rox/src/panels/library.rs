@@ -2751,31 +2751,17 @@ impl Panel for LibraryPanel {
         );
 
         // Panel section: operations on the panel itself, not its contents.
-        // Duplicate copies this view's config, over the same catalog and
-        // player. Hand-rolled because the copy takes the query along.
+        // Duplicate copies this view's config, the query included, over the
+        // same catalog and player.
         let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let weak = cx.entity().downgrade();
-        let menu = menu.item(
-            PopupMenuItem::new("Duplicate")
-                .icon(Icon::default().path(icons::COPY))
-                .on_click(move |_, window, cx| {
-                    let Some(this) = weak.upgrade() else { return };
-                    let (state, config, tabs) = {
-                        let panel = this.read(cx);
-                        (
-                            panel.state.clone(),
-                            panel.config(cx),
-                            panel.tab_panel.clone(),
-                        )
-                    };
-                    let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                        return;
-                    };
-                    let dup = cx.new(|cx| LibraryPanel::new(state, config, window, cx));
-                    tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-                }),
-        );
+        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
+            let (state, config) = {
+                let panel = this.read(cx);
+                (panel.state.clone(), panel.config(cx))
+            };
+            LibraryPanel::new(state, config, window, cx)
+        });
         panel::popout_item(
             menu,
             &cx.entity(),

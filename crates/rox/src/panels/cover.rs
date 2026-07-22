@@ -418,29 +418,13 @@ impl Panel for CoverArtPanel {
         let menu = self.config_menu(menu, window, cx);
         let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        // Duplicate hand-rolled rather than through `panel::duplicate_item`
-        // because the copy takes the config along, like the transports'.
-        let weak = cx.entity().downgrade();
-        let menu = menu.item(
-            PopupMenuItem::new("Duplicate")
-                .icon(Icon::default().path(icons::COPY))
-                .on_click(move |_, window, cx| {
-                    let Some(this) = weak.upgrade() else { return };
-                    let (state, config, tabs) = {
-                        let panel = this.read(cx);
-                        (
-                            panel.state.clone(),
-                            panel.config.clone(),
-                            panel.tab_panel.clone(),
-                        )
-                    };
-                    let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                        return;
-                    };
-                    let dup = cx.new(|cx| CoverArtPanel::new(state, config, cx));
-                    tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-                }),
-        );
+        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, _window, cx| {
+            let (state, config) = {
+                let panel = this.read(cx);
+                (panel.state.clone(), panel.config.clone())
+            };
+            CoverArtPanel::new(state, config, cx)
+        });
         panel::popout_item(
             menu,
             &cx.entity(),

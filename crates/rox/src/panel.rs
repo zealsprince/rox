@@ -15,8 +15,8 @@ use gpui::{
     AbsoluteLength, Along, AnyElement, App, Axis, Bounds, Context, DismissEvent, Div, Element,
     Entity, FocusHandle, Focusable as _, GlobalElementId, InspectorElementId, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollHandle, SharedString,
-    Stateful, Subscription, TitlebarOptions, UniformListScrollHandle, WeakEntity, Window,
-    WindowBounds, WindowOptions,
+    Size, Stateful, Subscription, TitlebarOptions, UniformListScrollHandle, WeakEntity, Window,
+    WindowBounds, WindowHandle, WindowOptions,
 };
 use gpui_component::button::Button;
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
@@ -333,6 +333,33 @@ pub fn popout_item<P: Panel>(
     )
 }
 
+/// The Duplicate entry for a panel's dropdown menu: drops a second panel of
+/// the same type into this one's tab strip, carrying the config along so the
+/// copy opens configured the same. Each panel's `new` takes a different
+/// shape, so `make` reconstructs the copy from the source panel - typically
+/// cloning its state and config, then calling the panel's own constructor.
+/// A popped-out panel has no tab strip to add to, so the entry no-ops.
+pub fn duplicate_item<P: Panel>(
+    menu: PopupMenu,
+    panel: &Entity<P>,
+    tab_panel: Option<WeakEntity<TabPanel>>,
+    make: impl Fn(&Entity<P>, &mut Window, &mut Context<P>) -> P + 'static,
+) -> PopupMenu {
+    let weak = panel.downgrade();
+    menu.item(
+        PopupMenuItem::new("Duplicate")
+            .icon(Icon::default().path(icons::COPY))
+            .on_click(move |_, window, cx| {
+                let Some(this) = weak.upgrade() else { return };
+                let Some(tabs) = tab_panel.clone().and_then(|tabs| tabs.upgrade()) else {
+                    return;
+                };
+                let dup = cx.new(|cx| make(&this, window, cx));
+                tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
+            }),
+    )
+}
+
 /// The Reveal in File Browser entry for a track context menu: shows the
 /// track's file in the platform file manager, which lands in its album
 /// folder. The id resolves to its path at click time, so the reveal
@@ -634,6 +661,39 @@ pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
         cx.new(|cx| Root::new(host, window, cx))
     })
     .expect("failed to open the panel window");
+}
+
+/// Open a child window titled `title`, sized to `bounds`, hosting the view
+/// `build` returns wrapped in a Root. Carries the app id so the compositor
+/// groups it with the main window, and re-sets the title after creation
+/// because the Wayland backend ignores the creation-time titlebar title -
+/// the one place that workaround now lives. `min_size` floors an interactive
+/// resize; None leaves a fixed-size modal free. The caller keeps its own
+/// singleton bookkeeping and stores the returned handle.
+pub fn open_child_window<V: 'static + Render>(
+    cx: &mut App,
+    title: impl Into<SharedString>,
+    bounds: Bounds<Pixels>,
+    min_size: Option<Size<Pixels>>,
+    build: impl FnOnce(&mut Window, &mut App) -> Entity<V> + 'static,
+) -> WindowHandle<Root> {
+    let title = title.into();
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_min_size: min_size,
+        titlebar: Some(TitlebarOptions {
+            title: Some(title.clone()),
+            ..Default::default()
+        }),
+        app_id: Some(crate::APP_ID.into()),
+        ..Default::default()
+    };
+    cx.open_window(options, move |window, cx| {
+        window.set_window_title(&title);
+        let view = build(window, cx);
+        cx.new(|cx| Root::new(view, window, cx))
+    })
+    .expect("failed to open child window")
 }
 
 /// The frame-level config every panel carries, flattened into each

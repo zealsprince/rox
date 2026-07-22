@@ -23,6 +23,7 @@ use souvlaki::{
     SeekDirection,
 };
 
+use crate::hash::fnv1a;
 use crate::APP_ID;
 
 /// A media-key press mapped off souvlaki's own event vocabulary onto the
@@ -306,15 +307,4 @@ fn mime_ext(mime: &str) -> &'static str {
         "image/bmp" => "bmp",
         _ => "img",
     }
-}
-
-/// FNV-1a over the track path, stable across runs so the same track keeps its
-/// scratch filename. Matches the waveform cache's keying.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x100_0000_01b3);
-    }
-    hash
 }

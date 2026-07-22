@@ -14,8 +14,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, Div, Entity, Global, ScrollHandle,
-    SharedString, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle,
-    WindowOptions,
+    SharedString, Subscription, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::Root;
 
@@ -24,6 +23,7 @@ use rox_library::lyrics::{self, Source};
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
+use crate::matching::{confidence_badge, confidence_bar, Phase};
 use crate::panel::AppState;
 use crate::panels::library::fmt_ms;
 use crate::panels::lyrics::LyricsPanel;
@@ -73,35 +73,12 @@ pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: 
         return;
     }
     let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(settings_ui::MIN_SIZE),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rox - Find Lyrics".into()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
     let opened = path.clone();
-    let handle = cx
-        .open_window(options, |window, cx| {
-            // The Wayland backend ignores the creation-time titlebar title;
-            // only set_window_title reaches the compositor.
-            window.set_window_title("rox - Find Lyrics");
-            let view = cx.new(|cx| LyricsMatch::new(state, panel, path, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .expect("failed to open the lyrics match window");
+    let handle = crate::panel::open_child_window(cx, "rox - Find Lyrics", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+        cx.new(|cx| LyricsMatch::new(state, panel, path, window, cx))
+    });
     alive.push((opened, handle));
     cx.set_global(OpenMatchers(alive));
-}
-
-/// Where the search stands: running, the ranked results, or a failure.
-enum Phase {
-    Searching,
-    Ready(Vec<LyricsCandidate>),
-    Failed(SharedString),
 }
 
 struct LyricsMatch {
@@ -114,7 +91,7 @@ struct LyricsMatch {
     /// against.
     line: SharedString,
     duration_ms: u32,
-    phase: Phase,
+    phase: Phase<LyricsCandidate>,
     /// The highlighted candidate, an index into the ready list; the search
     /// pre-selects the top score.
     selected: Option<usize>,
@@ -435,38 +412,6 @@ fn duration_ms_for(state: &AppState, id: i64, cx: &App) -> Option<u32> {
     let projection = library.projection()?;
     let row = projection.db_id.iter().position(|&db| db == id)?;
     Some(projection.resolve(row as u32).duration_ms)
-}
-
-/// A one-word confidence tag beside a candidate's title: a quick read of
-/// how far to trust the row before opening the preview.
-fn confidence_badge(confidence: f32) -> Div {
-    let pct = (confidence * 100.0).round() as u32;
-    div()
-        .flex_none()
-        .text_xs()
-        .text_color(if confidence >= 0.75 {
-            palette::text_bright()
-        } else {
-            palette::text_muted()
-        })
-        .child(SharedString::from(format!("{pct}%")))
-}
-
-/// The confidence as a filled bar, so the list reads at a glance without
-/// parsing the numbers.
-fn confidence_bar(confidence: f32) -> Div {
-    div()
-        .h(px(3.))
-        .w_full()
-        .rounded(px(2.))
-        .bg(palette::bg_root())
-        .child(
-            div()
-                .h_full()
-                .rounded(px(2.))
-                .w(gpui::relative(confidence.clamp(0.0, 1.0)))
-                .bg(palette::accent()),
-        )
 }
 
 impl Render for LyricsMatch {

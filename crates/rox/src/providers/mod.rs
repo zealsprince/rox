@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 pub mod deezer;
@@ -116,21 +116,84 @@ pub fn set_artist_online(on: bool) {
 /// under the query it ran, so asking again inside a session answers from
 /// memory instead of the network. Nothing persists; a restart starts cold,
 /// which is the whole invalidation story until bulk operations need more.
-/// Answer from the cache under `key`, or run `compute` and store what it
-/// returns, empty results and all. An error is not stored: a network blip
-/// should not pin a miss for the rest of the session. Cheap results ride a
-/// clone out; the entries never move.
-fn cached<T: Clone>(
-    cache: &Mutex<HashMap<String, T>>,
-    key: String,
-    compute: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
-    if let Some(hit) = cache.lock().unwrap().get(&key) {
-        return Ok(hit.clone());
+/// The per-session lookup cache with single-flight compute. Results cache by
+/// key; an error is not stored, so a network blip does not pin a miss for the
+/// rest of the session. Two callers asking for the same key at once (the
+/// lyrics panel and an open match window, say) share one compute: the second
+/// waits on the first's per-key gate and reads its result, instead of both
+/// hitting the network and MusicBrainz's ~1.1s throttle.
+struct SessionCache<T> {
+    entries: Mutex<HashMap<String, T>>,
+    /// One gate per key held for the duration of that key's compute. Grows
+    /// with the distinct queries seen, the same unbounded-per-session shape
+    /// as `entries`; a restart clears both.
+    inflight: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+}
+
+impl<T> Default for SessionCache<T> {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            inflight: Mutex::new(HashMap::new()),
+        }
     }
-    let value = compute()?;
-    cache.lock().unwrap().insert(key, value.clone());
-    Ok(value)
+}
+
+impl<T: Clone> SessionCache<T> {
+    /// Answer from the cache under `key`, or run `compute` and store what it
+    /// returns, empty results and all. Cheap results ride a clone out; the
+    /// entries never move.
+    fn get_or_compute(
+        &self,
+        key: String,
+        compute: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        if let Some(hit) = self.entries.lock().unwrap().get(&key) {
+            return Ok(hit.clone());
+        }
+        let gate = self
+            .inflight
+            .lock()
+            .unwrap()
+            .entry(key.clone())
+            .or_default()
+            .clone();
+        let _held = gate.lock().unwrap();
+        // The caller we may have waited on could have just filled the entry.
+        if let Some(hit) = self.entries.lock().unwrap().get(&key) {
+            return Ok(hit.clone());
+        }
+        let value = compute()?;
+        self.entries.lock().unwrap().insert(key, value.clone());
+        Ok(value)
+    }
+}
+
+/// Run each provider search in turn, keeping every candidate and skipping a
+/// provider that errors rather than failing the whole lot. The error only
+/// surfaces when nothing came back at all: one dead service should not sink
+/// the results a working one returned. With a single provider this matches a
+/// plain `?`, so it is correct today and stays correct once a domain gains a
+/// second service.
+fn collect_candidates<T>(
+    searches: impl IntoIterator<Item = Result<Vec<T>, String>>,
+) -> Result<Vec<T>, String> {
+    let mut found = Vec::new();
+    let mut first_error = None;
+    for result in searches {
+        match result {
+            Ok(candidates) => found.extend(candidates),
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    if found.is_empty() {
+        if let Some(e) = first_error {
+            return Err(e);
+        }
+    }
+    Ok(found)
 }
 
 /// The cache key for a query: its fields folded to one stable string, so
@@ -194,14 +257,11 @@ pub fn search_lyrics(query: &TrackQuery) -> Result<Vec<LyricsCandidate>, String>
     if !lyrics_online() {
         return Ok(Vec::new());
     }
-    static CACHE: OnceLock<Mutex<HashMap<String, Vec<LyricsCandidate>>>> = OnceLock::new();
+    static CACHE: OnceLock<SessionCache<Vec<LyricsCandidate>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    cached(cache, query_key(query), || {
+    cache.get_or_compute(query_key(query), || {
         let providers: &[&dyn LyricsProvider] = &[&lrclib::Lrclib];
-        let mut found = Vec::new();
-        for provider in providers {
-            found.extend(provider.search(query)?);
-        }
+        let mut found = collect_candidates(providers.iter().map(|p| p.search(query)))?;
         for candidate in &mut found {
             candidate.confidence = confidence(query, candidate);
         }
@@ -248,14 +308,11 @@ pub fn search_metadata(query: &TrackQuery) -> Result<Vec<MetadataCandidate>, Str
     if !metadata_online() {
         return Ok(Vec::new());
     }
-    static CACHE: OnceLock<Mutex<HashMap<String, Vec<MetadataCandidate>>>> = OnceLock::new();
+    static CACHE: OnceLock<SessionCache<Vec<MetadataCandidate>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    cached(cache, query_key(query), || {
+    cache.get_or_compute(query_key(query), || {
         let providers: &[&dyn MetadataProvider] = &[&musicbrainz::MusicBrainz];
-        let mut found = Vec::new();
-        for provider in providers {
-            found.extend(provider.search(query)?);
-        }
+        let mut found = collect_candidates(providers.iter().map(|p| p.search(query)))?;
         for candidate in &mut found {
             candidate.confidence = score_fields(
                 query,
@@ -307,9 +364,9 @@ pub fn search_art(query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
     // Which services are on is part of the answer, so it rides the key: a
     // toggle since the last search is a different result, not a stale hit.
     let key = format!("{}\u{1f}{itunes}\u{1f}{deezer}", query_key(query));
-    static CACHE: OnceLock<Mutex<HashMap<String, Vec<ArtCandidate>>>> = OnceLock::new();
+    static CACHE: OnceLock<SessionCache<Vec<ArtCandidate>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    cached(cache, key, || {
+    cache.get_or_compute(key, || {
         let mut providers: Vec<&dyn ArtProvider> = Vec::new();
         if itunes {
             providers.push(&itunes::Itunes);
@@ -317,21 +374,7 @@ pub fn search_art(query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
         if deezer {
             providers.push(&deezer::Deezer);
         }
-        let mut found = Vec::new();
-        let mut first_error = None;
-        for provider in providers {
-            match provider.search(query) {
-                Ok(candidates) => found.extend(candidates),
-                Err(e) => {
-                    first_error.get_or_insert(e);
-                }
-            }
-        }
-        if found.is_empty() {
-            if let Some(e) = first_error {
-                return Err(e);
-            }
-        }
+        let mut found = collect_candidates(providers.iter().map(|p| p.search(query)))?;
         found.sort_by_key(|b| std::cmp::Reverse(b.width * b.height));
         Ok(found)
     })
@@ -445,6 +488,19 @@ pub(crate) fn normalize(s: &str) -> String {
     out
 }
 
+/// A JSON string field trimmed to an owned String, empty when the value is
+/// absent or not a string. The literal "null" some services hand back for a
+/// missing field (theaudiodb does this) folds to empty too, so a caller
+/// never has to special-case it. Every provider parses its JSON through this.
+fn string(value: Option<&serde_json::Value>) -> String {
+    let s = value.and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
+    if s.eq_ignore_ascii_case("null") {
+        String::new()
+    } else {
+        s.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,10 +556,10 @@ mod tests {
 
     #[test]
     fn cache_computes_once_negatives_included() {
-        let cache: Mutex<HashMap<String, Vec<i32>>> = Mutex::new(HashMap::new());
+        let cache: SessionCache<Vec<i32>> = SessionCache::default();
         let mut runs = 0;
         let mut run = |value: Vec<i32>| {
-            cached(&cache, "k".into(), || {
+            cache.get_or_compute("k".into(), || {
                 runs += 1;
                 Ok(value)
             })
@@ -518,16 +574,19 @@ mod tests {
 
     #[test]
     fn cache_does_not_store_errors() {
-        let cache: Mutex<HashMap<String, Vec<i32>>> = Mutex::new(HashMap::new());
+        let cache: SessionCache<Vec<i32>> = SessionCache::default();
         // A failed compute stores nothing, so a retry runs again and can
         // land the real result instead of a pinned miss.
-        assert!(cached(&cache, "k".into(), || Err("boom".into())).is_err());
+        assert!(cache
+            .get_or_compute("k".into(), || Err("boom".into()))
+            .is_err());
         let mut runs = 0;
-        let got = cached(&cache, "k".into(), || {
-            runs += 1;
-            Ok(vec![7])
-        })
-        .unwrap();
+        let got = cache
+            .get_or_compute("k".into(), || {
+                runs += 1;
+                Ok(vec![7])
+            })
+            .unwrap();
         assert_eq!(got, vec![7]);
         assert_eq!(runs, 1);
     }

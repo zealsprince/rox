@@ -12,7 +12,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use super::{agent, MetadataCandidate, MetadataProvider, TrackQuery};
+use super::{agent, string, MetadataCandidate, MetadataProvider, TrackQuery};
 
 const API: &str = "https://musicbrainz.org/ws/2/recording";
 
@@ -176,15 +176,6 @@ fn artist_credit(credit: Option<&serde_json::Value>) -> String {
         );
     }
     out.trim().to_string()
-}
-
-/// A JSON string field trimmed, or empty when absent.
-fn string(value: Option<&serde_json::Value>) -> String {
-    value
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string()
 }
 
 /// Escape the Lucene specials that would otherwise steer the query, the

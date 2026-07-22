@@ -5,10 +5,9 @@
 
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, Entity, FocusHandle, Focusable, SharedString,
-    Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    Subscription, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::Root;
 
 use crate::backdrop::WindowBackdrop;
 use crate::design::{palette, tokens};
@@ -41,23 +40,9 @@ pub fn open_rename(state: AppState, id: i64, current: String, cx: &mut App) {
 fn open_modal(state: AppState, action: Action, verb: &str, current: String, cx: &mut App) {
     let title = SharedString::from(format!("rox - {verb}"));
     let bounds = Bounds::centered(None, size(px(380.), px(116.)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: Some(TitlebarOptions {
-            title: Some(title.clone()),
-            ..Default::default()
-        }),
-        app_id: Some(crate::APP_ID.into()),
-        ..Default::default()
-    };
-    cx.open_window(options, move |window, cx| {
-        // The Wayland backend ignores the creation-time titlebar title; only
-        // set_window_title reaches the compositor.
-        window.set_window_title(&title);
-        let view = cx.new(|cx| PlaylistNameWindow::new(state, action, current, window, cx));
-        cx.new(|cx| Root::new(view, window, cx))
-    })
-    .expect("failed to open the playlist name window");
+    crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
+        cx.new(|cx| PlaylistNameWindow::new(state, action, current, window, cx))
+    });
 }
 
 struct PlaylistNameWindow {

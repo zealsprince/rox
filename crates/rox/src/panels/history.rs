@@ -8,7 +8,6 @@
 //! never a mode of the library.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
@@ -18,7 +17,6 @@ use gpui::{
     WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
-use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::listens::TrackPlays;
 use rox_library::projection::{parse_query, track_matches, FilterSet, TrackFields};
@@ -924,29 +922,13 @@ impl Panel for HistoryPanel {
         );
         let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        // Duplicate hand-rolled rather than through `panel::duplicate_item`
-        // because the copy takes the config along, like the metadata's.
-        let weak = cx.entity().downgrade();
-        let menu = menu.item(
-            PopupMenuItem::new("Duplicate")
-                .icon(Icon::default().path(icons::COPY))
-                .on_click(move |_, window, cx| {
-                    let Some(this) = weak.upgrade() else { return };
-                    let (state, config, tabs) = {
-                        let panel = this.read(cx);
-                        (
-                            panel.state.clone(),
-                            panel.config.clone(),
-                            panel.tab_panel.clone(),
-                        )
-                    };
-                    let Some(tabs) = tabs.and_then(|tabs| tabs.upgrade()) else {
-                        return;
-                    };
-                    let dup = cx.new(|cx| HistoryPanel::new(state, config, window, cx));
-                    tabs.update(cx, |tabs, cx| tabs.add_panel(Arc::new(dup), window, cx));
-                }),
-        );
+        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
+            let (state, config) = {
+                let panel = this.read(cx);
+                (panel.state.clone(), panel.config.clone())
+            };
+            HistoryPanel::new(state, config, window, cx)
+        });
         panel::popout_item(
             menu,
             &cx.entity(),

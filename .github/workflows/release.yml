@@ -87,7 +87,7 @@ jobs:
           mkdir -p "$staging"
           cp target/release/rox "$staging/"
           cp crates/rox/assets/app/rox.desktop "$staging/"
-          cp crates/rox/assets/app/rox.svg "$staging/"
+          cp crates/rox/assets/app/rox-music.svg "$staging/rox.svg"
           cp crates/rox/assets/app/rox.png "$staging/"
           cp LICENSE "$staging/"
           tar czf "$staging.tar.gz" "$staging"

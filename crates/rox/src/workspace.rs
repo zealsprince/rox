@@ -29,14 +29,14 @@ use gpui_component::Icon;
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::panel_catalog::{self as catalog, PanelDef, PanelPlacement, PanelSection};
 use crate::composite;
 use crate::design::{palette, tokens};
-use crate::track_ui::track_drag::PlayDrag;
 use crate::history::{History, HistoryEvent};
-use crate::lastfm::Scrobbler;
 use crate::integrations::media_controls::{MediaCommand, MediaKeys, NowPlayingMeta};
+use crate::integrations::tray;
+use crate::lastfm::Scrobbler;
 use crate::panel::{self, AppState, TabHosts};
+use crate::panel_catalog::{self as catalog, PanelDef, PanelPlacement, PanelSection};
 use crate::panels::art::{ArtConfig, ArtPanel};
 use crate::panels::biography::BiographyPanel;
 use crate::panels::cover::CoverArtPanel;
@@ -65,15 +65,15 @@ use crate::panels::transport::{
 use crate::panels::waveform::WaveformPanel;
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
 use crate::player::{NowPlaying, Player};
+use crate::query::shared_query::SharedQuery;
 use crate::quick_play::QuickPlay;
 use crate::selection::Selection;
 use crate::settings::{
     self, LastTrack, LayoutEdit, LayoutSize, NamedLayout, QueueState, QueuedTrack, Settings,
     WindowState, WorkspaceBundle,
 };
-use crate::query::shared_query::SharedQuery;
 use crate::thumbs::Thumbs;
-use crate::integrations::tray;
+use crate::track_ui::track_drag::PlayDrag;
 
 mod menubar;
 
@@ -1179,9 +1179,17 @@ impl Workspace {
                     .unwrap_or_else(|| cx.new(|cx| StackPanel::new(Axis::Horizontal, window, cx)));
                 (item, stack, tabs, bottom)
             }
-            // An empty window starts blank; everything else that has no
-            // trustworthy dump falls back to the default arrangement.
-            None if matches!(start, WorkspaceStart::Empty) => empty_layout(&weak_dock, window, cx),
+            // An empty window starts blank, and so does the first launch's
+            // primary window: no settings file yet, so we show the empty
+            // layout with its onboarding instructions rather than the default
+            // arrangement. Scoped to is_primary so a New Window opened later in
+            // that same first session still gets the default. Everything else
+            // that has no trustworthy dump falls back to the default too.
+            None if matches!(start, WorkspaceStart::Empty)
+                || (is_primary && settings::first_run()) =>
+            {
+                empty_layout(&weak_dock, window, cx)
+            }
             None => default_layout(&state, &weak_dock, window, cx),
         };
 
@@ -1426,8 +1434,14 @@ impl Workspace {
         self.set_active_layout(Some(name.to_string()));
         // Size the window to whichever source won above (the working copy's
         // size, or the preset's); neither carrying one leaves the window as is.
+        // Except in a macOS fullscreen Space, where AppKit owns the frame and
+        // a resize is dropped or fights the Space: swap the layout, leave the
+        // frame alone. The mini toggle exits fullscreen before applying, so
+        // its resize still lands.
         if let Some(size) = size {
-            resize_clamped(window, size);
+            if !(cfg!(target_os = "macos") && window.is_fullscreen()) {
+                resize_clamped(window, size);
+            }
         }
         // A programmatic resize only shows on the next drawn frame, and gpui
         // stops pumping frames for a window that is idle and not focused.
@@ -1657,6 +1671,45 @@ impl Workspace {
         let Some(name) = target else {
             return;
         };
+        // On macOS the window may sit in its own fullscreen Space, where
+        // AppKit owns the frame: the layout's resize is dropped and the mini
+        // player would come up stretched over the whole screen. Leave
+        // fullscreen first and apply the layout once the exit transition has
+        // landed, so the resize hits a normal window.
+        #[cfg(target_os = "macos")]
+        if window.is_fullscreen() {
+            window.toggle_fullscreen();
+            let name = name.clone();
+            cx.spawn_in(window, async move |this, cx| {
+                // gpui exposes no did-exit hook, so poll: the style mask
+                // cleared and the frame stable across two ticks means the
+                // animation is done. The cap keeps a stuck transition from
+                // swallowing the toggle.
+                let mut last = None;
+                for _ in 0..40 {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(50))
+                        .await;
+                    let Ok(state) =
+                        this.update_in(cx, |_, window, _| (window.is_fullscreen(), window.bounds()))
+                    else {
+                        return;
+                    };
+                    match state {
+                        (false, bounds) if last == Some(bounds) => break,
+                        (_, bounds) => last = Some(bounds),
+                    }
+                }
+                this.update_in(cx, |this, window, cx| {
+                    if this.apply_named_layout(&name, window, cx) {
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+            return;
+        }
         if self.apply_named_layout(&name, window, cx) {
             cx.notify();
         }
@@ -2053,7 +2106,9 @@ impl Workspace {
                 .background_executor()
                 .spawn(async move {
                     rox_library::art::cover_art(&resolved).and_then(|(bytes, mime)| {
-                        crate::integrations::media_controls::cache_now_playing_art(&resolved, &bytes, &mime)
+                        crate::integrations::media_controls::cache_now_playing_art(
+                            &resolved, &bytes, &mime,
+                        )
                     })
                 })
                 .await;
@@ -2334,7 +2389,7 @@ impl Workspace {
                                     )
                                     .child(
                                         div().text_xs().text_color(palette::text_muted()).child(
-                                            "Start from a workspace or layout, or add a panel",
+                                            "Start from a workspace, or build your own by adding your first panel",
                                         ),
                                     ),
                             ),
@@ -2400,7 +2455,6 @@ impl Workspace {
                     })),
             )
     }
-
 
     /// The mini-player toggle, at the menubar's left edge before the menus.
     /// Shows whenever a mini layout is assigned; the glyph flips to say
@@ -2659,7 +2713,6 @@ impl Workspace {
                 .into_any_element(),
         )
     }
-
 }
 
 /// Resize the window to a preset's stored size, floored at the window

@@ -48,10 +48,22 @@ pub fn portable_data_dir() -> Option<PathBuf> {
 /// once per process so a mid-run toggle can't split the stores: the
 /// `portable` marker beside the executable, or a `--portable` flag for
 /// one run, routes everything into rox-data; a flip lands on the next
-/// launch.
+/// launch. In debug builds `--fresh` overrides both with a wiped scratch
+/// folder for testing the first-run experience.
 static DATA_DIR: OnceLock<(PathBuf, bool)> = OnceLock::new();
 
 fn resolve_data_dir() -> (PathBuf, bool) {
+    // A fresh run routes everything into a scratch folder in the OS temp
+    // dir, wiped here (the once-per-process choke point) so each launch
+    // lands on a genuine first run: no settings file, so the welcome
+    // window shows, and no library or caches. Debug-build aid for the
+    // first-time experience (`cargo run -- --fresh`); release builds
+    // ignore the flag so it never becomes user-facing surface.
+    if cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--fresh") {
+        let dir = std::env::temp_dir().join("rox-fresh");
+        let _ = std::fs::remove_dir_all(&dir);
+        return (dir, false);
+    }
     let portable = std::env::args().any(|arg| arg == "--portable")
         || portable_marker().is_some_and(|marker| marker.exists());
     if portable {

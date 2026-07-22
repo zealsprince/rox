@@ -6,6 +6,11 @@
 //! the same shared entities. New Window stays in the menubar so
 //! multi-window on Wayland keeps getting exercised.
 
+// On Windows a console-subsystem binary pops a terminal window next to the app.
+// Build release as a GUI (windows) subsystem so it doesn't; keep the console in
+// debug builds so stdout/stderr logging stays visible.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod artists;
 mod assets;
 mod backdrop;

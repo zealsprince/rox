@@ -82,6 +82,10 @@ X11, Vulkan, xkbcommon, fontconfig, alsa); every Rust dependency comes from crat
 Run `./scripts/vendor-gpui.sh` once before building: it fetches gpui and gpui-component
 and applies the small patches under `patches/` (the nix shell does this on entry).
 
+Debug builds accept a `--fresh` flag that runs rox against a wiped scratch data
+directory in the OS temp folder, so `cargo run -- --fresh` walks the first-run
+experience without touching your real settings or library. Release builds ignore it.
+
 ## Spec
 
 Check out the [docs index](docs/README.md) which lists the altitude spec for how `rox` is built.

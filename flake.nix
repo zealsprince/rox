@@ -106,7 +106,7 @@
 
           postInstall = ''
             install -Dm644 crates/rox/assets/app/rox.desktop $out/share/applications/rox.desktop
-            install -Dm644 crates/rox/assets/app/rox.svg $out/share/icons/hicolor/scalable/apps/rox.svg
+            install -Dm644 crates/rox/assets/app/rox-music.svg $out/share/icons/hicolor/scalable/apps/rox.svg
             install -Dm644 crates/rox/assets/app/rox.png $out/share/pixmaps/rox.png
           '';
 

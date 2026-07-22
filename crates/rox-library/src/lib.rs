@@ -5,8 +5,12 @@
 //! reused these modules for its harness (git history, commit bd22dc1).
 
 pub mod art;
+pub mod hash;
 pub mod listens;
 pub mod lyrics;
+pub mod m3u;
+pub mod migrate;
+pub mod open_files;
 pub mod playlists;
 pub mod projection;
 pub mod rating;

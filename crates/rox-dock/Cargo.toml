@@ -17,3 +17,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 smallvec = "1"
 itertools = "0.13"
+
+[dev-dependencies]
+# Pulls in gpui's headless TestAppContext and the #[gpui::test] macro so the
+# resize solver can run against a real Context<Self> without a display.
+gpui = { workspace = true, features = ["test-support"] }

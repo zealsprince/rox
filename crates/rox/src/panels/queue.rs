@@ -275,14 +275,20 @@ impl QueuePanel {
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| this.sync(cx));
         // A landing cover repaints the heading tiles and the cover column.
         let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
-        // A retag or rescan changes the tags a row draws, a rating or
-        // favourite change moves those columns; force a rebuild.
+        // A retag or rescan changes the tags a row draws, a favourite change
+        // moves that column; force a rebuild. A rating click only moved one
+        // cell through the shared projection, so patch it in place - a full
+        // sync here would rebuild every row on each star click.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
+                if matches!(event, LibraryEvent::Rated) {
+                    this.patch_ratings(cx);
+                    return;
+                }
                 if matches!(
                     event,
-                    LibraryEvent::Updated | LibraryEvent::Rated | LibraryEvent::PlaylistsChanged
+                    LibraryEvent::Updated | LibraryEvent::PlaylistsChanged
                 ) {
                     this.rev = None;
                     this.sync(cx);
@@ -548,6 +554,29 @@ impl QueuePanel {
         self.menu_row = None;
         self.refresh_query(cx);
         self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// Re-read ratings for the rows in place after a star click, instead of a
+    /// full sync. The rating moved through the shared projection already, and
+    /// the display rows index into `tracks` by position, so nothing rebuilds -
+    /// the changed cell just repaints. The playing strip caches its rating too.
+    fn patch_ratings(&mut self, cx: &mut Context<Self>) {
+        let mut ids: Vec<i64> = self.tracks.iter().filter_map(|t| t.track_id).collect();
+        if let Some(id) = self.playing.as_ref().and_then(|p| p.track_id) {
+            ids.push(id);
+        }
+        let ratings = self.state.library.read(cx).ratings_for(&ids);
+        for t in &mut self.tracks {
+            if let Some(&r) = t.track_id.and_then(|id| ratings.get(&id)) {
+                t.rating = r;
+            }
+        }
+        if let Some(playing) = &mut self.playing {
+            if let Some(&r) = playing.track_id.and_then(|id| ratings.get(&id)) {
+                playing.rating = r;
+            }
+        }
         cx.notify();
     }
 
@@ -910,7 +939,7 @@ impl QueuePanel {
     /// dragged in from the library. The window body plays drops now, so the
     /// queue panel stays the one surface that adds without interrupting.
     fn enqueue_external(&mut self, paths: &ExternalPaths, cx: &mut Context<Self>) {
-        let paths = crate::open_files::resolve_audio_paths(paths.paths().to_vec());
+        let paths = rox_library::open_files::resolve_audio_paths(paths.paths().to_vec());
         if paths.is_empty() {
             return;
         }

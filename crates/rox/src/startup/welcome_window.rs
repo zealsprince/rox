@@ -14,7 +14,7 @@ use crate::backdrop::WindowBackdrop;
 use crate::design::{palette, tokens};
 use crate::panel::AppState;
 use crate::settings;
-use crate::settings_ui::{section, small_button, SECTION_GAP};
+use crate::settings::ui::{section, small_button, SECTION_GAP};
 
 /// The open welcome window, if any: opening again focuses it instead of
 /// stacking a second one, same as the settings window.

@@ -28,7 +28,7 @@ use crate::panel::{self, AppState};
 use crate::panels::history::fmt_ago;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
 use crate::settings::{Settings, StatsWindowState};
-use crate::settings_ui::{self, section, SECTION_GAP};
+use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
 
 /// How many rows the album rollup and the recents show.
 const TOP_NAMES: usize = 15;

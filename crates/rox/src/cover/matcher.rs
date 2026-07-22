@@ -23,9 +23,9 @@ use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::cover::editor::{decode, sniff_mime, CoverEditor};
 use crate::design::{palette, tokens};
-use crate::matching::Phase;
+use crate::matching::{note, open_or_focus, Phase, WindowRegistry};
 use crate::providers::{self, ArtCandidate, TrackQuery};
-use crate::settings_ui::{self, section, SECTION_GAP};
+use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
 
 /// The default window size: room for a few rows of preview tiles beside
 /// the query.
@@ -44,6 +44,13 @@ struct OpenMatchers(Vec<(String, WindowHandle<Root>)>);
 
 impl Global for OpenMatchers {}
 
+impl WindowRegistry for OpenMatchers {
+    type Key = String;
+    fn entries(&mut self) -> &mut Vec<(String, WindowHandle<Root>)> {
+        &mut self.0
+    }
+}
+
 /// Open a cover search for `artist` and `album`, filling `editor`'s front
 /// slot on apply, or focus the one already on that query.
 pub fn open(
@@ -54,37 +61,16 @@ pub fn open(
     cx: &mut App,
 ) {
     let key = format!("{artist}\u{0}{album}");
-    let entries = cx
-        .try_global::<OpenMatchers>()
-        .map(|open| open.0.clone())
-        .unwrap_or_default();
-    // Closed windows fall out of the list as a side effect of the probe.
-    let mut alive = Vec::with_capacity(entries.len() + 1);
-    let mut focused = false;
-    for (entry_key, handle) in entries {
-        let matches = entry_key == key;
-        if handle
-            .update(cx, |_, window, _| {
-                if matches {
-                    window.activate_window();
-                }
+    open_or_focus::<OpenMatchers>(
+        key,
+        move |cx| {
+            let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
+            crate::panel::open_child_window(cx, "rox - Find Cover Art", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+                cx.new(|cx| CoverMatch::new(now_art, editor, artist, album, window, cx))
             })
-            .is_ok()
-        {
-            focused |= matches;
-            alive.push((entry_key, handle));
-        }
-    }
-    if focused {
-        cx.set_global(OpenMatchers(alive));
-        return;
-    }
-    let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-    let handle = crate::panel::open_child_window(cx, "rox - Find Cover Art", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-        cx.new(|cx| CoverMatch::new(now_art, editor, artist, album, window, cx))
-    });
-    alive.push((key, handle));
-    cx.set_global(OpenMatchers(alive));
+        },
+        cx,
+    );
 }
 
 /// A candidate and its preview once the thumbnail lands. None while the
@@ -482,15 +468,4 @@ impl Render for CoverMatch {
                     .child(div().flex_1().min_h_0().child(content)),
             )
     }
-}
-
-/// A quiet centered line where the grid would sit.
-fn note(text: impl Into<SharedString>) -> Div {
-    div()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_color(palette::text_faint())
-        .child(text.into())
 }

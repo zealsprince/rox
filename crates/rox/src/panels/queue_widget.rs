@@ -20,7 +20,7 @@ use crate::design::{palette, tokens};
 use crate::panel::{self, setting_row, toggle, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::queue::QueuePanel;
-use crate::settings_ui;
+use crate::settings::ui as settings_ui;
 
 /// How many titles the hover tooltip lists before summarizing the rest.
 const TOOLTIP_ROWS: usize = 12;

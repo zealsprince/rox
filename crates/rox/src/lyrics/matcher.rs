@@ -23,14 +23,14 @@ use rox_library::lyrics::{self, Source};
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
-use crate::matching::{confidence_badge, confidence_bar, Phase};
+use crate::matching::{confidence_badge, confidence_bar, note, open_or_focus, Phase, WindowRegistry};
 use crate::panel::AppState;
 use crate::panels::library::fmt_ms;
 use crate::panels::lyrics::LyricsPanel;
 use crate::player::fmt_time;
 use crate::providers::{self, LyricsCandidate, TrackQuery};
 use crate::settings::{lyrics_dir, LyricsSave, Settings};
-use crate::settings_ui::{self, section, SECTION_GAP};
+use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
 
 /// The default window size: room for the candidate list beside a preview
 /// that reads a verse or two without scrolling.
@@ -43,42 +43,27 @@ struct OpenMatchers(Vec<(PathBuf, WindowHandle<Root>)>);
 
 impl Global for OpenMatchers {}
 
+impl WindowRegistry for OpenMatchers {
+    type Key = PathBuf;
+    fn entries(&mut self) -> &mut Vec<(PathBuf, WindowHandle<Root>)> {
+        &mut self.0
+    }
+}
+
 /// Open a lyrics match window on `path`, or focus the one already on it.
 /// The panel handle is weak: a save pokes it to re-read, and a closed
 /// panel just no-ops.
 pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: &mut App) {
-    let entries = cx
-        .try_global::<OpenMatchers>()
-        .map(|open| open.0.clone())
-        .unwrap_or_default();
-    // Closed windows fall out of the list as a side effect of the probe.
-    let mut alive = Vec::with_capacity(entries.len() + 1);
-    let mut focused = false;
-    for (entry_path, handle) in entries {
-        let matches = entry_path == path;
-        if handle
-            .update(cx, |_, window, _| {
-                if matches {
-                    window.activate_window();
-                }
+    open_or_focus::<OpenMatchers>(
+        path.clone(),
+        move |cx| {
+            let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
+            crate::panel::open_child_window(cx, "rox - Find Lyrics", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+                cx.new(|cx| LyricsMatch::new(state, panel, path, window, cx))
             })
-            .is_ok()
-        {
-            focused |= matches;
-            alive.push((entry_path, handle));
-        }
-    }
-    if focused {
-        cx.set_global(OpenMatchers(alive));
-        return;
-    }
-    let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-    let opened = path.clone();
-    let handle = crate::panel::open_child_window(cx, "rox - Find Lyrics", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-        cx.new(|cx| LyricsMatch::new(state, panel, path, window, cx))
-    });
-    alive.push((opened, handle));
-    cx.set_global(OpenMatchers(alive));
+        },
+        cx,
+    );
 }
 
 struct LyricsMatch {
@@ -484,15 +469,4 @@ impl Render for LyricsMatch {
                     .child(div().flex_1().min_h_0().child(content)),
             )
     }
-}
-
-/// A quiet centered line where the candidate list would sit.
-fn note(text: impl Into<SharedString>) -> Div {
-    div()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_color(palette::text_faint())
-        .child(text.into())
 }

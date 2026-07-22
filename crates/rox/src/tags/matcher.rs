@@ -24,11 +24,11 @@ use rox_library::writer::{self, Change, Edit, Field};
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
-use crate::matching::{confidence_badge, confidence_bar, Phase};
+use crate::matching::{confidence_badge, confidence_bar, note, open_or_focus, Phase, WindowRegistry};
 use crate::panels::library::Library;
 use crate::player::fmt_time;
 use crate::providers::{self, MetadataCandidate, TrackQuery};
-use crate::settings_ui::{self, section, SECTION_GAP};
+use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
 use crate::tags::editor::TagEditor;
 
 /// What Apply does with the picked fields: write them to the file, or hand
@@ -78,6 +78,13 @@ struct OpenMatchers(Vec<(PathBuf, WindowHandle<Root>)>);
 
 impl Global for OpenMatchers {}
 
+impl WindowRegistry for OpenMatchers {
+    type Key = PathBuf;
+    fn entries(&mut self) -> &mut Vec<(PathBuf, WindowHandle<Root>)> {
+        &mut self.0
+    }
+}
+
 /// Open a metadata compare that writes straight to the track on apply,
 /// the metadata panel's lookup.
 pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, path: PathBuf, cx: &mut App) {
@@ -110,38 +117,16 @@ fn open_with(
     sink: Sink,
     cx: &mut App,
 ) {
-    let entries = cx
-        .try_global::<OpenMatchers>()
-        .map(|open| open.0.clone())
-        .unwrap_or_default();
-    // Closed windows fall out of the list as a side effect of the probe.
-    let mut alive = Vec::with_capacity(entries.len() + 1);
-    let mut focused = false;
-    for (entry_path, handle) in entries {
-        let matches = entry_path == path;
-        if handle
-            .update(cx, |_, window, _| {
-                if matches {
-                    window.activate_window();
-                }
+    open_or_focus::<OpenMatchers>(
+        path.clone(),
+        move |cx| {
+            let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
+            crate::panel::open_child_window(cx, "rox - Find Metadata", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+                cx.new(|cx| TagMatch::new(library, now_art, path, sink, window, cx))
             })
-            .is_ok()
-        {
-            focused |= matches;
-            alive.push((entry_path, handle));
-        }
-    }
-    if focused {
-        cx.set_global(OpenMatchers(alive));
-        return;
-    }
-    let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-    let opened = path.clone();
-    let handle = crate::panel::open_child_window(cx, "rox - Find Metadata", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-        cx.new(|cx| TagMatch::new(library, now_art, path, sink, window, cx))
-    });
-    alive.push((opened, handle));
-    cx.set_global(OpenMatchers(alive));
+        },
+        cx,
+    );
 }
 
 struct TagMatch {
@@ -763,15 +748,4 @@ impl TagMatch {
                     .child(field("Title", &self.title_input)),
             )
     }
-}
-
-/// A quiet centered line where the candidate list would sit.
-fn note(text: impl Into<SharedString>) -> Div {
-    div()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_color(palette::text_faint())
-        .child(text.into())
 }

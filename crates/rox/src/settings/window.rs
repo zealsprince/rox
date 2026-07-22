@@ -34,7 +34,7 @@ use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::palette::{self, Palette, Role, ROLES};
 use crate::design::tokens;
 use crate::lastfm::{self, AuthPhase, Scrobbler};
-use crate::layouts::Preset;
+use crate::settings::layouts::Preset;
 use crate::panel::{self, AppState, ScrubState};
 use crate::panel_settings;
 use crate::panels::library::{Library, LibraryEvent};
@@ -43,8 +43,8 @@ use crate::settings::{
     self, data_dir, settings_path, Frame, LayoutSize, LyricsSave, NamedLayout, Providers,
     RatingStyle, Settings, WorkspaceBundle, BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
 };
-use crate::settings_ui::{
-    self, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
+use crate::settings::ui::{
+    self as settings_ui, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
 };
 use crate::thumbs::Thumbs;
 use crate::integrations::tray;

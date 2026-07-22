@@ -72,6 +72,13 @@ pub struct Shared {
     pub frames_consumed: AtomicU64,
     /// True once the queue is exhausted and the ring has drained.
     pub ended: AtomicBool,
+    /// Set by the output stream's error callback when the device drops out
+    /// (unplugged, format change, backend fault). The RT callback stops
+    /// running, so the ring fills and the engine parks; the app polls this to
+    /// tear the dead stream down and reopen instead of showing a frozen
+    /// "playing". Only ever set on the audio backend's error thread and
+    /// cleared by the app on reopen.
+    pub device_lost: AtomicBool,
     /// Position mapping, appended by the decode thread.
     pub segments: Mutex<Vec<Segment>>,
     /// Display info per queue entry, filled in as tracks open.
@@ -95,6 +102,7 @@ impl Shared {
             volume_bits: AtomicU32::new(1.0f32.to_bits()),
             frames_consumed: AtomicU64::new(0),
             ended: AtomicBool::new(false),
+            device_lost: AtomicBool::new(false),
             segments: Mutex::new(Vec::new()),
             tracks: Mutex::new(vec![None; queue_len]),
             queue: Mutex::new(QueueSnapshot::default()),
@@ -117,6 +125,13 @@ impl Shared {
         f32::from_bits(self.volume_bits.load(std::sync::atomic::Ordering::Relaxed))
     }
 
+    /// Whether the output stream reported a fatal error and stopped. The app
+    /// polls this to reopen the device instead of parking on a dead stream.
+    pub fn device_lost(&self) -> bool {
+        self.device_lost
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Resolve the current position from the output clock: which track, and
     /// how many seconds in. `device_rate` converts frames to seconds.
     pub fn position(&self, device_rate: u32) -> Option<(usize, f64)> {
@@ -127,5 +142,56 @@ impl Shared {
         let seg = segments.iter().rev().find(|s| s.at_frame <= consumed)?;
         let frame = seg.track_frame + (consumed - seg.at_frame);
         Some((seg.track, frame as f64 / device_rate as f64))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn push_segment(shared: &Shared, at_frame: u64, track: usize, track_frame: u64) {
+        shared.segments.lock().unwrap().push(Segment {
+            at_frame,
+            track,
+            track_frame,
+        });
+    }
+
+    #[test]
+    fn position_none_before_any_segment() {
+        let shared = Shared::new(1);
+        assert!(shared.position(48000).is_none());
+    }
+
+    #[test]
+    fn position_resolves_track_and_seconds() {
+        let shared = Shared::new(2);
+        // Track 0 starts at output frame 0, at track offset 0.
+        push_segment(&shared, 0, 0, 0);
+        shared.frames_consumed.store(48000, Ordering::Relaxed);
+        // One second in at 48 kHz.
+        assert_eq!(shared.position(48000), Some((0, 1.0)));
+    }
+
+    #[test]
+    fn position_takes_newest_reached_segment() {
+        let shared = Shared::new(3);
+        push_segment(&shared, 0, 0, 0);
+        // Track 1 begins at output frame 96000, mid-track (its own frame 24000).
+        push_segment(&shared, 96000, 1, 24000);
+        // A future segment for track 2 that hasn't been reached yet.
+        push_segment(&shared, 200000, 2, 0);
+        shared.frames_consumed.store(96000 + 48000, Ordering::Relaxed);
+        // On track 1: track_frame 24000 + 48000 played = 72000 frames = 1.5s.
+        assert_eq!(shared.position(48000), Some((1, 1.5)));
+    }
+
+    #[test]
+    fn device_lost_flag_round_trips() {
+        let shared = Shared::new(1);
+        assert!(!shared.device_lost());
+        shared.device_lost.store(true, Ordering::Release);
+        assert!(shared.device_lost());
     }
 }

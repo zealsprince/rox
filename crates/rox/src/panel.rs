@@ -40,6 +40,9 @@ use crate::workspace::{SeekBackward, SeekForward, TogglePlayback};
 mod gesture;
 pub use gesture::*;
 
+mod tracked_load;
+pub use tracked_load::TrackedImage;
+
 /// The shared entities every panel renders over: one player, one catalog,
 /// and one selection per workspace. Cloning shares the handles, not the
 /// state.
@@ -1306,6 +1309,28 @@ pub fn toggle<P: 'static>(
         }))
 }
 
+/// How long a run of keystrokes stays one type-ahead phrase: a pause past
+/// this starts the buffer over. Shared by every panel that jumps by prefix.
+pub const TYPE_AHEAD: Duration = Duration::from_millis(1000);
+
+/// Grow or restart a type-ahead buffer for the keystroke `text`: within the
+/// window since the last stroke the letters build one phrase, past it the
+/// phrase starts fresh. Stamps `at` with now and returns whether the phrase
+/// grew, which the callers use to decide the match re-tests the current row
+/// or steps past it. The prefix match and the scroll that follow stay per
+/// panel, since the list widget and what a row's text is differ.
+pub fn type_ahead_grow(buffer: &mut String, at: &mut Option<Instant>, text: String) -> bool {
+    let now = Instant::now();
+    let grown = at.is_some_and(|last| now.duration_since(last) < TYPE_AHEAD);
+    if grown {
+        buffer.push_str(&text);
+    } else {
+        *buffer = text;
+    }
+    *at = Some(now);
+    grown
+}
+
 /// The shared "tracking" section for a panel's Behavior page: the
 /// follow-playing toggle and, while it is on, the smooth-scrolling toggle,
 /// under one header so the library, the grids, and the art shelf all read
@@ -1348,7 +1373,7 @@ pub fn tracking_section<P: 'static>(
             toggle(smooth, on_smooth, cx),
         ));
     }
-    crate::settings_ui::section("Tracking", None, body).into_any_element()
+    crate::settings::ui::section("Tracking", None, body).into_any_element()
 }
 
 /// A font-family picker: a small dropdown labeled with the current

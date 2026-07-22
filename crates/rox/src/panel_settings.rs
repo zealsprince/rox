@@ -55,14 +55,14 @@ use crate::settings;
 // settings window so the per-panel and app-wide frames scrub the same
 // range, every knob running from zero (off) up to its own, in px.
 use crate::settings::{BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX};
-use crate::settings_ui::{self, grid_columns, section, sidebar, small_button, SECTION_GAP};
+use crate::settings::ui::{self as settings_ui, grid_columns, section, sidebar, small_button, SECTION_GAP};
 use rox_dock::{PanelView, TabPanel};
 
 /// The open panel settings windows, keyed by the panel they edit:
 /// opening a panel's settings again focuses its window instead of
 /// stacking a second editor over the same config. Closed windows leave a
 /// stale handle whose activate fails, so the next open falls through and
-/// replaces it, same as [`settings_window`](crate::settings_window).
+/// replaces it, same as [`window`](crate::settings::window).
 #[derive(Default)]
 struct OpenPanelSettings(HashMap<EntityId, WindowHandle<Root>>);
 

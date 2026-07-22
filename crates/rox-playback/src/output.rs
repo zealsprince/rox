@@ -78,6 +78,11 @@ where
 {
     let device_channels = config.channels as usize;
 
+    // The error callback runs on the backend's own thread when the stream
+    // faults; it flags the loss so the app can reopen. Kept off the data
+    // callback's clone so that one stays a straight move.
+    let err_shared = shared.clone();
+
     let callback = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
         // A seek is in flight: throw away whatever the decode thread queued
         // before it, play silence, and advance nothing on the clock.
@@ -136,7 +141,17 @@ where
         }
     };
 
-    let err_fn = |err: cpal::Error| eprintln!("\nstream error: {err}");
+    let err_fn = move |err: cpal::Error| {
+        // The device dropped out or the backend faulted. The data callback
+        // won't run again on this stream, so flag the loss and let the app
+        // reopen; without this the ring fills, the engine parks, and the UI
+        // sits frozen on "playing". eprintln is fine here, this is the backend
+        // error thread, not the RT data path.
+        eprintln!("\nstream error: {err}");
+        err_shared
+            .device_lost
+            .store(true, Ordering::Release);
+    };
 
     device
         .build_output_stream(*config, callback, err_fn, None)

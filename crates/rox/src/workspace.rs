@@ -29,7 +29,7 @@ use gpui_component::Icon;
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::catalog::{self, PanelDef, PanelPlacement, PanelSection};
+use crate::panel_catalog::{self as catalog, PanelDef, PanelPlacement, PanelSection};
 use crate::composite;
 use crate::design::{palette, tokens};
 use crate::track_ui::track_drag::PlayDrag;
@@ -1156,7 +1156,7 @@ impl Workspace {
         let source = match &start {
             WorkspaceStart::Restore => settings.layout.clone(),
             WorkspaceStart::Preset(name) => {
-                crate::layouts::resolve(&settings, name).map(|preset| preset.dump)
+                crate::settings::layouts::resolve(&settings, name).map(|preset| preset.dump)
             }
             WorkspaceStart::Empty => None,
         };
@@ -1392,7 +1392,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> bool {
         let settings = Settings::load();
-        let Some(preset) = crate::layouts::resolve(&settings, name) else {
+        let Some(preset) = crate::settings::layouts::resolve(&settings, name) else {
             return false;
         };
         // Size to the preset by default; a working copy with its own size
@@ -1846,7 +1846,7 @@ impl Workspace {
     /// play fine.
     pub fn open_paths(
         &mut self,
-        mode: crate::open_files::LaunchMode,
+        mode: rox_library::open_files::LaunchMode,
         paths: Vec<PathBuf>,
         cx: &mut Context<Self>,
     ) {
@@ -1854,8 +1854,8 @@ impl Workspace {
             return;
         }
         self.state.player.update(cx, |player, cx| match mode {
-            crate::open_files::LaunchMode::Play => player.play(paths, cx),
-            crate::open_files::LaunchMode::Enqueue => player.enqueue(paths, cx),
+            rox_library::open_files::LaunchMode::Play => player.play(paths, cx),
+            rox_library::open_files::LaunchMode::Enqueue => player.enqueue(paths, cx),
         });
     }
 
@@ -1867,7 +1867,7 @@ impl Workspace {
     /// file open (the .desktop default) still replaces the session, that path
     /// runs through open_paths, not here.
     fn play_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        let paths = crate::open_files::resolve_audio_paths(paths);
+        let paths = rox_library::open_files::resolve_audio_paths(paths);
         if paths.is_empty() {
             return;
         }
@@ -1879,7 +1879,7 @@ impl Workspace {
     /// Add dropped files or tracks to the up-next queue, filtered to decodable
     /// audio. The Add to queue drop zone routes here.
     fn queue_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        let paths = crate::open_files::resolve_audio_paths(paths);
+        let paths = rox_library::open_files::resolve_audio_paths(paths);
         if paths.is_empty() {
             return;
         }
@@ -2278,7 +2278,7 @@ impl Workspace {
         let presets = self
             .empty_presets
             .get_or_insert_with(|| {
-                crate::layouts::all(&Settings::load())
+                crate::settings::layouts::all(&Settings::load())
                     .into_iter()
                     .map(|preset| preset.name)
                     .collect()
@@ -2843,7 +2843,7 @@ impl Render for Workspace {
                         .update(cx, |player, _| player.seek_by(5.0));
                 }))
                 .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
-                    crate::settings_window::open(
+                    crate::settings::window::open(
                         this.state.clone(),
                         cx.entity().downgrade(),
                         window.window_handle(),

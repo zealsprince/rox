@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use std::rc::Rc;
 
@@ -41,7 +41,7 @@ use crate::panel::{
 use crate::panel_settings;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
 use crate::query::search::{SearchBox, SearchEvent};
-use crate::settings_ui;
+use crate::settings::ui as settings_ui;
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::thumbs::Thumb;
 
@@ -208,9 +208,6 @@ const FALLBACK_COLS: usize = 4;
 /// reveals loaded tiles instead of placeholders.
 const PREFETCH_ROWS: usize = 2;
 
-/// How long a type-ahead phrase keeps growing before the next keystroke
-/// starts a fresh jump.
-const TYPE_AHEAD: Duration = Duration::from_millis(1000);
 
 pub struct GridPanel {
     state: AppState,
@@ -732,16 +729,7 @@ impl GridPanel {
     /// refining a match stays put. Matches album names by prefix, the
     /// caption's own text.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
-        let now = Instant::now();
-        let grown = self
-            .type_ahead_at
-            .is_some_and(|at| now.duration_since(at) < TYPE_AHEAD);
-        if grown {
-            self.type_ahead.push_str(&text);
-        } else {
-            self.type_ahead = text;
-        }
-        self.type_ahead_at = Some(now);
+        let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
         let len = self.cells.len();
         if len == 0 {
             return;

@@ -34,7 +34,7 @@ use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
 use crate::panels::library::Library;
-use crate::settings_ui::{small_button, MIN_SIZE};
+use crate::settings::ui::{small_button, MIN_SIZE};
 
 /// How many files each detection hop reads before the count moves. Big
 /// enough that the UI thread is not woken per file on a large library,

@@ -141,3 +141,93 @@ pub fn read_bundle(path: &Path, settings: &Settings) -> Option<WorkspaceBundle> 
     });
     Some(bundle)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn named_bundle(name: &str) -> WorkspaceBundle {
+        WorkspaceBundle {
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
+    /// A free base name comes back as-is; a taken one gets " (2)", then
+    /// " (3)", counting up until it finds an opening. This is how an import
+    /// avoids shadowing a workspace already saved.
+    #[test]
+    fn unique_name_counts_up_past_collisions() {
+        let taken: HashSet<&str> = ["Neon", "Neon (2)"].into_iter().collect();
+        assert_eq!(unique_name("Fresh", |c| taken.contains(c)), "Fresh");
+        assert_eq!(unique_name("Neon", |c| taken.contains(c)), "Neon (3)");
+    }
+
+    /// `resolve` prefers the user's saved bundle over a shipped one of the
+    /// same name, so a local edit shadows the built-in. An unknown name
+    /// resolves to None.
+    #[test]
+    fn resolve_prefers_saved_over_shipped() {
+        let mut s = Settings::default();
+        s.workspaces.push(named_bundle("Mine"));
+        assert!(resolve(&s, "Mine").is_some());
+        assert!(resolve(&s, "does-not-exist").is_none());
+    }
+
+    /// `all` lists the shipped bundles first, then the user's own in save
+    /// order, and every user bundle is flagged non-builtin.
+    #[test]
+    fn all_appends_user_bundles_after_shipped() {
+        let mut s = Settings::default();
+        s.workspaces.push(named_bundle("Alpha"));
+        s.workspaces.push(named_bundle("Beta"));
+        let list = all(&s);
+        // The two user bundles are the last entries, in save order.
+        let n = list.len();
+        assert!(n >= 2);
+        assert_eq!(list[n - 2].name(), "Alpha");
+        assert_eq!(list[n - 1].name(), "Beta");
+        assert!(!list[n - 2].builtin);
+        assert!(!list[n - 1].builtin);
+    }
+
+    /// A bundle read from a file with no name of its own takes the file stem,
+    /// and a name already in use is deduped so the import never shadows a
+    /// saved workspace.
+    #[test]
+    fn read_bundle_names_from_stem_and_dedupes() {
+        let dir = std::env::temp_dir().join(format!("rox-ws-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Nightfall.json");
+        // A nameless bundle on disk.
+        std::fs::write(&path, serde_json::to_string(&named_bundle("")).unwrap()).unwrap();
+
+        let empty = Settings::default();
+        let bundle = read_bundle(&path, &empty).expect("nameless bundle reads");
+        assert_eq!(bundle.name, "Nightfall");
+
+        // Same file, but that name is already taken: it dedupes.
+        let mut taken = Settings::default();
+        taken.workspaces.push(named_bundle("Nightfall"));
+        let deduped = read_bundle(&path, &taken).expect("bundle reads");
+        assert_eq!(deduped.name, "Nightfall (2)");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bundle from a newer format version is refused, so an older build
+    /// never applies a file it can't understand.
+    #[test]
+    fn read_bundle_refuses_newer_format() {
+        let dir = std::env::temp_dir().join(format!("rox-ws-newer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("future.json");
+        let mut future = named_bundle("Future");
+        future.version = WORKSPACE_VERSION + 1;
+        std::fs::write(&path, serde_json::to_string(&future).unwrap()).unwrap();
+
+        assert!(read_bundle(&path, &Settings::default()).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use crate::hash::fnv1a;
+use rox_library::hash::fnv1a;
 use crate::settings;
 
 /// Identifies the layout; bump it when the format changes and old entries
@@ -202,5 +202,42 @@ mod tests {
         let scratch = Scratch::new("missing");
         let track = scratch.track("pcm");
         assert_eq!(load_from(&scratch.cache(), &track), None);
+    }
+
+    /// An empty peak buffer stores and loads as empty, not a miss: the strip
+    /// for a zero-length file is legitimately empty and should cache like any
+    /// other.
+    #[test]
+    fn empty_peaks_round_trip() {
+        let scratch = Scratch::new("empty");
+        let track = scratch.track("pcm");
+        store_in(&scratch.cache(), &track, &[]);
+        assert_eq!(load_from(&scratch.cache(), &track), Some(Vec::new()));
+    }
+
+    /// The stored path disambiguates a hash collision: an entry written for
+    /// one track but planted where another's entry would live reads as a miss,
+    /// so two files that hash alike never hand each other the wrong waveform.
+    /// The entry carries a's path bytes, which b's load compares against and
+    /// rejects.
+    #[test]
+    fn planted_entry_with_wrong_path_misses() {
+        let scratch = Scratch::new("collision");
+        let cache = scratch.cache();
+        std::fs::create_dir_all(&cache).unwrap();
+        let a = scratch.0.join("a.flac");
+        let b = scratch.0.join("b.flac");
+        // Same bytes, so the size check can't be what rejects b; the load has
+        // to fall through to the stored-path comparison.
+        std::fs::write(&a, "same-bytes").unwrap();
+        std::fs::write(&b, "same-bytes").unwrap();
+
+        // Write a's entry, then drop it at b's entry path to fake the clash.
+        store_in(&cache, &a, &[(-1.0, 1.0)]);
+        std::fs::copy(entry_path(&cache, &a), entry_path(&cache, &b)).unwrap();
+        // The entry stores a's path, not b's, so b reads a miss.
+        assert_eq!(load_from(&cache, &b), None);
+        // And a itself still loads from its own entry.
+        assert_eq!(load_from(&cache, &a), Some(vec![(-1.0, 1.0)]));
     }
 }

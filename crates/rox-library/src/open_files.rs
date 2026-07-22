@@ -12,7 +12,7 @@ fn is_audio_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| {
-            rox_library::scanner::EXTENSIONS
+            crate::scanner::EXTENSIONS
                 .iter()
                 .any(|x| e.eq_ignore_ascii_case(x))
         })

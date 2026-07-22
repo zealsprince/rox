@@ -1850,3 +1850,88 @@ impl Render for TabPanel {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{point, size};
+
+    fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
+        Bounds {
+            origin: point(px(x), px(y)),
+            size: size(px(w), px(h)),
+        }
+    }
+
+    // placement_for is the pure split-direction math the drop preview and the
+    // middle-drag drop both rely on. Bounds plus a pointer in, a placement out,
+    // no Window or App needed.
+
+    #[test]
+    fn placement_center_merges_into_tabs() {
+        let b = bounds(0., 0., 400., 400.);
+        // Dead center falls in the merge rectangle, so no split.
+        assert_eq!(TabPanel::placement_for(point(px(200.), px(200.)), b), None);
+    }
+
+    #[test]
+    fn placement_edges_pick_their_side() {
+        let b = bounds(0., 0., 400., 400.);
+        // Left/right come from the interior height, between the top/bottom bands.
+        assert_eq!(
+            TabPanel::placement_for(point(px(20.), px(200.)), b),
+            Some(Placement::Left)
+        );
+        assert_eq!(
+            TabPanel::placement_for(point(px(380.), px(200.)), b),
+            Some(Placement::Right)
+        );
+        // Top and bottom bands hug the real edges.
+        assert_eq!(
+            TabPanel::placement_for(point(px(200.), px(5.)), b),
+            Some(Placement::Top)
+        );
+        assert_eq!(
+            TabPanel::placement_for(point(px(200.), px(395.)), b),
+            Some(Placement::Bottom)
+        );
+    }
+
+    #[test]
+    fn placement_band_is_capped_on_tall_panels() {
+        // On a very tall panel the top/bottom band caps at 64px rather than a
+        // full quarter, so a point at 100px down is interior, not Top.
+        let b = bounds(0., 0., 400., 2000.);
+        let p = TabPanel::placement_for(point(px(200.), px(100.)), b);
+        assert!(p == Some(Placement::Left) || p == Some(Placement::Right));
+        // Inside the 64px band it is still Top.
+        assert_eq!(
+            TabPanel::placement_for(point(px(200.), px(30.)), b),
+            Some(Placement::Top)
+        );
+    }
+
+    #[test]
+    fn placement_uses_a_quarter_band_on_short_panels() {
+        // Short panel: the band is a quarter of the height (well under 64px),
+        // so 30px down on a 120px-tall panel is Top (quarter = 30px).
+        let b = bounds(0., 0., 400., 120.);
+        assert_eq!(
+            TabPanel::placement_for(point(px(200.), px(10.)), b),
+            Some(Placement::Top)
+        );
+    }
+
+    #[test]
+    fn placement_degenerate_bounds_never_split() {
+        // Zero-area bounds can't be divided; guard against a divide-by-zero.
+        assert_eq!(
+            TabPanel::placement_for(point(px(0.), px(0.)), bounds(0., 0., 0., 0.)),
+            None
+        );
+        assert_eq!(
+            TabPanel::placement_for(point(px(0.), px(0.)), bounds(0., 0., 400., 0.)),
+            None
+        );
+    }
+}

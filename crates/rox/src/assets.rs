@@ -147,7 +147,7 @@ pub mod icons {
     /// The rox mark: a single-path logo, so it paints in the text color
     /// like any other svg element. Heads the empty launcher and the
     /// welcome window.
-    pub const LOGO: &str = "app/rox.svg";
+    pub const LOGO: &str = "app/rox-music.svg";
 
     /// Every icon the app draws, the surface an icon pack can override. A
     /// new pack is seeded with these, so an author edits the real files
@@ -242,7 +242,7 @@ pub mod icons {
 #[derive(RustEmbed)]
 #[folder = "assets"]
 #[include = "icons/**/*.svg"]
-#[include = "app/rox.svg"]
+#[include = "app/rox-music.svg"]
 #[include = "workspaces/**/*.json"]
 pub struct Assets;
 

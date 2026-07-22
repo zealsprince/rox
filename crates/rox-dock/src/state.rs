@@ -299,4 +299,120 @@ mod tests {
         assert_eq!(right_dock.panel.children.len(), 1);
         assert_eq!(right_dock.panel.children[0].panel_name, "StoryContainer");
     }
+
+    // Build a nested layout in code, serialize it, read it back, and require
+    // it survives byte-for-byte. This guards settings.json layout persistence:
+    // if a field stops round-tripping, a saved dock layout silently changes on
+    // the next load.
+    #[test]
+    fn dock_area_state_round_trips() {
+        let leaf = PanelState {
+            panel_name: "Spectrum".to_string(),
+            children: Vec::new(),
+            info: PanelInfo::panel(serde_json::json!({ "gain": 1.5 })),
+        };
+        let tabs = PanelState {
+            panel_name: "TabPanel".to_string(),
+            children: vec![leaf.clone(), leaf.clone()],
+            info: PanelInfo::tabs(1),
+        };
+        let center = PanelState {
+            panel_name: "StackPanel".to_string(),
+            children: vec![tabs],
+            info: PanelInfo::stack(vec![px(300.0), px(500.0)], Axis::Horizontal),
+        };
+
+        let state = DockAreaState {
+            version: Some(2),
+            center,
+            left_dock: Some(DockState {
+                panel: PanelState::default(),
+                placement: DockPlacement::Left,
+                size: px(280.0),
+                open: true,
+            }),
+            right_dock: None,
+            bottom_dock: None,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let back: DockAreaState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, back);
+    }
+
+    // The empty-container repair path: an older build dumped an empty TabPanel
+    // with the default Panel(Null) info instead of its own tabs info. That must
+    // still deserialize as the same PanelState so to_item can rebuild it as an
+    // empty tabs container rather than routing "TabPanel" through the registry.
+    #[test]
+    fn empty_tab_container_default_info_round_trips() {
+        let empty = PanelState {
+            panel_name: "TabPanel".to_string(),
+            children: Vec::new(),
+            info: PanelInfo::Panel(serde_json::Value::Null),
+        };
+        let json = serde_json::to_string(&empty).unwrap();
+        let back: PanelState = serde_json::from_str(&json).unwrap();
+        assert_eq!(empty, back);
+        // The name/info combo the repair path keys on is preserved.
+        assert_eq!(back.panel_name, "TabPanel");
+        assert!(matches!(back.info, PanelInfo::Panel(serde_json::Value::Null)));
+    }
+
+    // Tiles carry per-tile bounds and z-index; those must survive a save/load
+    // so a tiled layout doesn't reflow on restart.
+    #[test]
+    fn tiles_info_round_trips() {
+        let metas = vec![
+            TileMeta {
+                bounds: Bounds {
+                    origin: point(px(5.), px(15.)),
+                    size: size(px(320.), px(240.)),
+                },
+                z_index: 3,
+            },
+            TileMeta::default(),
+        ];
+        let info = PanelInfo::tiles(metas.clone());
+        let json = serde_json::to_string(&info).unwrap();
+        let back: PanelInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(info, back);
+        match back {
+            PanelInfo::Tiles { metas: got } => {
+                assert_eq!(got.len(), 2);
+                assert_eq!(got[0].z_index, 3);
+                assert_eq!(got[1], TileMeta::default());
+            }
+            _ => panic!("tiles info deserialized as the wrong variant"),
+        }
+    }
+
+    #[test]
+    fn panel_info_accessors_match_variant() {
+        let stack = PanelInfo::stack(vec![px(1.), px(2.)], Axis::Vertical);
+        assert_eq!(stack.axis(), Some(Axis::Vertical));
+        assert_eq!(stack.sizes().map(|s| s.len()), Some(2));
+        assert_eq!(stack.active_index(), None);
+
+        let tabs = PanelInfo::tabs(4);
+        assert_eq!(tabs.active_index(), Some(4));
+        assert_eq!(tabs.axis(), None);
+        assert_eq!(tabs.sizes(), None);
+
+        // Horizontal maps to axis 0, vertical to 1; the accessor inverts it.
+        assert_eq!(
+            PanelInfo::stack(vec![], Axis::Horizontal).axis(),
+            Some(Axis::Horizontal)
+        );
+    }
+
+    // PanelState::default is the seed for a freshly-dumped panel, and its
+    // Panel(Null) info is exactly what the empty-container repair path keys on.
+    #[test]
+    fn panel_state_default_is_empty_null_panel() {
+        let d = PanelState::default();
+        assert_eq!(d.panel_name, "");
+        assert!(d.children.is_empty());
+        assert!(matches!(d.info, PanelInfo::Panel(serde_json::Value::Null)));
+    }
 }

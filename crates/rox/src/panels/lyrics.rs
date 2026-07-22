@@ -41,7 +41,7 @@ use crate::panels::library::LibraryEvent;
 use crate::providers;
 use crate::selection::SelectionEvent;
 use crate::settings::lyrics_dir;
-use crate::settings_ui;
+use crate::settings::ui as settings_ui;
 use crate::source::{self, ResolvedTrack, TrackSource};
 
 actions!(

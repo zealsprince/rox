@@ -16,16 +16,13 @@ mod cover;
 mod design;
 mod duplicates;
 mod group_head;
-mod hash;
 mod history;
 mod integrations;
 mod lastfm;
-mod layouts;
 mod lyrics;
-mod m3u;
 mod matching;
-mod open_files;
 mod panel;
+mod panel_catalog;
 mod panel_settings;
 mod panels;
 mod peaks;
@@ -37,8 +34,6 @@ mod quick_play;
 mod rating_ui;
 mod selection;
 mod settings;
-mod settings_ui;
-mod settings_window;
 mod source;
 mod startup;
 mod stats_window;
@@ -102,7 +97,7 @@ fn open_workspace_window(
     // .desktop actions), with the mode the launch asked for. Play overrides
     // the restore so double-clicking a file starts it; enqueue appends to the
     // up-next queue. None on every other open.
-    open: Option<(open_files::LaunchMode, Vec<std::path::PathBuf>)>,
+    open: Option<(rox_library::open_files::LaunchMode, Vec<std::path::PathBuf>)>,
     cx: &mut App,
 ) {
     // Windows open on the saved frame, so a restart, and every New Window,
@@ -125,7 +120,7 @@ fn open_workspace_window(
     // keeping the restored position; a preset without a size opens like any
     // other window.
     if let workspace::WorkspaceStart::Preset(name) = &start {
-        if let Some(s) = layouts::resolve(&Settings::load(), name).and_then(|p| p.size) {
+        if let Some(s) = settings::layouts::resolve(&Settings::load(), name).and_then(|p| p.size) {
             window_bounds = WindowBounds::Windowed(Bounds {
                 origin: window_bounds.get_bounds().origin,
                 size: size(
@@ -171,7 +166,7 @@ fn main() {
     // Single-instance hook goes here: if a rox is already running, forward
     // these paths to it over a socket and exit instead of opening a second
     // window. Not wired yet - a second launch just spawns another instance.
-    let (launch_mode, launch_files) = open_files::from_args();
+    let (launch_mode, launch_files) = rox_library::open_files::from_args();
     let app = Application::new().with_assets(Assets);
     // macOS: clicking the dock icon while the app runs with no windows
     // brings a workspace back - the platform's own quit-to-tray. Only the

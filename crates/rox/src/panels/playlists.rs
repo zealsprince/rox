@@ -270,13 +270,20 @@ impl PlaylistsPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let expanded: HashSet<i64> = config.expanded.iter().copied().collect();
-        // Playlist edits and rescans both change what the tree shows.
+        // Playlist edits and rescans both change what the tree shows. A rating
+        // click only moved one cell through the shared projection and never
+        // reorders the tree, so patch it in place instead of reloading the
+        // expanded lists.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
+                if matches!(event, LibraryEvent::Rated) {
+                    this.patch_ratings(cx);
+                    return;
+                }
                 if matches!(
                     event,
-                    LibraryEvent::PlaylistsChanged | LibraryEvent::Updated | LibraryEvent::Rated
+                    LibraryEvent::PlaylistsChanged | LibraryEvent::Updated
                 ) {
                     this.refresh(cx);
                 }
@@ -452,6 +459,33 @@ impl PlaylistsPanel {
         cx.notify();
     }
 
+    /// Re-read ratings for the visible track rows in place after a star click,
+    /// instead of reloading the expanded playlists. The rating moved through
+    /// the shared projection already; a track can sit in more than one open
+    /// list, so every row that holds its id gets the new value, then repaints.
+    fn patch_ratings(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<i64> = self
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Track(t) => Some(t.track_id),
+                _ => None,
+            })
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let ratings = self.state.library.read(cx).ratings_for(&ids);
+        for row in &mut self.rows {
+            if let Row::Track(t) = row {
+                if let Some(&r) = ratings.get(&t.track_id) {
+                    t.rating = r;
+                }
+            }
+        }
+        cx.notify();
+    }
+
     /// Snapshot the active query and filter, so `refresh` filters the tree
     /// without a `cx`. The shared query while following it, the box's own
     /// text otherwise.
@@ -577,7 +611,7 @@ impl PlaylistsPanel {
         if rows.is_empty() {
             return;
         }
-        let text = crate::m3u::to_m3u8(&rows);
+        let text = rox_library::m3u::to_m3u8(&rows);
         let home = dirs::home_dir().unwrap_or_default();
         let file = format!("{name}.m3u8");
         let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
@@ -609,7 +643,7 @@ impl PlaylistsPanel {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 return;
             };
-            let entries = crate::m3u::parse(&text);
+            let entries = rox_library::m3u::parse(&text);
             if entries.is_empty() {
                 return;
             }

@@ -104,6 +104,10 @@ pub struct CoverArtPanel {
     _player_changed: Subscription,
     _selection_changed: Subscription,
     _library_changed: Subscription,
+    /// Retires whatever cover is still on screen when the panel is dropped
+    /// (closed or its pop-out window shut). Without it a closed panel leaves
+    /// its last decoded cover pinned in gpui's never-evicting asset cache.
+    _retire_on_drop: Subscription,
 }
 
 impl CoverArtPanel {
@@ -132,6 +136,19 @@ impl CoverArtPanel {
                 cx.notify();
             },
         );
+        // On drop the panel is gone, so nothing is still showing: force the
+        // decoded covers out of the asset cache rather than going through the
+        // showing-guarded retire.
+        let _retire_on_drop = cx.on_release(|this, cx| {
+            for slide in [
+                std::mem::replace(&mut this.from, Slide::Blank),
+                std::mem::replace(&mut this.to, Slide::Blank),
+            ] {
+                if let Slide::Art(image, _) = slide {
+                    image.remove_asset(cx);
+                }
+            }
+        });
         CoverArtPanel {
             state,
             config,
@@ -149,6 +166,7 @@ impl CoverArtPanel {
             _player_changed,
             _selection_changed,
             _library_changed,
+            _retire_on_drop,
         }
     }
 

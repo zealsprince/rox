@@ -523,6 +523,19 @@ impl Player {
                 if this.session.is_none() {
                     return false;
                 }
+                // The output stream died (device unplugged, backend fault).
+                // Rebuild it at the current spot and stop this pump: the
+                // rebuild starts its own, and running two would double-drain
+                // the tap. If the rebuild couldn't get a device it clears the
+                // session, so either way this pump is done.
+                if this
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.shared.device_lost())
+                {
+                    this.reopen_device(cx);
+                    return false;
+                }
                 this.drain_tap();
                 let playing = this.is_playing();
                 let rev = this.queue_rev();
@@ -546,6 +559,49 @@ impl Player {
                 break;
             }
         }));
+    }
+
+    /// Rebuild the output after the device dropped out. Captures the live
+    /// queue, cursor, and position from the dying session, tears it down, and
+    /// starts a fresh one at the same spot. The old stream is already dead, so
+    /// this is the only way back to audio short of the user restarting. Resumes
+    /// playing if it was playing, since a disconnect isn't a pause. A failed
+    /// reopen (no device at all) surfaces as an error and leaves the session
+    /// gone, so the UI stops showing a frozen "playing".
+    fn reopen_device(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let was_playing = session.shared.playing.load(Ordering::Relaxed);
+        // Pull the order, cursor, and position off the dying session the same
+        // way the close-time persist does, so the rebuilt queue matches what
+        // was playing rather than the seed order.
+        let Some((entries, cursor, position_secs)) = self.queue_state() else {
+            // Nothing resolvable to restore; drop the dead session so the UI
+            // falls back to idle instead of a frozen transport.
+            self.stop(cx);
+            self.error = Some("audio output: device lost".into());
+            cx.notify();
+            return;
+        };
+        let (paths, explicit): (Vec<PathBuf>, Vec<bool>) = entries.into_iter().unzip();
+        // Restore-shaped start: preserve the saved order, seed the position.
+        // start_session opens a fresh stream against the current default
+        // device, which is the reconnected (or newly default) one.
+        self.start_session(
+            paths,
+            cursor,
+            Some(position_secs),
+            explicit,
+            true,
+            cx,
+        );
+        // A restore comes up paused; a disconnect mid-playback should resume,
+        // so the reopened stream picks up where it left off. Only when the
+        // start actually produced a session.
+        if was_playing && self.session.is_some() {
+            self.send(Cmd::TogglePause);
+        }
     }
 
     /// The position clock as a comparable key for the pump's change check:

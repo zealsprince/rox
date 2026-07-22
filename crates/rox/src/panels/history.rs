@@ -203,14 +203,20 @@ impl HistoryPanel {
         );
         // A landing cover repaints the heading tiles and the cover column.
         let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
-        // A rescan retags tracks and grows the never-played set; a rating or
-        // favourite change moves those columns.
+        // A rescan retags tracks and grows the never-played set; a favourite
+        // change moves that column. A rating click only moved one cell through
+        // the shared projection, and the play-keyed views never reorder on it,
+        // so patch it in place instead of re-running the listens query.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
+                if matches!(event, LibraryEvent::Rated) {
+                    this.patch_ratings(cx);
+                    return;
+                }
                 if matches!(
                     event,
-                    LibraryEvent::Updated | LibraryEvent::Rated | LibraryEvent::PlaylistsChanged
+                    LibraryEvent::Updated | LibraryEvent::PlaylistsChanged
                 ) {
                     this.refresh(cx);
                 }
@@ -296,6 +302,22 @@ impl HistoryPanel {
         self.menu_row = None;
         self.refresh_query(cx);
         self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// Re-read ratings for the current tracks in place after a star click,
+    /// instead of re-running the listens query. The rating moved through the
+    /// shared projection already, the view (recent, most, never) is keyed on
+    /// play counts a rating never touches, and the display rows index into
+    /// `tracks` by position - so the changed cell just repaints.
+    fn patch_ratings(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<i64> = self.tracks.iter().map(|t| t.track_id).collect();
+        let ratings = self.state.library.read(cx).ratings_for(&ids);
+        for t in &mut self.tracks {
+            if let Some(&r) = ratings.get(&t.track_id) {
+                t.rating = r;
+            }
+        }
         cx.notify();
     }
 

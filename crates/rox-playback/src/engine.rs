@@ -186,6 +186,11 @@ impl Engine {
             // all recomputing off the stale self.pos. Two Next presses in one
             // drain otherwise collapse into a single advance.
             let mut nav_pos: Option<usize> = None;
+            // A remove dropped the pre-decoded next track while its source was
+            // already open. Set here, acted on after the drain: drop that stale
+            // source and reopen the real next track so the removed one doesn't
+            // play on. The audible track is fully in the ring, so no flush.
+            let mut reopen_runahead = false;
             while let Ok(cmd) = self.rx.try_recv() {
                 match cmd {
                     Cmd::TogglePause => {
@@ -263,8 +268,8 @@ impl Engine {
                             self.shared.playing.store(true, Ordering::Relaxed);
                         }
                     }
-                    Cmd::Remove { id } => self.remove(id),
-                    Cmd::RemoveMany { ids } => self.remove_many(&ids),
+                    Cmd::Remove { id } => reopen_runahead |= self.remove(id),
+                    Cmd::RemoveMany { ids } => reopen_runahead |= self.remove_many(&ids),
                     Cmd::Move { id, after } => self.move_entry(id, after),
                     // Reuse the nav path: setting the target flushes and opens
                     // it just like a Next would.
@@ -296,16 +301,51 @@ impl Engine {
                         // first, the same anchor Next/Prev use.
                         let ap = self.audible_pos();
                         if ap != self.pos {
-                            if let Some(src) = self.open_at(ap) {
-                                source = Some(src);
+                            match self.open_at(ap) {
+                                // Reopened the audible track; seek that, below.
+                                Some(src) => source = Some(src),
+                                // Couldn't reopen the audible track. The open
+                                // source is still the wrong track (the pre-rolled
+                                // next one), so seeking it would scrub the wrong
+                                // audio. Drop it and leave the clock be rather
+                                // than scrub a track the user isn't hearing.
+                                None => source = None,
                             }
                         }
                         if let Some(src) = source.as_mut() {
-                            let landed = src.seek(secs);
-                            self.register_segment(landed);
+                            if let Some(landed) = src.seek(secs) {
+                                self.register_segment(landed);
+                            }
                         }
                     }
                 }
+                continue;
+            }
+
+            // The pre-decoded next track was removed with its source open.
+            // Drop that stale source and reopen the track now sitting in its
+            // slot, right after the audible one. The audible track already
+            // filled the ring, so this reopen is silent, no flush needed. Any
+            // half-decoded pending samples belong to the removed track, so
+            // clear them too. Skipped when a flush already reopened above.
+            //
+            // Residual risk: if the decode cursor got far enough ahead that
+            // some of the removed track's samples already reached the ring
+            // (bounded by RING_SECS), that fraction still plays before the
+            // reopened next track takes over. Flushing the ring would drop it
+            // but would also cut the untouched audible track mid-note, a worse
+            // glitch, so we accept the short tail here.
+            if reopen_runahead {
+                let next = self.audible_pos() + 1;
+                self.pending.clear();
+                self.pending_pos = 0;
+                source = if next < self.order.len() {
+                    self.open_at(next)
+                } else if self.loop_mode == LoopMode::All && !self.order.is_empty() {
+                    self.open_at(0)
+                } else {
+                    None
+                };
                 continue;
             }
 
@@ -487,13 +527,23 @@ impl Engine {
     /// position, not the decode cursor, which has run ahead to the next entry
     /// near a boundary and would otherwise refuse removing the very item the
     /// queue is about to play.
-    fn remove(&mut self, id: u64) {
+    ///
+    /// Returns true when the entry removed was the runahead, the pre-decoded
+    /// next track the decode cursor already opened into the ring. The caller
+    /// must then flush that open source, or it plays on in full even though
+    /// it's no longer in the queue.
+    fn remove(&mut self, id: u64) -> bool {
         let Some(p) = self.find(id) else {
-            return;
+            return false;
         };
-        if p == self.audible_pos() {
-            return;
+        let audible = self.audible_pos();
+        if p == audible {
+            return false;
         }
+        // The open source is the entry at the decode cursor. When that leads
+        // the audible track, the cursor entry is the pre-rolled next track;
+        // removing it strands an open source on a track no longer queued.
+        let removed_runahead = p == self.pos && self.pos != audible;
         self.order.remove(p);
         // Removing at or before the decode cursor shifts it down one. When p
         // equals the cursor it's the pre-decoded next track (p can't be the
@@ -504,6 +554,7 @@ impl Engine {
             self.pos = self.pos.saturating_sub(1);
         }
         self.publish_queue();
+        removed_runahead
     }
 
     /// Drop every entry named in `ids` in one sweep, keeping the audible one so
@@ -511,18 +562,27 @@ impl Engine {
     /// once. One pass over the order rather than a find-and-remove per id, so
     /// clearing a huge queue stays O(n) with a single UI wake instead of O(n^2)
     /// with a wake per entry.
-    fn remove_many(&mut self, ids: &[u64]) {
+    ///
+    /// Returns true when the sweep dropped the runahead, the pre-decoded next
+    /// track the decode cursor already opened. The caller flushes the stale
+    /// open source in that case, same as single remove.
+    fn remove_many(&mut self, ids: &[u64]) -> bool {
         if ids.is_empty() {
-            return;
+            return false;
         }
         let drop: std::collections::HashSet<u64> = ids.iter().copied().collect();
-        let keep = self.order.get(self.audible_pos()).map(|e| e.id);
+        let audible = self.audible_pos();
+        let keep = self.order.get(audible).map(|e| e.id);
         let cursor = self.order.get(self.pos).map(|e| e.id);
+        // The cursor entry is the runahead when it leads the audible track and
+        // it's actually being dropped (not the kept audible one).
+        let removed_runahead = self.pos != audible
+            && cursor.is_some_and(|id| drop.contains(&id) && Some(id) != keep);
         let before = self.order.len();
         self.order
             .retain(|e| !drop.contains(&e.id) || Some(e.id) == keep);
         if self.order.len() == before {
-            return;
+            return false;
         }
         // Re-anchor the decode cursor by id. If the cursor entry itself was
         // dropped (the pre-decoded next track), fall back to the audible entry
@@ -533,6 +593,7 @@ impl Engine {
             .or_else(|| keep.and_then(|id| self.find(id)))
             .unwrap_or_else(|| self.pos.min(self.order.len().saturating_sub(1)));
         self.publish_queue();
+        removed_runahead
     }
 
     /// Move an entry to just after `after` (or to the front). The cursor is
@@ -669,10 +730,13 @@ pub fn count_frames(path: &PathBuf) -> Result<(u64, Option<u64>), String> {
     let mut chunk = Vec::new();
     loop {
         chunk.clear();
-        if !src.next_chunk(info.sample_rate, &mut chunk) {
+        // The EOF call flushes the resampler's final frame into `chunk`, so
+        // count what it returns before honouring the end signal.
+        let more = src.next_chunk(info.sample_rate, &mut chunk);
+        decoded += (chunk.len() / 2) as u64;
+        if !more {
             break;
         }
-        decoded += (chunk.len() / 2) as u64;
     }
     Ok((decoded, info.num_frames))
 }
@@ -700,9 +764,9 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<(f32, f32)>, Stri
     let mut chunk = Vec::new();
     loop {
         chunk.clear();
-        if !src.next_chunk(info.sample_rate, &mut chunk) {
-            break;
-        }
+        // The EOF call flushes the resampler's final frame into `chunk`, so
+        // fold it in before honouring the end signal.
+        let more = src.next_chunk(info.sample_rate, &mut chunk);
         for frame in chunk.chunks_exact(2) {
             let s = (frame[0] + frame[1]) * 0.5;
             lo = lo.min(s);
@@ -714,6 +778,9 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<(f32, f32)>, Stri
                 hi = f32::MIN;
                 in_block = 0;
             }
+        }
+        if !more {
+            break;
         }
     }
     if in_block > 0 {
@@ -769,16 +836,19 @@ pub fn decode_window(
 ) -> Result<Vec<f32>, String> {
     let (mut src, _) = Source::open(path, device_rate)?;
     if position_secs > 0.0 {
-        src.seek(position_secs);
+        let _ = src.seek(position_secs);
     }
     let mut out = Vec::with_capacity(frames * 2);
     let mut chunk = Vec::new();
     while out.len() < frames * 2 {
         chunk.clear();
-        if !src.next_chunk(device_rate, &mut chunk) {
+        // The EOF call flushes the resampler's final frame into `chunk`, so
+        // take it before honouring the end signal.
+        let more = src.next_chunk(device_rate, &mut chunk);
+        out.extend_from_slice(&chunk);
+        if !more {
             break;
         }
-        out.extend_from_slice(&chunk);
     }
     if out.is_empty() {
         return Err("no decodable audio".into());
@@ -862,9 +932,15 @@ impl Source {
         loop {
             let packet = match self.format.next_packet() {
                 Ok(Some(p)) => p,
-                Ok(None) => return false,
+                // End of stream: flush the resampler's carried final frame so
+                // the last source sample isn't dropped at the track boundary.
+                Ok(None) => {
+                    self.resampler.flush(out);
+                    return false;
+                }
                 Err(e) => {
                     eprintln!("\npacket error, ending track: {e}");
+                    self.resampler.flush(out);
                     return false;
                 }
             };
@@ -896,11 +972,16 @@ impl Source {
                 }
                 Err(e) => {
                     eprintln!("\nfatal decode error, ending track: {e}");
+                    self.resampler.flush(out);
                     return false;
                 }
             };
 
             if rate != self.resampler.src_rate() {
+                // Mid-stream rate change (a VBR container switching, a chained
+                // stream). Flush the old resampler's carried final frame before
+                // swapping it out, otherwise that frame is dropped at the seam.
+                self.resampler.flush(out);
                 self.resampler = Resampler::new(rate, device_rate);
             }
 
@@ -935,8 +1016,10 @@ impl Source {
     }
 
     /// Accurate seek. Returns the track position actually landed on, in
-    /// seconds, which can differ from the request.
-    fn seek(&mut self, secs: f64) -> f64 {
+    /// seconds, which can differ from the request. None when the seek failed
+    /// and the reader never moved, so the caller doesn't register a segment
+    /// that jumps the position display to a spot playback never reached.
+    fn seek(&mut self, secs: f64) -> Option<f64> {
         let time = Time::try_from_secs_f64(secs).unwrap_or(Time::ZERO);
         match self.format.seek(
             SeekMode::Accurate,
@@ -948,17 +1031,149 @@ impl Source {
             Ok(seeked) => {
                 self.decoder.reset();
                 self.resampler = Resampler::new(self.resampler.src_rate(), self.device_rate);
-                self.time_base
-                    .and_then(|tb| tb.calc_time(seeked.actual_ts))
-                    .map(|t| t.as_secs_f64().max(0.0))
-                    .unwrap_or(secs)
+                Some(
+                    self.time_base
+                        .and_then(|tb| tb.calc_time(seeked.actual_ts))
+                        .map(|t| t.as_secs_f64().max(0.0))
+                        .unwrap_or(secs),
+                )
             }
             Err(e) => {
                 eprintln!("\nseek failed: {e}");
-                // Position is unchanged; report where we were by falling back
-                // to the request so the display does not lie wildly.
-                secs
+                // Position is unchanged; the reader never moved, so report no
+                // landing and let the caller leave the clock where it was.
+                None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// An engine wired over synthetic paths and a throwaway ring, no audio
+    /// device and no decode thread. Enough to drive the pure queue-edit math:
+    /// order, cursor, and the runahead detection. `n` context entries with
+    /// stable ids 0..n.
+    fn test_engine(n: usize) -> Engine {
+        let shared = Arc::new(Shared::new(n));
+        let (producer, _consumer) = rtrb::RingBuffer::<f32>::new(16);
+        let (_tx, rx) = mpsc::channel::<Cmd>();
+        let queue: Vec<PathBuf> = (0..n).map(|i| PathBuf::from(format!("t{i}"))).collect();
+        Engine::new(queue, 0, shared, producer, 48000, rx, Vec::new())
+    }
+
+    /// Point the audible clock at pool index `track`, so `audible_pos` resolves
+    /// there instead of falling back to the decode cursor. Lets a test set up
+    /// the runahead window where the cursor leads the audible track.
+    fn set_audible(engine: &Engine, track: usize) {
+        engine.shared.frames_consumed.store(10, Ordering::Relaxed);
+        let mut segments = engine.shared.segments.lock().unwrap();
+        segments.clear();
+        segments.push(Segment {
+            at_frame: 0,
+            track,
+            track_frame: 0,
+        });
+    }
+
+    #[test]
+    fn prune_keeps_newest_reached_and_all_future() {
+        let mut segments = vec![
+            Segment { at_frame: 0, track: 0, track_frame: 0 },
+            Segment { at_frame: 100, track: 1, track_frame: 0 },
+            Segment { at_frame: 200, track: 2, track_frame: 0 },
+            Segment { at_frame: 300, track: 3, track_frame: 0 },
+        ];
+        // Consumed sits between segment 1 and 2: drop segment 0, keep 1 (the
+        // newest already reached) plus the two future ones.
+        prune_segments(&mut segments, 150);
+        let ats: Vec<u64> = segments.iter().map(|s| s.at_frame).collect();
+        assert_eq!(ats, vec![100, 200, 300]);
+    }
+
+    #[test]
+    fn prune_before_any_segment_keeps_all() {
+        let mut segments = vec![
+            Segment { at_frame: 100, track: 0, track_frame: 0 },
+            Segment { at_frame: 200, track: 1, track_frame: 0 },
+        ];
+        // Nothing reached yet, so there's no cutoff and every segment stays.
+        prune_segments(&mut segments, 50);
+        assert_eq!(segments.len(), 2);
+    }
+
+    #[test]
+    fn remove_non_runahead_entry_shifts_cursor_no_flush() {
+        let mut e = test_engine(5);
+        // Audible and decode cursor both on track 0; remove a later entry.
+        set_audible(&e, 0);
+        e.pos = 0;
+        let removed_runahead = e.remove(3);
+        assert!(!removed_runahead, "a future entry is not the runahead");
+        assert_eq!(e.pos, 0, "cursor before the removal is unaffected");
+        assert_eq!(e.order.len(), 4);
+    }
+
+    #[test]
+    fn remove_audible_entry_is_refused() {
+        let mut e = test_engine(5);
+        set_audible(&e, 2);
+        e.pos = 3; // decode cursor ran ahead of the audible track
+        // id 2 is the audible track; removing it must be refused.
+        let removed_runahead = e.remove(2);
+        assert!(!removed_runahead);
+        assert_eq!(e.order.len(), 5, "audible entry stays");
+    }
+
+    #[test]
+    fn remove_runahead_reports_and_reanchors() {
+        let mut e = test_engine(5);
+        // Audible on track 2, decode cursor pre-rolled to track 3.
+        set_audible(&e, 2);
+        e.pos = 3;
+        // id 3 is the pre-decoded next track the open source holds.
+        let removed_runahead = e.remove(3);
+        assert!(removed_runahead, "the pre-decoded next track is the runahead");
+        // Cursor re-anchors down onto the audible entry so the caller's reopen
+        // lands on the right next track.
+        assert_eq!(e.pos, 2);
+        assert_eq!(e.order.len(), 4);
+    }
+
+    #[test]
+    fn remove_many_reports_runahead_when_cursor_dropped() {
+        let mut e = test_engine(6);
+        set_audible(&e, 2);
+        e.pos = 3;
+        // Drop the runahead (id 3) plus an unrelated later entry.
+        let removed_runahead = e.remove_many(&[3, 5]);
+        assert!(removed_runahead);
+        // Cursor re-anchors to the audible entry (id 2) since its own entry went.
+        assert_eq!(e.order[e.pos].id, 2);
+    }
+
+    #[test]
+    fn remove_many_no_runahead_when_cursor_kept() {
+        let mut e = test_engine(6);
+        set_audible(&e, 2);
+        e.pos = 3;
+        // Drop only later entries, leave the runahead (id 3) in place.
+        let removed_runahead = e.remove_many(&[4, 5]);
+        assert!(!removed_runahead);
+        // Cursor still on its own entry, re-found by id.
+        assert_eq!(e.order[e.pos].id, 3);
+    }
+
+    #[test]
+    fn remove_many_keeps_audible_even_if_named() {
+        let mut e = test_engine(5);
+        set_audible(&e, 1);
+        e.pos = 1;
+        // Name the audible entry in the drop set; it must survive.
+        let _ = e.remove_many(&[0, 1, 2]);
+        assert!(e.order.iter().any(|entry| entry.id == 1), "audible entry kept");
     }
 }

@@ -18,7 +18,7 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
-use crate::catalog::PanelDef;
+use crate::panel_catalog::PanelDef;
 use crate::design::{palette, tokens};
 use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
@@ -307,7 +307,7 @@ impl MenuPanel {
             .child(chevron())
             .when(open, |d| {
                 // Read the presets only once the flyout opens.
-                let presets = crate::layouts::all(&Settings::load());
+                let presets = crate::settings::layouts::all(&Settings::load());
                 let mut flyout = dropdown(px(180.)).absolute().left_full().top(px(-5.));
                 if with_new {
                     flyout = flyout.child(self.new_row(cx));

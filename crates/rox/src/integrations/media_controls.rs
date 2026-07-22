@@ -23,7 +23,7 @@ use souvlaki::{
     SeekDirection,
 };
 
-use crate::hash::fnv1a;
+use rox_library::hash::fnv1a;
 use crate::APP_ID;
 
 /// A media-key press mapped off souvlaki's own event vocabulary onto the

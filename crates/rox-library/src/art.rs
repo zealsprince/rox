@@ -27,7 +27,29 @@ const ART_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 /// picture failing that), else a cover image file in its folder. None when
 /// neither exists or nothing identifies as an image.
 pub fn cover_art(path: &Path) -> Option<(Vec<u8>, String)> {
-    embedded(path).or_else(|| folder_art(path))
+    cover_art_source(path).map(|(bytes, mime, _)| (bytes, mime))
+}
+
+/// Where a track's resolved cover came from, so a cache keyed on file
+/// identity can tell an embedded picture (covered by the audio file's own
+/// mtime/size) from a folder cover that changes without touching the track.
+pub enum ArtSource {
+    /// The picture lived in the track's own tags.
+    Embedded,
+    /// The picture came from this image file beside the track.
+    Folder(std::path::PathBuf),
+}
+
+/// [`cover_art`] plus where the picture came from. The thumbnail cache uses
+/// the source to key a folder cover on that file's identity, so replacing
+/// or adding cover.jpg invalidates a thumb the audio file's own mtime/size
+/// would never notice.
+pub fn cover_art_source(path: &Path) -> Option<(Vec<u8>, String, ArtSource)> {
+    if let Some((bytes, mime)) = embedded(path) {
+        return Some((bytes, mime, ArtSource::Embedded));
+    }
+    let (bytes, mime, file) = folder_art(path)?;
+    Some((bytes, mime, ArtSource::Folder(file)))
 }
 
 /// The embedded picture, isolated like the scanner's tag reads: a file
@@ -57,7 +79,8 @@ fn embedded(path: &Path) -> Option<(Vec<u8>, String)> {
 }
 
 /// A cover image sitting next to the track, the best-ranked stem winning.
-fn folder_art(path: &Path) -> Option<(Vec<u8>, String)> {
+/// Hands back the file it read so a cache can key on that file's identity.
+fn folder_art(path: &Path) -> Option<(Vec<u8>, String, std::path::PathBuf)> {
     let dir = path.parent()?;
     let mut best: Option<(usize, std::path::PathBuf)> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
@@ -80,9 +103,10 @@ fn folder_art(path: &Path) -> Option<(Vec<u8>, String)> {
             best = Some((rank, candidate));
         }
     }
-    let bytes = std::fs::read(best?.1).ok()?;
+    let file = best?.1;
+    let bytes = std::fs::read(&file).ok()?;
     let mime = sniff(&bytes)?.into();
-    Some((bytes, mime))
+    Some((bytes, mime, file))
 }
 
 /// The picture pulled raw out of an ID3v2.4 tag whose header sets the

@@ -76,3 +76,97 @@ impl Default for AudioFeed {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_push_is_a_noop() {
+        let feed = AudioFeed::new();
+        feed.push(&[]);
+        assert_eq!(feed.written(), 0);
+        let mut out = [0.0f32; 4];
+        assert_eq!(feed.latest_mono(&mut out), 0);
+    }
+
+    #[test]
+    fn written_counts_every_sample_pushed() {
+        let feed = AudioFeed::new();
+        feed.push(&[0.0, 0.0]);
+        feed.push(&[0.0, 0.0, 0.0, 0.0]);
+        // Counts interleaved samples, not frames.
+        assert_eq!(feed.written(), 6);
+    }
+
+    #[test]
+    fn latest_mono_folds_stereo_pairs() {
+        let feed = AudioFeed::new();
+        // Two frames: (L, R) = (1, 3) and (2, 4). Mono fold is the average.
+        feed.push(&[1.0, 3.0, 2.0, 4.0]);
+        let mut out = [0.0f32; 2];
+        let n = feed.latest_mono(&mut out);
+        assert_eq!(n, 2);
+        assert_eq!(out, [2.0, 3.0]);
+    }
+
+    #[test]
+    fn latest_mono_returns_newest_frames_last() {
+        let feed = AudioFeed::new();
+        // Four frames, out buffer only fits two: the two newest, in order.
+        feed.push(&[10.0, 10.0, 20.0, 20.0, 30.0, 30.0, 40.0, 40.0]);
+        let mut out = [0.0f32; 2];
+        let n = feed.latest_mono(&mut out);
+        assert_eq!(n, 2);
+        assert_eq!(out, [30.0, 40.0]);
+    }
+
+    #[test]
+    fn latest_mono_short_when_underfed() {
+        let feed = AudioFeed::new();
+        feed.push(&[1.0, 1.0]);
+        let mut out = [0.0f32; 8];
+        // Only one frame buffered, so only one lands even though out is longer.
+        let n = feed.latest_mono(&mut out);
+        assert_eq!(n, 1);
+        assert_eq!(out[0], 1.0);
+    }
+
+    #[test]
+    fn ring_drops_oldest_past_capacity() {
+        let feed = AudioFeed::new();
+        // Overrun the ring by one frame, then the newest sample must survive
+        // and the write counter must reflect everything ever pushed.
+        let total = KEEP_SAMPLES + 2;
+        let samples: Vec<f32> = (0..total).map(|i| i as f32).collect();
+        feed.push(&samples);
+        assert_eq!(feed.written(), total as u64);
+
+        let mut out = vec![0.0f32; 1];
+        let n = feed.latest_mono(&mut out);
+        assert_eq!(n, 1);
+        // Newest frame is (total-2, total-1); their average is total-1.5.
+        assert_eq!(out[0], total as f32 - 1.5);
+    }
+
+    #[test]
+    fn ring_never_grows_past_capacity() {
+        let feed = AudioFeed::new();
+        for _ in 0..4 {
+            let chunk = vec![0.5f32; KEEP_SAMPLES];
+            feed.push(&chunk);
+        }
+        // Never more frames retrievable than half the kept sample budget.
+        let mut out = vec![0.0f32; KEEP_SAMPLES];
+        let n = feed.latest_mono(&mut out);
+        assert_eq!(n, KEEP_SAMPLES / 2);
+    }
+
+    #[test]
+    fn sample_rate_round_trips() {
+        let feed = AudioFeed::new();
+        assert_eq!(feed.sample_rate(), 48_000);
+        feed.set_sample_rate(44_100);
+        assert_eq!(feed.sample_rate(), 44_100);
+    }
+}

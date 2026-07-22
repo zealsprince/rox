@@ -71,7 +71,7 @@ fn files_for(name: &str) -> Files {
     // Punctuation-only names ("!!!", "+/-") fold to nothing and would all
     // collide into one file - key those on the raw trimmed name instead.
     let key = if folded.is_empty() { name.trim() } else { &folded };
-    let hash = crate::hash::fnv1a(key.as_bytes());
+    let hash = rox_library::hash::fnv1a(key.as_bytes());
     let dir = artists_dir();
     let slot = |ext: &str| dir.join(format!("{hash:016x}.{ext}"));
     Files {

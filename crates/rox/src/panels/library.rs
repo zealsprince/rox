@@ -1,7 +1,7 @@
-//! The library: a shared catalog entity over the promoted library service,
-//! and the dockable panel that browses it. The catalog owns the app's library
-//! database and only ever hands out the in-memory projection, per the library
-//! service boundary. Panels are views over the shared catalog with their own
+//! The dockable library panel that browses the shared catalog entity (which
+//! lives in `crate::catalog`). The catalog owns the app's library database and
+//! only ever hands out the in-memory projection, per the library service
+//! boundary. Panels are views over the shared catalog with their own
 //! search config, so a duplicated panel filters independently. Double
 //! clicking a track queues it straight on the shared player; single clicks
 //! select, and the selection publishes app-wide for panels that display it.
@@ -30,7 +30,7 @@ use crate::group_head::{self, Headers};
 use crate::panel::{self, AppState, PanelChrome, ResumeIdle, ScrubState};
 use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
-use crate::settings_ui;
+use crate::settings::ui as settings_ui;
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::thumbs::Thumb;
 use crate::track_ui::track_cells;
@@ -47,12 +47,7 @@ const ART_ROUNDING_MAX: f32 = 24.;
 /// How far page up and page down step the keyboard cursor.
 const PAGE_ROWS: isize = 25;
 
-/// Typing pauses longer than this restart the type-ahead buffer.
-const TYPE_AHEAD: Duration = Duration::from_millis(1000);
-
-mod catalog;
-
-pub(crate) use catalog::{Library, LibraryEvent};
+pub(crate) use crate::catalog::{Library, LibraryEvent};
 
 
 mod columns;
@@ -1540,16 +1535,7 @@ impl LibraryPanel {
     /// A grown buffer re-tests the current row first, so refining a match
     /// stays put instead of skipping ahead.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
-        let now = std::time::Instant::now();
-        let grown = self
-            .type_ahead_at
-            .is_some_and(|at| now.duration_since(at) < TYPE_AHEAD);
-        if grown {
-            self.type_ahead.push_str(&text);
-        } else {
-            self.type_ahead = text;
-        }
-        self.type_ahead_at = Some(now);
+        let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
         let target = {
             let delegate = self.table.read(cx).delegate();
             delegate.find_prefix(&self.type_ahead, grown, cx)

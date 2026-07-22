@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{PathBuf, MAIN_SEPARATOR};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use gpui::{
     div, prelude::*, px, svg, uniform_list, App, Context, Div, EventEmitter, FocusHandle,
@@ -45,9 +45,6 @@ const INDENT: f32 = 14.;
 /// The opacity a dimmed row (outside the active facet filter) draws at.
 const DIM: f32 = 0.4;
 
-/// How long a type-ahead phrase keeps growing before the next keystroke
-/// starts a fresh jump; the filter panel's cadence.
-const TYPE_AHEAD: Duration = Duration::from_millis(1000);
 
 /// Where the tree shows cover art in place of the row icon: nowhere, on
 /// the folder rows (the album tile), on the song rows, or both.
@@ -976,16 +973,7 @@ impl FolderTreePanel {
     /// among the visible rows. A grown phrase re-tests the cursor's own
     /// row first so refining a match stays put instead of skipping ahead.
     fn type_to(&mut self, text: String, cx: &mut Context<Self>) {
-        let now = Instant::now();
-        let grown = self
-            .type_ahead_at
-            .is_some_and(|at| now.duration_since(at) < TYPE_AHEAD);
-        if grown {
-            self.type_ahead.push_str(&text);
-        } else {
-            self.type_ahead = text;
-        }
-        self.type_ahead_at = Some(now);
+        let grown = panel::type_ahead_grow(&mut self.type_ahead, &mut self.type_ahead_at, text);
         let needle = self.type_ahead.to_lowercase();
         let start = match self.cursor {
             Some(ix) if grown => ix,
@@ -1418,7 +1406,7 @@ impl PanelSettings for FolderTreePanel {
             div()
                 .flex()
                 .flex_col()
-                .gap(crate::settings_ui::SECTION_GAP)
+                .gap(crate::settings::ui::SECTION_GAP)
                 .child(panel::tracking_section(
                     self.config.follow_playing,
                     "Reveal and scroll to the playing track whenever it changes",
@@ -1445,7 +1433,7 @@ impl PanelSettings for FolderTreePanel {
                     },
                     cx,
                 ))
-                .child(crate::settings_ui::section(
+                .child(crate::settings::ui::section(
                     "Filter",
                     None,
                     div()

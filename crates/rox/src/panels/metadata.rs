@@ -35,7 +35,7 @@ use crate::panels::library::LibraryEvent;
 use crate::player::fmt_time;
 use crate::providers;
 use crate::selection::SelectionEvent;
-use crate::settings_ui;
+use crate::settings::ui as settings_ui;
 use crate::source::{self, ResolvedTrack, TrackSource};
 
 /// The metadata panel's per-view config: what a saved layout restores, and
@@ -124,23 +124,23 @@ pub struct MetadataPanel {
     /// not know. Cached because the pump notifies every frame and the row
     /// lookup scans the projection; cleared when the catalog changes.
     details: Option<(PathBuf, Option<Details>)>,
-    /// The loaded background art keyed by the track it belongs to; None
-    /// inside means the track has no art.
-    art: Option<(PathBuf, Option<Arc<Image>>)>,
-    /// The track a load is running for, so a render can tell "already
-    /// fetching" from "needs a fetch".
-    pending: Option<PathBuf>,
+    /// The loaded background art keyed by the track it belongs to, with the
+    /// pending marker, generation guard, and swap/drop retires the shared
+    /// loader carries.
+    art: panel::TrackedImage,
     /// The cached source resolve, so the pump's per-frame notifies never
     /// turn into selection lookups.
     resolved: ResolvedTrack,
-    /// Discards stale load results when the track changes mid-read.
-    generation: u64,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
     _player_changed: Subscription,
     _selection_changed: Subscription,
     _library_changed: Subscription,
+    /// Retires the shown background art when the panel is dropped (closed or
+    /// its pop-out window shut), so nothing stays pinned in gpui's
+    /// never-evicting asset cache.
+    _retire_on_drop: Subscription,
 }
 
 impl MetadataPanel {
@@ -165,25 +165,24 @@ impl MetadataPanel {
                 }
                 this.resolved.invalidate();
                 this.details = None;
-                let old = this.art.take().and_then(|(_, art)| art);
-                this.retire(old, cx);
+                this.art.invalidate(cx);
                 cx.notify();
             },
         );
+        let _retire_on_drop = cx.on_release(|this, cx| this.art.invalidate(cx));
         MetadataPanel {
             state,
             config,
             edit: None,
             details: None,
-            art: None,
-            pending: None,
+            art: panel::TrackedImage::default(),
             resolved: ResolvedTrack::default(),
-            generation: 0,
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
             _selection_changed,
             _library_changed,
+            _retire_on_drop,
         }
     }
 
@@ -219,57 +218,21 @@ impl MetadataPanel {
     }
 
     /// Make sure the background art for `path` is cached or on its way:
-    /// read the file off the UI thread and swap the result in when done.
+    /// read the file off the UI thread through the shared loader, which
+    /// swaps the result in and retires the previous decode.
     fn ensure_art(&mut self, path: &Path, cx: &mut Context<Self>) {
-        if self.art.as_ref().map(|(p, _)| p.as_path()) == Some(path)
-            || self.pending.as_deref() == Some(path)
-        {
-            return;
-        }
-        self.pending = Some(path.to_path_buf());
-        self.generation += 1;
-        let generation = self.generation;
-        let path = path.to_path_buf();
-        cx.spawn(async move |this, cx| {
-            let loaded = cx
-                .background_executor()
-                .spawn({
-                    let path = path.clone();
-                    async move {
-                        rox_library::art::cover_art(&path).and_then(|(bytes, mime)| {
-                            let format = ImageFormat::from_mime_type(&mime)?;
-                            Some(Arc::new(Image::from_bytes(format, bytes)))
-                        })
-                    }
+        let read = path.to_path_buf();
+        self.art.ensure(
+            path,
+            |this: &mut Self| &mut this.art,
+            move || {
+                rox_library::art::cover_art(&read).and_then(|(bytes, mime)| {
+                    let format = ImageFormat::from_mime_type(&mime)?;
+                    Some(Arc::new(Image::from_bytes(format, bytes)))
                 })
-                .await;
-            this.update(cx, |this, cx| {
-                if this.generation != generation {
-                    return;
-                }
-                this.pending = None;
-                let old = this.art.take().and_then(|(_, art)| art);
-                this.art = Some((path, loaded));
-                this.retire(old, cx);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Drop a replaced background's decoded bitmap from gpui's asset cache,
-    /// unless the same art is what the panel holds now. Same reason as the
-    /// cover panel's retire: `img` keeps every distinct decode in the
-    /// process-wide asset cache and never evicts on its own.
-    fn retire(&self, art: Option<Arc<Image>>, cx: &mut App) {
-        let Some(old) = art else { return };
-        if let Some((_, Some(current))) = &self.art {
-            if current.id() == old.id() {
-                return;
-            }
-        }
-        old.remove_asset(cx);
+            },
+            cx,
+        );
     }
 
     /// The panel's own dropdown entries: the source pick and the cover
@@ -786,16 +749,7 @@ impl MetadataPanel {
         if self.config.cover {
             self.ensure_art(&path, cx);
         }
-        let backdrop = self
-            .config
-            .cover
-            .then(|| {
-                self.art
-                    .as_ref()
-                    .filter(|(cached, _)| *cached == path)
-                    .and_then(|(_, art)| art.clone())
-            })
-            .flatten();
+        let backdrop = self.config.cover.then(|| self.art.get(&path)).flatten();
         let root = root.when_some(backdrop, |root, image| {
             root.child(
                 div()

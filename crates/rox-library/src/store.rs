@@ -17,7 +17,25 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// The library database's migration ladder (ADR 5). Step 1 is the baseline
+/// converge, folding in every historical column probe; new schema changes
+/// append a clean forward step here rather than growing another probe. See
+/// [`crate::migrate`] for the versioning and downgrade policy.
+const MIGRATIONS: &[crate::migrate::Migration] = &[crate::migrate::Migration {
+    name: "baseline",
+    up: baseline,
+}];
+
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
+    crate::migrate::run(conn, MIGRATIONS)
+}
+
+/// The baseline schema: the whole store as it stood before the version ladder,
+/// probes and all, so any pre-versioning database converges to this shape on
+/// its first run and stamps user_version 1. On a fresh database the CREATEs
+/// build the current shape and the probe ALTERs are harmless no-ops. Do not add
+/// new columns here; append a step to [`MIGRATIONS`] instead.
+fn baseline(conn: &Connection) -> rusqlite::Result<()> {
     // Source-qualified identity per the components contract: local files are
     // the first source, streaming extensions add rows instead of migrations.
     conn.execute_batch(
@@ -622,6 +640,57 @@ mod tests {
             size,
             mtime: 0,
         }
+    }
+
+    #[test]
+    fn baseline_converges_an_old_database_and_stamps_the_version() {
+        // A tracks table from before the version ladder: the earliest shape,
+        // missing album_artist and every column added since, and sitting at
+        // user_version 0 the way any pre-versioning file does.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tracks (
+                id          INTEGER PRIMARY KEY,
+                source      TEXT NOT NULL DEFAULT 'local',
+                path        TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                artist      TEXT NOT NULL,
+                album       TEXT NOT NULL,
+                genre       TEXT NOT NULL,
+                year        INTEGER NOT NULL,
+                track_no    INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                size        INTEGER NOT NULL,
+                mtime       INTEGER NOT NULL,
+                UNIQUE (source, path)
+            );
+            INSERT INTO tracks (path, title, artist, album, genre, year, track_no,
+                duration_ms, size, mtime)
+                VALUES ('/m/1.mp3', 'One', 'A', 'First', 'rock', 0, 1, 0, 10, 5);",
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+
+        // Every column the baseline probes for is present now, the pre-existing
+        // row survived, and the file is stamped at the head of the ladder.
+        let (album_artist, added): (String, i64) = conn
+            .query_row(
+                "SELECT album_artist, added FROM tracks WHERE path = '/m/1.mp3'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(album_artist, "", "the added column defaults empty");
+        assert!(added > 0, "the added backfill stamped the old row");
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+
+        // A second open is a no-op: the baseline never re-probes a stamped file.
+        init_schema(&conn).unwrap();
+        assert_eq!(count(&conn).unwrap(), 1);
     }
 
     #[test]

@@ -10,7 +10,7 @@ impl Workspace {
         match action {
             MenuAction::NewWindow => crate::open_workspace(cx),
             MenuAction::EmptyWindow => crate::open_workspace_with(WorkspaceStart::Empty, cx),
-            MenuAction::OpenSettings => crate::settings_window::open(
+            MenuAction::OpenSettings => crate::settings::window::open(
                 self.state.clone(),
                 cx.entity().downgrade(),
                 window.window_handle(),
@@ -476,7 +476,7 @@ impl Workspace {
             .when(open, |d| {
                 // Read the presets only once the flyout opens, not on every
                 // parent-menu paint.
-                let presets = crate::layouts::all(&Settings::load());
+                let presets = crate::settings::layouts::all(&Settings::load());
                 let mut flyout = div()
                     .absolute()
                     .left_full()

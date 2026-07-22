@@ -19,7 +19,7 @@ use crate::design::{palette, tokens};
 use crate::group_head::{self, Headers};
 use crate::panel::{self, AppState};
 use crate::panels::library::fmt_ms;
-use crate::settings_ui;
+use crate::settings::ui as settings_ui;
 use crate::thumbs::Thumb;
 
 /// Every track row is this tall; the album block is two of them, so the

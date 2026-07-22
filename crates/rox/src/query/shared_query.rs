@@ -291,7 +291,7 @@ pub fn search_section<P: 'static>(
     on_source: impl Fn(&mut P, QuerySource, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> AnyElement {
-    crate::settings_ui::section(
+    crate::settings::ui::section(
         "Search",
         None,
         div()

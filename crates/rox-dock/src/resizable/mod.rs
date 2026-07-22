@@ -392,3 +392,263 @@ impl Default for ResizablePanelState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext as _, TestAppContext, point, size};
+
+    // Sum of the solved sizes, in raw pixels.
+    fn total(state: &ResizableState) -> f32 {
+        state.sizes.iter().map(|s| s.as_f32()).sum()
+    }
+
+    // Build a state with the given per-panel sizes and ranges, at a container
+    // size along the horizontal axis. Bounds and panels are set directly since
+    // the test lives inside the module.
+    fn make_state(sizes: &[f32], ranges: &[Range<Pixels>], container: f32) -> ResizableState {
+        let panels = sizes
+            .iter()
+            .zip(ranges)
+            .map(|(&s, r)| ResizablePanelState {
+                size: Some(px(s)),
+                size_range: r.clone(),
+                bounds: Bounds::default(),
+            })
+            .collect();
+        ResizableState {
+            axis: Axis::Horizontal,
+            panels,
+            sizes: sizes.iter().map(|&s| px(s)).collect(),
+            resizing_panel_ix: None,
+            bounds: Bounds {
+                origin: point(px(0.), px(0.)),
+                size: size(px(container), px(100.)),
+            },
+        }
+    }
+
+    fn open() -> Range<Pixels> {
+        PANEL_MIN_SIZE..Pixels::MAX
+    }
+
+    #[gpui::test]
+    fn adjust_keeps_total_at_container_size(cx: &mut TestAppContext) {
+        let entity = cx.new(|_| make_state(&[100., 300.], &[open(), open()], 1000.));
+        entity.update(cx, |state, cx| {
+            state.adjust_to_container_size(cx);
+            // Everything is flexible, so the split fills the container exactly
+            // and keeps the 1:3 proportion.
+            assert!((total(state) - 1000.).abs() < 0.5);
+            assert!((state.sizes[0].as_f32() - 250.).abs() < 0.5);
+            assert!((state.sizes[1].as_f32() - 750.).abs() < 0.5);
+        });
+    }
+
+    #[gpui::test]
+    fn adjust_pins_a_fixed_range_panel(cx: &mut TestAppContext) {
+        // A pinned toolbar (min == max) holds its size while the container
+        // grows; the flexible panel absorbs the rest. This is the pinned-panel
+        // path the recent fix cared about.
+        let entity = cx.new(|_| {
+            make_state(
+                &[80., 200.],
+                &[px(80.)..px(80.), open()],
+                1000.,
+            )
+        });
+        entity.update(cx, |state, cx| {
+            state.adjust_to_container_size(cx);
+            assert!((state.sizes[0].as_f32() - 80.).abs() < 0.5);
+            assert!((state.sizes[1].as_f32() - 920.).abs() < 0.5);
+            assert!((total(state) - 1000.).abs() < 0.5);
+        });
+    }
+
+    #[gpui::test]
+    fn adjust_respects_max_and_hands_slack_to_others(cx: &mut TestAppContext) {
+        // First panel caps at 150; the second takes everything else.
+        let entity = cx.new(|_| {
+            make_state(
+                &[100., 100.],
+                &[px(40.)..px(150.), open()],
+                1000.,
+            )
+        });
+        entity.update(cx, |state, cx| {
+            state.adjust_to_container_size(cx);
+            assert!(state.sizes[0].as_f32() <= 150.5);
+            assert!((total(state) - 1000.).abs() < 0.5);
+        });
+    }
+
+    #[gpui::test]
+    fn adjust_on_zero_container_is_a_noop(cx: &mut TestAppContext) {
+        // No bounds yet: nothing should be touched, and no divide-by-zero.
+        let entity = cx.new(|_| {
+            let mut s = make_state(&[100., 200.], &[open(), open()], 0.);
+            s.bounds = Bounds::default();
+            s
+        });
+        entity.update(cx, |state, cx| {
+            let before = state.sizes.clone();
+            state.adjust_to_container_size(cx);
+            assert_eq!(state.sizes, before);
+        });
+    }
+
+    #[gpui::test]
+    fn adjust_with_all_pinned_does_not_divide_by_zero(cx: &mut TestAppContext) {
+        // Every panel is pinned, so the flex set empties on the first pass.
+        // The solver must terminate and honor the pins, container be damned.
+        let entity = cx.new(|_| {
+            make_state(
+                &[80., 120.],
+                &[px(80.)..px(80.), px(120.)..px(120.)],
+                1000.,
+            )
+        });
+        entity.update(cx, |state, cx| {
+            state.adjust_to_container_size(cx);
+            assert!((state.sizes[0].as_f32() - 80.).abs() < 0.5);
+            assert!((state.sizes[1].as_f32() - 120.).abs() < 0.5);
+        });
+    }
+
+    #[gpui::test]
+    fn insert_panel_keeps_total_at_container(cx: &mut TestAppContext) {
+        let entity = cx.new(|_| make_state(&[400., 600.], &[open(), open()], 1000.));
+        entity.update(cx, |state, cx| {
+            state.insert_panel(Some(px(200.)), Some(1), cx);
+            assert_eq!(state.panels.len(), 3);
+            assert_eq!(state.sizes.len(), 3);
+            // The inserted panel lands at its requested size, the rest shrink
+            // proportionally so the total still fills the container.
+            assert!((state.sizes[1].as_f32() - 200.).abs() < 1.0);
+            assert!((total(state) - 1000.).abs() < 1.0);
+        });
+    }
+
+    #[gpui::test]
+    fn sync_panels_count_grows_and_shrinks(cx: &mut TestAppContext) {
+        let entity = cx.new(|_| make_state(&[500., 500.], &[open(), open()], 1000.));
+        entity.update(cx, |state, cx| {
+            state.sync_panels_count(Axis::Horizontal, 4, cx);
+            assert_eq!(state.panels.len(), 4);
+            assert_eq!(state.sizes.len(), 4);
+            // Growing re-solves against the container.
+            assert!((total(state) - 1000.).abs() < 1.0);
+
+            state.sync_panels_count(Axis::Horizontal, 1, cx);
+            assert_eq!(state.panels.len(), 1);
+            assert_eq!(state.sizes.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn remove_panel_reindexes_resizing_ix(cx: &mut TestAppContext) {
+        let entity = cx.new(|_| {
+            let mut s = make_state(&[300., 300., 400.], &[open(), open(), open()], 1000.);
+            // Pretend the third handle is mid-drag.
+            s.resizing_panel_ix = Some(2);
+            s
+        });
+        entity.update(cx, |state, cx| {
+            // Removing a panel before the dragged one shifts its index down.
+            state.remove_panel(0, cx);
+            assert_eq!(state.panels.len(), 2);
+            assert_eq!(state.resizing_panel_ix, Some(1));
+        });
+    }
+
+    #[gpui::test]
+    fn move_panel_carries_size_along(cx: &mut TestAppContext) {
+        let entity = cx.new(|_| make_state(&[100., 200., 300.], &[open(), open(), open()], 600.));
+        entity.update(cx, |state, cx| {
+            state.move_panel(0, 2, cx);
+            // The 100px panel rode to the end with its size intact.
+            assert_eq!(state.sizes[2].as_f32(), 100.);
+            assert_eq!(state.sizes[0].as_f32(), 200.);
+            assert_eq!(state.sizes[1].as_f32(), 300.);
+        });
+    }
+
+    #[gpui::test]
+    fn move_panel_out_of_range_is_a_noop(cx: &mut TestAppContext) {
+        let entity = cx.new(|_| make_state(&[100., 200.], &[open(), open()], 300.));
+        entity.update(cx, |state, cx| {
+            let before = state.sizes.clone();
+            state.move_panel(0, 5, cx);
+            state.move_panel(0, 0, cx);
+            assert_eq!(state.sizes, before);
+        });
+    }
+
+    #[gpui::test]
+    fn resize_moves_the_boundary_and_conserves_total(cx: &mut TestAppContext) {
+        // resize_panel takes a &mut Window (it never reads it), so run the
+        // drag from inside a headless test window that hands one over.
+        let entity = cx.new(|_| {
+            // Give panels real bounds so sync_real_panel_sizes reads them back.
+            let mut s = make_state(&[300., 300., 400.], &[open(), open(), open()], 1000.);
+            for (i, p) in s.panels.iter_mut().enumerate() {
+                let x = [0., 300., 600.][i];
+                let w = [300., 300., 400.][i];
+                p.bounds = Bounds {
+                    origin: point(px(x), px(0.)),
+                    size: size(px(w), px(100.)),
+                };
+            }
+            s
+        });
+        let window = cx.add_window(|_, _| DragPanel);
+        let before = 1000.;
+        window
+            .update(cx, |_, window, cx| {
+                entity.update(cx, |state, cx| {
+                    // Grow panel 0 by dragging its boundary out to 400.
+                    state.resize_panel(0, px(400.), window, cx);
+                    assert!(
+                        (total(state) - before).abs() < 1.0,
+                        "resize changed the total"
+                    );
+                    // Panel 0 grew, a panel on the shrink side gave the room back.
+                    assert!(state.sizes[0].as_f32() > 300.);
+                });
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn resize_cannot_shrink_a_pinned_neighbor(cx: &mut TestAppContext) {
+        let entity = cx.new(|_| {
+            let mut s = make_state(
+                &[300., 200., 500.],
+                // Middle panel is pinned; a drag must push past it to the
+                // flexible panel beyond.
+                &[open(), px(200.)..px(200.), open()],
+                1000.,
+            );
+            for (i, p) in s.panels.iter_mut().enumerate() {
+                let x = [0., 300., 500.][i];
+                let w = [300., 200., 500.][i];
+                p.bounds = Bounds {
+                    origin: point(px(x), px(0.)),
+                    size: size(px(w), px(100.)),
+                };
+            }
+            s
+        });
+        let window = cx.add_window(|_, _| DragPanel);
+        window
+            .update(cx, |_, window, cx| {
+                entity.update(cx, |state, cx| {
+                    state.resize_panel(0, px(400.), window, cx);
+                    // The pinned middle panel never changed size.
+                    assert_eq!(state.sizes[1].as_f32(), 200.);
+                    assert!((total(state) - 1000.).abs() < 1.0);
+                });
+            })
+            .unwrap();
+    }
+}

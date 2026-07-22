@@ -25,10 +25,11 @@ use rox_library::writer::{self, Edit, PicChange, PicKind};
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
+use crate::matching::{open_or_focus, WindowRegistry};
 use crate::panel::AppState;
 use crate::panels::library::{fmt_ms, Library};
 use crate::providers;
-use crate::settings_ui::{self, section, SECTION_GAP};
+use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
 
 /// The picture slots the editor exposes, in display order: the label each
 /// wears over its preview.
@@ -56,6 +57,13 @@ struct OpenCoverEditors(Vec<(Vec<i64>, WindowHandle<Root>)>);
 
 impl Global for OpenCoverEditors {}
 
+impl WindowRegistry for OpenCoverEditors {
+    type Key = Vec<i64>;
+    fn entries(&mut self) -> &mut Vec<(Vec<i64>, WindowHandle<Root>)> {
+        &mut self.0
+    }
+}
+
 /// Open a cover editor on `ids`, or bring the one already on that
 /// selection to the front. An empty selection opens nothing.
 pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
@@ -64,37 +72,16 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
     }
     let mut key = ids.clone();
     key.sort_unstable();
-    let entries = cx
-        .try_global::<OpenCoverEditors>()
-        .map(|open| open.0.clone())
-        .unwrap_or_default();
-    // Closed windows fall out of the list as a side effect of the probe.
-    let mut alive = Vec::with_capacity(entries.len() + 1);
-    let mut focused = false;
-    for (entry_key, handle) in entries {
-        let matches = entry_key == key;
-        if handle
-            .update(cx, |_, window, _| {
-                if matches {
-                    window.activate_window();
-                }
+    open_or_focus::<OpenCoverEditors>(
+        key,
+        move |cx| {
+            let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
+            crate::panel::open_child_window(cx, "rox - Cover Art", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+                cx.new(|cx| CoverEditor::new(state, ids, window, cx))
             })
-            .is_ok()
-        {
-            focused |= matches;
-            alive.push((entry_key, handle));
-        }
-    }
-    if focused {
-        cx.set_global(OpenCoverEditors(alive));
-        return;
-    }
-    let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-    let handle = crate::panel::open_child_window(cx, "rox - Cover Art", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-        cx.new(|cx| CoverEditor::new(state, ids, window, cx))
-    });
-    alive.push((key, handle));
-    cx.set_global(OpenCoverEditors(alive));
+        },
+        cx,
+    );
 }
 
 /// One file's embedded pictures at the editor's slots, as the writer reads

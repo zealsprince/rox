@@ -25,11 +25,12 @@ use rox_library::lyrics::{self, Source};
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
+use crate::matching::{open_or_focus, WindowRegistry};
 use crate::panel::AppState;
 use crate::panels::lyrics::{LyricsPanel, StampLine};
 use crate::player::fmt_time;
 use crate::settings::lyrics_dir;
-use crate::settings_ui;
+use crate::settings::ui as settings_ui;
 
 /// The default window size: tall enough for a verse or two at a glance,
 /// narrow since the sheet reads one line to a row.
@@ -42,42 +43,27 @@ struct OpenEditors(Vec<(PathBuf, WindowHandle<Root>)>);
 
 impl Global for OpenEditors {}
 
+impl WindowRegistry for OpenEditors {
+    type Key = PathBuf;
+    fn entries(&mut self) -> &mut Vec<(PathBuf, WindowHandle<Root>)> {
+        &mut self.0
+    }
+}
+
 /// Open a lyrics edit window on `path`, or focus the one already on it. The
 /// panel handle is weak: a save pokes it to re-read, and a closed panel
 /// just no-ops.
 pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: &mut App) {
-    let entries = cx
-        .try_global::<OpenEditors>()
-        .map(|open| open.0.clone())
-        .unwrap_or_default();
-    // Closed windows fall out of the list as a side effect of the probe.
-    let mut alive = Vec::with_capacity(entries.len() + 1);
-    let mut focused = false;
-    for (entry_path, handle) in entries {
-        let matches = entry_path == path;
-        if handle
-            .update(cx, |_, window, _| {
-                if matches {
-                    window.activate_window();
-                }
+    open_or_focus::<OpenEditors>(
+        path.clone(),
+        move |cx| {
+            let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
+            crate::panel::open_child_window(cx, "rox - Edit Lyrics", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+                cx.new(|cx| LyricsEdit::new(state, panel, path, window, cx))
             })
-            .is_ok()
-        {
-            focused |= matches;
-            alive.push((entry_path, handle));
-        }
-    }
-    if focused {
-        cx.set_global(OpenEditors(alive));
-        return;
-    }
-    let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-    let opened = path.clone();
-    let handle = crate::panel::open_child_window(cx, "rox - Edit Lyrics", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-        cx.new(|cx| LyricsEdit::new(state, panel, path, window, cx))
-    });
-    alive.push((opened, handle));
-    cx.set_global(OpenEditors(alive));
+        },
+        cx,
+    );
 }
 
 struct LyricsEdit {

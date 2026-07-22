@@ -7,7 +7,7 @@
 //! The store is still the source of truth, files are a snapshot you generate
 //! and re-read, never where playlists live.
 
-use rox_library::playlists::ExportTrack;
+use crate::playlists::ExportTrack;
 
 /// Serialize playable rows to an extended M3U8 document. Each track gets an
 /// `#EXTINF:<secs>,<artist> - <title>` line then its absolute path; a missing

@@ -237,6 +237,14 @@ pub struct Projection {
     album_ranks: OnceLock<Vec<u32>>,
     genre_ranks: OnceLock<Vec<u32>>,
     codec_ranks: OnceLock<Vec<u32>>,
+    /// The distinct album artists and (album artist, album) pairs, each with
+    /// its first-seen row, in row order. Query-independent, so the per-keystroke
+    /// search_artists/search_albums filter these instead of rescanning every row
+    /// with a HashSet each call. Built lazily on first search like the ranks,
+    /// and safe to memoize for the same reason: the projection is immutable once
+    /// loaded, so first-seen never shifts.
+    distinct_artists: OnceLock<Vec<ArtistHit>>,
+    distinct_albums: OnceLock<Vec<AlbumHit>>,
 }
 
 pub struct RowView<'a> {
@@ -479,6 +487,35 @@ impl TrackFields<'_> {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default()
     }
+}
+
+/// The decimal string of every u16, built once and shared. A `year:` term
+/// matches on the digits, so the search would else format all 65536 years to a
+/// fresh String per keystroke; this holds them as one contiguous arena so a
+/// year term only substring-tests borrowed slices.
+fn year_strings() -> &'static Arena {
+    static YEARS: OnceLock<Arena> = OnceLock::new();
+    YEARS.get_or_init(|| {
+        // Digits straight into a stack buffer, no per-year String. A u16 is at
+        // most five digits, written back to front then pushed as one slice.
+        let mut arena = Arena::default();
+        let mut buf = [0u8; 5];
+        for y in 0..=u16::MAX {
+            let mut n = y;
+            let mut i = buf.len();
+            loop {
+                i -= 1;
+                buf[i] = b'0' + (n % 10) as u8;
+                n /= 10;
+                if n == 0 {
+                    break;
+                }
+            }
+            // The bytes are ASCII digits, so the slice is valid UTF-8.
+            arena.push(std::str::from_utf8(&buf[i..]).unwrap());
+        }
+        arena
+    })
 }
 
 /// Case-folded substring test with a needle already lowercased by
@@ -772,6 +809,8 @@ impl Projection {
             album_ranks: OnceLock::new(),
             genre_ranks: OnceLock::new(),
             codec_ranks: OnceLock::new(),
+            distinct_artists: OnceLock::new(),
+            distinct_albums: OnceLock::new(),
         }
     }
 
@@ -864,12 +903,16 @@ impl Projection {
                 }
                 // A year needle matches on the digits, so `year:199`
                 // takes the whole decade; the mask covers every u16 once
-                // instead of formatting per row.
-                Some(QueryField::Year) => Hits::Year(
-                    (0..=u16::MAX)
-                        .map(|y| y.to_string().contains(&t.needle))
-                        .collect(),
-                ),
+                // over the shared year arena, so a keystroke never formats
+                // 65k fresh Strings.
+                Some(QueryField::Year) => {
+                    let years = year_strings();
+                    Hits::Year(
+                        (0..=u16::MAX as usize)
+                            .map(|y| years.get(y).contains(&t.needle))
+                            .collect(),
+                    )
+                }
             })
             .collect();
 
@@ -916,22 +959,16 @@ impl Projection {
                 _ => false,
             })
         };
-        let mut seen: HashSet<u32> = HashSet::new();
-        let mut hits: Vec<ArtistHit> = Vec::new();
-        for row in 0..self.len() as u32 {
-            let sym = self.album_artist[row as usize];
-            if !seen.insert(sym) {
-                continue;
-            }
-            let name = &self.album_artists.strings[sym as usize];
-            if name.is_empty() || !matches(&self.album_artists.lower[sym as usize]) {
-                continue;
-            }
-            hits.push(ArtistHit {
-                album_artist: sym,
-                row,
-            });
-        }
+        let mut hits: Vec<ArtistHit> = self
+            .distinct_artists()
+            .iter()
+            .filter(|h| {
+                let sym = h.album_artist as usize;
+                !self.album_artists.strings[sym].is_empty()
+                    && matches(&self.album_artists.lower[sym])
+            })
+            .copied()
+            .collect();
         hits.sort_by(|a, b| {
             self.album_artists.strings[a.album_artist as usize]
                 .cmp(&self.album_artists.strings[b.album_artist as usize])
@@ -960,31 +997,19 @@ impl Projection {
                 _ => false,
             })
         };
-        let mut seen: HashSet<u64> = HashSet::new();
-        let mut hits: Vec<AlbumHit> = Vec::new();
-        for row in 0..self.len() as u32 {
-            let i = row as usize;
-            let album_artist = self.album_artist[i];
-            let album = self.album[i];
-            let key = (album_artist as u64) << 32 | album as u64;
-            if !seen.insert(key) {
-                continue;
-            }
-            let album_name = &self.albums.strings[album as usize];
-            if album_name.is_empty()
-                || !matches(
-                    &self.album_artists.lower[album_artist as usize],
-                    &self.albums.lower[album as usize],
-                )
-            {
-                continue;
-            }
-            hits.push(AlbumHit {
-                album_artist,
-                album,
-                row,
-            });
-        }
+        let mut hits: Vec<AlbumHit> = self
+            .distinct_albums()
+            .iter()
+            .filter(|h| {
+                let album = h.album as usize;
+                !self.albums.strings[album].is_empty()
+                    && matches(
+                        &self.album_artists.lower[h.album_artist as usize],
+                        &self.albums.lower[album],
+                    )
+            })
+            .copied()
+            .collect();
         hits.sort_by(|a, b| {
             let artist = self.album_artists.strings[a.album_artist as usize]
                 .cmp(&self.album_artists.strings[b.album_artist as usize]);
@@ -1157,6 +1182,50 @@ impl Projection {
     }
     fn codec_ranks(&self) -> &[u32] {
         self.codec_ranks.get_or_init(|| Self::ranks(&self.codecs))
+    }
+
+    /// The distinct album artists in first-seen row order, cached. The
+    /// per-query search_artists filters these by name, so the O(rows) distinct
+    /// pass happens once instead of every keystroke.
+    fn distinct_artists(&self) -> &[ArtistHit] {
+        self.distinct_artists.get_or_init(|| {
+            let mut seen: HashSet<u32> = HashSet::new();
+            let mut out: Vec<ArtistHit> = Vec::new();
+            for row in 0..self.len() as u32 {
+                let sym = self.album_artist[row as usize];
+                if seen.insert(sym) {
+                    out.push(ArtistHit {
+                        album_artist: sym,
+                        row,
+                    });
+                }
+            }
+            out
+        })
+    }
+
+    /// The distinct (album artist, album) pairs in first-seen row order,
+    /// cached. The per-query search_albums filters these, moving the distinct
+    /// pass off the keystroke path the same way distinct_artists does.
+    fn distinct_albums(&self) -> &[AlbumHit] {
+        self.distinct_albums.get_or_init(|| {
+            let mut seen: HashSet<u64> = HashSet::new();
+            let mut out: Vec<AlbumHit> = Vec::new();
+            for row in 0..self.len() as u32 {
+                let i = row as usize;
+                let album_artist = self.album_artist[i];
+                let album = self.album[i];
+                let key = (album_artist as u64) << 32 | album as u64;
+                if seen.insert(key) {
+                    out.push(AlbumHit {
+                        album_artist,
+                        album,
+                        row,
+                    });
+                }
+            }
+            out
+        })
     }
 
     /// The canonical browse order: album artist, album, disc, track number.
@@ -1656,6 +1725,266 @@ mod tests {
         assert_eq!(p.resolve(1).plays, 2);
         let by_plays = p.sort_view(&[0, 1], SortKey::Plays, true);
         assert_eq!(by_plays, [1, 0]);
+    }
+
+    /// A brute-force reference for search_artists: the distinct non-empty
+    /// album artists whose lowered name matches every free/artist term, in
+    /// first-seen row order then sorted by name. Mirrors the function's rule
+    /// without the cache, so a mismatch flags the cached path drifting.
+    fn ref_artists(p: &Projection, query: &str) -> Vec<(String, u32)> {
+        let terms = parse_query(query);
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let matches = |lower: &str| {
+            terms.iter().all(|t| match t.field {
+                None | Some(QueryField::Artist) | Some(QueryField::AlbumArtist) => {
+                    lower.contains(&t.needle)
+                }
+                _ => false,
+            })
+        };
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut out: Vec<(String, u32)> = Vec::new();
+        for row in 0..p.len() as u32 {
+            let sym = p.album_artist[row as usize];
+            if !seen.insert(sym) {
+                continue;
+            }
+            let name = &p.album_artists.strings[sym as usize];
+            if name.is_empty() || !matches(&p.album_artists.lower[sym as usize]) {
+                continue;
+            }
+            out.push((name.clone(), row));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// The search_albums counterpart to ref_artists: distinct non-empty
+    /// (album artist, album) pairs matching every term, sorted by artist then
+    /// album.
+    fn ref_albums(p: &Projection, query: &str) -> Vec<(String, String, u32)> {
+        let terms = parse_query(query);
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let matches = |artist: &str, album: &str| {
+            terms.iter().all(|t| match t.field {
+                None => artist.contains(&t.needle) || album.contains(&t.needle),
+                Some(QueryField::Album) => album.contains(&t.needle),
+                Some(QueryField::Artist) | Some(QueryField::AlbumArtist) => {
+                    artist.contains(&t.needle)
+                }
+                _ => false,
+            })
+        };
+        let mut seen: HashSet<u64> = HashSet::new();
+        let mut out: Vec<(String, String, u32)> = Vec::new();
+        for row in 0..p.len() as u32 {
+            let i = row as usize;
+            let aa = p.album_artist[i];
+            let al = p.album[i];
+            let key = (aa as u64) << 32 | al as u64;
+            if !seen.insert(key) {
+                continue;
+            }
+            let album_name = &p.albums.strings[al as usize];
+            if album_name.is_empty()
+                || !matches(&p.album_artists.lower[aa as usize], &p.albums.lower[al as usize])
+            {
+                continue;
+            }
+            out.push((
+                p.album_artists.strings[aa as usize].clone(),
+                album_name.clone(),
+                row,
+            ));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        out
+    }
+
+    /// The cached search_artists/search_albums return exactly what a
+    /// straightforward brute-force distinct pass would, across empty,
+    /// no-match, single, and multi-term queries. The cache moves the O(rows)
+    /// work off the keystroke path, so this guards it hasn't changed results.
+    #[test]
+    fn search_grouped_matches_reference() {
+        fn full(path: &str, album_artist: &str, album: &str, title: &str) -> TrackRow {
+            TrackRow {
+                path: path.into(),
+                title: title.into(),
+                artist: album_artist.into(),
+                album_artist: album_artist.into(),
+                album: album.into(),
+                genre: String::new(),
+                year: 0,
+                disc_no: 0,
+                track_no: 0,
+                duration_ms: 0,
+                codec: String::new(),
+                bitrate_kbps: 0,
+                rating: 0,
+                size: 0,
+                mtime: 0,
+            }
+        }
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                full("/m/1.mp3", "Fleet Foxes", "Fleet Foxes", "White Winter Hymnal"),
+                full("/m/2.mp3", "Fleet Foxes", "Helplessness Blues", "Montezuma"),
+                full("/m/3.mp3", "ODESZA", "A Moment Apart", "Line Of Sight"),
+                full("/m/4.mp3", "Daft Punk", "Discovery", "One More Time"),
+                full("/m/5.mp3", "Daft Punk", "Discovery", "Aerodynamic"),
+            ],
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn).unwrap();
+
+        let check = |q: &str| {
+            let got_artists: Vec<(String, u32)> = p
+                .search_artists(q)
+                .iter()
+                .map(|h| (p.album_artists.strings[h.album_artist as usize].clone(), h.row))
+                .collect();
+            assert_eq!(got_artists, ref_artists(&p, q), "artists mismatch for {q:?}");
+            let got_albums: Vec<(String, String, u32)> = p
+                .search_albums(q)
+                .iter()
+                .map(|h| {
+                    (
+                        p.album_artists.strings[h.album_artist as usize].clone(),
+                        p.albums.strings[h.album as usize].clone(),
+                        h.row,
+                    )
+                })
+                .collect();
+            assert_eq!(got_albums, ref_albums(&p, q), "albums mismatch for {q:?}");
+        };
+
+        // Empty, no-match, single, multi-term, and pinned queries.
+        check("");
+        check("zzznomatch");
+        check("fleet");
+        check("daft");
+        check("d");
+        check("daft discovery");
+        check("album:discovery");
+        check("artist:fleet album:helpless");
+        check("title:montezuma");
+    }
+
+    /// The distinct caches are built from immutable projection data, so a
+    /// second call returns the same thing - the OnceLock doesn't corrupt
+    /// state between calls.
+    #[test]
+    fn search_cache_is_stable_across_calls() {
+        fn full(path: &str, album_artist: &str, album: &str) -> TrackRow {
+            TrackRow {
+                path: path.into(),
+                title: "t".into(),
+                artist: album_artist.into(),
+                album_artist: album_artist.into(),
+                album: album.into(),
+                genre: String::new(),
+                year: 0,
+                disc_no: 0,
+                track_no: 0,
+                duration_ms: 0,
+                codec: String::new(),
+                bitrate_kbps: 0,
+                rating: 0,
+                size: 0,
+                mtime: 0,
+            }
+        }
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                full("/m/1.mp3", "Air", "Moon Safari"),
+                full("/m/2.mp3", "Air", "Talkie Walkie"),
+                full("/m/3.mp3", "Moby", "Play"),
+            ],
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn).unwrap();
+
+        let artists1: Vec<u32> = p.search_artists("a").iter().map(|h| h.album_artist).collect();
+        let artists2: Vec<u32> = p.search_artists("a").iter().map(|h| h.album_artist).collect();
+        assert_eq!(artists1, artists2);
+
+        let albums1: Vec<(u32, u32)> = p
+            .search_albums("a")
+            .iter()
+            .map(|h| (h.album_artist, h.album))
+            .collect();
+        let albums2: Vec<(u32, u32)> = p
+            .search_albums("a")
+            .iter()
+            .map(|h| (h.album_artist, h.album))
+            .collect();
+        assert_eq!(albums1, albums2);
+
+        // The full-catalog search is likewise stable call to call.
+        assert_eq!(p.search("air"), p.search("air"));
+    }
+
+    /// The `year:` filter matches on the digits and holds at the boundary
+    /// years (0 and 65535) without panicking on the mask index.
+    #[test]
+    fn search_year_filter_matches_and_boundaries() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "Zero", "A", 0),
+                track("/m/2.mp3", "Nineties", "B", 1999),
+                track("/m/3.mp3", "Two Thousand", "C", 2000),
+                track("/m/4.mp3", "Max", "D", u16::MAX),
+            ],
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn).unwrap();
+
+        // The decade needle takes the one nineties row.
+        assert_eq!(titles_for(&p, "year:199"), ["Nineties"]);
+        // An exact year.
+        assert_eq!(titles_for(&p, "year:2000"), ["Two Thousand"]);
+        // A bare digit matches on the substring, so "0" takes both years
+        // whose decimal holds a zero.
+        assert_eq!(titles_for(&p, "year:0"), ["Zero", "Two Thousand"]);
+        // The max year matches its own digits, no index panic at the top.
+        assert_eq!(titles_for(&p, &format!("year:{}", u16::MAX)), ["Max"]);
+    }
+
+    /// heap_bytes counts the `added` column, so growing it grows the total.
+    #[test]
+    fn heap_bytes_counts_added() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", 2000)]).unwrap();
+        let small = Projection::load_serial(&conn).unwrap();
+
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/2.mp3", "Two", "A", 2000),
+                track("/m/3.mp3", "Three", "A", 2000),
+                track("/m/4.mp3", "Four", "A", 2000),
+            ],
+        )
+        .unwrap();
+        let big = Projection::load_serial(&conn).unwrap();
+
+        assert!(big.added.len() > small.added.len());
+        assert!(big.heap_bytes() > small.heap_bytes());
     }
 
     /// A two-disc set plays disc 1 through before disc 2 starts, instead

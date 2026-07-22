@@ -37,12 +37,13 @@ use rox_library::writer::{self, Change, Edit, Field};
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
+use crate::matching::{open_or_focus, WindowRegistry};
 use crate::panel::AppState;
 use crate::panels::library::{fmt_ms, Library};
 use crate::providers;
 use crate::settings::{rating_style, RatingStyle, Settings};
-use crate::settings_ui::{self, section, SECTION_GAP};
-use crate::tags::suggest;
+use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
+use crate::tags::{guess, suggest};
 
 /// The form's fields in sheet order: the label each row wears, and
 /// whether the field is per-track by nature. Per-track fields only edit
@@ -139,6 +140,13 @@ struct OpenTagEditors(Vec<(Vec<i64>, WindowHandle<Root>)>);
 
 impl Global for OpenTagEditors {}
 
+impl WindowRegistry for OpenTagEditors {
+    type Key = Vec<i64>;
+    fn entries(&mut self) -> &mut Vec<(Vec<i64>, WindowHandle<Root>)> {
+        &mut self.0
+    }
+}
+
 /// Open a tag editor on `ids`, the selection's tracks in view order, or
 /// bring the editor already on that selection to the front. An empty
 /// selection opens nothing.
@@ -148,44 +156,23 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
     }
     let mut key = ids.clone();
     key.sort_unstable();
-    let entries = cx
-        .try_global::<OpenTagEditors>()
-        .map(|open| open.0.clone())
-        .unwrap_or_default();
-    // Closed windows fall out of the list as a side effect of the probe.
-    let mut alive = Vec::with_capacity(entries.len() + 1);
-    let mut focused = false;
-    for (entry_key, handle) in entries {
-        let matches = entry_key == key;
-        if handle
-            .update(cx, |_, window, _| {
-                if matches {
-                    window.activate_window();
-                }
+    open_or_focus::<OpenTagEditors>(
+        key,
+        move |cx| {
+            // The last closed editor's size, sanity-floored; the default is
+            // wide enough that the table's columns fit without scrolling.
+            let (width, height) = Settings::load()
+                .tag_editor
+                .filter(|s| s.width >= 400. && s.height >= 300.)
+                .map(|s| (s.width, s.height))
+                .unwrap_or((1400., 680.));
+            let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
+            crate::panel::open_child_window(cx, "rox - Tag Editor", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
+                cx.new(|cx| TagEditor::new(state, ids, window, cx))
             })
-            .is_ok()
-        {
-            focused |= matches;
-            alive.push((entry_key, handle));
-        }
-    }
-    if focused {
-        cx.set_global(OpenTagEditors(alive));
-        return;
-    }
-    // The last closed editor's size, sanity-floored; the default is wide
-    // enough that the table's columns fit without scrolling.
-    let (width, height) = Settings::load()
-        .tag_editor
-        .filter(|s| s.width >= 400. && s.height >= 300.)
-        .map(|s| (s.width, s.height))
-        .unwrap_or((1400., 680.));
-    let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let handle = crate::panel::open_child_window(cx, "rox - Tag Editor", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-        cx.new(|cx| TagEditor::new(state, ids, window, cx))
-    });
-    alive.push((key, handle));
-    cx.set_global(OpenTagEditors(alive));
+        },
+        cx,
+    );
 }
 
 /// One selected track as the list shows it, resolved at open; the path is
@@ -239,6 +226,12 @@ pub struct TagEditor {
     /// The projection the suggestion providers share, kept for cells
     /// created after open.
     projection: Option<Arc<Projection>>,
+    /// The guess panel is open: a filename pattern with a live preview
+    /// of the values it would pull from every track's path.
+    guess: bool,
+    /// The guess pattern's input, remembered across editors through the
+    /// settings file - one library tends to one naming scheme.
+    pattern: Entity<InputState>,
     /// A failed read or commit, shown inline over the buttons.
     error: Option<SharedString>,
     /// A commit is in flight; the fields lock and the buttons hold still
@@ -342,7 +335,7 @@ impl TagEditor {
             .collect();
         // Enter in any input saves, the metadata panel's convention. The
         // change repaint keeps the rating control on the typed value.
-        let _input_events = inputs
+        let mut _input_events: Vec<Subscription> = inputs
             .iter()
             .map(|input| {
                 cx.subscribe_in(
@@ -356,6 +349,28 @@ impl TagEditor {
                 )
             })
             .collect();
+        // The guess pattern, seeded from the last editor's; enter applies
+        // the guesses rather than saving - the preview is right there and
+        // an accidental save would close the window.
+        let saved_pattern = Settings::load()
+            .tag_editor
+            .map(|s| s.pattern)
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| "%artist% - %title%".to_owned());
+        let pattern = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(saved_pattern)
+                .placeholder("%artist% - %title%")
+        });
+        _input_events.push(cx.subscribe_in(
+            &pattern,
+            window,
+            |this: &mut Self, _, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.apply_guesses(window, cx),
+                InputEvent::Change => cx.notify(),
+                _ => {}
+            },
+        ));
         window.focus(&inputs[0].read(cx).focus_handle(cx));
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         // The OS close button never runs remove_window, so the frame
@@ -384,6 +399,8 @@ impl TagEditor {
             grid: None,
             seeds: Vec::new(),
             projection,
+            guess: false,
+            pattern,
             error: None,
             saving: false,
             save_done: 0,
@@ -495,6 +512,7 @@ impl TagEditor {
                     .collect()
             })
             .unwrap_or_default();
+        let pattern = self.pattern.read(cx).value().to_string();
         Settings::update(move |s| {
             let state = s.tag_editor.get_or_insert_with(Default::default);
             state.width = frame.size.width.into();
@@ -503,6 +521,7 @@ impl TagEditor {
             if !columns.is_empty() {
                 state.columns = columns;
             }
+            state.pattern = pattern;
         });
     }
 
@@ -535,7 +554,8 @@ impl TagEditor {
         let Some(baselines) = self.baselines.clone() else {
             return;
         };
-        if self.cells.is_none() {
+        let created = self.cells.is_none();
+        if created {
             let mut cells = Vec::with_capacity(self.tracks.len());
             for _ in &self.tracks {
                 let mut row = Vec::with_capacity(FIELDS.len());
@@ -600,6 +620,14 @@ impl TagEditor {
         for (i, (field, _, _)) in FIELDS.iter().enumerate() {
             let form_value = self.inputs[i].read(cx).value().to_string();
             let drifted = form_value != self.filled[i].as_ref();
+            // Once the grid exists the cells carry the truth: a re-entry
+            // only folds in live form drift. Re-seeding a quiet field
+            // would push its cells back to the disk baseline, wiping the
+            // values an earlier fold-in carried.
+            if !created && !drifted {
+                self.cleared[i] = false;
+                continue;
+            }
             for (t, baseline) in baselines.iter().enumerate() {
                 let base = baseline
                     .iter()
@@ -659,7 +687,12 @@ impl TagEditor {
         };
         for (i, (value, mixed)) in fills.into_iter().enumerate() {
             self.inputs[i].update(cx, |input, cx| {
-                input.set_placeholder(if mixed { "Multiple values" } else { "" }, window, cx);
+                let placeholder = if mixed {
+                    "Multiple values"
+                } else {
+                    field_placeholder(&FIELDS[i].0)
+                };
+                input.set_placeholder(placeholder, window, cx);
                 input.set_value(value.clone(), window, cx);
             });
             self.filled[i] = value;
@@ -686,6 +719,206 @@ impl TagEditor {
             }
         });
         cx.notify();
+    }
+
+    /// Show or hide the guess panel; opening moves focus to the pattern.
+    fn toggle_guess(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.guess = !self.guess;
+        if self.guess {
+            window.focus(&self.pattern.read(cx).focus_handle(cx));
+        }
+        cx.notify();
+    }
+
+    /// Write the pattern's matches into the editor: per-track values land
+    /// in the table's cells (switching to table mode to show them), a
+    /// single track still on the form fills its fields. Either way the
+    /// values arm like typing and nothing touches disk until save.
+    fn apply_guesses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.baselines.is_none() {
+            return;
+        }
+        let Ok(pattern) = guess::parse(self.pattern.read(cx).value().trim()) else {
+            return;
+        };
+        let matches: Vec<Option<Vec<(Field, String)>>> = self
+            .tracks
+            .iter()
+            .map(|track| pattern.apply(&track.path))
+            .collect();
+        if matches.iter().all(|matched| matched.is_none()) {
+            return;
+        }
+        if self.tracks.len() == 1 && !self.table {
+            if let Some(values) = &matches[0] {
+                for (field, value) in values {
+                    let Some(i) = FIELDS.iter().position(|(f, _, _)| f == field) else {
+                        continue;
+                    };
+                    let value = value.clone();
+                    self.inputs[i].update(cx, |input, cx| input.set_value(value, window, cx));
+                }
+            }
+        } else {
+            if !self.table {
+                self.table = true;
+            }
+            self.seed_cells(window, cx);
+            let Some(cells) = self.cells.clone() else {
+                return;
+            };
+            // The seeds stay put: a guessed value reads as the user's own
+            // edit, so re-entering the table never reseeds it away.
+            for (t, matched) in matches.iter().enumerate() {
+                let Some(values) = matched else {
+                    continue;
+                };
+                for (field, value) in values {
+                    let Some(i) = FIELDS.iter().position(|(f, _, _)| f == field) else {
+                        continue;
+                    };
+                    let value = value.clone();
+                    cells[t][i].update(cx, |cell, cx| cell.set_value(value, window, cx));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// The guess panel: the pattern input over a live preview of the
+    /// values it pulls from each track's path, so the query's shape is
+    /// visible before anything applies. Rows past the cap fold into a
+    /// count; the apply button says how many tracks matched.
+    fn guess_panel(&self, cx: &mut Context<Self>) -> Div {
+        /// How many preview rows show before the rest fold into a count.
+        const PREVIEW_CAP: usize = 8;
+        let parsed = guess::parse(self.pattern.read(cx).value().trim());
+        let (matches, parse_error) = match &parsed {
+            Ok(pattern) => (
+                self.tracks
+                    .iter()
+                    .map(|track| pattern.apply(&track.path))
+                    .collect::<Vec<_>>(),
+                None,
+            ),
+            Err(e) => (Vec::new(), Some(SharedString::from(e.clone()))),
+        };
+        let hits = matches.iter().flatten().count();
+        let rows = self
+            .tracks
+            .iter()
+            .zip(&matches)
+            .take(PREVIEW_CAP)
+            .map(|(track, matched)| {
+                let name = track
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| track.path.display().to_string());
+                let values: gpui::AnyElement = match matched {
+                    Some(values) => div()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_x(tokens::SPACE_MD)
+                        .children(values.iter().map(|(field, value)| {
+                            let label = FIELDS
+                                .iter()
+                                .find(|(f, _, _)| f == field)
+                                .map(|(_, label, _)| *label)
+                                .unwrap_or("field");
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap(px(4.))
+                                .child(div().text_color(palette::text_muted()).child(label))
+                                .child(SharedString::from(value.clone()))
+                        }))
+                        .into_any_element(),
+                    None => div()
+                        .text_color(palette::text_muted())
+                        .child("no match")
+                        .into_any_element(),
+                };
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap(tokens::SPACE_MD)
+                    .text_xs()
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(280.))
+                            .truncate()
+                            .text_color(palette::text_muted())
+                            .child(SharedString::from(name)),
+                    )
+                    .child(div().flex_1().min_w_0().child(values))
+            })
+            .collect::<Vec<_>>();
+        let folded = if parse_error.is_none() {
+            self.tracks.len().saturating_sub(PREVIEW_CAP)
+        } else {
+            0
+        };
+        let status: SharedString = match parse_error {
+            Some(e) => e,
+            None => format!("{hits} of {} match", self.tracks.len()).into(),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(tokens::SPACE_XS)
+            .p(tokens::SPACE_SM)
+            .mb(tokens::SPACE_XS)
+            .border_1()
+            .border_color(palette::border())
+            .rounded(tokens::RADIUS)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(
+                        div()
+                            .w(px(84.))
+                            .flex_none()
+                            .text_color(palette::text_muted())
+                            .child("pattern"),
+                    )
+                    .child(div().flex_1().min_w_0().child(Input::new(&self.pattern).small()))
+                    .child(settings_ui::small_button(
+                        "Apply",
+                        icons::ARROW_DOWN,
+                        self.saving || self.baselines.is_none() || hits == 0,
+                        cx.listener(|this, _, window, cx| this.apply_guesses(window, cx)),
+                    )),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(format!(
+                        "{}; / matches the folder above, %skip% discards",
+                        guess::PLACEHOLDERS.join(" ")
+                    )),
+            )
+            .children(rows)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .map(|d| {
+                        if folded > 0 {
+                            d.child(format!("{status}, {folded} more not shown"))
+                        } else {
+                            d.child(status)
+                        }
+                    }),
+            )
     }
 
     /// Open the metadata compare on the single edited track. The window
@@ -982,6 +1215,12 @@ impl TagEditor {
                 ))
             })
             .child(settings_ui::small_button(
+                "Guess",
+                icons::FILE_TEXT,
+                self.saving || self.baselines.is_none(),
+                cx.listener(|this, _, window, cx| this.toggle_guess(window, cx)),
+            ))
+            .child(settings_ui::small_button(
                 if self.table { "Form" } else { "Table" },
                 icons::ROWS_3,
                 self.saving || self.baselines.is_none(),
@@ -1028,6 +1267,7 @@ impl TagEditor {
                         .flex()
                         .flex_col()
                         .when(self.table, |d| d.flex_1().min_h_0())
+                        .when(self.guess, |d| d.child(self.guess_panel(cx)))
                         .child(body)
                         .when(self.saving, |d| {
                             d.child(div().absolute().inset_0().occlude())

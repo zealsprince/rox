@@ -36,7 +36,7 @@ use crate::panel::{
 use crate::panel_settings;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
 use crate::query::search::{SearchBox, SearchEvent};
-use crate::settings_ui;
+use crate::settings::ui as settings_ui;
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::thumbs::Thumb;
 

@@ -116,6 +116,11 @@ pub struct BiographyPanel {
     _player_changed: Subscription,
     _selection_changed: Subscription,
     _library_changed: Subscription,
+    /// Retires the shown artist's decoded images when the panel is dropped
+    /// (closed or its pop-out window shut). Without it a closed panel leaves
+    /// its portrait, banner, and background pinned in gpui's never-evicting
+    /// asset cache.
+    _retire_on_drop: Subscription,
 }
 
 impl BiographyPanel {
@@ -144,6 +149,12 @@ impl BiographyPanel {
                 cx.notify();
             },
         );
+        // Taking loaded first leaves holds() false, so retire drops all
+        // three images the panel still had on screen.
+        let _retire_on_drop = cx.on_release(|this, cx| {
+            let old = this.loaded.take().and_then(|(_, a)| a);
+            this.retire(old, cx);
+        });
         BiographyPanel {
             state,
             config,
@@ -159,6 +170,7 @@ impl BiographyPanel {
             _player_changed,
             _selection_changed,
             _library_changed,
+            _retire_on_drop,
         }
     }
 

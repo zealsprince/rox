@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 
+use lofty::file::TaggedFile;
+use lofty::flac::FlacFile;
+use lofty::mpeg::MpegFile;
 use lofty::prelude::*;
 use rayon::prelude::*;
 use rusqlite::Connection;
@@ -283,11 +286,38 @@ fn collect_into(dir: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>)
 
 /// Tag read isolated per file: a malformed file that errors or panics
 /// lofty's parser costs that one file its tags, never the scan.
+///
+/// MPEG and FLAC parse to their native file type first, so the rating (in
+/// TXXX/POPM frames and unmapped Vorbis keys the generic tag drops) reads
+/// off the same parse that fills the row - one open per file, not two. The
+/// native file converts to a `TaggedFile` exactly as `Probe::read` does, so
+/// the generic tags below match the old probe path byte for byte. Any other
+/// format keeps the plain probe; those carry no rating rox reads anyway.
 fn read_tags(path: &Path) -> Option<TrackRow> {
     let source = crate::tag_source::open(path).ok()?;
-    let file = catch_unwind(AssertUnwindSafe(move || {
-        let probe = lofty::probe::Probe::new(source).guess_file_type().ok()?;
-        probe.options(crate::parse_opts()).read().ok()
+    let (file, rating) = catch_unwind(AssertUnwindSafe(move || {
+        let probe = lofty::probe::Probe::new(source)
+            .guess_file_type()
+            .ok()?
+            .options(crate::parse_opts());
+        let opts = crate::parse_opts();
+        // guess_file_type restores the reader to where it started, so the
+        // native read_from below sees the same stream Probe::read would.
+        match probe.file_type() {
+            Some(lofty::file::FileType::Mpeg) => {
+                let mut reader = probe.into_inner();
+                let mpeg = MpegFile::read_from(&mut reader, opts).ok()?;
+                let rating = mpeg.id3v2().and_then(crate::rating::from_id3v2);
+                Some((TaggedFile::from(mpeg), rating))
+            }
+            Some(lofty::file::FileType::Flac) => {
+                let mut reader = probe.into_inner();
+                let flac = FlacFile::read_from(&mut reader, opts).ok()?;
+                let rating = flac.vorbis_comments().and_then(crate::rating::from_vorbis);
+                Some((TaggedFile::from(flac), rating))
+            }
+            _ => probe.read().ok().map(|f| (f, None)),
+        }
     }))
     .ok()??;
     let mut row = fallback_row(path);
@@ -333,9 +363,9 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         row.disc_no = tag.disk().unwrap_or(0) as u16;
         row.track_no = tag.track().unwrap_or(0) as u16;
     }
-    // The rating reads concretely per format - FMPS lives in TXXX frames
-    // and unmapped Vorbis keys, which the generic tag above never carries.
-    row.rating = crate::rating::read(path, file.file_type()).unwrap_or(0);
+    // The rating read off the same native parse above - FMPS lives in TXXX
+    // frames and unmapped Vorbis keys, which this generic tag never carries.
+    row.rating = rating.unwrap_or(0);
     Some(row)
 }
 
@@ -440,6 +470,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rating, 75);
+    }
+
+    /// The combined read_tags path and the standalone rating::read agree on
+    /// a file's rating: the scanner now pulls the rating out of the same
+    /// parse it reads the tags from, so the two must not drift. Half points
+    /// survive both ways.
+    #[test]
+    fn rating_matches_across_read_paths() {
+        let dir = std::env::temp_dir().join("rox-scanner-rating-parity");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut audio = Vec::new();
+        for frame in 0..3u32 {
+            audio.extend([0xFF, 0xFB, 0x90, 0x00]);
+            audio.extend((0..413u32).map(|i| ((frame * 413 + i) * 7 % 251) as u8));
+        }
+        let path = dir.join("track.mp3");
+        std::fs::write(&path, &audio).unwrap();
+        writer::commit(
+            &path,
+            &[Change {
+                field: Field::Rating,
+                value: Some("7.5".into()),
+            }],
+        )
+        .unwrap();
+
+        // read_one runs read_tags, the combined parse; rating::read_path is
+        // the standalone reader. Both must land on the same half-point value.
+        let combined = read_one(&path).unwrap().rating;
+        let standalone = crate::rating::read_path(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(combined, 75);
+        assert_eq!(standalone, 75);
+        assert_eq!(combined, standalone);
     }
 
     /// A rescan drops the rows for files deleted from disk, keeps the ones

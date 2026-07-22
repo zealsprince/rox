@@ -3,6 +3,14 @@
 //! playback state, the workspace its window and layout) and write through
 //! [`Settings::update`], which reloads the file first so one writer's save
 //! never reverts another's fields to what they were at startup.
+//!
+//! The config subsystem lives under here: `ui` is the shared settings chrome,
+//! `window` the settings window and its pages, `layouts` the named dock
+//! presets.
+
+pub mod layouts;
+pub mod ui;
+pub mod window;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -857,15 +865,17 @@ pub struct QueuedTrack {
     pub explicit: bool,
 }
 
-/// The tag editor's remembered shape: window size in logical pixels and
-/// the table's column widths in field order. Every editor window writes
-/// it on close, the last writer wins.
+/// The tag editor's remembered shape: window size in logical pixels,
+/// the table's column widths in field order, and the last guess
+/// pattern. Every editor window writes it on close, the last writer
+/// wins.
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TagEditorState {
     pub width: f32,
     pub height: f32,
     pub columns: Vec<f32>,
+    pub pattern: String,
 }
 
 /// The stats window's remembered shape: size in logical pixels and the
@@ -1134,5 +1144,109 @@ mod tests {
         assert!(!json.contains("lastfm"));
         assert!(!json.contains("session_key"));
         assert!(!json.contains("last_track"));
+    }
+
+    /// The frame knobs feed div sizes straight, so `clamped` holds each to its
+    /// own ceiling and floors at zero. This is the sanitizer `load` runs over a
+    /// hand-edited frame.
+    #[test]
+    fn frame_clamps_each_knob_to_its_ceiling() {
+        let clamped = Frame {
+            margin: MARGIN_MAX + 100.0,
+            padding: -5.0,
+            rounding: ROUNDING_MAX + 1.0,
+            border: BORDER_MAX + 10.0,
+        }
+        .clamped();
+        assert_eq!(clamped.margin, MARGIN_MAX);
+        // A negative knob floors at zero, not its ceiling.
+        assert_eq!(clamped.padding, 0.0);
+        assert_eq!(clamped.rounding, ROUNDING_MAX);
+        assert_eq!(clamped.border, BORDER_MAX);
+    }
+
+    /// A non-finite knob resets to zero rather than propagating NaN into a
+    /// layout size.
+    #[test]
+    fn frame_resets_non_finite_knobs() {
+        let clamped = Frame {
+            margin: f32::NAN,
+            padding: f32::INFINITY,
+            rounding: 6.0,
+            border: 2.0,
+        }
+        .clamped();
+        assert_eq!(clamped.margin, 0.0);
+        assert_eq!(clamped.padding, 0.0);
+        // Finite, in-range knobs stand.
+        assert_eq!(clamped.rounding, 6.0);
+        assert_eq!(clamped.border, 2.0);
+    }
+
+    /// A round-trip through the JSON file format preserves the fields a
+    /// settings write cares about, so nothing silently drops on save and
+    /// reload.
+    #[test]
+    fn settings_roundtrip_preserves_fields() {
+        let mut src = Settings {
+            volume: 1.5,
+            muted: true,
+            loop_mode: "all".into(),
+            shuffle: true,
+            surface_opacity: 0.4,
+            backdrop_strength: 0.7,
+            art_theming: true,
+            last_scan: 12345,
+            ..Default::default()
+        };
+        src.lastfm.threshold = 0.8;
+        src.library_roots.push(PathBuf::from("/music"));
+
+        let json = serde_json::to_string_pretty(&src).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.volume, 1.5);
+        assert!(back.muted);
+        assert!(back.loop_mode() == LoopMode::All);
+        assert!(back.shuffle);
+        assert_eq!(back.surface_opacity, 0.4);
+        assert_eq!(back.backdrop_strength, 0.7);
+        assert!(back.art_theming);
+        assert_eq!(back.last_scan, 12345);
+        assert_eq!(back.lastfm.threshold, 0.8);
+        assert_eq!(back.library_roots, vec![PathBuf::from("/music")]);
+    }
+
+    /// Unknown fields drop and missing ones take defaults, so the file
+    /// survives version drift in both directions rather than failing to load.
+    #[test]
+    fn settings_deserialize_tolerates_drift() {
+        // A field the current build never wrote, plus a subset of real ones.
+        let json = r#"{ "volume": 0.3, "some_future_knob": 42, "shuffle": true }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.volume, 0.3);
+        assert!(s.shuffle);
+        // A field absent from the file falls back to its default.
+        assert!(!s.muted);
+        assert!(s.loop_mode() == LoopMode::Off);
+    }
+
+    /// The single-track fallback (`last_track`) still restores from an older
+    /// file that predates the full queue snapshot, so a restore isn't lost on
+    /// the format bump.
+    #[test]
+    fn loop_mode_wire_names_round_trip() {
+        let mut s = Settings::default();
+        for (mode, wire) in [
+            (LoopMode::Off, "off"),
+            (LoopMode::All, "all"),
+            (LoopMode::One, "one"),
+        ] {
+            s.set_loop_mode(mode);
+            assert_eq!(s.loop_mode, wire);
+            assert!(s.loop_mode() == mode);
+        }
+        // An unrecognized wire value degrades to Off rather than erroring.
+        s.loop_mode = "garbage".into();
+        assert!(s.loop_mode() == LoopMode::Off);
     }
 }

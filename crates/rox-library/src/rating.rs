@@ -11,8 +11,9 @@ use std::path::Path;
 
 use lofty::file::{AudioFile, FileType};
 use lofty::flac::FlacFile;
-use lofty::id3::v2::Frame;
+use lofty::id3::v2::{Frame, Id3v2Tag};
 use lofty::mpeg::MpegFile;
+use lofty::ogg::VorbisComments;
 use lofty::probe::Probe;
 
 /// The exact-value key, the FreeDesktop media player spec's 0.0-1.0
@@ -118,21 +119,7 @@ fn read_inner(path: &Path, kind: FileType) -> Option<u8> {
         FileType::Mpeg => {
             let mut source = crate::tag_source::open(path).ok()?;
             let tag = MpegFile::read_from(&mut source, opts).ok()?.id3v2().cloned()?;
-            let mut popm = None;
-            for frame in &tag {
-                match frame {
-                    Frame::UserText(f) if f.description.eq_ignore_ascii_case(FMPS_KEY) => {
-                        if let Some(value) = parse_fmps(&f.content) {
-                            return Some(value);
-                        }
-                    }
-                    Frame::Popularimeter(f) if popm.is_none() => {
-                        popm = Some(from_popm_byte(f.rating));
-                    }
-                    _ => {}
-                }
-            }
-            popm
+            from_id3v2(&tag)
         }
         FileType::Flac => {
             let mut source = crate::tag_source::open(path).ok()?;
@@ -140,29 +127,61 @@ fn read_inner(path: &Path, kind: FileType) -> Option<u8> {
                 .ok()?
                 .vorbis_comments()
                 .cloned()?;
-            let mut popm = None;
-            for (key, value) in tag.items() {
-                if key.eq_ignore_ascii_case(FMPS_KEY) {
-                    if let Some(value) = parse_fmps(value) {
-                        return Some(value);
-                    }
-                }
-                // The bare key and the RATING:email convention both count;
-                // provider-specific email scales (Picard's 0-25) are rare
-                // enough to read on the common 0-100 assumption.
-                if popm.is_none()
-                    && (key.eq_ignore_ascii_case("RATING")
-                        || key
-                            .get(..7)
-                            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("RATING:")))
-                {
-                    popm = parse_popm_text(value);
-                }
-            }
-            popm
+            from_vorbis(&tag)
         }
         _ => None,
     }
+}
+
+/// The rating carried by an already-parsed ID3v2 tag: FMPS first, the
+/// exact value, then the popularimeter's stars. The scanner parses the
+/// MPEG file once for its generic tags and hands that same tag here, so a
+/// scan never re-opens the file just for the rating. FMPS lives in a TXXX
+/// frame and POPM in its own frame, neither of which the generic tag
+/// carries, so this reads the native frames directly.
+pub fn from_id3v2(tag: &Id3v2Tag) -> Option<u8> {
+    let mut popm = None;
+    for frame in tag {
+        match frame {
+            Frame::UserText(f) if f.description.eq_ignore_ascii_case(FMPS_KEY) => {
+                if let Some(value) = parse_fmps(&f.content) {
+                    return Some(value);
+                }
+            }
+            Frame::Popularimeter(f) if popm.is_none() => {
+                popm = Some(from_popm_byte(f.rating));
+            }
+            _ => {}
+        }
+    }
+    popm
+}
+
+/// The rating carried by an already-parsed Vorbis comment block, the FLAC
+/// mirror of [`from_id3v2`]: FMPS first, then a bare RATING or a
+/// RATING:email key. The scanner's single FLAC parse feeds this so a scan
+/// reads the file once, not twice.
+pub fn from_vorbis(tag: &VorbisComments) -> Option<u8> {
+    let mut popm = None;
+    for (key, value) in tag.items() {
+        if key.eq_ignore_ascii_case(FMPS_KEY) {
+            if let Some(value) = parse_fmps(value) {
+                return Some(value);
+            }
+        }
+        // The bare key and the RATING:email convention both count;
+        // provider-specific email scales (Picard's 0-25) are rare
+        // enough to read on the common 0-100 assumption.
+        if popm.is_none()
+            && (key.eq_ignore_ascii_case("RATING")
+                || key
+                    .get(..7)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("RATING:")))
+        {
+            popm = parse_popm_text(value);
+        }
+    }
+    popm
 }
 
 /// Probe a path's format and read its rating, the reindex-free entry.

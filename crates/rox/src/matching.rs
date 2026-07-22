@@ -1,8 +1,11 @@
 //! Shared scaffolding for the online-match windows (find metadata, find
-//! lyrics, find cover art): the search-phase state they all cycle through
-//! and the small confidence widgets the scored lists render.
+//! lyrics, find cover art): the search-phase state they all cycle through,
+//! the small confidence widgets the scored lists render, the centered
+//! "note" line their empty states show, and the open-or-focus dance the
+//! editor and matcher windows all run over a keyed window registry.
 
-use gpui::{div, prelude::*, px, Div, SharedString};
+use gpui::{div, prelude::*, px, App, Div, Global, SharedString, WindowHandle};
+use gpui_component::Root;
 
 use crate::design::palette;
 
@@ -46,4 +49,61 @@ pub fn confidence_bar(confidence: f32) -> Div {
                 .w(gpui::relative(confidence.clamp(0.0, 1.0)))
                 .bg(palette::accent()),
         )
+}
+
+/// A quiet centered line where a search window's list or grid would sit -
+/// its empty, searching, and failed states share this.
+pub fn note(text: impl Into<SharedString>) -> Div {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(palette::text_faint())
+        .child(text.into())
+}
+
+/// A `Global` holding the live windows for one editor or matcher kind,
+/// keyed so a second request for the same subject focuses the open window
+/// instead of stacking a twin. Each kind keeps its own newtype (so the six
+/// registries never cross-talk); the key is whatever tells one window from
+/// another - sorted track ids, a path, or a path plus the opening editor's
+/// id where the window binds to a specific editor.
+pub trait WindowRegistry: Global + Default {
+    type Key: PartialEq;
+    fn entries(&mut self) -> &mut Vec<(Self::Key, WindowHandle<Root>)>;
+}
+
+/// Open a window for `key`, or bring the one already on that key to the
+/// front. The probe doubles as a sweep: a window whose handle no longer
+/// updates has been closed, so it drops out of the registry here. `build`
+/// runs only when no live window matches; it opens the OS window and hands
+/// back its handle, which registers under `key`.
+pub fn open_or_focus<R: WindowRegistry>(
+    key: R::Key,
+    build: impl FnOnce(&mut App) -> WindowHandle<Root>,
+    cx: &mut App,
+) {
+    let entries = std::mem::take(cx.default_global::<R>().entries());
+    // Closed windows fall out of the list as a side effect of the probe.
+    let mut alive = Vec::with_capacity(entries.len() + 1);
+    let mut focused = false;
+    for (entry_key, handle) in entries {
+        let matches = entry_key == key;
+        if handle
+            .update(cx, |_, window, _| {
+                if matches {
+                    window.activate_window();
+                }
+            })
+            .is_ok()
+        {
+            focused |= matches;
+            alive.push((entry_key, handle));
+        }
+    }
+    if !focused {
+        alive.push((key, build(cx)));
+    }
+    *cx.default_global::<R>().entries() = alive;
 }

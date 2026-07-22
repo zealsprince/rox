@@ -530,6 +530,44 @@ mod tests {
         assert_eq!(similarity("Harder, Better", "harder better"), 1.0);
     }
 
+    /// The normalizer collapses every run of non-alphanumerics to one space
+    /// and trims the ends, so leading, trailing, and repeated punctuation
+    /// never leave stray spaces or empty words behind.
+    #[test]
+    fn normalize_collapses_and_trims_separators() {
+        assert_eq!(normalize("  Air - Talkie Walkie  "), "air talkie walkie");
+        assert_eq!(normalize("Sunday!!! (Live)"), "sunday live");
+        assert_eq!(normalize("AC/DC"), "ac dc");
+        // Digits survive, and mixed case folds down.
+        assert_eq!(normalize("Blink-182"), "blink 182");
+    }
+
+    /// A punctuation-only name folds to the empty string. The prior fix keeps
+    /// two such names from reading as a match: "!!!" and "+/-" both normalize
+    /// to empty, but `similarity` scores an empty side 0, not 1, so distinct
+    /// symbol-only band names never collide into one.
+    #[test]
+    fn punctuation_only_names_fold_empty_and_do_not_collide() {
+        assert_eq!(normalize("!!!"), "");
+        assert_eq!(normalize("+/-"), "");
+        // Same folded form, but the empty-side guard scores them apart.
+        assert_eq!(similarity("!!!", "+/-"), 0.0);
+        assert_eq!(similarity("!!!", "!!!"), 0.0);
+    }
+
+    /// Word-set overlap, not order: the Jaccard fallback matches rearranged
+    /// or partially shared titles and ranks a full overlap above a partial one.
+    #[test]
+    fn similarity_is_word_set_overlap() {
+        // Reordered words, same set: a full match.
+        assert_eq!(similarity("Better Harder", "Harder Better"), 1.0);
+        // Two words shared of three total: 2/3.
+        let partial = similarity("one more time", "one more");
+        assert!((partial - 2.0 / 3.0).abs() < 1e-6);
+        // A larger shared fraction outranks a smaller one.
+        assert!(similarity("a b c", "a b c d") > similarity("a b c", "a b c d e f"));
+    }
+
     #[test]
     fn exact_match_outranks_a_loose_one() {
         let query = TrackQuery {
@@ -558,6 +596,70 @@ mod tests {
         );
         assert!(exact > loose);
         assert!(exact > 0.9);
+    }
+
+    /// Exact beats partial beats none: a candidate matching every field
+    /// outscores one matching some, which outscores one matching nothing.
+    #[test]
+    fn confidence_orders_exact_partial_none() {
+        let query = TrackQuery {
+            artist: "Air".into(),
+            title: "La Femme d'Argent".into(),
+            album: "Moon Safari".into(),
+            duration_secs: Some(430.0),
+        };
+        let exact = confidence(
+            &query,
+            &candidate("La Femme d'Argent", "Air", "Moon Safari", Some(430.0)),
+        );
+        // Title lands, artist and album miss, duration off.
+        let partial = confidence(
+            &query,
+            &candidate("La Femme d'Argent", "Nobody", "Wrong", Some(120.0)),
+        );
+        // Nothing matches at all.
+        let none = confidence(&query, &candidate("Unrelated", "Nobody", "Wrong", Some(10.0)));
+        assert!(exact > partial);
+        assert!(partial > none);
+        assert!(exact > 0.9);
+    }
+
+    /// Title carries more weight than artist (0.45 vs 0.30), so matching the
+    /// title with the artist wrong beats matching the artist with the title
+    /// wrong. The scorer leans on the title because it identifies the track.
+    #[test]
+    fn title_outweighs_artist() {
+        let query = TrackQuery {
+            artist: "Right Artist".into(),
+            title: "Right Title".into(),
+            album: String::new(),
+            duration_secs: None,
+        };
+        let title_hit = confidence(
+            &query,
+            &candidate("Right Title", "Wrong Artist", "", None),
+        );
+        let artist_hit = confidence(
+            &query,
+            &candidate("Wrong Title", "Right Artist", "", None),
+        );
+        assert!(title_hit > artist_hit);
+    }
+
+    /// Confidence stays inside 0..1 whatever the inputs, so a badge or a bar
+    /// never reads past full or below empty.
+    #[test]
+    fn confidence_stays_in_unit_range() {
+        let query = TrackQuery {
+            artist: "Air".into(),
+            title: "Sexy Boy".into(),
+            album: "Moon Safari".into(),
+            duration_secs: Some(298.0),
+        };
+        let best = confidence(&query, &candidate("Sexy Boy", "Air", "Moon Safari", Some(298.0)));
+        let worst = confidence(&query, &candidate("", "", "", None));
+        assert!((0.0..=1.0).contains(&best));
+        assert!((0.0..=1.0).contains(&worst));
     }
 
     #[test]

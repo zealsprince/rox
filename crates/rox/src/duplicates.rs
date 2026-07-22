@@ -36,7 +36,7 @@ use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
 use crate::panels::library::{fmt_ms, Library};
-use crate::settings_ui::{checkbox, small_button, MIN_SIZE};
+use crate::settings::ui::{checkbox, small_button, MIN_SIZE};
 use crate::thumbs::{Thumb, Thumbs};
 
 /// One row's height. The list is a uniform_list, so headers and members
@@ -1095,5 +1095,136 @@ impl Render for Duplicates {
                     .bg(palette::bg_elevated())
                     .child(page),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rox_library::projection::Projection;
+    use rox_library::rusqlite::Connection;
+    use rox_library::{store, TrackRow};
+
+    /// A track row with just the fields the clustering reads; the rest sit at
+    /// their neutral defaults.
+    fn track(path: &str, title: &str, artist: &str, album: &str, duration_ms: u32) -> TrackRow {
+        TrackRow {
+            path: path.into(),
+            title: title.into(),
+            artist: artist.into(),
+            album_artist: artist.into(),
+            album: album.into(),
+            genre: String::new(),
+            year: 0,
+            disc_no: 0,
+            track_no: 0,
+            duration_ms,
+            codec: "mp3".into(),
+            bitrate_kbps: 320,
+            rating: 0,
+            size: 0,
+            mtime: 0,
+        }
+    }
+
+    /// Load a projection from an in-memory database seeded with the rows, the
+    /// same path the app builds its read model over.
+    fn projection(rows: &[TrackRow]) -> Projection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, rows).unwrap();
+        Projection::load_serial(&conn).unwrap()
+    }
+
+    /// Real duplicates - same artist and title, durations within tolerance -
+    /// cluster into one group, so the tool can offer to trash a spare.
+    #[test]
+    fn real_duplicates_cluster() {
+        let p = projection(&[
+            track("/a/song.mp3", "Song", "Artist", "Album", 200_000),
+            track("/b/song.mp3", "Song", "Artist", "Album", 200_800),
+        ]);
+        let groups = match_duplicates(&p);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members.len(), 2);
+        assert!(groups[0].same_album);
+    }
+
+    /// The deletion-safety fix: two distinct zero-duration rows (files whose
+    /// tags failed to parse, so they scan as their filename stem with duration
+    /// zero) must never cluster. They carry no evidence of identity, and a
+    /// false cluster could auto-mark one for the trash.
+    #[test]
+    fn zero_duration_rows_never_cluster() {
+        // Same empty artist, same stem-derived title, both duration zero: the
+        // shape a pair of unparseable files would take. Without the guard they
+        // would bucket together and pass the duration check on their zeros.
+        let p = projection(&[
+            track("/a/track.mp3", "track", "", "", 0),
+            track("/b/track.mp3", "track", "", "", 0),
+        ]);
+        assert!(match_duplicates(&p).is_empty());
+    }
+
+    /// A zero-duration row is dropped even when it shares a real track's
+    /// identity, so a broken copy can't drag a good one into a group and get
+    /// itself trashed.
+    #[test]
+    fn zero_duration_row_excluded_from_a_real_group() {
+        let p = projection(&[
+            track("/a/song.mp3", "Song", "Artist", "Album", 200_000),
+            track("/b/song.mp3", "Song", "Artist", "Album", 200_500),
+            track("/c/song.mp3", "Song", "Artist", "Album", 0),
+        ]);
+        let groups = match_duplicates(&p);
+        assert_eq!(groups.len(), 1);
+        // Only the two parsed copies; the zero-duration row stayed out.
+        assert_eq!(groups[0].members.len(), 2);
+    }
+
+    /// Durations past the tolerance are different takes, not copies, so they
+    /// split into separate clusters and neither becomes a two-copy group.
+    #[test]
+    fn far_apart_durations_do_not_cluster() {
+        let p = projection(&[
+            track("/a/song.mp3", "Song", "Artist", "Album", 200_000),
+            // Well past DUR_TOLERANCE_MS from the first.
+            track("/b/song.mp3", "Song", "Artist", "Album", 260_000),
+        ]);
+        assert!(match_duplicates(&p).is_empty());
+    }
+
+    /// Case-folded identity: "ABBA" and "Abba", "Song" and "song" land in one
+    /// bucket, so a casing difference in the tags doesn't hide a duplicate.
+    #[test]
+    fn identity_folds_case() {
+        let p = projection(&[
+            track("/a/1.mp3", "Song", "ABBA", "Gold", 200_000),
+            track("/b/2.mp3", "song", "Abba", "Gold", 200_400),
+        ]);
+        let groups = match_duplicates(&p);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members.len(), 2);
+    }
+
+    /// Copies spread across different albums cluster (same song, several
+    /// releases) but carry same_album false, the flag auto-select reads to
+    /// leave them untouched so no album loses a track by default.
+    #[test]
+    fn cross_album_copies_flag_not_same_album() {
+        let p = projection(&[
+            track("/a/song.mp3", "Song", "Artist", "Singles", 200_000),
+            track("/b/song.mp3", "Song", "Artist", "Greatest Hits", 200_300),
+        ]);
+        let groups = match_duplicates(&p);
+        assert_eq!(groups.len(), 1);
+        assert!(!groups[0].same_album);
+    }
+
+    /// A lone copy is not a duplicate, so it never becomes a group.
+    #[test]
+    fn single_copy_is_no_group() {
+        let p = projection(&[track("/a/song.mp3", "Song", "Artist", "Album", 200_000)]);
+        assert!(match_duplicates(&p).is_empty());
     }
 }

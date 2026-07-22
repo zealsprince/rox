@@ -38,6 +38,10 @@ pub fn to_m3u8(rows: &[ExportTrack]) -> String {
 /// is left is the file references, whether the input was extended M3U or a
 /// bare path list.
 pub fn parse(text: &str) -> Vec<String> {
+    // Editors and Windows tools save UTF-8 with a leading BOM. Left on, it
+    // clings to the first line so `#EXTM3U` no longer starts with `#`, slips
+    // past the comment filter as a bogus entry, and the real first track drops.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))

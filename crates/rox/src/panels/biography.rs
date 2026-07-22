@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use gpui::{
     div, img, linear_color_stop, linear_gradient, point, prelude::*, px, App, Context, Div,
-    EventEmitter, FocusHandle, Focusable, MouseButton, ObjectFit, ScrollHandle, SharedString,
-    Subscription, WeakEntity, Window,
+    EventEmitter, FocusHandle, Focusable, Image, MouseButton, ObjectFit, ScrollHandle,
+    SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::spinner::Spinner;
@@ -214,7 +214,11 @@ impl BiographyPanel {
                 }
                 this.pending = None;
                 match result {
-                    Ok(artist) => this.loaded = Some((key, artist)),
+                    Ok(artist) => {
+                        let old = this.loaded.take().and_then(|(_, a)| a);
+                        this.loaded = Some((key, artist));
+                        this.retire(old, cx);
+                    }
                     Err(e) => this.error = Some((key, format!("Lookup failed: {e}").into())),
                 }
                 // A fresh sheet reads from the top.
@@ -224,6 +228,40 @@ impl BiographyPanel {
             .ok();
         })
         .detach();
+    }
+
+    /// Drop a replaced artist's decoded bitmaps from gpui's asset cache. `img`
+    /// keeps every distinct decode in the process-wide asset cache and never
+    /// evicts on its own, so without this every artist viewed leaks its
+    /// portrait, banner, and background for the life of the process. Same as
+    /// the cover and metadata panels' retire. Skips a bitmap the freshly loaded
+    /// artist still shows, which a refresh of the same artist reuses.
+    fn retire(&self, old: Option<Artist>, cx: &mut App) {
+        let Some(old) = old else { return };
+        for image in [
+            old.portrait.map(|(image, _)| image),
+            old.banner.map(|(image, _)| image),
+            old.background,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !self.holds(&image) {
+                image.remove_asset(cx);
+            }
+        }
+    }
+
+    /// Whether the currently loaded artist still shows the decode behind
+    /// `image`, so a same-artist refresh keeps the bitmap it just reloaded.
+    fn holds(&self, image: &Arc<Image>) -> bool {
+        let Some((_, Some(artist))) = &self.loaded else {
+            return false;
+        };
+        let id = image.id();
+        artist.portrait.as_ref().is_some_and(|(i, _)| i.id() == id)
+            || artist.banner.as_ref().is_some_and(|(i, _)| i.id() == id)
+            || artist.background.as_ref().is_some_and(|i| i.id() == id)
     }
 
     /// Refetch the shown artist past the store's TTL, the dropdown's

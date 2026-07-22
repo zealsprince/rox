@@ -86,8 +86,10 @@ fn call(
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
     // An API error still carries a JSON body worth reading, so a status
-    // failure parses like a success.
-    let text = match ureq::post(API_ROOT).send_form(&pairs) {
+    // failure parses like a success. Ride the shared provider agent for its
+    // User-Agent and timeout; a bare ureq::post has neither, so a hung endpoint
+    // parks the connect flow in Confirming forever.
+    let text = match crate::providers::agent().post(API_ROOT).send_form(&pairs) {
         Ok(response) => response.into_string().map_err(|e| e.to_string())?,
         Err(ureq::Error::Status(_, response)) => {
             response.into_string().map_err(|e| e.to_string())?

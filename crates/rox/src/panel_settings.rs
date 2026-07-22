@@ -32,6 +32,7 @@ use crate::panels::cover::CoverArtPanel;
 use crate::panels::depth::DepthPanel;
 use crate::panels::drag_anchor::DragAnchorPanel;
 use crate::panels::filter::FilterPanel;
+use crate::panels::folder_tree::FolderTreePanel;
 use crate::panels::grid::GridPanel;
 use crate::panels::group::GroupPanel;
 use crate::panels::history::HistoryPanel;
@@ -39,6 +40,7 @@ use crate::panels::library::LibraryPanel;
 use crate::panels::lyrics::LyricsPanel;
 use crate::panels::menu::MenuPanel;
 use crate::panels::metadata::MetadataPanel;
+use crate::panels::mini::MiniTogglePanel;
 use crate::panels::playlists::PlaylistsPanel;
 use crate::panels::queue::QueuePanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
@@ -167,6 +169,8 @@ macro_rules! with_settings_panel {
             GroupPanel,
             DepthPanel,
             SlidePanel,
+            FolderTreePanel,
+            MiniTogglePanel,
         )
     };
     (@try $view:expr, $panel:ident, $body:expr, $($ty:ty),+ $(,)?) => {

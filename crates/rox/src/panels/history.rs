@@ -431,18 +431,50 @@ impl HistoryPanel {
     /// click with a share kept for history. A track deleted since its event
     /// resolves to no path and drops out of the queue quietly.
     fn play_from(&mut self, ti: usize, cx: &mut Context<Self>) {
-        let lo = ti
-            .saturating_sub(QUEUE_CAP / 2)
-            .min(self.tracks.len().saturating_sub(QUEUE_CAP));
-        let hi = (lo + QUEUE_CAP).min(self.tracks.len());
-        let ids: Vec<i64> = self.tracks[lo..hi].iter().map(|t| t.track_id).collect();
-        let Ok(paths) = self.state.library.read(cx).paths_for(&ids) else {
+        // Window over the visible tracks in query order, the rows on screen, not
+        // the raw list. Windowing over `self.tracks` would pull query-hidden
+        // tracks into the queue. `ti` indexes `self.tracks`; find where it sits
+        // among the visible rows first.
+        let visible: Vec<usize> = self
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Track(i) => Some(*i as usize),
+                _ => None,
+            })
+            .collect();
+        let Some(pos) = visible.iter().position(|&i| i == ti) else {
             return;
         };
-        if paths.is_empty() {
-            return;
-        }
-        let start = ti - lo;
+        let lo = pos
+            .saturating_sub(QUEUE_CAP / 2)
+            .min(visible.len().saturating_sub(QUEUE_CAP));
+        let hi = (lo + QUEUE_CAP).min(visible.len());
+        let ids: Vec<i64> = visible[lo..hi]
+            .iter()
+            .map(|&i| self.tracks[i].track_id)
+            .collect();
+        let click = pos - lo;
+        // paths_for drops deleted ids, so the compacted queue is shorter than
+        // the window and the raw click offset no longer lines up. The start is
+        // how many ids ahead of the click actually resolved. If the clicked
+        // track is itself one of the deleted ones, bail rather than play its
+        // neighbour, which is what would land at that index.
+        let resolved = {
+            let library = self.state.library.read(cx);
+            let (Ok(paths), Ok(before), Ok(clicked)) = (
+                library.paths_for(&ids),
+                library.paths_for(&ids[..click]),
+                library.paths_for(&ids[click..=click]),
+            ) else {
+                return;
+            };
+            if paths.is_empty() || clicked.is_empty() {
+                return;
+            }
+            (paths, before.len())
+        };
+        let (paths, start) = resolved;
         self.state
             .player
             .update(cx, |player, cx| player.play_at(paths, start, cx));

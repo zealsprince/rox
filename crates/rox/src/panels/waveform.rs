@@ -728,9 +728,16 @@ impl WaveformPanel {
                 self.to = Shape::Blank;
                 div().into_any_element()
             }
-            (Some(_), Peaks::Failed) => self
-                .message("Waveform unavailable for this track")
-                .into_any_element(),
+            (Some(_), Peaks::Failed) => {
+                // Drop the placeholder the decode left behind. The message
+                // replaces the strip, so the shape is unused, but a lingering
+                // Placeholder keeps `generating` true and spins animation
+                // frames at refresh rate while paused on a failed decode.
+                self.from = Shape::Blank;
+                self.to = Shape::Blank;
+                self.message("Waveform unavailable for this track")
+                    .into_any_element()
+            }
             (Some(_), Peaks::Decoding) => {
                 self.retarget(Shape::Placeholder);
                 self.strip(marker).into_any_element()

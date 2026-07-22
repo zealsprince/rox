@@ -998,8 +998,11 @@ impl Library {
                         this.projection = Some(Arc::new(projection));
                         this.order = Arc::new(order);
                         // A finished scan reconciled with disk; stamp now so
-                        // the next launch's catch-up only fires once it ages.
-                        if was_scan {
+                        // the next launch's catch-up only fires once it ages. An
+                        // aborted walk never finished, so leave last_scan alone
+                        // and let the next launch catch up.
+                        let aborted = summary.as_ref().is_some_and(|s| s.aborted);
+                        if was_scan && !aborted {
                             let now = now_secs();
                             crate::settings::Settings::update(move |s| s.last_scan = now);
                         }
@@ -1245,7 +1248,15 @@ fn watch_sync(
     let mut removed = Vec::new();
     for path in paths {
         if path.exists() {
-            if scanner::is_audio(&path) {
+            if path.is_dir() {
+                // A directory moved into a root lands as one dir-path event.
+                // A dir is not is_audio, so without walking it the tracks
+                // inside never get indexed. Its counterpart, a dir moved out,
+                // is a non-existent path that remove_subtree already prunes.
+                if under_root(&path) {
+                    changed.extend(scanner::audio_files(&path));
+                }
+            } else if scanner::is_audio(&path) {
                 changed.push(path);
             }
         } else if under_root(&path) {

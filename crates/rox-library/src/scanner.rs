@@ -11,7 +11,7 @@
 //! and network mounts pay per-stat latency, and that is exactly what the
 //! parallelism hides.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -239,6 +239,15 @@ pub fn is_audio(path: &Path) -> bool {
 }
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+    let mut seen = HashSet::new();
+    // Seed with the root's real path so a link back up to it stops the walk too.
+    if let Ok(canon) = std::fs::canonicalize(dir) {
+        seen.insert(canon);
+    }
+    collect_into(dir, out, &mut seen);
+}
+
+fn collect_into(dir: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -253,7 +262,19 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
             _ => path.is_dir(),
         };
         if is_dir {
-            collect(&path, out);
+            // Guard against symlink loops. A linked folder whose real path was
+            // already walked is a cycle, so skip it; without this a symlink
+            // pointing back up the tree hangs the scan. Canonicalize collapses
+            // the two routes to one entry. A path that won't canonicalize (a
+            // mutual link loop errors here, so does one that vanished mid-walk)
+            // still gets walked, and read_dir short-circuits the loop for it.
+            if let Ok(canon) = std::fs::canonicalize(&path) {
+                // Already walked this real path: a cycle, skip it.
+                if !seen.insert(canon) {
+                    continue;
+                }
+            }
+            collect_into(&path, out, seen);
         } else if is_audio(&path) {
             out.push(path);
         }

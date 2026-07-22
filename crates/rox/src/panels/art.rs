@@ -516,6 +516,7 @@ impl ArtPanel {
                 None => Arc::new(Vec::new()),
             }
         };
+        let has_projection = self.state.library.read(cx).projection().is_some();
         if let Some(projection) = self.state.library.read(cx).projection() {
             let mut last = None;
             for (i, &row) in self.view.iter().enumerate() {
@@ -535,10 +536,15 @@ impl ArtPanel {
                 self.cells.last_mut().unwrap().len += 1;
             }
         }
-        // A shorter view (a query) can leave the center past the end.
-        let max = self.max_index();
-        self.pos = self.pos.clamp(0., max);
-        self.goal = self.goal.clamp(0., max);
+        // A shorter view (a query) can leave the center past the end. Only
+        // re-clamp once the projection is loaded, though: on a cold start it
+        // has not arrived, so there are no cells yet and clamping here would
+        // pin the restored center to 0 before the shelf ever builds.
+        if has_projection {
+            let max = self.max_index();
+            self.pos = self.pos.clamp(0., max);
+            self.goal = self.goal.clamp(0., max);
+        }
         self.playing_ix = self.playing_cell(cx);
         cx.notify();
     }

@@ -99,13 +99,24 @@ impl SlidePanel {
 
     /// Glide to `target`; out-of-range asks clamp, so the arrows never
     /// need their own guards.
-    fn go(&mut self, target: usize, cx: &mut Context<Self>) {
+    fn go(&mut self, target: usize, window: &mut Window, cx: &mut Context<Self>) {
         let target = target.min(self.slides.len().saturating_sub(1));
         if target == self.config.active {
             return;
         }
+        // Hand the active toggle from the slide leaving the viewport to the one
+        // gliding in, so a visualizer that scrolls off stops working and the
+        // arriving one starts. The panel's own set_active only forwards to the
+        // shown slide, so a manual navigation never reaches the children on its
+        // own. Only visible UI drives this, so the panel is active here.
+        if let Some(child) = self.slides.get(self.config.active) {
+            child.set_active(false, window, cx);
+        }
         self.from = self.pos();
         self.config.active = target;
+        if let Some(child) = self.slides.get(self.config.active) {
+            child.set_active(true, window, cx);
+        }
         self.slide_at = Instant::now();
         cx.notify();
     }
@@ -118,12 +129,17 @@ impl SlidePanel {
         cx.notify();
     }
 
-    fn add(&mut self, panel: Arc<dyn PanelView>, cx: &mut Context<Self>) {
+    fn add(&mut self, panel: Arc<dyn PanelView>, window: &mut Window, cx: &mut Context<Self>) {
         self.slides.push(panel);
         if self.slides.len() == 1 {
             self.snap(cx);
+            // First slide on a visible panel: wake it, since there is no
+            // previous slide for `go` to hand the active toggle over from.
+            if let Some(child) = self.slides.get(self.config.active) {
+                child.set_active(true, window, cx);
+            }
         } else {
-            self.go(self.slides.len() - 1, cx);
+            self.go(self.slides.len() - 1, window, cx);
         }
     }
 
@@ -176,9 +192,9 @@ impl SlidePanel {
                 "slide-add-first",
                 self.state.clone(),
                 self.workspace.clone(),
-                move |panel, _, cx| {
+                move |panel, window, cx| {
                     if let Some(this) = weak.upgrade() {
-                        this.update(cx, |this, cx| this.add(panel, cx));
+                        this.update(cx, |this, cx| this.add(panel, window, cx));
                     }
                 },
             );
@@ -231,11 +247,11 @@ impl SlidePanel {
                             .icon(Icon::default().path(icons::CHEVRON_LEFT))
                             .small()
                             .ghost()
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 if let Some(this) = weak.upgrade() {
                                     this.update(cx, |this, cx| {
                                         let target = this.config.active.saturating_sub(1);
-                                        this.go(target, cx);
+                                        this.go(target, window, cx);
                                     });
                                 }
                             }),
@@ -257,11 +273,11 @@ impl SlidePanel {
                             .icon(Icon::default().path(icons::CHEVRON_RIGHT))
                             .small()
                             .ghost()
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 if let Some(this) = weak.upgrade() {
                                     this.update(cx, |this, cx| {
                                         let target = this.config.active + 1;
-                                        this.go(target, cx);
+                                        this.go(target, window, cx);
                                     });
                                 }
                             }),
@@ -292,11 +308,14 @@ impl SlidePanel {
                             } else {
                                 palette::bg_control()
                             })
-                            .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, _, cx| {
-                                if let Some(this) = weak.upgrade() {
-                                    this.update(cx, |this, cx| this.go(i, cx));
-                                }
-                            })
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                move |_: &MouseDownEvent, window, cx| {
+                                    if let Some(this) = weak.upgrade() {
+                                        this.update(cx, |this, cx| this.go(i, window, cx));
+                                    }
+                                },
+                            )
                     })),
             )
         });
@@ -322,9 +341,9 @@ impl SlidePanel {
                                 workspace.clone(),
                                 window,
                                 cx,
-                                move |panel, _, cx| {
+                                move |panel, window, cx| {
                                     if let Some(this) = add_weak.upgrade() {
-                                        this.update(cx, |this, cx| this.add(panel, cx));
+                                        this.update(cx, |this, cx| this.add(panel, window, cx));
                                     }
                                 },
                             )
@@ -485,11 +504,11 @@ impl Panel for SlidePanel {
                 PopupMenuItem::new("Previous Slide")
                     .icon(Icon::default().path(icons::CHEVRON_LEFT))
                     .disabled(self.config.active == 0)
-                    .on_click(move |_, _, cx| {
+                    .on_click(move |_, window, cx| {
                         if let Some(this) = prev.upgrade() {
                             this.update(cx, |this, cx| {
                                 let target = this.config.active.saturating_sub(1);
-                                this.go(target, cx);
+                                this.go(target, window, cx);
                             });
                         }
                     }),
@@ -498,11 +517,11 @@ impl Panel for SlidePanel {
                 PopupMenuItem::new("Next Slide")
                     .icon(Icon::default().path(icons::CHEVRON_RIGHT))
                     .disabled(self.config.active + 1 >= self.slides.len())
-                    .on_click(move |_, _, cx| {
+                    .on_click(move |_, window, cx| {
                         if let Some(this) = next.upgrade() {
                             this.update(cx, |this, cx| {
                                 let target = this.config.active + 1;
-                                this.go(target, cx);
+                                this.go(target, window, cx);
                             });
                         }
                     }),

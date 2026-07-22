@@ -860,7 +860,17 @@ impl GridPanel {
             return cell;
         }
         let lanes = self.lanes();
-        let extent = f32::from(self.tile_side()) + self.config.gap;
+        // The line pitch is the cover edge plus the gap, plus the caption on a
+        // vertical wall where it trails each cover into the scroll. A
+        // horizontal wall stacks the caption on the cross axis, so it stays
+        // out of the scroll pitch. This has to match the item sizes the
+        // virtual list lays out, or the restored cell drifts as you scroll.
+        let scroll_label = if self.config.vertical {
+            self.label_height()
+        } else {
+            0.
+        };
+        let extent = f32::from(self.tile_side()) + scroll_label + self.config.gap;
         if extent <= 0. {
             return 0;
         }

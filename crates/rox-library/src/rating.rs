@@ -152,7 +152,9 @@ fn read_inner(path: &Path, kind: FileType) -> Option<u8> {
                 // enough to read on the common 0-100 assumption.
                 if popm.is_none()
                     && (key.eq_ignore_ascii_case("RATING")
-                        || key.len() > 7 && key[..7].eq_ignore_ascii_case("RATING:"))
+                        || key
+                            .get(..7)
+                            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("RATING:")))
                 {
                     popm = parse_popm_text(value);
                 }

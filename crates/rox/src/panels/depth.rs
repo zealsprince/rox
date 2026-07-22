@@ -89,8 +89,19 @@ impl DepthPanel {
         usize::from(self.config.revealed)
     }
 
-    fn flip(&mut self, cx: &mut Context<Self>) {
+    fn flip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Hand the active toggle across the flip: the child leaving the front
+        // goes inactive, the one arriving goes active, so a visualizer on the
+        // hidden side stops working and the revealed one starts. The panel's
+        // own set_active only ever forwards to the shown slot, so it never sees
+        // a flip - this has to do it.
+        if let Some(child) = &self.slots[self.shown_ix()] {
+            child.set_active(false, window, cx);
+        }
         self.config.revealed = !self.config.revealed;
+        if let Some(child) = &self.slots[self.shown_ix()] {
+            child.set_active(true, window, cx);
+        }
         self.fade_at = Instant::now();
         cx.notify();
     }
@@ -161,9 +172,9 @@ impl DepthPanel {
                     .small()
                     .ghost()
                     .tooltip("Flip")
-                    .on_click(move |_, _, cx| {
+                    .on_click(move |_, window, cx| {
                         if let Some(this) = flip.upgrade() {
-                            this.update(cx, |this, cx| this.flip(cx));
+                            this.update(cx, |this, cx| this.flip(window, cx));
                         }
                     }),
             )
@@ -293,9 +304,9 @@ impl Panel for DepthPanel {
         let menu = menu.item(
             PopupMenuItem::new("Flip")
                 .icon(Icon::default().path(icons::LAYERS))
-                .on_click(move |_, _, cx| {
+                .on_click(move |_, window, cx| {
                     if let Some(this) = flip.upgrade() {
-                        this.update(cx, |this, cx| this.flip(cx));
+                        this.update(cx, |this, cx| this.flip(window, cx));
                     }
                 }),
         );

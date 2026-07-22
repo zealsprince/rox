@@ -219,7 +219,9 @@ fn read_inner(path: &Path) -> Result<Vec<(Field, String)>, String> {
                 // Rating-shaped keys stay out of the customs; they show
                 // as the one Rating field below instead.
                 if key.eq_ignore_ascii_case(rating::FMPS_KEY)
-                    || key.len() >= 7 && key[..7].eq_ignore_ascii_case("RATING:")
+                    || key
+                        .get(..7)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("RATING:"))
                 {
                     continue;
                 }

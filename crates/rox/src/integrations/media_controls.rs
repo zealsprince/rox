@@ -15,7 +15,7 @@
 //! turning into a stream of D-Bus writes.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::Window;
 use souvlaki::{
@@ -46,6 +46,11 @@ pub enum MediaCommand {
 /// binding in the workspace.
 const SEEK_STEP: f64 = 5.0;
 
+/// How far the reported position may drift from where a steady playback would
+/// have carried the last pushed one before it counts as a seek worth re-pushing.
+/// Wide enough to sit above notify-cadence jitter, well under any real seek.
+const SEEK_EPSILON: Duration = Duration::from_millis(1000);
+
 /// The souvlaki handle plus the receiver its callback feeds. Kept alive for
 /// the whole session: dropping it tears the media service down and ends the
 /// event stream.
@@ -68,6 +73,12 @@ pub struct MediaKeys {
     /// The `file://` URL of the current track's cached cover. `None` until the
     /// art resolves, and while a track carries none.
     cover: Option<String>,
+    /// The position last written out and when, the baseline a seek is measured
+    /// against. MPRIS clients extrapolate the playhead from the last pushed
+    /// progress, so a seek that leaves the play state alone still has to be
+    /// pushed or the widget's clock keeps ticking from the old spot.
+    pushed_position: Option<Duration>,
+    pushed_at: Option<Instant>,
 }
 
 /// The now-playing tags the widget shows, resolved by the workspace off the
@@ -117,6 +128,8 @@ impl MediaKeys {
             force: false,
             meta: None,
             cover: None,
+            pushed_position: None,
+            pushed_at: None,
         })
     }
 
@@ -168,17 +181,42 @@ impl MediaKeys {
     /// track with no session behind it reads as stopped.
     pub fn set_playing(&mut self, has_track: bool, playing: bool, position: Option<Duration>) {
         let state = has_track.then_some(playing);
-        if !self.force && self.state == state {
+        // A seek leaves the play state alone, so the state gate alone would
+        // never push it and the widget's clock stays on the old spot. Push when
+        // the reported position has drifted from where a steady playback would
+        // have carried the last pushed one.
+        let seeked = self.position_jumped(position);
+        if !self.force && self.state == state && !seeked {
             return;
         }
         self.force = false;
         self.state = state;
+        self.pushed_position = position;
+        self.pushed_at = Some(Instant::now());
         let progress = position.map(MediaPosition);
         let _ = self.controls.set_playback(match state {
             None => MediaPlayback::Stopped,
             Some(true) => MediaPlayback::Playing { progress },
             Some(false) => MediaPlayback::Paused { progress },
         });
+    }
+
+    /// Whether the reported position has jumped away from the extrapolated
+    /// playhead, i.e. a seek happened since the last push. The baseline only
+    /// advances on its own while the last pushed state was playing, so a scrub
+    /// while paused counts too.
+    fn position_jumped(&self, position: Option<Duration>) -> bool {
+        let (Some(pos), Some(base), Some(at)) = (position, self.pushed_position, self.pushed_at)
+        else {
+            return false;
+        };
+        let advanced = if self.state == Some(true) {
+            at.elapsed()
+        } else {
+            Duration::ZERO
+        };
+        let expected = base + advanced;
+        pos.abs_diff(expected) > SEEK_EPSILON
     }
 }
 

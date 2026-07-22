@@ -509,6 +509,19 @@ impl PlaylistsPanel {
         panel::refresh_tab_panel(&self.tab_panel, cx);
     }
 
+    /// Nudge the dock to persist the layout after a config change it never sees
+    /// on its own - a column toggle, heading flip, or expand. The panel's own
+    /// events don't reach the dock, but its host tab panel's do, so bounce a
+    /// LayoutChanged through it and the workspace's debounced save picks the
+    /// change up. A plain tab-panel repaint isn't enough; only LayoutChanged
+    /// arms the save. Without this the change only reaches disk on a clean
+    /// close, so a relaunch can lose it.
+    fn request_layout_save(&self, cx: &mut Context<Self>) {
+        if let Some(tabs) = self.tab_panel.as_ref().and_then(|w| w.upgrade()) {
+            tabs.update(cx, |_, cx| cx.emit(PanelEvent::LayoutChanged));
+        }
+    }
+
     /// Expand or collapse a playlist, mirroring the set into the config so a
     /// layout dump keeps it.
     fn toggle(&mut self, id: i64, cx: &mut Context<Self>) {
@@ -516,6 +529,7 @@ impl PlaylistsPanel {
             self.expanded.insert(id);
         }
         self.config.expanded = self.expanded.iter().copied().collect();
+        self.request_layout_save(cx);
         self.refresh(cx);
     }
 
@@ -1071,6 +1085,7 @@ impl ColumnHost for PlaylistsPanel {
         } else if !on {
             self.config.columns.retain(|k| k != key);
         }
+        self.request_layout_save(cx);
         cx.notify();
     }
 }
@@ -1087,6 +1102,7 @@ impl HeadingHost for PlaylistsPanel {
             return;
         }
         self.config.headers = headers;
+        self.request_layout_save(cx);
         self.refresh(cx);
     }
 }

@@ -233,7 +233,15 @@ impl FilterPanel {
                 let Some(text) = &keystroke.key_char else {
                     return;
                 };
-                if self.type_ahead.is_empty() && text == " " {
+                // Space plays/pauses unless a phrase is actually mid-flight. The
+                // phrase never clears on its own, so an emptiness test alone
+                // would treat a phrase typed minutes ago as live and keep
+                // swallowing space. Gate on the type-ahead window instead.
+                let phrase_live = !self.type_ahead.is_empty()
+                    && self
+                        .type_ahead_at
+                        .is_some_and(|at| Instant::now().duration_since(at) < TYPE_AHEAD);
+                if !phrase_live && text == " " {
                     return;
                 }
                 self.type_to(text.clone(), cx);
@@ -458,8 +466,13 @@ impl FilterPanel {
             return;
         }
         let kind = self.config.columns.remove(from);
-        // Removing from ahead of the target shifts the target back one.
-        let dest = if from < to { to - 1 } else { to };
+        // `to` is the target header's index. After removing `from`, a target
+        // that sat ahead of it slid back one, so inserting at `to` lands the
+        // column past the target on a rightward drag and before it on a
+        // leftward one, which is what dropping onto that header should do.
+        // The removal also caps `to` at the new length, so the last slot stays
+        // reachable.
+        let dest = to.min(self.config.columns.len());
         self.config.columns.insert(dest, kind);
         self.refresh(cx);
     }

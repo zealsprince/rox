@@ -132,15 +132,32 @@ pub(crate) fn close_workspace_window(
     open.0.retain(|(h, _)| *h != handle);
     let last = open.0.is_empty();
     let stay = last && settings::quit_to_tray() && tray::resident(cx) && workspace.is_some();
+    let mut had_media = false;
     if let Some(ws) = workspace {
         let player = ws.read(cx).state.player.entity_id();
         let state = stay.then(|| ws.read(cx).state.clone());
-        ws.update(cx, |this, cx| this.persist(window, cx));
+        ws.update(cx, |this, cx| {
+            this.persist(window, cx);
+            // Free the OS media service before a survivor re-registers it; the
+            // D-Bus name is per-process, so both can't hold it at once.
+            had_media = this.release_media();
+        });
         match state {
             Some(state) => tray::hold(state, cx),
             // A shared pop-out re-seeds on its next track change, so a
             // stale entry never lingers.
             None => palette::forget(player, cx),
+        }
+    }
+    // The window that owned the media service just closed with others still
+    // open; hand the service to a survivor so the media keys keep working.
+    if had_media && !last {
+        if let Some((handle, ws)) = cx.default_global::<WorkspaceWindows>().0.first().cloned() {
+            let _ = handle.update(cx, |_, window, cx| {
+                if let Some(ws) = ws.upgrade() {
+                    ws.update(cx, |this, cx| this.install_media(window, cx));
+                }
+            });
         }
     }
     // Closing the last workspace window quits; without this, a settings or
@@ -992,6 +1009,25 @@ fn layout_views(
     (view.clone(), center_tabs, bottom)
 }
 
+/// Drain the OS media service's key presses onto the shared player and keep
+/// the widget in step. Shared by the primary window's launch and the hand-off
+/// when that window closes with another still open.
+fn spawn_media_events(keys: &MediaKeys, cx: &mut Context<Workspace>) -> Task<()> {
+    let events = keys.events();
+    cx.spawn(async move |this, cx| {
+        let _ = this.update(cx, |this, cx| this.publish_media(cx));
+        while let Ok(cmd) = events.recv().await {
+            let applied = this.update(cx, |this, cx| {
+                this.apply_media(cmd, cx);
+                this.publish_media(cx);
+            });
+            if applied.is_err() {
+                break;
+            }
+        }
+    })
+}
+
 impl Workspace {
     pub fn new(
         start: WorkspaceStart,
@@ -1211,21 +1247,7 @@ impl Workspace {
         } else {
             None
         };
-        let _media_events = media.as_ref().map(|keys| {
-            let events = keys.events();
-            cx.spawn(async move |this, cx| {
-                let _ = this.update(cx, |this, cx| this.publish_media(cx));
-                while let Ok(cmd) = events.recv().await {
-                    let applied = this.update(cx, |this, cx| {
-                        this.apply_media(cmd, cx);
-                        this.publish_media(cx);
-                    });
-                    if applied.is_err() {
-                        break;
-                    }
-                }
-            })
-        });
+        let _media_events = media.as_ref().map(|keys| spawn_media_events(keys, cx));
 
         Workspace {
             open_menu: None,
@@ -1963,6 +1985,23 @@ impl Workspace {
     }
 
     /// Push the now-playing track and play state out to the media widget. A
+    /// Register the OS media service on this window and start draining its key
+    /// presses. The hand-off target when the window that owned the service
+    /// closes with this one still open. The D-Bus name is per-process, so the
+    /// old owner has to release it first.
+    fn install_media(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let media = MediaKeys::new(window);
+        self._media_events = media.as_ref().map(|keys| spawn_media_events(keys, cx));
+        self.media = media;
+    }
+
+    /// Tear down the OS media service this window owned, freeing the per-process
+    /// D-Bus name for a survivor to claim. Returns whether it held one.
+    fn release_media(&mut self) -> bool {
+        self._media_events = None;
+        self.media.take().is_some()
+    }
+
     /// no-op off the primary window (no service there); the tag resolve only
     /// runs when the track turns over, the play-state push is gated in
     /// [`MediaKeys`], so this is cheap to call on every player notify.

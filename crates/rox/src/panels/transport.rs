@@ -5,7 +5,7 @@
 //! pop-outs rehost the entity.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use gpui::{
     canvas, div, fill, point, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, Div,
@@ -979,6 +979,12 @@ fn paint_strip(progress: f32, marker: Option<f32>, bounds: Bounds<Pixels>, windo
     ));
 }
 
+/// Tabular digits for the clock, built once - [`clock`] runs twice per
+/// pump tick while playing, so the feature list should not reallocate
+/// every call.
+static TNUM: LazyLock<FontFeatures> =
+    LazyLock::new(|| FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
+
 /// A clock beside the strip: muted, fixed in the row, digits tabular so a
 /// tick never changes the text width.
 fn clock(text: String) -> Div {
@@ -986,7 +992,7 @@ fn clock(text: String) -> Div {
     clock
         .text_style()
         .get_or_insert_with(Default::default)
-        .font_features = Some(FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
+        .font_features = Some(TNUM.clone());
     clock.child(text)
 }
 

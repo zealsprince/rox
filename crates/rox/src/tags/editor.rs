@@ -625,6 +625,10 @@ impl TagEditor {
             if drifted {
                 self.filled[i] = form_value.into();
             }
+            // The cells carry the truth from here, so a pending clear-all
+            // the form carried is off - left armed, save would wipe the tag
+            // on every file while the table showed the original values.
+            self.cleared[i] = false;
         }
     }
 

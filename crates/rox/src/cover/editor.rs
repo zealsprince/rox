@@ -511,6 +511,33 @@ impl CoverEditor {
                 }
             }
             this.update_in(cx, move |this, window, cx| {
+                // A written file's baseline follows the write, so a retry
+                // after a partial failure diffs against what is on disk
+                // now instead of re-committing the landed files.
+                for edit in &committed {
+                    let Some(ix) = this.tracks.iter().position(|t| t.path == edit.path) else {
+                        continue;
+                    };
+                    let Some(baseline) = this.baselines.as_mut().and_then(|b| b.get_mut(ix)) else {
+                        continue;
+                    };
+                    for picture in &edit.pictures {
+                        match &picture.data {
+                            Some((bytes, mime)) => {
+                                match baseline.iter_mut().find(|(k, _, _)| *k == picture.kind) {
+                                    Some(entry) => {
+                                        entry.1 = bytes.clone();
+                                        entry.2 = mime.clone();
+                                    }
+                                    None => {
+                                        baseline.push((picture.kind, bytes.clone(), mime.clone()))
+                                    }
+                                }
+                            }
+                            None => baseline.retain(|(k, _, _)| *k != picture.kind),
+                        }
+                    }
+                }
                 if !committed.is_empty() {
                     library.update(cx, |library, cx| library.apply_edits(&committed, cx));
                 }

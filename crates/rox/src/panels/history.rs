@@ -347,8 +347,11 @@ impl HistoryPanel {
         let mut i = 0;
         while i < visible.len() {
             let mut j = i + 1;
-            let album = &self.tracks[visible[i] as usize].album;
-            while j < visible.len() && &self.tracks[visible[j] as usize].album == album {
+            let head = &self.tracks[visible[i] as usize];
+            while j < visible.len()
+                && self.tracks[visible[j] as usize].album == head.album
+                && self.tracks[visible[j] as usize].album_artist == head.album_artist
+            {
                 j += 1;
             }
             let group: Vec<GroupTrack> = visible[i..j]

@@ -494,14 +494,12 @@ impl Library {
         let now = std::time::Instant::now();
         let window = std::time::Duration::from_secs(5);
         self.self_writes.retain(|_, at| now.duration_since(*at) < window);
-        let fresh = self
-            .self_writes
-            .iter()
-            .filter(|(_, at)| now.duration_since(**at) < window)
-            .map(|(p, _)| p.clone())
-            .collect::<HashSet<_>>();
-        self.pending
-            .extend(batch.paths.into_iter().filter(|p| !fresh.contains(p)));
+        self.pending.extend(
+            batch
+                .paths
+                .into_iter()
+                .filter(|p| !self.self_writes.contains_key(p)),
+        );
         self.pending_renames.extend(batch.renames);
         self.pump_watch(cx);
     }

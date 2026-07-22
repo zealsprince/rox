@@ -681,6 +681,9 @@ impl GridPanel {
             } else {
                 self.selected = (lo..=hi).collect();
             }
+            if self.anchor.is_none() {
+                self.anchor = Some(anchor);
+            }
         } else if modifiers.secondary() {
             if !self.selected.insert(ix) {
                 self.selected.remove(&ix);

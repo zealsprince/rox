@@ -402,8 +402,11 @@ impl PlaylistsPanel {
             let mut k = 0;
             while k < visible.len() {
                 let mut m = k + 1;
-                let album = &all[visible[k]].album;
-                while m < visible.len() && &all[visible[m]].album == album {
+                let head = &all[visible[k]];
+                while m < visible.len()
+                    && all[visible[m]].album == head.album
+                    && all[visible[m]].album_artist == head.album_artist
+                {
                     m += 1;
                 }
                 let group: Vec<GroupTrack> =

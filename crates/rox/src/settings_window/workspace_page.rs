@@ -6,6 +6,11 @@
 use super::*;
 
 impl SettingsWindow {
+    /// The Workspace page: the sharing hub. A workspace is a whole look -
+    /// layout presets, palette, appearance - traded as one file; presets are
+    /// single layouts under it. The composition tree below shows the opening
+    /// window's dock, splits and tab groups as muted structure lines, panels
+    /// as named rows with their settings a click away.
     pub(crate) fn workspace_page(&self, cx: &mut Context<Self>) -> Div {
         let live = self.workspace.upgrade().is_some();
         let mut body = div().flex().flex_col().gap(tokens::SPACE_XS).child(
@@ -915,20 +920,37 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Apply a workspace: replace the live look wholesale. The persist and
-    /// the appearance statics ride the shared path; this window mirrors the
-    /// applied look into its own editor state on top, and swaps the dock to
-    /// the bundle's primary layout when it names one.
+    /// Apply a workspace: replace the live look wholesale, through the
+    /// workspace's own apply so the persist, the active-layout guard, and
+    /// the no-layout fallback to the default arrangement all ride one flow.
+    /// This window only mirrors the applied look into its own editor state
+    /// on top.
     fn apply_workspace(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(bundle) = crate::workspaces::resolve(&Settings::load(), name) else {
             return;
         };
-        // Persist the replace and repaint every open window through the live
-        // statics, the empty launcher's path too.
-        crate::workspaces::apply_look(&bundle, cx);
+        let workspace = self.workspace.clone();
+        let name = name.to_string();
+        let applied = self
+            .workspace_window
+            .update(cx, |_, window, cx| {
+                workspace.upgrade().is_some_and(|workspace| {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.apply_workspace(&name, window, cx);
+                    });
+                    true
+                })
+            })
+            .unwrap_or(false);
+        // The workspace window can be gone with this one still open; the
+        // look still applies and persists, there is just no dock to swap.
+        if !applied {
+            crate::workspaces::apply_look(&bundle, cx);
+        }
         // Mirror the applied look into this window's own editor state so the
         // swatches, pickers, and sliders show it. apply_palette re-sets the
-        // live palette, which apply_look already did; the repeat is idempotent.
+        // live palette, which the apply above already did; the repeat is
+        // idempotent.
         self.apply_palette(Palette::from_map(&bundle.palette), window, cx);
         let a = &bundle.appearance;
         self.surface_opacity = a.surface_opacity;
@@ -937,14 +959,10 @@ impl SettingsWindow {
         self.art_theming = a.art_theming;
         self.keep_dark = a.keep_dark;
         self.rating_style = a.rating_style;
-        // The mini-player roles, and when the bundle names a primary layout,
-        // the dock itself.
+        // The mini-player roles; the workspace's apply already moved its own
+        // live copy along with the dock.
         self.primary_layout = bundle.primary_layout.clone();
         self.mini_layout = bundle.mini_layout.clone();
-        self.sync_roles_to_workspace(cx);
-        if let Some(primary) = bundle.primary_layout.clone() {
-            self.apply_preset(&primary, cx);
-        }
         cx.notify();
     }
 

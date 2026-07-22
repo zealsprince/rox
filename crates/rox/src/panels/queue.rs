@@ -596,8 +596,11 @@ impl QueuePanel {
         let mut i = 0;
         while i < visible.len() {
             let mut j = i + 1;
-            let album = &self.tracks[visible[i] as usize].album;
-            while j < visible.len() && &self.tracks[visible[j] as usize].album == album {
+            let head = &self.tracks[visible[i] as usize];
+            while j < visible.len()
+                && self.tracks[visible[j] as usize].album == head.album
+                && self.tracks[visible[j] as usize].album_artist == head.album_artist
+            {
                 j += 1;
             }
             let group: Vec<GroupTrack> = visible[i..j]
@@ -734,14 +737,23 @@ impl QueuePanel {
         cx.notify();
     }
 
-    /// Ctrl+A: take every queue entry. Anchors at the first so a follow-up
+    /// Ctrl+A: take every visible entry - the filter's rows, so selection
+    /// matches what Delete removes. Anchors at the first so a follow-up
     /// shift-click narrows from the top.
     fn select_all(&mut self, cx: &mut Context<Self>) {
-        if self.tracks.is_empty() {
+        let entries = self
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                QRow::Track(ti) => self.tracks.get(*ti as usize).map(|t| t.entry_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if entries.is_empty() {
             return;
         }
-        self.selected = self.tracks.iter().map(|t| t.entry_id).collect();
-        self.anchor = self.tracks.first().map(|t| t.entry_id);
+        self.anchor = entries.first().copied();
+        self.selected = entries.into_iter().collect();
         self.drag_gen += 1;
         self.publish_selection(cx);
         cx.notify();

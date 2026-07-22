@@ -481,6 +481,10 @@ impl ArtPanel {
         self.cells.clear();
         self.dimming.clear();
         self.selected.clear();
+        // The settle dedupe keys on a cell index, and the rebuild may have
+        // just reordered or refiltered the cells under it - the same index
+        // can now be a different album, and a settle there must publish.
+        self.centered = None;
         self.hovered = None;
         self.view = {
             let query = self.effective_query(cx);
@@ -1553,7 +1557,9 @@ impl ArtPanel {
                 // when that is all the mouse sends.
                 .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _, cx| {
                     this.touch_resume(cx);
-                    let delta = event.delta.pixel_delta(px(WHEEL_STEP));
+                    // A wheel notch arrives as 3 lines, so a line counts a
+                    // third of a step and one notch moves one cover.
+                    let delta = event.delta.pixel_delta(px(WHEEL_STEP / 3.0));
                     let along = f32::from(delta.along(axis));
                     let cross = f32::from(delta.along(axis.invert()));
                     let d = if along.abs() >= cross.abs() {

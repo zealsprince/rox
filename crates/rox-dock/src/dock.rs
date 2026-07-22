@@ -175,7 +175,9 @@ impl Dock {
             dock_area,
             panel,
             open,
-            size,
+            // The size comes straight from persisted JSON; floor it like
+            // set_size does so corrupt settings can't restore a 0-size dock.
+            size: size.max(PANEL_MIN_SIZE),
             collapsible: true,
             resizing: false,
         }
@@ -305,11 +307,12 @@ impl Dock {
             return;
         }
 
-        let dock_area = self
-            .dock_area
-            .upgrade()
-            .expect("DockArea is missing")
-            .read(cx);
+        // No-op on a stale weak like the rest of the crate, instead of
+        // panicking mid-drag.
+        let Some(dock_area) = self.dock_area.upgrade() else {
+            return;
+        };
+        let dock_area = dock_area.read(cx);
         let area_bounds = dock_area.bounds;
         let mut left_dock_size = px(0.0);
         let mut right_dock_size = px(0.0);

@@ -156,6 +156,9 @@ pub struct Player {
     /// while a session runs. Replaced (and the old one cancelled) whenever a
     /// new session starts.
     pump: Option<Task<()>>,
+    /// Debounce generation for the volume persist; only the last edit in a
+    /// burst writes the settings file. See [`Self::persist_volume_soon`].
+    persist_gen: u64,
 }
 
 impl Player {
@@ -166,6 +169,7 @@ impl Player {
             feed: Arc::new(AudioFeed::new()),
             settings: Settings::load(),
             pump: None,
+            persist_gen: 0,
         }
     }
 
@@ -500,8 +504,9 @@ impl Player {
     /// keeps ticking for the whole session so the drain feeds the audio
     /// views and so a resume (which flips on the audio thread) gets noticed,
     /// but the notify that repaints the clock, the meter, and the falling
-    /// bars only fires while audio moves, on the play-state edge, or when
-    /// the engine finishes a queue edit. That last one matters while
+    /// bars only fires while audio moves, on the play-state edge, when a
+    /// paused seek moves the position clock, or when the engine finishes a
+    /// queue edit. That last one matters while
     /// paused: queue commands are fire-and-forget to the engine thread, so
     /// the revision bumps after the notify an enqueue sends, and without a
     /// wake here the queue views would sit one edit behind until the next
@@ -511,6 +516,7 @@ impl Player {
     fn start_pump(&mut self, cx: &mut Context<Self>) {
         let mut was_playing = self.is_playing();
         let mut seen_rev = self.queue_rev();
+        let mut seen_pos = self.position_key();
         self.pump = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(PUMP_INTERVAL).await;
             let alive = this.update(cx, |this, cx| {
@@ -520,17 +526,35 @@ impl Player {
                 this.drain_tap();
                 let playing = this.is_playing();
                 let rev = this.queue_rev();
-                if playing || playing != was_playing || rev != seen_rev {
+                // A seek while paused moves the clock without touching any
+                // of the above: audio stays quiet and the queue keeps its
+                // revision, so the seek strip and the MPRIS position would
+                // show the old spot until the next resume. Compare the
+                // resolved position while paused; playing ticks notify
+                // anyway, so the check skips them and a settled pause still
+                // costs nothing when nothing moved.
+                let pos = if playing { None } else { this.position_key() };
+                if playing || playing != was_playing || rev != seen_rev || pos != seen_pos {
                     cx.notify();
                 }
                 was_playing = playing;
                 seen_rev = rev;
+                seen_pos = pos;
                 true
             });
             if !matches!(alive, Ok(true)) {
                 break;
             }
         }));
+    }
+
+    /// The position clock as a comparable key for the pump's change check:
+    /// track index and the seconds' raw bits. One atomic read plus a short
+    /// lock on the segment list, a handful of entries.
+    fn position_key(&self) -> Option<(usize, u64)> {
+        let session = self.session.as_ref()?;
+        let (track, secs) = session.shared.position(session.device_rate)?;
+        Some((track, secs.to_bits()))
     }
 
     /// Take whatever the tap holds, never wait for more; the samples move
@@ -667,11 +691,39 @@ impl Player {
         self.settings.volume = volume;
         self.settings.muted = false;
         self.send(Cmd::Volume(volume));
-        Settings::update(move |s| {
-            s.volume = volume;
-            s.muted = false;
-        });
+        self.persist_volume_soon(cx);
         cx.notify();
+    }
+
+    /// Persist the volume after the current scrub settles. Every slider tick
+    /// and wheel notch lands in [`Self::set_volume`], and `Settings::update`
+    /// reads, parses, and rewrites the whole settings file - too much for a
+    /// pointer-move rate. The engine and the in-memory copy already hold the
+    /// value, so only the file write waits for the last tick. Same pattern as
+    /// the settings window's persist_appearance_soon.
+    fn persist_volume_soon(&mut self, cx: &mut Context<Self>) {
+        self.persist_gen += 1;
+        let gen = self.persist_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            // A later tick bumped the gen past this capture, so only the last
+            // edit in a burst writes. Read the values at write time, not
+            // capture time, so a mute toggled during the wait persists as is.
+            let Ok((latest, volume, muted)) = this.update(cx, |this, _| {
+                (this.persist_gen, this.settings.volume, this.settings.muted)
+            }) else {
+                return;
+            };
+            if latest == gen {
+                Settings::update(move |s| {
+                    s.volume = volume;
+                    s.muted = muted;
+                });
+            }
+        })
+        .detach();
     }
 
     /// Silence the output without losing the level; unmute restores it.

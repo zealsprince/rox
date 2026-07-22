@@ -418,6 +418,14 @@ impl LyricsPanel {
                     return;
                 }
                 this.pending = None;
+                // A different track's sheet reads from the top, not from
+                // wherever the previous track's scroll sat.
+                if this.loaded.as_ref().map(|(p, _)| p.as_path()) != Some(path.as_path()) {
+                    let base = this.scroll.0.borrow().base_handle.clone();
+                    base.set_offset(Default::default());
+                    this.text_scroll.set_offset(Default::default());
+                    this.glide_to = None;
+                }
                 this.loaded = Some((path, loaded));
                 cx.notify();
             })

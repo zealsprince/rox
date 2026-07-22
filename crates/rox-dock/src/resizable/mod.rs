@@ -372,9 +372,23 @@ impl ResizableState {
 
 impl EventEmitter<ResizablePanelEvent> for ResizableState {}
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct ResizablePanelState {
     pub size: Option<Pixels>,
     pub size_range: Range<Pixels>,
     bounds: Bounds<Pixels>,
+}
+
+impl Default for ResizablePanelState {
+    fn default() -> Self {
+        Self {
+            size: None,
+            // The derived Default's px(0.)..px(0.) range made
+            // adjust_to_container_size clamp a fresh entry to 0 before its
+            // first paint filled the real range in; start unbounded like
+            // ResizablePanel::new() instead.
+            size_range: PANEL_MIN_SIZE..Pixels::MAX,
+            bounds: Bounds::default(),
+        }
+    }
 }

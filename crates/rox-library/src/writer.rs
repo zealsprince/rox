@@ -402,6 +402,11 @@ fn commit_inner(
         return Err("audio stream changed across the write".into());
     }
 
+    // Flush the clone to disk before the rename, or a power cut can leave
+    // the original replaced by a truncated file.
+    fs::File::open(tmp)
+        .and_then(|f| f.sync_all())
+        .map_err(|e| format!("sync clone: {e}"))?;
     fs::rename(tmp, path).map_err(|e| format!("rename over original: {e}"))
 }
 
@@ -818,7 +823,7 @@ pub fn is_clone_path(path: &Path) -> bool {
 
 /// The clone's path: a sibling in the same directory, so the final rename
 /// never crosses a filesystem, with an extension the scanner ignores.
-fn tmp_path(path: &Path) -> PathBuf {
+pub(crate) fn tmp_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(CLONE_SUFFIX);
     path.with_file_name(name)

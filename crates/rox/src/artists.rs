@@ -67,7 +67,11 @@ struct Files {
 }
 
 fn files_for(name: &str) -> Files {
-    let hash = crate::hash::fnv1a(providers::normalize(name).as_bytes());
+    let folded = providers::normalize(name);
+    // Punctuation-only names ("!!!", "+/-") fold to nothing and would all
+    // collide into one file - key those on the raw trimmed name instead.
+    let key = if folded.is_empty() { name.trim() } else { &folded };
+    let hash = crate::hash::fnv1a(key.as_bytes());
     let dir = artists_dir();
     let slot = |ext: &str| dir.join(format!("{hash:016x}.{ext}"));
     Files {
@@ -104,9 +108,17 @@ pub fn get(name: &str, force: bool) -> Result<Option<Artist>, String> {
         .as_ref()
         .is_some_and(|entry| now().saturating_sub(entry.fetched) < TTL_SECS);
     if !providers::artist_online() || (fresh && !force) {
-        return Ok(cached
-            .and_then(|entry| entry.info)
-            .map(|info| assemble(info, &files)));
+        let info = cached.and_then(|entry| entry.info);
+        // A fresh entry can still be missing images - one transient
+        // download failure shouldn't pin an empty slot for the whole TTL.
+        // fetch_images skips slots whose files already stand, so this only
+        // touches the network for what's absent, and never offline.
+        if providers::artist_online() {
+            if let Some(info) = &info {
+                fetch_images(&info.name, &files, false);
+            }
+        }
+        return Ok(info.map(|info| assemble(info, &files)));
     }
     match providers::lastfm::artist_info(name) {
         Ok(info) => {

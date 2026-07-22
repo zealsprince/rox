@@ -305,11 +305,13 @@ impl StatsWindow {
     /// panel's move. A track deleted since its event resolves to no path
     /// and drops out of the queue quietly.
     fn play_recent(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let ids: Vec<i64> = self.data.recents[ix..]
-            .iter()
-            .take(QUEUE_CAP)
-            .map(|row| row.track_id)
-            .collect();
+        // The index came off a drawn frame, and refresh rebuilds recents on
+        // history and library events, so a stale click can point past the
+        // end; bail rather than panic.
+        let Some(rows) = self.data.recents.get(ix..) else {
+            return;
+        };
+        let ids: Vec<i64> = rows.iter().take(QUEUE_CAP).map(|row| row.track_id).collect();
         let Ok(paths) = self.state.library.read(cx).paths_for(&ids) else {
             return;
         };

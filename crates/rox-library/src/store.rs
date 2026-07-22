@@ -377,7 +377,9 @@ pub fn apply_changes(
     // the scanner's read of the same tags.
     fn leading(value: &str) -> i64 {
         let digits: String = value.chars().take_while(|c| c.is_ascii_digit()).collect();
-        digits.parse().unwrap_or(0)
+        // The projection reads these columns back as u16; saturate so an
+        // oversized value cannot truncate to garbage.
+        digits.parse().unwrap_or(0).min(i64::from(u16::MAX))
     }
     for change in changes {
         let value = change.value.as_deref().unwrap_or("");

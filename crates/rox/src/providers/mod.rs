@@ -392,11 +392,17 @@ pub fn fetch_image(url: &str) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let response = agent().get(url).call().map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
+    // Read one byte past the cap: a body that fills that far is over the
+    // limit, and silently truncating it would cache a corrupt image that
+    // the exists-gates then never refetch.
     response
         .into_reader()
-        .take(MAX_IMAGE_BYTES)
+        .take(MAX_IMAGE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_IMAGE_BYTES {
+        return Err(format!("image exceeds the {MAX_IMAGE_BYTES} byte cap"));
+    }
     Ok(bytes)
 }
 

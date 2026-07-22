@@ -56,6 +56,14 @@ pub struct Listened {
     pub started: u64,
 }
 
+/// The wall clock as unix seconds, the scrobble timestamp's unit.
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// The api_sig the API requires on every signed call: the parameters
 /// sorted by name, concatenated as name-value, the secret appended, md5
 /// hex over the lot. `format` stays out of the signature per the docs.
@@ -131,7 +139,8 @@ struct Watch {
     /// silently.
     meta: Option<TrackMeta>,
     duration: Option<f64>,
-    /// When the watch began, unix seconds: the scrobble's timestamp.
+    /// When audio first moved under this watch, unix seconds: the
+    /// scrobble's timestamp. Zero until playback is actually observed.
     started: u64,
     /// Seconds actually listened: position deltas at playback speed.
     /// Seeks jump the clock and don't count.
@@ -388,6 +397,15 @@ impl Scrobbler {
             watch.last_pos = now.position_secs;
         }
 
+        // Stamp the start the first time audio is seen moving, not when
+        // the watch was created - a launch-restored track sits paused, and
+        // last.fm reads the timestamp as when the track started playing.
+        if let Some(watch) = self.watch.as_mut() {
+            if watch.started == 0 && playing {
+                watch.started = unix_now();
+            }
+        }
+
         // Evaluate both rules once against the current watch: the fixed
         // listen rule drives history, the user's threshold drives the
         // scrobble. They accrue off the same clock but cross apart.
@@ -459,15 +477,13 @@ impl Scrobbler {
         cx: &mut Context<Self>,
     ) {
         let meta = self.library.read(cx).meta_for(&path);
-        let started = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
         self.watch = Some(Watch {
             path,
             meta,
             duration,
-            started,
+            // Zero until the tick that first sees audio moving stamps it,
+            // so a track restored paused doesn't backdate its scrobble.
+            started: 0,
             played: 0.0,
             last_pos: position,
             now_playing_sent: false,

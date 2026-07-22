@@ -41,8 +41,14 @@ impl Arena {
     }
 
     fn push_lowercased(&mut self, s: &str) {
-        for c in s.chars() {
-            self.bytes.extend(c.to_lowercase());
+        // Query needles fold with str::to_lowercase, whose final-sigma
+        // handling char::to_lowercase lacks; fold the same way here so
+        // Greek titles match. ASCII skips the allocation.
+        if s.is_ascii() {
+            self.bytes
+                .extend(s.bytes().map(|b| b.to_ascii_lowercase() as char));
+        } else {
+            self.bytes.push_str(&s.to_lowercase());
         }
         self.offsets.push(self.bytes.len() as u32);
     }
@@ -1263,7 +1269,7 @@ impl Projection {
     }
 
     pub fn heap_bytes(&self) -> usize {
-        self.db_id.capacity() * 8
+        (self.db_id.capacity() + self.added.capacity()) * 8
             + self.title.heap_bytes()
             + self.title_lower.heap_bytes()
             + (self.artist.capacity()

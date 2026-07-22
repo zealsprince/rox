@@ -1445,8 +1445,14 @@ impl Workspace {
     /// primary layout, or resets to the default arrangement when the bundle
     /// carries no layout. The empty launcher's way to start from a vendored
     /// look; a blank window has nothing to replace, so it acts straight off
-    /// the click with no confirm.
-    fn apply_workspace(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// the click with no confirm. The settings window's apply lands here
+    /// too, so both entry points share one flow.
+    pub(crate) fn apply_workspace(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(bundle) = crate::workspaces::resolve(&Settings::load(), name) else {
             return;
         };
@@ -1984,7 +1990,6 @@ impl Workspace {
         });
     }
 
-    /// Push the now-playing track and play state out to the media widget. A
     /// Register the OS media service on this window and start draining its key
     /// presses. The hand-off target when the window that owned the service
     /// closes with this one still open. The D-Bus name is per-process, so the
@@ -2002,6 +2007,7 @@ impl Workspace {
         self.media.take().is_some()
     }
 
+    /// Push the now-playing track and play state out to the media widget. A
     /// no-op off the primary window (no service there); the tag resolve only
     /// runs when the track turns over, the play-state push is gated in
     /// [`MediaKeys`], so this is cheap to call on every player notify.

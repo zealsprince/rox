@@ -4,7 +4,7 @@
 //! and the embedded tag, and the one a load came from is remembered so
 //! an edit lands back in the same place rather than guessing. The reader
 //! never touches the audio stream and the tag save rides the writer's
-//! atomic layer; the sidecar and store saves are plain file writes.
+//! atomic layer; the sidecar and store saves clone and rename the same way.
 //! Blocking IO throughout, run it off the UI thread.
 //!
 //! The parser is deliberately forgiving. A line's leading `[mm:ss.xx]`
@@ -116,7 +116,11 @@ fn save_file(file: &Path, text: &str, make_dir: bool) -> Result<(), String> {
             fs::create_dir_all(parent).map_err(|e| format!("create lyrics folder: {e}"))?;
         }
     }
-    fs::write(file, text).map_err(|e| format!("write lyrics file: {e}"))
+    // A sibling clone and rename, so a crash mid-write never leaves the
+    // sheet truncated.
+    let tmp = writer::tmp_path(file);
+    fs::write(&tmp, text).map_err(|e| format!("write lyrics file: {e}"))?;
+    fs::rename(&tmp, file).map_err(|e| format!("rename lyrics file: {e}"))
 }
 
 /// The store file for a track: one flat folder, the name a stable hash

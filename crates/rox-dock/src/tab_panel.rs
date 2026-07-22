@@ -484,10 +484,14 @@ impl TabPanel {
     ) {
         self.detach_panel(panel, window, cx);
         self.remove_self_if_empty(window, cx);
-        // The ZoomOut below unzooms the group, so the flag has to follow or
-        // the zoom menu label lags one click behind after a pop-out.
-        self.zoomed = false;
-        cx.emit(PanelEvent::ZoomOut);
+        // Only unzoom when this group holds the zoom; an unconditional
+        // ZoomOut would make DockArea drop another group's zoomed view.
+        // The flag has to follow the event or the zoom menu label lags one
+        // click behind after a pop-out.
+        if self.zoomed {
+            self.zoomed = false;
+            cx.emit(PanelEvent::ZoomOut);
+        }
         cx.emit(PanelEvent::LayoutChanged);
         // Wake observers - remaining panels watch the group to know when
         // they become solo.
@@ -502,7 +506,16 @@ impl TabPanel {
     ) {
         panel.on_removed(window, cx);
         let panel_view = panel.view();
+        let removed_ix = self.panels.iter().position(|p| p.view() == panel_view);
         self.panels.retain(|p| p.view() != panel_view);
+        // Removing a tab left of the active one shifts the vec, so the
+        // active index has to shift with it or the shown tab jumps. The
+        // active panel itself doesn't change, so no activation round-trip.
+        if let Some(removed_ix) = removed_ix {
+            if removed_ix < self.active_ix {
+                self.active_ix -= 1;
+            }
+        }
         if self.active_ix >= self.panels.len() {
             self.set_active_ix(self.panels.len().saturating_sub(1), window, cx)
         }
@@ -1453,6 +1466,16 @@ impl TabPanel {
         //
         // We must to split it to remove_panel, unless it will be crash by error:
         // Cannot update ui::dock::tab_panel::TabPanel while it is already being updated
+        //
+        // `ix` was computed at render time, before the detach below shifts
+        // the vec; capture where the panel sat so a rightward same-group
+        // drag doesn't land one slot past the indicator.
+        let same_tab_from_ix = if is_same_tab {
+            let panel_view = panel.view();
+            self.panels.iter().position(|p| p.view() == panel_view)
+        } else {
+            None
+        };
         if is_same_tab {
             self.detach_panel(panel.clone(), window, cx);
         } else {
@@ -1466,7 +1489,10 @@ impl TabPanel {
         if let Some(placement) = self.will_split_placement {
             self.split_panel(panel, placement, None, window, cx);
         } else {
-            if let Some(ix) = ix {
+            if let Some(mut ix) = ix {
+                if same_tab_from_ix.is_some_and(|from_ix| from_ix < ix) {
+                    ix -= 1;
+                }
                 self.insert_panel_at(panel, ix, window, cx)
             } else {
                 self.add_panel_with_active(panel, active, window, cx)

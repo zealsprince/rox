@@ -211,7 +211,6 @@ struct SettingsWindow {
     /// show and write through [`settings::set_app_frame`].
     frame: Frame,
     restore_last_track: bool,
-    quit_to_tray: bool,
     /// Whether the library watches its folders for changes, the Folders page
     /// toggle. Mirrors the setting; flipping it arms or drops the watcher on
     /// the shared library.
@@ -293,10 +292,18 @@ struct SettingsWindow {
     /// pack list marks the current one without re-reading the settings file
     /// (which carries the dock dumps) on every render.
     active_icon_pack: Option<String>,
+    /// The pack folders as last listed, so the Icons section doesn't walk
+    /// the directory on every Appearance render; create, switch, and
+    /// delete refresh it.
+    icon_packs: Vec<String>,
     /// Bumped on every appearance-slider tick; a debounced writer flushes the
     /// current values once the scrub settles instead of rewriting the whole
     /// settings file per tick.
     persist_gen: u64,
+    /// Whether the debounced appearance write carries the palette map too.
+    /// Picker edits set it; reset clears it, since stock persists as an
+    /// empty map that a later write must not refill with explicit defaults.
+    persist_palette: bool,
     _picker_changes: Vec<Subscription>,
     _lastfm_changes: Vec<Subscription>,
     /// The connect flow's phases land through here, so the page's status
@@ -429,7 +436,6 @@ impl SettingsWindow {
             backdrop_strength: settings.backdrop_strength,
             frame: settings.frame,
             restore_last_track: settings.restore_last_track,
-            quit_to_tray: settings.quit_to_tray,
             watch_library: settings.watch_library,
             portable: settings::portable_marker().is_some_and(|marker| marker.exists()),
             portable_writable: settings::portable_available(),
@@ -465,7 +471,9 @@ impl SettingsWindow {
             update_check: UpdateCheck::from_cache(&settings),
             check_updates: settings.check_updates,
             active_icon_pack: settings.icon_pack.clone(),
+            icon_packs: crate::startup::icon_packs::all(),
             persist_gen: 0,
+            persist_palette: false,
             _picker_changes,
             _lastfm_changes,
             _scrobbler_changed,
@@ -497,8 +505,10 @@ impl SettingsWindow {
             }
         }
         palette::set(self.base, cx);
-        let map = self.base.to_map();
-        Settings::update(move |s| s.palette = map);
+        // The palette is live above; the file write rides the debounce, since
+        // a picker drag fires a change per tick like the sliders do.
+        self.persist_palette = true;
+        self.persist_appearance_soon(cx);
     }
 
     /// The song-theming switch: through the palette pipe, which also
@@ -535,10 +545,11 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The quit-to-tray switch: flips the live flag the close path reads,
-    /// persists, and puts the tray icon up or takes it down on the spot.
+    /// The quit-to-tray switch, the Window menu toggle's twin: flips the
+    /// live flag the close path reads, persists, and puts the tray icon up
+    /// or takes it down on the spot. The toggle reads the static, not a
+    /// cached field, so the two entry points never show different states.
     fn set_quit_to_tray(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.quit_to_tray = on;
         settings::set_quit_to_tray(on);
         Settings::update(move |s| s.quit_to_tray = on);
         tray::sync(cx);
@@ -652,27 +663,42 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Persist the appearance scalars and frame after the current scrub
-    /// settles. Each slider tick would otherwise read, parse, and rewrite the
-    /// whole settings file (dock dumps and all); the live statics already hold
-    /// the value, so only the file write needs to wait for the last tick.
+    /// Persist the appearance scalars, frame, and any pending palette edit
+    /// after the current scrub settles. Each slider tick or picker change
+    /// would otherwise read, parse, and rewrite the whole settings file (dock
+    /// dumps and all); the live statics already hold the value, so only the
+    /// file write needs to wait for the last tick.
     fn persist_appearance_soon(&mut self, cx: &mut Context<Self>) {
         self.persist_gen += 1;
         let gen = self.persist_gen;
         let (surface, backdrop, frame) =
             (self.surface_opacity, self.backdrop_strength, self.frame);
+        let palette = self.persist_palette.then(|| self.base.to_map());
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(200))
                 .await;
             // A later tick bumped the gen past this capture, so only the last
-            // edit in a burst writes.
-            let latest = this.update(cx, |this, _| this.persist_gen).unwrap_or(gen);
+            // edit in a burst writes. The palette rereads at fire time so an
+            // immediate writer (reset, import) landing inside the wait isn't
+            // undone; the capture only stands in when the window closed
+            // before the timer.
+            let (latest, palette) = this
+                .update(cx, |this, _| {
+                    (
+                        this.persist_gen,
+                        this.persist_palette.then(|| this.base.to_map()),
+                    )
+                })
+                .unwrap_or((gen, palette));
             if latest == gen {
                 Settings::update(move |s| {
                     s.surface_opacity = surface;
                     s.backdrop_strength = backdrop;
                     s.frame = frame;
+                    if let Some(palette) = palette {
+                        s.palette = palette;
+                    }
                 });
             }
         })
@@ -739,6 +765,9 @@ impl SettingsWindow {
     /// filling with defaults.
     fn reset_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.apply_palette(Palette::default(), window, cx);
+        // Back off the debounced palette writes too, or a settling picker
+        // burst would refill the map this just emptied.
+        self.persist_palette = false;
         Settings::update(|s| s.palette.clear());
     }
 
@@ -941,7 +970,7 @@ impl SettingsWindow {
     /// author to edit, rides the header.
     fn icons_section(&self, cx: &mut Context<Self>) -> Div {
         let active = self.active_icon_pack.clone();
-        let packs = crate::startup::icon_packs::all();
+        let packs = self.icon_packs.clone();
 
         // New-pack-from-name rides the header, so a pack is one name away
         // and lands pre-filled with the current icons.
@@ -1037,6 +1066,7 @@ impl SettingsWindow {
     fn set_icon_pack(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         crate::startup::icon_packs::activate(name.as_deref());
         self.active_icon_pack = name.clone();
+        self.icon_packs = crate::startup::icon_packs::all();
         let persist = name.clone();
         Settings::update(move |s| s.icon_pack = persist);
         // Repaint every window so any not-yet-cached icon picks up the pack.
@@ -1068,6 +1098,7 @@ impl SettingsWindow {
             self.set_icon_pack(None, cx);
         }
         crate::startup::icon_packs::delete(name);
+        self.icon_packs = crate::startup::icon_packs::all();
         cx.notify();
     }
 
@@ -1140,7 +1171,7 @@ impl SettingsWindow {
                             "Keep the music playing when the last window closes, with the \
                              tray icon (the dock on macOS) as the way back in",
                         ),
-                        panel::toggle(self.quit_to_tray, Self::set_quit_to_tray, cx),
+                        panel::toggle(settings::quit_to_tray(), Self::set_quit_to_tray, cx),
                     ),
                 ))
             })
@@ -1164,11 +1195,6 @@ impl SettingsWindow {
             ))
     }
 
-    /// The Workspace page: the sharing hub. A workspace is a whole look -
-    /// layout presets, palette, appearance - traded as one file; presets are
-    /// single layouts under it. The composition tree below shows the opening
-    /// window's dock, splits and tab groups as muted structure lines, panels
-    /// as named rows with their settings a click away.
     /// The Scrobbling page: the last.fm account section - the user's own
     /// api credentials, the connect flow, the connection readout - and
     /// the scrobbling knobs under it.

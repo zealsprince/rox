@@ -781,6 +781,9 @@ impl DockArea {
     ///
     /// This is used to render at the Center of the DockArea.
     pub fn set_center(&mut self, item: DockItem, window: &mut Window, cx: &mut Context<Self>) {
+        // A zoomed view belongs to the tree being replaced; drop the zoom
+        // first or the discarded view stays painted over the new layout.
+        self.zoom_out(window, cx);
         self.subscribe_item(&item, window, cx);
         self.items = item;
         self.update_toggle_button_tab_panels(window, cx);
@@ -1149,6 +1152,9 @@ impl DockArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
+        // A zoomed view belongs to the tree being replaced; drop the zoom
+        // first or the discarded view stays painted over the new layout.
+        self.zoom_out(window, cx);
         self.version = state.version;
         let weak_self = cx.entity().downgrade();
 
@@ -1202,27 +1208,14 @@ impl DockArea {
     #[allow(clippy::only_used_in_recursion)]
     fn subscribe_item(&mut self, item: &DockItem, window: &mut Window, cx: &mut Context<Self>) {
         match item {
-            DockItem::Split { items, view, .. } => {
+            DockItem::Split { items, .. } => {
                 for item in items {
                     self.subscribe_item(item, window, cx);
                 }
 
-                self._subscriptions.push(cx.subscribe_in(
-                    view,
-                    window,
-                    move |_, _, event, window, cx| match event {
-                        PanelEvent::LayoutChanged => {
-                            cx.spawn_in(window, async move |view, window| {
-                                _ = view.update_in(window, |view, window, cx| {
-                                    view.update_toggle_button_tab_panels(window, cx)
-                                });
-                            })
-                            .detach();
-                            cx.emit(DockEvent::LayoutChanged);
-                        }
-                        _ => {}
-                    },
-                ));
+                // The split view itself is subscribed by the deferred
+                // subscribe_panel in split_with_sizes; subscribing here too
+                // double-fired every layout-save event.
             }
             DockItem::Tabs { .. } => {
                 // We subscribe to the tab panel event in StackPanel's insert_panel

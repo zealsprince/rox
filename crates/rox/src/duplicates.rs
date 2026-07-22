@@ -432,6 +432,23 @@ impl Duplicates {
             .sum()
     }
 
+    /// How many marks the trash pass would actually take: groups the
+    /// filter hides are skipped, the same gate trash() applies, so the
+    /// button never promises files that stay put.
+    fn visible_checked_count(&self) -> usize {
+        self.groups
+            .iter()
+            .enumerate()
+            .filter(|(_, group)| self.query.is_empty() || group_matches(group, &self.query))
+            .map(|(g, _)| {
+                self.checked
+                    .get(g)
+                    .map(|marks| marks.iter().filter(|&&c| c).count())
+                    .unwrap_or(0)
+            })
+            .sum()
+    }
+
     /// Move every marked copy to the OS trash, one file per background hop
     /// so the count moves and a slow disk is visibly the holdup. Trashed
     /// files prune out of the catalog through the library; their rows drop
@@ -565,7 +582,7 @@ impl Duplicates {
     /// controls trailing it, on the border the settings sections wear.
     fn header(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.scanning || self.trashing;
-        let count = self.checked_count();
+        let count = self.visible_checked_count();
         let controls = div()
             .flex()
             .flex_row()
@@ -973,6 +990,14 @@ fn match_duplicates(projection: &rox_library::projection::Projection) -> Vec<Gro
     // bucket like the folded title does; distinct symbols share a lower form.
     let mut by_key: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
     for i in 0..projection.db_id.len() {
+        // A file whose tags failed to parse scans as its filename stem, no
+        // artist, no album, duration zero - no evidence of identity at all.
+        // Two different songs named alike would cluster, pass the duration
+        // and album checks on their empty fallbacks, and auto-select could
+        // mark one for the trash. Keep such rows out of the matching.
+        if projection.duration_ms[i] == 0 {
+            continue;
+        }
         let artist_lower = projection.artists.lower[projection.artist[i] as usize].as_str();
         by_key
             .entry((artist_lower, projection.title_lower.get(i)))

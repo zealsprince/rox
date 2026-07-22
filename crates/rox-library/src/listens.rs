@@ -265,6 +265,10 @@ pub fn histogram(
     bucket: i64,
     now: i64,
 ) -> rusqlite::Result<Vec<u64>> {
+    // A non-positive bucket has no bar width; bail before it divides.
+    if bucket <= 0 {
+        return Ok(Vec::new());
+    }
     let n = ((now - since) / bucket).max(0) as usize + 1;
     let mut counts = vec![0u64; n];
     let mut stmt = conn.prepare_cached(

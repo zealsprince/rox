@@ -980,6 +980,21 @@ impl Settings {
         } else {
             0.5
         };
+        // The restored frame reads straight into window Bounds on open: a
+        // non-finite field drops back to the centered default, and the size
+        // floors at the window minimum so a zero or negative frame can't
+        // open an invisible window. Negative origins are real on
+        // multi-monitor setups, so finite ones stand.
+        let bad_frame = settings
+            .window
+            .as_ref()
+            .is_some_and(|w| [w.x, w.y, w.width, w.height].iter().any(|v| !v.is_finite()));
+        if bad_frame {
+            settings.window = None;
+        } else if let Some(w) = settings.window.as_mut() {
+            w.width = w.width.max(f32::from(crate::MIN_WINDOW_SIZE.width));
+            w.height = w.height.max(f32::from(crate::MIN_WINDOW_SIZE.height));
+        }
         // A file from before multi-folder carries one library_root; it
         // seeds the list here and the next save drops it.
         if settings.library_roots.is_empty() {

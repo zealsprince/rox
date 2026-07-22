@@ -1577,6 +1577,9 @@ impl LibraryPanel {
                     .filter(|&i| delegate.track_at(i).is_some())
                     .collect();
                 delegate.selected = range;
+                if delegate.anchor.is_none() {
+                    delegate.anchor = Some(anchor);
+                }
             } else {
                 delegate.selected = HashSet::from([ix]);
                 delegate.anchor = Some(ix);
@@ -1745,6 +1748,9 @@ impl LibraryPanel {
                         } else {
                             delegate.selected = range.into_iter().collect();
                         }
+                        if delegate.anchor.is_none() {
+                            delegate.anchor = Some(anchor);
+                        }
                     } else if modifiers.secondary() {
                         if !delegate.selected.insert(ix) {
                             delegate.selected.remove(&ix);
@@ -1879,19 +1885,26 @@ impl LibraryPanel {
     /// The table re-reads the delegate's columns and the view stays put.
     fn toggle_column(&mut self, key: &'static str, cx: &mut Context<Self>) {
         let Some(def) = column_def(key) else { return };
+        let mut sort_cleared = false;
         self.table.update(cx, |table, cx| {
-            let columns = &mut table.delegate_mut().columns;
-            if let Some(ix) = columns.iter().position(|c| c.key.as_ref() == key) {
+            let delegate = table.delegate_mut();
+            if let Some(ix) = delegate.columns.iter().position(|c| c.key.as_ref() == key) {
                 // Never let the last column go: an empty table has no
                 // header to bring one back from.
-                if columns.len() > 1 {
-                    columns.remove(ix);
+                if delegate.columns.len() > 1 {
+                    delegate.columns.remove(ix);
+                    // A hidden sort column leaves no header to clear the
+                    // sort; drop back to the canonical order instead.
+                    if delegate.sort.as_ref().is_some_and(|(k, _)| k.as_ref() == key) {
+                        delegate.sort = None;
+                        sort_cleared = true;
+                    }
                 }
             } else {
                 let column = Column::new(def.key, def.label)
                     .width(px(def.default_width))
                     .sort(ColumnSort::Default);
-                columns.push(if def.right {
+                delegate.columns.push(if def.right {
                     column.text_right()
                 } else {
                     column
@@ -1899,6 +1912,9 @@ impl LibraryPanel {
             }
             table.refresh(cx);
         });
+        if sort_cleared {
+            self.refresh_view(cx);
+        }
         self.columns_shown = self.shown_columns(cx);
         self.refresh_title_bar(cx);
         self.request_layout_save(cx);

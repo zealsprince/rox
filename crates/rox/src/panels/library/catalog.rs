@@ -543,6 +543,14 @@ impl Library {
         store::id_for_path(conn, path.to_str()?).ok().flatten()
     }
 
+    /// Resolve a path to its track id and tags together in one query, for
+    /// callers (the queue) that want both and would otherwise pay `id_for`
+    /// plus `meta_for` separately. None when the path is not in the library.
+    pub fn resolve_path(&self, path: &std::path::Path) -> Option<(i64, store::TrackMeta)> {
+        let conn = self.conn.as_ref()?;
+        store::meta_row_for_path(conn, path.to_str()?).ok().flatten()
+    }
+
     /// The history views' reads, on the UI-side connection: SQL over the
     /// indexed events table at panel-open and listen-append cadence, per
     /// ADR 11, never per keystroke or frame.

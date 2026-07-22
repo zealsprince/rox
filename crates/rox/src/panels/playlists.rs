@@ -186,7 +186,7 @@ fn group_track(t: &PlaylistTrack) -> GroupTrack<'_> {
 /// source playlist rides along.
 #[derive(Clone)]
 struct TrackDrag {
-    members: Vec<i64>,
+    members: Arc<[i64]>,
     title: SharedString,
 }
 
@@ -243,6 +243,11 @@ pub struct PlaylistsPanel {
     /// dropping the highlight. Shift extends, cmd (ctrl elsewhere) toggles,
     /// Ctrl+A takes the lot, the library's click rules.
     selected: HashSet<i64>,
+    /// Bumped whenever the selection or the row order changes, keying the
+    /// drag-set cache so a grab inside a big selection shares one Arc across
+    /// every visible selected row instead of rescanning the tree per row.
+    drag_gen: u64,
+    drag_set: Option<(u64, Arc<[i64]>)>,
     /// Where the next shift-click extends from: the last plain or toggle pick,
     /// held as a member id so it survives a rebuild too.
     anchor: Option<i64>,
@@ -310,6 +315,8 @@ impl PlaylistsPanel {
             favourites: HashSet::new(),
             playing: None,
             selected: HashSet::new(),
+            drag_gen: 0,
+            drag_set: None,
             anchor: None,
             menu_row: None,
             scroll: UniformListScrollHandle::new(),
@@ -419,6 +426,9 @@ impl PlaylistsPanel {
             }
         }
         self.rows = rows;
+        // The row order drives drag order, so a rebuild invalidates the cached
+        // drag set even when the selected members are unchanged.
+        self.drag_gen += 1;
         self.albums = albums;
         self.favourites = favourites;
         // Keep only members that still exist; a removed track drops out of the
@@ -645,6 +655,19 @@ impl PlaylistsPanel {
             .collect()
     }
 
+    /// The multi-selection drag set as a shared Arc, resolved through
+    /// `selected_members` once per selection or row change and cached after.
+    fn drag_members(&mut self) -> Arc<[i64]> {
+        if self.drag_set.as_ref().map(|(gen, _)| *gen) != Some(self.drag_gen) {
+            let members: Arc<[i64]> = self.selected_members().into();
+            self.drag_set = Some((self.drag_gen, members));
+        }
+        self.drag_set
+            .as_ref()
+            .map(|(_, members)| members.clone())
+            .unwrap_or_else(|| Arc::from([]))
+    }
+
     /// Put a click on a track row: plain selects just it, shift extends from
     /// the anchor over the tracks between, cmd (ctrl elsewhere) toggles - the
     /// library's click rules. Publishes the selection either way.
@@ -683,6 +706,7 @@ impl PlaylistsPanel {
             self.selected = HashSet::from([member]);
             self.anchor = Some(member);
         }
+        self.drag_gen += 1;
         self.publish_selection(cx);
         cx.notify();
     }
@@ -703,6 +727,7 @@ impl PlaylistsPanel {
         }
         self.anchor = members.first().copied();
         self.selected = members.into_iter().collect();
+        self.drag_gen += 1;
         self.publish_selection(cx);
         cx.notify();
     }
@@ -779,6 +804,10 @@ impl PlaylistsPanel {
         range: std::ops::Range<usize>,
         cx: &mut Context<Self>,
     ) -> Vec<Stateful<Div>> {
+        // The whole multi-selection drag set, resolved once per frame (and
+        // cached across frames until the selection or rows move) so a grab
+        // inside it hands every selected row one shared Arc, not a rescan each.
+        let multi_drag = (self.selected.len() > 1).then(|| self.drag_members());
         range
             .filter_map(|ix| {
                 Some(match self.rows.get(ix)? {
@@ -799,7 +828,7 @@ impl PlaylistsPanel {
                     }
                     Row::Track(t) => {
                         let selected = self.selected.contains(&t.member_id);
-                        self.track_row(ix, t, selected, cx)
+                        self.track_row(ix, t, selected, multi_drag.as_ref(), cx)
                     }
                 })
             })
@@ -932,17 +961,18 @@ impl PlaylistsPanel {
         ix: usize,
         t: &TrackRow,
         selected: bool,
+        multi_drag: Option<&Arc<[i64]>>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let (playlist_id, member_id, track_id) = (t.playlist_id, t.member_id, t.track_id);
         let playing = self.playing == Some(track_id);
         let favourite = self.favourites.contains(&track_id);
         // Dragging a row inside a multi-selection carries the whole set in view
-        // order; outside it, just this row.
-        let members = if self.selected.len() > 1 && self.selected.contains(&member_id) {
-            self.selected_members()
-        } else {
-            vec![member_id]
+        // order, the shared Arc `list_rows` resolved once; outside it, just this
+        // row.
+        let members: Arc<[i64]> = match multi_drag {
+            Some(set) if selected => set.clone(),
+            _ => Arc::from([member_id]),
         };
         let drag = TrackDrag {
             members,

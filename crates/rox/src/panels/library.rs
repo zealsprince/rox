@@ -254,9 +254,37 @@ struct TrackTable {
     /// caches here or a scrolled list would hit the catalog per row per frame.
     /// Same lifetime as `cover_paths`; cleared on reload.
     drag_paths: HashMap<i64, Option<PathBuf>>,
+    /// Bumped on every selection change. Keys the drag-set cache below so it
+    /// rebuilds only when the selection actually moves, not per frame. A view
+    /// swap always clears the selection, so this catches those too.
+    sel_gen: u64,
+    /// The wall clock the "added" column dates against, refreshed at most every
+    /// half minute instead of a `SystemTime::now` per shown cell per frame;
+    /// relative-time granularity is coarse enough that the small lag is unseen.
+    added_now: i64,
+    added_now_at: Instant,
+    /// The multi-selection drag paths, in view order, built once per selection
+    /// change and shared behind an Arc. A grab inside the selection hands every
+    /// visible selected row this same Arc instead of rebuilding the whole set
+    /// per row per frame.
+    drag_set: Option<(u64, Arc<[PathBuf]>)>,
 }
 
 impl TrackTable {
+    /// The current unix time the "added" column dates against, refreshed at
+    /// most twice a minute so a wall of shown cells shares one read instead of
+    /// each calling `SystemTime::now`.
+    fn added_now(&mut self) -> i64 {
+        if self.added_now_at.elapsed() >= Duration::from_secs(30) {
+            self.added_now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(self.added_now);
+            self.added_now_at = Instant::now();
+        }
+        self.added_now
+    }
+
     /// The track a view row holds; None for a header row.
     fn track_at(&self, ix: usize) -> Option<u32> {
         match self.view.get(ix) {
@@ -273,18 +301,38 @@ impl TrackTable {
     /// built eagerly every frame, so paths come from `drag_paths`, filled per
     /// id on the first grab that needs it rather than a query per row per frame.
     fn drag_payload(&mut self, ix: usize, cx: &App) -> Option<PlayDrag> {
-        let rows: Vec<usize> = if self.selected.len() > 1 && self.selected.contains(&ix) {
-            let mut rows: Vec<usize> = self.selected.iter().copied().collect();
-            rows.sort_unstable();
-            rows
-        } else {
-            vec![ix]
-        };
         let projection = self.state.library.read(cx).projection().cloned()?;
         let title = self
             .track_at(ix)
             .map(|row| projection.resolve(row).title.to_string())
             .unwrap_or_default();
+        // A grab inside a multi-selection carries the whole set in view order,
+        // built once per selection change and shared behind an Arc so it costs
+        // a refcount bump per row, not a rebuild. Outside it, just this row.
+        let paths: Arc<[PathBuf]> = if self.selected.len() > 1 && self.selected.contains(&ix) {
+            if self.drag_set.as_ref().map(|(gen, _)| *gen) != Some(self.sel_gen) {
+                let mut rows: Vec<usize> = self.selected.iter().copied().collect();
+                rows.sort_unstable();
+                let set: Arc<[PathBuf]> = self.resolve_drag_paths(&rows, &projection, cx).into();
+                self.drag_set = Some((self.sel_gen, set));
+            }
+            self.drag_set.as_ref().map(|(_, set)| set.clone())?
+        } else {
+            self.resolve_drag_paths(&[ix], &projection, cx).into()
+        };
+        if paths.is_empty() {
+            return None;
+        }
+        Some(PlayDrag {
+            paths,
+            title: title.into(),
+        })
+    }
+
+    /// Resolve view rows to their files in row order, through the same per-id
+    /// path cache the cover column fills, so a drag never re-queries the
+    /// catalog once a track's path is known.
+    fn resolve_drag_paths(&mut self, rows: &[usize], projection: &Projection, cx: &App) -> Vec<PathBuf> {
         let ids: Vec<i64> = rows
             .iter()
             .filter_map(|&i| self.track_at(i))
@@ -310,13 +358,7 @@ impl TrackTable {
                 paths.push(path);
             }
         }
-        if paths.is_empty() {
-            return None;
-        }
-        Some(PlayDrag {
-            paths,
-            title: title.into(),
-        })
+        paths
     }
 
     /// The nearest track row from `ix` heading `forward`, bouncing off the
@@ -804,6 +846,7 @@ impl TableDelegate for TrackTable {
         // view swap. The widget's own focus row does too, but it can only
         // be cleared once the table's update ends.
         self.selected.clear();
+        self.sel_gen += 1;
         self.anchor = None;
         self.cursor = None;
         self.locate_playing(cx);
@@ -882,12 +925,14 @@ impl TableDelegate for TrackTable {
         }
         if let Some(rows) = &album {
             self.selected = rows.iter().copied().collect();
+            self.sel_gen += 1;
             self.anchor = rows.first().copied();
             self.cursor = rows.first().copied();
             self.publish_selection(cx);
             cx.notify();
         } else if !self.selected.contains(&row_ix) {
             self.selected = HashSet::from([row_ix]);
+            self.sel_gen += 1;
             self.anchor = Some(row_ix);
             self.publish_selection(cx);
             cx.notify();
@@ -1095,11 +1140,7 @@ impl TableDelegate for TrackTable {
                 .child(if v.added <= 0 {
                     SharedString::default()
                 } else {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    SharedString::from(super::history::fmt_ago(now - v.added))
+                    SharedString::from(super::history::fmt_ago(self.added_now() - v.added))
                 }),
             _ => cell,
         };
@@ -1293,6 +1334,13 @@ impl LibraryPanel {
             favourites: state.library.read(cx).favourite_ids(),
             cover_paths: HashMap::new(),
             drag_paths: HashMap::new(),
+            sel_gen: 0,
+            added_now: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+            added_now_at: Instant::now(),
+            drag_set: None,
         };
         // Widths and order persist by column key, so a drag survives a
         // layout save; the delegate mirrors the widget's reorder.
@@ -1533,6 +1581,7 @@ impl LibraryPanel {
                 delegate.selected = HashSet::from([ix]);
                 delegate.anchor = Some(ix);
             }
+            delegate.sel_gen += 1;
             table.delegate().publish_selection(cx);
             table.scroll_to_row(ix, cx);
             cx.notify();
@@ -1619,6 +1668,7 @@ impl LibraryPanel {
             delegate.view = view;
             delegate.groups = groups;
             delegate.selected.clear();
+            delegate.sel_gen += 1;
             delegate.anchor = None;
             delegate.cursor = None;
             delegate.locate_playing(cx);
@@ -1670,6 +1720,7 @@ impl LibraryPanel {
                         delegate.anchor = rows.first().copied();
                         delegate.cursor = rows.first().copied();
                         delegate.selected = rows.into_iter().collect();
+                        delegate.sel_gen += 1;
                         table.delegate().publish_selection(cx);
                         cx.notify();
                     });
@@ -1707,6 +1758,7 @@ impl LibraryPanel {
                         delegate.anchor = Some(ix);
                     }
                     table.delegate_mut().cursor = Some(ix);
+                    table.delegate_mut().sel_gen += 1;
                     table.delegate().publish_selection(cx);
                     cx.notify();
                 });

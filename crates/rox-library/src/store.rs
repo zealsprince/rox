@@ -504,6 +504,41 @@ pub fn meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<T
     }
 }
 
+/// Resolve a path to its track id and tags in one query, for callers that want
+/// both. Ok(None) when the path is not in the library. Saves the round trip of
+/// calling [`id_for_path`] and [`meta_for_path`] back to back on the same path.
+pub fn meta_row_for_path(
+    conn: &Connection,
+    path: &str,
+) -> rusqlite::Result<Option<(i64, TrackMeta)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, title, artist, album, track_no,
+                album_artist, year, genre, duration_ms, codec, bitrate, rating
+         FROM tracks
+         WHERE source = 'local' AND path = ?1",
+    )?;
+    let mut rows = stmt.query([path])?;
+    match rows.next()? {
+        Some(row) => Ok(Some((
+            row.get(0)?,
+            TrackMeta {
+                title: row.get(1)?,
+                artist: row.get(2)?,
+                album: row.get(3)?,
+                track_no: row.get::<_, i64>(4)? as u16,
+                album_artist: row.get(5)?,
+                year: row.get(6)?,
+                genre: row.get(7)?,
+                duration_ms: row.get(8)?,
+                codec: row.get(9)?,
+                bitrate_kbps: row.get(10)?,
+                rating: row.get(11)?,
+            },
+        ))),
+        None => Ok(None),
+    }
+}
+
 pub fn max_rowid(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT COALESCE(MAX(id), 0) FROM tracks", [], |r| r.get(0))
 }

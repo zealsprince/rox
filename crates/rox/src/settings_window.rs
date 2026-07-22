@@ -17,6 +17,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
     div, prelude::*, px, size, svg, AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, Div,
@@ -301,6 +302,14 @@ struct SettingsWindow {
     update_check: UpdateCheck,
     /// Whether launch runs the daily update check, the About page toggle.
     check_updates: bool,
+    /// The active icon pack, mirrored from settings so the Appearance page's
+    /// pack list marks the current one without re-reading the settings file
+    /// (which carries the dock dumps) on every render.
+    active_icon_pack: Option<String>,
+    /// Bumped on every appearance-slider tick; a debounced writer flushes the
+    /// current values once the scrub settles instead of rewriting the whole
+    /// settings file per tick.
+    persist_gen: u64,
     _picker_changes: Vec<Subscription>,
     _lastfm_changes: Vec<Subscription>,
     /// The connect flow's phases land through here, so the page's status
@@ -468,6 +477,8 @@ impl SettingsWindow {
             pending: None,
             update_check: UpdateCheck::from_cache(&settings),
             check_updates: settings.check_updates,
+            active_icon_pack: settings.icon_pack.clone(),
+            persist_gen: 0,
             _picker_changes,
             _lastfm_changes,
             _scrobbler_changed,
@@ -650,12 +661,35 @@ impl SettingsWindow {
 
     fn scalars_edited(&mut self, cx: &mut Context<Self>) {
         palette::set_scalars(self.surface_opacity, self.backdrop_strength, cx);
-        let (surface, backdrop) = (self.surface_opacity, self.backdrop_strength);
-        Settings::update(move |s| {
-            s.surface_opacity = surface;
-            s.backdrop_strength = backdrop;
-        });
+        self.persist_appearance_soon(cx);
         cx.notify();
+    }
+
+    /// Persist the appearance scalars and frame after the current scrub
+    /// settles. Each slider tick would otherwise read, parse, and rewrite the
+    /// whole settings file (dock dumps and all); the live statics already hold
+    /// the value, so only the file write needs to wait for the last tick.
+    fn persist_appearance_soon(&mut self, cx: &mut Context<Self>) {
+        self.persist_gen += 1;
+        let gen = self.persist_gen;
+        let (surface, backdrop, frame) =
+            (self.surface_opacity, self.backdrop_strength, self.frame);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            // A later tick bumped the gen past this capture, so only the last
+            // edit in a burst writes.
+            let latest = this.update(cx, |this, _| this.persist_gen).unwrap_or(gen);
+            if latest == gen {
+                Settings::update(move |s| {
+                    s.surface_opacity = surface;
+                    s.backdrop_strength = backdrop;
+                    s.frame = frame;
+                });
+            }
+        })
+        .detach();
     }
 
     // The app-wide frame setters: the strip fraction mapped onto whole px,
@@ -683,8 +717,7 @@ impl SettingsWindow {
 
     fn frame_edited(&mut self, cx: &mut Context<Self>) {
         settings::set_app_frame(self.frame, cx);
-        let frame = self.frame;
-        Settings::update(move |s| s.frame = frame);
+        self.persist_appearance_soon(cx);
         cx.notify();
     }
 
@@ -920,7 +953,7 @@ impl SettingsWindow {
     /// badge. Creating a new pack, seeded with the built-in icons for an
     /// author to edit, rides the header.
     fn icons_section(&self, cx: &mut Context<Self>) -> Div {
-        let active = Settings::load().icon_pack;
+        let active = self.active_icon_pack.clone();
         let packs = crate::startup::icon_packs::all();
 
         // New-pack-from-name rides the header, so a pack is one name away
@@ -1016,6 +1049,7 @@ impl SettingsWindow {
     /// their tiles until the next launch, so the switch reads as pending.
     fn set_icon_pack(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         crate::startup::icon_packs::activate(name.as_deref());
+        self.active_icon_pack = name.clone();
         let persist = name.clone();
         Settings::update(move |s| s.icon_pack = persist);
         // Repaint every window so any not-yet-cached icon picks up the pack.
@@ -1043,7 +1077,7 @@ impl SettingsWindow {
     /// Delete a pack. If it was the active one, fall back to the built-in
     /// set so the resolver never points at a folder that is gone.
     fn delete_pack(&mut self, name: &str, cx: &mut Context<Self>) {
-        if Settings::load().icon_pack.as_deref() == Some(name) {
+        if self.active_icon_pack.as_deref() == Some(name) {
             self.set_icon_pack(None, cx);
         }
         crate::startup::icon_packs::delete(name);

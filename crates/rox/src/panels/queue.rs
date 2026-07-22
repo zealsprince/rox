@@ -22,6 +22,7 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use rox_library::projection::{parse_query, track_matches, FilterSet, TrackFields};
+use rox_library::store::TrackMeta;
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
@@ -173,7 +174,7 @@ struct Playing {
 /// inside a multi-selection carries the whole set; outside it, just that row.
 #[derive(Clone)]
 struct QueueDrag {
-    ids: Vec<u64>,
+    ids: Arc<[u64]>,
     title: SharedString,
 }
 
@@ -244,6 +245,11 @@ pub struct QueuePanel {
     /// highlight on the same entries wherever they land. Shift extends, cmd
     /// (ctrl elsewhere) toggles, Ctrl+A takes the lot, the library's rules.
     selected: HashSet<u64>,
+    /// Bumped whenever the selection or the row order changes, keying the
+    /// drag-set cache so a grab inside a big selection shares one Arc across
+    /// every visible selected row instead of rescanning the rows per row.
+    drag_gen: u64,
+    drag_set: Option<(u64, Arc<[u64]>)>,
     /// Where the next shift-click extends from: the last plain or toggle
     /// pick, held as an entry id so it survives a rebuild too.
     anchor: Option<u64>,
@@ -314,6 +320,8 @@ impl QueuePanel {
             rev: None,
             playing_path: None,
             selected: HashSet::new(),
+            drag_gen: 0,
+            drag_set: None,
             anchor: None,
             menu_row: None,
             scroll: UniformListScrollHandle::new(),
@@ -377,12 +385,25 @@ impl QueuePanel {
         self.playing_path = playing_path;
         let queued = self.state.player.read(cx).queued();
         let library = self.state.library.read(cx);
+        // Resolve every queued and playing file to its id and tags once, in a
+        // single query each. The plays, loose-tag, and row passes below all read
+        // from this instead of hitting id_for and meta_for twice apiece per
+        // entry, which was four round trips a row on every rebuild.
+        let resolved: Vec<Option<(i64, TrackMeta)>> =
+            queued.iter().map(|e| library.resolve_path(&e.path)).collect();
+        let playing_resolved: Option<(i64, TrackMeta)> = self
+            .playing_path
+            .as_ref()
+            .and_then(|path| library.resolve_path(path));
         // Total play counts for the queue's tracks and the playing one, one
         // projection pass, for the plays column.
         let plays = {
-            let mut ids: Vec<i64> = queued.iter().filter_map(|e| library.id_for(&e.path)).collect();
-            if let Some(id) = self.playing_path.as_ref().and_then(|p| library.id_for(p)) {
-                ids.push(id);
+            let mut ids: Vec<i64> = resolved
+                .iter()
+                .filter_map(|r| r.as_ref().map(|(id, _)| *id))
+                .collect();
+            if let Some((id, _)) = &playing_resolved {
+                ids.push(*id);
             }
             library.plays_for(&ids)
         };
@@ -390,21 +411,22 @@ impl QueuePanel {
         // not know, once, before the resolve passes read the cache. Each
         // read_one hits the disk, so it is gated on a rev-change rebuild here
         // and cached per path; a steady queue reads nothing.
-        for path in queued
+        for (path, meta) in queued
             .iter()
             .map(|e| &e.path)
-            .chain(self.playing_path.as_ref())
+            .zip(resolved.iter())
+            .chain(self.playing_path.as_ref().map(|p| (p, &playing_resolved)))
         {
-            if library.meta_for(path).is_none() && !self.loose_tags.contains_key(path) {
+            if meta.is_none() && !self.loose_tags.contains_key(path) {
                 self.loose_tags
                     .insert(path.clone(), rox_library::scanner::read_one(path));
             }
         }
         self.playing = self.playing_path.as_ref().map(|path| {
-            let track_id = library.id_for(path);
+            let track_id = playing_resolved.as_ref().map(|(id, _)| *id);
             let count = track_id.and_then(|id| plays.get(&id).copied()).unwrap_or(0);
-            match library.meta_for(path) {
-                Some(m) => Playing {
+            match playing_resolved {
+                Some((_, m)) => Playing {
                     track_id,
                     title: m.title,
                     artist: m.artist,
@@ -449,13 +471,14 @@ impl QueuePanel {
         self.favourites = library.favourite_ids();
         self.tracks = queued
             .iter()
+            .zip(resolved)
             .enumerate()
-            .map(|(i, entry)| {
-                let track_id = library.id_for(&entry.path);
+            .map(|(i, (entry, resolved))| {
+                let track_id = resolved.as_ref().map(|(id, _)| *id);
                 let pos = (i + 1) as u32;
                 let count = track_id.and_then(|id| plays.get(&id).copied()).unwrap_or(0);
-                match library.meta_for(&entry.path) {
-                    Some(m) => TrackRow {
+                match resolved {
+                    Some((_, m)) => TrackRow {
                         entry_id: entry.id,
                         track_id,
                         pos,
@@ -555,6 +578,9 @@ impl QueuePanel {
     /// column, or query flip that leaves the queue itself alone calls this,
     /// not `sync`.
     fn rebuild_rows(&mut self) {
+        // The row order drives drag order, so a rebuild invalidates the cached
+        // drag set even when the selected ids are unchanged.
+        self.drag_gen += 1;
         let terms = parse_query(&self.applied_query);
         let visible: Vec<u32> = (0..self.tracks.len() as u32)
             .filter(|&i| self.matches(&terms, &self.tracks[i as usize]))
@@ -654,6 +680,19 @@ impl QueuePanel {
             .collect()
     }
 
+    /// The multi-selection drag set as a shared Arc, resolved through
+    /// `selected_ids` once per selection or row change and cached after.
+    fn drag_ids(&mut self) -> Arc<[u64]> {
+        if self.drag_set.as_ref().map(|(gen, _)| *gen) != Some(self.drag_gen) {
+            let ids: Arc<[u64]> = self.selected_ids().into();
+            self.drag_set = Some((self.drag_gen, ids));
+        }
+        self.drag_set
+            .as_ref()
+            .map(|(_, ids)| ids.clone())
+            .unwrap_or_else(|| Arc::from([]))
+    }
+
     /// Put a click on a track row: plain selects just it, shift extends from
     /// the anchor over the tracks between, cmd (ctrl elsewhere) toggles - the
     /// library's rules, keyed on the entry id so a rebuild keeps the mark.
@@ -690,6 +729,7 @@ impl QueuePanel {
             self.selected = HashSet::from([entry]);
             self.anchor = Some(entry);
         }
+        self.drag_gen += 1;
         self.publish_selection(cx);
         cx.notify();
     }
@@ -702,6 +742,7 @@ impl QueuePanel {
         }
         self.selected = self.tracks.iter().map(|t| t.entry_id).collect();
         self.anchor = self.tracks.first().map(|t| t.entry_id);
+        self.drag_gen += 1;
         self.publish_selection(cx);
         cx.notify();
     }
@@ -835,6 +876,7 @@ impl QueuePanel {
         // entry-id selection rides the rebuild on its own.
         self.selected = dragged.iter().copied().collect();
         self.anchor = dragged.first().copied();
+        self.drag_gen += 1;
     }
 
     /// A track dragged in from the library (or another play-drag source)
@@ -846,7 +888,7 @@ impl QueuePanel {
         if drag.is_empty() {
             return;
         }
-        let paths = drag.paths.clone();
+        let paths = drag.paths.to_vec();
         self.state
             .player
             .update(cx, |player, cx| player.enqueue(paths, cx));
@@ -872,6 +914,10 @@ impl QueuePanel {
         range: std::ops::Range<usize>,
         cx: &mut Context<Self>,
     ) -> Vec<Stateful<Div>> {
+        // The whole multi-selection drag set, resolved once per frame (and
+        // cached across frames until the selection or rows move) so a grab
+        // inside it hands every selected row one shared Arc, not a rescan each.
+        let multi_drag = (self.selected.len() > 1).then(|| self.drag_ids());
         range
             .filter_map(|ix| {
                 Some(match self.rows.get(ix)? {
@@ -892,7 +938,7 @@ impl QueuePanel {
                     }
                     QRow::Track(ti) => {
                         let ti = *ti as usize;
-                        self.track_row(ix, ti, cx)
+                        self.track_row(ix, ti, multi_drag.as_ref(), cx)
                     }
                 })
             })
@@ -902,7 +948,13 @@ impl QueuePanel {
     /// One queue entry row: reorder-drag, multi-select, and remove keyed on
     /// the entry id, its cells the shown columns. A queued file the library
     /// does not know shows no rating or favourite.
-    fn track_row(&self, ix: usize, ti: usize, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn track_row(
+        &self,
+        ix: usize,
+        ti: usize,
+        multi_drag: Option<&Arc<[u64]>>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let t = &self.tracks[ti];
         let entry = t.entry_id;
         let has_track = t.track_id.is_some();
@@ -912,11 +964,11 @@ impl QueuePanel {
             .unwrap_or(false);
         let selected = self.selected.contains(&entry);
         // Dragging a row inside a multi-selection carries the whole set in
-        // queue order; outside it, just this entry.
-        let ids = if self.selected.len() > 1 && selected {
-            self.selected_ids()
-        } else {
-            vec![entry]
+        // queue order, the shared Arc `list_rows` resolved once; outside it,
+        // just this entry.
+        let ids: Arc<[u64]> = match multi_drag {
+            Some(set) if selected => set.clone(),
+            _ => Arc::from([entry]),
         };
         let drag = QueueDrag {
             ids,

@@ -264,6 +264,11 @@ pub struct GridPanel {
     playing_ix: Option<usize>,
     /// Whether audio is moving right now; pause lifts the dim.
     playing: bool,
+    /// A dim fade is in flight, so the per-frame ease loop should run. Set when
+    /// a dim target shifts (play state, playing album, or the dim knobs) and
+    /// cleared once every tile has settled, so idle renders skip the full-cell
+    /// scan the ease would otherwise do every frame.
+    dim_fading: bool,
     /// The tile size slider's scrub strip, for the settings window.
     tile_scrub: ScrubState,
     /// The tile rounding slider's scrub strip, same window.
@@ -359,6 +364,7 @@ impl GridPanel {
             playing_path: None,
             playing_ix: None,
             playing: false,
+            dim_fading: false,
             tile_scrub: ScrubState::default(),
             rounding_scrub: ScrubState::default(),
             gap_scrub: ScrubState::default(),
@@ -397,6 +403,7 @@ impl GridPanel {
             // Pause lifts the dim, resuming drops it back; render steps
             // the fade, this kicks it off.
             self.playing = playing;
+            self.dim_fading = true;
             cx.notify();
         }
         if path == self.playing_path {
@@ -404,6 +411,8 @@ impl GridPanel {
         }
         self.playing_path = path;
         self.playing_ix = self.playing_cell(cx);
+        // The un-dimmed album moved, so the old and new tiles both ease.
+        self.dim_fading = true;
         if self.config.follow_playing {
             self.follow_playing(cx);
         }
@@ -1280,6 +1289,7 @@ impl PanelSettings for GridPanel {
                                 self.config.dim_playing,
                                 |this: &mut Self, on, cx| {
                                     this.config.dim_playing = on;
+                                    this.dim_fading = true;
                                     cx.notify();
                                 },
                                 cx,
@@ -1295,6 +1305,7 @@ impl PanelSettings for GridPanel {
                                     format!("{:.0} %", self.config.dim),
                                     |this: &mut Self, fraction, cx| {
                                         this.config.dim = (fraction * TILE_DIM_MAX).round();
+                                        this.dim_fading = true;
                                         cx.notify();
                                     },
                                     cx,
@@ -1700,26 +1711,30 @@ impl GridPanel {
                 self.restore = None;
             }
         }
-        // The dim fade: every painted tile's opacity eases toward its
-        // target, the glide's exponential approach. Frames only while
-        // one is still moving; a settled wall costs a linear scan.
-        let step = 1.0 - (0.08_f32).powf(dt * 10.0);
-        let mut fading = false;
-        for ix in 0..self.cells.len() {
-            let Some(current) = self.cells[ix].dim else {
-                continue;
-            };
-            let target = self.dim_target(ix);
-            let diff = target - current;
-            self.cells[ix].dim = Some(if diff.abs() < 0.005 {
-                target
-            } else {
-                fading = true;
-                current + diff * step
-            });
-        }
-        if fading {
-            window.request_animation_frame();
+        // The dim fade: every painted tile's opacity eases toward its target,
+        // the glide's exponential approach. Gated on `dim_fading` so a settled
+        // wall skips the full-cell scan on the idle renders hover and scroll
+        // trigger; a target shift re-arms it.
+        if self.dim_fading {
+            let step = 1.0 - (0.08_f32).powf(dt * 10.0);
+            let mut fading = false;
+            for ix in 0..self.cells.len() {
+                let Some(current) = self.cells[ix].dim else {
+                    continue;
+                };
+                let target = self.dim_target(ix);
+                let diff = target - current;
+                self.cells[ix].dim = Some(if diff.abs() < 0.005 {
+                    target
+                } else {
+                    fading = true;
+                    current + diff * step
+                });
+            }
+            self.dim_fading = fading;
+            if fading {
+                window.request_animation_frame();
+            }
         }
 
         // The search lives in the tab bar via title_suffix while the panel

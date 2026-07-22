@@ -219,6 +219,11 @@ pub struct FolderTreePanel {
     /// Per-track paths resolved for drag payloads, so a hover frame never
     /// repeats the store lookup. Cleared on a library update.
     drag_paths: HashMap<i64, Option<PathBuf>>,
+    /// Bumped whenever the selection or the visible order changes, keying the
+    /// drag-set cache so a grab inside a big selection shares one Arc across
+    /// every visible selected row instead of rebuilding the set per row.
+    drag_gen: u64,
+    drag_set: Option<(u64, Arc<[PathBuf]>)>,
     /// The idle clock behind resume: a browse gesture arms it, its wake
     /// scrolls back to the playing track once the panel sits untouched.
     resume_idle: ResumeIdle,
@@ -281,6 +286,8 @@ impl FolderTreePanel {
             playing_path: None,
             playing: None,
             drag_paths: HashMap::new(),
+            drag_gen: 0,
+            drag_set: None,
             resume_idle: ResumeIdle::default(),
             glide_to: None,
             glide_tick: Instant::now(),
@@ -508,16 +515,18 @@ impl FolderTreePanel {
             .filter(|path| self.expanded.contains(*path))
             .cloned()
             .collect();
+        // Lower each label once up front rather than per comparison: the sort
+        // touched to_lowercase O(n log n) times per expanded folder on every
+        // keystroke, allocating a fresh String each call.
+        let sort_keys: HashMap<u32, String> = labels
+            .iter()
+            .map(|(&row, (label, _))| (row, label.to_lowercase()))
+            .collect();
         for path in expanded_paths {
             if let Some(rows) = self.folder_tracks.get_mut(&path) {
                 rows.sort_by(|a, b| {
-                    let name = |row: &u32| {
-                        labels
-                            .get(row)
-                            .map(|(label, _)| label.to_lowercase())
-                            .unwrap_or_default()
-                    };
-                    natural_cmp(&name(a), &name(b))
+                    let name = |row: &u32| sort_keys.get(row).map(String::as_str).unwrap_or("");
+                    natural_cmp(name(a), name(b))
                 });
             }
         }
@@ -533,6 +542,9 @@ impl FolderTreePanel {
             walk.folder(root, 0);
         }
         self.visible = walk.out;
+        // The visible order drives drag order, so a reflow invalidates the
+        // cached drag set even when the selection ids are unchanged.
+        self.drag_gen += 1;
         // The row set moved under the indices; drop the ones now off the end.
         // The selection rides on ids, so it survives untouched.
         if self.cursor.is_some_and(|ix| ix >= self.visible.len()) {
@@ -846,18 +858,27 @@ impl FolderTreePanel {
     /// into the play-drag story.
     fn song_drag(&mut self, ix: usize, title: &SharedString, cx: &App) -> Option<PlayDrag> {
         let id = self.song_id_at(ix)?;
-        let ids: Vec<i64> = if self.selected.len() > 1 && self.selected.contains(&id) {
-            self.visible
-                .iter()
-                .filter_map(|row| match &row.kind {
-                    RowKind::Track { id, .. } if self.selected.contains(id) => Some(*id),
-                    _ => None,
-                })
-                .collect()
+        // A grab inside a multi-selection carries the whole set in visible order,
+        // built once per selection or reflow and shared behind an Arc so it's a
+        // refcount bump per row, not a rebuild. Outside it, just this song.
+        let paths: Arc<[PathBuf]> = if self.selected.len() > 1 && self.selected.contains(&id) {
+            if self.drag_set.as_ref().map(|(gen, _)| *gen) != Some(self.drag_gen) {
+                let ids: Vec<i64> = self
+                    .visible
+                    .iter()
+                    .filter_map(|row| match &row.kind {
+                        RowKind::Track { id, .. } if self.selected.contains(id) => Some(*id),
+                        _ => None,
+                    })
+                    .collect();
+                let set: Arc<[PathBuf]> =
+                    ids.iter().filter_map(|&id| self.path_for(id, cx)).collect();
+                self.drag_set = Some((self.drag_gen, set));
+            }
+            self.drag_set.as_ref().map(|(_, set)| set.clone())?
         } else {
-            vec![id]
+            self.path_for(id, cx).into_iter().collect()
         };
-        let paths: Vec<PathBuf> = ids.iter().filter_map(|&id| self.path_for(id, cx)).collect();
         if paths.is_empty() {
             return None;
         }
@@ -1030,6 +1051,7 @@ impl FolderTreePanel {
             self.selected = HashSet::from([id]);
             self.anchor = Some(ix);
         }
+        self.drag_gen += 1;
         self.publish_selection(cx);
         cx.notify();
     }
@@ -1049,6 +1071,7 @@ impl FolderTreePanel {
             .visible
             .iter()
             .position(|row| matches!(row.kind, RowKind::Track { .. }));
+        self.drag_gen += 1;
         self.publish_selection(cx);
         cx.notify();
     }

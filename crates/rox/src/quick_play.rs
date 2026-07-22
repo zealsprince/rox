@@ -5,6 +5,7 @@
 //! shared catalog and player the panels use, hosted as an overlay instead
 //! of a dock item; the workspace owns one at most and drops it on dismiss.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -111,6 +112,10 @@ pub struct QuickPlay {
     /// The highlighted row, what enter plays. Indexes the combined list,
     /// heads first.
     selected: usize,
+    /// Cover path per db id, filled on a row's first paint and reused after,
+    /// so a scroll through a big result list doesn't run a store query per
+    /// visible row every frame. Cleared whenever the hits rebuild.
+    cover_paths: HashMap<i64, Option<PathBuf>>,
     scroll: UniformListScrollHandle,
     /// A failed play, shown until the next query change.
     error: Option<SharedString>,
@@ -158,6 +163,7 @@ impl QuickPlay {
             heads: Vec::new(),
             hits: Arc::new(Vec::new()),
             selected: 0,
+            cover_paths: HashMap::new(),
             scroll: UniformListScrollHandle::new(),
             error: None,
             config: Settings::load().quick_play,
@@ -267,6 +273,7 @@ impl QuickPlay {
         };
         self.heads = heads;
         self.hits = hits;
+        self.cover_paths.clear();
         self.selected = 0;
         self.error = None;
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -361,27 +368,41 @@ impl QuickPlay {
     /// The visible slice of the hit list. Row text resolves through the
     /// projection per visible row, so a huge library costs only what
     /// shows.
-    fn hit_rows(&self, range: std::ops::Range<usize>, cx: &mut Context<Self>) -> Vec<Div> {
+    fn hit_rows(&mut self, range: std::ops::Range<usize>, cx: &mut Context<Self>) -> Vec<Div> {
         let show_cover = self.config.show_cover;
         let head_count = self.heads.len();
         let rows: Vec<RowInfo> = {
-            let library = self.state.library.read(cx);
+            let QuickPlay {
+                state,
+                heads,
+                hits,
+                cover_paths,
+                ..
+            } = self;
+            let library = state.library.read(cx);
             let Some(projection) = library.projection() else {
                 return Vec::new();
             };
-            // The cover's path, resolved only when the column shows.
-            let cover_path = |row: u32| {
-                show_cover
-                    .then(|| library.paths_for(&[projection.db_id[row as usize]]).ok())
-                    .flatten()
-                    .and_then(|mut paths| paths.pop())
+            // The cover's path, resolved only when the column shows and cached
+            // per id so a scroll doesn't re-query the store every frame.
+            let mut cover_path = |row: u32| {
+                if !show_cover {
+                    return None;
+                }
+                let id = projection.db_id[row as usize];
+                cover_paths
+                    .entry(id)
+                    .or_insert_with(|| {
+                        library.paths_for(&[id]).ok().and_then(|mut paths| paths.pop())
+                    })
+                    .clone()
             };
             range
                 .filter_map(|ix| {
                     // Heads lead the list, tracks follow; the index splits
                     // on the head count.
                     if ix < head_count {
-                        let head = *self.heads.get(ix)?;
+                        let head = *heads.get(ix)?;
                         let (title, sub, tag) = match head {
                             Head::Artist { album_artist, .. } => (
                                 projection.album_artists.strings[album_artist as usize].clone(),
@@ -407,7 +428,7 @@ impl QuickPlay {
                             is_head: true,
                         });
                     }
-                    let row = *self.hits.get(ix - head_count)?;
+                    let row = *hits.get(ix - head_count)?;
                     let v = projection.resolve(row);
                     let sub = match (v.artist.is_empty(), v.album.is_empty()) {
                         (false, false) => format!("{} - {}", v.artist, v.album),

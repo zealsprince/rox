@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::OnceLock;
 
 use memchr::memmem;
 use rayon::prelude::*;
@@ -220,6 +221,16 @@ pub struct Projection {
     pub genres: SymTable,
     pub codecs: SymTable,
     pub folders: SymTable,
+    /// The lowered-order rank of each symbol, filled on the first sort that
+    /// needs it and reused after. The projection is immutable once loaded, so
+    /// these never go stale; every sort's canonical tie-break wants the album
+    /// artist and album ranks, so ranking them once beats re-sorting the whole
+    /// symbol table per sort.
+    artist_ranks: OnceLock<Vec<u32>>,
+    album_artist_ranks: OnceLock<Vec<u32>>,
+    album_ranks: OnceLock<Vec<u32>>,
+    genre_ranks: OnceLock<Vec<u32>>,
+    codec_ranks: OnceLock<Vec<u32>>,
 }
 
 pub struct RowView<'a> {
@@ -750,6 +761,11 @@ impl Projection {
             genres: SymTable::from(genres),
             codecs: SymTable::from(codecs),
             folders: SymTable::from(folders),
+            artist_ranks: OnceLock::new(),
+            album_artist_ranks: OnceLock::new(),
+            album_ranks: OnceLock::new(),
+            genre_ranks: OnceLock::new(),
+            codec_ranks: OnceLock::new(),
         }
     }
 
@@ -1116,14 +1132,35 @@ impl Projection {
         rank
     }
 
+    // The cached lowered-order ranks per symbol table: ranked once on the first
+    // sort that reaches for them, reused after. Every sort's tie-break wants the
+    // album artist and album ranks, so this saves re-sorting those tables per
+    // sort; the keyed sorts save their own table's rank too.
+    fn album_artist_ranks(&self) -> &[u32] {
+        self.album_artist_ranks
+            .get_or_init(|| Self::ranks(&self.album_artists))
+    }
+    fn album_ranks(&self) -> &[u32] {
+        self.album_ranks.get_or_init(|| Self::ranks(&self.albums))
+    }
+    fn artist_ranks(&self) -> &[u32] {
+        self.artist_ranks.get_or_init(|| Self::ranks(&self.artists))
+    }
+    fn genre_ranks(&self) -> &[u32] {
+        self.genre_ranks.get_or_init(|| Self::ranks(&self.genres))
+    }
+    fn codec_ranks(&self) -> &[u32] {
+        self.codec_ranks.get_or_init(|| Self::ranks(&self.codecs))
+    }
+
     /// The canonical browse order: album artist, album, disc, track number.
     /// The album artist keys it so an album's tracks stay one run under its
     /// credited artist, per-track guests and all; the disc keys ahead of the
     /// track so a multi-disc set plays through in order instead of
     /// interleaving its discs' track numbers.
     pub fn sort_canonical(&self) -> Vec<u32> {
-        let a_rank = Self::ranks(&self.album_artists);
-        let b_rank = Self::ranks(&self.albums);
+        let a_rank = self.album_artist_ranks();
+        let b_rank = self.album_ranks();
         let mut idx: Vec<u32> = (0..self.len() as u32).collect();
         idx.par_sort_unstable_by_key(|&i| {
             let i = i as usize;
@@ -1161,28 +1198,28 @@ impl Projection {
         match key {
             SortKey::Title => self.order_view(view, descending, |i| self.title_lower.get(i)),
             SortKey::Artist => {
-                let rank = Self::ranks(&self.artists);
+                let rank = self.artist_ranks();
                 self.order_view(view, descending, move |i| rank[self.artist[i] as usize])
             }
             SortKey::AlbumArtist => {
-                let rank = Self::ranks(&self.album_artists);
+                let rank = self.album_artist_ranks();
                 self.order_view(view, descending, move |i| {
                     rank[self.album_artist[i] as usize]
                 })
             }
             SortKey::Album => {
-                let rank = Self::ranks(&self.albums);
+                let rank = self.album_ranks();
                 self.order_view(view, descending, move |i| rank[self.album[i] as usize])
             }
             SortKey::Genre => {
-                let rank = Self::ranks(&self.genres);
+                let rank = self.genre_ranks();
                 self.order_view(view, descending, move |i| rank[self.genre[i] as usize])
             }
             SortKey::Year => self.order_view(view, descending, |i| self.year[i]),
             SortKey::TrackNo => self.order_view(view, descending, |i| self.track_no[i]),
             SortKey::Duration => self.order_view(view, descending, |i| self.duration_ms[i]),
             SortKey::Codec => {
-                let rank = Self::ranks(&self.codecs);
+                let rank = self.codec_ranks();
                 self.order_view(view, descending, move |i| rank[self.codec[i] as usize])
             }
             SortKey::Bitrate => self.order_view(view, descending, |i| self.bitrate_kbps[i]),
@@ -1205,8 +1242,8 @@ impl Projection {
         K: Ord,
         F: Fn(usize) -> K + Sync,
     {
-        let a_rank = Self::ranks(&self.album_artists);
-        let b_rank = Self::ranks(&self.albums);
+        let a_rank = self.album_artist_ranks();
+        let b_rank = self.album_ranks();
         let canonical = |i: usize| {
             (
                 a_rank[self.album_artist[i] as usize],

@@ -7,7 +7,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -1307,9 +1307,19 @@ pub fn font_picker<P: 'static>(
         .clone()
         .map(SharedString::from)
         .unwrap_or_else(|| "Default".into());
-    let mut fonts = cx.text_system().all_font_names();
-    fonts.sort();
-    fonts.dedup();
+    // The installed families don't change over a session, so enumerate and sort
+    // them once and share the list. This runs on every settings render, slider
+    // scrubs included, where re-listing and re-sorting every font each frame was
+    // pure waste.
+    static FONTS: OnceLock<Arc<Vec<SharedString>>> = OnceLock::new();
+    let fonts = FONTS
+        .get_or_init(|| {
+            let mut fonts = cx.text_system().all_font_names();
+            fonts.sort();
+            fonts.dedup();
+            Arc::new(fonts.into_iter().map(SharedString::from).collect())
+        })
+        .clone();
     let weak = cx.entity().downgrade();
     Button::new(id)
         .label(label)
@@ -1328,14 +1338,14 @@ pub fn font_picker<P: 'static>(
                         }
                     }),
             );
-            for name in &fonts {
+            for name in fonts.iter() {
                 let name = name.clone();
-                let checked = current.as_deref() == Some(name.as_str());
+                let checked = current.as_deref() == Some(name.as_ref());
                 let pick = weak.clone();
                 let apply = apply.clone();
                 menu = menu.item(PopupMenuItem::new(name.clone()).checked(checked).on_click(
                     move |_, _, cx| {
-                        let name = name.clone();
+                        let name = name.to_string();
                         let apply = apply.clone();
                         if let Some(this) = pick.upgrade() {
                             this.update(cx, |this, cx| apply(this, Some(name), cx));

@@ -5,6 +5,7 @@
 //! and external file drops all land through the same enqueue path.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{div, SharedString};
@@ -13,10 +14,13 @@ use crate::design::{palette, tokens};
 
 /// The value carried through a track drag. `paths` is the drag order a drop
 /// enqueues, straight through the path-based engine so out-of-library files
-/// ride along too. `title` labels the floating preview.
+/// ride along too. `title` labels the floating preview. The paths ride behind
+/// an Arc so a row attaches the payload with a refcount bump: a grab inside a
+/// big multi-selection would otherwise clone the whole path set into every
+/// visible selected row on every frame.
 #[derive(Clone)]
 pub struct PlayDrag {
-    pub paths: Vec<PathBuf>,
+    pub paths: Arc<[PathBuf]>,
     pub title: SharedString,
 }
 

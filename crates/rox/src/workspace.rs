@@ -1948,14 +1948,14 @@ impl Workspace {
                 this.play_dropped(paths.paths().to_vec(), cx);
             }))
             .on_drop(cx.listener(|this, drag: &PlayDrag, _, cx| {
-                this.play_dropped(drag.paths.clone(), cx);
+                this.play_dropped(drag.paths.to_vec(), cx);
             }))
         } else {
             card.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 this.queue_dropped(paths.paths().to_vec(), cx);
             }))
             .on_drop(cx.listener(|this, drag: &PlayDrag, _, cx| {
-                this.queue_dropped(drag.paths.clone(), cx);
+                this.queue_dropped(drag.paths.to_vec(), cx);
             }))
         }
     }

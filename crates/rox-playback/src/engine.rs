@@ -15,6 +15,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
+use std::time::Instant;
 
 use rtrb::Producer;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
@@ -368,11 +369,15 @@ impl Engine {
                     self.idx = i;
                     self.shared.tracks.lock().unwrap()[i] = Some(info);
                     let at_frame = self.pushed_playable;
-                    self.shared.segments.lock().unwrap().push(Segment {
+                    let consumed = self.shared.frames_consumed.load(Ordering::Relaxed);
+                    let mut segments = self.shared.segments.lock().unwrap();
+                    segments.push(Segment {
                         at_frame,
                         track: i,
                         track_frame: 0,
                     });
+                    prune_segments(&mut segments, consumed);
+                    drop(segments);
                     return Some(src);
                 }
                 Err(e) => {
@@ -578,7 +583,14 @@ impl Engine {
         self.pending_pos = 0;
         self.shared.flush.store(true, Ordering::Release);
         let cap = self.producer.buffer().capacity();
+        // A live callback drains the ring in a few ms; bound the wait so a dead
+        // output stream (unplugged device, callback stopped) can't spin here
+        // forever. Past the deadline we resync anyway, at worst a few stale ms.
+        let deadline = Instant::now() + StdDuration::from_millis(500);
         while self.producer.slots() < cap {
+            if Instant::now() >= deadline {
+                break;
+            }
             std::thread::sleep(StdDuration::from_millis(2));
         }
         // One callback period of grace so an in-flight callback that read
@@ -590,11 +602,31 @@ impl Engine {
     }
 
     fn register_segment(&self, track_secs: f64) {
-        self.shared.segments.lock().unwrap().push(Segment {
+        let consumed = self.shared.frames_consumed.load(Ordering::Relaxed);
+        let mut segments = self.shared.segments.lock().unwrap();
+        segments.push(Segment {
             at_frame: self.pushed_playable,
             track: self.idx,
             track_frame: (track_secs * self.device_rate as f64).round() as u64,
         });
+        prune_segments(&mut segments, consumed);
+    }
+}
+
+/// Drop position segments that can never resolve again. Both readers take the
+/// newest segment with `at_frame <= consumed`, and the output clock only ever
+/// advances, so once it passes a later segment no earlier one is ever the
+/// answer. Keep the newest already-reached segment plus every future one; the
+/// vec stays a handful of entries instead of growing one per open and seek for
+/// the whole session.
+fn prune_segments(segments: &mut Vec<Segment>, consumed: u64) {
+    let cutoff = segments
+        .iter()
+        .filter(|s| s.at_frame <= consumed)
+        .map(|s| s.at_frame)
+        .max();
+    if let Some(cutoff) = cutoff {
+        segments.retain(|s| s.at_frame >= cutoff);
     }
 }
 

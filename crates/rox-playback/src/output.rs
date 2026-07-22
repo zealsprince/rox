@@ -107,9 +107,14 @@ where
             let r = ring.pop().unwrap() * volume;
 
             // Lossy PCM tap: if the visualizer side is behind, drop, never
-            // wait. Tapped post-volume, i.e. what the device gets.
-            let _ = tap.push(l);
-            let _ = tap.push(r);
+            // wait. Push L and R together or not at all, so a single free
+            // slot can't drop R while L lands and leave the tap stream
+            // frame-misaligned for good. Tapped post-volume, i.e. what the
+            // device gets.
+            if tap.slots() >= 2 {
+                let _ = tap.push(l);
+                let _ = tap.push(r);
+            }
 
             match device_channels {
                 1 => frame[0] = T::from_sample((l + r) * 0.5),

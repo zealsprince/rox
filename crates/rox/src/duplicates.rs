@@ -460,6 +460,12 @@ impl Duplicates {
         }
         let mut targets: Vec<(usize, usize, PathBuf)> = Vec::new();
         for (g, group) in self.groups.iter().enumerate() {
+            // Only trash what the user can see. A group the filter hides is
+            // off the list, so its marks (from a prior auto-select) must not
+            // slip through here and delete copies out of view.
+            if !self.query.is_empty() && !group_matches(group, &self.query) {
+                continue;
+            }
             for (m, member) in group.members.iter().enumerate() {
                 let marked = self
                     .checked
@@ -979,11 +985,14 @@ fn cover_tile(thumb: Thumb) -> Div {
 /// its keep policy. Blocking; run it off the UI thread.
 fn match_duplicates(projection: &rox_library::projection::Projection) -> Vec<GroupSpec> {
     // Bucket by identity first; the map borrows the projection's strings,
-    // nothing is owned until a bucket proves duplicated.
-    let mut by_key: HashMap<(u32, &str), Vec<usize>> = HashMap::new();
+    // nothing is owned until a bucket proves duplicated. Key on the folded
+    // artist, not the case-sensitive symbol, so "ABBA" and "Abba" land in one
+    // bucket like the folded title does; distinct symbols share a lower form.
+    let mut by_key: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
     for i in 0..projection.db_id.len() {
+        let artist_lower = projection.artists.lower[projection.artist[i] as usize].as_str();
         by_key
-            .entry((projection.artist[i], projection.title_lower.get(i)))
+            .entry((artist_lower, projection.title_lower.get(i)))
             .or_default()
             .push(i);
     }

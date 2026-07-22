@@ -995,6 +995,12 @@ impl Settings {
     /// through the file here is what keeps one writer's save from
     /// reverting another's fields.
     pub fn update(f: impl FnOnce(&mut Settings)) {
+        // Serialize the load-modify-save so a background writer (the update
+        // check) and a UI-thread writer can't both read the same file, each
+        // apply their own field, and have the last save drop the other's
+        // change. The lock only spans the read-modify-write here.
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut settings = Settings::load();
         f(&mut settings);
         settings.save();
@@ -1004,9 +1010,27 @@ impl Settings {
     /// worth interrupting playback for.
     fn save(&self) {
         let path = settings_path();
-        let text = serde_json::to_string_pretty(self).expect("settings serialize");
-        if let Err(e) = std::fs::write(&path, text) {
-            eprintln!("settings: writing {}: {e}", path.display());
+        let text = match serde_json::to_string_pretty(self) {
+            Ok(text) => text,
+            // A non-finite f32 would fail here; log and keep the old file
+            // rather than panic the whole app mid-playback.
+            Err(e) => {
+                eprintln!("settings: serializing: {e}");
+                return;
+            }
+        };
+        // Write a sibling temp file then rename over the real one. A crash
+        // mid-write can't truncate settings and take every layout, workspace,
+        // palette, and the last.fm session down with it; rename is atomic
+        // within the same directory.
+        let tmp = path.with_extension("json.tmp");
+        if let Err(e) = std::fs::write(&tmp, &text) {
+            eprintln!("settings: writing {}: {e}", tmp.display());
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            eprintln!("settings: replacing {}: {e}", path.display());
+            let _ = std::fs::remove_file(&tmp);
         }
     }
 

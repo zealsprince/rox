@@ -1196,8 +1196,6 @@ fn apply(cx: &mut App) {
     theme.sidebar_border = palette.border.into();
     theme.title_bar_border = palette.border.into();
     theme.table_row_border = palette.border.into();
-    theme.input = palette.border_light.into();
-    theme.ring = palette.accent.into();
     // The scrollbar thumb rides the ink ladder like the faint text it
     // sits beside; the track stays the stock transparent. Same alphas as
     // the stock thumb, resting slightly sheer, opaque under the pointer.

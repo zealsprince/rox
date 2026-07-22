@@ -288,6 +288,17 @@ impl Engine {
                         source = self.open_at(p);
                     }
                     FlushAction::Seek(secs) => {
+                        // The decode cursor leads the audible track by up to a
+                        // ring during the gapless preroll, so the open source
+                        // is already the next track and seeking it would scrub
+                        // inside the following track. Reopen the audible track
+                        // first, the same anchor Next/Prev use.
+                        let ap = self.audible_pos();
+                        if ap != self.pos {
+                            if let Some(src) = self.open_at(ap) {
+                                source = Some(src);
+                            }
+                        }
                         if let Some(src) = source.as_mut() {
                             let landed = src.seek(secs);
                             self.register_segment(landed);
@@ -479,8 +490,13 @@ impl Engine {
             return;
         }
         self.order.remove(p);
-        if p < self.pos {
-            self.pos -= 1;
+        // Removing at or before the decode cursor shifts it down one. When p
+        // equals the cursor it's the pre-decoded next track (p can't be the
+        // audible entry, that's refused above), and the still-open source
+        // hands off to pos+1 at EOF, so pos must land on the audible entry or
+        // that handoff skips a track.
+        if p <= self.pos {
+            self.pos = self.pos.saturating_sub(1);
         }
         self.publish_queue();
     }
@@ -503,10 +519,13 @@ impl Engine {
         if self.order.len() == before {
             return;
         }
-        // Re-anchor the decode cursor by id; if it was dropped, clamp so we
-        // never index past the shortened order.
+        // Re-anchor the decode cursor by id. If the cursor entry itself was
+        // dropped (the pre-decoded next track), fall back to the audible entry
+        // so the still-open source hands off to the right next track at EOF
+        // instead of clamping and skipping one. Last resort clamps into range.
         self.pos = cursor
             .and_then(|id| self.find(id))
+            .or_else(|| keep.and_then(|id| self.find(id)))
             .unwrap_or_else(|| self.pos.min(self.order.len().saturating_sub(1)));
         self.publish_queue();
     }

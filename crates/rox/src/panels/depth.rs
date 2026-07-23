@@ -120,7 +120,11 @@ impl DepthPanel {
             None => {
                 let weak = cx.entity().downgrade();
                 composite::empty_slot(
-                    if ix == 0 { "depth-add-0" } else { "depth-add-1" },
+                    if ix == 0 {
+                        "depth-add-0"
+                    } else {
+                        "depth-add-1"
+                    },
                     self.state.clone(),
                     self.workspace.clone(),
                     move |panel, _, cx| {
@@ -310,7 +314,8 @@ impl Panel for DepthPanel {
                     }
                 }),
         );
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         panel::popout_item(
             menu,

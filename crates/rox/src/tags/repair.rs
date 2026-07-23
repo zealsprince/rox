@@ -21,8 +21,8 @@ use std::path::PathBuf;
 
 use gpui::{
     div, prelude::*, px, size, svg, uniform_list, App, Bounds, Context, Div, Entity, Global,
-    PathPromptOptions, SharedString, Stateful, Subscription,
-    UniformListScrollHandle, Window, WindowHandle,
+    PathPromptOptions, SharedString, Stateful, Subscription, UniformListScrollHandle, Window,
+    WindowHandle,
 };
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
@@ -101,9 +101,13 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut A
         }
     }
     let bounds = Bounds::centered(None, size(px(720.), px(600.)), cx);
-    let handle = crate::panel::open_child_window(cx, "rox - Tag Repair", bounds, Some(MIN_SIZE), move |_window, cx| {
-        cx.new(|cx| TagRepair::new(library, now_art, cx))
-    });
+    let handle = crate::panel::open_child_window(
+        cx,
+        "rox - Tag Repair",
+        bounds,
+        Some(MIN_SIZE),
+        move |_window, cx| cx.new(|cx| TagRepair::new(library, now_art, cx)),
+    );
     cx.set_global(OpenTagRepair(Some(handle)));
 }
 
@@ -139,7 +143,11 @@ pub struct TagRepair {
 }
 
 impl TagRepair {
-    fn new(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        library: Entity<Library>,
+        now_art: Entity<NowPlayingArt>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let _backdrop_changed = cx.observe(&now_art, |_, _, cx| cx.notify());
         TagRepair {
             library,
@@ -531,7 +539,12 @@ impl TagRepair {
                         .track_scroll(self.scroll.clone())
                         .size_full(),
                     )
-                    .child(div().absolute().inset_0().child(Scrollbar::vertical(&self.scroll)))
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .child(Scrollbar::vertical(&self.scroll)),
+                    )
                     // The list locks while a repair runs: a transparent
                     // occluder over it swallows clicks so nothing checks or
                     // unchecks out from under the commits.
@@ -561,7 +574,7 @@ impl TagRepair {
                         .flex_row()
                         .items_center()
                         .gap(tokens::SPACE_SM)
-                        .h(px(ROW_H))
+                        .h(palette::scaled_px(ROW_H))
                         .px(tokens::SPACE_XS)
                         .rounded(tokens::RADIUS)
                         .cursor_pointer()
@@ -675,9 +688,11 @@ fn pill(
         .text_xs()
         .map(|d| {
             if active {
-                d.bg(palette::bg_control_active()).text_color(palette::text())
+                d.bg(palette::bg_control_active())
+                    .text_color(palette::text())
             } else {
-                d.bg(palette::bg_control()).text_color(palette::text_muted())
+                d.bg(palette::bg_control())
+                    .text_color(palette::text_muted())
             }
         })
         .map(|d| {

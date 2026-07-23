@@ -244,12 +244,22 @@ pub mod icons {
 #[include = "icons/**/*.svg"]
 #[include = "app/rox-music.svg"]
 #[include = "workspaces/**/*.json"]
+#[include = "workspaces/**/*.png"]
 pub struct Assets;
 
 /// The shipped workspace bundles: every JSON file under `assets/workspaces`,
 /// as `(file stem, raw bytes)`. The workspaces module names and parses them.
 pub fn shipped_workspaces() -> Vec<(String, Cow<'static, [u8]>)> {
     shipped_json("workspaces/")
+}
+
+/// The preview picture shipped beside a workspace bundle, when one exists:
+/// `workspaces/<stem>.png` next to the bundle's JSON, keyed by the file stem
+/// rather than the bundle's own name. The welcome window's quick-start tiles
+/// draw it; a bundle without one shows a placeholder there.
+pub fn workspace_preview(stem: &str) -> Option<SharedString> {
+    let path = format!("workspaces/{stem}.png");
+    Assets::get(&path).is_some().then(|| path.into())
 }
 
 /// Every shipped `.json` under one asset folder, as `(file stem, raw bytes)`.

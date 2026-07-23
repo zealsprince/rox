@@ -4,7 +4,6 @@
 //! icon. The move is the compositor's, so it works wherever
 //! `start_window_move` does.
 
-
 use gpui::{
     div, prelude::*, px, svg, AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable,
     MouseButton, Pixels, WeakEntity, Window,
@@ -197,15 +196,21 @@ impl Panel for DragAnchorPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, _window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            DragAnchorPanel::new(state, config, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, _window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                DragAnchorPanel::new(state, config, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),

@@ -526,7 +526,8 @@ impl Panel for SlidePanel {
                         }
                     }),
             );
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         panel::popout_item(
             menu,

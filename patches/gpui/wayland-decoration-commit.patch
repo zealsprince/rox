@@ -1,0 +1,63 @@
+--- a/src/platform/linux/wayland/window.rs
++++ b/src/platform/linux/wayland/window.rs
+@@ -111,6 +111,11 @@
+     hovered: bool,
+     in_progress_configure: Option<InProgressConfigure>,
+     resize_throttle: bool,
++    // rox patch: set when a decoration configure changes the mode; the
++    // xdg_surface configure handler turns it into a frame so a commit
++    // always follows the ack. Without it the compositor holds the mode
++    // change until something else happens to repaint.
++    pending_decoration_frame: bool,
+     in_progress_window_controls: Option<WindowControls>,
+     window_controls: WindowControls,
+     client_inset: Option<Pixels>,
+@@ -181,6 +186,7 @@
+             window_bounds: options.bounds,
+             in_progress_configure: None,
+             resize_throttle: false,
++            pending_decoration_frame: false,
+             client,
+             appearance,
+             handle,
+@@ -430,7 +436,11 @@
+                 window_geometry.size.height,
+             );
+ 
+-            let request_frame_callback = !state.acknowledged_first_configure;
++            // rox patch: a decoration mode change latches on the first
++            // commit after this ack, so schedule a frame for it; an idle
++            // window otherwise never commits and keeps the old chrome.
++            let decoration_frame = std::mem::take(&mut state.pending_decoration_frame);
++            let request_frame_callback = !state.acknowledged_first_configure || decoration_frame;
+             if request_frame_callback {
+                 state.acknowledged_first_configure = true;
+                 drop(state);
+@@ -443,7 +453,13 @@
+         if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
+             match mode {
+                 WEnum::Value(zxdg_toplevel_decoration_v1::Mode::ServerSide) => {
+-                    self.state.borrow_mut().decorations = WindowDecorations::Server;
++                    {
++                        let mut state = self.state.borrow_mut();
++                        state.decorations = WindowDecorations::Server;
++                        // rox patch: ask the configure ack that follows this
++                        // event for a frame, so the mode change commits.
++                        state.pending_decoration_frame = true;
++                    }
+                     if let Some(mut appearance_changed) =
+                         self.callbacks.borrow_mut().appearance_changed.as_mut()
+                     {
+@@ -451,7 +467,11 @@
+                     }
+                 }
+                 WEnum::Value(zxdg_toplevel_decoration_v1::Mode::ClientSide) => {
+-                    self.state.borrow_mut().decorations = WindowDecorations::Client;
++                    {
++                        let mut state = self.state.borrow_mut();
++                        state.decorations = WindowDecorations::Client;
++                        state.pending_decoration_frame = true;
++                    }
+                     // Update background to be transparent
+                     if let Some(mut appearance_changed) =
+                         self.callbacks.borrow_mut().appearance_changed.as_mut()

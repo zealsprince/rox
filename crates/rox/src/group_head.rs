@@ -6,9 +6,7 @@
 //! projection, the playlists tree from its member rows) and lays the content
 //! over its own row background, so the two headings stay one look.
 
-use gpui::{
-    div, img, prelude::*, px, svg, AnyElement, Div, ObjectFit, Pixels, SharedString,
-};
+use gpui::{div, img, prelude::*, px, svg, AnyElement, Div, ObjectFit, Pixels, SharedString};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;

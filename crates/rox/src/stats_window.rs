@@ -27,8 +27,8 @@ use crate::history::HistoryEvent;
 use crate::panel::{self, AppState};
 use crate::panels::history::fmt_ago;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
-use crate::settings::{Settings, StatsWindowState};
 use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
+use crate::settings::{Settings, StatsWindowState};
 
 /// How many rows the album rollup and the recents show.
 const TOP_NAMES: usize = 15;
@@ -129,9 +129,13 @@ pub fn open(state: AppState, cx: &mut App) {
         .map(|s| (s.width, s.height))
         .unwrap_or((640., 720.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let handle = crate::panel::open_child_window(cx, "rox - Stats", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-        cx.new(|cx| StatsWindow::new(state, window, cx))
-    });
+    let handle = crate::panel::open_child_window(
+        cx,
+        "rox - Stats",
+        bounds,
+        Some(settings_ui::MIN_SIZE),
+        move |window, cx| cx.new(|cx| StatsWindow::new(state, window, cx)),
+    );
     cx.set_global(OpenStats(handle));
 }
 
@@ -311,7 +315,11 @@ impl StatsWindow {
         let Some(rows) = self.data.recents.get(ix..) else {
             return;
         };
-        let ids: Vec<i64> = rows.iter().take(QUEUE_CAP).map(|row| row.track_id).collect();
+        let ids: Vec<i64> = rows
+            .iter()
+            .take(QUEUE_CAP)
+            .map(|row| row.track_id)
+            .collect();
         let Ok(paths) = self.state.library.read(cx).paths_for(&ids) else {
             return;
         };

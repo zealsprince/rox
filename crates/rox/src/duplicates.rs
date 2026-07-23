@@ -22,8 +22,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use gpui::{
-    div, img, prelude::*, px, size, svg, App, Bounds, Context, Div, Entity, Global, ObjectFit,
-    SharedString, Stateful, Subscription, UniformListScrollHandle, Window, WindowHandle, uniform_list,
+    div, img, prelude::*, px, size, svg, uniform_list, App, Bounds, Context, Div, Entity, Global,
+    ObjectFit, SharedString, Stateful, Subscription, UniformListScrollHandle, Window, WindowHandle,
 };
 use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -156,9 +156,13 @@ pub fn open(
         }
     }
     let bounds = Bounds::centered(None, size(px(760.), px(600.)), cx);
-    let handle = crate::panel::open_child_window(cx, "rox - Duplicates", bounds, Some(MIN_SIZE), move |window, cx| {
-        cx.new(|cx| Duplicates::new(library, thumbs, now_art, window, cx))
-    });
+    let handle = crate::panel::open_child_window(
+        cx,
+        "rox - Duplicates",
+        bounds,
+        Some(MIN_SIZE),
+        move |window, cx| cx.new(|cx| Duplicates::new(library, thumbs, now_art, window, cx)),
+    );
     cx.set_global(OpenDuplicates(Some(handle)));
 }
 
@@ -212,8 +216,9 @@ impl Duplicates {
         cx: &mut Context<Self>,
     ) -> Self {
         let _backdrop_changed = cx.observe(&now_art, |_, _, cx| cx.notify());
-        let query_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter by title, artist, or folder"));
+        let query_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Filter by title, artist, or folder")
+        });
         let _query_changed = cx.subscribe_in(
             &query_input,
             window,
@@ -723,7 +728,11 @@ impl Duplicates {
                         format!("{groups} groups, {extras} extra copies")
                     })
                     .child(small_button(
-                        if count > 0 { "Select none" } else { "Auto-select" },
+                        if count > 0 {
+                            "Select none"
+                        } else {
+                            "Auto-select"
+                        },
                         icons::CHECK,
                         self.trashing,
                         cx.listener(move |this, _, _, cx| {
@@ -822,7 +831,7 @@ impl Duplicates {
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_SM)
-            .h(px(ROW_H))
+            .h(palette::scaled_px(ROW_H))
             .px(tokens::SPACE_XS)
             .when(i > 0, |d| d.border_t_1().border_color(palette::border()))
             .child(
@@ -902,7 +911,7 @@ impl Duplicates {
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_SM)
-            .h(px(ROW_H))
+            .h(palette::scaled_px(ROW_H))
             // Indented under the group header so the copies read as its.
             .pl(px(24.))
             .pr(tokens::SPACE_XS)
@@ -1049,8 +1058,7 @@ fn match_duplicates(projection: &rox_library::projection::Projection) -> Vec<Gro
     // The map's order is arbitrary; artist then title keeps the list
     // stable across rescans.
     out.sort_by(|a, b| {
-        (a.artist.to_lowercase(), &a.title)
-            .cmp(&(b.artist.to_lowercase(), &b.title))
+        (a.artist.to_lowercase(), &a.title).cmp(&(b.artist.to_lowercase(), &b.title))
     });
     out
 }

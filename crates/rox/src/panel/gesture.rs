@@ -159,7 +159,9 @@ impl ResumeIdle {
             // interaction, so a gesture mid-countdown pushes the wake out
             // instead of stacking a second task.
             loop {
-                let Some(last) = *at.lock().unwrap() else { break };
+                let Some(last) = *at.lock().unwrap() else {
+                    break;
+                };
                 let remaining = RESUME_IDLE.saturating_sub(last.elapsed());
                 if remaining.is_zero() {
                     break;

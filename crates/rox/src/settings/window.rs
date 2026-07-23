@@ -33,22 +33,21 @@ use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::palette::{self, Palette, Role, ROLES};
 use crate::design::tokens;
+use crate::integrations::tray;
 use crate::lastfm::{self, AuthPhase, Scrobbler};
-use crate::settings::layouts::Preset;
 use crate::panel::{self, AppState, ScrubState};
 use crate::panel_settings;
 use crate::panels::library::{Library, LibraryEvent};
 use crate::providers;
+use crate::settings::layouts::Preset;
+use crate::settings::ui::{
+    self as settings_ui, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
+};
 use crate::settings::{
     self, data_dir, settings_path, Frame, LayoutSize, LyricsSave, NamedLayout, Providers,
     RatingStyle, Settings, WorkspaceBundle, BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
 };
-use crate::settings::ui::{
-    self as settings_ui, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
-};
 use crate::thumbs::Thumbs;
-use crate::integrations::tray;
-use crate::startup::updates;
 use crate::workspace::Workspace;
 use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
 use rox_library::store::Stats;
@@ -123,7 +122,6 @@ enum Page {
     Providers,
     Scrobbling,
     Storage,
-    About,
 }
 
 const PAGES: &[(Page, &str, &str)] = &[
@@ -134,41 +132,7 @@ const PAGES: &[(Page, &str, &str)] = &[
     (Page::Providers, "Providers", icons::DOWNLOAD),
     (Page::Scrobbling, "Scrobbling", icons::RADIO),
     (Page::Storage, "Storage", icons::DATABASE),
-    (Page::About, "About", icons::INFO),
 ];
-
-/// The About page's update check as it moves along: nothing asked yet,
-/// the request in flight, or a landed result. The result variants carry
-/// what the status line beside the button shows.
-enum UpdateCheck {
-    Idle,
-    Checking,
-    UpToDate,
-    Available(updates::Release),
-    Failed,
-}
-
-impl UpdateCheck {
-    /// What a freshly opened About page shows: the last cached check mapped
-    /// to up-to-date or an available release against the running build, or
-    /// Idle when nothing has been checked yet.
-    fn from_cache(settings: &Settings) -> Self {
-        match &settings.update_cache {
-            Some(cache) => {
-                let release = updates::Release {
-                    version: cache.latest.clone(),
-                    url: cache.url.clone(),
-                };
-                if release.is_new() {
-                    UpdateCheck::Available(release)
-                } else {
-                    UpdateCheck::UpToDate
-                }
-            }
-            None => UpdateCheck::Idle,
-        }
-    }
-}
 
 /// The storage page's measurements, taken entering the page and after a
 /// clear rather than per frame: the stats and the cache walk are cheap
@@ -203,10 +167,12 @@ struct SettingsWindow {
     /// The working copy of the user palette: what the swatches show and
     /// what edits write through [`palette::set`].
     base: Palette,
-    art_theming: bool,
     keep_dark: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
+    /// The app font size's working copy: what the Typography slider shows
+    /// and writes through [`palette::set_app_font_size`].
+    font_size: f32,
     /// The app-wide frame defaults' working copy: what the Frame sliders
     /// show and write through [`settings::set_app_frame`].
     frame: Frame,
@@ -233,6 +199,7 @@ struct SettingsWindow {
     pickers: Vec<Entity<ColorPickerState>>,
     surface_scrub: ScrubState,
     backdrop_scrub: ScrubState,
+    font_size_scrub: ScrubState,
     margin_scrub: ScrubState,
     padding_scrub: ScrubState,
     rounding_scrub: ScrubState,
@@ -284,9 +251,7 @@ struct SettingsWindow {
     /// The confirm dialog waiting on the user, if any: an overwrite or a
     /// workspace apply. None when no dialog is up.
     pending: Option<Pending>,
-    /// The About page's update check, its status line's subject.
-    update_check: UpdateCheck,
-    /// Whether launch runs the daily update check, the About page toggle.
+    /// Whether launch runs the daily update check, the Behavior page toggle.
     check_updates: bool,
     /// The active icon pack, mirrored from settings so the Appearance page's
     /// pack list marks the current one without re-reading the settings file
@@ -430,10 +395,10 @@ impl SettingsWindow {
         SettingsWindow {
             page: Page::Appearance,
             base,
-            art_theming: settings.art_theming,
             keep_dark: settings.keep_dark,
             surface_opacity: settings.surface_opacity,
             backdrop_strength: settings.backdrop_strength,
+            font_size: settings.app_font_size,
             frame: settings.frame,
             restore_last_track: settings.restore_last_track,
             watch_library: settings.watch_library,
@@ -445,6 +410,7 @@ impl SettingsWindow {
             pickers,
             surface_scrub: ScrubState::default(),
             backdrop_scrub: ScrubState::default(),
+            font_size_scrub: ScrubState::default(),
             margin_scrub: ScrubState::default(),
             padding_scrub: ScrubState::default(),
             rounding_scrub: ScrubState::default(),
@@ -468,7 +434,6 @@ impl SettingsWindow {
             primary_layout: settings.primary_layout.clone(),
             mini_layout: settings.mini_layout.clone(),
             pending: None,
-            update_check: UpdateCheck::from_cache(&settings),
             check_updates: settings.check_updates,
             active_icon_pack: settings.icon_pack.clone(),
             icon_packs: crate::startup::icon_packs::all(),
@@ -511,10 +476,11 @@ impl SettingsWindow {
         self.persist_appearance_soon(cx);
     }
 
-    /// The song-theming switch: through the palette pipe, which also
-    /// gates the backdrop layers, and into the file.
+    /// The song-theming switch, the Window menu toggle's twin: through
+    /// the palette pipe, which also gates the backdrop layers, and into
+    /// the file. The toggle reads the palette static, not a cached field,
+    /// so the two entry points never show different states.
     fn set_art_theming(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.art_theming = on;
         palette::set_art_theming(on, cx);
         Settings::update(move |s| s.art_theming = on);
         cx.notify();
@@ -541,7 +507,8 @@ impl SettingsWindow {
     /// library, which persists it and arms or drops the watcher on the spot.
     fn set_watch_library(&mut self, on: bool, cx: &mut Context<Self>) {
         self.watch_library = on;
-        self.library.update(cx, |library, cx| library.set_watch(on, cx));
+        self.library
+            .update(cx, |library, cx| library.set_watch(on, cx));
         cx.notify();
     }
 
@@ -647,6 +614,17 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// The app font size: the strip fraction mapped onto whole px across
+    /// the shared range, through the palette pipe so every window's rem
+    /// follows the scrub live.
+    fn set_font_size(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        let range = palette::FONT_SIZE_MAX - palette::FONT_SIZE_MIN;
+        self.font_size = (palette::FONT_SIZE_MIN + fraction * range).round();
+        palette::set_app_font_size(self.font_size, cx);
+        self.persist_appearance_soon(cx);
+        cx.notify();
+    }
+
     fn set_surface(&mut self, value: f32, cx: &mut Context<Self>) {
         self.surface_opacity = value;
         self.scalars_edited(cx);
@@ -671,8 +649,12 @@ impl SettingsWindow {
     fn persist_appearance_soon(&mut self, cx: &mut Context<Self>) {
         self.persist_gen += 1;
         let gen = self.persist_gen;
-        let (surface, backdrop, frame) =
-            (self.surface_opacity, self.backdrop_strength, self.frame);
+        let (surface, backdrop, frame, font_size) = (
+            self.surface_opacity,
+            self.backdrop_strength,
+            self.frame,
+            self.font_size,
+        );
         let palette = self.persist_palette.then(|| self.base.to_map());
         cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -696,6 +678,7 @@ impl SettingsWindow {
                     s.surface_opacity = surface;
                     s.backdrop_strength = backdrop;
                     s.frame = frame;
+                    s.app_font_size = font_size;
                     if let Some(palette) = palette {
                         s.palette = palette;
                     }
@@ -831,7 +814,7 @@ impl SettingsWindow {
     /// palette, or the derived one while song theming drives the colors,
     /// so a look a track built can leave as a theme.
     fn export_palette(&mut self, cx: &mut Context<Self>) {
-        let map = if self.art_theming {
+        let map = if palette::art_theming() {
             palette::resolved().to_map()
         } else {
             self.base.to_map()
@@ -882,7 +865,7 @@ impl SettingsWindow {
                     .child(panel::setting_row(
                         "Song Theming",
                         Some("Tint the palette and back windows with the playing track's cover art"),
-                        panel::toggle(self.art_theming, Self::set_art_theming, cx),
+                        panel::toggle(palette::art_theming(), Self::set_art_theming, cx),
                     ))
                     .child(panel::setting_row(
                         "Keep Dark",
@@ -893,16 +876,32 @@ impl SettingsWindow {
             .child(section(
                 "Typography",
                 None,
-                panel::setting_row(
-                    "Font",
-                    Some("The app-wide typeface; panels can override it in their own settings"),
-                    panel::font_picker(
-                        "app-font",
-                        settings::app_font().map(|font| font.to_string()),
-                        Self::set_app_font,
-                        cx,
-                    ),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "Font",
+                        Some("The app-wide typeface; panels can override it in their own settings"),
+                        panel::font_picker(
+                            "app-font",
+                            settings::app_font().map(|font| font.to_string()),
+                            Self::set_app_font,
+                            cx,
+                        ),
+                    ))
+                    .child(panel::setting_row(
+                        "Font Size",
+                        Some("The base text size every panel's text scales from; controls and icons hold their size"),
+                        settings_ui::slider_labeled(
+                            &self.font_size_scrub,
+                            (self.font_size - palette::FONT_SIZE_MIN)
+                                / (palette::FONT_SIZE_MAX - palette::FONT_SIZE_MIN),
+                            format!("{:.0} px", self.font_size),
+                            Self::set_font_size,
+                            cx,
+                        ),
+                    )),
             ))
             .child(self.icons_section(cx))
             .child(section(
@@ -1153,11 +1152,20 @@ impl SettingsWindow {
             .child(section(
                 "Startup",
                 None,
-                panel::setting_row(
-                    "Restore Last Track",
-                    Some("Launch with the last playing track loaded, paused where it left off"),
-                    panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "Restore Last Track",
+                        Some("Launch with the last playing track loaded, paused where it left off"),
+                        panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
+                    ))
+                    .child(panel::setting_row(
+                        "Check for Updates",
+                        Some("Look for a newer release once a day when rox starts; the About window checks now either way"),
+                        panel::toggle(self.check_updates, Self::set_check_updates, cx),
+                    )),
             ))
             // No tray backend on Windows yet, and a resident process with no
             // way back in is worse than quitting, so the row sits out there.
@@ -1519,7 +1527,7 @@ impl SettingsWindow {
     }
 
     fn colors_section(&self, columns: usize, cx: &mut Context<Self>) -> Div {
-        let locked = self.art_theming;
+        let locked = palette::art_theming();
         let mut body = div().flex().flex_col().gap(tokens::SPACE_XS);
         if locked {
             body = body.child(div().text_xs().text_color(palette::text_muted()).child(
@@ -1604,24 +1612,44 @@ impl SettingsWindow {
     fn library_page(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.library.read(cx).busy();
         let scanning = busy.is_some();
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_SM)
-            .child(
-                div().text_xs().text_color(palette::text_muted()).child(
-                    "Folders scanned into the library; removing one drops its \
-                     tracks from the catalog and leaves the files alone",
+        // Past the ceiling the watch turns itself off, so the toggle grays
+        // out at off and the note says why, with the numbers. Folders summed
+        // off the cached rollups, not a per-frame count; the roots never
+        // nest, so nothing counts twice. Matched to the catalog's own limit,
+        // which is None where the platform prices watching flat.
+        let dirs = self.root_stats.iter().map(|(_, s)| s.dirs).sum::<u64>();
+        let watch_row = match crate::catalog::watch_limit_dirs() {
+            Some(limit) if dirs > limit => panel::setting_row_dyn(
+                "Watch folders",
+                Some(
+                    format!(
+                        "Off: this library spans {dirs} folders and each needs \
+                         one Linux file watch, more than the {limit} the app \
+                         will take from the system's shared budget. Rescan by \
+                         hand to fold in changes"
+                    )
+                    .into(),
                 ),
-            )
-            .child(panel::setting_row(
+                panel::toggle_locked(false),
+            ),
+            _ => panel::setting_row(
                 "Watch folders",
                 Some(
                     "Fold added, edited, and deleted files into the library as \
                      they happen, without a manual rescan",
                 ),
                 panel::toggle(self.watch_library, Self::set_watch_library, cx),
-            ));
+            ),
+        };
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_SM)
+            .child(div().text_xs().text_color(palette::text_muted()).child(
+                "Folders scanned into the library; removing one drops its \
+                     tracks from the catalog and leaves the files alone",
+            ))
+            .child(watch_row);
         // The folder table: a column header line, then a hairlined row
         // per folder.
         let mut table = div().flex().flex_col().child(
@@ -1854,128 +1882,11 @@ impl SettingsWindow {
             ))
     }
 
-    /// The About page: the running version and the update check. The check
-    /// is notify only - it reports a newer release and links to its page,
-    /// it never downloads or installs.
-    fn about_page(&self, cx: &mut Context<Self>) -> Div {
-        let checking = matches!(self.update_check, UpdateCheck::Checking);
-
-        // The status line beside the button, one wording per check state.
-        // The available state hangs a link to the release page off its tail.
-        let status: Option<AnyElement> = match &self.update_check {
-            UpdateCheck::Idle => None,
-            UpdateCheck::Checking => Some(readout("Checking...".into()).into_any_element()),
-            UpdateCheck::UpToDate => {
-                Some(readout("You're on the latest version".into()).into_any_element())
-            }
-            UpdateCheck::Failed => {
-                Some(readout("Couldn't reach GitHub".into()).into_any_element())
-            }
-            UpdateCheck::Available(release) => {
-                let url = release.url.clone();
-                Some(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(tokens::SPACE_SM)
-                        .child(readout(format!("Version {} is available", release.version)))
-                        .child(small_button(
-                            "Get It",
-                            icons::EXTERNAL_LINK,
-                            false,
-                            cx.listener(move |_, _, _, cx| cx.open_url(&url)),
-                        ))
-                        .into_any_element(),
-                )
-            }
-        };
-
-        let control = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_SM)
-            .child(small_button(
-                "Check for Updates",
-                icons::REFRESH_CW,
-                checking,
-                cx.listener(|this, _, _, cx| this.check_for_updates(cx)),
-            ))
-            .when_some(status, |d, status| d.child(status));
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section(
-                "About",
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        "Version",
-                        Some("The build you're running"),
-                        readout(format!("rox {}", updates::CURRENT)),
-                    ))
-                    .child(panel::setting_row(
-                        "Check on Launch",
-                        Some("Look for a newer release once a day when rox starts; the button below checks now either way"),
-                        panel::toggle(self.check_updates, Self::set_check_updates, cx),
-                    ))
-                    .child(panel::setting_row(
-                        "Updates",
-                        Some("Check GitHub for a newer release; installing it is still up to you"),
-                        control,
-                    )),
-            ))
-    }
-
     /// The launch-check toggle: into the file, so the next start reads the
     /// new setting. This run is already past its launch check either way.
     fn set_check_updates(&mut self, on: bool, cx: &mut Context<Self>) {
         self.check_updates = on;
         Settings::update(move |s| s.check_updates = on);
-        cx.notify();
-    }
-
-    /// Kick off the update check on the background executor, landing the
-    /// result on the About page's status line and refreshing the cache so
-    /// it persists and a launch treats it as recent. Ignored while one is
-    /// already in flight.
-    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.update_check, UpdateCheck::Checking) {
-            return;
-        }
-        self.update_check = UpdateCheck::Checking;
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { updates::fetch_latest() })
-                .await;
-            this.update(cx, |this, cx| {
-                this.update_check = match result {
-                    Ok(release) => {
-                        let entry = updates::cache(&release);
-                        Settings::update(move |s| s.update_cache = Some(entry));
-                        if release.is_new() {
-                            UpdateCheck::Available(release)
-                        } else {
-                            UpdateCheck::UpToDate
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("update check: {e}");
-                        UpdateCheck::Failed
-                    }
-                };
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
         cx.notify();
     }
 
@@ -2258,7 +2169,6 @@ impl Render for SettingsWindow {
             Page::Providers => self.providers_page(cx),
             Page::Scrobbling => self.scrobbling_page(cx),
             Page::Storage => self.storage_page(cx),
-            Page::About => self.about_page(cx),
         };
 
         div()

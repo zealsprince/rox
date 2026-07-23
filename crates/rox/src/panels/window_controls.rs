@@ -4,7 +4,6 @@
 //! macOS traffic lights. The buttons drive the window they render in, so
 //! a popped-out copy controls its own window.
 
-
 use gpui::{
     div, prelude::*, px, rgb, svg, AnyElement, App, Context, Div, EventEmitter, FocusHandle,
     Focusable, MouseButton, MouseDownEvent, Pixels, Subscription, WeakEntity, Window,
@@ -407,19 +406,25 @@ impl Panel for WindowControlsPanel {
         // The config block: the panel's quick entry and the settings
         // window, apart from the core panel items.
         let menu = self.config_menu(menu, cx);
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, _window, cx| {
-            let (state, workspace, config) = {
-                let panel = this.read(cx);
-                (
-                    panel.state.clone(),
-                    panel.workspace.clone(),
-                    panel.config.clone(),
-                )
-            };
-            WindowControlsPanel::new(state, workspace, config, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, _window, cx| {
+                let (state, workspace, config) = {
+                    let panel = this.read(cx);
+                    (
+                        panel.state.clone(),
+                        panel.workspace.clone(),
+                        panel.config.clone(),
+                    )
+                };
+                WindowControlsPanel::new(state, workspace, config, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),

@@ -127,7 +127,11 @@ impl GroupPanel {
             None => {
                 let weak = cx.entity().downgrade();
                 composite::empty_slot(
-                    if ix == 0 { "group-add-0" } else { "group-add-1" },
+                    if ix == 0 {
+                        "group-add-0"
+                    } else {
+                        "group-add-1"
+                    },
                     self.state.clone(),
                     self.workspace.clone(),
                     move |panel, _, cx| {
@@ -376,7 +380,8 @@ impl Panel for GroupPanel {
                         }
                     }),
             );
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         panel::popout_item(
             menu,

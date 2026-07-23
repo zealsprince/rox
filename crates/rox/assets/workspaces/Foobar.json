@@ -1,0 +1,319 @@
+{
+  "version": 1,
+  "name": "Foobar",
+  "layouts": [
+    {
+      "name": "Foobar",
+      "dump": {
+        "version": 1,
+        "center": {
+          "panel_name": "StackPanel",
+          "children": [
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "playback",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_height": 24.0,
+                          "align": "left",
+                          "stop": true,
+                          "random": true
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "seek",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_height": 24.0,
+                          "timings": true,
+                          "show_total": true,
+                          "scrobble_marker": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "volume",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_width": 200.0,
+                          "max_height": 24.0,
+                          "align": "right",
+                          "stretch": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    300.0,
+                    660.0,
+                    180.0
+                  ],
+                  "axis": 0
+                }
+              }
+            },
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "StackPanel",
+                  "children": [
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "filter",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "columns": [
+                                "artist",
+                                "album"
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "cover art",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "min_height": 200.0,
+                              "source": "playing",
+                              "align": "left",
+                              "stretch": false
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "stack": {
+                      "sizes": [
+                        406.0,
+                        250.0
+                      ],
+                      "axis": 1
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "library",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "query": "",
+                          "search": false,
+                          "query_source": "global",
+                          "density": "compact",
+                          "headers": "compact",
+                          "group_by": "album",
+                          "column_layout": [
+                            {
+                              "key": "track",
+                              "width": 40.0
+                            },
+                            {
+                              "key": "title",
+                              "width": 300.0
+                            },
+                            {
+                              "key": "artist",
+                              "width": 180.0
+                            },
+                            {
+                              "key": "album",
+                              "width": 200.0
+                            },
+                            {
+                              "key": "duration",
+                              "width": 60.0
+                            },
+                            {
+                              "key": "plays",
+                              "width": 50.0
+                            },
+                            {
+                              "key": "rating",
+                              "width": 80.0
+                            }
+                          ],
+                          "sort_key": null,
+                          "sort_desc": false,
+                          "follow_playing": true,
+                          "resume_playing": false,
+                          "smooth_follow": false,
+                          "art_rounding": 0.0,
+                          "header_art": false,
+                          "header_year": true,
+                          "header_details": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    250.0,
+                    890.0
+                  ],
+                  "axis": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "track info",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "max_height": 24.0,
+                      "align": "left"
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            }
+          ],
+          "info": {
+            "stack": {
+              "sizes": [
+                30.0,
+                660.0,
+                24.0
+              ],
+              "axis": 1
+            }
+          }
+        }
+      },
+      "size": {
+        "width": 1160.0,
+        "height": 760.0
+      }
+    }
+  ],
+  "primary_layout": "Foobar",
+  "palette": {
+    "accent": "#3873b3",
+    "accent_hover": "#5590cc",
+    "highlight": "#ffffff",
+    "border": "#c8c8c8",
+    "border_light": "#d8d8d8",
+    "text_bright": "#000000",
+    "text_on_accent": "#ffffff",
+    "bg_root": "#e8e8e8",
+    "bg_panel": "#f5f5f5",
+    "bg_elevated": "#fafafa",
+    "bg_menubar": "#f0f0f0",
+    "bg_menu": "#ffffff",
+    "bg_control": "#e4e4e4",
+    "bg_menu_hover": "#e0e8f0",
+    "bg_control_active": "#d0d8e0",
+    "bg_control_hover": "#dde3ea",
+    "bg_input": "#ffffff",
+    "bg_toolbar": "#ececec",
+    "text": "#202020",
+    "text_secondary": "#404040",
+    "text_dim": "#606060",
+    "text_muted": "#808080",
+    "text_faint": "#969696",
+    "gridline": "#b0b0b0"
+  },
+  "appearance": {
+    "surface_opacity": 1.0,
+    "backdrop_strength": 1.0,
+    "frame": {
+      "margin": 0.0,
+      "padding": 0.0,
+      "rounding": 0.0,
+      "border": 0.0
+    },
+    "art_theming": false,
+    "keep_dark": false,
+    "rating_style": "stars",
+    "quick_play": {
+      "show_cover": true,
+      "show_subtitle": true,
+      "show_duration": true,
+      "comfortable": false
+    },
+    "hide_menubar": false,
+    "os_decorations": true
+  }
+}

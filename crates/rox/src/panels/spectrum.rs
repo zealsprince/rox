@@ -4,20 +4,23 @@
 //! paint primitives on the UI thread: one FFT per frame while audio flows,
 //! and once the bars have settled the panel stops asking for frames, so an
 //! idle app pays nothing. The analyzed range, the FFT window size (split
-//! zoning trades reactivity for resolution per end of the range), the bar
-//! width and fill style, the peak-hold caps and their gravity, and the
-//! octave pitch markers are per-view config the customize window edits and
-//! the layout dump carries.
+//! zoning trades reactivity for resolution per end of the range), the
+//! render style (bars, LED blocks, or a solid line), the edge the bands
+//! grow from and the mirrored symmetry, the bar width and fill, the
+//! peak-hold caps and their gravity, and the octave pitch markers are
+//! per-view config the customize window edits and the layout dump carries.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
     canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, relative, size,
-    AnyElement, App, BorderStyle, Bounds, Context, Div, EventEmitter, FocusHandle, Focusable, Rgba,
-    SharedString, Subscription, WeakEntity, Window,
+    AnyElement, App, BorderStyle, Bounds, Context, Div, Entity, EventEmitter, FocusHandle,
+    Focusable, Path, Rgba, SharedString, Subscription, WeakEntity, Window,
 };
+use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::Sizable as _;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +56,17 @@ const BAR_GAP_MAX: f32 = 8.0;
 /// as a filled bar again.
 const OUTLINE_W_MIN: f32 = 1.0;
 const OUTLINE_W_MAX: f32 = 4.0;
+
+/// The block cell sliders' spans, px: how deep each cell draws and the
+/// dark seam between cells in the block style. Values snap to whole
+/// pixels; gap zero fuses a stack back into a solid bar.
+const BLOCK_H_MIN: f32 = 2.0;
+const BLOCK_H_MAX: f32 = 12.0;
+const BLOCK_GAP_MIN: f32 = 0.0;
+const BLOCK_GAP_MAX: f32 = 4.0;
+
+/// The line style's stroke thickness, px.
+const LINE_W: f32 = 1.5;
 
 /// The frequency band the bounds sliders (and a hand-edited config) may pick
 /// between: roughly the audible range up to a typical Nyquist ceiling.
@@ -112,6 +126,143 @@ const EPSILON: f32 = 0.002;
 /// playing audio always pushes, silence included.
 const SILENT_AFTER: f32 = 0.15;
 
+/// How the bands render: the classic solid bars, LED-style stacks of
+/// blocks (the Winamp and Block Analyzer look), or a solid line over a
+/// soft fill (the Fruity EQ look).
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpectrumStyle {
+    #[default]
+    Bars,
+    Blocks,
+    Line,
+}
+
+/// The edge the bands grow from. Left and right turn the panel sideways:
+/// the frequency axis runs vertically, low end at the bottom.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Orientation {
+    #[default]
+    Bottom,
+    Top,
+    Left,
+    Right,
+}
+
+impl Orientation {
+    /// Whether the frequency axis runs along the panel's width.
+    fn horizontal(self) -> bool {
+        matches!(self, Orientation::Bottom | Orientation::Top)
+    }
+
+    /// The gradient angle pointing from the base edge toward the tips,
+    /// degrees clockwise from up.
+    fn tip_angle(self) -> f32 {
+        match self {
+            Orientation::Bottom => 0.0,
+            Orientation::Top => 180.0,
+            Orientation::Left => 90.0,
+            Orientation::Right => 270.0,
+        }
+    }
+}
+
+/// How the bands color: flat accent, or a loudness ramp - the theme's dim
+/// floor up to the accent, the cover art's two extracted colors while song
+/// theming derives (the accent and highlight carry the art's primary and
+/// runner-up, and fall back to the plain palette when it doesn't), or a
+/// custom two-color pair.
+#[derive(Clone, Copy, Default, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Gradient {
+    #[default]
+    Off,
+    Theme,
+    Cover,
+    Custom,
+}
+
+impl<'de> Deserialize<'de> for Gradient {
+    /// By hand for the layouts dumped before the ramp had sources, when
+    /// `gradient` was the Intensity Color bool: true was the theme ramp,
+    /// false flat. An unknown name reads as flat rather than failing the
+    /// whole panel config.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Legacy(bool),
+            Named(String),
+        }
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Legacy(false) => Gradient::Off,
+            Raw::Legacy(true) => Gradient::Theme,
+            Raw::Named(name) => match name.as_str() {
+                "theme" => Gradient::Theme,
+                "cover" => Gradient::Cover,
+                "custom" => Gradient::Custom,
+                _ => Gradient::Off,
+            },
+        })
+    }
+}
+
+/// The symmetry modes: off, or the spectrum folded around the axis center
+/// and painted mirrored into both halves. Forward runs the range
+/// outside-in, lows at the outer edges; reverse runs it inside-out, lows
+/// meeting at the middle.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Symmetry {
+    #[default]
+    None,
+    Forward,
+    Reverse,
+}
+
+impl Symmetry {
+    /// Whether the spectrum folds into two mirrored halves.
+    fn mirrored(self) -> bool {
+        self != Symmetry::None
+    }
+
+    /// Whether the range runs backwards within its half.
+    fn reversed(self) -> bool {
+        self == Symmetry::Reverse
+    }
+}
+
+/// The style, orientation, and symmetry pickers' options.
+const STYLE_CHOICES: &[(&str, SpectrumStyle)] = &[
+    ("Bars", SpectrumStyle::Bars),
+    ("Blocks", SpectrumStyle::Blocks),
+    ("Line", SpectrumStyle::Line),
+];
+
+const ORIENTATION_CHOICES: &[(&str, Orientation)] = &[
+    ("Bottom", Orientation::Bottom),
+    ("Top", Orientation::Top),
+    ("Left", Orientation::Left),
+    ("Right", Orientation::Right),
+];
+
+const SYMMETRY_CHOICES: &[(&str, Symmetry)] = &[
+    ("None", Symmetry::None),
+    ("Forward", Symmetry::Forward),
+    ("Reverse", Symmetry::Reverse),
+];
+
+const GRADIENT_CHOICES: &[(&str, Gradient)] = &[
+    ("Off", Gradient::Off),
+    ("Theme", Gradient::Theme),
+    ("Cover", Gradient::Cover),
+    ("Custom", Gradient::Custom),
+];
+
 /// The spectrum panel's per-view config: what a saved layout restores, and
 /// what the customize window edits. Missing fields take the defaults, so a
 /// layout dumped before this config existed still loads.
@@ -122,6 +273,14 @@ pub struct SpectrumConfig {
     /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
+    /// How the bands render: bars, blocks, or a line.
+    pub style: SpectrumStyle,
+    /// The edge the bands grow from.
+    pub orientation: Orientation,
+    /// Fold the spectrum around the axis center - the symmetry look:
+    /// forward runs the lows to the outer edges, reverse meets them at
+    /// the middle.
+    pub symmetry: Symmetry,
     /// Low bound of the analyzed range, Hz: the bars span log-spaced from
     /// here up to `freq_hi`.
     pub freq_lo: f32,
@@ -134,6 +293,10 @@ pub struct SpectrumConfig {
     /// Gap between bars, px: zero packs them edge to edge, wider spreads
     /// them out. Also feeds the bar count, so a wider gap fits fewer bars.
     pub bar_gap: f32,
+    /// Cell depth in the block style, px.
+    pub block_height: f32,
+    /// Dark seam between cells in the block style, px.
+    pub block_gap: f32,
     /// FFT window size: short windows react fast, long ones resolve finer.
     /// With split zoning on this covers the bands below `split_hz`.
     pub fft_size: usize,
@@ -146,9 +309,12 @@ pub struct SpectrumConfig {
     pub split_hz: f32,
     /// The window size for the bands above the split.
     pub fft_size_hi: usize,
-    /// Color bars by loudness - a ramp from a dim floor up to the accent -
-    /// instead of a flat accent fill, so only the peaks light up.
-    pub gradient: bool,
+    /// How the bands color: flat accent, or a loudness ramp from the
+    /// theme, the cover art, or the custom pair below.
+    pub gradient: Gradient,
+    /// The custom ramp's ends, `#rrggbb`: the quiet base and the loud tip.
+    pub gradient_lo: String,
+    pub gradient_hi: String,
     /// Draw each bar as a hollow outline instead of a filled ramp.
     pub outline: bool,
     /// Stroke thickness of the hollow bars, px.
@@ -168,15 +334,22 @@ impl Default for SpectrumConfig {
     fn default() -> Self {
         SpectrumConfig {
             chrome: PanelChrome::default(),
+            style: SpectrumStyle::default(),
+            orientation: Orientation::default(),
+            symmetry: Symmetry::default(),
             freq_lo: 30.0,
             freq_hi: 16_000.0,
             bar_width: tokens::BAR_W,
             bar_gap: tokens::BAR_GAP,
+            block_height: 3.0,
+            block_gap: 1.0,
             fft_size: 8192,
             split: false,
             split_hz: 1_000.0,
             fft_size_hi: MAX_FFT_SIZE,
-            gradient: false,
+            gradient: Gradient::default(),
+            gradient_lo: "#33aacc".into(),
+            gradient_hi: "#cc5588".into(),
             outline: false,
             outline_width: 1.0,
             caps: true,
@@ -212,6 +385,24 @@ impl SpectrumConfig {
 
     fn outline_w(&self) -> f32 {
         self.outline_width.clamp(OUTLINE_W_MIN, OUTLINE_W_MAX)
+    }
+
+    fn block_h(&self) -> f32 {
+        self.block_height.clamp(BLOCK_H_MIN, BLOCK_H_MAX)
+    }
+
+    /// The custom ramp's ends parsed, falling back to the theme ramp's
+    /// when a hand-edited hex doesn't parse.
+    fn custom_ramp(&self) -> (Rgba, Rgba) {
+        (
+            palette::parse_hex(&self.gradient_lo)
+                .unwrap_or_else(|| palette::alpha(palette::text_faint(), 0x66)),
+            palette::parse_hex(&self.gradient_hi).unwrap_or_else(palette::accent),
+        )
+    }
+
+    fn block_gap(&self) -> f32 {
+        self.block_gap.clamp(BLOCK_GAP_MIN, BLOCK_GAP_MAX)
     }
 
     fn gravity(&self) -> f32 {
@@ -348,7 +539,9 @@ impl Bars {
     /// One tick: pull the newest window off the feed, fold it into the bar
     /// levels, advance the holds. No new audio means the bars decay, unless
     /// `hold` keeps the last frame standing (the freeze-on-pause option).
-    fn step(&mut self, feed: &AudioFeed, width: f32, config: &SpectrumConfig, hold: bool) {
+    /// `axis` is the length the bands lay along - the panel's width or
+    /// height per the orientation, halved when mirrored.
+    fn step(&mut self, feed: &AudioFeed, axis: f32, config: &SpectrumConfig, hold: bool) {
         let (freq_lo, freq_hi) = config.range();
         let gravity = config.gravity();
         let now = Instant::now();
@@ -363,7 +556,7 @@ impl Bars {
         self.last_written = written;
 
         let count =
-            ((width / (config.bar_w() + config.bar_gap())) as usize).clamp(MIN_BARS, MAX_BARS);
+            ((axis / (config.bar_w() + config.bar_gap())) as usize).clamp(MIN_BARS, MAX_BARS);
         let mapping = Mapping {
             count,
             rate: feed.sample_rate(),
@@ -475,94 +668,311 @@ impl Bars {
             return;
         }
 
-        let max_h = h * 0.94;
-        let step = w / count as f32;
+        // The bands lay along `axis`, levels grow into `depth`; symmetric
+        // panels lay them into half the axis and paint each band twice,
+        // the second half reflected. Reverse runs the range backwards
+        // within its half, so the lows meet at the middle instead of
+        // holding the outer edges.
+        let orientation = config.orientation;
+        let mirror = config.symmetry.mirrored();
+        let reversed = config.symmetry.reversed();
+        let (axis, depth) = if orientation.horizontal() {
+            (w, h)
+        } else {
+            (h, w)
+        };
+        let half = if mirror { axis / 2.0 } else { axis };
+        let max_d = depth * 0.94;
+        let step = half / count as f32;
         let bar_w = (step - config.bar_gap()).max(1.0);
+
+        // Axis/depth space into panel space: `a` along the frequency axis
+        // (rightward, or upward on the sideways orientations), `d` from
+        // the base edge toward the tips.
+        let origin = bounds.origin;
+        let rect = move |a: f32, aw: f32, d: f32, dw: f32| {
+            let (x, y, rw, rh) = match orientation {
+                Orientation::Bottom => (a, h - d - dw, aw, dw),
+                Orientation::Top => (a, d, aw, dw),
+                Orientation::Left => (d, h - a - aw, dw, aw),
+                Orientation::Right => (w - d - dw, h - a - aw, dw, aw),
+            };
+            Bounds::new(
+                point(origin.x + px(x), origin.y + px(y)),
+                size(px(rw), px(rh)),
+            )
+        };
 
         // dB gridlines behind the bars.
         for db in DB_MARKS {
-            let y = h - (db - FLOOR_DB) / (MAX_DB - FLOOR_DB) * max_h;
+            let d = (db - FLOOR_DB) / (MAX_DB - FLOOR_DB) * max_d;
             window.paint_quad(fill(
-                Bounds::new(
-                    point(bounds.origin.x, bounds.origin.y + px(y)),
-                    size(px(w), px(1.0)),
-                ),
+                rect(0.0, axis, d, 1.0),
                 palette::alpha(palette::gridline(), 0x28),
             ));
         }
 
-        for i in 0..count {
-            let bar_h = (self.levels[i] * max_h).max(2.0);
-            let x = bounds.origin.x + px(i as f32 * step);
-            // The bar base color: flat accent, or a loudness ramp from a dim
-            // floor up to the accent so only the peaks read hot.
-            let base = bar_color(self.levels[i], config.gradient);
-            let bar = Bounds::new(
-                point(x, bounds.origin.y + px(h - bar_h)),
-                size(px(bar_w), px(bar_h)),
-            );
-            if config.outline {
-                // Hollow variant: the bar as a frame in its base color, at
-                // the configured stroke width.
-                window.paint_quad(gpui::quad(
-                    bar,
-                    0.,
-                    gpui::transparent_black(),
-                    config.outline_w(),
-                    base,
-                    BorderStyle::default(),
-                ));
-            } else {
-                window.paint_quad(fill(
-                    bar,
-                    // Angle 0 points the gradient line at the top: solid base
-                    // at the baseline fading out toward the bar tip.
-                    linear_gradient(
-                        0.0,
-                        linear_color_stop(base, 0.0),
-                        linear_color_stop(palette::alpha(base, 0x40), 1.0),
-                    ),
-                ));
-            }
+        // The block grid: cells stacked into the depth on a shared rhythm,
+        // the caps quantizing onto the same grid.
+        let block_h = config.block_h();
+        let cell = block_h + config.block_gap();
+        let cells = ((max_d / cell) as usize).max(1);
 
-            if !config.caps {
-                continue;
+        if config.style == SpectrumStyle::Line {
+            self.paint_line(bounds, window, config, axis, half, step, max_d);
+        } else {
+            for i in 0..count {
+                let level = self.levels[i];
+                let a0 = i as f32 * step;
+                let a0 = if reversed { half - a0 - bar_w } else { a0 };
+                let slots = [a0, axis - a0 - bar_w];
+                let slots = if mirror { &slots[..] } else { &slots[..1] };
+                // The bar base color: flat accent, or the configured ramp
+                // at the band's level so only the peaks read hot.
+                let base = bar_color(config, level);
+                for &a in slots {
+                    if config.style == SpectrumStyle::Blocks {
+                        // The stack: cells lit up to the level, each colored
+                        // by its own height on the ramp - the classic look
+                        // where only a tall stack's top runs hot.
+                        let lit = (level * cells as f32).round() as usize;
+                        for c in 0..lit {
+                            let color = bar_color(config, (c as f32 + 0.5) / cells as f32);
+                            window
+                                .paint_quad(fill(rect(a, bar_w, c as f32 * cell, block_h), color));
+                        }
+                        // A ghosted cell at the base keeps a silent band's
+                        // footprint, the block twin of the bars' 2px stub.
+                        if lit == 0 {
+                            window.paint_quad(fill(
+                                rect(a, bar_w, 0.0, block_h),
+                                palette::alpha(base, 0x40),
+                            ));
+                        }
+                        continue;
+                    }
+                    let bar = rect(a, bar_w, 0.0, (level * max_d).max(2.0));
+                    if config.outline {
+                        // Hollow variant: the bar as a frame in its base
+                        // color, at the configured stroke width.
+                        window.paint_quad(gpui::quad(
+                            bar,
+                            0.,
+                            gpui::transparent_black(),
+                            config.outline_w(),
+                            base,
+                            BorderStyle::default(),
+                        ));
+                    } else {
+                        window.paint_quad(fill(
+                            bar,
+                            // Solid base at the baseline fading out toward
+                            // the bar tip, whichever way the tips point.
+                            linear_gradient(
+                                orientation.tip_angle(),
+                                linear_color_stop(base, 0.0),
+                                linear_color_stop(palette::alpha(base, 0x40), 1.0),
+                            ),
+                        ));
+                    }
+                }
             }
-            // Solid peak-hold cap sitting at the held level above the bar:
-            // a position mark like the playheads and slider knobs, so it
-            // wears the highlight and stays legible over accent-colored
-            // bars.
-            let cap_y = (h - self.holds[i] * max_h - 1.0).max(0.0);
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(x, bounds.origin.y + px(cap_y)),
-                    size(px(bar_w), px(1.0)),
-                ),
-                palette::highlight(),
-            ));
+        }
+
+        if !config.caps {
+            return;
+        }
+        // Peak-hold caps at the held level above each band: position marks
+        // like the playheads and slider knobs, so they wear the highlight
+        // and stay legible over accent-colored bars. Block style lights a
+        // floating segment on the cell grid instead of a thin line.
+        for i in 0..count {
+            let a0 = i as f32 * step;
+            let a0 = if reversed { half - a0 - bar_w } else { a0 };
+            let slots = [a0, axis - a0 - bar_w];
+            let slots = if mirror { &slots[..] } else { &slots[..1] };
+            for &a in slots {
+                let cap = if config.style == SpectrumStyle::Blocks {
+                    let c = ((self.holds[i] * cells as f32).ceil() as usize)
+                        .saturating_sub(1)
+                        .min(cells - 1);
+                    rect(a, bar_w, c as f32 * cell, block_h)
+                } else {
+                    rect(a, bar_w, (self.holds[i] * max_d).min(depth - 1.0), 1.0)
+                };
+                window.paint_quad(fill(cap, palette::highlight()));
+            }
+        }
+    }
+
+    /// The line style: a solid stroke through the band tips over a soft
+    /// fill down to the baseline, built as triangle strips the way the
+    /// chart donut fans its ring. Intensity color rides the depth here -
+    /// one path is one fill, so the ramp runs base to tip rather than
+    /// per band.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_line(
+        &self,
+        bounds: Bounds<gpui::Pixels>,
+        window: &mut Window,
+        config: &SpectrumConfig,
+        axis: f32,
+        half: f32,
+        step: f32,
+        max_d: f32,
+    ) {
+        let count = self.levels.len();
+        let w = f32::from(bounds.size.width);
+        let h = f32::from(bounds.size.height);
+        let orientation = config.orientation;
+        let origin = bounds.origin;
+        let at = move |a: f32, d: f32| {
+            let (x, y) = match orientation {
+                Orientation::Bottom => (a, h - d),
+                Orientation::Top => (a, d),
+                Orientation::Left => (d, h - a),
+                Orientation::Right => (w - d, h - a),
+            };
+            point(origin.x + px(x), origin.y + px(y))
+        };
+
+        // The curve runs through the band centers, pinned to the half's
+        // edges so it spans it fully; a mirrored panel's halves meet at
+        // the center without a seam.
+        let mut tips = Vec::with_capacity(count + 2);
+        tips.push((0.0, (self.levels[0] * max_d).max(2.0)));
+        for (i, &level) in self.levels.iter().enumerate() {
+            tips.push((i as f32 * step + step / 2.0, (level * max_d).max(2.0)));
+        }
+        tips.push((half, (self.levels[count - 1] * max_d).max(2.0)));
+
+        // The ramp's ends for the configured source; None paints the flat
+        // accent. One path is one fill, so the ramp rides the depth as a
+        // base-to-tip gradient rather than per band.
+        let ramp = match config.gradient {
+            Gradient::Off => None,
+            Gradient::Theme => Some((
+                palette::alpha(palette::text_faint(), 0x66),
+                palette::accent(),
+            )),
+            Gradient::Cover => Some((
+                palette::accent(),
+                palette::mix(palette::accent(), palette::highlight(), 0.85),
+            )),
+            Gradient::Custom => Some(config.custom_ramp()),
+        };
+
+        let reversed = config.symmetry.reversed();
+        let halves: &[bool] = if config.symmetry.mirrored() {
+            &[false, true]
+        } else {
+            &[false]
+        };
+        for &reflect in halves {
+            let pos = move |a: f32| {
+                let a = if reversed { half - a } else { a };
+                if reflect {
+                    axis - a
+                } else {
+                    a
+                }
+            };
+            let solid = (point(0., 1.), point(0., 1.), point(0., 1.));
+            let mut area = Path::new(at(pos(tips[0].0), 0.0));
+            let mut stroke = Path::new(at(pos(tips[0].0), tips[0].1));
+            for pair in tips.windows(2) {
+                let (a0, d0) = pair[0];
+                let (a1, d1) = pair[1];
+                area.push_triangle((at(pos(a0), d0), at(pos(a1), d1), at(pos(a1), 0.0)), solid);
+                area.push_triangle((at(pos(a0), d0), at(pos(a1), 0.0), at(pos(a0), 0.0)), solid);
+                let (u0, u1) = ((d0 - LINE_W).max(0.0), (d1 - LINE_W).max(0.0));
+                stroke.push_triangle((at(pos(a0), d0), at(pos(a1), d1), at(pos(a1), u1)), solid);
+                stroke.push_triangle((at(pos(a0), d0), at(pos(a1), u1), at(pos(a0), u0)), solid);
+            }
+            if let Some((lo, hi)) = ramp {
+                let angle = orientation.tip_angle();
+                window.paint_path(
+                    area,
+                    linear_gradient(
+                        angle,
+                        linear_color_stop(palette::alpha(lo, 0x22), 0.0),
+                        linear_color_stop(palette::alpha(hi, 0x40), 1.0),
+                    ),
+                );
+                window.paint_path(
+                    stroke,
+                    linear_gradient(
+                        angle,
+                        linear_color_stop(lo, 0.0),
+                        linear_color_stop(hi, 1.0),
+                    ),
+                );
+            } else {
+                window.paint_path(area, palette::alpha(palette::accent(), 0x33));
+                window.paint_path(stroke, palette::accent());
+            }
         }
     }
 }
 
-/// A bar's base color for its level. Flat mode is the accent everywhere;
-/// intensity mode blends from a dim floor up to the accent, curved so mid
-/// bars stay muted and only the loud ones light up.
-fn bar_color(level: f32, gradient: bool) -> Rgba {
-    if !gradient {
-        return palette::accent();
+/// A band's color at ramp position `t` - its level, or a cell's height in
+/// the block stack. Flat mode is the accent everywhere; the ramps blend
+/// upward, curved so the mids stay muted and only the top lights up. The
+/// cover ramp runs accent to highlight - the art's primary and runner-up
+/// while song theming derives - and stops short of full highlight so the
+/// peak caps stay legible on a pinned band.
+fn bar_color(config: &SpectrumConfig, t: f32) -> Rgba {
+    let t = t.clamp(0.0, 1.0).powf(1.5);
+    match config.gradient {
+        Gradient::Off => palette::accent(),
+        Gradient::Theme => palette::mix(
+            palette::alpha(palette::text_faint(), 0x66),
+            palette::accent(),
+            t,
+        ),
+        Gradient::Cover => palette::mix(palette::accent(), palette::highlight(), 0.85 * t),
+        Gradient::Custom => {
+            let (lo, hi) = config.custom_ramp();
+            palette::mix(lo, hi, t)
+        }
     }
-    let t = level.clamp(0.0, 1.0).powf(1.5);
-    palette::mix(
-        palette::alpha(palette::text_faint(), 0x66),
-        palette::accent(),
-        t,
-    )
+}
+
+/// A hairline across the panel at an axis fraction: vertical at `frac` of
+/// the width on the horizontal orientations, horizontal at `frac` of the
+/// height (bottom-up) on the sideways ones.
+fn axis_rule(orientation: Orientation, frac: f32, color: Rgba) -> Div {
+    let rule = div().absolute().border_color(color);
+    if orientation.horizontal() {
+        rule.top_0().bottom_0().left(relative(frac)).border_l_1()
+    } else {
+        rule.left_0().right_0().bottom(relative(frac)).border_b_1()
+    }
+}
+
+/// Where an axis fraction of the analyzed range lands on the panel: one
+/// spot as-is, or two under symmetry, folded into the halves - forward
+/// outside-in, reverse inside-out.
+fn axis_fracs(symmetry: Symmetry, frac: f32) -> Vec<f32> {
+    if !symmetry.mirrored() {
+        return vec![frac];
+    }
+    let frac = if symmetry.reversed() {
+        1.0 - frac
+    } else {
+        frac
+    };
+    vec![frac / 2.0, 1.0 - frac / 2.0]
 }
 
 /// The octave pitch markers over the analyzed range: a faint divider at each
-/// C with its label at the bottom. Positions are log-frequency fractions, so
-/// they line up with the bars at any panel width without knowing the pixels.
-fn labels_overlay(freq_lo: f32, freq_hi: f32) -> Div {
+/// C with its label tucked against it, hugging the panel edge the config's
+/// orientation leaves quiet. Positions are log-frequency fractions along the
+/// axis, so they line up with the bars at any panel size. Symmetric panels
+/// rule both halves but label only the first: the reflected half reads
+/// backwards, and twin labels would just clutter it.
+fn labels_overlay(config: &SpectrumConfig) -> Div {
+    let (freq_lo, freq_hi) = config.range();
     let span = (freq_hi / freq_lo).ln();
     let mut overlay = div().absolute().inset_0();
     for octave in 0..=10 {
@@ -571,38 +981,61 @@ fn labels_overlay(freq_lo: f32, freq_hi: f32) -> Div {
             continue;
         }
         let frac = (freq / freq_lo).ln() / span;
-        // A label pinned to the far right edge would clip; drop it and keep
-        // the divider.
-        let labeled = frac <= 0.97;
-        overlay = overlay.child(
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(relative(frac))
-                .border_l_1()
-                .border_color(palette::alpha(palette::gridline(), 0x1f))
-                .flex()
-                .flex_col()
-                .justify_end()
-                .when(labeled, |d| {
-                    d.child(
-                        div()
-                            .pl(px(3.))
-                            .pb(px(2.))
-                            .text_xs()
-                            .text_color(palette::text_faint())
-                            .child(format!("C{octave}")),
-                    )
-                }),
-        );
+        let fracs = axis_fracs(config.symmetry, frac);
+        // A label pinned to the axis' far end would clip; drop it and keep
+        // the divider. Folded halves never reach the end.
+        let labeled = fracs.len() > 1 || frac <= 0.97;
+        overlay = overlay.child(octave_mark(
+            config.orientation,
+            fracs[0],
+            labeled.then_some(octave),
+        ));
+        if let Some(&mirrored) = fracs.get(1) {
+            overlay = overlay.child(octave_mark(config.orientation, mirrored, None));
+        }
     }
     overlay
 }
 
+/// One octave marker: the divider across the panel with the pitch label
+/// against it. Horizontal orientations run the divider full height with the
+/// text along the base edge; sideways ones sit the text on the divider,
+/// against the base edge.
+fn octave_mark(orientation: Orientation, frac: f32, octave: Option<i32>) -> Div {
+    let mark = axis_rule(orientation, frac, palette::alpha(palette::gridline(), 0x1f));
+    let Some(octave) = octave else {
+        return mark;
+    };
+    let label = div()
+        .text_xs()
+        .text_color(palette::text_faint())
+        .child(format!("C{octave}"));
+    match orientation {
+        Orientation::Bottom => mark
+            .flex()
+            .flex_col()
+            .justify_end()
+            .child(label.pl(px(3.)).pb(px(2.))),
+        Orientation::Top => mark
+            .flex()
+            .flex_col()
+            .justify_start()
+            .child(label.pl(px(3.)).pt(px(2.))),
+        Orientation::Left => mark
+            .flex()
+            .justify_start()
+            .child(label.pl(px(3.)).pb(px(2.))),
+        Orientation::Right => mark.flex().justify_end().child(label.pr(px(3.)).pb(px(2.))),
+    }
+}
+
 /// A labelled config toggle for the Display menu: the row label, a getter for
 /// its current state, and a setter that flips it.
-type ConfigToggle = (&'static str, fn(&SpectrumPanel) -> bool, fn(&mut SpectrumPanel));
+type ConfigToggle = (
+    &'static str,
+    fn(&SpectrumPanel) -> bool,
+    fn(&mut SpectrumPanel),
+);
 
 pub struct SpectrumPanel {
     state: AppState,
@@ -615,9 +1048,16 @@ pub struct SpectrumPanel {
     hi_scrub: ScrubState,
     bar_w_scrub: ScrubState,
     bar_gap_scrub: ScrubState,
+    block_h_scrub: ScrubState,
+    block_gap_scrub: ScrubState,
     outline_w_scrub: ScrubState,
     gravity_scrub: ScrubState,
     split_scrub: ScrubState,
+    /// The custom ramp's pickers, base then tip, built on the first
+    /// settings render: the panel itself constructs without a window,
+    /// which the picker state needs.
+    ramp_pickers: Option<[Entity<ColorPickerState>; 2]>,
+    _ramp_changes: Vec<Subscription>,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -638,9 +1078,13 @@ impl SpectrumPanel {
             hi_scrub: ScrubState::default(),
             bar_w_scrub: ScrubState::default(),
             bar_gap_scrub: ScrubState::default(),
+            block_h_scrub: ScrubState::default(),
+            block_gap_scrub: ScrubState::default(),
             outline_w_scrub: ScrubState::default(),
             gravity_scrub: ScrubState::default(),
             split_scrub: ScrubState::default(),
+            ramp_pickers: None,
+            _ramp_changes: Vec::new(),
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
@@ -672,6 +1116,17 @@ impl SpectrumPanel {
 
     fn set_bar_gap(&mut self, fraction: f32, cx: &mut Context<Self>) {
         self.config.bar_gap = (BAR_GAP_MIN + fraction * (BAR_GAP_MAX - BAR_GAP_MIN)).round();
+        cx.notify();
+    }
+
+    fn set_block_height(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.config.block_height = (BLOCK_H_MIN + fraction * (BLOCK_H_MAX - BLOCK_H_MIN)).round();
+        cx.notify();
+    }
+
+    fn set_block_gap(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.config.block_gap =
+            (BLOCK_GAP_MIN + fraction * (BLOCK_GAP_MAX - BLOCK_GAP_MIN)).round();
         cx.notify();
     }
 
@@ -712,17 +1167,7 @@ impl SpectrumPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let toggles: [ConfigToggle; 4] = [
-            (
-                "Intensity Color",
-                |this| this.config.gradient,
-                |this| this.config.gradient = !this.config.gradient,
-            ),
-            (
-                "Outline Bars",
-                |this| this.config.outline,
-                |this| this.config.outline = !this.config.outline,
-            ),
+        let mut toggles: Vec<ConfigToggle> = vec![
             (
                 "Peak Caps",
                 |this| this.config.caps,
@@ -734,6 +1179,18 @@ impl SpectrumPanel {
                 |this| this.config.labels = !this.config.labels,
             ),
         ];
+        // Outlines only apply to the bar style; the flyout drops the toggle
+        // with the other styles the way the settings page hides it.
+        if self.config.style == SpectrumStyle::Bars {
+            toggles.insert(
+                0,
+                (
+                    "Outline Bars",
+                    |this| this.config.outline,
+                    |this| this.config.outline = !this.config.outline,
+                ),
+            );
+        }
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
@@ -778,17 +1235,82 @@ impl PanelSettings for SpectrumPanel {
     fn page(
         &mut self,
         _page: &'static str,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // The custom ramp's pickers on first need; each edit writes its
+        // hex back into the config, the format the layout dump carries.
+        if self.config.gradient == Gradient::Custom && self.ramp_pickers.is_none() {
+            let (lo, hi) = self.config.custom_ramp();
+            let mut build = |seed: Rgba, write: fn(&mut Self, Rgba)| {
+                let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(seed));
+                let sub = cx.subscribe_in(
+                    &picker,
+                    window,
+                    move |this, _, event: &ColorPickerEvent, _, cx| {
+                        let ColorPickerEvent::Change(color) = event;
+                        if let Some(color) = color {
+                            write(this, Rgba::from(*color));
+                            cx.notify();
+                        }
+                    },
+                );
+                self._ramp_changes.push(sub);
+                picker
+            };
+            let lo = build(lo, |this, c| this.config.gradient_lo = palette::to_hex(c));
+            let hi = build(hi, |this, c| this.config.gradient_hi = palette::to_hex(c));
+            self.ramp_pickers = Some([lo, hi]);
+        }
         let bar_w = self.config.bar_w();
         let bar_gap = self.config.bar_gap();
+        let block_h = self.config.block_h();
+        let block_gap = self.config.block_gap();
         let outline_w = self.config.outline_w();
         let gravity = self.config.gravity();
         div()
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
+            .child(setting_row(
+                "Style",
+                Some("Classic bars, LED-style blocks, or a solid line"),
+                choices(
+                    STYLE_CHOICES,
+                    self.config.style,
+                    |this: &mut Self, style, cx| {
+                        this.config.style = style;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(setting_row(
+                "Orientation",
+                Some("The edge the bands grow from"),
+                choices(
+                    ORIENTATION_CHOICES,
+                    self.config.orientation,
+                    |this: &mut Self, orientation, cx| {
+                        this.config.orientation = orientation;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(setting_row(
+                "Symmetry",
+                Some("Fold the spectrum around the center; forward puts lows at the edges, reverse meets them in the middle"),
+                choices(
+                    SYMMETRY_CHOICES,
+                    self.config.symmetry,
+                    |this: &mut Self, symmetry, cx| {
+                        this.config.symmetry = symmetry;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
             .child(setting_row(
                 "Low Bound",
                 Some("Lowest frequency the bars analyze"),
@@ -821,6 +1343,30 @@ impl PanelSettings for SpectrumPanel {
                     cx,
                 ),
             ))
+            .when(self.config.style == SpectrumStyle::Blocks, |d| {
+                d.child(setting_row(
+                    "Block Height",
+                    Some("How tall each cell in a stack draws"),
+                    panel::value_slider(
+                        &self.block_h_scrub,
+                        (block_h - BLOCK_H_MIN) / (BLOCK_H_MAX - BLOCK_H_MIN),
+                        format!("{block_h:.0} px"),
+                        Self::set_block_height,
+                        cx,
+                    ),
+                ))
+                .child(setting_row(
+                    "Block Gap",
+                    Some("The seam between cells in a stack"),
+                    panel::value_slider(
+                        &self.block_gap_scrub,
+                        (block_gap - BLOCK_GAP_MIN) / (BLOCK_GAP_MAX - BLOCK_GAP_MIN),
+                        format!("{block_gap:.0} px"),
+                        Self::set_block_gap,
+                        cx,
+                    ),
+                ))
+            })
             .child(setting_row(
                 "FFT Size",
                 Some("Analysis window; short reacts fast, long resolves finer"),
@@ -872,41 +1418,61 @@ impl PanelSettings for SpectrumPanel {
                 ))
             })
             .child(setting_row(
-                "Intensity Color",
-                Some("Color bars by loudness so only the peaks light up, instead of a flat fill"),
-                toggle(
+                "Gradient",
+                Some("Color the bands by loudness: the theme's ramp, the cover art's colors under song theming, or a custom pair"),
+                choices(
+                    GRADIENT_CHOICES,
                     self.config.gradient,
-                    |this: &mut Self, on, cx| {
-                        this.config.gradient = on;
+                    |this: &mut Self, gradient, cx| {
+                        this.config.gradient = gradient;
                         cx.notify();
                     },
                     cx,
                 ),
             ))
-            .child(setting_row(
-                "Outline Bars",
-                Some("Draw each bar as a hollow outline instead of a filled ramp"),
-                toggle(
-                    self.config.outline,
-                    |this: &mut Self, on, cx| {
-                        this.config.outline = on;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when(self.config.outline, |d| {
+            .when_some(
+                (self.config.gradient == Gradient::Custom)
+                    .then(|| self.ramp_pickers.clone())
+                    .flatten(),
+                |d, [lo, hi]| {
+                    d.child(setting_row(
+                        "Base Color",
+                        Some("The quiet end of the custom ramp"),
+                        ColorPicker::new(&lo).small(),
+                    ))
+                    .child(setting_row(
+                        "Tip Color",
+                        Some("The loud end of the custom ramp"),
+                        ColorPicker::new(&hi).small(),
+                    ))
+                },
+            )
+            .when(self.config.style == SpectrumStyle::Bars, |d| {
                 d.child(setting_row(
-                    "Outline Width",
-                    Some("Stroke thickness of the hollow bars"),
-                    panel::value_slider(
-                        &self.outline_w_scrub,
-                        (outline_w - OUTLINE_W_MIN) / (OUTLINE_W_MAX - OUTLINE_W_MIN),
-                        format!("{outline_w:.0} px"),
-                        Self::set_outline_width,
+                    "Outline Bars",
+                    Some("Draw each bar as a hollow outline instead of a filled ramp"),
+                    toggle(
+                        self.config.outline,
+                        |this: &mut Self, on, cx| {
+                            this.config.outline = on;
+                            cx.notify();
+                        },
                         cx,
                     ),
                 ))
+                .when(self.config.outline, |d| {
+                    d.child(setting_row(
+                        "Outline Width",
+                        Some("Stroke thickness of the hollow bars"),
+                        panel::value_slider(
+                            &self.outline_w_scrub,
+                            (outline_w - OUTLINE_W_MIN) / (OUTLINE_W_MAX - OUTLINE_W_MIN),
+                            format!("{outline_w:.0} px"),
+                            Self::set_outline_width,
+                            cx,
+                        ),
+                    ))
+                })
             })
             .child(setting_row(
                 "Peak Caps",
@@ -1037,15 +1603,21 @@ impl Panel for SpectrumPanel {
         // The config block: the panel's quick toggles and the settings
         // window, apart from the core panel items.
         let menu = self.config_menu(menu, window, cx);
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, _window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            SpectrumPanel::new(state, config, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, _window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                SpectrumPanel::new(state, config, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),
@@ -1088,31 +1660,39 @@ impl SpectrumPanel {
             canvas(
                 move |_, _, _| {},
                 move |bounds, _, window, _| {
+                    // The bands lay along the width, or the height on the
+                    // sideways orientations; symmetric panels fold the
+                    // range into half of it.
+                    let axis = if config.orientation.horizontal() {
+                        bounds.size.width
+                    } else {
+                        bounds.size.height
+                    };
+                    let axis = f32::from(axis) / if config.symmetry.mirrored() { 2.0 } else { 1.0 };
                     let mut bars = bars.lock().unwrap();
-                    bars.step(&feed, f32::from(bounds.size.width), &config, hold);
+                    bars.step(&feed, axis, &config, hold);
                     bars.paint(bounds, window, &config);
                 },
             )
             .size_full(),
         );
         if self.config.labels {
-            root = root.child(labels_overlay(freq_lo, freq_hi));
+            root = root.child(labels_overlay(&self.config));
         }
         // While the split slider drags, mark where the zones meet so the
-        // pick lands by eye; the playhead's alpha keeps it legible.
+        // pick lands by eye; the playhead's alpha keeps it legible. A
+        // symmetric panel's zones meet twice, once per half.
         if self.config.split && self.split_scrub.is_dragging() {
             let split = self.config.split_hz.clamp(SLIDER_MIN_HZ, SLIDER_MAX_HZ);
             let frac = (split / freq_lo).ln() / (freq_hi / freq_lo).ln();
             if (0.0..=1.0).contains(&frac) {
-                root = root.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(relative(frac))
-                        .border_l_1()
-                        .border_color(palette::alpha(palette::highlight(), 0xd9)),
-                );
+                for frac in axis_fracs(self.config.symmetry, frac) {
+                    root = root.child(axis_rule(
+                        self.config.orientation,
+                        frac,
+                        palette::alpha(palette::highlight(), 0xd9),
+                    ));
+                }
             }
         }
         root

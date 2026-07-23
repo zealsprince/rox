@@ -193,28 +193,41 @@ fn path_range(root: &Path) -> (String, String) {
     (lo, hi)
 }
 
-/// One scope's rollup: how many tracks and distinct albums it holds and
-/// what its files weigh on disk.
+/// One scope's rollup: how many tracks and distinct albums it holds, what
+/// its files weigh on disk, and how many folders hold them.
 #[derive(Clone, Copy, Default)]
 pub struct Stats {
     pub tracks: u64,
     pub albums: u64,
     pub bytes: u64,
+    /// Distinct parent folders of the local tracks: what a recursive
+    /// filesystem watch would spend its per-directory watches on, so the
+    /// watch ceiling reasons in this. Intermediate folders that hold only
+    /// folders are not counted; callers wanting the true watch cost should
+    /// leave headroom for them.
+    pub dirs: u64,
 }
 
 /// The rollup columns behind [`Stats`]. Albums are distinct
 /// (album_artist, album) pairs joined on the unit separator so the pair
 /// never collides across the boundary; untagged tracks (empty album)
 /// count no album, and the CASE's NULL keeps them out of the DISTINCT.
+/// Dirs are distinct parents of the local rows: the nested replace empties
+/// the path of both separators, and rtrim with that set eats the tail back
+/// to the last separator, leaving the folder prefix. Non-local rows carry
+/// no watchable folder, and the CASE's NULL keeps them out.
 const STATS_COLUMNS: &str = "COUNT(*),
      COUNT(DISTINCT CASE WHEN album <> '' THEN album_artist || char(31) || album END),
-     COALESCE(SUM(size), 0)";
+     COALESCE(SUM(size), 0),
+     COUNT(DISTINCT CASE WHEN source = 'local'
+         THEN rtrim(path, replace(replace(path, '/', ''), '\\', '')) END)";
 
 fn stats_row(r: &rusqlite::Row) -> rusqlite::Result<Stats> {
     Ok(Stats {
         tracks: r.get::<_, i64>(0)? as u64,
         albums: r.get::<_, i64>(1)? as u64,
         bytes: r.get::<_, i64>(2)? as u64,
+        dirs: r.get::<_, i64>(3)? as u64,
     })
 }
 
@@ -713,13 +726,16 @@ mod tests {
 
         let whole = stats(&conn).unwrap();
         assert_eq!(
-            (whole.tracks, whole.albums, whole.bytes),
-            (5, 3, 1050),
-            "an empty album tag counts no album"
+            (whole.tracks, whole.albums, whole.bytes, whole.dirs),
+            (5, 3, 1050, 4),
+            "an empty album tag counts no album; two tracks share one folder"
         );
 
         let under = stats_under(&conn, Path::new("/m")).unwrap();
-        assert_eq!((under.tracks, under.albums, under.bytes), (4, 2, 650));
+        assert_eq!(
+            (under.tracks, under.albums, under.bytes, under.dirs),
+            (4, 2, 650, 3)
+        );
     }
 
     /// A rating lands on the row and a rescan's upsert leaves it alone,

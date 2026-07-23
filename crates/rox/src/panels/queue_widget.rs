@@ -330,7 +330,8 @@ impl Panel for QueueWidgetPanel {
                     state.player.read(cx).clear_queue();
                 }),
         );
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         panel::popout_item(
             menu,

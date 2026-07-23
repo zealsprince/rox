@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 use gpui::{
     anchored, canvas, deferred, div, fill, point, prelude::*, px, relative, size, svg,
     AbsoluteLength, Along, AnyElement, App, Axis, Bounds, Context, DismissEvent, Div, Element,
-    Entity, FocusHandle, Focusable as _, GlobalElementId, InspectorElementId, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollHandle, SharedString,
-    Size, Stateful, Subscription, TitlebarOptions, UniformListScrollHandle, WeakEntity, Window,
-    WindowBounds, WindowHandle, WindowOptions,
+    Entity, FocusHandle, Focusable as _, GlobalElementId, InspectorElementId, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollHandle,
+    SharedString, Size, Stateful, Subscription, TitlebarOptions, UniformListScrollHandle,
+    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use gpui_component::button::Button;
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
@@ -32,8 +32,8 @@ use crate::history::History;
 use crate::lastfm::Scrobbler;
 use crate::panels::library::Library;
 use crate::player::{fmt_time, Player};
-use crate::selection::Selection;
 use crate::query::shared_query::SharedQuery;
+use crate::selection::Selection;
 use crate::thumbs::Thumbs;
 use crate::workspace::{SeekBackward, SeekForward, TogglePlayback};
 
@@ -156,7 +156,6 @@ pub fn icon_control_sized<V: 'static>(
         )
         .child(svg().path(icon).size(size).text_color(color))
 }
-
 
 /// Map a strip fraction to an absolute seek on the playing track, the
 /// seek strip's and the waveform's shared apply.
@@ -680,10 +679,35 @@ pub fn open_child_window<V: 'static + Render>(
     min_size: Option<Size<Pixels>>,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V> + 'static,
 ) -> WindowHandle<Root> {
+    open_window(cx, title, bounds, min_size, true, build)
+}
+
+/// Like [`open_child_window`] but fixed: the user can't resize it, so it
+/// holds the bounds it opened at and its min size is that same size. For
+/// dialogs whose layout is one set size, like About, where a resize would
+/// only strand the content in empty space.
+pub fn open_fixed_window<V: 'static + Render>(
+    cx: &mut App,
+    title: impl Into<SharedString>,
+    bounds: Bounds<Pixels>,
+    build: impl FnOnce(&mut Window, &mut App) -> Entity<V> + 'static,
+) -> WindowHandle<Root> {
+    open_window(cx, title, bounds, Some(bounds.size), false, build)
+}
+
+fn open_window<V: 'static + Render>(
+    cx: &mut App,
+    title: impl Into<SharedString>,
+    bounds: Bounds<Pixels>,
+    min_size: Option<Size<Pixels>>,
+    resizable: bool,
+    build: impl FnOnce(&mut Window, &mut App) -> Entity<V> + 'static,
+) -> WindowHandle<Root> {
     let title = title.into();
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: min_size,
+        is_resizable: resizable,
         titlebar: Some(TitlebarOptions {
             title: Some(title.clone()),
             ..Default::default()
@@ -985,18 +1009,56 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
             root.into_any_element()
         }
     };
-    let Some(scope) = theme.scope() else {
+    let scope = theme.scope();
+    // A stored 1.0 (or anything that rounds to no change) reads as
+    // follow-app, so the wrapper only turns on for a real override.
+    let rem_scale = theme
+        .font_scale
+        .map(|s| s.clamp(palette::PANEL_FONT_SCALE_MIN, palette::PANEL_FONT_SCALE_MAX))
+        .filter(|s| (s - 1.0).abs() > 0.001);
+    if scope.is_none() && rem_scale.is_none() {
         return frame();
-    };
-    let child = palette::scoped(&scope, frame);
-    Themed { scope, child }.into_any_element()
+    }
+    // Build the element under both channels, so a scoped color and a
+    // hand-rolled row's `scaled_px` bake in at construction; the wrapper
+    // re-applies them through each render phase below.
+    let child = panel_env(scope.as_ref(), rem_scale, frame);
+    Themed {
+        scope,
+        rem_scale,
+        child,
+    }
+    .into_any_element()
 }
 
-/// The element that carries a panel's palette scope through the render
-/// phases. A pure pass-through otherwise: the child's layout is its
-/// layout.
+/// Run `f` under a panel's palette scope and rem scale, whichever are set.
+/// Both the build and the three render phases go through here so a scope
+/// color and a `scaled_px` row read the same values every time.
+fn panel_env<R>(
+    scope: Option<&palette::Scope>,
+    rem_scale: Option<f32>,
+    f: impl FnOnce() -> R,
+) -> R {
+    let scaled = move || match rem_scale {
+        Some(s) => palette::rem_scaled(s, f),
+        None => f(),
+    };
+    match scope {
+        Some(scope) => palette::scoped(scope, scaled),
+        None => scaled(),
+    }
+}
+
+/// The element that carries a panel's palette scope and font scale through
+/// the render phases. A pure pass-through for layout; the scope re-applies
+/// through the thread-local channel while the font scale rides two rails at
+/// once - the window rem (for text and the vendored table, which read it)
+/// and the [`palette::rem_scaled`] thread-local (for the hand-rolled rows
+/// built without a `Window`). The two stay in step because both derive from
+/// the same panel multiplier.
 struct Themed {
-    scope: palette::Scope,
+    scope: Option<palette::Scope>,
+    rem_scale: Option<f32>,
     child: AnyElement,
 }
 
@@ -1019,7 +1081,20 @@ impl Element for Themed {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        let layout_id = palette::scoped(&self.scope, || self.child.request_layout(window, cx));
+        // Layout is where `.text_xs` and the table's row height resolve the
+        // rem, but `with_rem_size` is paint-only, so override the base the
+        // way the window root does and put it back after the subtree lays
+        // out. No override is active here, so the base is the app size.
+        let base = window.rem_size();
+        if let Some(scale) = self.rem_scale {
+            window.set_rem_size(base * scale);
+        }
+        let layout_id = panel_env(self.scope.as_ref(), self.rem_scale, || {
+            self.child.request_layout(window, cx)
+        });
+        if self.rem_scale.is_some() {
+            window.set_rem_size(base);
+        }
         (layout_id, ())
     }
 
@@ -1032,8 +1107,15 @@ impl Element for Themed {
         window: &mut Window,
         cx: &mut App,
     ) {
-        palette::scoped(&self.scope, || {
-            self.child.prepaint(window, cx);
+        let scope = self.scope.as_ref();
+        let rem_scale = self.rem_scale;
+        let child = &mut self.child;
+        // `with_rem_size` no-ops on None, so the unscaled panel pays nothing.
+        let rem = rem_scale.map(|scale| window.rem_size() * scale);
+        window.with_rem_size(rem, |window| {
+            panel_env(scope, rem_scale, || {
+                child.prepaint(window, cx);
+            });
         });
     }
 
@@ -1047,7 +1129,13 @@ impl Element for Themed {
         window: &mut Window,
         cx: &mut App,
     ) {
-        palette::scoped(&self.scope, || self.child.paint(window, cx));
+        let scope = self.scope.as_ref();
+        let rem_scale = self.rem_scale;
+        let child = &mut self.child;
+        let rem = rem_scale.map(|scale| window.rem_size() * scale);
+        window.with_rem_size(rem, |window| {
+            panel_env(scope, rem_scale, || child.paint(window, cx));
+        });
     }
 }
 
@@ -1142,6 +1230,16 @@ impl IntoElement for WindowTint {
 pub fn setting_row(
     label: &'static str,
     description: Option<&'static str>,
+    control: impl IntoElement,
+) -> Div {
+    setting_row_dyn(label, description.map(SharedString::from), control)
+}
+
+/// [`setting_row`] with a built description, for the rare row whose note
+/// carries live numbers rather than fixed copy.
+pub fn setting_row_dyn(
+    label: &'static str,
+    description: Option<SharedString>,
     control: impl IntoElement,
 ) -> Div {
     div()
@@ -1280,13 +1378,9 @@ pub fn value_slider<P: 'static>(
         )
 }
 
-/// An on/off switch: a pill track, the knob in the accent on the far side
-/// while on.
-pub fn toggle<P: 'static>(
-    on: bool,
-    on_change: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
-    cx: &mut Context<P>,
-) -> Div {
+/// The switch pill and knob without any interaction, shared by [`toggle`] and
+/// [`toggle_locked`].
+fn toggle_track(on: bool) -> Div {
     div()
         .w(px(34.))
         .h(px(18.))
@@ -1297,16 +1391,31 @@ pub fn toggle<P: 'static>(
         .items_center()
         .when(on, |d| d.justify_end())
         .p(px(2.))
-        .cursor_pointer()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _, _, cx| on_change(this, !on, cx)),
-        )
         .child(div().size(px(14.)).rounded_full().bg(if on {
             palette::accent()
         } else {
             palette::text_faint()
         }))
+}
+
+/// An on/off switch: a pill track, the knob in the accent on the far side
+/// while on.
+pub fn toggle<P: 'static>(
+    on: bool,
+    on_change: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    toggle_track(on).cursor_pointer().on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |this, _, _, cx| on_change(this, !on, cx)),
+    )
+}
+
+/// A [`toggle`] the user cannot flip: dimmed and inert, the same shape as the
+/// live switch. For a setting the app is holding at a value, like the watch
+/// switch a library grows too large to arm.
+pub fn toggle_locked(on: bool) -> Div {
+    toggle_track(on).opacity(0.5)
 }
 
 /// How long a run of keystrokes stays one type-ahead phrase: a pause past
@@ -1662,10 +1771,14 @@ impl Render for PopoutHost {
                         .update(cx, |player, _| player.toggle_pause());
                 }))
                 .on_action(cx.listener(|this, _: &SeekBackward, _, cx| {
-                    this.state.player.update(cx, |player, _| player.seek_by(-5.0));
+                    this.state
+                        .player
+                        .update(cx, |player, _| player.seek_by(-5.0));
                 }))
                 .on_action(cx.listener(|this, _: &SeekForward, _, cx| {
-                    this.state.player.update(cx, |player, _| player.seek_by(5.0));
+                    this.state
+                        .player
+                        .update(cx, |player, _| player.seek_by(5.0));
                 }))
                 .bg(palette::bg_elevated())
                 .text_color(palette::text_bright())

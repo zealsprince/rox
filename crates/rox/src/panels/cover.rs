@@ -434,15 +434,21 @@ impl Panel for CoverArtPanel {
         // The config block: the panel's quick entries and the settings
         // window, apart from the core panel items.
         let menu = self.config_menu(menu, window, cx);
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, _window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            CoverArtPanel::new(state, config, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, _window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                CoverArtPanel::new(state, config, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),

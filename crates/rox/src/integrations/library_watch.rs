@@ -50,61 +50,60 @@ impl LibraryWatcher {
     /// unplugged drive) is skipped, the others still watched.
     pub fn new(roots: &[PathBuf]) -> Option<LibraryWatcher> {
         let (tx, events) = async_channel::unbounded();
-        let mut debouncer = new_debouncer(
-            DEBOUNCE,
-            None,
-            move |result: DebounceEventResult| {
-                // Runs on the debouncer's own thread. Access events (a plain
-                // read, the file we just played) never change the catalog, so
-                // they are dropped here; create, modify, and remove carry the
-                // paths a rescan needs to converge. Errors just skip the batch;
-                // the next real change re-triggers the sync.
-                let Ok(batch) = result else {
-                    return;
-                };
-                let mut paths: Vec<PathBuf> = Vec::new();
-                let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
-                for event in batch {
-                    if matches!(event.kind, EventKind::Access(_)) {
+        let mut debouncer = new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
+            // Runs on the debouncer's own thread. Access events (a plain
+            // read, the file we just played) never change the catalog, so
+            // they are dropped here; create, modify, and remove carry the
+            // paths a rescan needs to converge. Errors just skip the batch;
+            // the next real change re-triggers the sync.
+            let Ok(batch) = result else {
+                return;
+            };
+            let mut paths: Vec<PathBuf> = Vec::new();
+            let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
+            for event in batch {
+                if matches!(event.kind, EventKind::Access(_)) {
+                    continue;
+                }
+                // The debouncer correlates a rename into a single Both
+                // event carrying [from, to]. Carry that as a pair so the
+                // sync moves the row and keeps its id; a Both that did not
+                // land exactly two paths is not a pair we can trust, so it
+                // falls back into the plain path list.
+                if matches!(
+                    event.kind,
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+                ) {
+                    if let [from, to] = event.paths.as_slice() {
+                        // The writer's commit renames its working clone
+                        // over the original. That pair is a modify of the
+                        // target, not a real rename, so it rides `paths`
+                        // where the library's self-write filter can drop
+                        // it; carried as a rename it would slip past the
+                        // filter and force a reload per written file.
+                        if writer::is_clone_path(from) {
+                            paths.push(to.clone());
+                        } else {
+                            renames.push((from.clone(), to.clone()));
+                        }
                         continue;
                     }
-                    // The debouncer correlates a rename into a single Both
-                    // event carrying [from, to]. Carry that as a pair so the
-                    // sync moves the row and keeps its id; a Both that did not
-                    // land exactly two paths is not a pair we can trust, so it
-                    // falls back into the plain path list.
-                    if matches!(event.kind, EventKind::Modify(ModifyKind::Name(RenameMode::Both))) {
-                        if let [from, to] = event.paths.as_slice() {
-                            // The writer's commit renames its working clone
-                            // over the original. That pair is a modify of the
-                            // target, not a real rename, so it rides `paths`
-                            // where the library's self-write filter can drop
-                            // it; carried as a rename it would slip past the
-                            // filter and force a reload per written file.
-                            if writer::is_clone_path(from) {
-                                paths.push(to.clone());
-                            } else {
-                                renames.push((from.clone(), to.clone()));
-                            }
-                            continue;
-                        }
-                    }
-                    // The writer's clones themselves (created, written,
-                    // removed on a failed commit) are never library rows;
-                    // drop them here so they cannot pump empty syncs.
-                    paths.extend(
-                        event
-                            .paths
-                            .iter()
-                            .filter(|p| !writer::is_clone_path(p))
-                            .cloned(),
-                    );
                 }
-                if !paths.is_empty() || !renames.is_empty() {
-                    let _ = tx.try_send(WatchBatch { paths, renames });
-                }
-            },
-        )
+                // The writer's clones themselves (created, written,
+                // removed on a failed commit) are never library rows;
+                // drop them here so they cannot pump empty syncs.
+                paths.extend(
+                    event
+                        .paths
+                        .iter()
+                        .filter(|p| !writer::is_clone_path(p))
+                        .cloned(),
+                );
+            }
+            if !paths.is_empty() || !renames.is_empty() {
+                let _ = tx.try_send(WatchBatch { paths, renames });
+            }
+        })
         .ok()?;
         let mut watched = 0;
         for root in roots {

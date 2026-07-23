@@ -1206,15 +1206,26 @@ macro_rules! transport_panel {
                 // The config block: the panel's quick entries and the
                 // settings window, apart from the core panel items.
                 let menu = self.config_menu(menu, cx);
-                let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
+                let menu = panel_settings::rename_item(
+                    menu,
+                    &cx.entity(),
+                    self.tab_panel.clone(),
+                    _window,
+                    cx,
+                );
                 let menu = panel_settings::settings_item(menu, &cx.entity());
-                let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, _window, cx| {
-                    let (state, config) = {
-                        let panel = this.read(cx);
-                        (panel.state.clone(), panel.config.clone())
-                    };
-                    <$panel>::new(state, config, cx)
-                });
+                let menu = panel::duplicate_item(
+                    menu,
+                    &cx.entity(),
+                    self.tab_panel.clone(),
+                    |this, _window, cx| {
+                        let (state, config) = {
+                            let panel = this.read(cx);
+                            (panel.state.clone(), panel.config.clone())
+                        };
+                        <$panel>::new(state, config, cx)
+                    },
+                );
                 panel::popout_item(
                     menu,
                     &cx.entity(),

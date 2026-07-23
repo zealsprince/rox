@@ -8,3 +8,7 @@ file name (without `.json`) names it when the bundle carries no name of its own.
 To add one: set up the workspace in the app, open Settings, Workspace, export
 it, then drop the file here and rebuild. Files that don't parse, or that come
 from a newer bundle format, are skipped.
+
+A `.png` named like the bundle's file (`Foobar.json` -> `Foobar.png`) becomes
+the preview picture on the welcome window's quick-start tiles. A bundle
+without one shows a placeholder there.

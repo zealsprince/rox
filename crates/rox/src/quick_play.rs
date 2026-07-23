@@ -52,8 +52,15 @@ const PAGE_ROWS: isize = 10;
 /// track it holds instead of a single file.
 #[derive(Clone, Copy)]
 enum Head {
-    Artist { album_artist: u32, row: u32 },
-    Album { album_artist: u32, album: u32, row: u32 },
+    Artist {
+        album_artist: u32,
+        row: u32,
+    },
+    Album {
+        album_artist: u32,
+        album: u32,
+        row: u32,
+    },
 }
 
 /// One resolved list row, ready to render: a track or a group head, already
@@ -189,18 +196,21 @@ impl QuickPlay {
     }
 
     /// Each result row's height, taller when comfortable rows are on and
-    /// again when the subtitle line shows.
+    /// again when the subtitle line shows. Scaled by the app font like the
+    /// track-list panels, so the modal's rows track the text and the list
+    /// height that feeds off this stays in step.
     fn row_h(&self) -> f32 {
         let base = if self.config.comfortable {
             ROW_H_COMFORTABLE
         } else {
             ROW_H
         };
-        if self.config.show_subtitle {
+        let base = if self.config.show_subtitle {
             base + SUBTITLE_H
         } else {
             base
-        }
+        };
+        base * palette::font_scale()
     }
 
     /// Let the search box's suggestion menu take an action first; true
@@ -393,7 +403,10 @@ impl QuickPlay {
                 cover_paths
                     .entry(id)
                     .or_insert_with(|| {
-                        library.paths_for(&[id]).ok().and_then(|mut paths| paths.pop())
+                        library
+                            .paths_for(&[id])
+                            .ok()
+                            .and_then(|mut paths| paths.pop())
                     })
                     .clone()
             };
@@ -458,7 +471,9 @@ impl QuickPlay {
         // Thumbnails, once the library borrow is dropped so the store updates.
         let covers: Vec<Option<Thumb>> = rows
             .iter()
-            .map(|info| track_columns::cover_thumb(&self.state, info.path.as_deref(), show_cover, cx))
+            .map(|info| {
+                track_columns::cover_thumb(&self.state, info.path.as_deref(), show_cover, cx)
+            })
             .collect();
         let row_h = self.row_h();
         rows.into_iter()

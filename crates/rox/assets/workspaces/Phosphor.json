@@ -1,0 +1,535 @@
+{
+  "version": 1,
+  "name": "Phosphor",
+  "layouts": [
+    {
+      "name": "Phosphor",
+      "dump": {
+        "version": 1,
+        "center": {
+          "panel_name": "StackPanel",
+          "children": [
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "menu",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_width": 24.0,
+                          "max_height": 24.0,
+                          "align": "left"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "search",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_height": 24.0,
+                          "chips": "inline"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "window controls",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_width": 96.0,
+                          "max_height": 24.0,
+                          "min_width": 96.0,
+                          "style": "icons",
+                          "mini": true,
+                          "align": "right"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    28.0,
+                    936.0,
+                    96.0
+                  ],
+                  "axis": 0
+                }
+              }
+            },
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "folder tree",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "cover": "none",
+                          "folders": "dim",
+                          "songs": "dim",
+                          "follow_playing": true,
+                          "resume_playing": false,
+                          "smooth_follow": true
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "library",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "query": "",
+                          "search": false,
+                          "query_source": "global",
+                          "density": "compact",
+                          "headers": "compact",
+                          "group_by": "album",
+                          "column_layout": [
+                            {
+                              "key": "track",
+                              "width": 40.0
+                            },
+                            {
+                              "key": "title",
+                              "width": 380.0
+                            },
+                            {
+                              "key": "artist",
+                              "width": 220.0
+                            },
+                            {
+                              "key": "duration",
+                              "width": 60.0
+                            }
+                          ],
+                          "sort_key": null,
+                          "sort_desc": false,
+                          "follow_playing": true,
+                          "resume_playing": false,
+                          "smooth_follow": false,
+                          "art_rounding": 0.0,
+                          "header_art": false,
+                          "header_year": true,
+                          "header_details": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    280.0,
+                    780.0
+                  ],
+                  "axis": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "seek",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "max_height": 20.0,
+                      "timings": true,
+                      "show_total": true,
+                      "scrobble_marker": false
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "spectrum",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "anchor": true,
+                      "max_height": 140.0,
+                      "freq_lo": 30.0,
+                      "freq_hi": 16000.0,
+                      "bar_width": 2.0,
+                      "bar_gap": 1.0,
+                      "fft_size": 16384,
+                      "split": false,
+                      "split_hz": 1000.0,
+                      "fft_size_hi": 4096,
+                      "gradient": false,
+                      "outline": false,
+                      "outline_width": 1.0,
+                      "caps": true,
+                      "freeze": false,
+                      "cap_gravity": 0.05,
+                      "labels": false
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            },
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "track info",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "anchor": true,
+                          "max_height": 24.0,
+                          "align": "left"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "playback",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_height": 24.0,
+                          "align": "right",
+                          "stop": true,
+                          "random": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "volume",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_width": 200.0,
+                          "max_height": 24.0,
+                          "align": "right",
+                          "stretch": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    554.0,
+                    306.0,
+                    200.0
+                  ],
+                  "axis": 0
+                }
+              }
+            }
+          ],
+          "info": {
+            "stack": {
+              "sizes": [
+                24.0,
+                560.0,
+                20.0,
+                110.0,
+                26.0
+              ],
+              "axis": 1
+            }
+          }
+        }
+      },
+      "size": {
+        "width": 1080.0,
+        "height": 800.0
+      }
+    },
+    {
+      "name": "Phosphor Mini",
+      "dump": {
+        "version": 1,
+        "center": {
+          "panel_name": "StackPanel",
+          "children": [
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "track info",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "anchor": true,
+                          "align": "left"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "mini toggle",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_width": 26.0,
+                          "align": "left"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    494.0,
+                    26.0
+                  ],
+                  "axis": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "spectrum",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "anchor": true,
+                      "freq_lo": 30.0,
+                      "freq_hi": 16000.0,
+                      "bar_width": 2.0,
+                      "bar_gap": 1.0,
+                      "fft_size": 8192,
+                      "split": false,
+                      "split_hz": 1000.0,
+                      "fft_size_hi": 16384,
+                      "gradient": false,
+                      "outline": false,
+                      "outline_width": 1.0,
+                      "caps": true,
+                      "freeze": false,
+                      "cap_gravity": 0.05,
+                      "labels": false
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "seek",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "max_height": 20.0,
+                      "timings": true,
+                      "show_total": false,
+                      "scrobble_marker": false
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            }
+          ],
+          "info": {
+            "stack": {
+              "sizes": [
+                28.0,
+                52.0,
+                20.0
+              ],
+              "axis": 1
+            }
+          }
+        }
+      },
+      "size": {
+        "width": 540.0,
+        "height": 120.0
+      }
+    }
+  ],
+  "primary_layout": "Phosphor",
+  "mini_layout": "Phosphor Mini",
+  "palette": {
+    "accent": "#33ff33",
+    "accent_hover": "#66ff66",
+    "highlight": "#ccffcc",
+    "border": "#0f3f0f",
+    "border_light": "#145214",
+    "text_bright": "#66ff66",
+    "text_on_accent": "#001800",
+    "bg_root": "#000000",
+    "bg_panel": "#000000",
+    "bg_elevated": "#020a02",
+    "bg_menubar": "#041004",
+    "bg_menu": "#061406",
+    "bg_control": "#082008",
+    "bg_menu_hover": "#0a280a",
+    "bg_control_active": "#0c300c",
+    "bg_control_hover": "#0e380e",
+    "bg_input": "#010401",
+    "bg_toolbar": "#020a02",
+    "text": "#33e033",
+    "text_secondary": "#2cc42c",
+    "text_dim": "#26aa26",
+    "text_muted": "#1e8a1e",
+    "text_faint": "#176a17",
+    "gridline": "#124f12"
+  },
+  "appearance": {
+    "surface_opacity": 1.0,
+    "backdrop_strength": 1.0,
+    "frame": {
+      "margin": 0.0,
+      "padding": 0.0,
+      "rounding": 0.0,
+      "border": 0.0
+    },
+    "art_theming": false,
+    "keep_dark": true,
+    "rating_style": "stars",
+    "quick_play": {
+      "show_cover": false,
+      "show_subtitle": true,
+      "show_duration": true,
+      "comfortable": false
+    },
+    "hide_menubar": true,
+    "os_decorations": false
+  }
+}

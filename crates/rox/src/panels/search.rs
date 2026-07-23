@@ -7,7 +7,6 @@
 //! come from the projection's tag values, reattached on each scan the way the
 //! play launcher does.
 
-
 use gpui::{
     div, prelude::*, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, SharedString,
     Subscription, WeakEntity, Window,
@@ -312,16 +311,22 @@ impl Panel for SearchPanel {
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let menu = self.chips_menu(menu, window, cx);
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
         // The copy carries the config; the two boxes then drive and mirror the one shared query.
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            SearchPanel::new(state, config, window, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                SearchPanel::new(state, config, window, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),

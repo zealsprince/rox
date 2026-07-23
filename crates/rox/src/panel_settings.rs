@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use gpui::{
     div, prelude::*, px, size, AnyElement, App, Bounds, Context, Div, Entity, EntityId,
-    Focusable as _, Global, Hsla, ScrollHandle, SharedString, Subscription,
-    WeakEntity, Window, WindowHandle,
+    Focusable as _, Global, Hsla, ScrollHandle, SharedString, Subscription, WeakEntity, Window,
+    WindowHandle,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -54,8 +54,10 @@ use crate::settings;
 // The frame sliders' ceilings live in settings, shared with the app
 // settings window so the per-panel and app-wide frames scrub the same
 // range, every knob running from zero (off) up to its own, in px.
+use crate::settings::ui::{
+    self as settings_ui, grid_columns, section, sidebar, small_button, SECTION_GAP,
+};
 use crate::settings::{BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX};
-use crate::settings::ui::{self as settings_ui, grid_columns, section, sidebar, small_button, SECTION_GAP};
 use rox_dock::{PanelView, TabPanel};
 
 /// The open panel settings windows, keyed by the panel they edit:
@@ -111,9 +113,15 @@ pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
         .unwrap_or((640., 480.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let state = panel.read(cx).state();
-    let handle = crate::panel::open_child_window(cx, title, bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-        cx.new(|cx| PanelSettingsWindow::new(panel.downgrade(), state, window, cx))
-    });
+    let handle = crate::panel::open_child_window(
+        cx,
+        title,
+        bounds,
+        Some(settings_ui::MIN_SIZE),
+        move |window, cx| {
+            cx.new(|cx| PanelSettingsWindow::new(panel.downgrade(), state, window, cx))
+        },
+    );
     cx.default_global::<OpenPanelSettings>()
         .0
         .insert(id, handle);
@@ -352,6 +360,7 @@ struct PanelSettingsWindow<P: PanelSettings> {
     padding_scrub: ScrubState,
     rounding_scrub: ScrubState,
     border_scrub: ScrubState,
+    font_scale_scrub: ScrubState,
     /// The size limit fields, typed in px; empty means no limit.
     min_width_input: Entity<InputState>,
     min_height_input: Entity<InputState>,
@@ -466,6 +475,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             padding_scrub: ScrubState::default(),
             rounding_scrub: ScrubState::default(),
             border_scrub: ScrubState::default(),
+            font_scale_scrub: ScrubState::default(),
             min_width_input,
             min_height_input,
             max_width_input,
@@ -665,6 +675,48 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
 
     fn reset_border(&mut self, cx: &mut Context<Self>) {
         self.update_theme(|theme| theme.border = None, cx);
+    }
+
+    /// The panel font size: the strip fraction mapped onto the multiplier
+    /// range, forked as this panel's own override over the app size. The
+    /// reset below sends it back to following the app.
+    fn set_font_scale(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        let range = palette::PANEL_FONT_SCALE_MAX - palette::PANEL_FONT_SCALE_MIN;
+        let scale = palette::PANEL_FONT_SCALE_MIN + fraction * range;
+        self.update_theme(|theme| theme.font_scale = Some(scale), cx);
+    }
+
+    fn reset_font_scale(&mut self, cx: &mut Context<Self>) {
+        self.update_theme(|theme| theme.font_scale = None, cx);
+    }
+
+    /// The panel font-size row: the multiplier over its range, a percent
+    /// readout alongside. Unset, the slider rests at 100% (follow the app
+    /// size); once the panel forks its own, an inline reset sends it back,
+    /// the frame sliders' pattern.
+    fn font_scale_row(&self, value: Option<f32>, cx: &mut Context<Self>) -> Div {
+        let min = palette::PANEL_FONT_SCALE_MIN;
+        let max = palette::PANEL_FONT_SCALE_MAX;
+        let scale = value.unwrap_or(1.0);
+        let fraction = ((scale - min) / (max - min)).clamp(0.0, 1.0);
+        let readout = format!("{}%", (scale * 100.0).round() as i32);
+        let slider =
+            panel::value_slider(&self.font_scale_scrub, fraction, readout, Self::set_font_scale, cx);
+        let row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .child(slider);
+        if value.is_some() {
+            row.child(settings_ui::icon_button(
+                icons::REFRESH_CW,
+                false,
+                cx.listener(|this, _, _, cx| this.reset_font_scale(cx)),
+            ))
+        } else {
+            row
+        }
     }
 
     /// One frame knob's slider row: the value over its 0 to `max` range,
@@ -1059,16 +1111,28 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         // when unset. Panels with their own (the lyrics panel) opt out
         // through `has_own_font` so the page never shows two.
         let font_section = (!own_font).then(|| {
+            // The section Reset drops both font overrides at once, inert
+            // until one is set; the size row also carries its own inline
+            // reset, the frame sliders' pattern.
             let reset = small_button(
                 "Reset",
                 icons::REFRESH_CW,
-                theme.font.is_none(),
-                cx.listener(|this, _, _, cx| this.update_theme(|theme| theme.font = None, cx)),
+                theme.font.is_none() && theme.font_scale.is_none(),
+                cx.listener(|this, _, _, cx| {
+                    this.update_theme(
+                        |theme| {
+                            theme.font = None;
+                            theme.font_scale = None;
+                        },
+                        cx,
+                    )
+                }),
             );
-            section(
-                "Font",
-                Some(reset.into_any_element()),
-                panel::setting_row(
+            let body = div()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_MD)
+                .child(panel::setting_row(
                     "Font",
                     Some("The panel's typeface; default follows the app font"),
                     panel::font_picker(
@@ -1079,9 +1143,13 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                         },
                         cx,
                     ),
-                ),
-            )
-            .into_any_element()
+                ))
+                .child(panel::setting_row(
+                    "Font Size",
+                    Some("The panel's text size relative to the app font; rows scale with it"),
+                    self.font_scale_row(theme.font_scale, cx),
+                ));
+            section("Font", Some(reset.into_any_element()), body).into_any_element()
         });
 
         div()

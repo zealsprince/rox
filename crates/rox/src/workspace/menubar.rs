@@ -10,6 +10,20 @@ impl Workspace {
         match action {
             MenuAction::NewWindow => crate::open_workspace(cx),
             MenuAction::EmptyWindow => crate::open_workspace_with(WorkspaceStart::Empty, cx),
+            MenuAction::TogglePlayback => {
+                self.state
+                    .player
+                    .update(cx, |player, _| player.toggle_pause());
+            }
+            MenuAction::Stop => {
+                self.state.player.update(cx, |player, cx| player.stop(cx));
+            }
+            MenuAction::Next => {
+                self.state.player.update(cx, |player, _| player.next());
+            }
+            MenuAction::Previous => {
+                self.state.player.update(cx, |player, _| player.prev());
+            }
             MenuAction::OpenSettings => crate::settings::window::open(
                 self.state.clone(),
                 cx.entity().downgrade(),
@@ -27,6 +41,7 @@ impl Workspace {
             }
             MenuAction::OpenStats => crate::stats_window::open(self.state.clone(), cx),
             MenuAction::OpenWelcome => crate::startup::welcome_window::open(self.state.clone(), cx),
+            MenuAction::OpenAbout => crate::startup::about_window::open(self.state.clone(), cx),
             MenuAction::ToggleMenubar => {
                 let on = !settings::hide_menubar();
                 settings::set_hide_menubar(on, cx);
@@ -37,6 +52,11 @@ impl Workspace {
                 settings::set_os_decorations(on);
                 Settings::update(move |s| s.os_decorations = on);
                 apply_decorations(cx);
+            }
+            MenuAction::ToggleArtTheming => {
+                let on = !palette::art_theming();
+                palette::set_art_theming(on, cx);
+                Settings::update(move |s| s.art_theming = on);
             }
             MenuAction::ImportWorkspace => self.import_workspace(window, cx),
             MenuAction::ToggleQuitToTray => {
@@ -294,8 +314,11 @@ impl Workspace {
             MenuAction::ToggleMenubar => settings::hide_menubar(),
             MenuAction::ToggleDecorations => settings::os_decorations(),
             MenuAction::ToggleQuitToTray => settings::quit_to_tray(),
+            MenuAction::ToggleArtTheming => palette::art_theming(),
             _ => false,
         };
+        let is_playing = self.state.player.read(cx).is_playing();
+        let (label, icon) = menu_item_display(item, is_playing);
         div()
             .px(tokens::SPACE_MD)
             .py(tokens::SPACE_XS)
@@ -316,11 +339,11 @@ impl Workspace {
             .gap(tokens::SPACE_SM)
             .child(
                 svg()
-                    .path(item.icon)
+                    .path(icon)
                     .size_3p5()
                     .text_color(palette::text_muted()),
             )
-            .child(item.label)
+            .child(label)
             // The trailing slot: the row's keybinding, or the check while
             // a toggle row is on. The spacer pushes it to the right edge.
             .when_some(shortcut_for(action), |d, keys| {

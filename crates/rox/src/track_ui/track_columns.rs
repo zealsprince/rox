@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use gpui::{
-    div, img, prelude::*, px, AnyElement, Context, Div, Entity, MouseButton, ObjectFit, svg,
+    div, img, prelude::*, px, svg, AnyElement, Context, Div, Entity, MouseButton, ObjectFit,
     SharedString, Stateful, Window,
 };
 use gpui_component::menu::PopupMenu;
@@ -22,8 +22,11 @@ use crate::panels::library::fmt_ms;
 use crate::settings::ui as settings_ui;
 use crate::thumbs::Thumb;
 
-/// Every track row is this tall; the album block is two of them, so the
-/// cover tile spans a two-row square. Matches each panel's own row height.
+/// Every track row is this tall at the stock font size; the album block is
+/// two of them, so the cover tile spans a two-row square. Matches each
+/// panel's own row height. The call sites run it through
+/// [`palette::scaled_px`] so headings and tiles grow with the app font, the
+/// same way the library table scales its rows.
 const ROW_H: f32 = 30.;
 
 /// One toggleable column: its config key, its menu and settings label, and
@@ -111,16 +114,20 @@ pub fn cell(key: &str, c: &Cell, state: &AppState) -> Option<Div> {
         // A zero length reads as unknown, not a real 0:00 (the scanner
         // leaves it zero when it can't read a file's tags), so the slot
         // stays blank like the year does, keeping its width for alignment.
-        "duration" => div()
-            .flex_none()
-            .text_color(palette::text_muted())
-            .child(SharedString::from(if c.duration_ms == 0 {
-                String::new()
-            } else {
-                fmt_ms(c.duration_ms)
-            })),
+        "duration" => {
+            div()
+                .flex_none()
+                .text_color(palette::text_muted())
+                .child(SharedString::from(if c.duration_ms == 0 {
+                    String::new()
+                } else {
+                    fmt_ms(c.duration_ms)
+                }))
+        }
         "rating" => crate::track_ui::track_cells::rating(state.clone(), c.track_id, c.rating),
-        "favourite" => crate::track_ui::track_cells::favourite(state.clone(), c.track_id, c.favourite),
+        "favourite" => {
+            crate::track_ui::track_cells::favourite(state.clone(), c.track_id, c.favourite)
+        }
         _ => return None,
     })
 }
@@ -130,7 +137,7 @@ pub fn cell(key: &str, c: &Cell, state: &AppState) -> Option<Div> {
 /// a landing cover fills without shifting the row. Shared with the library
 /// table's cover column, which draws outside [`cell`].
 pub fn cover_cell(cover: &Option<Thumb>) -> Div {
-    let side = px(ROW_H - 6.);
+    let side = palette::scaled_px(ROW_H - 6.);
     let content: AnyElement = match cover {
         Some(Thumb::Ready(image)) => img(image.clone())
             .size(side)
@@ -250,7 +257,7 @@ pub fn album_group(run: &[GroupTrack]) -> AlbumGroup {
 /// part shown.
 fn look() -> group_head::HeadLook {
     group_head::HeadLook {
-        tile_side: px(ROW_H * 2.),
+        tile_side: palette::scaled_px(ROW_H * 2.),
         show_art: true,
         show_year: true,
         show_details: true,
@@ -284,7 +291,13 @@ fn tile<P: 'static>(
             // No album tag is the unknown bucket, not a real album: keep the
             // placeholder rather than a loose track's art.
             let path = (!group.album.is_empty())
-                .then(|| state.library.read(cx).paths_for(&[group.first_track_id]).ok())
+                .then(|| {
+                    state
+                        .library
+                        .read(cx)
+                        .paths_for(&[group.first_track_id])
+                        .ok()
+                })
                 .flatten()
                 .and_then(|mut paths| paths.pop());
             group.art = Some(path.clone());
@@ -295,7 +308,7 @@ fn tile<P: 'static>(
         Some(path) => state.thumbs.update(cx, |thumbs, cx| thumbs.get(&path, cx)),
         None => Thumb::Missing,
     };
-    group_head::tile(thumb, px(ROW_H * 2.), 0., bottom)
+    group_head::tile(thumb, palette::scaled_px(ROW_H * 2.), 0., bottom)
 }
 
 /// An album run's name line. Expanded opens the two-row cover tile and gives
@@ -314,7 +327,7 @@ pub fn album_name_row<P: 'static>(
         .id(("album-head", ix))
         .relative()
         .w_full()
-        .h(px(ROW_H))
+        .h(palette::scaled_px(ROW_H))
         .bg(palette::bg_elevated())
         .when_some(tile, |d, tile| d.child(tile))
         .child(group_head::name_content(&head, &look(), expanded))
@@ -334,7 +347,7 @@ pub fn album_meta_row<P: 'static>(
         .id(("album-meta", ix))
         .relative()
         .w_full()
-        .h(px(ROW_H))
+        .h(palette::scaled_px(ROW_H))
         .bg(palette::bg_elevated())
         .child(tile)
         .child(group_head::meta_content(&head, &look()))

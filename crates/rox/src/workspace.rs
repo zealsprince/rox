@@ -96,18 +96,24 @@ impl Global for WorkspaceWindows {}
 /// editors) keep the OS chrome. Called from the Window menu toggle and
 /// the settings window's Appearance page.
 pub(crate) fn apply_decorations(cx: &mut App) {
-    let mode = settings::window_decorations();
-    for (handle, _) in cx.default_global::<WorkspaceWindows>().0.clone() {
-        handle
-            .update(cx, |_, window, _| window.request_decorations(mode))
-            .ok();
-    }
-    // Every window repaints, not just the renegotiated ones: the settings
-    // window's Appearance toggle reads the flag live and would show stale
-    // otherwise.
-    for window in cx.windows() {
-        window.update(cx, |_, window, _| window.refresh()).ok();
-    }
+    // Deferred out of the caller's update: the menu toggle runs inside the
+    // very window this renegotiates, and a window can't be updated while it
+    // is already on the update stack - the re-entrant update errs and the
+    // window silently keeps its old chrome until restart.
+    cx.defer(|cx| {
+        let mode = settings::window_decorations();
+        for (handle, _) in cx.default_global::<WorkspaceWindows>().0.clone() {
+            handle
+                .update(cx, |_, window, _| window.request_decorations(mode))
+                .ok();
+        }
+        // Every window repaints, not just the renegotiated ones: the settings
+        // window's Appearance toggle reads the flag live and would show stale
+        // otherwise.
+        for window in cx.windows() {
+            window.update(cx, |_, window, _| window.refresh()).ok();
+        }
+    });
 }
 
 /// Tear down a workspace window's app-level state: persist its layout, drop
@@ -177,6 +183,23 @@ pub(crate) fn front_workspace(cx: &mut App) -> Option<(AnyWindowHandle, AppState
         let state = ws.upgrade()?.read(cx).state.clone();
         Some((*handle, state))
     })
+}
+
+/// Apply a named workspace to the frontmost workspace window from app
+/// level, the same path the settings window's Apply takes. The welcome
+/// window's quick-start tiles land here: they live in their own OS window,
+/// with no workspace of their own to call into.
+pub(crate) fn apply_workspace_to_front(name: &str, cx: &mut App) {
+    let open = cx.default_global::<WorkspaceWindows>().0.clone();
+    let found = open
+        .into_iter()
+        .find_map(|(handle, ws)| ws.upgrade().map(|ws| (handle, ws)));
+    if let Some((handle, ws)) = found {
+        let name = name.to_string();
+        let _ = handle.update(cx, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.apply_workspace(&name, window, cx));
+        });
+    }
 }
 
 /// Whether `window` is one of the tracked workspace windows, told apart
@@ -528,11 +551,20 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
 pub(crate) enum MenuAction {
     NewWindow,
     EmptyWindow,
+    /// Toggle play/pause on the current track. Labeled "Play"; the trailing
+    /// Space shortcut matches the global [`TogglePlayback`] binding.
+    TogglePlayback,
+    Stop,
+    Next,
+    Previous,
     OpenSettings,
     OpenStats,
     OpenWelcome,
+    OpenAbout,
     ToggleMenubar,
     ToggleDecorations,
+    /// Flip song theming: the playing track's art tinting the palette.
+    ToggleArtTheming,
     /// Pick a workspace file and add it to the collection.
     ImportWorkspace,
     /// Open a catalog panel with its default config, landing where its
@@ -635,11 +667,42 @@ pub(crate) const MENUS: &[Menu] = &[
                 icon: icons::INFO,
                 action: MenuAction::OpenWelcome,
             }),
+            MenuEntry::Item(MenuItem {
+                label: "About",
+                icon: icons::LOGO,
+                action: MenuAction::OpenAbout,
+            }),
             MenuEntry::Section("Session"),
             MenuEntry::Item(MenuItem {
                 label: "Exit",
                 icon: icons::CLOSE,
                 action: MenuAction::Quit,
+            }),
+        ],
+    },
+    Menu {
+        label: "Playback",
+        entries: &[
+            MenuEntry::Item(MenuItem {
+                label: "Play",
+                icon: icons::PLAY,
+                action: MenuAction::TogglePlayback,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Stop",
+                icon: icons::STOP,
+                action: MenuAction::Stop,
+            }),
+            MenuEntry::Section("Track"),
+            MenuEntry::Item(MenuItem {
+                label: "Next",
+                icon: icons::SKIP_FORWARD,
+                action: MenuAction::Next,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Previous",
+                icon: icons::SKIP_BACK,
+                action: MenuAction::Previous,
             }),
         ],
     },
@@ -666,6 +729,11 @@ pub(crate) const MENUS: &[Menu] = &[
                 label: "OS Decorations",
                 icon: icons::APP_WINDOW,
                 action: MenuAction::ToggleDecorations,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Song Theming",
+                icon: icons::DISC,
+                action: MenuAction::ToggleArtTheming,
             }),
             MenuEntry::Section("Session"),
             MenuEntry::Item(MenuItem {
@@ -741,8 +809,19 @@ pub(crate) const MENUS: &[Menu] = &[
 /// The keybinding a dropdown row trails, Zed-style, matching [`init`]'s
 /// bindings. Only the primary chord shows; secondaries like Ctrl+I stay
 /// off the label.
+/// The label and icon a dropdown row shows, read live. Most rows are static,
+/// but the Play/Pause toggle flips both to match the player: "Pause" while
+/// playing, "Play" while stopped or paused.
+pub(crate) fn menu_item_display(item: MenuItem, is_playing: bool) -> (&'static str, &'static str) {
+    match item.action {
+        MenuAction::TogglePlayback if is_playing => ("Pause", icons::PAUSE),
+        _ => (item.label, item.icon),
+    }
+}
+
 pub(crate) fn shortcut_for(action: MenuAction) -> Option<&'static str> {
     match action {
+        MenuAction::TogglePlayback => Some("Space"),
         MenuAction::OpenSettings => Some(if cfg!(target_os = "macos") {
             "Cmd-,"
         } else {
@@ -825,13 +904,6 @@ pub struct Workspace {
     /// `mini_layout`; a workspace save captures into it. None is an unnamed
     /// arrangement.
     active_layout: Option<String>,
-    /// The preset names the empty-window launcher lists, read once when
-    /// the launcher shows and dropped when the dock fills again, so the
-    /// per-frame render never touches the settings file.
-    empty_presets: Option<Vec<String>>,
-    /// The workspace names the empty-window launcher lists, cached the same
-    /// way as the presets above.
-    empty_workspaces: Option<Vec<String>>,
     /// The layout save/apply dialog while it is up; dropped on close.
     layout_dialog: Option<LayoutDialog>,
     /// Submits the save dialog's name field on Enter.
@@ -1271,8 +1343,6 @@ impl Workspace {
             primary_layout,
             mini_layout,
             active_layout,
-            empty_presets: None,
-            empty_workspaces: None,
             layout_dialog: None,
             _layout_input: None,
             quick_play: None,
@@ -1690,8 +1760,8 @@ impl Workspace {
                     cx.background_executor()
                         .timer(Duration::from_millis(50))
                         .await;
-                    let Ok(state) =
-                        this.update_in(cx, |_, window, _| (window.is_fullscreen(), window.bounds()))
+                    let Ok(state) = this
+                        .update_in(cx, |_, window, _| (window.is_fullscreen(), window.bounds()))
                     else {
                         return;
                     };
@@ -2321,39 +2391,18 @@ impl Workspace {
 
     /// The empty dock's launcher, floated mid-window: an empty tab group
     /// renders to nothing, so without this a blank window gives no way in.
-    /// The rox mark heads it, then the whole looks - shipped and saved
-    /// workspaces and layout presets - lead, with the panel catalog under
-    /// a rule below. A layout or workspace applies straight away, no
-    /// confirm, because a blank window has nothing to replace. The look
-    /// pickers only belong here, in the empty state: applying one replaces
-    /// the whole window, so they never show once panels are in.
+    /// The rox mark heads it, then the panel catalog, one titled section
+    /// per group. The whole-look pickers live in the welcome window's
+    /// quick-start tiles now; this stays the piece-by-piece way in.
     fn empty_hint(&mut self, cx: &mut Context<Self>) -> Div {
-        // Read once when the launcher shows; the render loop must not
-        // touch the settings file per frame.
-        let presets = self
-            .empty_presets
-            .get_or_insert_with(|| {
-                crate::settings::layouts::all(&Settings::load())
-                    .into_iter()
-                    .map(|preset| preset.name)
-                    .collect()
-            })
-            .clone();
-        let workspaces = self
-            .empty_workspaces
-            .get_or_insert_with(|| {
-                crate::workspaces::all(&Settings::load())
-                    .into_iter()
-                    .map(|entry| entry.bundle.name)
-                    .collect()
-            })
-            .clone();
-        let has_presets = !presets.is_empty();
-        let has_workspaces = !workspaces.is_empty();
-
         div()
             .absolute()
             .inset_0()
+            // An empty dock paints no surface of its own, so without this
+            // the launcher's copy would sit straight on the backdrop art.
+            // The same page surface the settings pages hold: opaque at
+            // full surface opacity, thinning with the rest.
+            .bg(palette::bg_elevated())
             .flex()
             .flex_col()
             .items_center()
@@ -2389,54 +2438,14 @@ impl Workspace {
                                     )
                                     .child(
                                         div().text_xs().text_color(palette::text_muted()).child(
-                                            "Start from a workspace, or build your own by adding your first panel",
+                                            "Add your first panel to start building; or chose a preset \
+                                            under Workspace > Apply Workspace",
                                         ),
                                     ),
                             ),
                     )
-                    // The whole looks lead: from a blank window, dressing
-                    // it in a saved arrangement is the bigger move than
-                    // adding one panel at a time. They read as headings,
-                    // not group labels, because picking one replaces the
-                    // whole window.
-                    .when(has_workspaces, |d| {
-                        d.child(launcher_section(
-                            "Workspaces",
-                            true,
-                            workspaces.into_iter().map(|name| {
-                                let apply = name.clone();
-                                launcher_tile(
-                                    SharedString::from(name),
-                                    icons::APP_WINDOW,
-                                    cx.listener(move |this, _, window, cx| {
-                                        this.apply_workspace(&apply, window, cx);
-                                    }),
-                                )
-                            }),
-                        ))
-                    })
-                    .when(has_presets, |d| {
-                        d.child(launcher_section(
-                            "Layouts",
-                            true,
-                            presets.into_iter().map(|name| {
-                                let apply = name.clone();
-                                launcher_tile(
-                                    SharedString::from(name),
-                                    icons::LAYOUT_DASHBOARD,
-                                    cx.listener(move |this, _, window, cx| {
-                                        this.apply_named_layout(&apply, window, cx);
-                                    }),
-                                )
-                            }),
-                        ))
-                    })
-                    // The panel catalog sits below the rule: the piece-by-
-                    // piece way in, one titled section per group; the bare
-                    // center run reads under a plain "Panels".
-                    .when(has_workspaces || has_presets, |d| {
-                        d.child(launcher_divider())
-                    })
+                    // The panel catalog: one titled section per group; the
+                    // bare center run reads under a plain "Panels".
                     .children(catalog::CATALOG.iter().map(|section| {
                         let tiles = section.panels.iter().map(|def| {
                             launcher_tile(
@@ -2449,7 +2458,6 @@ impl Workspace {
                         });
                         launcher_section(
                             section.group.map(|(label, _)| label).unwrap_or("Panels"),
-                            false,
                             tiles,
                         )
                     })),
@@ -2760,39 +2768,21 @@ fn tile_row() -> Div {
         .gap(tokens::SPACE_SM)
 }
 
-/// A titled launcher block: a centered header over its wrap of tiles.
-/// `prominent` reads the header as a heading in full-strength text for the
-/// whole-look sections; the panel groups stay muted and small so the tiles
-/// carry the weight.
-fn launcher_section(
-    header: impl Into<SharedString>,
-    prominent: bool,
-    tiles: impl IntoIterator<Item = Div>,
-) -> Div {
-    let header = div().child(header.into()).map(|d| {
-        if prominent {
-            d.text_color(palette::text())
-        } else {
-            d.text_xs().text_color(palette::text_muted())
-        }
-    });
+/// A titled launcher block: a centered header over its wrap of tiles. The
+/// headers stay muted and small so the tiles carry the weight.
+fn launcher_section(header: impl Into<SharedString>, tiles: impl IntoIterator<Item = Div>) -> Div {
     div()
         .flex()
         .flex_col()
         .items_center()
         .gap(tokens::SPACE_SM)
-        .child(header)
+        .child(
+            div()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(header.into()),
+        )
         .child(tile_row().children(tiles))
-}
-
-/// The rule between the panel catalog and the whole-look pickers, a short
-/// centered hairline so the two halves read apart.
-fn launcher_divider() -> Div {
-    div()
-        .w(px(220.))
-        .h(px(1.))
-        .my(tokens::SPACE_XS)
-        .bg(palette::border())
 }
 
 /// A launcher tile: an icon-and-label chip that opens a panel or applies
@@ -2866,13 +2856,7 @@ impl Render for Workspace {
         // and the window claims the one widget theme while it holds focus.
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
-        // The launcher's preset cache lives only while the launcher shows;
-        // dropping it here means the next empty state reads fresh names.
         let dock_empty = self.dock_is_empty(cx);
-        if !dock_empty {
-            self.empty_presets = None;
-            self.empty_workspaces = None;
-        }
         panel::window_body(player, || {
             div()
                 .flex()

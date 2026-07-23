@@ -24,7 +24,9 @@ use rox_library::writer::{self, Change, Edit, Field};
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
-use crate::matching::{confidence_badge, confidence_bar, note, open_or_focus, Phase, WindowRegistry};
+use crate::matching::{
+    confidence_badge, confidence_bar, note, open_or_focus, Phase, WindowRegistry,
+};
 use crate::panels::library::Library;
 use crate::player::fmt_time;
 use crate::providers::{self, MetadataCandidate, TrackQuery};
@@ -121,9 +123,15 @@ fn open_with(
         path.clone(),
         move |cx| {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-            crate::panel::open_child_window(cx, "rox - Find Metadata", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-                cx.new(|cx| TagMatch::new(library, now_art, path, sink, window, cx))
-            })
+            crate::panel::open_child_window(
+                cx,
+                "rox - Find Metadata",
+                bounds,
+                Some(settings_ui::MIN_SIZE),
+                move |window, cx| {
+                    cx.new(|cx| TagMatch::new(library, now_art, path, sink, window, cx))
+                },
+            )
         },
         cx,
     );

@@ -618,7 +618,10 @@ mod tests {
             &candidate("La Femme d'Argent", "Nobody", "Wrong", Some(120.0)),
         );
         // Nothing matches at all.
-        let none = confidence(&query, &candidate("Unrelated", "Nobody", "Wrong", Some(10.0)));
+        let none = confidence(
+            &query,
+            &candidate("Unrelated", "Nobody", "Wrong", Some(10.0)),
+        );
         assert!(exact > partial);
         assert!(partial > none);
         assert!(exact > 0.9);
@@ -635,14 +638,8 @@ mod tests {
             album: String::new(),
             duration_secs: None,
         };
-        let title_hit = confidence(
-            &query,
-            &candidate("Right Title", "Wrong Artist", "", None),
-        );
-        let artist_hit = confidence(
-            &query,
-            &candidate("Wrong Title", "Right Artist", "", None),
-        );
+        let title_hit = confidence(&query, &candidate("Right Title", "Wrong Artist", "", None));
+        let artist_hit = confidence(&query, &candidate("Wrong Title", "Right Artist", "", None));
         assert!(title_hit > artist_hit);
     }
 
@@ -656,7 +653,10 @@ mod tests {
             album: "Moon Safari".into(),
             duration_secs: Some(298.0),
         };
-        let best = confidence(&query, &candidate("Sexy Boy", "Air", "Moon Safari", Some(298.0)));
+        let best = confidence(
+            &query,
+            &candidate("Sexy Boy", "Air", "Moon Safari", Some(298.0)),
+        );
         let worst = confidence(&query, &candidate("", "", "", None));
         assert!((0.0..=1.0).contains(&best));
         assert!((0.0..=1.0).contains(&worst));

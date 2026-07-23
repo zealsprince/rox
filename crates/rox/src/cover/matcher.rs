@@ -65,9 +65,15 @@ pub fn open(
         key,
         move |cx| {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-            crate::panel::open_child_window(cx, "rox - Find Cover Art", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-                cx.new(|cx| CoverMatch::new(now_art, editor, artist, album, window, cx))
-            })
+            crate::panel::open_child_window(
+                cx,
+                "rox - Find Cover Art",
+                bounds,
+                Some(settings_ui::MIN_SIZE),
+                move |window, cx| {
+                    cx.new(|cx| CoverMatch::new(now_art, editor, artist, album, window, cx))
+                },
+            )
         },
         cx,
     );

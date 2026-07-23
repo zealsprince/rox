@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, Instant};
 
-use gpui::{rgb, App, EntityId, Rgba};
+use gpui::{px, rgb, App, EntityId, Rgba};
 use gpui_component::{Theme, ThemeColor, ThemeMode};
 use serde::{Deserialize, Serialize};
 
@@ -347,8 +347,9 @@ tokens! {
 }
 
 /// A `#rrggbb` string as a color; anything else is None. The settings
-/// map's format, tolerant of a missing `#` from a hand edit.
-fn parse_hex(hex: &str) -> Option<Rgba> {
+/// map's format, tolerant of a missing `#` from a hand edit. Shared with
+/// whatever else records colors as hex, like the spectrum's custom ramp.
+pub fn parse_hex(hex: &str) -> Option<Rgba> {
     let hex = hex.trim().trim_start_matches('#');
     if hex.len() != 6 {
         return None;
@@ -357,7 +358,7 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
 }
 
 /// A color as the settings map's `#rrggbb`; alpha does not participate.
-fn to_hex(c: Rgba) -> String {
+pub fn to_hex(c: Rgba) -> String {
     format!(
         "#{:02x}{:02x}{:02x}",
         (c.r * 255.0).round() as u8,
@@ -428,6 +429,13 @@ pub struct PanelTheme {
     /// render, so a config moved between machines still shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font: Option<String>,
+    /// The panel's text size as a multiplier over the app font size, so it
+    /// grows and shrinks with the app control instead of pinning an
+    /// absolute px. None (and 1.0) follows the app size; the wrapper scales
+    /// the panel's rem and its hand-rolled rows by this. Clamped to
+    /// [`PANEL_FONT_SCALE_MIN`]..=[`PANEL_FONT_SCALE_MAX`] at render.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_scale: Option<f32>,
 }
 
 impl PanelTheme {
@@ -442,6 +450,7 @@ impl PanelTheme {
             && self.rounding.is_none()
             && self.border.is_none()
             && self.font.is_none()
+            && self.font_scale.is_none()
     }
 
     /// A role's override, when one is set and parses.
@@ -521,6 +530,37 @@ fn scope_opacity() -> Option<f32> {
     })
 }
 
+thread_local! {
+    /// The active panel rem scales, innermost last: a panel font override
+    /// multiplies the app rem for its own subtree. The [`Themed`] wrapper
+    /// pushes it around build and every render phase, the twin of [`SCOPES`],
+    /// so [`scaled_px`] (the hand-rolled rows built without a `Window`) reads
+    /// the same multiplier the window rem carries for text and the table.
+    static REM_SCALES: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The innermost panel rem scale, 1.0 when no panel override is in scope.
+fn panel_rem_scale() -> f32 {
+    REM_SCALES.with(|scales| scales.borrow().last().copied().unwrap_or(1.0))
+}
+
+/// Run `f` with a panel rem scale active, so [`scaled_px`] inside it grows
+/// its rows with the panel's font override. The pop rides a drop guard, like
+/// [`scoped`], so an unwinding `f` can't leave the scale stuck.
+pub fn rem_scaled<R>(scale: f32, f: impl FnOnce() -> R) -> R {
+    REM_SCALES.with(|scales| scales.borrow_mut().push(scale));
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            REM_SCALES.with(|scales| {
+                scales.borrow_mut().pop();
+            });
+        }
+    }
+    let _pop = Pop;
+    f()
+}
+
 /// Run `f` with a panel scope active: every accessor answers with the
 /// scope's roles and opacity, falling through to the app palette for the
 /// rest. The pop rides a drop guard, so an unwinding `f` can't leave the
@@ -581,6 +621,10 @@ struct Base {
     keep_dark: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
+    /// The app-wide text size in px, the rem every `.text_*` class
+    /// resolves against. [`apply`] projects it into the widget theme,
+    /// whose root pushes it to each window's rem size per frame.
+    font_size: f32,
 }
 
 /// One playback's art tint: the easing run between the palette where it
@@ -660,6 +704,7 @@ static BASE: LazyLock<RwLock<Base>> = LazyLock::new(|| {
         keep_dark: false,
         surface_opacity: 1.0,
         backdrop_strength: 1.0,
+        font_size: FONT_SIZE_DEFAULT,
     })
 });
 
@@ -738,6 +783,72 @@ pub fn set_scalars(surface_opacity: f32, backdrop_strength: f32, cx: &mut App) {
     }
     apply(cx);
 }
+
+/// The app font size's range in px, shared by the setter's clamp and the
+/// settings window's slider. The band stays modest on purpose: the rem
+/// text classes scale with it while the px chrome (control heights, icons,
+/// the spacing ladder) holds, and past this range the fixed chrome crowds
+/// the grown text.
+pub const FONT_SIZE_MIN: f32 = 12.0;
+pub const FONT_SIZE_MAX: f32 = 20.0;
+/// gpui's stock rem, the size the app has always drawn at.
+pub const FONT_SIZE_DEFAULT: f32 = 16.0;
+
+/// The app font size's setter, the same pipe as [`set_scalars`]: a
+/// settings knob, not a palette color, so no easing. Runtime value only;
+/// persisting it stays with the settings' writers.
+pub fn set_app_font_size(size: f32, cx: &mut App) {
+    let size = if size.is_finite() {
+        size.clamp(FONT_SIZE_MIN, FONT_SIZE_MAX)
+    } else {
+        FONT_SIZE_DEFAULT
+    };
+    {
+        let mut base = BASE.write().unwrap();
+        if base.font_size == size {
+            return;
+        }
+        base.font_size = size;
+    }
+    apply(cx);
+}
+
+/// How far the app font size sits from the stock rem, as a multiplier: what
+/// a fixed px height tuned for the 16px rem scales by to track the text,
+/// where no `Window` is at hand to read the rem itself. 1 at the default
+/// size. Matches the window rem because the widget theme's root sets each
+/// window's rem from the same value.
+pub fn font_scale() -> f32 {
+    BASE.read().unwrap().font_size / FONT_SIZE_DEFAULT
+}
+
+/// The total font scale in effect right now: the app size ([`font_scale`])
+/// times any panel override in scope. What a fixed row height or cover tile
+/// multiplies by to track the text. Equal to the window rem over the stock
+/// 16, since the panel wrapper sets the window rem to the same product, so a
+/// size derived from this matches one the vendored table derives from the
+/// window rem.
+pub fn row_scale() -> f32 {
+    font_scale() * panel_rem_scale()
+}
+
+/// A fixed px length grown by [`row_scale`], for the hand-rolled lists
+/// (playlists, queue, history, the folder tree, the filter facets) whose
+/// `uniform_list` rows size themselves rather than going through the library
+/// table. A row height run through here tracks the text the way the table's
+/// rows do, and a cover tile derived from it stays square. The library table
+/// scales off the window rem instead, since its rows draw inside the
+/// vendored widget where a `Window` is at hand; the two agree by
+/// construction.
+pub fn scaled_px(length: f32) -> gpui::Pixels {
+    px(length * row_scale())
+}
+
+/// A panel font override's range, as a multiplier over the app font size,
+/// shared by the wrapper's clamp and the settings slider. Modest like the
+/// app size's own band: text scales, the px chrome holds.
+pub const PANEL_FONT_SCALE_MIN: f32 = 0.75;
+pub const PANEL_FONT_SCALE_MAX: f32 = 1.5;
 
 /// The derived mode's writer, one playback at a time: the playing track's
 /// seed color in, None when playback stops or the cover is achromatic.
@@ -998,7 +1109,9 @@ impl Palette {
             .iter()
             .filter(|role| role.group == "Surfaces")
             .map(|role| rgba_to_oklch((role.get)(self)).0)
-            .fold((0.0, 0), |(sum, count), lightness| (sum + lightness, count + 1));
+            .fold((0.0, 0), |(sum, count), lightness| {
+                (sum + lightness, count + 1)
+            });
         sum / count.max(1) as f32
     }
 
@@ -1016,8 +1129,7 @@ impl Palette {
     pub fn inverse(&self) -> Palette {
         let dark = Palette::default();
         let light = Palette::light();
-        let midpoint =
-            (dark.mean_surface_lightness() + light.mean_surface_lightness()) / 2.0;
+        let midpoint = (dark.mean_surface_lightness() + light.mean_surface_lightness()) / 2.0;
         let (near, far) = if self.mean_surface_lightness() <= midpoint {
             (&dark, &light)
         } else {
@@ -1183,6 +1295,11 @@ fn apply(cx: &mut App) {
     };
     Theme::change(mode, None, cx);
     let theme = Theme::global_mut(cx);
+    // The app font size rides the theme: every window's Root pushes
+    // `font_size` into its rem size per frame, scaling the rem-based text
+    // classes at once. `Theme::change` just reset it to stock, so it
+    // reprojects here like the color tokens below.
+    theme.font_size = px(base.font_size);
     // Selection follows the accent instead of the stock blue.
     theme.table_active = alpha(palette.accent, 0x26).into();
     theme.table_active_border = palette.accent.into();
@@ -1476,7 +1593,11 @@ mod tests {
         for role in ROLES {
             let (rl, ..) = rgba_to_oklch((role.get)(&round));
             let (dl, ..) = rgba_to_oklch((role.get)(&dark));
-            assert!((rl - dl).abs() < 0.02, "round trip drifted on {}", role.name);
+            assert!(
+                (rl - dl).abs() < 0.02,
+                "round trip drifted on {}",
+                role.name
+            );
         }
 
         // A user edit rides across: recolor a neutral role, and its oklch

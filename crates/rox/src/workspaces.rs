@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use gpui::App;
+use gpui::{App, SharedString};
 
 use crate::assets;
 use crate::design::palette::{self, Palette};
@@ -22,6 +22,10 @@ use crate::settings::{self, Settings, WorkspaceBundle, WORKSPACE_VERSION};
 pub struct Entry {
     pub bundle: WorkspaceBundle,
     pub builtin: bool,
+    /// The asset path of the preview picture shipped beside the bundle
+    /// (`workspaces/<stem>.png`), None when no picture ships or the user
+    /// saved the bundle. The welcome window's quick-start tiles draw it.
+    pub preview: Option<SharedString>,
 }
 
 impl Entry {
@@ -34,8 +38,9 @@ impl Entry {
 /// The bundles shipped in `assets/workspaces`, named after their files when
 /// the file carries no name. A file from a newer format, one that doesn't
 /// parse, or one with no usable name is skipped rather than failing the list.
-/// Sorted by name for a stable order in the settings window.
-fn shipped() -> Vec<Entry> {
+/// Sorted by name for a stable order in the settings window and the welcome
+/// window's quick-start tiles.
+pub fn shipped() -> Vec<Entry> {
     let mut out: Vec<Entry> = assets::shipped_workspaces()
         .into_iter()
         .filter_map(|(stem, bytes)| {
@@ -43,12 +48,16 @@ fn shipped() -> Vec<Entry> {
             if bundle.version > WORKSPACE_VERSION {
                 return None;
             }
+            // The picture is keyed by the file stem, not the bundle's own
+            // name, so look it up before the stem moves into the name.
+            let preview = assets::workspace_preview(&stem);
             if bundle.name.trim().is_empty() {
                 bundle.name = stem;
             }
             (!bundle.name.trim().is_empty()).then_some(Entry {
                 bundle,
                 builtin: true,
+                preview,
             })
         })
         .collect();
@@ -63,6 +72,7 @@ pub fn all(settings: &Settings) -> Vec<Entry> {
     list.extend(settings.workspaces.iter().cloned().map(|bundle| Entry {
         bundle,
         builtin: false,
+        preview: None,
     }));
     list
 }
@@ -86,6 +96,7 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     palette::set_keep_dark(a.keep_dark, cx);
     palette::set_art_theming(a.art_theming, cx);
     settings::set_app_font(a.app_font.clone(), cx);
+    palette::set_app_font_size(a.app_font_size, cx);
     settings::set_rating_style(a.rating_style, cx);
     settings::set_hide_menubar(a.hide_menubar, cx);
     settings::set_os_decorations(a.os_decorations);
@@ -152,6 +163,23 @@ mod tests {
             name: name.into(),
             ..Default::default()
         }
+    }
+
+    /// Every file in `assets/workspaces` makes it through the shipped
+    /// filter. The filter drops a bundle that doesn't parse silently, so
+    /// without this a typo in a shipped file just vanishes from the list.
+    #[test]
+    fn every_shipped_asset_parses() {
+        let files = crate::assets::shipped_workspaces();
+        assert!(!files.is_empty());
+        let parsed = shipped();
+        assert_eq!(
+            parsed.len(),
+            files.len(),
+            "a shipped workspace file failed to parse: {:?} vs {:?}",
+            files.iter().map(|(stem, _)| stem).collect::<Vec<_>>(),
+            parsed.iter().map(|e| e.name()).collect::<Vec<_>>()
+        );
     }
 
     /// A free base name comes back as-is; a taken one gets " (2)", then

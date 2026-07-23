@@ -9,10 +9,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, svg, uniform_list, App, Context, Div, Entity, EventEmitter,
-    FocusHandle, Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent,
-    PathPromptOptions, SharedString, Stateful, Subscription, UniformListScrollHandle, WeakEntity,
-    Window,
+    div, prelude::*, px, svg, uniform_list, App, Context, Div, Entity, EventEmitter, FocusHandle,
+    Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, PathPromptOptions,
+    SharedString, Stateful, Subscription, UniformListScrollHandle, WeakEntity, Window,
 };
 use gpui_component::button::Button;
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
@@ -42,17 +41,61 @@ const ROW_H: f32 = 30.;
 /// the config's call; this only fixes the order and the default set. Every
 /// key is one the shared [`track_columns::cell`] draws.
 const COLUMNS: &[Column] = &[
-    Column { key: "cover", label: "Cover", default_on: false },
-    Column { key: "number", label: "Number", default_on: true },
-    Column { key: "name", label: "Name", default_on: true },
-    Column { key: "artist", label: "Artist", default_on: true },
-    Column { key: "album", label: "Album", default_on: false },
-    Column { key: "year", label: "Year", default_on: false },
-    Column { key: "genre", label: "Genre", default_on: false },
-    Column { key: "duration", label: "Duration", default_on: false },
-    Column { key: "plays", label: "Plays", default_on: false },
-    Column { key: "rating", label: "Rating", default_on: true },
-    Column { key: "favourite", label: "Favourite", default_on: true },
+    Column {
+        key: "cover",
+        label: "Cover",
+        default_on: false,
+    },
+    Column {
+        key: "number",
+        label: "Number",
+        default_on: true,
+    },
+    Column {
+        key: "name",
+        label: "Name",
+        default_on: true,
+    },
+    Column {
+        key: "artist",
+        label: "Artist",
+        default_on: true,
+    },
+    Column {
+        key: "album",
+        label: "Album",
+        default_on: false,
+    },
+    Column {
+        key: "year",
+        label: "Year",
+        default_on: false,
+    },
+    Column {
+        key: "genre",
+        label: "Genre",
+        default_on: false,
+    },
+    Column {
+        key: "duration",
+        label: "Duration",
+        default_on: false,
+    },
+    Column {
+        key: "plays",
+        label: "Plays",
+        default_on: false,
+    },
+    Column {
+        key: "rating",
+        label: "Rating",
+        default_on: true,
+    },
+    Column {
+        key: "favourite",
+        label: "Favourite",
+        default_on: true,
+    },
 ];
 
 /// The playlists panel's config: the shared chrome, which playlists are
@@ -293,8 +336,7 @@ impl PlaylistsPanel {
             this.sync_playing(cx)
         });
         // A landing cover repaints the heading tiles; nothing to recompute.
-        let _thumbs_changed =
-            cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
+        let _thumbs_changed = cx.observe(&state.thumbs, |_: &mut Self, _, cx| cx.notify());
         // A panel restored as global opens showing the shared query; a local
         // one shows its own.
         let initial = match config.query_source {
@@ -416,8 +458,10 @@ impl PlaylistsPanel {
                 {
                     m += 1;
                 }
-                let group: Vec<GroupTrack> =
-                    visible[k..m].iter().map(|&i| group_track(&all[i])).collect();
+                let group: Vec<GroupTrack> = visible[k..m]
+                    .iter()
+                    .map(|&i| group_track(&all[i]))
+                    .collect();
                 albums.push(track_columns::album_group(&group));
                 let g = (albums.len() - 1) as u32;
                 rows.push(Row::Album(g));
@@ -889,7 +933,7 @@ impl PlaylistsPanel {
         div()
             .id(("playlist-head", ix))
             .w_full()
-            .h(px(ROW_H))
+            .h(palette::scaled_px(ROW_H))
             .px(tokens::SPACE_SM)
             .flex()
             .flex_row()
@@ -1021,7 +1065,7 @@ impl PlaylistsPanel {
             // library table's route.
             .group(track_cells::ROW_GROUP)
             .w_full()
-            .h(px(ROW_H))
+            .h(palette::scaled_px(ROW_H))
             // Indented under its header, past the chevron column.
             .pl(px(28.))
             .pr(tokens::SPACE_SM)
@@ -1271,7 +1315,11 @@ impl PanelSettings for PlaylistsPanel {
 
     /// The Behavior page's search section: show the box, and follow the
     /// shared query or filter by the panel's own.
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn behavior(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         Some(crate::query::shared_query::search_section(
             self.config.search,
             |this: &mut Self, on, cx| this.set_search(on, cx),
@@ -1399,15 +1447,21 @@ impl Panel for PlaylistsPanel {
         );
 
         // Panel section: rename_item opens it with its own "Panel" label.
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            PlaylistsPanel::new(state, config, window, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                PlaylistsPanel::new(state, config, window, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),
@@ -1620,9 +1674,7 @@ impl PlaylistsPanel {
             }
             // A right-click never lands on a heading (they set no menu row),
             // but keep the match total: fall back to the panel menu.
-            Some(Row::Album(_) | Row::AlbumMeta(_)) | None => {
-                self.dropdown_menu(menu, window, cx)
-            }
+            Some(Row::Album(_) | Row::AlbumMeta(_)) | None => self.dropdown_menu(menu, window, cx),
         }
     }
 }

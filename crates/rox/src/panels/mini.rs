@@ -5,7 +5,6 @@
 //! mini one. With no mini layout assigned it sits faint and inert, the
 //! same gate every mini toggle shows behind.
 
-
 use gpui::{
     div, prelude::*, px, svg, AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable,
     MouseButton, Pixels, Subscription, WeakEntity, Window,
@@ -89,13 +88,11 @@ impl MiniTogglePanel {
             .flex()
             .items_center()
             .justify_center()
-            .child(
-                svg().path(icon).size(px(14.)).text_color(if assigned {
-                    palette::text_muted()
-                } else {
-                    palette::text_faint()
-                }),
-            )
+            .child(svg().path(icon).size(px(14.)).text_color(if assigned {
+                palette::text_muted()
+            } else {
+                palette::text_faint()
+            }))
             .when(assigned, |d| {
                 d.cursor_pointer()
                     .hover(|d| d.bg(palette::bg_control_hover()))
@@ -258,17 +255,22 @@ impl Panel for MiniTogglePanel {
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, _window, cx| {
-            let (state, workspace, config) = {
-                let panel = this.read(cx);
-                (
-                    panel.state.clone(),
-                    panel.workspace.clone(),
-                    panel.config.clone(),
-                )
-            };
-            MiniTogglePanel::new(state, workspace, config, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, _window, cx| {
+                let (state, workspace, config) = {
+                    let panel = this.read(cx);
+                    (
+                        panel.state.clone(),
+                        panel.workspace.clone(),
+                        panel.config.clone(),
+                    )
+                };
+                MiniTogglePanel::new(state, workspace, config, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),

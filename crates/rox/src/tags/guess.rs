@@ -219,12 +219,18 @@ mod tests {
         let got = apply("%track%. %title%", "/m/01. Intro.mp3").unwrap();
         assert_eq!(
             got,
-            vec![(Field::TrackNo, "01".into()), (Field::Title, "Intro".into())]
+            vec![
+                (Field::TrackNo, "01".into()),
+                (Field::Title, "Intro".into())
+            ]
         );
         let got = apply("%track% - %title%", "/m/07 - Outro.mp3").unwrap();
         assert_eq!(
             got,
-            vec![(Field::TrackNo, "07".into()), (Field::Title, "Outro".into())]
+            vec![
+                (Field::TrackNo, "07".into()),
+                (Field::Title, "Outro".into())
+            ]
         );
     }
 
@@ -256,7 +262,10 @@ mod tests {
         let got = apply("%artist%-%title%", "/m/Name - Song.mp3").unwrap();
         assert_eq!(
             got,
-            vec![(Field::Artist, "Name".into()), (Field::Title, "Song".into())]
+            vec![
+                (Field::Artist, "Name".into()),
+                (Field::Title, "Song".into())
+            ]
         );
     }
 

@@ -74,103 +74,104 @@ pub(crate) struct PanelSection {
 
 /// The music collection itself: browse, search, filter, and the play
 /// queues. The panels reached most often when getting around the library.
-pub(crate) static CATALOGUE: PanelSection = PanelSection {
-    group: Some(("Catalogue", icons::DISC)),
-    panels: &[
-        PanelDef {
-            label: "Library",
-            icon: icons::LIST_MUSIC,
-            placement: PanelPlacement::Center,
-            build: |state, _, window, cx| {
-                Arc::new(cx.new(|cx| {
-                    LibraryPanel::new(state.clone(), LibraryConfig::default(), window, cx)
-                }))
+pub(crate) static CATALOGUE: PanelSection =
+    PanelSection {
+        group: Some(("Catalogue", icons::DISC)),
+        panels: &[
+            PanelDef {
+                label: "Library",
+                icon: icons::LIST_MUSIC,
+                placement: PanelPlacement::Center,
+                build: |state, _, window, cx| {
+                    Arc::new(cx.new(|cx| {
+                        LibraryPanel::new(state.clone(), LibraryConfig::default(), window, cx)
+                    }))
+                },
             },
-        },
-        PanelDef {
-            label: "Search",
-            icon: icons::SEARCH,
-            placement: PanelPlacement::Top,
-            build: |state, _, window, cx| {
-                Arc::new(
-                    cx.new(|cx| {
+            PanelDef {
+                label: "Search",
+                icon: icons::SEARCH,
+                placement: PanelPlacement::Top,
+                build: |state, _, window, cx| {
+                    Arc::new(cx.new(|cx| {
                         SearchPanel::new(state.clone(), SearchConfig::default(), window, cx)
-                    }),
-                )
+                    }))
+                },
             },
-        },
-        PanelDef {
-            label: "Filter",
-            icon: icons::FUNNEL,
-            placement: PanelPlacement::Center,
-            build: |state, _, window, cx| {
-                Arc::new(cx.new(|cx| {
-                    FilterPanel::new(state.clone(), FilterConfig::default(), window, cx)
-                }))
+            PanelDef {
+                label: "Filter",
+                icon: icons::FUNNEL,
+                placement: PanelPlacement::Center,
+                build: |state, _, window, cx| {
+                    Arc::new(cx.new(|cx| {
+                        FilterPanel::new(state.clone(), FilterConfig::default(), window, cx)
+                    }))
+                },
             },
-        },
-        PanelDef {
-            label: "Folder Tree",
-            icon: icons::FOLDER,
-            placement: PanelPlacement::Center,
-            build: |state, _, window, cx| {
-                Arc::new(cx.new(|cx| {
-                    FolderTreePanel::new(state.clone(), FolderTreeConfig::default(), window, cx)
-                }))
+            PanelDef {
+                label: "Folder Tree",
+                icon: icons::FOLDER,
+                placement: PanelPlacement::Center,
+                build: |state, _, window, cx| {
+                    Arc::new(cx.new(|cx| {
+                        FolderTreePanel::new(state.clone(), FolderTreeConfig::default(), window, cx)
+                    }))
+                },
             },
-        },
-        PanelDef {
-            label: "Album Grid",
-            icon: icons::LAYOUT_GRID,
-            placement: PanelPlacement::Center,
-            build: |state, _, window, cx| {
-                Arc::new(
-                    cx.new(|cx| GridPanel::new(state.clone(), GridConfig::default(), window, cx)),
-                )
+            PanelDef {
+                label: "Album Grid",
+                icon: icons::LAYOUT_GRID,
+                placement: PanelPlacement::Center,
+                build: |state, _, window, cx| {
+                    Arc::new(
+                        cx.new(|cx| {
+                            GridPanel::new(state.clone(), GridConfig::default(), window, cx)
+                        }),
+                    )
+                },
             },
-        },
-        PanelDef {
-            label: "Album Carousel",
-            icon: icons::GALLERY,
-            placement: PanelPlacement::Center,
-            build: |state, _, window, cx| {
-                Arc::new(
-                    cx.new(|cx| ArtPanel::new(state.clone(), ArtConfig::default(), window, cx)),
-                )
+            PanelDef {
+                label: "Album Carousel",
+                icon: icons::GALLERY,
+                placement: PanelPlacement::Center,
+                build: |state, _, window, cx| {
+                    Arc::new(
+                        cx.new(|cx| ArtPanel::new(state.clone(), ArtConfig::default(), window, cx)),
+                    )
+                },
             },
-        },
-        PanelDef {
-            label: "Playlists",
-            icon: icons::LIST_MUSIC,
-            placement: PanelPlacement::Center,
-            build: |state, _, window, cx| {
-                Arc::new(cx.new(|cx| {
-                    PlaylistsPanel::new(state.clone(), PlaylistsConfig::default(), window, cx)
-                }))
+            PanelDef {
+                label: "Playlists",
+                icon: icons::LIST_MUSIC,
+                placement: PanelPlacement::Center,
+                build: |state, _, window, cx| {
+                    Arc::new(cx.new(|cx| {
+                        PlaylistsPanel::new(state.clone(), PlaylistsConfig::default(), window, cx)
+                    }))
+                },
             },
-        },
-        PanelDef {
-            label: "Queue",
-            icon: icons::LIST_MUSIC,
-            placement: PanelPlacement::Center,
-            build: |state, _, window, cx| {
-                Arc::new(cx.new(|cx| {
-                    QueuePanel::new(state.clone(), QueueConfig::default(), window, cx)
-                }))
+            PanelDef {
+                label: "Queue",
+                icon: icons::LIST_MUSIC,
+                placement: PanelPlacement::Center,
+                build: |state, _, window, cx| {
+                    Arc::new(cx.new(|cx| {
+                        QueuePanel::new(state.clone(), QueueConfig::default(), window, cx)
+                    }))
+                },
             },
-        },
-        PanelDef {
-            label: "History",
-            icon: icons::CLOCK,
-            placement: PanelPlacement::Center,
-            build: |state, _, window, cx| {
-                Arc::new(cx.new(|cx| {
-                    HistoryPanel::new(state.clone(), HistoryConfig::default(), window, cx)
-                }))
+            PanelDef {
+                label: "History",
+                icon: icons::CLOCK,
+                placement: PanelPlacement::Center,
+                build: |state, _, window, cx| {
+                    Arc::new(cx.new(|cx| {
+                        HistoryPanel::new(state.clone(), HistoryConfig::default(), window, cx)
+                    }))
+                },
             },
-        },
-    ],
-};
+        ],
+    };
 
 /// The inspector views: what's playing or selected, shown from a few
 /// angles. Grouped so the Catalogue list stays short.
@@ -226,9 +227,9 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
             icon: icons::COLUMNS_2,
             placement: PanelPlacement::Center,
             build: |state, ws, _, cx| {
-                Arc::new(cx.new(|cx| {
-                    GroupPanel::new(state.clone(), ws, GroupConfig::default(), cx)
-                }))
+                Arc::new(
+                    cx.new(|cx| GroupPanel::new(state.clone(), ws, GroupConfig::default(), cx)),
+                )
             },
         },
         PanelDef {
@@ -236,9 +237,9 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
             icon: icons::LAYERS,
             placement: PanelPlacement::Center,
             build: |state, ws, _, cx| {
-                Arc::new(cx.new(|cx| {
-                    DepthPanel::new(state.clone(), ws, DepthConfig::default(), cx)
-                }))
+                Arc::new(
+                    cx.new(|cx| DepthPanel::new(state.clone(), ws, DepthConfig::default(), cx)),
+                )
             },
         },
         PanelDef {
@@ -246,9 +247,9 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
             icon: icons::GALLERY,
             placement: PanelPlacement::Center,
             build: |state, ws, _, cx| {
-                Arc::new(cx.new(|cx| {
-                    SlidePanel::new(state.clone(), ws, SlideConfig::default(), cx)
-                }))
+                Arc::new(
+                    cx.new(|cx| SlidePanel::new(state.clone(), ws, SlideConfig::default(), cx)),
+                )
             },
         },
     ],

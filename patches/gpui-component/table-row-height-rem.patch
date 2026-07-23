@@ -1,0 +1,88 @@
+--- a/src/styled.rs
++++ b/src/styled.rs
+@@ -256,6 +256,15 @@
+         }
+     }
+ 
++    /// rox patch: the row height scaled by the window's rem size, so table
++    /// rows track the app font size. The fixed heights above are tuned for
++    /// the stock 16px rem; a bigger rem grows the row with the text, a
++    /// smaller one tightens it.
++    #[inline]
++    pub fn table_row_height_scaled(&self, window: &Window) -> Pixels {
++        self.table_row_height() * (window.rem_size() / px(16.))
++    }
++
+     /// Returns the padding for a table cell.
+     #[inline]
+     pub fn table_cell_padding(&self) -> Edges<Pixels> {
+--- a/src/table/state.rs
++++ b/src/table/state.rs
+@@ -885,7 +885,8 @@
+         header
+             .h_flex()
+             .w_full()
+-            .h(self.options.size.table_row_height())
++            // rox patch: rows and header track the window rem size.
++            .h(self.options.size.table_row_height_scaled(window))
+             .flex_shrink_0()
+             .border_b_1()
+             .border_color(cx.theme().border)
+@@ -974,7 +975,8 @@
+         let is_stripe_row = self.options.stripe && row_ix % 2 != 0;
+         let is_selected = self.selected_row == Some(row_ix);
+         let view = cx.entity().clone();
+-        let row_height = self.options.size.table_row_height();
++        // rox patch: rows and header track the window rem size.
++        let row_height = self.options.size.table_row_height_scaled(window);
+ 
+         if row_ix < rows_count {
+             let is_last_row = row_ix + 1 == rows_count;
+@@ -1201,14 +1203,15 @@
+     fn render_vertical_scrollbar(
+         &mut self,
+ 
+-        _: &mut Window,
++        window: &mut Window,
+         _: &mut Context<Self>,
+     ) -> Option<impl IntoElement> {
+         Some(
+             div()
+                 .occlude()
+                 .absolute()
+-                .top(self.options.size.table_row_height())
++                // rox patch: clear the header at its rem-scaled height.
++                .top(self.options.size.table_row_height_scaled(window))
+                 .right_0()
+                 .bottom_0()
+                 .w(Scrollbar::width())
+@@ -1258,7 +1261,8 @@
+         let rows_count = self.delegate.rows_count(cx);
+         let loading = self.delegate.loading(cx);
+ 
+-        let row_height = self.options.size.table_row_height();
++        // rox patch: rows and header track the window rem size.
++        let row_height = self.options.size.table_row_height_scaled(window);
+         let total_height = self
+             .vertical_scroll_handle
+             .0
+--- a/src/table/loading.rs
++++ b/src/table/loading.rs
+@@ -45,13 +45,14 @@
+ }
+ 
+ impl RenderOnce for LoadingRow {
+-    fn render(self, _: &mut gpui::Window, cx: &mut gpui::App) -> impl IntoElement {
++    fn render(self, window: &mut gpui::Window, cx: &mut gpui::App) -> impl IntoElement {
+         let paddings = self.size.table_cell_padding();
+-        let height = self.size.table_row_height() * 0.5;
++        // rox patch: the skeleton rows match the rem-scaled live rows.
++        let height = self.size.table_row_height_scaled(window) * 0.5;
+ 
+         h_flex()
+             .gap_3()
+-            .h(self.size.table_row_height())
++            .h(self.size.table_row_height_scaled(window))
+             .overflow_hidden()
+             .pt(paddings.top)
+             .pb(paddings.bottom)

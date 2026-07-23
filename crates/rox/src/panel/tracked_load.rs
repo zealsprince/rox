@@ -64,7 +64,10 @@ impl TrackedImage {
         let generation = self.generation;
         let path = path.to_path_buf();
         cx.spawn(async move |this, cx| {
-            let loaded = cx.background_executor().spawn(async move { decode() }).await;
+            let loaded = cx
+                .background_executor()
+                .spawn(async move { decode() })
+                .await;
             this.update(cx, |this, cx| {
                 let tracked = slot(this);
                 if tracked.generation != generation {

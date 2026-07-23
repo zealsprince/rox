@@ -191,7 +191,6 @@ pub enum Density {
     Comfortable,
 }
 
-
 /// What the group headers break on. Album keys the album artist and
 /// album together over the canonical order as-is; the rest key one
 /// field, and genre and year re-sort the list by that field first
@@ -334,7 +333,10 @@ impl Default for LibraryConfig {
 /// Build the table columns from a saved layout (or the default set),
 /// marking the active sort's direction on its column. Unknown keys in a
 /// hand-edited layout are skipped.
-pub(crate) fn track_columns(layout: &[ColumnSpec], sort: &Option<(SharedString, bool)>) -> Vec<Column> {
+pub(crate) fn track_columns(
+    layout: &[ColumnSpec],
+    sort: &Option<(SharedString, bool)>,
+) -> Vec<Column> {
     let specs = if layout.is_empty() {
         default_layout()
     } else {

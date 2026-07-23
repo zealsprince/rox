@@ -225,7 +225,14 @@ impl Player {
     /// until asked to play. Files written since carry the whole queue and come
     /// back through [`restore_queue`] instead.
     pub fn restore(&mut self, path: PathBuf, position_secs: f64, cx: &mut Context<Self>) {
-        self.start_session(vec![path], 0, Some(position_secs.max(0.0)), Vec::new(), true, cx);
+        self.start_session(
+            vec![path],
+            0,
+            Some(position_secs.max(0.0)),
+            Vec::new(),
+            true,
+            cx,
+        );
     }
 
     /// The launch restore: bring back the whole play order paused at the
@@ -240,7 +247,14 @@ impl Player {
         position_secs: f64,
         cx: &mut Context<Self>,
     ) {
-        self.start_session(queue, cursor, Some(position_secs.max(0.0)), explicit, true, cx);
+        self.start_session(
+            queue,
+            cursor,
+            Some(position_secs.max(0.0)),
+            explicit,
+            true,
+            cx,
+        );
     }
 
     /// The queue's revision, so a panel can skip re-reading the snapshot on
@@ -588,14 +602,7 @@ impl Player {
         // Restore-shaped start: preserve the saved order, seed the position.
         // start_session opens a fresh stream against the current default
         // device, which is the reconnected (or newly default) one.
-        self.start_session(
-            paths,
-            cursor,
-            Some(position_secs),
-            explicit,
-            true,
-            cx,
-        );
+        self.start_session(paths, cursor, Some(position_secs), explicit, true, cx);
         // A restore comes up paused; a disconnect mid-playback should resume,
         // so the reopened stream picks up where it left off. Only when the
         // start actually produced a session.

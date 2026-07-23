@@ -36,8 +36,8 @@ use crate::panel::{
 use crate::panel_settings;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
 use crate::query::search::{SearchBox, SearchEvent};
-use crate::settings::ui as settings_ui;
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::settings::ui as settings_ui;
 use crate::thumbs::Thumb;
 
 /// The tile rounding knob's ceiling, in percent of circular: 100 rounds a
@@ -1364,15 +1364,21 @@ impl Panel for ArtPanel {
             window,
             cx,
         );
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            ArtPanel::new(state, config, window, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                ArtPanel::new(state, config, window, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),
@@ -1502,9 +1508,7 @@ impl ArtPanel {
                 .justify_center()
                 .text_color(palette::text_muted())
                 .child(
-                    if self.effective_query(cx).is_empty()
-                        && self.effective_filter(cx).is_empty()
-                    {
+                    if self.effective_query(cx).is_empty() && self.effective_filter(cx).is_empty() {
                         "The library is empty"
                     } else {
                         "No matches"

@@ -64,6 +64,30 @@ const SCAN_REFRESH_STEADY: Duration = Duration::from_secs(30);
 /// skip it, short enough that a day-old offline edit still gets swept in.
 const CATCH_UP_STALE: i64 = 24 * 60 * 60;
 
+/// How many folders the library will watch at most, when the platform prices
+/// watches per directory. Only Linux does: inotify spends one watch per
+/// directory out of the per-user `fs.inotify.max_user_watches` budget, shared
+/// with every other watching app (IDEs, sync tools), so the library claims at
+/// most half of it. The half also leaves room for the intermediate folders
+/// that [`store::Stats::dirs`], a count of track parents, does not see. macOS
+/// (FSEvents) and Windows (ReadDirectoryChangesW) watch a root natively at
+/// flat cost, so there is no ceiling there and this returns None.
+pub fn watch_limit_dirs() -> Option<u64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    static LIMIT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    Some(*LIMIT.get_or_init(|| {
+        std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            // The kernel's long-standing fixed default, for when /proc is
+            // unreadable; 5.11+ scales the real value up with memory.
+            .unwrap_or(65_536)
+            / 2
+    }))
+}
+
 /// Live progress of a background scan: the scan thread writes it per file,
 /// the UI polls it at [`SCAN_POLL`] cadence. Zero total means the folder
 /// walk has not finished yet.
@@ -401,6 +425,14 @@ impl Library {
         self.watcher.is_some()
     }
 
+    /// Whether the library has outgrown live watching, holding more folders
+    /// than [`watch_limit_dirs`] allows. The watcher refuses to arm here and
+    /// the settings toggle grays out; these libraries fold changes in through
+    /// a manual rescan. Always false where the platform has no ceiling.
+    pub fn watch_limited(&self) -> bool {
+        watch_limit_dirs().is_some_and(|limit| self.stats().dirs > limit)
+    }
+
     /// How many roots the live watch actually covers versus how many it was
     /// asked to, so a partial watch (a missing folder, an unplugged drive)
     /// can be surfaced. None when watching is off. The settings UI hookup to
@@ -455,6 +487,12 @@ impl Library {
         self.watcher = None;
         self.watch_task = None;
         if self.scan_roots.is_empty() {
+            return;
+        }
+        // A library past the ceiling never arms: the recursive watch would be
+        // too heavy to build and to carry. The stored preference stays put, so
+        // dropping back under the limit lets it watch again on the next re-arm.
+        if self.watch_limited() {
             return;
         }
         let roots = self.scan_roots.clone();
@@ -512,7 +550,8 @@ impl Library {
         // window errs short rather than eat a real user edit.
         let now = std::time::Instant::now();
         let window = std::time::Duration::from_secs(5);
-        self.self_writes.retain(|_, at| now.duration_since(*at) < window);
+        self.self_writes
+            .retain(|_, at| now.duration_since(*at) < window);
         self.pending.extend(
             batch
                 .paths
@@ -533,7 +572,14 @@ impl Library {
         let paths: Vec<PathBuf> = self.pending.drain().collect();
         let renames = std::mem::take(&mut self.pending_renames);
         let roots = self.scan_roots.clone();
-        self.reload(Refresh::Watch { paths, renames, roots }, cx);
+        self.reload(
+            Refresh::Watch {
+                paths,
+                renames,
+                roots,
+            },
+            cx,
+        );
     }
 
     /// Resolve database ids to playable paths on the UI-side connection.
@@ -565,7 +611,9 @@ impl Library {
     /// plus `meta_for` separately. None when the path is not in the library.
     pub fn resolve_path(&self, path: &std::path::Path) -> Option<(i64, store::TrackMeta)> {
         let conn = self.conn.as_ref()?;
-        store::meta_row_for_path(conn, path.to_str()?).ok().flatten()
+        store::meta_row_for_path(conn, path.to_str()?)
+            .ok()
+            .flatten()
     }
 
     /// The history views' reads, on the UI-side connection: SQL over the
@@ -1174,7 +1222,12 @@ fn load(
     refresh: Refresh,
     progress: &ScanProgress,
 ) -> Result<
-    (Projection, Vec<u32>, Option<ScanSummary>, Option<WatchSummary>),
+    (
+        Projection,
+        Vec<u32>,
+        Option<ScanSummary>,
+        Option<WatchSummary>,
+    ),
     rox_library::rusqlite::Error,
 > {
     let mut watch = None;
@@ -1230,7 +1283,11 @@ fn load(
             }
             None
         }
-        Refresh::Watch { paths, renames, roots } => {
+        Refresh::Watch {
+            paths,
+            renames,
+            roots,
+        } => {
             let mut conn = store::open(db_path)?;
             store::init_schema(&conn)?;
             watch = Some(watch_sync(&mut conn, paths, renames, &roots)?);
@@ -1260,7 +1317,11 @@ fn watch_sync(
     renames: Vec<(PathBuf, PathBuf)>,
     roots: &[PathBuf],
 ) -> Result<WatchSummary, rox_library::rusqlite::Error> {
-    let under_root = |path: &Path| roots.iter().any(|root| path.starts_with(root) && path != *root);
+    let under_root = |path: &Path| {
+        roots
+            .iter()
+            .any(|root| path.starts_with(root) && path != *root)
+    };
     let mut summary = WatchSummary::default();
     // Only a rename with both endpoints strictly inside a root moves a row;
     // anything reaching a root boundary or out of the tree falls through to
@@ -1392,7 +1453,9 @@ mod tests {
         // A correlated rename moves the row and keeps its id, so the moved
         // file is not a fresh insert. The renamed-then-present path re-reads
         // clean since the file is on disk under its new name.
-        let one_id = store::id_for_path(&conn, one.to_str().unwrap()).unwrap().unwrap();
+        let one_id = store::id_for_path(&conn, one.to_str().unwrap())
+            .unwrap()
+            .unwrap();
         let renamed = dir.join("Album/renamed.mp3");
         std::fs::rename(&one, &renamed).unwrap();
         let s = watch_sync(
@@ -1408,7 +1471,9 @@ mod tests {
             Some(one_id),
             "a correlated rename keeps the id"
         );
-        assert!(store::id_for_path(&conn, one.to_str().unwrap()).unwrap().is_none());
+        assert!(store::id_for_path(&conn, one.to_str().unwrap())
+            .unwrap()
+            .is_none());
         assert_eq!(store::count(&conn).unwrap(), 2);
 
         // Delete one file on disk, then sync its path: only its row goes.

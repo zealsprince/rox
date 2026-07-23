@@ -76,9 +76,13 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
         key,
         move |cx| {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-            crate::panel::open_child_window(cx, "rox - Cover Art", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-                cx.new(|cx| CoverEditor::new(state, ids, window, cx))
-            })
+            crate::panel::open_child_window(
+                cx,
+                "rox - Cover Art",
+                bounds,
+                Some(settings_ui::MIN_SIZE),
+                move |window, cx| cx.new(|cx| CoverEditor::new(state, ids, window, cx)),
+            )
         },
         cx,
     );
@@ -459,7 +463,9 @@ impl CoverEditor {
                 // the end notes too, but by then the suppression window has
                 // long passed for all but the last few files of a big batch.
                 if library
-                    .update(cx, |library, _| library.note_self_write([edit.path.clone()]))
+                    .update(cx, |library, _| {
+                        library.note_self_write([edit.path.clone()])
+                    })
                     .is_err()
                 {
                     return;
@@ -665,12 +671,9 @@ impl CoverEditor {
                     // transparent occluder over them swallows clicks so no
                     // slot edits out from under the write. Cancel sits above
                     // it, on the header.
-                    div()
-                        .relative()
-                        .child(cards)
-                        .when(self.saving, |d| {
-                            d.child(div().absolute().inset_0().occlude())
-                        }),
+                    div().relative().child(cards).when(self.saving, |d| {
+                        d.child(div().absolute().inset_0().occlude())
+                    }),
                 )
                 .when_some(self.error.clone(), |d, error| {
                     d.child(

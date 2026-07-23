@@ -31,8 +31,8 @@ use crate::panel::{self, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
 use crate::query::search::{SearchBox, SearchEvent};
-use crate::settings::Settings;
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::settings::Settings;
 use crate::track_ui::track_cells;
 use crate::track_ui::track_columns::{self, Column, ColumnHost, GroupTrack, HeadingHost};
 use crate::track_ui::track_drag::PlayDrag;
@@ -43,17 +43,61 @@ const ROW_H: f32 = 30.;
 /// The track columns, in render order. Number here is the queue position.
 /// Every key is one the shared [`track_columns::cell`] draws.
 const COLUMNS: &[Column] = &[
-    Column { key: "cover", label: "Cover", default_on: false },
-    Column { key: "number", label: "Number", default_on: true },
-    Column { key: "name", label: "Name", default_on: true },
-    Column { key: "artist", label: "Artist", default_on: true },
-    Column { key: "album", label: "Album", default_on: false },
-    Column { key: "year", label: "Year", default_on: false },
-    Column { key: "genre", label: "Genre", default_on: false },
-    Column { key: "duration", label: "Duration", default_on: false },
-    Column { key: "plays", label: "Plays", default_on: false },
-    Column { key: "rating", label: "Rating", default_on: false },
-    Column { key: "favourite", label: "Favourite", default_on: false },
+    Column {
+        key: "cover",
+        label: "Cover",
+        default_on: false,
+    },
+    Column {
+        key: "number",
+        label: "Number",
+        default_on: true,
+    },
+    Column {
+        key: "name",
+        label: "Name",
+        default_on: true,
+    },
+    Column {
+        key: "artist",
+        label: "Artist",
+        default_on: true,
+    },
+    Column {
+        key: "album",
+        label: "Album",
+        default_on: false,
+    },
+    Column {
+        key: "year",
+        label: "Year",
+        default_on: false,
+    },
+    Column {
+        key: "genre",
+        label: "Genre",
+        default_on: false,
+    },
+    Column {
+        key: "duration",
+        label: "Duration",
+        default_on: false,
+    },
+    Column {
+        key: "plays",
+        label: "Plays",
+        default_on: false,
+    },
+    Column {
+        key: "rating",
+        label: "Rating",
+        default_on: false,
+    },
+    Column {
+        key: "favourite",
+        label: "Favourite",
+        default_on: false,
+    },
 ];
 
 /// The queue panel's config: the shared chrome, the album heading mode, and
@@ -395,8 +439,10 @@ impl QueuePanel {
         // single query each. The plays, loose-tag, and row passes below all read
         // from this instead of hitting id_for and meta_for twice apiece per
         // entry, which was four round trips a row on every rebuild.
-        let resolved: Vec<Option<(i64, TrackMeta)>> =
-            queued.iter().map(|e| library.resolve_path(&e.path)).collect();
+        let resolved: Vec<Option<(i64, TrackMeta)>> = queued
+            .iter()
+            .map(|e| library.resolve_path(&e.path))
+            .collect();
         let playing_resolved: Option<(i64, TrackMeta)> = self
             .playing_path
             .as_ref()
@@ -975,7 +1021,12 @@ impl QueuePanel {
                     }
                     QRow::AlbumMeta(g) => {
                         let g = *g;
-                        track_columns::album_meta_row(ix, &mut self.albums[g as usize], &self.state, cx)
+                        track_columns::album_meta_row(
+                            ix,
+                            &mut self.albums[g as usize],
+                            &self.state,
+                            cx,
+                        )
                     }
                     QRow::Track(ti) => {
                         let ti = *ti as usize;
@@ -1020,7 +1071,7 @@ impl QueuePanel {
             // The hover group the rating and favourite cells reveal on.
             .group(track_cells::ROW_GROUP)
             .w_full()
-            .h(px(ROW_H))
+            .h(palette::scaled_px(ROW_H))
             .px(tokens::SPACE_SM)
             .flex()
             .flex_row()
@@ -1260,7 +1311,11 @@ impl PanelSettings for QueuePanel {
 
     /// The Behavior page's search section: show the box, and follow the
     /// shared query or filter by the panel's own, the searching views' knob.
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn behavior(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         Some(crate::query::shared_query::search_section(
             self.config.search,
             |this: &mut Self, on, cx| this.set_search(on, cx),
@@ -1405,15 +1460,21 @@ impl Panel for QueuePanel {
             window,
             cx,
         );
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            QueuePanel::new(state, config, window, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                QueuePanel::new(state, config, window, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),
@@ -1479,7 +1540,7 @@ impl QueuePanel {
             let mut strip = div()
                 .flex_none()
                 .w_full()
-                .h(px(ROW_H))
+                .h(palette::scaled_px(ROW_H))
                 .px(tokens::SPACE_SM)
                 .flex()
                 .flex_row()
@@ -1562,7 +1623,9 @@ impl QueuePanel {
         // space below the rows, enqueues too, so a drag need not land on a
         // row. A drop on a row is caught by the row's own handler first.
         let content = content
-            .drag_over::<PlayDrag>(|style, _, _, _| style.bg(palette::alpha(palette::accent(), 0x0f)))
+            .drag_over::<PlayDrag>(|style, _, _, _| {
+                style.bg(palette::alpha(palette::accent(), 0x0f))
+            })
             .on_drop(cx.listener(move |this, drag: &PlayDrag, _, cx| {
                 this.enqueue_dropped(drag, cx);
             }))

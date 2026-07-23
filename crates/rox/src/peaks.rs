@@ -14,8 +14,8 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use rox_library::hash::fnv1a;
 use crate::settings;
+use rox_library::hash::fnv1a;
 
 /// Identifies the layout; bump it when the format changes and old entries
 /// read as misses and get rewritten.

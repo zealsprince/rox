@@ -12,10 +12,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, Context, Div, Entity, EventEmitter,
-    FocusHandle, Focusable, KeyDownEvent, MouseButton,
-    ScrollStrategy, ScrollWheelEvent, SharedString, Stateful, Subscription, WeakEntity,
-    Window,
+    div, prelude::*, px, AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle,
+    Focusable, KeyDownEvent, MouseButton, ScrollStrategy, ScrollWheelEvent, SharedString, Stateful,
+    Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableEvent, TableState};
@@ -30,8 +29,8 @@ use crate::group_head::{self, Headers};
 use crate::panel::{self, AppState, PanelChrome, ResumeIdle, ScrubState};
 use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
-use crate::settings::ui as settings_ui;
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::settings::ui as settings_ui;
 use crate::thumbs::Thumb;
 use crate::track_ui::track_cells;
 use crate::track_ui::track_drag::{PlayDrag, PlayDragPreview};
@@ -48,7 +47,6 @@ const ART_ROUNDING_MAX: f32 = 24.;
 const PAGE_ROWS: isize = 25;
 
 pub(crate) use crate::catalog::{Library, LibraryEvent};
-
 
 mod columns;
 
@@ -327,7 +325,12 @@ impl TrackTable {
     /// Resolve view rows to their files in row order, through the same per-id
     /// path cache the cover column fills, so a drag never re-queries the
     /// catalog once a track's path is known.
-    fn resolve_drag_paths(&mut self, rows: &[usize], projection: &Projection, cx: &App) -> Vec<PathBuf> {
+    fn resolve_drag_paths(
+        &mut self,
+        rows: &[usize],
+        projection: &Projection,
+        cx: &App,
+    ) -> Vec<PathBuf> {
         let ids: Vec<i64> = rows
             .iter()
             .filter_map(|&i| self.track_at(i))
@@ -391,8 +394,10 @@ impl TrackTable {
 
     /// The edge length of an expanded header's cover tile: the full
     /// two-row block, so the art squares off exactly against the text.
+    /// Scaled like the table scales its rows, so the square holds at any
+    /// app font size or panel override.
     fn tile_side(&self) -> gpui::Pixels {
-        self.density.size().table_row_height() * 2.
+        self.density.size().table_row_height() * 2. * palette::row_scale()
     }
 
     /// The heading look knobs packaged for the shared surface, mirrored
@@ -975,7 +980,9 @@ impl TableDelegate for TrackTable {
             window,
             cx,
             move |_, cx| {
-                let Some(panel) = play_panel.upgrade() else { return };
+                let Some(panel) = play_panel.upgrade() else {
+                    return;
+                };
                 panel.update(cx, |panel, cx| match from_row {
                     Some(ix) => panel.play_from(ix, cx),
                     None => panel.play_rows(play_rows.clone(), cx),
@@ -1076,7 +1083,8 @@ impl TableDelegate for TrackTable {
                     path
                 }
             };
-            let thumb = crate::track_ui::track_columns::cover_thumb(&self.state, path.as_deref(), true, cx);
+            let thumb =
+                crate::track_ui::track_columns::cover_thumb(&self.state, path.as_deref(), true, cx);
             return crate::track_ui::track_columns::cover_cell(&thumb).into_any_element();
         }
         let cell = match key.as_ref() {
@@ -1110,11 +1118,9 @@ impl TableDelegate for TrackTable {
             "duration" => cell
                 .text_color(palette::text_muted())
                 .child(SharedString::from(fmt_ms(v.duration_ms))),
-            "rating" => track_cells::rating(
-                self.state.clone(),
-                projection.db_id[row as usize],
-                v.rating,
-            ),
+            "rating" => {
+                track_cells::rating(self.state.clone(), projection.db_id[row as usize], v.rating)
+            }
             "favourite" => {
                 let id = projection.db_id[row as usize];
                 track_cells::favourite(self.state.clone(), id, self.favourites.contains(&id))
@@ -1843,9 +1849,10 @@ impl LibraryPanel {
     /// The view row at the top of the viewport, read off the table's
     /// scroll handle. The uniform list never reports child bounds to its
     /// base handle, so the row comes from the pixel offset over the row
-    /// height - the density's, the same fixed height every row renders
-    /// at (the handle's own `last_item_size.item` is the viewport, not a
-    /// row). A restore still pending (the panel never painted) reports
+    /// height - the density's scaled by the app font, the same height
+    /// every row renders at (the handle's own `last_item_size.item` is
+    /// the viewport, not a row). A restore still pending (the panel never
+    /// painted) reports
     /// its target, so an unshown panel round-trips its position instead
     /// of dropping to zero.
     fn scroll_row(&self, cx: &App) -> usize {
@@ -1857,7 +1864,20 @@ impl LibraryPanel {
         if let Some(deferred) = &handle.deferred_scroll_to_item {
             return deferred.item_index;
         }
-        let row_height = table.delegate().density.size().table_row_height();
+        // The rendered rows scale by the app font times this panel's own
+        // override. A dump save runs outside the panel's render, so the
+        // render-time thread-local scale isn't in scope; read the override
+        // off our own theme instead so the offset-to-row math still matches
+        // the rows on screen.
+        let panel_scale = self
+            .chrome
+            .theme
+            .font_scale
+            .map(|s| s.clamp(palette::PANEL_FONT_SCALE_MIN, palette::PANEL_FONT_SCALE_MAX))
+            .unwrap_or(1.0);
+        let row_height = table.delegate().density.size().table_row_height()
+            * palette::font_scale()
+            * panel_scale;
         if row_height <= px(0.) {
             return 0;
         }
@@ -1881,7 +1901,11 @@ impl LibraryPanel {
                     delegate.columns.remove(ix);
                     // A hidden sort column leaves no header to clear the
                     // sort; drop back to the canonical order instead.
-                    if delegate.sort.as_ref().is_some_and(|(k, _)| k.as_ref() == key) {
+                    if delegate
+                        .sort
+                        .as_ref()
+                        .is_some_and(|(k, _)| k.as_ref() == key)
+                    {
                         delegate.sort = None;
                         sort_cleared = true;
                     }
@@ -2755,15 +2779,21 @@ impl Panel for LibraryPanel {
         // Panel section: operations on the panel itself, not its contents.
         // Duplicate copies this view's config, the query included, over the
         // same catalog and player.
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config(cx))
-            };
-            LibraryPanel::new(state, config, window, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config(cx))
+                };
+                LibraryPanel::new(state, config, window, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),

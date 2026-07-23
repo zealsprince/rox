@@ -7,7 +7,6 @@
 //! Items run through the workspace that registered the panel, which is why
 //! the builder carries its handle.
 
-
 use gpui::{
     anchored, deferred, div, prelude::*, px, svg, AnyElement, App, Context, Div, EventEmitter,
     FocusHandle, Focusable, MouseButton, MouseDownEvent, Pixels, Point, SharedString, WeakEntity,
@@ -18,14 +17,14 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
-use crate::panel_catalog::PanelDef;
 use crate::design::{palette, tokens};
 use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
+use crate::panel_catalog::PanelDef;
 use crate::panel_settings;
 use crate::settings::{self, Settings};
 use crate::workspace::{
-    menu_section, panel_menu_item, shortcut_for, LayoutTarget, Menu, MenuAction, MenuEntry,
-    MenuItem, Workspace, WorkspaceTarget, MENUS,
+    menu_item_display, menu_section, panel_menu_item, shortcut_for, LayoutTarget, Menu, MenuAction,
+    MenuEntry, MenuItem, Workspace, WorkspaceTarget, MENUS,
 };
 
 /// The menu panel's per-view config: what a saved layout restores, and
@@ -204,8 +203,11 @@ impl MenuPanel {
             MenuAction::ToggleMenubar => settings::hide_menubar(),
             MenuAction::ToggleDecorations => settings::os_decorations(),
             MenuAction::ToggleQuitToTray => settings::quit_to_tray(),
+            MenuAction::ToggleArtTheming => palette::art_theming(),
             _ => false,
         };
+        let is_playing = self.state.player.read(cx).is_playing();
+        let (label, item_icon) = menu_item_display(item, is_playing);
         row()
             .on_mouse_down(
                 MouseButton::Left,
@@ -217,8 +219,8 @@ impl MenuPanel {
                     ws.update(cx, |ws, cx| ws.run(action, window, cx));
                 }),
             )
-            .child(icon(item.icon))
-            .child(item.label)
+            .child(icon(item_icon))
+            .child(label)
             // The trailing slot: the row's keybinding, or the check while a
             // toggle row is on. The spacer pushes it to the right edge.
             .when_some(shortcut_for(action), |d, keys| {
@@ -733,19 +735,25 @@ impl Panel for MenuPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, _window, cx| {
-            let (state, workspace, config) = {
-                let panel = this.read(cx);
-                (
-                    panel.state.clone(),
-                    panel.workspace.clone(),
-                    panel.config.clone(),
-                )
-            };
-            MenuPanel::new(state, workspace, config, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, _window, cx| {
+                let (state, workspace, config) = {
+                    let panel = this.read(cx);
+                    (
+                        panel.state.clone(),
+                        panel.workspace.clone(),
+                        panel.config.clone(),
+                    )
+                };
+                MenuPanel::new(state, workspace, config, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),

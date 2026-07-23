@@ -624,7 +624,6 @@ impl LyricsPanel {
         }
         cx.notify();
     }
-
 }
 
 impl PanelSettings for LyricsPanel {
@@ -878,9 +877,8 @@ impl PanelSettings for LyricsPanel {
     /// family, weight, and size.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let fraction = ((self.config.font_size - FONT_MIN) / (FONT_MAX - FONT_MIN)).clamp(0., 1.);
-        let spacing_fraction = ((self.config.line_spacing - SPACING_MIN)
-            / (SPACING_MAX - SPACING_MIN))
-            .clamp(0., 1.);
+        let spacing_fraction =
+            ((self.config.line_spacing - SPACING_MIN) / (SPACING_MAX - SPACING_MIN)).clamp(0., 1.);
         // Reset the lyric type back to its defaults: family off to the app
         // font, weight, size, and spacing to the built-in look.
         let reset = settings_ui::small_button(
@@ -1085,15 +1083,21 @@ impl Panel for LyricsPanel {
         } else {
             menu
         };
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, _window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            LyricsPanel::new(state, config, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, _window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                LyricsPanel::new(state, config, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),
@@ -1691,7 +1695,6 @@ impl LyricsPanel {
                     ),
             )
     }
-
 }
 
 /// A non-active line's opacity under the distance falloff: `dim` shaved

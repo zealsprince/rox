@@ -25,9 +25,9 @@ use gpui_component::{Icon, Sizable as _};
 use rox_dock::{DockArea, Panel, PanelRegistry, PanelState, PanelView};
 
 use crate::assets::icons;
-use crate::panel_catalog::{self as catalog, PanelDef};
 use crate::design::{palette, tokens};
 use crate::panel::AppState;
+use crate::panel_catalog::{self as catalog, PanelDef};
 use crate::panel_settings;
 use crate::workspace::Workspace;
 

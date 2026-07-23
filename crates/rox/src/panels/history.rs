@@ -12,9 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
     div, prelude::*, px, uniform_list, App, Context, Div, Entity, EventEmitter, FocusHandle,
-    Focusable,
-    MouseButton, MouseDownEvent, SharedString, Stateful, Subscription, UniformListScrollHandle,
-    WeakEntity, Window,
+    Focusable, MouseButton, MouseDownEvent, SharedString, Stateful, Subscription,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -65,18 +64,66 @@ impl HistoryView {
 /// own, drawn here; the rest are the shared columns [`track_columns::cell`]
 /// draws. The view sets the query order, not which columns show.
 const COLUMNS: &[Column] = &[
-    Column { key: "cover", label: "Cover", default_on: false },
-    Column { key: "number", label: "Number", default_on: false },
-    Column { key: "name", label: "Name", default_on: true },
-    Column { key: "artist", label: "Artist", default_on: true },
-    Column { key: "album", label: "Album", default_on: false },
-    Column { key: "year", label: "Year", default_on: false },
-    Column { key: "genre", label: "Genre", default_on: false },
-    Column { key: "duration", label: "Duration", default_on: false },
-    Column { key: "plays", label: "Plays", default_on: true },
-    Column { key: "lastplayed", label: "Last Played", default_on: true },
-    Column { key: "rating", label: "Rating", default_on: true },
-    Column { key: "favourite", label: "Favourite", default_on: true },
+    Column {
+        key: "cover",
+        label: "Cover",
+        default_on: false,
+    },
+    Column {
+        key: "number",
+        label: "Number",
+        default_on: false,
+    },
+    Column {
+        key: "name",
+        label: "Name",
+        default_on: true,
+    },
+    Column {
+        key: "artist",
+        label: "Artist",
+        default_on: true,
+    },
+    Column {
+        key: "album",
+        label: "Album",
+        default_on: false,
+    },
+    Column {
+        key: "year",
+        label: "Year",
+        default_on: false,
+    },
+    Column {
+        key: "genre",
+        label: "Genre",
+        default_on: false,
+    },
+    Column {
+        key: "duration",
+        label: "Duration",
+        default_on: false,
+    },
+    Column {
+        key: "plays",
+        label: "Plays",
+        default_on: true,
+    },
+    Column {
+        key: "lastplayed",
+        label: "Last Played",
+        default_on: true,
+    },
+    Column {
+        key: "rating",
+        label: "Rating",
+        default_on: true,
+    },
+    Column {
+        key: "favourite",
+        label: "Favourite",
+        default_on: true,
+    },
 ];
 
 /// A flattened display row: an album heading (Recent view only), or a track
@@ -530,7 +577,12 @@ impl HistoryPanel {
                     }
                     Row::AlbumMeta(g) => {
                         let g = *g;
-                        track_columns::album_meta_row(ix, &mut self.albums[g as usize], &self.state, cx)
+                        track_columns::album_meta_row(
+                            ix,
+                            &mut self.albums[g as usize],
+                            &self.state,
+                            cx,
+                        )
                     }
                     Row::Track(ti) => {
                         let ti = *ti as usize;
@@ -554,7 +606,7 @@ impl HistoryPanel {
             // The hover group the rating and favourite cells reveal on.
             .group(track_cells::ROW_GROUP)
             .w_full()
-            .h(px(ROW_H))
+            .h(palette::scaled_px(ROW_H))
             .px(tokens::SPACE_SM)
             .flex()
             .flex_row()
@@ -803,7 +855,9 @@ impl PanelSettings for HistoryPanel {
             .when(recent, |d| {
                 d.child(panel::setting_row(
                     "Headings",
-                    Some("Break the recent list into album runs; Expanded adds the cover and stats"),
+                    Some(
+                        "Break the recent list into album runs; Expanded adds the cover and stats",
+                    ),
                     panel::choices(
                         &[
                             ("Off", Headers::Off),
@@ -821,7 +875,11 @@ impl PanelSettings for HistoryPanel {
 
     /// The Behavior page's search section: show the box, and follow the
     /// shared query or filter by the panel's own.
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn behavior(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         Some(crate::query::shared_query::search_section(
             self.config.search,
             |this: &mut Self, on, cx| this.set_search(on, cx),
@@ -945,15 +1003,21 @@ impl Panel for HistoryPanel {
             window,
             cx,
         );
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            HistoryPanel::new(state, config, window, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                HistoryPanel::new(state, config, window, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),

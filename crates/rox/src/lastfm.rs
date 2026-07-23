@@ -410,7 +410,10 @@ impl Scrobbler {
         // listen rule drives history, the user's threshold drives the
         // scrobble. They accrue off the same clock but cross apart.
         let listens = self.watch.as_ref().is_some_and(Self::qualifies_listen);
-        let scrobbles = self.watch.as_ref().is_some_and(|w| self.qualifies_scrobble(w));
+        let scrobbles = self
+            .watch
+            .as_ref()
+            .is_some_and(|w| self.qualifies_scrobble(w));
 
         // The listen signal fires on the listen-rule crossing no matter
         // where scrobbling stands: history records every real listen.

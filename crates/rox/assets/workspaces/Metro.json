@@ -1,0 +1,546 @@
+{
+  "version": 1,
+  "name": "Metro",
+  "layouts": [
+    {
+      "name": "Metro",
+      "dump": {
+        "version": 1,
+        "center": {
+          "panel_name": "StackPanel",
+          "children": [
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "menu",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_width": 24.0,
+                          "max_height": 24.0,
+                          "align": "left"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "search",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_height": 24.0,
+                          "chips": "inline"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "window controls",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_width": 128.0,
+                          "max_height": 24.0,
+                          "min_width": 128.0,
+                          "style": "icons",
+                          "mini": true,
+                          "align": "right"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    36.0,
+                    1096.0,
+                    128.0
+                  ],
+                  "axis": 0
+                }
+              }
+            },
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "album grid",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "query": "",
+                          "search": false,
+                          "query_source": "global",
+                          "vertical": true,
+                          "tile": 208.0,
+                          "follow_playing": true,
+                          "resume_playing": false,
+                          "smooth_follow": true,
+                          "dim_playing": false,
+                          "dim": 60.0,
+                          "rounding": 0.0,
+                          "gap": 8.0,
+                          "labels": true,
+                          "label_align": "left",
+                          "scroll": 3
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "StackPanel",
+                  "children": [
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "cover art",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "min_width": 200.0,
+                              "min_height": 200.0,
+                              "source": "playing",
+                              "align": "left",
+                              "stretch": false
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "biography",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "source": "playing",
+                              "portrait": false,
+                              "header_aspect": true,
+                              "header_fill": true,
+                              "background": true,
+                              "stats": true,
+                              "tags": true,
+                              "similar": true
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "stack": {
+                      "sizes": [
+                        340.0,
+                        336.0
+                      ],
+                      "axis": 1
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    920.0,
+                    340.0
+                  ],
+                  "axis": 0
+                }
+              }
+            },
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "cover art",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "anchor": true,
+                          "max_width": 48.0,
+                          "max_height": 48.0,
+                          "source": "playing",
+                          "align": "left",
+                          "stretch": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "track info",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "anchor": true,
+                          "max_height": 48.0,
+                          "align": "left"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "seek",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_height": 24.0,
+                          "timings": true,
+                          "show_total": false,
+                          "scrobble_marker": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "playback",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_height": 24.0,
+                          "align": "right",
+                          "stop": false,
+                          "random": true
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "volume",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_width": 200.0,
+                          "max_height": 24.0,
+                          "align": "right",
+                          "stretch": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    52.0,
+                    300.0,
+                    402.0,
+                    306.0,
+                    200.0
+                  ],
+                  "axis": 0
+                }
+              }
+            }
+          ],
+          "info": {
+            "stack": {
+              "sizes": [
+                32.0,
+                676.0,
+                48.0
+              ],
+              "axis": 1
+            }
+          }
+        }
+      },
+      "size": {
+        "width": 1280.0,
+        "height": 820.0
+      }
+    },
+    {
+      "name": "Metro Mini",
+      "dump": {
+        "version": 1,
+        "center": {
+          "panel_name": "StackPanel",
+          "children": [
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "cover art",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "anchor": true,
+                      "source": "playing",
+                      "align": "left",
+                      "stretch": false
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            },
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "StackPanel",
+                  "children": [
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "track info",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "locked": true,
+                              "anchor": true,
+                              "align": "left"
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "mini toggle",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "locked": true,
+                              "max_width": 26.0,
+                              "align": "left"
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "stack": {
+                      "sizes": [
+                        430.0,
+                        26.0
+                      ],
+                      "axis": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "seek",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_height": 20.0,
+                          "timings": true,
+                          "show_total": false,
+                          "scrobble_marker": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    28.0,
+                    22.0
+                  ],
+                  "axis": 1
+                }
+              }
+            }
+          ],
+          "info": {
+            "stack": {
+              "sizes": [
+                56.0,
+                456.0
+              ],
+              "axis": 0
+            }
+          }
+        }
+      },
+      "size": {
+        "width": 540.0,
+        "height": 88.0
+      }
+    }
+  ],
+  "primary_layout": "Metro",
+  "mini_layout": "Metro Mini",
+  "palette": {
+    "accent": "#ff0097",
+    "accent_hover": "#ff40b0",
+    "highlight": "#ffffff",
+    "border": "#1e1e1e",
+    "border_light": "#282828",
+    "text_bright": "#ffffff",
+    "text_on_accent": "#ffffff",
+    "bg_root": "#000000",
+    "bg_panel": "#050505",
+    "bg_elevated": "#0a0a0a",
+    "bg_menubar": "#000000",
+    "bg_menu": "#101010",
+    "bg_control": "#141414",
+    "bg_menu_hover": "#1a1a1a",
+    "bg_control_active": "#202020",
+    "bg_control_hover": "#242424",
+    "bg_input": "#0a0a0a",
+    "bg_toolbar": "#050505",
+    "text": "#d0d0d0",
+    "text_secondary": "#a0a0a0",
+    "text_dim": "#8a8a8a",
+    "text_muted": "#6a6a6a",
+    "text_faint": "#525252",
+    "gridline": "#3a3a3a"
+  },
+  "appearance": {
+    "surface_opacity": 1.0,
+    "backdrop_strength": 1.0,
+    "frame": {
+      "margin": 0.0,
+      "padding": 0.0,
+      "rounding": 0.0,
+      "border": 0.0
+    },
+    "art_theming": true,
+    "keep_dark": true,
+    "rating_style": "stars",
+    "quick_play": {
+      "show_cover": true,
+      "show_subtitle": true,
+      "show_duration": true,
+      "comfortable": true
+    },
+    "hide_menubar": true,
+    "os_decorations": false
+  }
+}

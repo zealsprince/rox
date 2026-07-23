@@ -58,9 +58,13 @@ pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: 
         path.clone(),
         move |cx| {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-            crate::panel::open_child_window(cx, "rox - Edit Lyrics", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-                cx.new(|cx| LyricsEdit::new(state, panel, path, window, cx))
-            })
+            crate::panel::open_child_window(
+                cx,
+                "rox - Edit Lyrics",
+                bounds,
+                Some(settings_ui::MIN_SIZE),
+                move |window, cx| cx.new(|cx| LyricsEdit::new(state, panel, path, window, cx)),
+            )
         },
         cx,
     );

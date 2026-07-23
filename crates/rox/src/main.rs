@@ -199,6 +199,7 @@ fn main() {
         palette::set_keep_dark(settings.keep_dark, cx);
         palette::set_art_theming(settings.art_theming, cx);
         settings::set_app_font(settings.app_font.clone(), cx);
+        palette::set_app_font_size(settings.app_font_size, cx);
         settings::set_rating_style(settings.rating_style, cx);
         settings::set_hide_menubar(settings.hide_menubar, cx);
         settings::set_os_decorations(settings.os_decorations);

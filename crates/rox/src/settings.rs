@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use rox_playback::engine::LoopMode;
 
-use crate::design::palette::Palette;
+use crate::design::palette::{self, Palette};
 
 /// The folder holding the running executable, portable mode's anchor.
 /// None when the exe path can't be read, which just leaves portable off.
@@ -230,6 +230,10 @@ pub struct Settings {
     /// file survives moving between machines.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_font: Option<String>,
+    /// The app-wide text size in px, the rem every window's rem-based text
+    /// scales from. Clamped to the palette's shared range on apply; 16 is
+    /// the stock size the app has always drawn at.
+    pub app_font_size: f32,
     /// The active icon pack by name, a folder of SVGs under the packs dir
     /// that overrides the built-in icons. None uses the built-in set, as
     /// does a name whose folder is gone. Applied at startup; a switch lands
@@ -733,6 +737,7 @@ pub struct AppearanceBundle {
     pub keep_dark: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_font: Option<String>,
+    pub app_font_size: f32,
     pub rating_style: RatingStyle,
     pub quick_play: QuickPlayConfig,
     pub hide_menubar: bool,
@@ -748,6 +753,7 @@ impl Default for AppearanceBundle {
             art_theming: false,
             keep_dark: false,
             app_font: None,
+            app_font_size: palette::FONT_SIZE_DEFAULT,
             rating_style: RatingStyle::default(),
             quick_play: QuickPlayConfig::default(),
             hide_menubar: false,
@@ -808,6 +814,7 @@ impl WorkspaceBundle {
                 art_theming: s.art_theming,
                 keep_dark: s.keep_dark,
                 app_font: s.app_font.clone(),
+                app_font_size: s.app_font_size,
                 rating_style: s.rating_style,
                 quick_play: s.quick_play.clone(),
                 hide_menubar: s.hide_menubar,
@@ -834,6 +841,7 @@ impl WorkspaceBundle {
         s.art_theming = a.art_theming;
         s.keep_dark = a.keep_dark;
         s.app_font = a.app_font;
+        s.app_font_size = a.app_font_size;
         s.rating_style = a.rating_style;
         s.quick_play = a.quick_play;
         s.hide_menubar = a.hide_menubar;
@@ -939,6 +947,7 @@ impl Default for Settings {
             frame: Frame::DEFAULT,
             palette: BTreeMap::new(),
             app_font: None,
+            app_font_size: palette::FONT_SIZE_DEFAULT,
             icon_pack: None,
             art_theming: false,
             keep_dark: false,

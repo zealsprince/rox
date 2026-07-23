@@ -72,9 +72,8 @@ fn sanitize(name: &str) -> String {
 /// created name for the caller to select, or an error string to surface.
 pub fn create(name: &str) -> Result<String, String> {
     let base = sanitize(name);
-    let name = crate::workspaces::unique_name(&base, |candidate| {
-        packs_dir().join(candidate).exists()
-    });
+    let name =
+        crate::workspaces::unique_name(&base, |candidate| packs_dir().join(candidate).exists());
     let dir = packs_dir().join(&name);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     for path in icons::CATALOG {

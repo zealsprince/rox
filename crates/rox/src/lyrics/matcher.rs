@@ -23,14 +23,16 @@ use rox_library::lyrics::{self, Source};
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
-use crate::matching::{confidence_badge, confidence_bar, note, open_or_focus, Phase, WindowRegistry};
+use crate::matching::{
+    confidence_badge, confidence_bar, note, open_or_focus, Phase, WindowRegistry,
+};
 use crate::panel::AppState;
 use crate::panels::library::fmt_ms;
 use crate::panels::lyrics::LyricsPanel;
 use crate::player::fmt_time;
 use crate::providers::{self, LyricsCandidate, TrackQuery};
-use crate::settings::{lyrics_dir, LyricsSave, Settings};
 use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
+use crate::settings::{lyrics_dir, LyricsSave, Settings};
 
 /// The default window size: room for the candidate list beside a preview
 /// that reads a verse or two without scrolling.
@@ -58,9 +60,13 @@ pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: 
         path.clone(),
         move |cx| {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-            crate::panel::open_child_window(cx, "rox - Find Lyrics", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-                cx.new(|cx| LyricsMatch::new(state, panel, path, window, cx))
-            })
+            crate::panel::open_child_window(
+                cx,
+                "rox - Find Lyrics",
+                bounds,
+                Some(settings_ui::MIN_SIZE),
+                move |window, cx| cx.new(|cx| LyricsMatch::new(state, panel, path, window, cx)),
+            )
         },
         cx,
     );

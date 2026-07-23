@@ -17,8 +17,9 @@ use std::time::Instant;
 
 use gpui::{
     div, prelude::*, px, svg, uniform_list, App, Context, Div, EventEmitter, FocusHandle,
-    Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, ScrollStrategy, ScrollWheelEvent,
-    SharedString, Stateful, Subscription, UniformListScrollHandle, WeakEntity, Window,
+    Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, ScrollStrategy,
+    ScrollWheelEvent, SharedString, Stateful, Subscription, UniformListScrollHandle, WeakEntity,
+    Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
@@ -44,7 +45,6 @@ const INDENT: f32 = 14.;
 
 /// The opacity a dimmed row (outside the active facet filter) draws at.
 const DIM: f32 = 0.4;
-
 
 /// Where the tree shows cover art in place of the row icon: nowhere, on
 /// the folder rows (the album tile), on the song rows, or both.
@@ -719,11 +719,7 @@ impl FolderTreePanel {
     /// each folder's subfolders first, then its own songs. What Play
     /// Folder queues and the folder context menu acts on.
     fn subtree_rows(&self, path: &str) -> Vec<u32> {
-        fn collect(
-            node: &Node,
-            folder_tracks: &HashMap<String, Vec<u32>>,
-            out: &mut Vec<u32>,
-        ) {
+        fn collect(node: &Node, folder_tracks: &HashMap<String, Vec<u32>>, out: &mut Vec<u32>) {
             for child in &node.children {
                 collect(child, folder_tracks, out);
             }
@@ -1131,12 +1127,12 @@ impl FolderTreePanel {
                 _ => None,
             };
             // A selected song or the cursor row wears the accent wash.
-            let lit = cursor == Some(ix)
-                || row_song_id.is_some_and(|id| self.selected.contains(&id));
+            let lit =
+                cursor == Some(ix) || row_song_id.is_some_and(|id| self.selected.contains(&id));
             let base = div()
                 .id(("folder-tree-row", ix))
                 .w_full()
-                .h(px(ROW_H))
+                .h(palette::scaled_px(ROW_H))
                 .pl(px(INDENT) * row.depth as f32 + tokens::SPACE_XS)
                 .pr(tokens::SPACE_SM)
                 .flex()
@@ -1217,9 +1213,9 @@ impl FolderTreePanel {
                             }),
                     )
                     .child(match cover {
-                        Some(thumb) => {
-                            track_columns::cover_cell(&Some(thumb)).flex_none().into_any_element()
-                        }
+                        Some(thumb) => track_columns::cover_cell(&Some(thumb))
+                            .flex_none()
+                            .into_any_element(),
                         None => svg()
                             .path(icons::FOLDER)
                             .size(px(12.))
@@ -1316,9 +1312,9 @@ impl FolderTreePanel {
                     // their folder's children.
                     .child(div().flex_none().w(px(16.)))
                     .child(match cover {
-                        Some(thumb) => {
-                            track_columns::cover_cell(&Some(thumb)).flex_none().into_any_element()
-                        }
+                        Some(thumb) => track_columns::cover_cell(&Some(thumb))
+                            .flex_none()
+                            .into_any_element(),
                         None => svg()
                             .path(icons::MUSIC)
                             .size(px(12.))
@@ -1401,7 +1397,11 @@ impl PanelSettings for FolderTreePanel {
             .into_any_element()
     }
 
-    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn behavior(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         Some(
             div()
                 .flex()
@@ -1674,13 +1674,18 @@ impl Panel for FolderTreePanel {
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            FolderTreePanel::new(state, config, window, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                FolderTreePanel::new(state, config, window, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),
@@ -1706,7 +1711,9 @@ impl FolderTreePanel {
         if let Some(ix) = self.glide_to {
             let count = self.visible.len();
             match panel::glide_target(&self.scroll, ix, count) {
-                Some(target) if !panel::glide_step(&self.scroll, target, dt) => self.glide_to = None,
+                Some(target) if !panel::glide_step(&self.scroll, target, dt) => {
+                    self.glide_to = None
+                }
                 // Not laid out yet, or still moving: keep going.
                 _ => window.request_animation_frame(),
             }
@@ -1717,9 +1724,9 @@ impl FolderTreePanel {
             .flex_col()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                this.on_panel_key(event, cx)
-            }))
+            .on_key_down(
+                cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_panel_key(event, cx)),
+            )
             // Any scroll or press over the tree counts as browsing; the stamp
             // only restarts the idle clock, leaving the gesture to the row
             // handlers underneath, so nothing acts twice.
@@ -1838,7 +1845,9 @@ impl FolderTreePanel {
                         window,
                         cx,
                         move |_, cx| {
-                            let Some(this) = play_panel.upgrade() else { return };
+                            let Some(this) = play_panel.upgrade() else {
+                                return;
+                            };
                             this.update(cx, |this, cx| this.play_folder(&play_path.clone(), cx));
                         },
                     );
@@ -1851,7 +1860,9 @@ impl FolderTreePanel {
                         })
                         .icon(Icon::default().path(icons::FUNNEL))
                         .on_click(move |_, _, cx| {
-                            let Some(this) = scope_panel.upgrade() else { return };
+                            let Some(this) = scope_panel.upgrade() else {
+                                return;
+                            };
                             this.update(cx, |this, cx| this.toggle_scope(path.clone(), cx));
                         }),
                     )
@@ -1885,7 +1896,9 @@ impl FolderTreePanel {
                     let play_panel = weak.clone();
                     let play_ids = selection.clone();
                     panel::track_actions(menu, state, selection, label, window, cx, move |_, cx| {
-                        let Some(this) = play_panel.upgrade() else { return };
+                        let Some(this) = play_panel.upgrade() else {
+                            return;
+                        };
                         this.update(cx, |this, cx| {
                             if play_ids.len() > 1 {
                                 this.play_ids(&play_ids, cx);
@@ -1927,10 +1940,7 @@ fn build_roots(folders: &[String]) -> Vec<Node> {
     for path in folders.iter().filter(|s| !s.is_empty()) {
         let mut node = &mut root;
         let mut start = 0;
-        for (ix, _) in path
-            .match_indices(MAIN_SEPARATOR)
-            .chain([(path.len(), "")])
-        {
+        for (ix, _) in path.match_indices(MAIN_SEPARATOR).chain([(path.len(), "")]) {
             if ix > start {
                 let component = path[start..ix].to_string();
                 node = node.children.entry(component).or_default();
@@ -2099,7 +2109,10 @@ mod tests {
         // exact interned paths so a pick matches them.
         let cult = &top.children[1];
         assert_eq!(cult.children.len(), 2);
-        assert_eq!(cult.children[0].path, "/mnt/Zeal/Music/Apocalyptica - Cult/CD1");
+        assert_eq!(
+            cult.children[0].path,
+            "/mnt/Zeal/Music/Apocalyptica - Cult/CD1"
+        );
     }
 
     /// A folder with tracks stops the collapse even with a single child,
@@ -2142,12 +2155,23 @@ mod tests {
         names.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(
             names,
-            ["1 lost.mp3", "2 never ever.mp3", "10 moonbeam.mp3", "12 emerald.mp3"]
+            [
+                "1 lost.mp3",
+                "2 never ever.mp3",
+                "10 moonbeam.mp3",
+                "12 emerald.mp3"
+            ]
         );
         // Zero-padding reads as the same value, so "02" and "2" tie on
         // magnitude and only the padding breaks it.
-        assert_eq!(natural_cmp("02 x.mp3", "2 x.mp3"), std::cmp::Ordering::Greater);
-        assert_eq!(natural_cmp("03 a.mp3", "10 a.mp3"), std::cmp::Ordering::Less);
+        assert_eq!(
+            natural_cmp("02 x.mp3", "2 x.mp3"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            natural_cmp("03 a.mp3", "10 a.mp3"),
+            std::cmp::Ordering::Less
+        );
     }
 
     /// Counts fold bottom-up: a parent's count is its own tracks plus

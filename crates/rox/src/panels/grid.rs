@@ -22,9 +22,9 @@ use std::rc::Rc;
 
 use gpui::{
     canvas, div, img, prelude::*, px, size, svg, Along, AnyElement, App, Axis, Context, Div,
-    Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent,
-    MouseUpEvent, ObjectFit, Pixels, ScrollStrategy, ScrollWheelEvent, SharedString, Size,
-    Subscription, WeakEntity, Window,
+    Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Modifiers, MouseButton,
+    MouseDownEvent, MouseUpEvent, ObjectFit, Pixels, ScrollStrategy, ScrollWheelEvent,
+    SharedString, Size, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
@@ -41,8 +41,8 @@ use crate::panel::{
 use crate::panel_settings;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
 use crate::query::search::{SearchBox, SearchEvent};
-use crate::settings::ui as settings_ui;
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::settings::ui as settings_ui;
 use crate::thumbs::Thumb;
 
 /// The tile size knob's range: how wide a tile wants to be, in px. The
@@ -207,7 +207,6 @@ const FALLBACK_COLS: usize = 4;
 /// Rows of covers asked for past each edge of the viewport, so a scroll
 /// reveals loaded tiles instead of placeholders.
 const PREFETCH_ROWS: usize = 2;
-
 
 pub struct GridPanel {
     state: AppState,
@@ -751,7 +750,10 @@ impl GridPanel {
                         .get(ix)
                         .and_then(|cell| self.view.get(cell.start))
                         .and_then(|&row| {
-                            projection.albums.lower.get(projection.album[row as usize] as usize)
+                            projection
+                                .albums
+                                .lower
+                                .get(projection.album[row as usize] as usize)
                         })
                         .is_some_and(|album| album.starts_with(&needle))
                 })
@@ -1098,22 +1100,22 @@ impl GridPanel {
             TitleAlign::Center => base.text_center(),
             TitleAlign::Right => base.text_right(),
         }
-            .child(
+        .child(
+            div()
+                .truncate()
+                .text_sm()
+                .text_color(palette::text_bright())
+                .child(album),
+        )
+        .when(!artist.is_empty(), |d| {
+            d.child(
                 div()
                     .truncate()
-                    .text_sm()
-                    .text_color(palette::text_bright())
-                    .child(album),
+                    .text_xs()
+                    .text_color(palette::text_secondary())
+                    .child(artist),
             )
-            .when(!artist.is_empty(), |d| {
-                d.child(
-                    div()
-                        .truncate()
-                        .text_xs()
-                        .text_color(palette::text_secondary())
-                        .child(artist),
-                )
-            })
+        })
     }
 
     /// Solo or popped out there is no title bar to host the search, so it
@@ -1608,15 +1610,21 @@ impl Panel for GridPanel {
             window,
             cx,
         );
-        let menu = panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
+        let menu =
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            GridPanel::new(state, config, window, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                GridPanel::new(state, config, window, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),
@@ -1745,9 +1753,7 @@ impl GridPanel {
                 .justify_center()
                 .text_color(palette::text_muted())
                 .child(
-                    if self.effective_query(cx).is_empty()
-                        && self.effective_filter(cx).is_empty()
-                    {
+                    if self.effective_query(cx).is_empty() && self.effective_filter(cx).is_empty() {
                         "The library is empty"
                     } else {
                         "No matches"

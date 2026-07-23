@@ -23,8 +23,8 @@ use souvlaki::{
     SeekDirection,
 };
 
-use rox_library::hash::fnv1a;
 use crate::APP_ID;
+use rox_library::hash::fnv1a;
 
 /// A media-key press mapped off souvlaki's own event vocabulary onto the
 /// transport verbs the player already speaks. Play and Pause stay distinct

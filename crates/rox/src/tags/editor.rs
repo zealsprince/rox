@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 use gpui::{
     actions, div, prelude::*, px, size, App, Bounds, Context, Div, Entity, FocusHandle,
-    Focusable as _, Global, KeyBinding, ScrollHandle, SharedString, Subscription,
-    Window, WindowHandle,
+    Focusable as _, Global, KeyBinding, ScrollHandle, SharedString, Subscription, Window,
+    WindowHandle,
 };
 use gpui_component::input::{Enter, Input, InputEvent, InputState};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
@@ -41,8 +41,8 @@ use crate::matching::{open_or_focus, WindowRegistry};
 use crate::panel::AppState;
 use crate::panels::library::{fmt_ms, Library};
 use crate::providers;
-use crate::settings::{rating_style, RatingStyle, Settings};
 use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
+use crate::settings::{rating_style, RatingStyle, Settings};
 use crate::tags::{guess, suggest};
 
 /// The form's fields in sheet order: the label each row wears, and
@@ -167,9 +167,13 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
                 .map(|s| (s.width, s.height))
                 .unwrap_or((1400., 680.));
             let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-            crate::panel::open_child_window(cx, "rox - Tag Editor", bounds, Some(settings_ui::MIN_SIZE), move |window, cx| {
-                cx.new(|cx| TagEditor::new(state, ids, window, cx))
-            })
+            crate::panel::open_child_window(
+                cx,
+                "rox - Tag Editor",
+                bounds,
+                Some(settings_ui::MIN_SIZE),
+                move |window, cx| cx.new(|cx| TagEditor::new(state, ids, window, cx)),
+            )
         },
         cx,
     );
@@ -889,7 +893,12 @@ impl TagEditor {
                             .text_color(palette::text_muted())
                             .child("pattern"),
                     )
-                    .child(div().flex_1().min_w_0().child(Input::new(&self.pattern).small()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&self.pattern).small()),
+                    )
                     .child(settings_ui::small_button(
                         "Apply",
                         icons::ARROW_DOWN,
@@ -907,18 +916,13 @@ impl TagEditor {
                     )),
             )
             .children(rows)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .map(|d| {
-                        if folded > 0 {
-                            d.child(format!("{status}, {folded} more not shown"))
-                        } else {
-                            d.child(status)
-                        }
-                    }),
-            )
+            .child(div().text_xs().text_color(palette::text_muted()).map(|d| {
+                if folded > 0 {
+                    d.child(format!("{status}, {folded} more not shown"))
+                } else {
+                    d.child(status)
+                }
+            }))
     }
 
     /// Open the metadata compare on the single edited track. The window
@@ -1046,7 +1050,9 @@ impl TagEditor {
                 // the end notes too, but by then the suppression window has
                 // long passed for all but the last few files of a big batch.
                 if library
-                    .update(cx, |library, _| library.note_self_write([edit.path.clone()]))
+                    .update(cx, |library, _| {
+                        library.note_self_write([edit.path.clone()])
+                    })
                     .is_err()
                 {
                     return;
@@ -1296,7 +1302,8 @@ impl TagEditor {
                 // A mixed batch field can be wiped across every file: its
                 // box is empty over the placeholder, so typing can only add
                 // a value, never say "clear it everywhere". The toggle does.
-                let clearable = !single && !per_track && self.mixed.get(i).copied().unwrap_or(false);
+                let clearable =
+                    !single && !per_track && self.mixed.get(i).copied().unwrap_or(false);
                 let cleared = self.cleared.get(i).copied().unwrap_or(false);
                 let field: gpui::AnyElement = if *per_track && !single {
                     let value = self.inputs[i].read(cx).value();

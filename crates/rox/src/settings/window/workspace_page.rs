@@ -611,7 +611,11 @@ impl SettingsWindow {
                     .children(self.move_controls(&slot, cx))
                     .when(!hosted, |d| {
                         let button = icon_button(
-                            if locked { icons::LOCK } else { icons::LOCK_OPEN },
+                            if locked {
+                                icons::LOCK
+                            } else {
+                                icons::LOCK_OPEN
+                            },
                             false,
                             cx.listener(move |_, _, _, cx| {
                                 panel_settings::toggle_locked_for_view(&lock_panel, cx);
@@ -623,9 +627,13 @@ impl SettingsWindow {
                         // controls.
                         d.child(if locked { button } else { reveal(button) })
                     })
-                    .child(reveal(icon_button(icons::SETTINGS, false, move |_, _, cx| {
-                        panel_settings::open_for_view(&panel, cx);
-                    }))),
+                    .child(reveal(icon_button(
+                        icons::SETTINGS,
+                        false,
+                        move |_, _, cx| {
+                            panel_settings::open_for_view(&panel, cx);
+                        },
+                    ))),
             )
             .into_any_element()
     }
@@ -956,7 +964,6 @@ impl SettingsWindow {
         self.surface_opacity = a.surface_opacity;
         self.backdrop_strength = a.backdrop_strength;
         self.frame = a.frame;
-        self.art_theming = a.art_theming;
         self.keep_dark = a.keep_dark;
         self.rating_style = a.rating_style;
         // The mini-player roles; the workspace's apply already moved its own
@@ -965,5 +972,4 @@ impl SettingsWindow {
         self.mini_layout = bundle.mini_layout.clone();
         cx.notify();
     }
-
 }

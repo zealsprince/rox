@@ -45,7 +45,11 @@ pub fn favourite(state: AppState, id: i64, on: bool) -> Div {
         .cursor_pointer()
         .child(
             svg()
-                .path(if on { icons::HEART_FILLED } else { icons::HEART })
+                .path(if on {
+                    icons::HEART_FILLED
+                } else {
+                    icons::HEART
+                })
                 .size(px(15.))
                 .text_color(if on {
                     palette::accent()

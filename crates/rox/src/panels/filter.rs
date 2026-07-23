@@ -12,9 +12,9 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, svg, uniform_list, App, Context, Div, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, MouseButton, MouseDownEvent, ScrollStrategy, SharedString, Subscription,
-    UniformListScrollHandle, WeakEntity, Window,
+    div, prelude::*, px, svg, uniform_list, App, Context, Div, EventEmitter, FocusHandle,
+    Focusable, KeyDownEvent, MouseButton, MouseDownEvent, ScrollStrategy, SharedString,
+    Subscription, UniformListScrollHandle, WeakEntity, Window,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
@@ -637,7 +637,7 @@ impl FilterPanel {
         div()
             .flex_none()
             .w_full()
-            .h(px(ROW_H))
+            .h(palette::scaled_px(ROW_H))
             .px(tokens::SPACE_SM)
             .flex()
             .flex_row()
@@ -678,7 +678,7 @@ impl FilterPanel {
                 Some(
                     div()
                         .w_full()
-                        .h(px(ROW_H))
+                        .h(palette::scaled_px(ROW_H))
                         .px(tokens::SPACE_SM)
                         .flex()
                         .flex_row()
@@ -862,13 +862,18 @@ impl Panel for FilterPanel {
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity());
-        let menu = panel::duplicate_item(menu, &cx.entity(), self.tab_panel.clone(), |this, window, cx| {
-            let (state, config) = {
-                let panel = this.read(cx);
-                (panel.state.clone(), panel.config.clone())
-            };
-            FilterPanel::new(state, config, window, cx)
-        });
+        let menu = panel::duplicate_item(
+            menu,
+            &cx.entity(),
+            self.tab_panel.clone(),
+            |this, window, cx| {
+                let (state, config) = {
+                    let panel = this.read(cx);
+                    (panel.state.clone(), panel.config.clone())
+                };
+                FilterPanel::new(state, config, window, cx)
+            },
+        );
         panel::popout_item(
             menu,
             &cx.entity(),
@@ -893,9 +898,9 @@ impl FilterPanel {
             .flex_col()
             .bg(palette::bg_root())
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                this.on_panel_key(event, cx)
-            }));
+            .on_key_down(
+                cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_panel_key(event, cx)),
+            );
         if self.config.columns.is_empty() {
             return root.child(
                 div()

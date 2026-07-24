@@ -549,9 +549,9 @@ impl SettingsWindow {
         self.panel_rows(node, depth, slot, rows, cx);
     }
 
-    /// A panel's row, and under a composite host (group, depth, slide)
-    /// its hosted children as indented rows of their own, so the tree
-    /// shows what the host holds instead of one opaque line.
+    /// A panel's row, and under a composite host (group, overlay, drawer,
+    /// slide) its hosted children as indented rows of their own, so the
+    /// tree shows what the host holds instead of one opaque line.
     fn panel_rows(
         &self,
         panel: Arc<dyn PanelView>,
@@ -762,7 +762,10 @@ impl SettingsWindow {
         let Some(preset) = crate::settings::layouts::resolve(&Settings::load(), name) else {
             return;
         };
-        let dump = preset.dump;
+        // Denoise on the way out too, not just at save: a preset saved before
+        // the store-time pass still carries widened f64 tails in settings.
+        let mut dump = preset.dump;
+        crate::workspace::denoise_f32(&mut dump);
         let home = dirs::home_dir().unwrap_or_default();
         let file = format!("{name}.json");
         let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
@@ -884,9 +887,15 @@ impl SettingsWindow {
     /// Export a workspace bundle to a file, the whole look as one shareable
     /// artifact. Works for shipped bundles too.
     fn export_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
-        let Some(bundle) = crate::workspaces::resolve(&Settings::load(), name) else {
+        let Some(mut bundle) = crate::workspaces::resolve(&Settings::load(), name) else {
             return;
         };
+        // Same denoise as the preset export: clean any widened f64 tails in the
+        // bundled layout dumps. Done in place so the bundle's own field order
+        // survives (routing it through serde_json::Value would sort the keys).
+        for layout in &mut bundle.layouts {
+            crate::workspace::denoise_f32(&mut layout.dump);
+        }
         let home = dirs::home_dir().unwrap_or_default();
         let file = format!("{name}.json");
         let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));

@@ -150,7 +150,16 @@ impl Workspace {
                     .enumerate()
                     .map(|(i, menu)| self.menu_button(i, menu, cx)),
             )
-            .child(div().flex_1())
+            // The empty middle is a drag handle, so a decorations-off
+            // window still moves by its menu bar. The move is the
+            // compositor's, same as the drag anchor panel.
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .cursor_grab()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()),
+            )
             .child(self.library_status(cx))
     }
 
@@ -770,7 +779,7 @@ impl Workspace {
                     div()
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child("Shipped"),
+                        .child("Built-in"),
                 )
             })
     }

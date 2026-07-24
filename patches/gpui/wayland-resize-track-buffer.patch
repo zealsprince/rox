@@ -1,0 +1,30 @@
+--- a/src/platform/linux/wayland/window.rs
++++ b/src/platform/linux/wayland/window.rs
+@@ -706,6 +706,28 @@ impl WaylandWindowStatePtr {
+             }
+             let device_bounds = state.bounds.to_device_pixels(state.scale);
+             state.renderer.update_drawable_size(device_bounds.size);
++            // rox patch: re-declare the window geometry now that the buffer has
++            // grown to the new size. The programmatic-resize path set geometry
++            // ahead of this, while the buffer was still the old (smaller) size,
++            // so a compositor that clips geometry to the surface (KWin) pinned
++            // the window to the old size and never heard the real one - the
++            // resize looked stuck. A configure normally re-issued geometry from
++            // the ack path, but a resize with no accompanying configure (two
++            // workspaces in a row with the same decoration mode) never got one.
++            // Declaring it here ties geometry to the buffer on every resize.
++            let geometry = inset_by_tiling(
++                state.bounds.map_origin(|_| px(0.0)),
++                state.inset(),
++                state.tiling,
++            )
++            .map(|v| v.0 as i32)
++            .map_size(|v| if v <= 0 { 1 } else { v });
++            state.xdg_surface.set_window_geometry(
++                geometry.origin.x,
++                geometry.origin.y,
++                geometry.size.width,
++                geometry.size.height,
++            );
+             (state.bounds.size, state.scale)
+         };

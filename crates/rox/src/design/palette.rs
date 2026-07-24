@@ -1275,19 +1275,18 @@ fn apply(cx: &mut App) {
             .unwrap()
             .and_then(|id| tints.get(&id).copied())
     };
-    let (palette, opacity, light) = match focused_tint {
-        Some(tint) => {
-            let light = base.art_theming
-                && !base.keep_dark
-                && tint.seed.is_some_and(|seed| seed.lightness > LIGHT_COVER);
-            (tint.snapshot(), base.surface_opacity, light)
-        }
-        None => (base.base, base.surface_opacity, false),
+    let (palette, opacity) = match focused_tint {
+        Some(tint) => (tint.snapshot(), base.surface_opacity),
+        None => (base.base, base.surface_opacity),
     };
     // Start over from the stock baseline so repeated feeds project onto
     // pristine values instead of compounding. The baseline follows the
     // ladder, so the widget tokens we never project (scrollbars,
-    // popovers, dialogs) don't sit dark on a light album.
+    // popovers, dialogs, the ghost/secondary foregrounds) don't sit dark
+    // on a light surface. Read the resolved palette's own lightness, the
+    // same cut derivation makes on a cover, so a hand-authored light
+    // theme picks the light baseline too, not just an art-derived one.
+    let light = !base.keep_dark && palette.mean_surface_lightness() > LIGHT_COVER;
     let mode = if light {
         ThemeMode::Light
     } else {
@@ -1365,9 +1364,16 @@ fn apply(cx: &mut App) {
     let structural = if opacity < 1.0 { 0.0 } else { 1.0 };
     colors.background = scaled(palette.bg_root, structural).into();
     colors.table = scaled(palette.bg_root, structural).into();
-    // The ink rule again, for the chrome's own labels and icons: as
-    // surfaces thin, foregrounds lift toward text_bright so tab titles,
-    // dock buttons, and the table header keep contrast.
+    // The ink rule again, for the chrome's own labels and icons, seeded
+    // from the ladder roles nearest their stock dark values - left stock
+    // they stay gray, which reads as a bug on a high-chroma skin like
+    // Phosphor (gray table headers and search placeholder in a sea of
+    // green). As surfaces thin they lift toward text_bright so tab
+    // titles, dock buttons, and the table header keep contrast.
+    colors.tab_foreground = palette.text.into();
+    colors.muted_foreground = palette.text_muted.into();
+    colors.secondary_foreground = palette.text_bright.into();
+    colors.table_head_foreground = palette.text_faint.into();
     let lift = 1.0 - opacity;
     for token in [
         &mut colors.tab_foreground,

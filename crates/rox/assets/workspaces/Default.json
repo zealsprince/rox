@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "name": "NekoRoX",
+  "name": "Default",
   "layouts": [
     {
-      "name": "NekoRoX",
+      "name": "Default",
       "dump": {
         "version": 1,
         "center": {
@@ -116,9 +116,16 @@
                           "info": {
                             "panel": {
                               "locked": true,
-                              "max_width": 256.0,
+                              "max_width": 300.0,
                               "max_height": 24.0,
+                              "min_width": 300.0,
                               "align": "right",
+                              "prev": true,
+                              "play": true,
+                              "next": true,
+                              "seek": true,
+                              "repeat": true,
+                              "shuffle": true,
                               "stop": true,
                               "random": true
                             }
@@ -135,7 +142,7 @@
                   "info": {
                     "stack": {
                       "sizes": [
-                        306.0
+                        300.0
                       ],
                       "axis": 0
                     }
@@ -172,9 +179,9 @@
                   "sizes": [
                     48.0,
                     40.0,
-                    725.0,
-                    64.0,
-                    306.0,
+                    584.0,
+                    43.0,
+                    300.0,
                     128.0
                   ],
                   "axis": 0
@@ -227,8 +234,7 @@
                                   "smooth_follow": true,
                                   "dim_playing": false,
                                   "dim": 60.0,
-                                  "rounding": 0.0,
-                                  "center": 8
+                                  "rounding": 0.0
                                 }
                               }
                             },
@@ -241,7 +247,7 @@
                                   "search": false,
                                   "query_source": "global",
                                   "vertical": true,
-                                  "tile": 192.0,
+                                  "tile": 160.0,
                                   "follow_playing": true,
                                   "resume_playing": false,
                                   "smooth_follow": true,
@@ -250,8 +256,7 @@
                                   "rounding": 0.0,
                                   "gap": 0.0,
                                   "labels": false,
-                                  "label_align": "left",
-                                  "scroll": 3
+                                  "label_align": "left"
                                 }
                               }
                             }
@@ -260,7 +265,7 @@
                             "panel": {
                               "title": "Art",
                               "stacked": true,
-                              "ratio": 0.3211009204387665
+                              "ratio": 0.3696
                             }
                           }
                         },
@@ -300,8 +305,8 @@
                               "source": "playing",
                               "align": "center",
                               "bold": false,
-                              "font_size": 14.12857151031494,
-                              "line_spacing": 1.899999976158142,
+                              "font_size": 14.1286,
+                              "line_spacing": 1.9,
                               "follow": true,
                               "pre_scroll": true,
                               "fade_lines": false,
@@ -309,7 +314,7 @@
                               "intro_rest": false,
                               "gap_rest": false,
                               "gap_secs": 5.0,
-                              "dim": 0.15357142686843872,
+                              "dim": 0.1536,
                               "dim_edge": "bottom",
                               "search_button": true,
                               "auto_search": false,
@@ -341,7 +346,7 @@
                   "info": {
                     "stack": {
                       "sizes": [
-                        707.0
+                        537.0
                       ],
                       "axis": 1
                     }
@@ -355,6 +360,9 @@
                       "children": [],
                       "info": {
                         "panel": {
+                          "theme": {
+                            "font_scale": 0.8975
+                          },
                           "query": "",
                           "search": false,
                           "query_source": "global",
@@ -368,11 +376,11 @@
                             },
                             {
                               "key": "title",
-                              "width": 339.0
+                              "width": 244.0
                             },
                             {
                               "key": "artist",
-                              "width": 194.0
+                              "width": 170.0
                             },
                             {
                               "key": "duration",
@@ -393,7 +401,7 @@
                           ],
                           "sort_key": null,
                           "sort_desc": false,
-                          "scroll_row": 240,
+                          "scroll_row": 163,
                           "follow_playing": true,
                           "resume_playing": false,
                           "smooth_follow": true,
@@ -409,6 +417,9 @@
                       "children": [],
                       "info": {
                         "panel": {
+                          "theme": {
+                            "font_scale": 0.9075
+                          },
                           "expanded": [
                             2
                           ],
@@ -431,6 +442,9 @@
                       "children": [],
                       "info": {
                         "panel": {
+                          "theme": {
+                            "font_scale": 0.895
+                          },
                           "headers": "off",
                           "columns": [
                             "number",
@@ -449,6 +463,9 @@
                       "children": [],
                       "info": {
                         "panel": {
+                          "theme": {
+                            "font_scale": 0.8975
+                          },
                           "view": "recent",
                           "headers": "off",
                           "columns": [
@@ -471,6 +488,9 @@
                       "children": [],
                       "info": {
                         "panel": {
+                          "theme": {
+                            "font_scale": 0.9
+                          },
                           "cover": "folders",
                           "folders": "hide",
                           "songs": "dim",
@@ -491,8 +511,8 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    471.69140625,
-                    839.3086547851562
+                    430.0,
+                    713.0
                   ],
                   "axis": 0
                 }
@@ -531,10 +551,11 @@
                       "children": [],
                       "info": {
                         "panel": {
-                          "max_width": 222.0,
                           "max_height": 24.0,
+                          "min_width": 200.0,
                           "align": "right",
-                          "stretch": false
+                          "stretch": false,
+                          "icon_only": false
                         }
                       }
                     }
@@ -549,8 +570,8 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    1111.0,
-                    200.0
+                    955.0,
+                    188.0
                   ],
                   "axis": 0
                 }
@@ -570,20 +591,27 @@
                           "children": [],
                           "info": {
                             "panel": {
+                              "style": "bars",
+                              "orientation": "bottom",
+                              "symmetry": "none",
                               "freq_lo": 30.0,
                               "freq_hi": 16000.0,
                               "bar_width": 3.0,
                               "bar_gap": 2.0,
+                              "block_height": 3.0,
+                              "block_gap": 1.0,
                               "fft_size": 16384,
                               "split": true,
-                              "split_hz": 100.23744201660156,
+                              "split_hz": 100.2374,
                               "fft_size_hi": 4096,
-                              "gradient": true,
+                              "gradient": "theme",
+                              "gradient_lo": "#33aacc",
+                              "gradient_hi": "#cc5588",
                               "outline": false,
                               "outline_width": 1.0,
                               "caps": true,
                               "freeze": true,
-                              "cap_gravity": 0.05000000074505806,
+                              "cap_gravity": 0.05,
                               "labels": true
                             }
                           }
@@ -621,8 +649,8 @@
                   "info": {
                     "stack": {
                       "sizes": [
-                        99.7885971069336,
-                        100.2114028930664
+                        100.0,
+                        100.0
                       ],
                       "axis": 1
                     }
@@ -655,7 +683,7 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    1111.0,
+                    943.0,
                     200.0
                   ],
                   "axis": 0
@@ -674,7 +702,7 @@
                       "source": "playing",
                       "align": "center",
                       "bold": false,
-                      "font_size": 12.921428680419922,
+                      "font_size": 12.9214,
                       "line_spacing": 3.0,
                       "follow": true,
                       "pre_scroll": true,
@@ -683,7 +711,7 @@
                       "intro_rest": true,
                       "gap_rest": false,
                       "gap_secs": 5.0,
-                      "dim": 0.7964285612106323,
+                      "dim": 0.7964,
                       "dim_edge": "bottom",
                       "search_button": false,
                       "auto_search": false,
@@ -706,7 +734,7 @@
               "sizes": [
                 40.0,
                 30.0,
-                707.0,
+                537.0,
                 40.0,
                 200.0,
                 40.0
@@ -717,12 +745,12 @@
         }
       },
       "size": {
-        "width": 1337.0,
-        "height": 1083.0
+        "width": 1170.0,
+        "height": 910.0
       }
     },
     {
-      "name": "NekoRoX Mini",
+      "name": "Default Mini",
       "dump": {
         "version": 1,
         "center": {
@@ -833,7 +861,7 @@
                           "outline_width": 1.0,
                           "caps": true,
                           "freeze": false,
-                          "cap_gravity": 0.05000000074505806,
+                          "cap_gravity": 0.05,
                           "labels": false
                         }
                       }
@@ -873,8 +901,8 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    47.31034469604492,
-                    50.68965148925781,
+                    47.0,
+                    51.0,
                     40.0
                   ],
                   "axis": 1
@@ -885,8 +913,8 @@
           "info": {
             "stack": {
               "sizes": [
-                144.07907104492188,
-                475.9208984375
+                144.0,
+                476.0
               ],
               "axis": 0
             }
@@ -894,15 +922,15 @@
         }
       },
       "size": {
-        "width": 646.0,
-        "height": 164.0
+        "width": 650.0,
+        "height": 160.0
       }
     }
   ],
-  "primary_layout": "NekoRoX",
-  "mini_layout": "NekoRoX Mini",
+  "primary_layout": "Default",
+  "mini_layout": "Default Mini",
   "appearance": {
-    "surface_opacity": 0.6035714,
+    "surface_opacity": 0.6036,
     "backdrop_strength": 0.8,
     "frame": {
       "margin": 0.0,
@@ -912,6 +940,7 @@
     },
     "art_theming": false,
     "keep_dark": false,
+    "app_font_size": 16.0,
     "rating_style": "stars",
     "quick_play": {
       "show_cover": true,

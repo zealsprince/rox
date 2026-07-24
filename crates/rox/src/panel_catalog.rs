@@ -15,8 +15,8 @@ use crate::panel::AppState;
 use crate::panels::art::{ArtConfig, ArtPanel};
 use crate::panels::biography::{BiographyConfig, BiographyPanel};
 use crate::panels::cover::{CoverArtPanel, CoverConfig};
-use crate::panels::depth::{DepthConfig, DepthPanel};
 use crate::panels::drag_anchor::{DragAnchorConfig, DragAnchorPanel};
+use crate::panels::drawer::{DrawerConfig, DrawerPanel};
 use crate::panels::filter::{FilterConfig, FilterPanel};
 use crate::panels::folder_tree::{FolderTreeConfig, FolderTreePanel};
 use crate::panels::grid::{GridConfig, GridPanel};
@@ -27,16 +27,19 @@ use crate::panels::lyrics::{LyricsConfig, LyricsPanel};
 use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::metadata::{MetadataConfig, MetadataPanel};
 use crate::panels::mini::{MiniToggleConfig, MiniTogglePanel};
+use crate::panels::overlay::{OverlayConfig, OverlayPanel};
 use crate::panels::playlists::{PlaylistsConfig, PlaylistsPanel};
 use crate::panels::queue::{QueueConfig, QueuePanel};
 use crate::panels::queue_widget::{QueueWidgetConfig, QueueWidgetPanel};
 use crate::panels::search::{SearchConfig, SearchPanel};
 use crate::panels::slide::{SlideConfig, SlidePanel};
+use crate::panels::spacer::{SpacerConfig, SpacerPanel};
 use crate::panels::spectrum::{SpectrumConfig, SpectrumPanel};
 use crate::panels::transport::{
     SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
     VolumeConfig, VolumePanel,
 };
+use crate::panels::vu::{VuConfig, VuPanel};
 use crate::panels::waveform::{WaveformConfig, WaveformPanel};
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
 use crate::workspace::Workspace;
@@ -223,6 +226,16 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
     group: Some(("Arrangement", icons::LAYOUT_DASHBOARD)),
     panels: &[
         PanelDef {
+            label: "Drawer",
+            icon: icons::PANEL_BOTTOM,
+            placement: PanelPlacement::Center,
+            build: |state, ws, _, cx| {
+                Arc::new(
+                    cx.new(|cx| DrawerPanel::new(state.clone(), ws, DrawerConfig::default(), cx)),
+                )
+            },
+        },
+        PanelDef {
             label: "Group",
             icon: icons::COLUMNS_2,
             placement: PanelPlacement::Center,
@@ -233,12 +246,12 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
             },
         },
         PanelDef {
-            label: "Depth",
+            label: "Overlay",
             icon: icons::LAYERS,
             placement: PanelPlacement::Center,
             build: |state, ws, _, cx| {
                 Arc::new(
-                    cx.new(|cx| DepthPanel::new(state.clone(), ws, DepthConfig::default(), cx)),
+                    cx.new(|cx| OverlayPanel::new(state.clone(), ws, OverlayConfig::default(), cx)),
                 )
             },
         },
@@ -276,6 +289,14 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
                         DragAnchorPanel::new(state.clone(), DragAnchorConfig::default(), cx)
                     }),
                 )
+            },
+        },
+        PanelDef {
+            label: "Spacer",
+            icon: icons::SQUARE_DASHED,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| SpacerPanel::new(state.clone(), SpacerConfig::default(), cx)))
             },
         },
         PanelDef {
@@ -376,10 +397,18 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
                 )
             },
         },
+        PanelDef {
+            label: "VU Meter",
+            icon: icons::GAUGE,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| VuPanel::new(state.clone(), VuConfig::default(), cx)))
+            },
+        },
     ],
 };
 
-/// Whether a section holds the composition hosts (group, depth, slide).
+/// Whether a section holds the composition hosts (group, overlay, slide).
 /// The composite slot pickers gray these out: a composite can sit in a
 /// tab, but not inside another composite's slot, so nesting stays one
 /// level deep while the entries stay visible.

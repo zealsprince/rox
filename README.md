@@ -60,6 +60,32 @@ very much love the vision of going back native. I've been loving working with it
 prototypes and I realized I had most of the foundation written and all I had to do
 is start mapping it over. So that's what I did. And now we have a new native player.
 
+## Screenshots & Additional Workspaces
+
+A workspace is a whole look in one shareable file: layout, palette, appearance.
+The shot above is the Default workspace, and these ship in the box too, one
+click away on the welcome window or in settings:
+
+<table>
+  <tr>
+    <th width="50%">Foobar</th>
+    <th width="50%">Llama</th>
+  </tr>
+  <tr>
+    <td><img src="crates/rox/assets/workspaces/Foobar.png" alt="Foobar" width="100%"></td>
+    <td><img src="crates/rox/assets/workspaces/Llama.png" alt="Llama" width="100%"></td>
+  </tr>
+  <tr>
+    <th>Metro</th>
+    <th>Phosphor</th>
+  </tr>
+  <tr>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Metro.png" alt="Metro" width="100%"></td>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Phosphor.png" alt="Phosphor" width="100%"></td>
+  </tr>
+</table>
+
+
 ## Development
 
 With Nix:

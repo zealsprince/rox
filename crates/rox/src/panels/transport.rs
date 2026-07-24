@@ -6,13 +6,15 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
+use std::time::Instant;
 
 use gpui::{
     canvas, div, fill, point, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, Div,
-    EventEmitter, FocusHandle, Focusable, FontFeatures, MouseButton, Pixels, Subscription,
-    WeakEntity, Window,
+    EventEmitter, FocusHandle, Focusable, FontFeatures, MouseButton, Pixels, ScrollHandle,
+    Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::tooltip::Tooltip;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +32,7 @@ use crate::player::{fmt_time, fmt_time_padded, observe_view};
 
 /// The playback panel's per-view config: what a saved layout restores,
 /// and what the settings window edits.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TransportConfig {
     /// The rename, theme override, and placement locks shared by every
     /// panel.
@@ -38,12 +40,51 @@ pub struct TransportConfig {
     pub chrome: PanelChrome,
     #[serde(default)]
     pub align: Align,
+    /// The previous-track button.
+    #[serde(default = "default_true")]
+    pub prev: bool,
+    /// The play/pause button, the primary transport action.
+    #[serde(default = "default_true")]
+    pub play: bool,
+    /// The next-track button.
+    #[serde(default = "default_true")]
+    pub next: bool,
+    /// The seek nudge buttons that jump back and forward ten seconds. On by
+    /// default; drop them on a compact bar that only needs prev/play/next.
+    #[serde(default = "default_true")]
+    pub seek: bool,
+    /// The loop button that cycles off, all, one.
+    #[serde(default = "default_true")]
+    pub repeat: bool,
+    /// The shuffle button.
+    #[serde(default = "default_true")]
+    pub shuffle: bool,
     /// The stop button that ejects the playing track.
     #[serde(default)]
     pub stop: bool,
     /// The random button that plays one track from anywhere in the library.
     #[serde(default)]
     pub random: bool,
+}
+
+impl Default for TransportConfig {
+    fn default() -> Self {
+        // The seek/loop/shuffle buttons ship on, matching what a layout with
+        // none of these fields set decodes to; only stop and random are
+        // opt-in.
+        TransportConfig {
+            chrome: PanelChrome::default(),
+            align: Align::default(),
+            prev: true,
+            play: true,
+            next: true,
+            seek: true,
+            repeat: true,
+            shuffle: true,
+            stop: false,
+            random: false,
+        }
+    }
 }
 
 /// The playback controls: prev, the seek nudges around play/pause, next,
@@ -177,6 +218,78 @@ impl PanelSettings for TransportPanel {
                 cx,
             ))
             .child(panel::setting_row(
+                "Previous",
+                Some("The previous-track button"),
+                panel::toggle(
+                    self.config.prev,
+                    |this: &mut Self, prev, cx| {
+                        this.config.prev = prev;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Play",
+                Some("The play and pause button"),
+                panel::toggle(
+                    self.config.play,
+                    |this: &mut Self, play, cx| {
+                        this.config.play = play;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Next",
+                Some("The next-track button"),
+                panel::toggle(
+                    self.config.next,
+                    |this: &mut Self, next, cx| {
+                        this.config.next = next;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Seek Buttons",
+                Some("The back and forward ten-second nudges around play"),
+                panel::toggle(
+                    self.config.seek,
+                    |this: &mut Self, seek, cx| {
+                        this.config.seek = seek;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Loop",
+                Some("The loop button that cycles off, all, one"),
+                panel::toggle(
+                    self.config.repeat,
+                    |this: &mut Self, repeat, cx| {
+                        this.config.repeat = repeat;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Shuffle",
+                Some("The shuffle button"),
+                panel::toggle(
+                    self.config.shuffle,
+                    |this: &mut Self, shuffle, cx| {
+                        this.config.shuffle = shuffle;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
                 "Stop",
                 Some("The stop button that ejects the playing track"),
                 panel::toggle(
@@ -263,31 +376,39 @@ impl TransportPanel {
             .map(|d| justify(d, self.config.align))
             .gap(tokens::SPACE_XS)
             .px(tokens::SPACE_SM)
-            .child(panel::icon_control(
-                icons::SKIP_BACK,
-                palette::text(),
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.prev()),
-                cx,
-            ))
-            .child(panel::icon_control(
-                icons::REWIND,
-                palette::text(),
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(-10.0)),
-                cx,
-            ))
-            .child(play_pause)
-            .child(panel::icon_control(
-                icons::FAST_FORWARD,
-                palette::text(),
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(10.0)),
-                cx,
-            ))
-            .child(panel::icon_control(
-                icons::SKIP_FORWARD,
-                palette::text(),
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.next()),
-                cx,
-            ))
+            .when(self.config.prev, |d| {
+                d.child(panel::icon_control(
+                    icons::SKIP_BACK,
+                    palette::text(),
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.prev()),
+                    cx,
+                ))
+            })
+            .when(self.config.seek, |d| {
+                d.child(panel::icon_control(
+                    icons::REWIND,
+                    palette::text(),
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(-10.0)),
+                    cx,
+                ))
+            })
+            .when(self.config.play, |d| d.child(play_pause))
+            .when(self.config.seek, |d| {
+                d.child(panel::icon_control(
+                    icons::FAST_FORWARD,
+                    palette::text(),
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(10.0)),
+                    cx,
+                ))
+            })
+            .when(self.config.next, |d| {
+                d.child(panel::icon_control(
+                    icons::SKIP_FORWARD,
+                    palette::text(),
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.next()),
+                    cx,
+                ))
+            })
             // Stop ejects the track: the session drops and every view over
             // it goes idle. Dim while nothing is loaded.
             .when(self.config.stop, |d| {
@@ -302,18 +423,22 @@ impl TransportPanel {
                     cx,
                 ))
             })
-            .child(panel::icon_control(
-                loop_icon,
-                loop_color,
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.cycle_loop()),
-                cx,
-            ))
-            .child(panel::icon_control(
-                icons::SHUFFLE,
-                shuffle_color,
-                |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.toggle_shuffle()),
-                cx,
-            ))
+            .when(self.config.repeat, |d| {
+                d.child(panel::icon_control(
+                    loop_icon,
+                    loop_color,
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.cycle_loop()),
+                    cx,
+                ))
+            })
+            .when(self.config.shuffle, |d| {
+                d.child(panel::icon_control(
+                    icons::SHUFFLE,
+                    shuffle_color,
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.toggle_shuffle()),
+                    cx,
+                ))
+            })
             .when(self.config.random, |d| {
                 d.child(panel::icon_control(
                     icons::DICE,
@@ -327,7 +452,7 @@ impl TransportPanel {
 
 /// The track info panel's per-view config: what a saved layout restores,
 /// and what the settings window edits.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TrackInfoConfig {
     /// The rename, theme override, and placement locks shared by every
     /// panel.
@@ -335,6 +460,202 @@ pub struct TrackInfoConfig {
     pub chrome: PanelChrome,
     #[serde(default)]
     pub align: Align,
+    /// What a line too long for the panel does; see [`MarqueeMode`].
+    #[serde(default)]
+    pub marquee: MarqueeMode,
+    /// The crawl's pace for the scroll and loop modes, pixels per second.
+    #[serde(default = "default_marquee_speed")]
+    pub marquee_speed: f32,
+    /// How long the scroll rests at each end before moving again,
+    /// seconds.
+    #[serde(default = "default_marquee_delay")]
+    pub marquee_delay: f32,
+    /// Show one piece at a time - the heading, then the byline - fading
+    /// between them instead of the whole line at once. Independent of
+    /// the marquee: the shown piece still crawls if it overflows.
+    #[serde(default)]
+    pub swap: bool,
+    /// How long each piece sits fully shown before the swap, seconds.
+    #[serde(default = "default_swap_secs")]
+    pub swap_secs: f32,
+}
+
+impl Default for TrackInfoConfig {
+    fn default() -> Self {
+        TrackInfoConfig {
+            chrome: PanelChrome::default(),
+            align: Align::default(),
+            marquee: MarqueeMode::default(),
+            marquee_speed: default_marquee_speed(),
+            marquee_delay: default_marquee_delay(),
+            swap: false,
+            swap_secs: default_swap_secs(),
+        }
+    }
+}
+
+/// What the track line does when it outgrows the panel.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MarqueeMode {
+    /// Cut the line off where the room runs out.
+    #[default]
+    Off,
+    /// Crawl to the end, rest, crawl back, rest, repeat.
+    Scroll,
+    /// Crawl one way without end, the line chasing its own tail.
+    Loop,
+}
+
+/// The crawl speed range the settings slider spans, pixels per second.
+const MARQUEE_SPEED_MIN: f32 = 10.0;
+const MARQUEE_SPEED_MAX: f32 = 120.0;
+
+/// The default crawl pace, a comfortable read.
+fn default_marquee_speed() -> f32 {
+    30.0
+}
+
+/// The swap dwell range the settings slider spans, seconds.
+const SWAP_SECS_MIN: f32 = 1.0;
+const SWAP_SECS_MAX: f32 = 15.0;
+
+/// The default dwell, long enough to read either piece.
+fn default_swap_secs() -> f32 {
+    4.0
+}
+
+/// The end-rest range the settings slider spans, seconds.
+const MARQUEE_DELAY_MIN: f32 = 0.0;
+const MARQUEE_DELAY_MAX: f32 = 10.0;
+
+/// The default rest at each end of a scroll, a beat to read the edge.
+fn default_marquee_delay() -> f32 {
+    2.0
+}
+/// The gap between the line's two copies in loop mode, the breather
+/// between a tail and the next head.
+const MARQUEE_GAP: f32 = 48.0;
+/// The swap fade's length, going out and coming in.
+const SWAP_FADE_SECS: f32 = 0.4;
+
+/// The track line's crawl state while the marquee setting is on. The
+/// scroll handle owns the clipping and reports the overflow off the last
+/// layout; the rest drives the offset through it, one leg at a time.
+struct MarqueeScroll {
+    handle: ScrollHandle,
+    /// How far the line sits left of home, in pixels.
+    offset: f32,
+    /// The scroll crawl's direction: 1 heading out, -1 heading home.
+    dir: f32,
+    /// Time left resting at an end before the next leg starts.
+    hold: f32,
+    /// The configured rest at each end, mirrored off the panel config by
+    /// the body each frame so the crawl state can refill `hold` itself.
+    delay: f32,
+    /// The last frame's clock, for the per-frame step.
+    last_tick: Instant,
+    /// The path the crawl belongs to; a track change starts over.
+    path: Option<PathBuf>,
+    /// Loop mode's verdict off the last layout: whether one copy alone
+    /// overflows, so the line renders doubled and wraps.
+    looping: bool,
+    /// The piece swap mode shows, counting through heading and byline.
+    swap_ix: usize,
+    /// When the shown piece's cycle started: fade in, dwell, fade out.
+    swap_at: Instant,
+    /// Whether the swap is actually cycling this frame - on, with a
+    /// byline to trade against. The body sets it; the crawl reads it to
+    /// decide between bouncing back and parking at the end.
+    swap_live: bool,
+    /// The scroll-mode handshake: the crawl finished its trip out (or a
+    /// fitting piece its dwell) and the swap may fade the piece away.
+    crawl_done: bool,
+    /// When the fade-out started; None while the piece is coming in or
+    /// fully up.
+    fade_at: Option<Instant>,
+}
+
+impl MarqueeScroll {
+    fn new() -> Self {
+        MarqueeScroll {
+            handle: ScrollHandle::new(),
+            offset: 0.0,
+            dir: 1.0,
+            hold: default_marquee_delay(),
+            delay: default_marquee_delay(),
+            last_tick: Instant::now(),
+            path: None,
+            looping: false,
+            swap_ix: 0,
+            swap_at: Instant::now(),
+            swap_live: false,
+            crawl_done: false,
+            fade_at: None,
+        }
+    }
+
+    /// Send the crawl home without touching the swap cycle, for a fresh
+    /// piece coming in.
+    fn rehome(&mut self) {
+        self.offset = 0.0;
+        self.dir = 1.0;
+        self.hold = self.delay;
+        self.last_tick = Instant::now();
+        self.looping = false;
+        self.crawl_done = false;
+        self.fade_at = None;
+    }
+
+    /// Back home, resting, the swap cycle back on its heading.
+    fn reset(&mut self) {
+        self.rehome();
+        self.swap_ix = 0;
+        self.swap_at = Instant::now();
+    }
+
+    /// One frame of the scroll crawl: run the rest down, then step along
+    /// the current leg. Without `park` it turns around with a fresh rest
+    /// at each end; with it (the swap rides the crawl) it stays put once
+    /// it has crawled out and rested, raising `crawl_done` for the swap
+    /// to fade the piece away. The step clamps so a stalled frame never
+    /// teleports the line.
+    fn advance(&mut self, overflow: f32, speed: f32, park: bool) {
+        let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
+        self.last_tick = Instant::now();
+        if self.hold > 0.0 {
+            self.hold -= dt;
+            return;
+        }
+        if park && self.offset >= overflow {
+            self.crawl_done = true;
+            return;
+        }
+        self.offset += self.dir * speed * dt;
+        if self.offset >= overflow {
+            self.offset = overflow;
+            self.hold = self.delay;
+            if !park {
+                self.dir = -1.0;
+            }
+        } else if self.offset <= 0.0 {
+            self.offset = 0.0;
+            self.dir = 1.0;
+            self.hold = self.delay;
+        }
+    }
+
+    /// One frame of the endless crawl: step left at the pace, wrapping
+    /// once a full copy and its gap have gone by, so the doubled line
+    /// reads as one unbroken loop.
+    fn advance_loop(&mut self, period: f32, speed: f32) {
+        let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
+        self.last_tick = Instant::now();
+        self.offset += speed * dt;
+        if self.offset >= period {
+            self.offset -= period;
+        }
+    }
 }
 
 /// The track info readout the playback panel's status line grew into: one
@@ -348,6 +669,15 @@ pub struct TrackInfoPanel {
     /// know. Cached because the pump notifies every frame and the lookup is
     /// a database query; cleared when the track or the catalog changes.
     meta: Option<(PathBuf, Option<TrackMeta>)>,
+    /// The marquee's crawl, live only while the setting is on and the
+    /// line overflows.
+    marquee: MarqueeScroll,
+    /// The settings page's speed slider strip.
+    speed_scrub: ScrubState,
+    /// The settings page's end-rest delay slider strip.
+    delay_scrub: ScrubState,
+    /// The settings page's swap dwell slider strip.
+    swap_scrub: ScrubState,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -374,6 +704,10 @@ impl TrackInfoPanel {
             state,
             config,
             meta: None,
+            marquee: MarqueeScroll::new(),
+            speed_scrub: ScrubState::default(),
+            delay_scrub: ScrubState::default(),
+            swap_scrub: ScrubState::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
@@ -385,6 +719,26 @@ impl TrackInfoPanel {
     /// window.
     fn config_menu(&self, menu: PopupMenu, _cx: &mut Context<Self>) -> PopupMenu {
         menu
+    }
+
+    /// Store the speed slider's fraction as a pace inside the range.
+    fn set_marquee_speed(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.config.marquee_speed =
+            MARQUEE_SPEED_MIN + fraction * (MARQUEE_SPEED_MAX - MARQUEE_SPEED_MIN);
+        cx.notify();
+    }
+
+    /// Store the delay slider's fraction as seconds inside the range.
+    fn set_marquee_delay(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.config.marquee_delay =
+            MARQUEE_DELAY_MIN + fraction * (MARQUEE_DELAY_MAX - MARQUEE_DELAY_MIN);
+        cx.notify();
+    }
+
+    /// Store the dwell slider's fraction as seconds inside the range.
+    fn set_swap_secs(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        self.config.swap_secs = SWAP_SECS_MIN + fraction * (SWAP_SECS_MAX - SWAP_SECS_MIN);
+        cx.notify();
     }
 
     /// The playing path's tags, from the cache or one lookup on a miss.
@@ -436,17 +790,109 @@ impl PanelSettings for TrackInfoPanel {
         )
         .into_any_element()
     }
+
+    fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let speed = self
+            .config
+            .marquee_speed
+            .clamp(MARQUEE_SPEED_MIN, MARQUEE_SPEED_MAX);
+        let speed_fraction = (speed - MARQUEE_SPEED_MIN) / (MARQUEE_SPEED_MAX - MARQUEE_SPEED_MIN);
+        let delay = self
+            .config
+            .marquee_delay
+            .clamp(MARQUEE_DELAY_MIN, MARQUEE_DELAY_MAX);
+        let delay_fraction = (delay - MARQUEE_DELAY_MIN) / (MARQUEE_DELAY_MAX - MARQUEE_DELAY_MIN);
+        let dwell = self.config.swap_secs.clamp(SWAP_SECS_MIN, SWAP_SECS_MAX);
+        let dwell_fraction = (dwell - SWAP_SECS_MIN) / (SWAP_SECS_MAX - SWAP_SECS_MIN);
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_MD)
+                .child(panel::setting_row(
+                    "Marquee",
+                    Some("What a line too long for the panel does: crawl and return, or loop without end"),
+                    panel::choices(
+                        &[
+                            ("Off", MarqueeMode::Off),
+                            ("Scroll", MarqueeMode::Scroll),
+                            ("Loop", MarqueeMode::Loop),
+                        ],
+                        self.config.marquee,
+                        |this: &mut Self, mode, cx| {
+                            this.config.marquee = mode;
+                            this.marquee.reset();
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+                .when(self.config.marquee != MarqueeMode::Off, |d| {
+                    d.child(panel::setting_row(
+                        "Speed",
+                        Some("How fast the line crawls"),
+                        panel::value_slider(
+                            &self.speed_scrub,
+                            speed_fraction,
+                            format!("{speed:.0} px/s"),
+                            Self::set_marquee_speed,
+                            cx,
+                        ),
+                    ))
+                })
+                .when(self.config.marquee == MarqueeMode::Scroll, |d| {
+                    d.child(panel::setting_row(
+                        "Delay",
+                        Some("How long the line rests at each end before moving again"),
+                        panel::value_slider(
+                            &self.delay_scrub,
+                            delay_fraction,
+                            format!("{delay:.1} s"),
+                            Self::set_marquee_delay,
+                            cx,
+                        ),
+                    ))
+                })
+                .child(panel::setting_row(
+                    "Swap",
+                    Some("Show one piece at a time - the title, then the artist - fading between them"),
+                    panel::toggle(
+                        self.config.swap,
+                        |this: &mut Self, swap, cx| {
+                            this.config.swap = swap;
+                            this.marquee.reset();
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+                .when(self.config.swap, |d| {
+                    d.child(panel::setting_row(
+                        "Swap every",
+                        Some("How long each piece sits before the fade"),
+                        panel::value_slider(
+                            &self.swap_scrub,
+                            dwell_fraction,
+                            format!("{dwell:.0} s"),
+                            Self::set_swap_secs,
+                            cx,
+                        ),
+                    ))
+                })
+                .into_any_element(),
+        )
+    }
 }
 
 impl Render for TrackInfoPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(cx))
+        panel::themed(&chrome, || self.body(window, cx))
     }
 }
 
 impl TrackInfoPanel {
-    fn body(&mut self, cx: &mut Context<Self>) -> Div {
+    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let player = self.state.player.read(cx);
         let now = player.now_playing();
         let active = player.is_active();
@@ -506,27 +952,269 @@ impl TrackInfoPanel {
             .collect::<Vec<_>>()
             .join(" - ");
 
+        // Mirror the configured rest before anything refills a hold this
+        // frame.
+        self.marquee.delay = self
+            .config
+            .marquee_delay
+            .clamp(MARQUEE_DELAY_MIN, MARQUEE_DELAY_MAX);
+
+        // A fresh track starts every cycle over: crawl home, swap back
+        // to the heading.
+        if self.marquee.path.as_deref() != Some(now.path.as_path()) {
+            self.marquee.path = Some(now.path.clone());
+            self.marquee.reset();
+        }
+
+        // The swap cycle picks which piece shows and how faded it sits;
+        // the marquee below then treats that piece as the whole line.
+        self.marquee.swap_live = self.config.swap && !byline.is_empty();
+        let (heading, byline, fade) = if self.marquee.swap_live {
+            let (on_byline, fade) = self.swap_cycle(window);
+            if on_byline {
+                (String::new(), byline, fade)
+            } else {
+                (heading, String::new(), fade)
+            }
+        } else {
+            (heading, byline, 1.0)
+        };
+
         // One line: the heading, the byline dimmed beside it, both giving
-        // way gracefully when the panel runs out of room.
-        root.child(div().flex_shrink_0().max_w_full().truncate().child(heading))
-            .when(!byline.is_empty(), |d| {
-                d.child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(palette::text_muted())
-                        .child(byline),
-                )
-            })
-            .when(ended, |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .text_color(palette::text_muted())
-                        .child("(queue finished)"),
-                )
-            })
+        // way gracefully when the panel runs out of room - unless a
+        // marquee mode crawls what overflows instead.
+        match self.config.marquee {
+            MarqueeMode::Off => {}
+            MarqueeMode::Scroll | MarqueeMode::Loop => {
+                return root.child(self.marquee_line(heading, byline, ended, fade, window, cx));
+            }
+        }
+        root.when(!heading.is_empty(), |d| {
+            d.child(
+                div()
+                    .flex_shrink_0()
+                    .max_w_full()
+                    .truncate()
+                    .when(fade < 1.0, |d| d.opacity(fade))
+                    .child(heading),
+            )
+        })
+        .when(!byline.is_empty(), |d| {
+            d.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(palette::text_muted())
+                    .when(fade < 1.0, |d| d.opacity(fade))
+                    .child(byline),
+            )
+        })
+        .when(ended, |d| {
+            d.child(
+                div()
+                    .flex_none()
+                    .text_color(palette::text_muted())
+                    .child("(queue finished)"),
+            )
+        })
     }
+
+    /// Advance the swap cycle and hand back which piece shows (false for
+    /// the heading, true for the byline) and how faded it sits. On a
+    /// timer - in over the fade, full through the dwell, out over the
+    /// fade, then the other piece - except under scroll mode, where the
+    /// crawl runs the clock instead: a piece leaves once it has crawled
+    /// out and rested, and the next one comes in back at the start. The
+    /// cycle never settles, so it keeps its own frames running.
+    fn swap_cycle(&mut self, window: &mut Window) -> (bool, f32) {
+        window.request_animation_frame();
+        let dwell = self.config.swap_secs.clamp(SWAP_SECS_MIN, SWAP_SECS_MAX);
+        // Smoothstepped so the fades ease instead of snapping.
+        let smooth = |u: f32| u * u * (3.0 - 2.0 * u);
+        if self.config.marquee == MarqueeMode::Scroll {
+            let t = self.marquee.swap_at.elapsed().as_secs_f32();
+            // A piece that fits never crawls, so the dwell stands in for
+            // the trip out.
+            let overflow = f32::from(self.marquee.handle.max_offset().width);
+            if overflow <= 0.0 && t >= SWAP_FADE_SECS + dwell {
+                self.marquee.crawl_done = true;
+            }
+            if self.marquee.crawl_done && self.marquee.fade_at.is_none() {
+                self.marquee.fade_at = Some(Instant::now());
+            }
+            if let Some(fade_at) = self.marquee.fade_at {
+                let out = fade_at.elapsed().as_secs_f32();
+                if out >= SWAP_FADE_SECS {
+                    // Faded away: the other piece comes in at the start.
+                    self.marquee.swap_ix = (self.marquee.swap_ix + 1) % 2;
+                    self.marquee.swap_at = Instant::now();
+                    self.marquee.rehome();
+                    return (self.marquee.swap_ix % 2 == 1, 0.0);
+                }
+                return (
+                    self.marquee.swap_ix % 2 == 1,
+                    smooth(1.0 - out / SWAP_FADE_SECS),
+                );
+            }
+            // Coming in, then full until the crawl hands over.
+            return (
+                self.marquee.swap_ix % 2 == 1,
+                smooth((t / SWAP_FADE_SECS).min(1.0)),
+            );
+        }
+        let cycle = SWAP_FADE_SECS + dwell + SWAP_FADE_SECS;
+        let mut t = self.marquee.swap_at.elapsed().as_secs_f32();
+        if t >= cycle {
+            // The other piece comes in, crawling from home if it must.
+            self.marquee.swap_ix = (self.marquee.swap_ix + 1) % 2;
+            self.marquee.swap_at = Instant::now();
+            self.marquee.rehome();
+            t = 0.0;
+        }
+        let u = if t < SWAP_FADE_SECS {
+            t / SWAP_FADE_SECS
+        } else if t < SWAP_FADE_SECS + dwell {
+            1.0
+        } else {
+            (1.0 - (t - SWAP_FADE_SECS - dwell) / SWAP_FADE_SECS).max(0.0)
+        };
+        (self.marquee.swap_ix % 2 == 1, smooth(u))
+    }
+
+    /// The crawling take on the track line, for the scroll and loop
+    /// modes. The scroll box does the clipping and hands back the
+    /// overflow off the last layout: scroll crawls out, rests, and
+    /// crawls home again, while loop doubles the line and wraps the
+    /// offset for an unbroken ticker.
+    fn marquee_line(
+        &mut self,
+        heading: String,
+        byline: String,
+        ended: bool,
+        fade: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let speed = self
+            .config
+            .marquee_speed
+            .clamp(MARQUEE_SPEED_MIN, MARQUEE_SPEED_MAX);
+        // Both come off the last layout and start at zero, so a fresh
+        // panel sits still until it knows better.
+        let container = f32::from(self.marquee.handle.bounds().size.width);
+        let overflow = f32::from(self.marquee.handle.max_offset().width);
+        let moving = if self.config.marquee == MarqueeMode::Loop {
+            if self.marquee.looping {
+                // The layout is doubled: peel the second copy and the
+                // gap back off for the single line's width.
+                let line = (overflow + container - MARQUEE_GAP) / 2.0;
+                if line <= container + 0.5 {
+                    // Room came back; one copy fits again.
+                    self.marquee.reset();
+                    false
+                } else {
+                    self.marquee.advance_loop(line + MARQUEE_GAP, speed);
+                    true
+                }
+            } else if overflow > 0.0 {
+                // One copy overflows: double up and start the wrap.
+                self.marquee.looping = true;
+                true
+            } else {
+                false
+            }
+        } else {
+            self.marquee.looping = false;
+            if overflow > 0.0 {
+                // With the swap riding along, the crawl parks at the end
+                // and hands over; the swap brings the next piece in back
+                // at the start.
+                self.marquee
+                    .advance(overflow, speed, self.marquee.swap_live);
+                true
+            } else {
+                if self.marquee.offset != 0.0 {
+                    self.marquee.reset();
+                }
+                false
+            }
+        };
+        if moving {
+            window.request_animation_frame();
+        }
+        self.marquee
+            .handle
+            .set_offset(point(px(-self.marquee.offset), px(0.)));
+
+        // No frames run while the line fits, so a resize that steals the
+        // room would go unseen; the probe repaints with the panel and
+        // wakes it whenever the overflow no longer matches the crawl.
+        let handle = self.marquee.handle.clone();
+        let entity_id = cx.entity_id();
+        let probe = canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                if (handle.max_offset().width > px(0.)) != moving {
+                    window.on_next_frame(move |_, cx| cx.notify(entity_id));
+                }
+            },
+        )
+        .absolute()
+        .inset_0();
+
+        // Loop mode shows the line twice, a gap apart, so the wrap lands
+        // on an identical picture.
+        let content = if self.marquee.looping {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(MARQUEE_GAP))
+                .child(track_line_row(heading.clone(), byline.clone(), ended))
+                .child(track_line_row(heading, byline, ended))
+        } else {
+            track_line_row(heading, byline, ended)
+        };
+
+        // min_w_0 lets the box shrink below its content in the panel's
+        // row - without it the automatic minimum holds the box at the
+        // full line's width. flex makes the box size its child row at
+        // max-content - as a default block, the row would stretch to the
+        // box instead. Either way lost, there is no overflow to crawl.
+        div()
+            .id("track-marquee")
+            .flex()
+            .min_w_0()
+            .max_w_full()
+            .overflow_x_scroll()
+            .track_scroll(&self.marquee.handle)
+            .when(fade < 1.0, |d| d.opacity(fade))
+            .child(content)
+            .child(probe)
+    }
+}
+
+/// One copy of the track line: the heading with the byline dimmed
+/// beside it, refusing to wrap, for the marquee's scroll box. Either
+/// piece may be absent - the swap setting shows one at a time.
+fn track_line_row(heading: String, byline: String, ended: bool) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(tokens::SPACE_SM)
+        .whitespace_nowrap()
+        .when(!heading.is_empty(), |d| d.child(heading))
+        .when(!byline.is_empty(), |d| {
+            d.child(div().text_color(palette::text_muted()).child(byline))
+        })
+        .when(ended, |d| {
+            d.child(
+                div()
+                    .text_color(palette::text_muted())
+                    .child("(queue finished)"),
+            )
+        })
 }
 
 /// The volume panel's per-view config: what a saved layout restores, and
@@ -543,6 +1231,10 @@ pub struct VolumeConfig {
     /// at its natural size.
     #[serde(default)]
     pub stretch: bool,
+    /// Collapse the panel to just the speaker icon: scroll it to change the
+    /// volume, and the readout rides along in a tooltip.
+    #[serde(default)]
+    pub icon_only: bool,
 }
 
 /// The volume strip: the speaker button that toggles mute, and the volume
@@ -576,12 +1268,29 @@ impl VolumePanel {
     /// The panel's own dropdown entries: the quick stretch toggle, the
     /// same knob the customize window edits.
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
-        let weak = cx.entity().downgrade();
+        let stretch = cx.entity().downgrade();
+        let icon_only = cx.entity().downgrade();
         menu.item(
+            PopupMenuItem::new("Icon only")
+                .checked(self.config.icon_only)
+                .on_click(move |_, _, cx| {
+                    let Some(this) = icon_only.upgrade() else {
+                        return;
+                    };
+                    this.update(cx, |this, cx| {
+                        this.config.icon_only = !this.config.icon_only;
+                        cx.notify();
+                    });
+                }),
+        )
+        .item(
             PopupMenuItem::new("Stretch")
+                .disabled(self.config.icon_only)
                 .checked(self.config.stretch)
                 .on_click(move |_, _, cx| {
-                    let Some(this) = weak.upgrade() else { return };
+                    let Some(this) = stretch.upgrade() else {
+                        return;
+                    };
                     this.update(cx, |this, cx| {
                         this.config.stretch = !this.config.stretch;
                         cx.notify();
@@ -633,6 +1342,18 @@ impl PanelSettings for VolumePanel {
                 cx,
             ))
             .child(panel::setting_row(
+                "Icon only",
+                Some("Collapse to just the speaker icon; scroll it to change the volume"),
+                panel::toggle(
+                    self.config.icon_only,
+                    |this: &mut Self, icon_only, cx| {
+                        this.config.icon_only = icon_only;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
                 "Stretch",
                 Some("Let the slider fill the panel instead of capping its width"),
                 panel::toggle(
@@ -646,6 +1367,25 @@ impl PanelSettings for VolumePanel {
             ))
             .into_any_element()
     }
+}
+
+/// One wheel step over the volume panel, shared by the full strip and the
+/// icon-only speaker. A notch arrives as 3 lines, so one notch steps 5%; the
+/// range is 0 to 100% and touching it unmutes.
+fn volume_scroll(
+    this: &mut VolumePanel,
+    event: &gpui::ScrollWheelEvent,
+    _window: &mut Window,
+    cx: &mut Context<VolumePanel>,
+) {
+    let lines = match event.delta {
+        gpui::ScrollDelta::Lines(lines) => lines.y,
+        gpui::ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 20.0,
+    };
+    this.state.player.update(cx, |player, cx| {
+        let volume = (player.volume() + lines / 3.0 * 0.05).clamp(0.0, 1.0);
+        player.set_volume(volume, cx);
+    });
 }
 
 impl Render for VolumePanel {
@@ -671,6 +1411,38 @@ impl VolumePanel {
         } else {
             (icons::VOLUME_2, palette::text())
         };
+
+        // Icon-only: the speaker carries the whole panel. Click toggles mute,
+        // scrolling nudges the volume, and the percent rides along in a
+        // tooltip so the readout still has a home.
+        if self.config.icon_only {
+            let icon = div()
+                .id("volume-icon")
+                .p(tokens::ICON_PAD)
+                .rounded(tokens::RADIUS)
+                .hover(|d| d.bg(palette::bg_control()))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.state
+                            .player
+                            .update(cx, |player, cx| player.toggle_mute(cx));
+                    }),
+                )
+                .tooltip(move |window, cx| Tooltip::new(format!("{percent}%")).build(window, cx))
+                .child(svg().path(speaker).size(px(16.)).text_color(speaker_color));
+
+            return div()
+                .size_full()
+                .bg(palette::bg_root())
+                .flex()
+                .items_center()
+                .map(|d| justify(d, self.config.align))
+                .px(tokens::SPACE_MD)
+                .on_scroll_wheel(cx.listener(volume_scroll))
+                .child(icon);
+        }
 
         let scrub = self.scrub.clone();
         let player = self.state.player.clone();
@@ -724,17 +1496,7 @@ impl VolumePanel {
             .px(tokens::SPACE_MD)
             // Scrolling anywhere on the strip nudges the volume; like the
             // slider it spans 0 to 100% and unmutes on touch.
-            .on_scroll_wheel(cx.listener(|this, event: &gpui::ScrollWheelEvent, _, cx| {
-                let lines = match event.delta {
-                    gpui::ScrollDelta::Lines(lines) => lines.y,
-                    gpui::ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 20.0,
-                };
-                // A wheel notch arrives as 3 lines, so one notch steps 5%.
-                this.state.player.update(cx, |player, cx| {
-                    let volume = (player.volume() + lines / 3.0 * 0.05).clamp(0.0, 1.0);
-                    player.set_volume(volume, cx);
-                });
-            }))
+            .on_scroll_wheel(cx.listener(volume_scroll))
             .child(panel::icon_control(
                 speaker,
                 speaker_color,
@@ -1237,20 +1999,21 @@ macro_rules! transport_panel {
     };
 }
 
-// The widths below are each panel's controls at their tightest: the
-// playback row's seven buttons plus 32px (icon, padding, gap) for each
-// optional button turned on, the volume strip's icon, 80px slider floor,
-// and readout, the seek strip's clocks around a usable track, and enough
-// of the track info line to read a title.
+// The widths below are each panel's controls at their tightest: the seek
+// strip's clocks around a usable track, and enough of the track info line to
+// read a title. The playback row and the volume strip are fully composable
+// now, so they lean on the app's own panel floor instead of pinning a width.
 transport_panel!(
     TransportPanel,
     "playback",
     "Playback",
-    min_w = |this: &TransportPanel| {
-        let extras = this.config.stop as u8 + this.config.random as u8;
-        px(242. + f32::from(extras) * 32.)
-    }
+    min_w = |_: &TransportPanel| rox_dock::resizable::PANEL_MIN_SIZE
 );
-transport_panel!(VolumePanel, "volume", "Volume", min_w = 200.);
+transport_panel!(
+    VolumePanel,
+    "volume",
+    "Volume",
+    min_w = |_: &VolumePanel| rox_dock::resizable::PANEL_MIN_SIZE
+);
 transport_panel!(SeekStripPanel, "seek", "Seek", min_w = 160.);
 transport_panel!(TrackInfoPanel, "track info", "Track Info", min_w = 120.);

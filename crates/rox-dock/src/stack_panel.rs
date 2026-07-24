@@ -91,7 +91,10 @@ impl Panel for StackPanel {
     }
 
     fn dump(&self, cx: &App) -> PanelState {
-        let sizes = self.state.read(cx).sizes().clone();
+        // The weights, not the solved sizes: a dump taken while the window is
+        // squeezed (the mini toggle stashes mid-swap) still records the real
+        // proportions, and a restore reproduces them exactly.
+        let sizes = self.state.read(cx).weights();
         let mut state = PanelState::new(self);
         // Set the stack info up front, not inside the loop: same reason as
         // TabPanel::dump, an empty stack left on the `Panel(Null)` default

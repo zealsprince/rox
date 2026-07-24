@@ -215,6 +215,7 @@
                       "locked": true,
                       "anchor": true,
                       "max_height": 140.0,
+                      "style": "line",
                       "freq_lo": 30.0,
                       "freq_hi": 16000.0,
                       "bar_width": 2.0,
@@ -223,10 +224,10 @@
                       "split": false,
                       "split_hz": 1000.0,
                       "fft_size_hi": 4096,
-                      "gradient": false,
+                      "gradient": "theme",
                       "outline": false,
                       "outline_width": 1.0,
-                      "caps": true,
+                      "caps": false,
                       "freeze": false,
                       "cap_gravity": 0.05,
                       "labels": false
@@ -399,7 +400,7 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    494.0,
+                    514.0,
                     26.0
                   ],
                   "axis": 0
@@ -416,6 +417,7 @@
                     "panel": {
                       "locked": true,
                       "anchor": true,
+                      "style": "line",
                       "freq_lo": 30.0,
                       "freq_hi": 16000.0,
                       "bar_width": 2.0,
@@ -424,13 +426,36 @@
                       "split": false,
                       "split_hz": 1000.0,
                       "fft_size_hi": 16384,
-                      "gradient": false,
+                      "gradient": "theme",
                       "outline": false,
                       "outline_width": 1.0,
-                      "caps": true,
+                      "caps": false,
                       "freeze": false,
                       "cap_gravity": 0.05,
                       "labels": false
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "playback",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "max_height": 24.0,
+                      "align": "left",
+                      "stop": true,
+                      "random": false
                     }
                   }
                 }
@@ -470,6 +495,7 @@
               "sizes": [
                 28.0,
                 52.0,
+                24.0,
                 20.0
               ],
               "axis": 1
@@ -479,7 +505,7 @@
       },
       "size": {
         "width": 540.0,
-        "height": 120.0
+        "height": 180.0
       }
     }
   ],
@@ -530,6 +556,7 @@
       "comfortable": false
     },
     "hide_menubar": true,
-    "os_decorations": false
+    "os_decorations": false,
+    "app_font": "Consolas"
   }
 }

@@ -484,7 +484,7 @@ impl MenuPanel {
                     div()
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child("Shipped"),
+                        .child("Built-in"),
                 )
             })
     }

@@ -37,6 +37,15 @@ pub struct ResizableState {
     /// The `axis` will sync to actual axis of the ResizablePanelGroup in use.
     axis: Axis,
     panels: Vec<ResizablePanelState>,
+    /// The authoritative shares: what each panel is owed, set when a panel is
+    /// inserted with an explicit size, captured from the first paint when it
+    /// wasn't (`None` until then), and rewritten by a drag. Container fits
+    /// solve display sizes *from* these and never write back, so squeezing a
+    /// layout through a small window and restoring it is lossless.
+    weights: Vec<Option<Pixels>>,
+    /// The solved display sizes for the current container: the weights scaled
+    /// to fit, with each panel's min/max honored. This is what the flex layout
+    /// renders from.
     sizes: Vec<Pixels>,
     pub(crate) resizing_panel_ix: Option<usize>,
     bounds: Bounds<Pixels>,
@@ -47,6 +56,7 @@ impl Default for ResizableState {
         Self {
             axis: Axis::Horizontal,
             panels: vec![],
+            weights: vec![],
             sizes: vec![],
             resizing_panel_ix: None,
             bounds: Bounds::default(),
@@ -60,6 +70,18 @@ impl ResizableState {
         &self.sizes
     }
 
+    /// The panel shares to persist: the weights, with panels that never got
+    /// one (not painted yet) falling back to their solved size. Dumps read
+    /// this rather than [`sizes`](Self::sizes) so a layout saved while the
+    /// window is squeezed still records the real proportions.
+    pub fn weights(&self) -> Vec<Pixels> {
+        self.weights
+            .iter()
+            .zip(&self.sizes)
+            .map(|(w, s)| w.unwrap_or(*s))
+            .collect()
+    }
+
     pub(crate) fn insert_panel(
         &mut self,
         size: Option<Pixels>,
@@ -71,6 +93,7 @@ impl ResizableState {
             ..Default::default()
         };
 
+        let weight = size;
         let size = size.unwrap_or(PANEL_MIN_SIZE);
 
         // We make sure that the size always sums up to the container size
@@ -84,11 +107,24 @@ impl ResizableState {
             panel.size = Some(self.sizes[i]);
         }
 
+        // A structural change re-shares the split at the live container, so
+        // the solved sizes become the new weights. During a layout rebuild the
+        // container has no bounds yet and the loop above was a no-op, so this
+        // keeps the dump's sizes as the weights verbatim. Uncaptured panels
+        // stay `None` and get their weight from their first paint.
+        for (w, s) in self.weights.iter_mut().zip(&self.sizes) {
+            if w.is_some() {
+                *w = Some(*s);
+            }
+        }
+
         if let Some(ix) = ix {
             self.panels.insert(ix, panel_state);
+            self.weights.insert(ix, weight);
             self.sizes.insert(ix, size);
         } else {
             self.panels.push(panel_state);
+            self.weights.push(weight);
             self.sizes.push(size);
         };
 
@@ -108,12 +144,15 @@ impl ResizableState {
             let diff = panels_count - self.panels.len();
             self.panels
                 .extend(vec![ResizablePanelState::default(); diff]);
+            // No weight yet: the first paint captures the rendered size.
+            self.weights.extend(vec![None; diff]);
             self.sizes.extend(vec![PANEL_MIN_SIZE; diff]);
             changed = true;
         }
 
         if panels_count < self.panels.len() {
             self.panels.truncate(panels_count);
+            self.weights.truncate(panels_count);
             self.sizes.truncate(panels_count);
             changed = true;
         }
@@ -132,10 +171,13 @@ impl ResizableState {
         cx: &mut Context<Self>,
     ) {
         let size = bounds.size.along(self.axis);
-        // This check is only necessary to stop the very first panel from resizing on its own
-        // it needs to be passed when the panel is freshly created so we get the initial size,
-        // but its also fine when it sometimes passes later.
-        if self.sizes[panel_ix].as_f32() == PANEL_MIN_SIZE.as_f32() {
+        // A panel created without an explicit size gets its weight from its
+        // first paint: whatever the flex layout gave it is what it is owed
+        // from here on. Upstream keyed this off the size still being exactly
+        // PANEL_MIN_SIZE, which misfired on panels whose real share happens
+        // to equal it; the explicit `None` weight is the honest marker.
+        if self.weights[panel_ix].is_none() {
+            self.weights[panel_ix] = Some(size);
             self.sizes[panel_ix] = size;
             self.panels[panel_ix].size = Some(size);
         }
@@ -153,6 +195,8 @@ impl ResizableState {
         }
         let panel = self.panels.remove(from_ix);
         self.panels.insert(to_ix, panel);
+        let weight = self.weights.remove(from_ix);
+        self.weights.insert(to_ix, weight);
         let size = self.sizes.remove(from_ix);
         self.sizes.insert(to_ix, size);
         cx.notify();
@@ -160,6 +204,7 @@ impl ResizableState {
 
     pub(crate) fn remove_panel(&mut self, panel_ix: usize, cx: &mut Context<Self>) {
         self.panels.remove(panel_ix);
+        self.weights.remove(panel_ix);
         self.sizes.remove(panel_ix);
         if let Some(resizing_panel_ix) = self.resizing_panel_ix {
             if resizing_panel_ix > panel_ix {
@@ -184,6 +229,7 @@ impl ResizableState {
 
     pub(crate) fn clear(&mut self) {
         self.panels.clear();
+        self.weights.clear();
         self.sizes.clear();
     }
 
@@ -286,11 +332,14 @@ impl ResizableState {
         for (i, s) in new.iter().enumerate() {
             self.panels[i].size = Some(*s);
         }
+        // A drag re-shares the whole split at the live container: what you
+        // see when you let go is what every panel is owed from now on.
+        self.weights = new.iter().map(|s| Some(*s)).collect();
         self.sizes = new;
         cx.notify();
     }
 
-    /// Adjust panel sizes according to the container size.
+    /// Solve the display sizes for the current container size.
     ///
     /// When the container size changes, the panels keep the same share of the
     /// space, except that each panel's [`size_range`](ResizablePanelState::size_range)
@@ -300,6 +349,15 @@ impl ResizableState {
     /// while the content panels stretch. Panels that hit a bound drop out of
     /// the split and the rest are redistributed, repeating until nothing new
     /// clamps.
+    ///
+    /// The solve reads the weights and writes only the display sizes, never
+    /// back into the weights. Clamping is lossy: a squeezed panel pinned at
+    /// its min has given its share to its siblings, and feeding that result
+    /// back in (as upstream does, one `sizes` vec doing both jobs) rewrote
+    /// the split for good on every pass through a small window. The mini
+    /// player toggle was the worst case: restore the main layout while the
+    /// window is still mini-sized and the splits came back wherever the
+    /// clamps left them.
     fn adjust_to_container_size(&mut self, cx: &mut Context<Self>) {
         if self.container_size().is_zero() {
             return;
@@ -311,9 +369,15 @@ impl ResizableState {
             return;
         }
 
-        // The current sizes act as the proportional weights; the ranges are
-        // the bounds each panel gets clamped to.
-        let weights: Vec<f32> = self.sizes.iter().map(|s| s.as_f32()).collect();
+        // The weights are the proportional shares; the ranges are the bounds
+        // each panel gets clamped to. A panel with no weight yet (first paint
+        // pending) weighs in at its current solved size.
+        let weights: Vec<f32> = self
+            .weights
+            .iter()
+            .zip(&self.sizes)
+            .map(|(w, s)| w.unwrap_or(*s).as_f32())
+            .collect();
         let ranges: Vec<Range<Pixels>> = (0..n).map(|i| self.panel_size_range(i)).collect();
 
         // None means "still flexible"; Some means the panel clamped to a
@@ -419,6 +483,7 @@ mod tests {
         ResizableState {
             axis: Axis::Horizontal,
             panels,
+            weights: sizes.iter().map(|&s| Some(px(s))).collect(),
             sizes: sizes.iter().map(|&s| px(s)).collect(),
             resizing_panel_ix: None,
             bounds: Bounds {
@@ -426,6 +491,12 @@ mod tests {
                 size: size(px(container), px(100.)),
             },
         }
+    }
+
+    // Point the state at a new container size, as the group's bounds canvas
+    // does when the window resizes.
+    fn set_container(state: &mut ResizableState, container: f32) {
+        state.bounds.size.width = px(container);
     }
 
     fn open() -> Range<Pixels> {
@@ -480,6 +551,66 @@ mod tests {
             assert!(state.sizes[0].as_f32() <= 150.5);
             assert!((total(state) - 1000.).abs() < 0.5);
         });
+    }
+
+    #[gpui::test]
+    fn adjust_round_trip_restores_shares(cx: &mut TestAppContext) {
+        // The mini toggle bug: a 934/320 main split restored while the window
+        // is still mini-sized. At 320 wide the right panel's share falls
+        // below its 120px min, clamps, and the left panel absorbs the rest.
+        // When the window comes back to full size the split must return to
+        // exactly 934/320; the solver used to feed the clamped result back
+        // into its weights, so it came back wherever the squeeze left it.
+        let entity = cx.new(|_| {
+            make_state(
+                &[934., 320.],
+                &[px(40.)..Pixels::MAX, px(120.)..Pixels::MAX],
+                1254.,
+            )
+        });
+        entity.update(cx, |state, cx| {
+            set_container(state, 320.);
+            state.adjust_to_container_size(cx);
+            // The right panel pinned at its min, the left took the leftover.
+            assert!((state.sizes[1].as_f32() - 120.).abs() < 0.5);
+            assert!((state.sizes[0].as_f32() - 200.).abs() < 0.5);
+
+            set_container(state, 1254.);
+            state.adjust_to_container_size(cx);
+            assert!((state.sizes[0].as_f32() - 934.).abs() < 0.5);
+            assert!((state.sizes[1].as_f32() - 320.).abs() < 0.5);
+        });
+    }
+
+    #[gpui::test]
+    fn drag_reanchors_weights(cx: &mut TestAppContext) {
+        // A drag is a deliberate re-share: afterwards the weights are the
+        // dragged sizes, so a dump records them and a later container change
+        // scales from them.
+        let entity = cx.new(|_| {
+            let mut s = make_state(&[300., 700.], &[open(), open()], 1000.);
+            for (i, p) in s.panels.iter_mut().enumerate() {
+                let x = [0., 300.][i];
+                let w = [300., 700.][i];
+                p.bounds = Bounds {
+                    origin: point(px(x), px(0.)),
+                    size: size(px(w), px(100.)),
+                };
+            }
+            s
+        });
+        let window = cx.add_window(|_, _| DragPanel);
+        window
+            .update(cx, |_, window, cx| {
+                entity.update(cx, |state, cx| {
+                    state.resize_panel(0, px(400.), window, cx);
+                    let weights = state.weights();
+                    assert_eq!(weights.len(), 2);
+                    assert!((weights[0].as_f32() - 400.).abs() < 0.5);
+                    assert!((weights[1].as_f32() - 600.).abs() < 0.5);
+                });
+            })
+            .unwrap();
     }
 
     #[gpui::test]

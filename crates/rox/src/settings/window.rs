@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use gpui::{
     div, prelude::*, px, size, svg, AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, Div,
-    Entity, Global, Hsla, MouseButton, MouseDownEvent, PathPromptOptions, Pixels, ScrollHandle,
-    SharedString, Subscription, WeakEntity, Window, WindowHandle,
+    Entity, EntityId, Global, Hsla, MouseButton, MouseDownEvent, PathPromptOptions, Pixels,
+    ScrollHandle, SharedString, Subscription, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -220,6 +220,10 @@ struct SettingsWindow {
     /// the window backs with the playing track's art like every other.
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
+    /// The workspace player's id, the key the window renders its art
+    /// tint under. Just the id: the workspace owns the player, and the
+    /// tint map drops the entry when its last player window closes.
+    player: EntityId,
     /// The shared thumbnail service, whose durable store the storage
     /// page sizes and clears.
     thumbs: Entity<Thumbs>,
@@ -296,6 +300,7 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let player = state.player.entity_id();
         let library = state.library;
         let settings = Settings::load();
         let base = settings.palette();
@@ -421,6 +426,7 @@ impl SettingsWindow {
             workspace_window,
             now_art: state.now_art,
             backdrop: WindowBackdrop::default(),
+            player,
             thumbs: state.thumbs,
             scrobbler,
             lastfm_key,
@@ -1998,7 +2004,7 @@ fn shipped_tag() -> Div {
         .rounded(tokens::RADIUS)
         .bg(palette::bg_control())
         .text_color(palette::text_muted())
-        .child("Shipped")
+        .child("Built-in")
 }
 
 fn role_chip(
@@ -2137,83 +2143,94 @@ impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let columns = grid_columns(window);
 
-        let sidebar = sidebar()
-            .children(PAGES.iter().map(|&(page, label, icon)| {
-                settings_ui::nav_item(
-                    label,
-                    icon,
-                    self.page == page,
-                    // Entering Storage measures the files fresh, so the
-                    // numbers are current without a per-frame stat.
-                    move |this: &mut Self, cx| {
-                        this.page = page;
-                        if page == Page::Storage {
-                            this.refresh_storage(cx);
-                        }
-                        cx.notify();
-                    },
-                    cx,
-                )
-            }))
-            // The escape hatches sink to the bottom: the raw file this
-            // window edits and the folder it lives in.
-            .child(div().flex_1())
-            .child(self.sidebar_action("Settings File", icons::FILE_TEXT, settings_path, cx))
-            .child(self.sidebar_action("Data Folder", icons::FOLDER, data_dir, cx));
+        // The window renders under the workspace player's art tint and
+        // claims the widget theme while it holds focus, so the pages sit
+        // in the same colors as the app they configure. The Appearance
+        // page's swatches still edit the base palette underneath; the
+        // locked swatches show the derived colors through `resolved`.
+        let player = self.player;
+        palette::note_focus(player, window.is_window_active(), cx);
 
-        let page = match self.page {
-            Page::Appearance => self.appearance_page(columns, cx),
-            Page::Behavior => self.behavior_page(cx),
-            Page::Workspace => self.workspace_page(cx),
-            Page::Library => self.library_page(cx),
-            Page::Providers => self.providers_page(cx),
-            Page::Scrobbling => self.scrobbling_page(cx),
-            Page::Storage => self.storage_page(cx),
-        };
-
-        div()
-            .size_full()
-            .flex()
-            .flex_row()
-            .bg(palette::bg_elevated())
-            .text_color(palette::text_bright())
-            .text_sm()
-            .when_some(settings::app_font(), |d, font| d.font_family(font))
-            // The backdrop paints first, under the pages; without it
-            // translucent surfaces would sink into the window's own
-            // black instead of the playing track's art.
-            .children(self.backdrop.layer(&self.now_art, window, cx))
-            .child(sidebar)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .relative()
-                    // The page's own surface, the window base the sidebar
-                    // sits beside: opaque at full surface opacity so the
-                    // backdrop only reads through as the surfaces thin,
-                    // never at 100% like the sidebar already holds.
-                    .bg(palette::bg_elevated())
-                    .child(
-                        div()
-                            .id("settings-page")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .p(tokens::SPACE_MD)
-                            .child(page),
+        panel::window_body(player, || {
+            let sidebar = sidebar()
+                .children(PAGES.iter().map(|&(page, label, icon)| {
+                    settings_ui::nav_item(
+                        label,
+                        icon,
+                        self.page == page,
+                        // Entering Storage measures the files fresh, so the
+                        // numbers are current without a per-frame stat.
+                        move |this: &mut Self, cx| {
+                            this.page = page;
+                            if page == Page::Storage {
+                                this.refresh_storage(cx);
+                            }
+                            cx.notify();
+                        },
+                        cx,
                     )
-                    // Always visible, not fading in on scroll: the thumb
-                    // is what says more page hangs below the fold. The
-                    // absolute wrapper gives the scrollbar its bounds; on
-                    // its own it lays out to nothing.
-                    .child(div().absolute().inset_0().child(
-                        Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
-                    )),
-            )
-            // The overwrite confirm floats over the whole window on its own
-            // occluding layer, last so it paints on top of the page.
-            .children(self.confirm_overlay(cx))
+                }))
+                // The escape hatches sink to the bottom: the raw file this
+                // window edits and the folder it lives in.
+                .child(div().flex_1())
+                .child(self.sidebar_action("Settings File", icons::FILE_TEXT, settings_path, cx))
+                .child(self.sidebar_action("Data Folder", icons::FOLDER, data_dir, cx));
+
+            let page = match self.page {
+                Page::Appearance => self.appearance_page(columns, cx),
+                Page::Behavior => self.behavior_page(cx),
+                Page::Workspace => self.workspace_page(cx),
+                Page::Library => self.library_page(cx),
+                Page::Providers => self.providers_page(cx),
+                Page::Scrobbling => self.scrobbling_page(cx),
+                Page::Storage => self.storage_page(cx),
+            };
+
+            div()
+                .size_full()
+                .flex()
+                .flex_row()
+                .bg(palette::bg_elevated())
+                .text_color(palette::text_bright())
+                .text_sm()
+                .when_some(settings::app_font(), |d, font| d.font_family(font))
+                // The backdrop paints first, under the pages; without it
+                // translucent surfaces would sink into the window's own
+                // black instead of the playing track's art.
+                .children(self.backdrop.layer(&self.now_art, window, cx))
+                .child(sidebar)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .relative()
+                        // The page's own surface, the window base the sidebar
+                        // sits beside: opaque at full surface opacity so the
+                        // backdrop only reads through as the surfaces thin,
+                        // never at 100% like the sidebar already holds.
+                        .bg(palette::bg_elevated())
+                        .child(
+                            div()
+                                .id("settings-page")
+                                .size_full()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll)
+                                .p(tokens::SPACE_MD)
+                                .child(page),
+                        )
+                        // Always visible, not fading in on scroll: the thumb
+                        // is what says more page hangs below the fold. The
+                        // absolute wrapper gives the scrollbar its bounds; on
+                        // its own it lays out to nothing.
+                        .child(div().absolute().inset_0().child(
+                            Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
+                        )),
+                )
+                // The overwrite confirm floats over the whole window on its own
+                // occluding layer, last so it paints on top of the page.
+                .children(self.confirm_overlay(cx))
+                .into_any_element()
+        })
     }
 }

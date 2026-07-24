@@ -1,4 +1,4 @@
-//! Shared plumbing for the layout-composition panels (group, depth,
+//! Shared plumbing for the layout-composition panels (group, overlay,
 //! slide): panels that host other panels inside one dock slot. The dock
 //! tree only knows splits and tabs, so these hosts render their children
 //! themselves - a child is just an [`Arc<dyn PanelView>`] whose view lands
@@ -87,8 +87,17 @@ pub fn hosted_children(panel: &Arc<dyn PanelView>, cx: &App) -> Option<Vec<Slot>
     if let Ok(group) = view.clone().downcast::<crate::panels::group::GroupPanel>() {
         return Some(group.read(cx).slots().to_vec());
     }
-    if let Ok(depth) = view.clone().downcast::<crate::panels::depth::DepthPanel>() {
-        return Some(depth.read(cx).slots().to_vec());
+    if let Ok(overlay) = view
+        .clone()
+        .downcast::<crate::panels::overlay::OverlayPanel>()
+    {
+        return Some(overlay.read(cx).slots().to_vec());
+    }
+    if let Ok(drawer) = view
+        .clone()
+        .downcast::<crate::panels::drawer::DrawerPanel>()
+    {
+        return Some(drawer.read(cx).slots().to_vec());
     }
     if let Ok(slide) = view.downcast::<crate::panels::slide::SlidePanel>() {
         return Some(slide.read(cx).slides().iter().cloned().map(Some).collect());

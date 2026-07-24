@@ -14,7 +14,7 @@ use gpui_component::Root;
 use crate::assets::icons;
 use crate::backdrop::WindowBackdrop;
 use crate::design::{palette, tokens};
-use crate::panel::AppState;
+use crate::panel::{self, AppState};
 use crate::settings::ui::{small_button, SECTION_GAP};
 use crate::settings::{self, Settings};
 use crate::startup::updates;
@@ -179,51 +179,60 @@ fn prose() -> Div {
 
 impl Render for AboutWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let checking = matches!(self.update_check, UpdateCheck::Checking);
+        // The window renders under the player's art tint like the
+        // workspace it was opened from, and claims the widget theme while
+        // it holds focus.
+        let player = self.state.player.entity_id();
+        palette::note_focus(player, window.is_window_active(), cx);
 
-        // The status line beside the button, one wording per check state.
-        // The available state hangs a link to the release page off its tail.
-        let status: Option<AnyElement> = match &self.update_check {
-            UpdateCheck::Idle => None,
-            UpdateCheck::Checking => Some(line("Checking...").into_any_element()),
-            UpdateCheck::UpToDate => Some(line("You're on the latest version").into_any_element()),
-            UpdateCheck::Failed => Some(line("Couldn't reach GitHub").into_any_element()),
-            UpdateCheck::Available(release) => {
-                let url = release.url.clone();
-                Some(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(tokens::SPACE_SM)
-                        .child(line(format!("Version {} is available", release.version)))
-                        .child(small_button(
-                            "Get It",
-                            icons::EXTERNAL_LINK,
-                            false,
-                            cx.listener(move |_, _, _, cx| cx.open_url(&url)),
-                        ))
-                        .into_any_element(),
-                )
-            }
-        };
+        panel::window_body(player, || {
+            let checking = matches!(self.update_check, UpdateCheck::Checking);
 
-        let update_control = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_SM)
-            .child(small_button(
-                "Check for Updates",
-                icons::REFRESH_CW,
-                checking,
-                cx.listener(|this, _, _, cx| this.check_for_updates(cx)),
-            ))
-            .when_some(status, |d, status| d.child(status));
+            // The status line beside the button, one wording per check state.
+            // The available state hangs a link to the release page off its tail.
+            let status: Option<AnyElement> = match &self.update_check {
+                UpdateCheck::Idle => None,
+                UpdateCheck::Checking => Some(line("Checking...").into_any_element()),
+                UpdateCheck::UpToDate => {
+                    Some(line("You're on the latest version").into_any_element())
+                }
+                UpdateCheck::Failed => Some(line("Couldn't reach GitHub").into_any_element()),
+                UpdateCheck::Available(release) => {
+                    let url = release.url.clone();
+                    Some(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(tokens::SPACE_SM)
+                            .child(line(format!("Version {} is available", release.version)))
+                            .child(small_button(
+                                "Get It",
+                                icons::EXTERNAL_LINK,
+                                false,
+                                cx.listener(move |_, _, _, cx| cx.open_url(&url)),
+                            ))
+                            .into_any_element(),
+                    )
+                }
+            };
 
-        // The identity column beside the logo: name and version up top, then
-        // the copyright, the copyleft notice, and where the source lives.
-        let identity = div()
+            let update_control = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_SM)
+                .child(small_button(
+                    "Check for Updates",
+                    icons::REFRESH_CW,
+                    checking,
+                    cx.listener(|this, _, _, cx| this.check_for_updates(cx)),
+                ))
+                .when_some(status, |d, status| d.child(status));
+
+            // The identity column beside the logo: name and version up top, then
+            // the copyright, the copyleft notice, and where the source lives.
+            let identity = div()
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
@@ -260,43 +269,45 @@ impl Render for AboutWindow {
             )
             .child(update_control);
 
-        let page = div()
-            .flex()
-            .flex_row()
-            .items_start()
-            .gap(SECTION_GAP)
-            .child(
-                svg()
-                    .path(icons::LOGO)
-                    .size(px(192.))
-                    .flex_none()
-                    .text_color(palette::text_bright()),
-            )
-            .child(identity);
+            let page = div()
+                .flex()
+                .flex_row()
+                .items_start()
+                .gap(SECTION_GAP)
+                .child(
+                    svg()
+                        .path(icons::LOGO)
+                        .size(px(192.))
+                        .flex_none()
+                        .text_color(palette::text_bright()),
+                )
+                .child(identity);
 
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(palette::bg_elevated())
-            .text_color(palette::text_bright())
-            .text_sm()
-            .when_some(settings::app_font(), |d, font| d.font_family(font))
-            // The backdrop paints first, under the page; without it
-            // translucent surfaces would sink into the window's own black
-            // instead of the playing track's art.
-            .children(self.backdrop.layer(&self.state.now_art, window, cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    // The page's own surface over the backdrop, the same
-                    // one the settings pages sit on: opaque at full
-                    // surface opacity, so the art only reads through as
-                    // the surfaces thin, never straight under the copy.
-                    .bg(palette::bg_elevated())
-                    .p(tokens::SPACE_MD)
-                    .child(page),
-            )
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(palette::bg_elevated())
+                .text_color(palette::text_bright())
+                .text_sm()
+                .when_some(settings::app_font(), |d, font| d.font_family(font))
+                // The backdrop paints first, under the page; without it
+                // translucent surfaces would sink into the window's own black
+                // instead of the playing track's art.
+                .children(self.backdrop.layer(&self.state.now_art, window, cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        // The page's own surface over the backdrop, the same
+                        // one the settings pages sit on: opaque at full
+                        // surface opacity, so the art only reads through as
+                        // the surfaces thin, never straight under the copy.
+                        .bg(palette::bg_elevated())
+                        .p(tokens::SPACE_MD)
+                        .child(page),
+                )
+                .into_any_element()
+        })
     }
 }

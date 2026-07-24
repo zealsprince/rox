@@ -293,14 +293,42 @@ pub fn config_from_info<C: Default + serde::de::DeserializeOwned>(info: &PanelIn
 /// can leave behind offers the way back in. Popped out there is no Close:
 /// closing the OS window is the close. Pinned panels keep the dock menus'
 /// guard and the click no-ops.
+/// The Dock Back entry: the popped-out counterpart of Pop Out. Moves the
+/// panel into the workspace's newest live tab group and closes the window it
+/// was hosted in (harmless if there is none). Cross-window drags can't carry
+/// a panel home - a held button pins pointer events to its window and Wayland
+/// hides window positions - so this menu is the way back. It no-ops when the
+/// layout has no live tab group to land in.
+pub fn dock_back_item(menu: PopupMenu, panel: Arc<dyn PanelView>, state: AppState) -> PopupMenu {
+    let hosts = state.tab_hosts.clone();
+    menu.item(
+        PopupMenuItem::new("Dock Back")
+            .icon(Icon::default().path(icons::EXTERNAL_LINK))
+            .on_click(move |_, window, cx| {
+                let Some(tabs) = hosts.read(cx).last_live(cx) else {
+                    return;
+                };
+                tabs.update(cx, |tabs, cx| {
+                    tabs.add_panel(panel.clone(), window, cx);
+                });
+                window.remove_window();
+            }),
+    )
+}
+
 pub fn popout_item<P: Panel>(
     menu: PopupMenu,
     panel: &Entity<P>,
     tab_panel: Option<WeakEntity<TabPanel>>,
     state: AppState,
 ) -> PopupMenu {
+    // No tab strip means the panel is popped out into its own window; there
+    // the item that belongs here is the way home, not another Pop Out.
+    let Some(tabs) = tab_panel.clone() else {
+        return dock_back_item(menu, Arc::new(panel.clone()), state);
+    };
     let pop_panel = panel.clone();
-    let pop_tabs = tab_panel.clone();
+    let pop_tabs = tab_panel;
     let menu = menu.item(
         PopupMenuItem::new("Pop Out")
             .icon(Icon::default().path(icons::EXTERNAL_LINK))
@@ -314,9 +342,6 @@ pub fn popout_item<P: Panel>(
                 );
             }),
     );
-    let Some(tabs) = tab_panel else {
-        return menu;
-    };
     let panel = panel.clone();
     menu.item(
         PopupMenuItem::new("Close")
@@ -1720,22 +1745,9 @@ impl PopoutHost {
     /// and Wayland hides window positions), so this is the way home.
     fn open_menu(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.panel_view.clone();
-        let hosts = self.state.tab_hosts.clone();
-        let dockable = hosts.read(cx).last_live(cx).is_some();
+        let state = self.state.clone();
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            menu.item(
-                PopupMenuItem::new("Dock Back")
-                    .disabled(!dockable)
-                    .on_click(move |_, window, cx| {
-                        let Some(tabs) = hosts.read(cx).last_live(cx) else {
-                            return;
-                        };
-                        tabs.update(cx, |tabs, cx| {
-                            tabs.add_panel(panel.clone(), window, cx);
-                        });
-                        window.remove_window();
-                    }),
-            )
+            dock_back_item(menu, panel, state)
         });
         menu.focus_handle(cx).focus(window);
         let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
@@ -1783,12 +1795,18 @@ impl Render for PopoutHost {
                 .bg(palette::bg_elevated())
                 .text_color(palette::text_bright())
                 .text_sm()
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                        this.open_menu(event.position, window, cx);
-                    }),
-                )
+                // A panel that serves its own content menu already carries
+                // Dock Back in that menu's Panel tail, so the window's own
+                // right-click would only stack a second menu on top. Install
+                // it only as the fallback for panels with no content menu.
+                .when(!self.panel_view.content_context_menu(cx), |body| {
+                    body.on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.open_menu(event.position, window, cx);
+                        }),
+                    )
+                })
                 // The backdrop paints first, under the panel; how much shows
                 // through is the surfaces' call (ADR 10's strength scalar).
                 .children(self.backdrop.layer(&self.state.now_art, window, cx))

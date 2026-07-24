@@ -69,6 +69,21 @@ impl AudioFeed {
         }
         n
     }
+
+    /// Copy the newest frames split into their two channels, newest last -
+    /// what a stereo meter (the VU panel, a goniometer) needs instead of the
+    /// mono fold. `left` and `right` fill to the same length; returns how
+    /// many frames landed, short when the ring hasn't buffered enough yet.
+    pub fn latest_stereo(&self, left: &mut [f32], right: &mut [f32]) -> usize {
+        let buf = self.buf.lock().unwrap();
+        let n = (buf.len() / 2).min(left.len()).min(right.len());
+        let start = buf.len() - n * 2;
+        for i in 0..n {
+            left[i] = buf[start + i * 2];
+            right[i] = buf[start + i * 2 + 1];
+        }
+        n
+    }
 }
 
 impl Default for AudioFeed {
@@ -119,6 +134,20 @@ mod tests {
         let n = feed.latest_mono(&mut out);
         assert_eq!(n, 2);
         assert_eq!(out, [30.0, 40.0]);
+    }
+
+    #[test]
+    fn latest_stereo_splits_channels_newest_last() {
+        let feed = AudioFeed::new();
+        // Three frames: (L, R) = (1, 2), (3, 4), (5, 6). The out buffers only
+        // fit two, so the two newest land, in order, split by channel.
+        feed.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut left = [0.0f32; 2];
+        let mut right = [0.0f32; 2];
+        let n = feed.latest_stereo(&mut left, &mut right);
+        assert_eq!(n, 2);
+        assert_eq!(left, [3.0, 5.0]);
+        assert_eq!(right, [4.0, 6.0]);
     }
 
     #[test]

@@ -152,13 +152,13 @@ pub enum Orientation {
 
 impl Orientation {
     /// Whether the frequency axis runs along the panel's width.
-    fn horizontal(self) -> bool {
+    pub fn horizontal(self) -> bool {
         matches!(self, Orientation::Bottom | Orientation::Top)
     }
 
     /// The gradient angle pointing from the base edge toward the tips,
     /// degrees clockwise from up.
-    fn tip_angle(self) -> f32 {
+    pub fn tip_angle(self) -> f32 {
         match self {
             Orientation::Bottom => 0.0,
             Orientation::Top => 180.0,
@@ -243,7 +243,9 @@ const STYLE_CHOICES: &[(&str, SpectrumStyle)] = &[
     ("Line", SpectrumStyle::Line),
 ];
 
-const ORIENTATION_CHOICES: &[(&str, Orientation)] = &[
+/// Shared with the VU meter panel, which grows its meters from the same
+/// four edges.
+pub const ORIENTATION_CHOICES: &[(&str, Orientation)] = &[
     ("Bottom", Orientation::Bottom),
     ("Top", Orientation::Top),
     ("Left", Orientation::Left),
@@ -256,7 +258,9 @@ const SYMMETRY_CHOICES: &[(&str, Symmetry)] = &[
     ("Reverse", Symmetry::Reverse),
 ];
 
-const GRADIENT_CHOICES: &[(&str, Gradient)] = &[
+/// Shared with the VU meter panel, which colors its meters by the same
+/// loudness ramp.
+pub const GRADIENT_CHOICES: &[(&str, Gradient)] = &[
     ("Off", Gradient::Off),
     ("Theme", Gradient::Theme),
     ("Cover", Gradient::Cover),
@@ -916,14 +920,22 @@ impl Bars {
 }
 
 /// A band's color at ramp position `t` - its level, or a cell's height in
-/// the block stack. Flat mode is the accent everywhere; the ramps blend
-/// upward, curved so the mids stay muted and only the top lights up. The
-/// cover ramp runs accent to highlight - the art's primary and runner-up
-/// while song theming derives - and stops short of full highlight so the
-/// peak caps stay legible on a pinned band.
+/// the block stack. The ramp itself lives in [`ramp_color`], shared with the
+/// VU meter panel.
 fn bar_color(config: &SpectrumConfig, t: f32) -> Rgba {
+    ramp_color(config.gradient, t, config.custom_ramp())
+}
+
+/// The loudness ramp at position `t`, shared with the VU meter panel so both
+/// visualizers color the same way. Flat mode is the accent everywhere; the
+/// ramps blend upward, curved so the mids stay muted and only the top lights
+/// up. The cover ramp runs accent to highlight - the art's primary and
+/// runner-up while song theming derives - and stops short of full highlight
+/// so the peak caps stay legible on a pinned band. `custom` is the parsed
+/// custom pair, ignored unless the source is [`Gradient::Custom`].
+pub fn ramp_color(gradient: Gradient, t: f32, custom: (Rgba, Rgba)) -> Rgba {
     let t = t.clamp(0.0, 1.0).powf(1.5);
-    match config.gradient {
+    match gradient {
         Gradient::Off => palette::accent(),
         Gradient::Theme => palette::mix(
             palette::alpha(palette::text_faint(), 0x66),
@@ -932,7 +944,7 @@ fn bar_color(config: &SpectrumConfig, t: f32) -> Rgba {
         ),
         Gradient::Cover => palette::mix(palette::accent(), palette::highlight(), 0.85 * t),
         Gradient::Custom => {
-            let (lo, hi) = config.custom_ramp();
+            let (lo, hi) = custom;
             palette::mix(lo, hi, t)
         }
     }

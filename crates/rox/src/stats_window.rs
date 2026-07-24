@@ -665,63 +665,71 @@ fn empty_note(range: StatsRange) -> Div {
 
 impl Render for StatsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let page = div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(panel::setting_row(
-                "Range",
-                None,
-                panel::choices(
-                    RANGES,
-                    self.range,
-                    |this: &mut Self, range, cx| this.set_range(range, cx),
-                    cx,
-                ),
-            ))
-            .child(self.listens_section())
-            .child(self.chart_section(cx))
-            .child(self.donut_section("Top Artists", Rollup::Artist, &self.data.artists, cx))
-            .child(self.name_section("Top Albums", Rollup::Album, &self.data.albums, cx))
-            .child(self.donut_section("Top Genres", Rollup::Genre, &self.data.genres, cx))
-            .child(self.recents_section(cx));
+        // The page renders under the player's art tint like the workspace
+        // that opened it, and claims the widget theme while it holds focus,
+        // so the stats read in the playing track's colors.
+        let player = self.state.player.entity_id();
+        palette::note_focus(player, window.is_window_active(), cx);
+        panel::window_body(player, || {
+            let page = div()
+                .flex()
+                .flex_col()
+                .gap(SECTION_GAP)
+                .child(panel::setting_row(
+                    "Range",
+                    None,
+                    panel::choices(
+                        RANGES,
+                        self.range,
+                        |this: &mut Self, range, cx| this.set_range(range, cx),
+                        cx,
+                    ),
+                ))
+                .child(self.listens_section())
+                .child(self.chart_section(cx))
+                .child(self.donut_section("Top Artists", Rollup::Artist, &self.data.artists, cx))
+                .child(self.name_section("Top Albums", Rollup::Album, &self.data.albums, cx))
+                .child(self.donut_section("Top Genres", Rollup::Genre, &self.data.genres, cx))
+                .child(self.recents_section(cx));
 
-        div()
-            .size_full()
-            .flex()
-            .flex_row()
-            .bg(palette::bg_elevated())
-            .text_color(palette::text_bright())
-            .text_sm()
-            // The backdrop paints first, under the page; without it
-            // translucent surfaces would sink into the window's own
-            // black instead of the playing track's art.
-            .children(self.backdrop.layer(&self.state.now_art, window, cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .relative()
-                    .bg(palette::bg_elevated())
-                    .child(
-                        div()
-                            .id("stats-page")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .p(tokens::SPACE_MD)
-                            // Room for the scrollbar's 16px lane, so the
-                            // counts and play controls never sit under
-                            // the thumb.
-                            .pr(tokens::SPACE_MD + px(16.))
-                            .child(page),
-                    )
-                    // Always visible, not fading in on scroll: the thumb
-                    // is what says more page hangs below the fold.
-                    .child(div().absolute().inset_0().child(
-                        Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
-                    )),
-            )
+            div()
+                .size_full()
+                .flex()
+                .flex_row()
+                .bg(palette::bg_elevated())
+                .text_color(palette::text_bright())
+                .text_sm()
+                // The backdrop paints first, under the page; without it
+                // translucent surfaces would sink into the window's own
+                // black instead of the playing track's art.
+                .children(self.backdrop.layer(&self.state.now_art, window, cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .relative()
+                        .bg(palette::bg_elevated())
+                        .child(
+                            div()
+                                .id("stats-page")
+                                .size_full()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll)
+                                .p(tokens::SPACE_MD)
+                                // Room for the scrollbar's 16px lane, so the
+                                // counts and play controls never sit under
+                                // the thumb.
+                                .pr(tokens::SPACE_MD + px(16.))
+                                .child(page),
+                        )
+                        // Always visible, not fading in on scroll: the thumb
+                        // is what says more page hangs below the fold.
+                        .child(div().absolute().inset_0().child(
+                            Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
+                        )),
+                )
+                .into_any_element()
+        })
     }
 }

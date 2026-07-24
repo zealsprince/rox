@@ -137,6 +137,16 @@ pub struct GridConfig {
     /// hovering lights a tile back up.
     #[serde(default)]
     pub dim_playing: bool,
+    /// The same focus effect in color: drain every cover but the playing
+    /// album's to grayscale while a track plays. Stacks with `dim_playing`
+    /// or stands on its own.
+    #[serde(default)]
+    pub desaturate_playing: bool,
+    /// Keep the dim and desaturate effects on all the time, not only while a
+    /// track plays: every cover but the one under the pointer recedes,
+    /// playing or not.
+    #[serde(default)]
+    pub dim_always: bool,
     /// How far the dimmed covers fade, in percent of fully hidden.
     #[serde(default = "default_dim")]
     pub dim: f32,
@@ -176,6 +186,8 @@ impl Default for GridConfig {
             resume_playing: false,
             smooth_follow: false,
             dim_playing: false,
+            desaturate_playing: false,
+            dim_always: false,
             dim: default_dim(),
             rounding: 0.,
             gap: 0.,
@@ -796,7 +808,7 @@ impl GridPanel {
                 self.error = None;
                 self.state
                     .player
-                    .update(cx, |player, cx| player.play(paths, cx));
+                    .update(cx, |player, cx| player.play_explicit(paths, cx));
             }
             Err(e) => {
                 self.error = Some(format!("library: {e}").into());
@@ -895,19 +907,30 @@ impl GridPanel {
         px((((cross - self.config.gap * (lanes - 1.)) / lanes) - self.cross_label()).max(1.))
     }
 
-    /// A tile's resting opacity under the dim mode: full for the playing
-    /// album and the hovered tile, the configured floor for everything
-    /// else while audio moves, full for all when it stops.
+    /// Whether tile `ix` sits in the receded set: the covers the focus
+    /// effects push back. The hovered tile and the playing album are always
+    /// exempt. Always mode pushes back every other cover; otherwise only the
+    /// rest while audio moves.
+    fn receded(&self, ix: usize) -> bool {
+        if self.hovered == Some(ix) || self.playing_ix == Some(ix) {
+            return false;
+        }
+        self.config.dim_always || self.playing
+    }
+
+    /// A tile's resting opacity under the dim mode: the configured floor for
+    /// a receded cover, full otherwise.
     fn dim_target(&self, ix: usize) -> f32 {
-        if self.config.dim_playing
-            && self.playing
-            && self.playing_ix != Some(ix)
-            && self.hovered != Some(ix)
-        {
+        if self.config.dim_playing && self.receded(ix) {
             1.0 - self.config.dim / TILE_DIM_MAX
         } else {
             1.0
         }
+    }
+
+    /// Whether a tile paints grayscale under the desaturate mode.
+    fn desaturated(&self, ix: usize) -> bool {
+        self.config.desaturate_playing && self.receded(ix)
     }
 
     /// One album tile: the cover filling a square, the label overlay while
@@ -941,10 +964,12 @@ impl GridPanel {
         // rectangular, so a rounded tile under a square image would paint
         // over its own corners.
         let radius = side * (self.config.rounding / 200.);
+        let desaturated = self.desaturated(ix);
         let content: AnyElement = match thumb {
             Thumb::Ready(image) => img(image)
                 .size_full()
                 .object_fit(ObjectFit::Cover)
+                .grayscale(desaturated)
                 .rounded(radius)
                 .into_any_element(),
             _ => div()
@@ -996,6 +1021,9 @@ impl GridPanel {
                 let target = hovered.then_some(ix);
                 if this.hovered != target && (this.hovered == Some(ix) || *hovered) {
                     this.hovered = target;
+                    // Hovering lights a receded tile back up, so re-arm the
+                    // ease loop to fade the dim off and back on.
+                    this.dim_fading = true;
                     cx.notify();
                 }
             }))
@@ -1298,6 +1326,33 @@ impl PanelSettings for GridPanel {
                                     format!("{:.0} %", self.config.dim),
                                     |this: &mut Self, fraction, cx| {
                                         this.config.dim = (fraction * TILE_DIM_MAX).round();
+                                        this.dim_fading = true;
+                                        cx.notify();
+                                    },
+                                    cx,
+                                ),
+                            ))
+                        })
+                        .child(setting_row(
+                            "Desaturate While Playing",
+                            Some("Drain every cover but the playing album's to grayscale; hovering brings a tile's color back"),
+                            toggle(
+                                self.config.desaturate_playing,
+                                |this: &mut Self, on, cx| {
+                                    this.config.desaturate_playing = on;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                        .when(self.config.dim_playing || self.config.desaturate_playing, |d| {
+                            d.child(setting_row(
+                                "Always",
+                                Some("Keep the covers pushed back even when nothing plays; only a hovered tile shows in full"),
+                                toggle(
+                                    self.config.dim_always,
+                                    |this: &mut Self, on, cx| {
+                                        this.config.dim_always = on;
                                         this.dim_fading = true;
                                         cx.notify();
                                     },
@@ -1745,7 +1800,41 @@ impl GridPanel {
             .when(headerless && self.config.search, |d| {
                 d.child(self.toolbar(cx))
             });
-        let content: AnyElement = if self.cells.is_empty() {
+        // The "open a folder" call-to-action means the catalog itself holds no
+        // tracks, so it keys off the loaded projection, never the view (the
+        // library panel's rule): off the cells it would wrongly show when a
+        // query hides every album, and `is_some_and` keeps it off until the
+        // projection loads.
+        let busy = self.state.library.read(cx).busy().is_some();
+        let catalog_empty = self
+            .state
+            .library
+            .read(cx)
+            .projection()
+            .is_some_and(|p| p.is_empty());
+        let content: AnyElement = if catalog_empty && !busy {
+            div()
+                .id("grid-empty")
+                .flex_1()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(tokens::SPACE_SM)
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.state
+                        .library
+                        .update(cx, |library, cx| library.browse(cx));
+                }))
+                .child(div().text_lg().child("Open a music folder"))
+                .child(
+                    div()
+                        .text_color(palette::text_muted())
+                        .child("It gets scanned into the library (flac, mp3, wav)"),
+                )
+                .into_any_element()
+        } else if self.cells.is_empty() {
             div()
                 .flex_1()
                 .flex()

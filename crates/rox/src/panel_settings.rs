@@ -29,8 +29,8 @@ use crate::panel::{self, AppState, PanelSettings, ScrubState};
 use crate::panels::art::ArtPanel;
 use crate::panels::biography::BiographyPanel;
 use crate::panels::cover::CoverArtPanel;
-use crate::panels::depth::DepthPanel;
 use crate::panels::drag_anchor::DragAnchorPanel;
+use crate::panels::drawer::DrawerPanel;
 use crate::panels::filter::FilterPanel;
 use crate::panels::folder_tree::FolderTreePanel;
 use crate::panels::grid::GridPanel;
@@ -41,6 +41,7 @@ use crate::panels::lyrics::LyricsPanel;
 use crate::panels::menu::MenuPanel;
 use crate::panels::metadata::MetadataPanel;
 use crate::panels::mini::MiniTogglePanel;
+use crate::panels::overlay::OverlayPanel;
 use crate::panels::playlists::PlaylistsPanel;
 use crate::panels::queue::QueuePanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
@@ -159,7 +160,8 @@ macro_rules! with_settings_panel {
             DragAnchorPanel,
             WindowControlsPanel,
             GroupPanel,
-            DepthPanel,
+            OverlayPanel,
+            DrawerPanel,
             SlidePanel,
             FolderTreePanel,
             MiniTogglePanel,
@@ -700,8 +702,13 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         let scale = value.unwrap_or(1.0);
         let fraction = ((scale - min) / (max - min)).clamp(0.0, 1.0);
         let readout = format!("{}%", (scale * 100.0).round() as i32);
-        let slider =
-            panel::value_slider(&self.font_scale_scrub, fraction, readout, Self::set_font_scale, cx);
+        let slider = panel::value_slider(
+            &self.font_scale_scrub,
+            fraction,
+            readout,
+            Self::set_font_scale,
+            cx,
+        );
         let row = div()
             .flex()
             .flex_row()
@@ -1264,43 +1271,52 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
             }
         };
 
-        div()
-            .size_full()
-            .flex()
-            .flex_row()
-            .bg(palette::bg_elevated())
-            .text_color(palette::text_bright())
-            .text_sm()
-            .when_some(settings::app_font(), |d, font| d.font_family(font))
-            // The backdrop paints first, under the pages; without it
-            // translucent surfaces would sink into the window's own
-            // black instead of the playing track's art.
-            .children(self.backdrop.layer(&self.state.now_art, window, cx))
-            .child(nav)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .relative()
-                    // The page's own surface, the window base the sidebar
-                    // sits beside: opaque at full surface opacity so the
-                    // backdrop only reads through as the surfaces thin.
-                    .bg(palette::bg_elevated())
-                    .child(
-                        div()
-                            .id("panel-settings-page")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .p(tokens::SPACE_MD)
-                            .child(body),
-                    )
-                    // Always visible, not fading in on scroll: the thumb
-                    // is what says more page hangs below the fold.
-                    .child(div().absolute().inset_0().child(
-                        Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
-                    )),
-            )
+        // The window renders under the player's art tint like the
+        // workspace that opened it, and claims the widget theme while it
+        // holds focus, so the panel's settings read in the playing track's
+        // colors like every other window.
+        let player = self.state.player.entity_id();
+        palette::note_focus(player, window.is_window_active(), cx);
+        panel::window_body(player, || {
+            div()
+                .size_full()
+                .flex()
+                .flex_row()
+                .bg(palette::bg_elevated())
+                .text_color(palette::text_bright())
+                .text_sm()
+                .when_some(settings::app_font(), |d, font| d.font_family(font))
+                // The backdrop paints first, under the pages; without it
+                // translucent surfaces would sink into the window's own
+                // black instead of the playing track's art.
+                .children(self.backdrop.layer(&self.state.now_art, window, cx))
+                .child(nav)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .relative()
+                        // The page's own surface, the window base the sidebar
+                        // sits beside: opaque at full surface opacity so the
+                        // backdrop only reads through as the surfaces thin.
+                        .bg(palette::bg_elevated())
+                        .child(
+                            div()
+                                .id("panel-settings-page")
+                                .size_full()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll)
+                                .p(tokens::SPACE_MD)
+                                .child(body),
+                        )
+                        // Always visible, not fading in on scroll: the thumb
+                        // is what says more page hangs below the fold.
+                        .child(div().absolute().inset_0().child(
+                            Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
+                        )),
+                )
+                .into_any_element()
+        })
     }
 }

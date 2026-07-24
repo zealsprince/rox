@@ -40,8 +40,8 @@ use crate::panel_catalog::{self as catalog, PanelDef, PanelPlacement, PanelSecti
 use crate::panels::art::{ArtConfig, ArtPanel};
 use crate::panels::biography::BiographyPanel;
 use crate::panels::cover::CoverArtPanel;
-use crate::panels::depth::DepthPanel;
 use crate::panels::drag_anchor::DragAnchorPanel;
+use crate::panels::drawer::DrawerPanel;
 use crate::panels::filter::{FilterConfig, FilterPanel};
 use crate::panels::folder_tree::FolderTreePanel;
 use crate::panels::grid::{GridConfig, GridPanel};
@@ -52,16 +52,19 @@ use crate::panels::lyrics::{LyricsPanel, StampLine};
 use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::metadata::MetadataPanel;
 use crate::panels::mini::{MiniToggleConfig, MiniTogglePanel};
+use crate::panels::overlay::OverlayPanel;
 use crate::panels::playlists::PlaylistsPanel;
 use crate::panels::queue::QueuePanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
 use crate::panels::search::{SearchConfig, SearchPanel};
 use crate::panels::slide::SlidePanel;
+use crate::panels::spacer::SpacerPanel;
 use crate::panels::spectrum::SpectrumPanel;
 use crate::panels::transport::{
     SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
     VolumeConfig, VolumePanel,
 };
+use crate::panels::vu::VuPanel;
 use crate::panels::waveform::WaveformPanel;
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
 use crate::player::{NowPlaying, Player};
@@ -497,8 +500,12 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
             );
         }};
     }
+    composite!("drawer", DrawerPanel);
     composite!("group", GroupPanel);
-    composite!("depth", DepthPanel);
+    composite!("overlay", OverlayPanel);
+    // "depth" was this panel's old name; keep the alias so layouts saved
+    // before the rename still rebuild it.
+    composite!("depth", OverlayPanel);
     composite!("slide", SlidePanel);
     // The grid takes the window like the library: its search box builds
     // an input state.
@@ -525,7 +532,9 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured!("volume", VolumePanel);
     configured!("spectrum", SpectrumPanel);
     configured!("waveform", WaveformPanel);
+    configured!("vu meter", VuPanel);
     configured!("drag anchor", DragAnchorPanel);
+    configured!("spacer", SpacerPanel);
     // These two drive the workspace back, so their builders carry its
     // handle alongside the shared state.
     let s = state.clone();
@@ -1439,6 +1448,17 @@ impl Workspace {
         });
     }
 
+    /// The dock's current layout as a JSON value, denoised: the shape saved
+    /// into settings and written out in an exported workspace bundle. The
+    /// denoise pass matters because [`serde_json::to_value`] widens the dump's
+    /// f32 sizes and panel configs to f64, so a raw dump carries 17-digit
+    /// float tails; [`denoise_f32`] snaps them back to clean numbers.
+    fn dock_dump(&self, cx: &App) -> serde_json::Result<serde_json::Value> {
+        let mut value = serde_json::to_value(self.dock.read(cx).dump(cx))?;
+        denoise_f32(&mut value);
+        Ok(value)
+    }
+
     /// Fold this window's live dock into the active layout's working copy,
     /// the unsaved-tweaks store a later switch reads back. A window on an
     /// unnamed arrangement (the default build, a one-off import) has no name
@@ -1448,7 +1468,7 @@ impl Workspace {
         let Some(name) = self.active_layout.clone() else {
             return;
         };
-        let Ok(dump) = serde_json::to_value(self.dock.read(cx).dump(cx)) else {
+        let Ok(dump) = self.dock_dump(cx) else {
             return;
         };
         // The current window size rides along, live off the window rather than
@@ -1812,7 +1832,7 @@ impl Workspace {
         if name.is_empty() {
             return;
         }
-        let Ok(dump) = serde_json::to_value(self.dock.read(cx).dump(cx)) else {
+        let Ok(dump) = self.dock_dump(cx) else {
             return;
         };
         let size = Some(window_size(window));
@@ -1835,7 +1855,7 @@ impl Workspace {
     /// the same name, which shadows it everywhere presets resolve.
     fn overwrite_layout(&mut self, name: &str, window: &Window, cx: &mut Context<Self>) {
         let name = name.to_string();
-        let Ok(dump) = serde_json::to_value(self.dock.read(cx).dump(cx)) else {
+        let Ok(dump) = self.dock_dump(cx) else {
             return;
         };
         let size = Some(window_size(window));
@@ -2236,7 +2256,7 @@ impl Workspace {
     /// layout most recently touched.
     pub(crate) fn persist(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.save_task = None;
-        let layout = serde_json::to_value(self.dock.read(cx).dump(cx)).ok();
+        let layout = self.dock_dump(cx).ok();
         let bounds = window.window_bounds();
         let frame = bounds.get_bounds();
         let window_state = WindowState {
@@ -2407,6 +2427,20 @@ impl Workspace {
             .flex_col()
             .items_center()
             .justify_center()
+            // A way back to the welcome window's quick-start tiles, since
+            // this launcher replaced it as the empty window's face.
+            .child(
+                div().absolute().top(tokens::SPACE_SM).right(tokens::SPACE_SM).child(
+                    panel::icon_control(
+                        icons::INFO,
+                        palette::text_muted(),
+                        |this: &mut Self, cx| {
+                            crate::startup::welcome_window::open(this.state.clone(), cx);
+                        },
+                        cx,
+                    ),
+                ),
+            )
             .child(
                 div()
                     .flex()
@@ -2460,7 +2494,32 @@ impl Workspace {
                             section.group.map(|(label, _)| label).unwrap_or("Panels"),
                             tiles,
                         )
-                    })),
+                    }))
+                    // Under the whole catalog: the other way back to the
+                    // welcome window's quick-start, spelled out for anyone who
+                    // read past the panels without spotting the corner info.
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(tokens::SPACE_XS)
+                            .pt(tokens::SPACE_XS)
+                            .text_xs()
+                            .text_color(palette::text_muted())
+                            .cursor_pointer()
+                            .hover(|d| d.text_color(palette::text()))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    crate::startup::welcome_window::open(
+                                        this.state.clone(),
+                                        cx,
+                                    );
+                                }),
+                            )
+                            .child("Need help?"),
+                    ),
             )
     }
 
@@ -2720,6 +2779,34 @@ impl Workspace {
                 .child(card)
                 .into_any_element(),
         )
+    }
+}
+
+/// Snap every float in a serialized dock dump to the shortest decimal that
+/// round-trips through f32. The dump's sizes and panel configs are all f32,
+/// but [`serde_json::to_value`] widens them to f64 and bakes in the expansion
+/// noise: 0.05 comes back as 0.05000000074505806, a splitter at 584.31px as
+/// 584.3106079101562. Walking the value once strips that back to clean numbers
+/// without touching the actual value, since f32's Display is already the
+/// shortest round-tripping decimal. Integers serialize as i64/u64 and are
+/// exact, so they're left alone.
+pub(crate) fn denoise_f32(value: &mut serde_json::Value) {
+    use serde_json::Value;
+    match value {
+        // Integers deserialize as i64/u64 and are exact; only widened f64s need
+        // snapping, so the guard skips the integer numbers.
+        Value::Number(n) if n.as_i64().is_none() && n.as_u64().is_none() => {
+            if let Some(clean) = n
+                .as_f64()
+                .and_then(|f| (f as f32).to_string().parse::<f64>().ok())
+                .and_then(serde_json::Number::from_f64)
+            {
+                *n = clean;
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(denoise_f32),
+        Value::Object(map) => map.values_mut().for_each(denoise_f32),
+        _ => {}
     }
 }
 
@@ -3035,5 +3122,56 @@ impl Render for Workspace {
                 .children(self.drop_zones_overlay(cx))
                 .into_any_element()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::denoise_f32;
+    use serde_json::json;
+
+    #[test]
+    fn denoise_strips_widened_f32_tails() {
+        // The exact f64 expansions serde_json::to_value produces from f32
+        // sizes and configs, the way they landed in saved layouts.
+        let mut v = json!({
+            "sizes": [584.3106079101562f64, 429.8237609863281f64],
+            "config": {
+                "cap_gravity": 0.05000000074505806f64,
+                "line_spacing": 1.899999976158142f64,
+            },
+        });
+        denoise_f32(&mut v);
+        // Re-serialized, the numbers read as their clean f32 form.
+        let s = serde_json::to_string(&v).unwrap();
+        assert!(s.contains("584.3106"), "{s}");
+        assert!(s.contains("429.82376"), "{s}");
+        assert!(s.contains("0.05"), "{s}");
+        assert!(s.contains("1.9"), "{s}");
+        assert!(!s.contains("0.05000000"), "{s}");
+        assert!(!s.contains("584.3106079"), "{s}");
+    }
+
+    #[test]
+    fn denoise_leaves_integers_and_strings_alone() {
+        let mut v = json!({
+            "active_index": 2,
+            "axis": 1,
+            "panel_name": "album grid",
+            "count": 50000,
+        });
+        let before = v.clone();
+        denoise_f32(&mut v);
+        // Integers deserialize as i64/u64, so nothing is touched.
+        assert_eq!(v, before);
+    }
+
+    #[test]
+    fn denoise_is_idempotent() {
+        let mut v = json!({ "w": 0.05000000074505806f64, "sizes": [713.17626953125f64] });
+        denoise_f32(&mut v);
+        let once = v.clone();
+        denoise_f32(&mut v);
+        assert_eq!(v, once);
     }
 }

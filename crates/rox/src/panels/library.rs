@@ -2043,18 +2043,27 @@ impl LibraryPanel {
             let hi = (lo + QUEUE_CAP).min(tracks.len());
             (tracks[lo..hi].to_vec(), clicked - lo)
         };
-        self.play_rows_at(rows, start, cx);
+        self.play_rows_at(rows, start, false, cx);
     }
 
-    /// Resolve view rows to paths and queue them starting at the first,
-    /// the explicit-selection play.
+    /// Resolve view rows to paths and play them as the up-next queue, from
+    /// the first. The explicit-selection play: an album or a hand-picked set
+    /// lands in the queue panel, unlike a library walk, which stays context.
     fn play_rows(&mut self, rows: Vec<usize>, cx: &mut Context<Self>) {
-        self.play_rows_at(rows, 0, cx);
+        self.play_rows_at(rows, 0, true, cx);
     }
 
     /// Resolve view rows to paths and queue them on the shared player with
-    /// the cursor at `start`.
-    fn play_rows_at(&mut self, rows: Vec<usize>, start: usize, cx: &mut Context<Self>) {
+    /// the cursor at `start`. `explicit` marks them the up-next queue so the
+    /// queue panel lists them (an album, a selection); a context run (a
+    /// library walk, a shuffle) passes false and starts at `start`.
+    fn play_rows_at(
+        &mut self,
+        rows: Vec<usize>,
+        start: usize,
+        explicit: bool,
+        cx: &mut Context<Self>,
+    ) {
         let result = {
             let view = self.table.read(cx).delegate().view.clone();
             let library = self.state.library.read(cx);
@@ -2071,10 +2080,13 @@ impl LibraryPanel {
             library.paths_for(&ids)
         };
         match result {
-            Ok(paths) => self
-                .state
-                .player
-                .update(cx, |player, cx| player.play_at(paths, start, cx)),
+            Ok(paths) => self.state.player.update(cx, |player, cx| {
+                if explicit {
+                    player.play_explicit(paths, cx);
+                } else {
+                    player.play_at(paths, start, cx);
+                }
+            }),
             Err(e) => {
                 self.error = Some(format!("library: {e}").into());
                 cx.notify();
@@ -2091,7 +2103,7 @@ impl LibraryPanel {
         self.state
             .player
             .update(cx, |player, _| player.set_shuffle(true));
-        self.play_rows_at(rows, 0, cx);
+        self.play_rows_at(rows, 0, false, cx);
     }
 
     /// Play the whole view shuffled with `ix` first: the clicked row heads the

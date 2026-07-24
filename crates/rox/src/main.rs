@@ -119,7 +119,10 @@ fn open_workspace_window(
                 WindowBounds::Windowed(bounds)
             }
         }
-        None => WindowBounds::Windowed(Bounds::centered(None, size(px(1100.), px(700.)), cx)),
+        // A hair larger than the welcome window (1160x660) it opens under on
+        // a first run, so that window nests inside it like a child. Sized to
+        // still fit a 1366x768 laptop with margin to spare.
+        None => WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(720.)), cx)),
     };
     // A preset window opens at the preset's stored size when it carries one,
     // keeping the restored position; a preset without a size opens like any

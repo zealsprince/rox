@@ -114,6 +114,8 @@ pub mod icons {
     pub const MOVE_HORIZONTAL: &str = "icons/move-horizontal.svg";
     pub const AUDIO_LINES: &str = "icons/audio-lines.svg";
     pub const AUDIO_WAVEFORM: &str = "icons/audio-waveform.svg";
+    /// The VU meter panel: a level gauge.
+    pub const GAUGE: &str = "icons/gauge.svg";
     /// The mini-player toggle: shrink into the mini layout, grow back to
     /// the primary.
     pub const MINIMIZE: &str = "icons/minimize-2.svg";
@@ -130,11 +132,13 @@ pub mod icons {
     pub const USER: &str = "icons/user-round.svg";
     /// The drag anchor panel's grip.
     pub const MOVE: &str = "icons/move.svg";
-    /// The composition panels: the group's split, the depth panel's
-    /// stacked layers, and the slide panel's back arrow (forward is
-    /// CHEVRON_RIGHT; left resolves from the bundled widget set).
+    /// The composition panels: the group's split, the overlay panel's
+    /// stacked layers, the drawer's docked edge, and the slide panel's
+    /// back arrow (forward is CHEVRON_RIGHT; left resolves from the
+    /// bundled widget set).
     pub const COLUMNS_2: &str = "icons/columns-2.svg";
     pub const LAYERS: &str = "icons/layers-2.svg";
+    pub const PANEL_BOTTOM: &str = "icons/panel-bottom.svg";
     pub const CHEVRON_LEFT: &str = "icons/chevron-left.svg";
     /// The layout tree's per-panel lock toggle, pinned and free.
     pub const LOCK: &str = "icons/lock.svg";
@@ -218,6 +222,7 @@ pub mod icons {
         MOVE_HORIZONTAL,
         AUDIO_LINES,
         AUDIO_WAVEFORM,
+        GAUGE,
         MINIMIZE,
         MAXIMIZE,
         SQUARE_DASHED,
@@ -228,6 +233,7 @@ pub mod icons {
         MOVE,
         COLUMNS_2,
         LAYERS,
+        PANEL_BOTTOM,
         CHEVRON_LEFT,
         LOCK,
         LOCK_OPEN,
@@ -260,6 +266,21 @@ pub fn shipped_workspaces() -> Vec<(String, Cow<'static, [u8]>)> {
 pub fn workspace_preview(stem: &str) -> Option<SharedString> {
     let path = format!("workspaces/{stem}.png");
     Assets::get(&path).is_some().then(|| path.into())
+}
+
+/// The width over height of an embedded PNG asset, read straight from the
+/// IHDR header. The quick-start tiles size a preview to its real scaled
+/// height with it, so the hover pan sweeps the whole screenshot.
+pub fn png_aspect(path: &str) -> Option<f32> {
+    let bytes = Assets::get(path)?.data;
+    // Signature (8 bytes) and the IHDR chunk header (8 more), then width
+    // and height as big-endian u32s.
+    if bytes.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    let w = u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?);
+    let h = u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?);
+    (w > 0 && h > 0).then(|| w as f32 / h as f32)
 }
 
 /// Every shipped `.json` under one asset folder, as `(file stem, raw bytes)`.

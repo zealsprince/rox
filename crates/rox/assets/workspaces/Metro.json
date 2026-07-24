@@ -23,6 +23,8 @@
                           "locked": true,
                           "max_width": 24.0,
                           "max_height": 24.0,
+                          "min_width": 24.0,
+                          "min_height": 24.0,
                           "align": "left"
                         }
                       }
@@ -38,13 +40,14 @@
                   "panel_name": "TabPanel",
                   "children": [
                     {
-                      "panel_name": "search",
+                      "panel_name": "spacer",
                       "children": [],
                       "info": {
                         "panel": {
                           "locked": true,
+                          "anchor": true,
                           "max_height": 24.0,
-                          "chips": "inline"
+                          "min_height": 24.0
                         }
                       }
                     }
@@ -84,8 +87,8 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    36.0,
-                    1096.0,
+                    48.0,
+                    1078.0,
                     128.0
                   ],
                   "axis": 0
@@ -96,41 +99,143 @@
               "panel_name": "StackPanel",
               "children": [
                 {
-                  "panel_name": "TabPanel",
+                  "panel_name": "StackPanel",
                   "children": [
                     {
-                      "panel_name": "album grid",
-                      "children": [],
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "search",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "max_height": 40.0,
+                              "min_height": 40.0,
+                              "chips": "inline"
+                            }
+                          }
+                        }
+                      ],
                       "info": {
-                        "panel": {
-                          "query": "",
-                          "search": false,
-                          "query_source": "global",
-                          "vertical": true,
-                          "tile": 208.0,
-                          "follow_playing": true,
-                          "resume_playing": false,
-                          "smooth_follow": true,
-                          "dim_playing": false,
-                          "dim": 60.0,
-                          "rounding": 0.0,
-                          "gap": 8.0,
-                          "labels": true,
-                          "label_align": "left",
-                          "scroll": 3
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "drawer",
+                          "children": [
+                            {
+                              "panel_name": "album grid",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "query": "",
+                                  "search": false,
+                                  "query_source": "global",
+                                  "vertical": true,
+                                  "tile": 208.0,
+                                  "follow_playing": true,
+                                  "resume_playing": false,
+                                  "smooth_follow": true,
+                                  "dim_playing": false,
+                                  "dim": 60.0,
+                                  "rounding": 0.0,
+                                  "gap": 8.0,
+                                  "labels": true,
+                                  "label_align": "left",
+                                  "scroll": 4030
+                                }
+                              }
+                            },
+                            {
+                              "panel_name": "queue",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "headers": "off",
+                                  "columns": [
+                                    "number",
+                                    "name",
+                                    "artist"
+                                  ],
+                                  "search": false,
+                                  "query_source": "global",
+                                  "query": ""
+                                }
+                              }
+                            }
+                          ],
+                          "info": {
+                            "panel": {
+                              "edge": "right",
+                              "reveal": 0.4,
+                              "dim": 0.0
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
                         }
                       }
                     }
                   ],
                   "info": {
-                    "tabs": {
-                      "active_index": 0
+                    "stack": {
+                      "sizes": [
+                        40.0,
+                        674.0
+                      ],
+                      "axis": 1
                     }
                   }
                 },
                 {
                   "panel_name": "StackPanel",
                   "children": [
+                    {
+                      "panel_name": "StackPanel",
+                      "children": [
+                        {
+                          "panel_name": "TabPanel",
+                          "children": [
+                            {
+                              "panel_name": "track info",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "max_height": 40.0,
+                                  "align": "left",
+                                  "marquee": "loop",
+                                  "marquee_speed": 30.0,
+                                  "marquee_delay": 2.0,
+                                  "swap": false,
+                                  "swap_secs": 4.0
+                                }
+                              }
+                            }
+                          ],
+                          "info": {
+                            "tabs": {
+                              "active_index": 0
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "stack": {
+                          "sizes": [
+                            320.0
+                          ],
+                          "axis": 0
+                        }
+                      }
+                    },
                     {
                       "panel_name": "TabPanel",
                       "children": [
@@ -139,10 +244,10 @@
                           "children": [],
                           "info": {
                             "panel": {
-                              "min_width": 200.0,
-                              "min_height": 200.0,
+                              "min_width": 320.0,
+                              "min_height": 320.0,
                               "source": "playing",
-                              "align": "left",
+                              "align": "center",
                               "stretch": false
                             }
                           }
@@ -184,8 +289,9 @@
                   "info": {
                     "stack": {
                       "sizes": [
-                        340.0,
-                        336.0
+                        40.0,
+                        320.0,
+                        354.0
                       ],
                       "axis": 1
                     }
@@ -195,8 +301,8 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    920.0,
-                    340.0
+                    934.0,
+                    320.0
                   ],
                   "axis": 0
                 }
@@ -209,58 +315,10 @@
                   "panel_name": "TabPanel",
                   "children": [
                     {
-                      "panel_name": "cover art",
-                      "children": [],
-                      "info": {
-                        "panel": {
-                          "locked": true,
-                          "anchor": true,
-                          "max_width": 48.0,
-                          "max_height": 48.0,
-                          "source": "playing",
-                          "align": "left",
-                          "stretch": false
-                        }
-                      }
-                    }
-                  ],
-                  "info": {
-                    "tabs": {
-                      "active_index": 0
-                    }
-                  }
-                },
-                {
-                  "panel_name": "TabPanel",
-                  "children": [
-                    {
-                      "panel_name": "track info",
-                      "children": [],
-                      "info": {
-                        "panel": {
-                          "locked": true,
-                          "anchor": true,
-                          "max_height": 48.0,
-                          "align": "left"
-                        }
-                      }
-                    }
-                  ],
-                  "info": {
-                    "tabs": {
-                      "active_index": 0
-                    }
-                  }
-                },
-                {
-                  "panel_name": "TabPanel",
-                  "children": [
-                    {
                       "panel_name": "seek",
                       "children": [],
                       "info": {
                         "panel": {
-                          "locked": true,
                           "max_height": 24.0,
                           "timings": true,
                           "show_total": false,
@@ -283,11 +341,16 @@
                       "children": [],
                       "info": {
                         "panel": {
-                          "locked": true,
                           "max_height": 24.0,
-                          "align": "right",
-                          "stop": false,
-                          "random": true
+                          "align": "center",
+                          "prev": true,
+                          "play": true,
+                          "next": true,
+                          "seek": false,
+                          "repeat": true,
+                          "shuffle": true,
+                          "stop": true,
+                          "random": false
                         }
                       }
                     }
@@ -307,10 +370,12 @@
                       "info": {
                         "panel": {
                           "locked": true,
-                          "max_width": 200.0,
+                          "max_width": 48.0,
                           "max_height": 24.0,
-                          "align": "right",
-                          "stretch": false
+                          "min_width": 48.0,
+                          "align": "left",
+                          "stretch": false,
+                          "icon_only": true
                         }
                       }
                     }
@@ -325,11 +390,9 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    52.0,
-                    300.0,
-                    402.0,
-                    306.0,
-                    200.0
+                    934.0,
+                    272.0,
+                    48.0
                   ],
                   "axis": 0
                 }
@@ -339,9 +402,9 @@
           "info": {
             "stack": {
               "sizes": [
-                32.0,
-                676.0,
-                48.0
+                40.0,
+                714.0,
+                40.0
               ],
               "axis": 1
             }
@@ -370,9 +433,55 @@
                     "panel": {
                       "locked": true,
                       "anchor": true,
+                      "min_width": 200.0,
                       "source": "playing",
-                      "align": "left",
+                      "align": "center",
                       "stretch": false
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "track info",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "anchor": true,
+                      "max_height": 28.0,
+                      "align": "center"
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "seek",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "max_height": 20.0,
+                      "timings": true,
+                      "show_total": false,
+                      "scrobble_marker": false
                     }
                   }
                 }
@@ -387,74 +496,24 @@
               "panel_name": "StackPanel",
               "children": [
                 {
-                  "panel_name": "StackPanel",
-                  "children": [
-                    {
-                      "panel_name": "TabPanel",
-                      "children": [
-                        {
-                          "panel_name": "track info",
-                          "children": [],
-                          "info": {
-                            "panel": {
-                              "locked": true,
-                              "anchor": true,
-                              "align": "left"
-                            }
-                          }
-                        }
-                      ],
-                      "info": {
-                        "tabs": {
-                          "active_index": 0
-                        }
-                      }
-                    },
-                    {
-                      "panel_name": "TabPanel",
-                      "children": [
-                        {
-                          "panel_name": "mini toggle",
-                          "children": [],
-                          "info": {
-                            "panel": {
-                              "locked": true,
-                              "max_width": 26.0,
-                              "align": "left"
-                            }
-                          }
-                        }
-                      ],
-                      "info": {
-                        "tabs": {
-                          "active_index": 0
-                        }
-                      }
-                    }
-                  ],
-                  "info": {
-                    "stack": {
-                      "sizes": [
-                        430.0,
-                        26.0
-                      ],
-                      "axis": 0
-                    }
-                  }
-                },
-                {
                   "panel_name": "TabPanel",
                   "children": [
                     {
-                      "panel_name": "seek",
+                      "panel_name": "playback",
                       "children": [],
                       "info": {
                         "panel": {
                           "locked": true,
-                          "max_height": 20.0,
-                          "timings": true,
-                          "show_total": false,
-                          "scrobble_marker": false
+                          "max_height": 24.0,
+                          "align": "center",
+                          "prev": true,
+                          "play": true,
+                          "next": true,
+                          "seek": false,
+                          "repeat": false,
+                          "shuffle": false,
+                          "stop": false,
+                          "random": false
                         }
                       }
                     }
@@ -469,10 +528,9 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    28.0,
-                    22.0
+                    294.0
                   ],
-                  "axis": 1
+                  "axis": 0
                 }
               }
             }
@@ -480,17 +538,19 @@
           "info": {
             "stack": {
               "sizes": [
-                56.0,
-                456.0
+                294.0,
+                40.0,
+                40.0,
+                40.0
               ],
-              "axis": 0
+              "axis": 1
             }
           }
         }
       },
       "size": {
-        "width": 540.0,
-        "height": 88.0
+        "width": 320.0,
+        "height": 440.0
       }
     }
   ],
@@ -499,28 +559,28 @@
   "palette": {
     "accent": "#ff0097",
     "accent_hover": "#ff40b0",
-    "highlight": "#ffffff",
-    "border": "#1e1e1e",
-    "border_light": "#282828",
-    "text_bright": "#ffffff",
-    "text_on_accent": "#ffffff",
-    "bg_root": "#000000",
-    "bg_panel": "#050505",
-    "bg_elevated": "#0a0a0a",
-    "bg_menubar": "#000000",
-    "bg_menu": "#101010",
     "bg_control": "#141414",
-    "bg_menu_hover": "#1a1a1a",
     "bg_control_active": "#202020",
     "bg_control_hover": "#242424",
+    "bg_elevated": "#0a0a0a",
     "bg_input": "#0a0a0a",
+    "bg_menu": "#101010",
+    "bg_menu_hover": "#1a1a1a",
+    "bg_menubar": "#000000",
+    "bg_panel": "#050505",
+    "bg_root": "#000000",
     "bg_toolbar": "#050505",
+    "border": "#1e1e1e",
+    "border_light": "#282828",
+    "gridline": "#3a3a3a",
+    "highlight": "#ffffff",
     "text": "#d0d0d0",
-    "text_secondary": "#a0a0a0",
+    "text_bright": "#ffffff",
     "text_dim": "#8a8a8a",
-    "text_muted": "#6a6a6a",
     "text_faint": "#525252",
-    "gridline": "#3a3a3a"
+    "text_muted": "#6a6a6a",
+    "text_on_accent": "#ffffff",
+    "text_secondary": "#a0a0a0"
   },
   "appearance": {
     "surface_opacity": 1.0,
@@ -533,6 +593,8 @@
     },
     "art_theming": true,
     "keep_dark": true,
+    "app_font": "Segoe UI",
+    "app_font_size": 16.0,
     "rating_style": "stars",
     "quick_play": {
       "show_cover": true,

@@ -127,6 +127,16 @@ pub struct ArtConfig {
     /// hovering lights a cover back up.
     #[serde(default)]
     pub dim_playing: bool,
+    /// The same focus effect in color: drain every cover but the playing
+    /// album's to grayscale while a track plays. Stacks with `dim_playing`
+    /// or stands on its own.
+    #[serde(default)]
+    pub desaturate_playing: bool,
+    /// Keep the dim and desaturate effects on all the time, not only while a
+    /// track plays: every cover but the one under the pointer recedes,
+    /// playing or not.
+    #[serde(default)]
+    pub dim_always: bool,
     /// How far the dimmed covers fade, in percent of fully hidden.
     #[serde(default = "default_dim")]
     pub dim: f32,
@@ -152,6 +162,8 @@ impl Default for ArtConfig {
             resume_playing: false,
             smooth_follow: false,
             dim_playing: false,
+            desaturate_playing: false,
+            dim_always: false,
             dim: default_dim(),
             rounding: 0.,
             center: 0,
@@ -685,7 +697,7 @@ impl ArtPanel {
                 self.error = None;
                 self.state
                     .player
-                    .update(cx, |player, cx| player.play(paths, cx));
+                    .update(cx, |player, cx| player.play_explicit(paths, cx));
             }
             Err(e) => {
                 self.error = Some(format!("library: {e}").into());
@@ -737,19 +749,30 @@ impl ArtPanel {
         (self.hero_side() * STEP).max(1.)
     }
 
-    /// A cover's resting opacity under the dim mode: full for the playing
-    /// album and the hovered cover, the configured floor for everything else
-    /// while audio moves, full for all when it stops.
+    /// Whether cover `ix` sits in the receded set: the covers the focus
+    /// effects push back. The hovered cover and the playing album are always
+    /// exempt. Always mode pushes back every other cover; otherwise only the
+    /// rest while audio moves.
+    fn receded(&self, ix: usize) -> bool {
+        if self.hovered == Some(ix) || self.playing_ix == Some(ix) {
+            return false;
+        }
+        self.config.dim_always || self.playing
+    }
+
+    /// A cover's resting opacity under the dim mode: the configured floor
+    /// for a receded cover, full otherwise.
     fn dim_target(&self, ix: usize) -> f32 {
-        if self.config.dim_playing
-            && self.playing
-            && self.playing_ix != Some(ix)
-            && self.hovered != Some(ix)
-        {
+        if self.config.dim_playing && self.receded(ix) {
             1.0 - self.config.dim / TILE_DIM_MAX
         } else {
             1.0
         }
+    }
+
+    /// Whether a cover paints grayscale under the desaturate mode.
+    fn desaturated(&self, ix: usize) -> bool {
+        self.config.desaturate_playing && self.receded(ix)
     }
 
     /// A cover's center offset from the hero, in units of the hero's edge:
@@ -828,10 +851,12 @@ impl ArtPanel {
         } else {
             ObjectFit::Fill
         };
+        let desaturated = self.desaturated(ix);
         let content: AnyElement = match thumb {
             Thumb::Ready(image) => img(image)
                 .size_full()
                 .object_fit(fit)
+                .grayscale(desaturated)
                 .rounded(radius)
                 .into_any_element(),
             _ => div()
@@ -1114,6 +1139,32 @@ impl PanelSettings for ArtPanel {
                                     format!("{:.0} %", self.config.dim),
                                     |this: &mut Self, fraction, cx| {
                                         this.config.dim = (fraction * TILE_DIM_MAX).round();
+                                        cx.notify();
+                                    },
+                                    cx,
+                                ),
+                            ))
+                        })
+                        .child(setting_row(
+                            "Desaturate While Playing",
+                            Some("Drain every cover but the playing album's to grayscale; hovering brings a cover's color back"),
+                            toggle(
+                                self.config.desaturate_playing,
+                                |this: &mut Self, on, cx| {
+                                    this.config.desaturate_playing = on;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                        .when(self.config.dim_playing || self.config.desaturate_playing, |d| {
+                            d.child(setting_row(
+                                "Always",
+                                Some("Keep the covers pushed back even when nothing plays; only a hovered cover shows in full"),
+                                toggle(
+                                    self.config.dim_always,
+                                    |this: &mut Self, on, cx| {
+                                        this.config.dim_always = on;
                                         cx.notify();
                                     },
                                     cx,

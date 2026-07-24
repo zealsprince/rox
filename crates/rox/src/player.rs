@@ -220,6 +220,17 @@ impl Player {
         self.start_session(queue, start, None, Vec::new(), false, cx);
     }
 
+    /// Replace whatever is playing with a fresh queue whose entries are all
+    /// explicit, playing from the first. Unlike [`play`] and [`play_at`],
+    /// which seed a context (an album or library run that plays on unlisted),
+    /// these entries are the up-next queue, so the queue panel lists them.
+    /// Clicking an album in a browser lands here, so the album you played
+    /// shows in the queue.
+    pub fn play_explicit(&mut self, queue: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let explicit = vec![true; queue.len()];
+        self.start_session(queue, 0, None, explicit, false, cx);
+    }
+
     /// The launch restore for an old settings file that saved only a single
     /// track: load it paused at a position, ready on the seek strip but silent
     /// until asked to play. Files written since carry the whole queue and come

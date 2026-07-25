@@ -136,3 +136,24 @@ jobs:
             --title "v${{ needs.check.outputs.version }}" \
             --generate-notes \
             artifacts/*
+
+      # rox.music bakes the version and asset URLs into its download page at
+      # build time, so it only learns about a release when something tells it to
+      # rebuild. github.token cannot reach another repo, so this needs a PAT with
+      # contents:write on rox.music, stored as ROX_WEBSITE_TOKEN.
+      #
+      # continue-on-error because a missing or expired secret is not worth
+      # failing a good release over. The site keeps serving the previous version
+      # until its next build, and the step goes yellow to say so.
+      - name: Rebuild rox.music
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.ROX_WEBSITE_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::ROX_WEBSITE_TOKEN not set, rox.music will not rebuild"
+            exit 0
+          fi
+          gh api repos/zealsprince/rox.music/dispatches \
+            --field event_type=rox-release \
+            --field "client_payload[version]=${{ needs.check.outputs.version }}"

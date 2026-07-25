@@ -938,8 +938,9 @@
       "rounding": 0.0,
       "border": 0.0
     },
+    "theme": "dark",
+    "keep_theme": false,
     "art_theming": false,
-    "keep_dark": false,
     "app_font_size": 16.0,
     "rating_style": "stars",
     "quick_play": {

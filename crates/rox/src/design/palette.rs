@@ -14,12 +14,15 @@
 //! move toward a seed color pulled from the cover art while its lightness
 //! holds, so the contrast ladder survives any album. The one
 //! gpui-component widget theme is a single global, so it can carry only
-//! one tint; it follows the focused window's playback. A bright cover swaps the dark ladder for the
-//! designed light one before tinting, and when a second cover color
-//! stands apart from the first it takes the highlight role whole. The
+//! one tint; it follows the focused window's playback. A bright cover
+//! swaps in the light theme's palette before tinting, and when a second
+//! cover color stands apart from the first it takes the highlight role
+//! whole. The
 //! whole derived mode sits behind the
 //! [`set_art_theming`] switch, off by default; the backdrop layers read
-//! the same switch. Changes ease componentwise from wherever the
+//! the same switch. The user keeps two palettes, one per theme; the
+//! active [`Mode`] picks which one renders, and derivation flips between
+//! them by cover lightness unless keep-theme pins the active one. Changes ease componentwise from wherever the
 //! palette visibly is to the new target. The static sits outside gpui's
 //! reactivity, so the setters repaint explicitly - one choke point for
 //! every writer. On top of all of it, per ADR 13 a panel can carry a
@@ -377,11 +380,18 @@ impl Palette {
             .collect()
     }
 
-    /// A palette from the settings map, over the defaults: unknown keys
-    /// and unparsable values fall away silently, so the file survives
+    /// A palette from the settings map, over the dark defaults: unknown
+    /// keys and unparsable values fall away silently, so the file survives
     /// role changes in both directions.
     pub fn from_map(map: &BTreeMap<String, String>) -> Palette {
-        let mut palette = Palette::default();
+        Palette::from_map_over(Palette::default(), map)
+    }
+
+    /// A palette from the settings map over an explicit anchor, the light
+    /// theme's read: its map fills in over [`Palette::light`] where the
+    /// dark one fills in over the defaults.
+    pub fn from_map_over(anchor: Palette, map: &BTreeMap<String, String>) -> Palette {
+        let mut palette = anchor;
         for role in ROLES {
             if let Some(color) = map.get(role.name).and_then(|hex| parse_hex(hex)) {
                 (role.set)(&mut palette, color);
@@ -605,26 +615,51 @@ impl Seed {
     }
 }
 
-/// What the accessors read: the base palette and its writers' inputs,
-/// plus the easing run the reads actually sample.
+/// Which of the two user palettes the app renders. The persisted theme
+/// pick lives with the settings; System is resolved against the OS there,
+/// so only a concrete side ever lands here.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Dark,
+    Light,
+}
+
+/// What the accessors read: the two user palettes and their writers'
+/// inputs, plus the easing run the reads actually sample.
 #[derive(Clone, Copy)]
 struct Base {
-    /// The user palette. [`set`] writes it, editing targets it,
-    /// derivation layers on top without touching it.
-    base: Palette,
+    /// The dark theme's user palette. [`set`] writes the active side,
+    /// editing targets it, derivation layers on top without touching it.
+    dark: Palette,
+    /// The light theme's counterpart, same contract.
+    light: Palette,
+    /// The theme in effect: which of the two palettes renders while
+    /// nothing derives, and the side keep-theme holds derivation to.
+    mode: Mode,
     /// The song-theming switch: whether a seed may derive at all. Off,
     /// each tint's seed is only remembered for a later enable.
     art_theming: bool,
-    /// Hold the dark ladder even under a bright cover: song theming still
-    /// tints hue and chroma toward the seed, but the surfaces never flip
-    /// light and the widget theme stays dark. Caps how far the look shifts.
-    keep_dark: bool,
+    /// Hold the active theme under any cover: song theming still tints
+    /// hue and chroma toward the seed, but a cover's brightness never
+    /// swaps the theme. Caps how far the look shifts.
+    keep_theme: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
     /// The app-wide text size in px, the rem every `.text_*` class
     /// resolves against. [`apply`] projects it into the widget theme,
     /// whose root pushes it to each window's rem size per frame.
     font_size: f32,
+}
+
+impl Base {
+    /// The palette the active theme renders, the accessors' fallback and
+    /// what derivation returns to while nothing seeds.
+    fn active(&self) -> &Palette {
+        match self.mode {
+            Mode::Dark => &self.dark,
+            Mode::Light => &self.light,
+        }
+    }
 }
 
 /// One playback's art tint: the easing run between the palette where it
@@ -688,7 +723,7 @@ impl Tint {
     fn retarget(&mut self, base: &Base) {
         self.from = self.snapshot();
         let seed = if base.art_theming { self.seed } else { None };
-        self.target = derive(&base.base, seed, base.keep_dark);
+        self.target = derive(base, seed);
         self.eased_at = Instant::now();
     }
 }
@@ -699,9 +734,11 @@ impl Tint {
 /// plain signatures and paint closures can read them without a context.
 static BASE: LazyLock<RwLock<Base>> = LazyLock::new(|| {
     RwLock::new(Base {
-        base: Palette::default(),
+        dark: Palette::default(),
+        light: Palette::light(),
+        mode: Mode::Dark,
         art_theming: false,
-        keep_dark: false,
+        keep_theme: false,
         surface_opacity: 1.0,
         backdrop_strength: 1.0,
         font_size: FONT_SIZE_DEFAULT,
@@ -731,7 +768,7 @@ thread_local! {
 fn active_role(pick: impl Fn(&Palette) -> Rgba) -> Rgba {
     TINT_STACK.with(|stack| match stack.borrow().last() {
         Some(tint) => tint.role(&pick),
-        None => pick(&BASE.read().unwrap().base),
+        None => pick(BASE.read().unwrap().active()),
     })
 }
 
@@ -763,13 +800,63 @@ fn retarget_all() {
     }
 }
 
-/// The one setter every palette change goes through: swap the base
-/// palette and ease every window toward it. User edits land here;
+/// The one setter every palette edit goes through: swap the active
+/// theme's palette and ease every window toward it. User edits land here;
 /// derivation layers over whatever this holds.
 pub fn set(palette: Palette, cx: &mut App) {
-    BASE.write().unwrap().base = palette;
+    {
+        let mut base = BASE.write().unwrap();
+        match base.mode {
+            Mode::Dark => base.dark = palette,
+            Mode::Light => base.light = palette,
+        }
+    }
     retarget_all();
     drive(cx);
+}
+
+/// Both user palettes at once, the startup and workspace-apply path, so
+/// the inactive theme's palette lands without a second ease.
+pub fn set_palettes(dark: Palette, light: Palette, cx: &mut App) {
+    {
+        let mut base = BASE.write().unwrap();
+        base.dark = dark;
+        base.light = light;
+    }
+    retarget_all();
+    drive(cx);
+}
+
+/// The theme's setter: which of the two user palettes renders. The
+/// settings layer resolves System against the OS before calling, so a
+/// no-op resolution (the OS agreeing with where we sit) returns early
+/// instead of restarting every window's ease.
+pub fn set_mode(mode: Mode, cx: &mut App) {
+    {
+        let mut base = BASE.write().unwrap();
+        if base.mode == mode {
+            return;
+        }
+        base.mode = mode;
+    }
+    retarget_all();
+    drive(cx);
+}
+
+/// The theme in effect, for the editor and the writers that persist
+/// alongside the live statics.
+pub fn mode() -> Mode {
+    BASE.read().unwrap().mode
+}
+
+/// A theme's palette as edits left it, whether or not it is the one
+/// rendering: what the editor seeds one side from the other with.
+pub fn theme_palette(mode: Mode) -> Palette {
+    let base = BASE.read().unwrap();
+    match mode {
+        Mode::Dark => base.dark,
+        Mode::Light => base.light,
+    }
 }
 
 /// The transparency pair's setter, the same pipe as [`set`] but without
@@ -861,7 +948,7 @@ pub fn set_seed(player: EntityId, seed: Option<Seed>, cx: &mut App) {
         let mut tints = TINTS.write().unwrap();
         let tint = tints
             .entry(player)
-            .or_insert_with(|| Tint::settled(base.base));
+            .or_insert_with(|| Tint::settled(*base.active()));
         // Consecutive tracks off one album carry identical art; don't
         // restart the ease for a seed that isn't going anywhere.
         let unchanged = match (&tint.seed, &seed) {
@@ -904,17 +991,17 @@ pub fn art_theming() -> bool {
     BASE.read().unwrap().art_theming
 }
 
-/// The keep-dark switch: whether a bright cover may flip the app light.
-/// On, song theming still tints, but the dark ladder holds. Toggling eases
-/// every window like any other palette change, so the surfaces wash between
-/// the light and dark ladders instead of snapping.
-pub fn set_keep_dark(on: bool, cx: &mut App) {
+/// The keep-theme switch: whether a cover's brightness may swap the
+/// theme. On, song theming still tints, but the active theme's palette
+/// holds. Toggling eases every window like any other palette change, so
+/// the surfaces wash between the two palettes instead of snapping.
+pub fn set_keep_theme(on: bool, cx: &mut App) {
     {
         let mut base = BASE.write().unwrap();
-        if base.keep_dark == on {
+        if base.keep_theme == on {
             return;
         }
-        base.keep_dark = on;
+        base.keep_theme = on;
     }
     retarget_all();
     drive(cx);
@@ -943,7 +1030,7 @@ pub fn resolved() -> Palette {
     {
         return tint.target;
     }
-    BASE.read().unwrap().base
+    *BASE.read().unwrap().active()
 }
 
 /// The tint a window should render under: its player's easing run, or a
@@ -953,7 +1040,7 @@ pub fn resolved() -> Palette {
 pub fn window_tint(player: EntityId) -> Tint {
     match TINTS.read().unwrap().get(&player) {
         Some(tint) => *tint,
-        None => Tint::settled(BASE.read().unwrap().base),
+        None => Tint::settled(*BASE.read().unwrap().active()),
     }
 }
 
@@ -1053,7 +1140,8 @@ const CHROMATIC: f32 = 0.05;
 /// so a muted album still gets quiet borders.
 const BORDER_TINT: f32 = 0.6;
 /// Mean cover lightness above this reads as a light album: derivation
-/// tints the light ladder instead of the base.
+/// tints the light theme's palette instead of the dark's. The same cut
+/// [`apply`] makes on the resolved palette to pick the widget baseline.
 const LIGHT_COVER: f32 = 0.70;
 /// The lightness band the highlight clamps into when a runner-up cover
 /// color takes it, one band per ladder: far enough from the surfaces to
@@ -1066,10 +1154,10 @@ const HIGHLIGHT_LIGHT_BAND: (f32, f32) = (0.30, 0.55);
 impl Palette {
     /// The light ladder, the dark defaults' designed counterpart:
     /// surfaces mirrored bright, ink mirrored dark, the accent pulled
-    /// down to read over bright surfaces. Only derivation reads it - a
-    /// bright cover swaps it in for the base before tinting, so the app
-    /// goes light with the album instead of sitting dark under it.
-    fn light() -> Palette {
+    /// down to read over bright surfaces. The light theme's stock
+    /// palette, the anchor its settings map fills in over, and the far
+    /// anchor [`Palette::inverse`] lands edits on.
+    pub fn light() -> Palette {
         Palette {
             accent: rgb(0xb07d00),
             accent_hover: rgb(0x976a00),
@@ -1150,15 +1238,30 @@ impl Palette {
     }
 }
 
-/// The derived palette: the ladder the cover's lightness picks, every
-/// role re-tinted toward the seed, or the base itself while nothing
-/// seeds. An achromatic cover picks the ladder by lightness, then strips
-/// the colorful roles to neutral so a black-and-white album gets a
-/// black-and-white app.
-fn derive(base: &Palette, seed: Option<Seed>, keep_dark: bool) -> Palette {
-    let Some(seed) = seed else { return *base };
-    let light = !keep_dark && seed.lightness > LIGHT_COVER;
-    let ladder = if light { Palette::light() } else { *base };
+/// The derived palette: the user palette the cover's lightness picks,
+/// every role re-tinted toward the seed, or the active theme's palette
+/// while nothing seeds. A bright cover derives over the light theme's
+/// palette and a dark one over the dark's - the user's own edits on
+/// either side carry into the tint - unless keep-theme pins the active
+/// side. An achromatic cover picks the side by lightness too, then
+/// strips the colorful roles to neutral so a black-and-white album gets
+/// a black-and-white app.
+fn derive(base: &Base, seed: Option<Seed>) -> Palette {
+    let Some(seed) = seed else {
+        return *base.active();
+    };
+    let mode = if base.keep_theme {
+        base.mode
+    } else if seed.lightness > LIGHT_COVER {
+        Mode::Light
+    } else {
+        Mode::Dark
+    };
+    let light = mode == Mode::Light;
+    let ladder = match mode {
+        Mode::Dark => base.dark,
+        Mode::Light => base.light,
+    };
     let Some(primary) = seed.primary else {
         // No hue to derive toward. Leaving the ladder as-is would keep
         // the brand accent as a lone spot of color against a gray cover,
@@ -1277,16 +1380,16 @@ fn apply(cx: &mut App) {
     };
     let (palette, opacity) = match focused_tint {
         Some(tint) => (tint.snapshot(), base.surface_opacity),
-        None => (base.base, base.surface_opacity),
+        None => (*base.active(), base.surface_opacity),
     };
     // Start over from the stock baseline so repeated feeds project onto
     // pristine values instead of compounding. The baseline follows the
-    // ladder, so the widget tokens we never project (scrollbars,
+    // palette on screen, so the widget tokens we never project (scrollbars,
     // popovers, dialogs, the ghost/secondary foregrounds) don't sit dark
     // on a light surface. Read the resolved palette's own lightness, the
-    // same cut derivation makes on a cover, so a hand-authored light
-    // theme picks the light baseline too, not just an art-derived one.
-    let light = !base.keep_dark && palette.mean_surface_lightness() > LIGHT_COVER;
+    // same cut derivation makes on a cover, rather than the theme pick: a
+    // dim-authored light theme still gets the baseline that reads on it.
+    let light = palette.mean_surface_lightness() > LIGHT_COVER;
     let mode = if light {
         ThemeMode::Light
     } else {
@@ -1438,13 +1541,28 @@ mod tests {
         }
     }
 
+    /// A [`Base`] over the designed palettes for the derive tests: dark
+    /// theme active, the writers' inputs at rest.
+    fn test_base(keep_theme: bool) -> Base {
+        Base {
+            dark: Palette::default(),
+            light: Palette::light(),
+            mode: Mode::Dark,
+            art_theming: true,
+            keep_theme,
+            surface_opacity: 1.0,
+            backdrop_strength: 1.0,
+            font_size: FONT_SIZE_DEFAULT,
+        }
+    }
+
     /// Derivation's core promise: whatever the seed, every role keeps
     /// its lightness, so the contrast ladder survives.
     #[test]
     fn derivation_preserves_lightness() {
         let base = Palette::default();
         for seed in [rgb(0xff2200), rgb(0x2244ff), rgb(0x88ff00), rgb(0xfdcb00)] {
-            let derived = derive(&base, Some(dark_seed(seed)), false);
+            let derived = derive(&test_base(false), Some(dark_seed(seed)));
             for (before, after) in [
                 (base.bg_root, derived.bg_root),
                 (base.bg_menu, derived.bg_menu),
@@ -1470,7 +1588,7 @@ mod tests {
         let base = Palette::default();
         let seed = rgb(0x88ff00);
         let (.., seed_h) = rgba_to_oklch(seed);
-        let derived = derive(&base, Some(dark_seed(seed)), false);
+        let derived = derive(&test_base(false), Some(dark_seed(seed)));
         let (l, c, h) = rgba_to_oklch(derived.border);
         let (base_l, ..) = rgba_to_oklch(base.border);
         assert!((l - base_l).abs() < 0.02, "border lightness drifted");
@@ -1493,13 +1611,12 @@ mod tests {
             "premise: the default accent is colorful"
         );
         let derived = derive(
-            &base,
+            &test_base(false),
             Some(Seed {
                 primary: None,
                 secondary: None,
                 lightness: 0.3,
             }),
-            false,
         );
         for role in [derived.accent, derived.accent_hover] {
             let (_, c, _) = rgba_to_oklch(role);
@@ -1518,16 +1635,14 @@ mod tests {
     /// when the cover is too achromatic to tint anything.
     #[test]
     fn bright_cover_goes_light() {
-        let base = Palette::default();
         for primary in [Some(rgb(0xff2200)), None] {
             let derived = derive(
-                &base,
+                &test_base(false),
                 Some(Seed {
                     primary,
                     secondary: None,
                     lightness: 0.9,
                 }),
-                false,
             );
             let (root_l, ..) = rgba_to_oklch(derived.bg_root);
             let (text_l, ..) = rgba_to_oklch(derived.text);
@@ -1536,12 +1651,13 @@ mod tests {
         }
     }
 
-    /// Keep-dark holds the dark ladder under the same bright cover that
-    /// flips the app light: the surfaces stay dark, the ink stays light,
-    /// so the look never leaves the dark theme.
+    /// The flip lands on the light theme's own palette, not the stock
+    /// ladder: an edit on the light side shows under a bright album.
     #[test]
-    fn keep_dark_holds_the_dark_ladder() {
-        let base = Palette::default();
+    fn bright_cover_uses_light_theme_palette() {
+        let mut base = test_base(false);
+        // A light theme with its root pulled well below stock.
+        base.light.bg_root = rgb(0xc9c9c9);
         let derived = derive(
             &base,
             Some(Seed {
@@ -1549,7 +1665,43 @@ mod tests {
                 secondary: None,
                 lightness: 0.9,
             }),
-            true,
+        );
+        let (root_l, ..) = rgba_to_oklch(derived.bg_root);
+        let (edit_l, ..) = rgba_to_oklch(base.light.bg_root);
+        let (stock_l, ..) = rgba_to_oklch(Palette::light().bg_root);
+        assert!(
+            (root_l - edit_l).abs() < 0.02,
+            "root ignored the light theme's edit: {root_l}"
+        );
+        assert!((edit_l - stock_l).abs() > 0.04, "premise: the edit moved");
+    }
+
+    /// The flip runs both ways: with the light theme active, a dark cover
+    /// derives over the dark theme's palette.
+    #[test]
+    fn dark_cover_flips_a_light_theme_dark() {
+        let mut base = test_base(false);
+        base.mode = Mode::Light;
+        let derived = derive(&base, Some(dark_seed(rgb(0xff2200))));
+        let (root_l, ..) = rgba_to_oklch(derived.bg_root);
+        let (text_l, ..) = rgba_to_oklch(derived.text);
+        assert!(root_l < 0.3, "root stayed light: {root_l}");
+        assert!(text_l > 0.5, "text stayed dark: {text_l}");
+    }
+
+    /// Keep-theme holds the active theme's palette under the same bright
+    /// cover that flips the app light: the surfaces stay dark, the ink
+    /// stays light, so the look never leaves the theme.
+    #[test]
+    fn keep_theme_holds_the_active_palette() {
+        let base = Palette::default();
+        let derived = derive(
+            &test_base(true),
+            Some(Seed {
+                primary: Some(rgb(0xff2200)),
+                secondary: None,
+                lightness: 0.9,
+            }),
         );
         let (root_l, ..) = rgba_to_oklch(derived.bg_root);
         let (text_l, ..) = rgba_to_oklch(derived.text);
@@ -1628,16 +1780,14 @@ mod tests {
     /// the cover's color rather than a gray.
     #[test]
     fn secondary_takes_highlight() {
-        let base = Palette::default();
         let blue = rgb(0x2244ff);
         let (.., blue_h) = rgba_to_oklch(blue);
         let derived = derive(
-            &base,
+            &test_base(false),
             Some(Seed {
                 secondary: Some(blue),
                 ..dark_seed(rgb(0xff2200))
             }),
-            false,
         );
         let (l, c, h) = rgba_to_oklch(derived.highlight);
         let (lo, hi) = HIGHLIGHT_DARK_BAND;

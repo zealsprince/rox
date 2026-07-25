@@ -153,6 +153,18 @@ fn open_workspace_window(
         // The Wayland backend ignores the creation-time titlebar title;
         // only set_window_title reaches the compositor.
         window.set_window_title("rox");
+        // System-theme follow rides the OS appearance events, which only
+        // reach us through a window. The window's own cached appearance
+        // feeds the settings cache - the platform's read borrows the
+        // Wayland client, which is already borrowed here. The immediate
+        // note covers a flip that happened while no window was up (tray
+        // residency); the setter dedupes, so repeats cost nothing.
+        settings::note_os_appearance(window.appearance(), cx);
+        window
+            .observe_window_appearance(|window, cx| {
+                settings::note_os_appearance(window.appearance(), cx);
+            })
+            .detach();
         let workspace = cx.new(|cx| Workspace::new(start, adopt, window, cx));
         // Command-line files route into the fresh window's player. The player
         // is path-based, so this works for files outside the library.
@@ -196,10 +208,12 @@ fn main() {
         // same choke point every later palette change goes through. The
         // setters set the dark baseline and feed the widget theme tokens.
         let settings = Settings::load();
-        palette::set(settings.palette(), cx);
+        palette::set_palettes(settings.palette_dark(), settings.palette_light(), cx);
+        settings::seed_os_appearance(cx);
+        settings::set_theme(settings.theme, cx);
         palette::set_scalars(settings.surface_opacity, settings.backdrop_strength, cx);
         settings::set_app_frame(settings.frame, cx);
-        palette::set_keep_dark(settings.keep_dark, cx);
+        palette::set_keep_theme(settings.keep_theme, cx);
         palette::set_art_theming(settings.art_theming, cx);
         settings::set_app_font(settings.app_font.clone(), cx);
         palette::set_app_font_size(settings.app_font_size, cx);

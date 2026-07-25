@@ -65,10 +65,12 @@ struct WelcomeWindow {
     /// the art bake the backdrop paints from.
     state: AppState,
     backdrop: WindowBackdrop,
-    /// The shipped workspaces as the quick-start tiles show them: name and,
-    /// when a preview ships, its asset path and aspect ratio. Read once on
-    /// open; the render loop must not reparse the embedded bundles per frame.
-    workspaces: Vec<(SharedString, Option<(SharedString, f32)>)>,
+    /// The shipped workspaces as the quick-start tiles show them: name
+    /// and, when previews ship, their asset paths and aspect ratios per
+    /// theme side. Read once on open; the render loop must not reparse the
+    /// embedded bundles per frame. Render picks the live theme's side, so
+    /// the tiles follow a flip while the window is up.
+    workspaces: Vec<(SharedString, TilePreviews)>,
     /// The tile the pointer is over, if any: its preview shows in color
     /// while the rest sit desaturated.
     hovered_tile: Option<usize>,
@@ -85,16 +87,20 @@ struct WelcomeWindow {
 impl WelcomeWindow {
     fn new(state: AppState, cx: &mut Context<Self>) -> Self {
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        // A header that doesn't parse falls back to the frame's own
+        // aspect, which renders the picture static.
+        fn sized(path: SharedString) -> (SharedString, f32) {
+            let aspect = crate::assets::png_aspect(&path).unwrap_or(FRAME_ASPECT);
+            (path, aspect)
+        }
         let workspaces = crate::workspaces::shipped()
             .into_iter()
             .map(|entry| {
-                let preview = entry.preview.map(|path| {
-                    // A header that doesn't parse falls back to the frame's
-                    // own aspect, which renders the picture static.
-                    let aspect = crate::assets::png_aspect(&path).unwrap_or(FRAME_ASPECT);
-                    (path, aspect)
-                });
-                (SharedString::from(entry.bundle.name.clone()), preview)
+                let previews = TilePreviews {
+                    dark: entry.preview_dark.map(sized),
+                    light: entry.preview_light.map(sized),
+                };
+                (SharedString::from(entry.bundle.name.clone()), previews)
             })
             .collect();
         WelcomeWindow {
@@ -153,6 +159,25 @@ fn kbd_line(segs: impl IntoIterator<Item = Seg>) -> Div {
                 Seg::Key(label) => vec![kbd(label)],
             }
         }))
+}
+
+/// One tile's preview pair: the asset path and aspect ratio per theme
+/// side, resolved once on open. Both sides fall back to a bundle's plain
+/// unthemed picture in the asset lookup, so a pair is either both set or
+/// both None until themed shots ship.
+struct TilePreviews {
+    dark: Option<(SharedString, f32)>,
+    light: Option<(SharedString, f32)>,
+}
+
+impl TilePreviews {
+    /// The side a theme mode shows.
+    fn pick(&self, mode: palette::Mode) -> Option<(SharedString, f32)> {
+        match mode {
+            palette::Mode::Dark => self.dark.clone(),
+            palette::Mode::Light => self.light.clone(),
+        }
+    }
 }
 
 /// The tile frame's shape: every preview crops to a 16:9 window of the
@@ -438,11 +463,11 @@ impl Render for WelcomeWindow {
                     self.workspaces
                         .iter()
                         .enumerate()
-                        .map(|(i, (name, preview))| {
+                        .map(|(i, (name, previews))| {
                             let apply = name.clone();
                             workspace_tile(
                                 name.clone(),
-                                preview.clone(),
+                                previews.pick(palette::mode()),
                                 self.hovered_tile == Some(i),
                                 tile_width,
                                 cx.listener(move |_, _, window, cx| {

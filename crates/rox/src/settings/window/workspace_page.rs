@@ -967,13 +967,22 @@ impl SettingsWindow {
         // Mirror the applied look into this window's own editor state so the
         // swatches, pickers, and sliders show it. apply_palette re-sets the
         // live palette, which the apply above already did; the repeat is
-        // idempotent.
-        self.apply_palette(Palette::from_map(&bundle.palette), window, cx);
+        // idempotent. The apply may have flipped the theme side, so the
+        // editor re-seeds onto whichever side now renders.
+        self.editor_mode = palette::mode();
+        let mirrored = match self.editor_mode {
+            palette::Mode::Dark => Palette::from_map(&bundle.palette_dark),
+            palette::Mode::Light => {
+                Palette::from_map_over(Palette::light(), &bundle.palette_light)
+            }
+        };
+        self.apply_palette(mirrored, window, cx);
         let a = &bundle.appearance;
         self.surface_opacity = a.surface_opacity;
         self.backdrop_strength = a.backdrop_strength;
         self.frame = a.frame;
-        self.keep_dark = a.keep_dark;
+        self.theme = a.theme;
+        self.keep_theme = a.keep_theme;
         self.rating_style = a.rating_style;
         // The mini-player roles; the workspace's apply already moved its own
         // live copy along with the dock.

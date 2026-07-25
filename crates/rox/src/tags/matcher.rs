@@ -8,13 +8,14 @@
 //! atomic commit the tag editor uses, then closes; the library reload
 //! refreshes every panel. Nothing is written until Apply.
 //!
-//! One window per track path, registered like the cover editor.
+//! One window per track path and opening editor, registered like the
+//! cover editor.
 
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, Div, Entity, Global,
-    ScrollHandle, SharedString, Subscription, Task, WeakEntity, Window, WindowHandle,
+    div, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, Div, Entity, EntityId,
+    Global, ScrollHandle, SharedString, Subscription, Task, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Root, Sizable as _};
@@ -73,16 +74,22 @@ const DEFAULT_SIZE: (f32, f32) = (760., 560.);
 /// typing spends one request, not one a keystroke.
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(350);
 
-/// The open match windows, keyed by track path, so a second request for
-/// the same track focuses the first - the cover editor's registry shape.
+/// The registry key: the track path, plus the opening editor for fills.
+/// A fill's window binds its Apply to the editor that opened it, so two
+/// editors on the same track need their own windows; the panel's commit
+/// lookup carries no editor and shares one window per path.
+type MatchKey = (PathBuf, Option<EntityId>);
+
+/// The open match windows, keyed so a second request for the same track
+/// (and editor, for fills) focuses the first.
 #[derive(Default)]
-struct OpenMatchers(Vec<(PathBuf, WindowHandle<Root>)>);
+struct OpenMatchers(Vec<(MatchKey, WindowHandle<Root>)>);
 
 impl Global for OpenMatchers {}
 
 impl WindowRegistry for OpenMatchers {
-    type Key = PathBuf;
-    fn entries(&mut self) -> &mut Vec<(PathBuf, WindowHandle<Root>)> {
+    type Key = MatchKey;
+    fn entries(&mut self) -> &mut Vec<(MatchKey, WindowHandle<Root>)> {
         &mut self.0
     }
 }
@@ -119,8 +126,12 @@ fn open_with(
     sink: Sink,
     cx: &mut App,
 ) {
+    let opener = match &sink {
+        Sink::Commit => None,
+        Sink::Fill { editor, .. } => Some(editor.entity_id()),
+    };
     open_or_focus::<OpenMatchers>(
-        path.clone(),
+        (path.clone(), opener),
         move |cx| {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             crate::panel::open_child_window(

@@ -1,7 +1,8 @@
 //! OS media controls: one MPRIS service on Linux (SMTC on Windows, the remote
 //! command center on macOS) that answers the hardware media keys and shows the
-//! now-playing track in the desktop's media widget. The D-Bus name is
-//! per-process, so this is wired to the primary workspace only.
+//! now-playing track in the desktop's media widget. The D-Bus name carries a
+//! per-process instance suffix so a second rox can run without colliding on
+//! the MPRIS name, and this is wired to the primary workspace only.
 //!
 //! Windows' SMTC binds to a window, so [`MediaKeys::new`] takes the primary
 //! workspace window and hands its HWND down; the other two backends ignore it.
@@ -105,8 +106,16 @@ impl MediaKeys {
         if hwnd.is_none() {
             return None;
         }
+        // souvlaki asks D-Bus for the well-known name
+        // `org.mpris.MediaPlayer2.{dbus_name}`, and its zbus service thread
+        // unwraps the result, so a second instance claiming the same name
+        // panics that thread with NameTaken and loses media keys. The MPRIS
+        // spec lets us append a per-instance suffix, which controllers still
+        // match on the prefix, so give each process its own name and let two
+        // rox windows coexist. Windows and macOS ignore this field.
+        let dbus_name = format!("{APP_ID}.instance{}", std::process::id());
         let config = PlatformConfig {
-            dbus_name: APP_ID,
+            dbus_name: &dbus_name,
             display_name: "rox",
             // Windows SMTC binds to this window; Linux and macOS ignore it.
             hwnd,

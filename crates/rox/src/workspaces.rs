@@ -22,10 +22,12 @@ use crate::settings::{self, Settings, WorkspaceBundle, WORKSPACE_VERSION};
 pub struct Entry {
     pub bundle: WorkspaceBundle,
     pub builtin: bool,
-    /// The asset path of the preview picture shipped beside the bundle
-    /// (`workspaces/<stem>.png`), None when no picture ships or the user
-    /// saved the bundle. The welcome window's quick-start tiles draw it.
-    pub preview: Option<SharedString>,
+    /// The asset paths of the preview pictures shipped beside the bundle,
+    /// one per theme side (see [`assets::workspace_preview`]), None when
+    /// no picture ships or the user saved the bundle. The welcome window's
+    /// quick-start tiles draw the side the live theme picks.
+    pub preview_dark: Option<SharedString>,
+    pub preview_light: Option<SharedString>,
 }
 
 impl Entry {
@@ -48,16 +50,18 @@ pub fn shipped() -> Vec<Entry> {
             if bundle.version > WORKSPACE_VERSION {
                 return None;
             }
-            // The picture is keyed by the file stem, not the bundle's own
-            // name, so look it up before the stem moves into the name.
-            let preview = assets::workspace_preview(&stem);
+            // The pictures are keyed by the file stem, not the bundle's own
+            // name, so look them up before the stem moves into the name.
+            let preview_dark = assets::workspace_preview(&stem, palette::Mode::Dark);
+            let preview_light = assets::workspace_preview(&stem, palette::Mode::Light);
             if bundle.name.trim().is_empty() {
                 bundle.name = stem;
             }
             (!bundle.name.trim().is_empty()).then_some(Entry {
                 bundle,
                 builtin: true,
-                preview,
+                preview_dark,
+                preview_light,
             })
         })
         .collect();
@@ -72,7 +76,8 @@ pub fn all(settings: &Settings) -> Vec<Entry> {
     list.extend(settings.workspaces.iter().cloned().map(|bundle| Entry {
         bundle,
         builtin: false,
-        preview: None,
+        preview_dark: None,
+        preview_light: None,
     }));
     list
 }
@@ -89,11 +94,16 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     // repaint, they don't save again.
     let persist = bundle.clone();
     Settings::update(move |s| persist.apply_to(s));
-    palette::set(Palette::from_map(&bundle.palette), cx);
+    palette::set_palettes(
+        Palette::from_map(&bundle.palette_dark),
+        Palette::from_map_over(Palette::light(), &bundle.palette_light),
+        cx,
+    );
     let a = &bundle.appearance;
+    settings::set_theme(a.theme, cx);
     palette::set_scalars(a.surface_opacity, a.backdrop_strength, cx);
     settings::set_app_frame(a.frame, cx);
-    palette::set_keep_dark(a.keep_dark, cx);
+    palette::set_keep_theme(a.keep_theme, cx);
     palette::set_art_theming(a.art_theming, cx);
     settings::set_app_font(a.app_font.clone(), cx);
     palette::set_app_font_size(a.app_font_size, cx);

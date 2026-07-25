@@ -269,7 +269,7 @@
     }
   ],
   "primary_layout": "Foobar",
-  "palette": {
+  "palette_light": {
     "accent": "#3873b3",
     "accent_hover": "#5590cc",
     "highlight": "#ffffff",
@@ -304,8 +304,9 @@
       "rounding": 0.0,
       "border": 0.0
     },
+    "theme": "light",
+    "keep_theme": false,
     "art_theming": false,
-    "keep_dark": false,
     "rating_style": "stars",
     "quick_play": {
       "show_cover": true,

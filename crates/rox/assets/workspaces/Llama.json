@@ -634,7 +634,7 @@
   ],
   "primary_layout": "Llama",
   "mini_layout": "Llama Shade",
-  "palette": {
+  "palette_dark": {
     "accent": "#00d800",
     "accent_hover": "#40e840",
     "bg_control": "#2a3146",
@@ -669,8 +669,9 @@
       "rounding": 0.0,
       "border": 0.0
     },
+    "theme": "dark",
+    "keep_theme": true,
     "art_theming": false,
-    "keep_dark": true,
     "app_font": "Tahoma",
     "app_font_size": 16.0,
     "rating_style": "stars",

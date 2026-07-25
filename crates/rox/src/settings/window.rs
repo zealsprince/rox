@@ -45,7 +45,8 @@ use crate::settings::ui::{
 };
 use crate::settings::{
     self, data_dir, settings_path, Frame, LayoutSize, LyricsSave, NamedLayout, Providers,
-    RatingStyle, Settings, WorkspaceBundle, BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
+    RatingStyle, Settings, Theme, WorkspaceBundle, BORDER_MAX, MARGIN_MAX, PADDING_MAX,
+    ROUNDING_MAX,
 };
 use crate::thumbs::Thumbs;
 use crate::workspace::Workspace;
@@ -165,9 +166,15 @@ enum Pending {
 struct SettingsWindow {
     page: Page,
     /// The working copy of the user palette: what the swatches show and
-    /// what edits write through [`palette::set`].
+    /// what edits write through [`palette::set`]. Mirrors the active
+    /// theme's side; `editor_mode` tracks which.
     base: Palette,
-    keep_dark: bool,
+    /// The theme side the working copy mirrors. Render re-seeds the copy
+    /// and the pickers when the live mode moves off it: a theme switch
+    /// here, the OS flipping under System, a workspace apply.
+    editor_mode: palette::Mode,
+    theme: Theme,
+    keep_theme: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
     /// The app font size's working copy: what the Typography slider shows
@@ -303,7 +310,11 @@ impl SettingsWindow {
         let player = state.player.entity_id();
         let library = state.library;
         let settings = Settings::load();
-        let base = settings.palette();
+        let editor_mode = palette::mode();
+        let base = match editor_mode {
+            palette::Mode::Dark => settings.palette_dark(),
+            palette::Mode::Light => settings.palette_light(),
+        };
         let root_stats = library.read(cx).root_stats();
         let _library_changed = cx.subscribe(
             &library,
@@ -400,7 +411,9 @@ impl SettingsWindow {
         SettingsWindow {
             page: Page::Appearance,
             base,
-            keep_dark: settings.keep_dark,
+            editor_mode,
+            theme: settings.theme,
+            keep_theme: settings.keep_theme,
             surface_opacity: settings.surface_opacity,
             backdrop_strength: settings.backdrop_strength,
             font_size: settings.app_font_size,
@@ -470,7 +483,7 @@ impl SettingsWindow {
         match color {
             Some(color) => (role.set)(&mut self.base, color.to_rgb()),
             None => {
-                let default = (role.get)(&Palette::default());
+                let default = (role.get)(&self.side_anchor());
                 (role.set)(&mut self.base, default);
                 picker.update(cx, |picker, cx| picker.set_value(default, window, cx));
             }
@@ -492,13 +505,57 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The keep-dark switch: holds the dark ladder under a bright cover.
-    /// Through the palette pipe so open windows ease over, and into the file.
-    fn set_keep_dark(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.keep_dark = on;
-        palette::set_keep_dark(on, cx);
-        Settings::update(move |s| s.keep_dark = on);
+    /// The theme pick: which palette side renders, with System following
+    /// the OS. Through the settings pipe so the side re-resolves and every
+    /// window eases over; render then re-seeds the editor onto that side.
+    fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        self.theme = theme;
+        settings::set_theme(theme, cx);
+        Settings::update(move |s| s.theme = theme);
         cx.notify();
+    }
+
+    /// The keep-theme switch: holds the active theme's palette under any
+    /// cover. Through the palette pipe so open windows ease over, and into
+    /// the file.
+    fn set_keep_theme(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.keep_theme = on;
+        palette::set_keep_theme(on, cx);
+        Settings::update(move |s| s.keep_theme = on);
+        cx.notify();
+    }
+
+    /// The editing side's designed anchor: what a cleared picker returns
+    /// a role to and what Reset returns the whole palette to.
+    fn side_anchor(&self) -> Palette {
+        match self.editor_mode {
+            palette::Mode::Dark => Palette::default(),
+            palette::Mode::Light => Palette::light(),
+        }
+    }
+
+    /// Persist the working palette onto its side of the settings file,
+    /// the immediate writers' shared tail (inverse, import, song theme).
+    fn persist_palette_now(&self) {
+        let mode = self.editor_mode;
+        let map = self.base.to_map();
+        Settings::update(move |s| *s.palette_map_mut(mode) = map);
+    }
+
+    /// Point the editor at the side now rendering after a theme switch:
+    /// the working copy and every picker move to that theme's palette.
+    /// Runs from render, since every switch path (the toggle here, the OS
+    /// flipping under System, a workspace apply) repaints all windows.
+    fn sync_editor_side(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_mode == palette::mode() {
+            return;
+        }
+        self.editor_mode = palette::mode();
+        self.base = palette::theme_palette(self.editor_mode);
+        for (role, picker) in ROLES.iter().zip(&self.pickers) {
+            let color = (role.get)(&self.base);
+            picker.update(cx, |picker, cx| picker.set_value(color, window, cx));
+        }
     }
 
     /// The restore switch: straight into the file. Launch reads it there,
@@ -661,7 +718,9 @@ impl SettingsWindow {
             self.frame,
             self.font_size,
         );
-        let palette = self.persist_palette.then(|| self.base.to_map());
+        let palette = self
+            .persist_palette
+            .then(|| (self.editor_mode, self.base.to_map()));
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(200))
@@ -675,7 +734,8 @@ impl SettingsWindow {
                 .update(cx, |this, _| {
                     (
                         this.persist_gen,
-                        this.persist_palette.then(|| this.base.to_map()),
+                        this.persist_palette
+                            .then(|| (this.editor_mode, this.base.to_map())),
                     )
                 })
                 .unwrap_or((gen, palette));
@@ -685,8 +745,8 @@ impl SettingsWindow {
                     s.backdrop_strength = backdrop;
                     s.frame = frame;
                     s.app_font_size = font_size;
-                    if let Some(palette) = palette {
-                        s.palette = palette;
+                    if let Some((mode, palette)) = palette {
+                        *s.palette_map_mut(mode) = palette;
                     }
                 });
             }
@@ -750,23 +810,28 @@ impl SettingsWindow {
         palette::set(self.base, cx);
     }
 
-    /// Back to the stock palette; the file's map empties rather than
-    /// filling with defaults.
+    /// Back to the editing side's stock palette; the file's map empties
+    /// rather than filling with defaults.
     fn reset_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_palette(Palette::default(), window, cx);
+        self.apply_palette(self.side_anchor(), window, cx);
         // Back off the debounced palette writes too, or a settling picker
         // burst would refill the map this just emptied.
         self.persist_palette = false;
-        Settings::update(|s| s.palette.clear());
+        let mode = self.editor_mode;
+        Settings::update(move |s| s.palette_map_mut(mode).clear());
     }
 
-    /// Flip the working palette light for dark, the accents held: a dark
-    /// theme comes back light without redrawing every swatch by hand. The
-    /// map persists like any other edit, so the flip survives a restart.
+    /// Seed the working palette from the other theme's, flipped across
+    /// the designed ladders: editing dark, Inverse From Light Theme pulls
+    /// the light side's look dark, and the other way around. The map
+    /// persists like any other edit, so the flip survives a restart.
     fn inverse_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.apply_palette(self.base.inverse(), window, cx);
-        let map = self.base.to_map();
-        Settings::update(move |s| s.palette = map);
+        let other = match self.editor_mode {
+            palette::Mode::Dark => palette::Mode::Light,
+            palette::Mode::Light => palette::Mode::Dark,
+        };
+        self.apply_palette(palette::theme_palette(other).inverse(), window, cx);
+        self.persist_palette_now();
     }
 
     /// Bake the song theme into the palette: the colors the playing track
@@ -778,8 +843,7 @@ impl SettingsWindow {
         let themed = palette::resolved();
         self.set_art_theming(false, cx);
         self.apply_palette(themed, window, cx);
-        let map = self.base.to_map();
-        Settings::update(move |s| s.palette = map);
+        self.persist_palette_now();
     }
 
     /// Pick a palette file and load it: the same role-to-hex map the
@@ -807,9 +871,9 @@ impl SettingsWindow {
                 return;
             };
             this.update_in(cx, |this, window, cx| {
-                this.apply_palette(Palette::from_map(&map), window, cx);
-                let map = this.base.to_map();
-                Settings::update(move |s| s.palette = map);
+                let anchor = this.side_anchor();
+                this.apply_palette(Palette::from_map_over(anchor, &map), window, cx);
+                this.persist_palette_now();
             })
             .ok();
         })
@@ -869,14 +933,28 @@ impl SettingsWindow {
                     .flex_col()
                     .gap(tokens::SPACE_MD)
                     .child(panel::setting_row(
+                        "Theme",
+                        Some("The palette the app renders and the one the color editor below targets; System follows the OS's light or dark preference"),
+                        panel::choices(
+                            &[
+                                ("Dark", Theme::Dark),
+                                ("Light", Theme::Light),
+                                ("System", Theme::System),
+                            ],
+                            self.theme,
+                            Self::set_theme,
+                            cx,
+                        ),
+                    ))
+                    .child(panel::setting_row(
                         "Song Theming",
                         Some("Tint the palette and back windows with the playing track's cover art"),
                         panel::toggle(palette::art_theming(), Self::set_art_theming, cx),
                     ))
                     .child(panel::setting_row(
-                        "Keep Dark",
-                        Some("Hold the dark surfaces even when a bright cover would flip the app light; song theming still tints the color"),
-                        panel::toggle(self.keep_dark, Self::set_keep_dark, cx),
+                        "Keep Theme",
+                        Some("Hold the active theme even when a cover's brightness would flip it; song theming still tints the color"),
+                        panel::toggle(self.keep_theme, Self::set_keep_theme, cx),
                     )),
             ))
             .child(section(
@@ -1551,13 +1629,17 @@ impl SettingsWindow {
         // live only while theming drives the colors it bakes in. Export
         // stays live; unlocked it saves the base palette, locked the
         // derived one the swatches show.
+        let inverse_label = match self.editor_mode {
+            palette::Mode::Dark => "Inverse From Light Theme",
+            palette::Mode::Light => "Inverse From Dark Theme",
+        };
         let controls = div()
             .flex()
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_XS)
             .child(small_button(
-                "Inverse",
+                inverse_label,
                 icons::CONTRAST,
                 locked,
                 cx.listener(|this, _, window, cx| this.inverse_palette(window, cx)),
@@ -2150,6 +2232,11 @@ impl Render for SettingsWindow {
         // locked swatches show the derived colors through `resolved`.
         let player = self.player;
         palette::note_focus(player, window.is_window_active(), cx);
+
+        // A theme switch lands the live palette on the other side; the
+        // editor follows it here since every switch path repaints all
+        // windows.
+        self.sync_editor_side(window, cx);
 
         panel::window_body(player, || {
             let sidebar = sidebar()

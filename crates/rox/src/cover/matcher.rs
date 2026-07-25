@@ -13,8 +13,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    div, img, prelude::*, px, size, App, Bounds, Context, Div, Entity, Global, Image, ObjectFit,
-    ScrollHandle, SharedString, Subscription, Task, WeakEntity, Window, WindowHandle,
+    div, img, prelude::*, px, size, App, Bounds, Context, Div, Entity, EntityId, Global, Image,
+    ObjectFit, ScrollHandle, SharedString, Subscription, Task, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Root, Sizable as _};
@@ -37,16 +37,18 @@ const TILE: f32 = 132.0;
 /// How long the query rests before an edit fires a search.
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(350);
 
-/// The open match windows, keyed by the query they opened on, so asking
-/// again for the same album focuses the first.
+/// The open match windows, keyed by the opening editor plus the query, so
+/// the same editor asking again focuses its window. Apply fills the front
+/// slot of the editor that opened it, so two editors on the same album
+/// need their own windows, not a shared one.
 #[derive(Default)]
-struct OpenMatchers(Vec<(String, WindowHandle<Root>)>);
+struct OpenMatchers(Vec<((EntityId, String), WindowHandle<Root>)>);
 
 impl Global for OpenMatchers {}
 
 impl WindowRegistry for OpenMatchers {
-    type Key = String;
-    fn entries(&mut self) -> &mut Vec<(String, WindowHandle<Root>)> {
+    type Key = (EntityId, String);
+    fn entries(&mut self) -> &mut Vec<((EntityId, String), WindowHandle<Root>)> {
         &mut self.0
     }
 }
@@ -60,7 +62,7 @@ pub fn open(
     album: String,
     cx: &mut App,
 ) {
-    let key = format!("{artist}\u{0}{album}");
+    let key = (editor.entity_id(), format!("{artist}\u{0}{album}"));
     open_or_focus::<OpenMatchers>(
         key,
         move |cx| {

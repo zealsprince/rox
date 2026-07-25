@@ -14,3 +14,7 @@ means per-platform FFI beyond cpal, and DSD has no Rust decoder at all. The prod
 didn't ask for audiophile exclusive output, so building it now is speculative. Keeping the
 output behind a trait costs little and leaves the door open. If bit-perfect becomes a real
 requirement, that's a product decision that pulls this FFI work into scope.
+
+**Amendment:** that product decision happened (#70). The deferral ends with
+[ADR 19](19-adr-processing-chain.md), which defines the backend contract, the exclusive
+mode, and the bypass rule that makes bit-perfect checkable.

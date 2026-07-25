@@ -120,4 +120,6 @@ Each ADR records the call, the alternatives weighed, and what it costs. They liv
 | [14 - Online providers](decisions/14-adr-online-providers.md) | Per-domain provider traits for online enrichment | Decided |
 | [15 - Shared query](decisions/15-adr-global-filter.md) | App-wide search entity panels follow by default, opt out per view | Decided |
 | [16 - Play queue](decisions/16-adr-play-queue.md) | Mutable timeline the engine owns, playlists in the library store | Decided |
-| [17 - Tag editor](decisions/17-adr-tag-editor.md) | Shared batch form plus a per-file table, not foobar's per-field step-in | Decided |
+| [17 - Queue continuation](decisions/17-adr-queue-continuation.md) | Single provider feeding the live timeline | Decided |
+| [18 - Tag editor](decisions/18-adr-tag-editor.md) | Shared batch form plus a per-file table, not foobar's per-field step-in | Decided |
+| [19 - Processing chain](decisions/19-adr-processing-chain.md) | DSP chain pre-ring on the decode thread, exclusive output behind the seam | Proposed |

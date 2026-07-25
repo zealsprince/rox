@@ -511,7 +511,7 @@
   ],
   "primary_layout": "Phosphor",
   "mini_layout": "Phosphor Mini",
-  "palette": {
+  "palette_dark": {
     "accent": "#33ff33",
     "accent_hover": "#66ff66",
     "highlight": "#ccffcc",
@@ -546,8 +546,9 @@
       "rounding": 0.0,
       "border": 0.0
     },
+    "theme": "dark",
+    "keep_theme": true,
     "art_theming": false,
-    "keep_dark": true,
     "rating_style": "stars",
     "quick_play": {
       "show_cover": false,

@@ -556,7 +556,7 @@
   ],
   "primary_layout": "Metro",
   "mini_layout": "Metro Mini",
-  "palette": {
+  "palette_dark": {
     "accent": "#ff0097",
     "accent_hover": "#ff40b0",
     "bg_control": "#141414",
@@ -591,8 +591,9 @@
       "rounding": 0.0,
       "border": 0.0
     },
+    "theme": "dark",
+    "keep_theme": true,
     "art_theming": true,
-    "keep_dark": true,
     "app_font": "Segoe UI",
     "app_font_size": 16.0,
     "rating_style": "stars",

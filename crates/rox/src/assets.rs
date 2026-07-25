@@ -10,6 +10,8 @@ use std::sync::RwLock;
 use gpui::{AssetSource, Result, SharedString};
 use rust_embed::RustEmbed;
 
+use crate::design::palette;
+
 /// The active icon pack's folder, or None for the built-in set. A pack is a
 /// flat folder of SVGs named like the built-in icons (play.svg, heart.svg);
 /// a file present there overrides that icon, a missing one falls through to
@@ -259,13 +261,24 @@ pub fn shipped_workspaces() -> Vec<(String, Cow<'static, [u8]>)> {
     shipped_json("workspaces/")
 }
 
-/// The preview picture shipped beside a workspace bundle, when one exists:
-/// `workspaces/<stem>.png` next to the bundle's JSON, keyed by the file stem
-/// rather than the bundle's own name. The welcome window's quick-start tiles
-/// draw it; a bundle without one shows a placeholder there.
-pub fn workspace_preview(stem: &str) -> Option<SharedString> {
-    let path = format!("workspaces/{stem}.png");
-    Assets::get(&path).is_some().then(|| path.into())
+/// The preview picture shipped beside a workspace bundle for a theme side,
+/// when one exists: `workspaces/<stem>_Dark.png` or `_Light.png` next to
+/// the bundle's JSON, falling back to a plain `<stem>.png` serving both
+/// sides, keyed by the file stem rather than the bundle's own name. The
+/// welcome window's quick-start tiles draw the side the live theme picks;
+/// a bundle with no picture shows a placeholder there.
+pub fn workspace_preview(stem: &str, mode: palette::Mode) -> Option<SharedString> {
+    let side = match mode {
+        palette::Mode::Dark => "Dark",
+        palette::Mode::Light => "Light",
+    };
+    [
+        format!("workspaces/{stem}_{side}.png"),
+        format!("workspaces/{stem}.png"),
+    ]
+    .into_iter()
+    .find(|path| Assets::get(path).is_some())
+    .map(Into::into)
 }
 
 /// The width over height of an embedded PNG asset, read straight from the

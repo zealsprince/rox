@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
 
-use gpui::{App, SharedString, WindowDecorations};
+use gpui::{App, SharedString, WindowAppearance, WindowDecorations};
 use serde::{Deserialize, Serialize};
 
 use rox_playback::engine::LoopMode;
@@ -220,10 +220,16 @@ pub struct Settings {
     /// rounding, and border, all in px. A panel's own theme overrides any
     /// of them; unset there, the panel takes these.
     pub frame: Frame,
-    /// The user palette as role-name-to-`#rrggbb` entries,
+    /// The theme pick: which of the two user palettes renders, with
+    /// System following the OS's light/dark preference live.
+    pub theme: Theme,
+    /// The dark theme's user palette as role-name-to-`#rrggbb` entries,
     /// [`Palette::to_map`]'s shape. Empty means the default palette;
     /// unknown roles fall away on load, like the file's own fields.
-    pub palette: BTreeMap<String, String>,
+    pub palette_dark: BTreeMap<String, String>,
+    /// The light theme's counterpart, filling in over [`Palette::light`]
+    /// where the dark map fills in over the defaults.
+    pub palette_light: BTreeMap<String, String>,
     /// The app-wide font family, the base every window and panel inherits.
     /// None follows the platform default. A panel's own font override layers
     /// over this; a name that is not installed falls back at render, so the
@@ -244,10 +250,11 @@ pub struct Settings {
     /// the windows (ADR 10's derived mode). Off by default: the look
     /// only follows the music when asked to.
     pub art_theming: bool,
-    /// Whether a bright cover is held to the dark ladder. Song theming
-    /// still tints hue and chroma, but the surfaces never flip light. Off
-    /// by default: the app follows a bright album all the way.
-    pub keep_dark: bool,
+    /// Whether song theming is held to the active theme. Song theming
+    /// still tints hue and chroma, but a cover's brightness never swaps
+    /// the light and dark palettes. Off by default: the app follows a
+    /// bright album all the way.
+    pub keep_theme: bool,
     /// Whether launch loads the last playing track back up, paused where
     /// it left off. The track below is written either way; this only
     /// gates the restore.
@@ -304,6 +311,75 @@ pub struct Settings {
     /// instead. Kept as raw JSON, like the dock layout, so settings stay
     /// readable when the queue's config schema moves. None until edited.
     pub queue_view: Option<serde_json::Value>,
+}
+
+/// The theme pick: dark, light, or the OS's own preference. Dark and
+/// light name the two user palettes directly; System resolves to one of
+/// them against the desktop's light/dark setting and follows it live.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+    System,
+}
+
+/// The live theme pick, a static like the rating style's: the OS
+/// appearance observers read it to decide whether a change re-themes.
+/// Seeded at startup, flipped by the settings window and workspace apply.
+static THEME: RwLock<Theme> = RwLock::new(Theme::Dark);
+
+/// The last OS appearance reported, [`seed_os_appearance`]'s startup read
+/// refreshed by every workspace window's observer. Cached because the
+/// platform's own read borrows the whole Wayland client, which panics
+/// from inside window construction or event dispatch; the observers hand
+/// us the window's already-cached value instead.
+static OS_APPEARANCE: RwLock<WindowAppearance> = RwLock::new(WindowAppearance::Light);
+
+pub fn theme() -> Theme {
+    *THEME.read().unwrap()
+}
+
+/// Flip the live theme and re-resolve which palette renders. Persisting
+/// is the caller's, startup seeds from the file through here too.
+pub fn set_theme(theme: Theme, cx: &mut App) {
+    *THEME.write().unwrap() = theme;
+    palette::set_mode(resolve_theme(theme), cx);
+}
+
+/// A theme pick resolved to a palette side: System asks the cached OS
+/// appearance, which reads Light until a backend (the xdg-desktop-portal
+/// on Linux) has reported otherwise.
+fn resolve_theme(theme: Theme) -> palette::Mode {
+    match theme {
+        Theme::Dark => palette::Mode::Dark,
+        Theme::Light => palette::Mode::Light,
+        Theme::System => match *OS_APPEARANCE.read().unwrap() {
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => palette::Mode::Dark,
+            WindowAppearance::Light | WindowAppearance::VibrantLight => palette::Mode::Light,
+        },
+    }
+}
+
+/// Seed the appearance cache from the platform, once at startup before
+/// [`set_theme`]: the one place the platform read is safe, since the
+/// event loop is not running yet. The portal may answer after this with
+/// the true preference; the window observers fold that in and the theme
+/// eases over.
+pub fn seed_os_appearance(cx: &App) {
+    *OS_APPEARANCE.write().unwrap() = cx.window_appearance();
+}
+
+/// A window reported its OS appearance, at open and on every change:
+/// refresh the cache, and while the theme follows the system re-resolve
+/// the palette side. The mode setter dedupes, so windows past the first
+/// and no-op reports cost nothing.
+pub fn note_os_appearance(appearance: WindowAppearance, cx: &mut App) {
+    *OS_APPEARANCE.write().unwrap() = appearance;
+    if theme() == Theme::System {
+        palette::set_mode(resolve_theme(Theme::System), cx);
+    }
 }
 
 /// The rating scale: five stars for quick clicks, or a 0-10 number in
@@ -701,10 +777,13 @@ pub struct WorkspaceBundle {
     pub primary_layout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mini_layout: Option<String>,
-    /// The palette as role-name-to-`#rrggbb`, [`Palette::to_map`]'s shape;
-    /// empty means the default palette.
+    /// The two theme palettes as role-name-to-`#rrggbb`,
+    /// [`Palette::to_map`]'s shape; an empty map means that theme's
+    /// designed defaults.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub palette: BTreeMap<String, String>,
+    pub palette_dark: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub palette_light: BTreeMap<String, String>,
     /// The appearance knobs the workspace dresses the app with.
     pub appearance: AppearanceBundle,
 }
@@ -717,7 +796,8 @@ impl Default for WorkspaceBundle {
             layouts: Vec::new(),
             primary_layout: None,
             mini_layout: None,
-            palette: BTreeMap::new(),
+            palette_dark: BTreeMap::new(),
+            palette_light: BTreeMap::new(),
             appearance: AppearanceBundle::default(),
         }
     }
@@ -733,8 +813,9 @@ pub struct AppearanceBundle {
     pub surface_opacity: f32,
     pub backdrop_strength: f32,
     pub frame: Frame,
+    pub theme: Theme,
     pub art_theming: bool,
-    pub keep_dark: bool,
+    pub keep_theme: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_font: Option<String>,
     pub app_font_size: f32,
@@ -750,8 +831,9 @@ impl Default for AppearanceBundle {
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
             frame: Frame::DEFAULT,
+            theme: Theme::default(),
             art_theming: false,
-            keep_dark: false,
+            keep_theme: false,
             app_font: None,
             app_font_size: palette::FONT_SIZE_DEFAULT,
             rating_style: RatingStyle::default(),
@@ -806,13 +888,15 @@ impl WorkspaceBundle {
             layouts,
             primary_layout,
             mini_layout: s.mini_layout.clone(),
-            palette: s.palette.clone(),
+            palette_dark: s.palette_dark.clone(),
+            palette_light: s.palette_light.clone(),
             appearance: AppearanceBundle {
                 surface_opacity: s.surface_opacity,
                 backdrop_strength: s.backdrop_strength,
                 frame: s.frame,
+                theme: s.theme,
                 art_theming: s.art_theming,
-                keep_dark: s.keep_dark,
+                keep_theme: s.keep_theme,
                 app_font: s.app_font.clone(),
                 app_font_size: s.app_font_size,
                 rating_style: s.rating_style,
@@ -833,13 +917,15 @@ impl WorkspaceBundle {
         s.layout_edits.clear();
         s.primary_layout = self.primary_layout;
         s.mini_layout = self.mini_layout;
-        s.palette = self.palette;
+        s.palette_dark = self.palette_dark;
+        s.palette_light = self.palette_light;
         let a = self.appearance;
         s.surface_opacity = a.surface_opacity;
         s.backdrop_strength = a.backdrop_strength;
         s.frame = a.frame;
+        s.theme = a.theme;
         s.art_theming = a.art_theming;
-        s.keep_dark = a.keep_dark;
+        s.keep_theme = a.keep_theme;
         s.app_font = a.app_font;
         s.app_font_size = a.app_font_size;
         s.rating_style = a.rating_style;
@@ -945,12 +1031,14 @@ impl Default for Settings {
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
             frame: Frame::DEFAULT,
-            palette: BTreeMap::new(),
+            theme: Theme::default(),
+            palette_dark: BTreeMap::new(),
+            palette_light: BTreeMap::new(),
             app_font: None,
             app_font_size: palette::FONT_SIZE_DEFAULT,
             icon_pack: None,
             art_theming: false,
-            keep_dark: false,
+            keep_theme: false,
             restore_last_track: true,
             quit_to_tray: false,
             last_track: None,
@@ -1080,9 +1168,24 @@ impl Settings {
         }
     }
 
-    /// The user palette the map holds, over the defaults.
-    pub fn palette(&self) -> Palette {
-        Palette::from_map(&self.palette)
+    /// The dark theme's user palette, its map over the defaults.
+    pub fn palette_dark(&self) -> Palette {
+        Palette::from_map(&self.palette_dark)
+    }
+
+    /// The light theme's user palette, its map over the designed light
+    /// ladder.
+    pub fn palette_light(&self) -> Palette {
+        Palette::from_map_over(Palette::light(), &self.palette_light)
+    }
+
+    /// The stored palette map for a theme side, where the editor's edits
+    /// land.
+    pub fn palette_map_mut(&mut self, mode: palette::Mode) -> &mut BTreeMap<String, String> {
+        match mode {
+            palette::Mode::Dark => &mut self.palette_dark,
+            palette::Mode::Light => &mut self.palette_light,
+        }
     }
 
     pub fn loop_mode(&self) -> LoopMode {
@@ -1119,14 +1222,16 @@ mod tests {
                 rounding: 12.0,
                 border: 1.0,
             },
+            theme: Theme::Light,
             art_theming: true,
-            keep_dark: true,
+            keep_theme: true,
             rating_style: RatingStyle::Numeric,
             hide_menubar: true,
             primary_layout: Some("one".into()),
             ..Default::default()
         };
-        src.palette.insert("accent".into(), "#336699".into());
+        src.palette_dark.insert("accent".into(), "#336699".into());
+        src.palette_light.insert("accent".into(), "#663399".into());
         src.layouts.push(NamedLayout {
             name: "one".into(),
             dump: serde_json::json!({ "k": "v" }),
@@ -1142,13 +1247,18 @@ mod tests {
         assert_eq!(dst.surface_opacity, 0.5);
         assert_eq!(dst.frame.rounding, 12.0);
         assert_eq!(dst.frame.padding, 8.0);
+        assert!(dst.theme == Theme::Light);
         assert!(dst.art_theming);
-        assert!(dst.keep_dark);
+        assert!(dst.keep_theme);
         assert!(dst.rating_style == RatingStyle::Numeric);
         assert!(dst.hide_menubar);
         assert_eq!(
-            dst.palette.get("accent").map(String::as_str),
+            dst.palette_dark.get("accent").map(String::as_str),
             Some("#336699")
+        );
+        assert_eq!(
+            dst.palette_light.get("accent").map(String::as_str),
+            Some("#663399")
         );
         assert_eq!(dst.layouts.len(), 1);
         assert_eq!(dst.primary_layout.as_deref(), Some("one"));

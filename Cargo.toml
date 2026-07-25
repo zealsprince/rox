@@ -10,7 +10,7 @@ members = [
 default-members = ["crates/rox"]
 
 [workspace.package]
-version = "1.4.0"
+version = "1.4.1"
 edition = "2021"
 license = "AGPL-3.0-only"
 
@@ -30,7 +30,8 @@ opt-level = 3
 opt-level = 3
 
 # Debug symbols are a third of the binary (68 MB down to 54 MB) and release
-# builds aren't what we debug with.
+# builds aren't what we debug with. Thin LTO was tried and bought nothing
+# here (62 vs 63 MB, noise) at +75s link time, so it stays off.
 [profile.release]
 strip = true
 

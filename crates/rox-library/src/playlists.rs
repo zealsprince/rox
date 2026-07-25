@@ -10,6 +10,14 @@
 //! Members are addressed by their own row id, not the track id: a playlist may
 //! hold the same track more than once, so removing or moving a member acts on
 //! one occurrence, not every copy of a track.
+//!
+//! The one identity a rowid does not survive is a prune: a file missing at
+//! scan time loses its row, and coming back it lands under a fresh id the
+//! member knows nothing about. So a member also snapshots the track's path,
+//! and [`reattach`] runs after every scan to match dangling members back to
+//! the catalog - by that path first, then by the tag snapshot when it names
+//! exactly one track. A playlist survives its files leaving and returning,
+//! even at a new path.
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -77,7 +85,62 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     if !has_favourite {
         conn.execute_batch("ALTER TABLE playlists ADD COLUMN favourite INTEGER NOT NULL DEFAULT 0;")?;
     }
+    // The path snapshot column arrives via the store ladder's snapshot-paths
+    // step, which runs after this baseline.
     Ok(())
+}
+
+/// The store ladder's snapshot-paths step, the playlist half: members learn
+/// the track's path, the content key [`reattach`] matches on. Live members
+/// backfill from the catalog so existing playlists get the durability
+/// without a re-add; dangling ones keep the empty default and rely on the
+/// tag fallback.
+pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE playlist_tracks ADD COLUMN path TEXT NOT NULL DEFAULT '';
+         UPDATE playlist_tracks SET path = COALESCE(
+             (SELECT t.path FROM tracks t
+              WHERE t.id = playlist_tracks.track_id AND t.source = 'local'), '');",
+    )
+}
+
+/// Match member rows back to the catalog after a scan. A member keys to its
+/// track by rowid, which survives rescans and renames (ADR 5) but dies with
+/// a prune: a drive missing at scan time, an album deleted and restored, a
+/// reorganize done with the app closed all bring the file back under a fresh
+/// id the member knows nothing about. Dangling members relink by their path
+/// snapshot first, then by their tag snapshot when it names exactly one
+/// track, so an ambiguous match never guesses. Members with a live track
+/// just keep their path snapshot current (a rename moves the path under the
+/// same id). Returns how many members relinked.
+pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE playlist_tracks SET path = t.path FROM tracks t
+         WHERE t.id = playlist_tracks.track_id AND t.source = 'local'
+           AND playlist_tracks.path <> t.path",
+        [],
+    )?;
+    let by_path = conn.execute(
+        "UPDATE playlist_tracks SET track_id = t.id FROM tracks t
+         WHERE playlist_tracks.path <> ''
+           AND t.source = 'local' AND t.path = playlist_tracks.path
+           AND NOT EXISTS (SELECT 1 FROM tracks x WHERE x.id = playlist_tracks.track_id)",
+        [],
+    )?;
+    let by_tags = conn.execute(
+        "UPDATE playlist_tracks SET track_id = t.id, path = t.path FROM tracks t
+         WHERE NOT EXISTS (SELECT 1 FROM tracks x WHERE x.id = playlist_tracks.track_id)
+           AND NOT (playlist_tracks.title = '' AND playlist_tracks.artist = ''
+                    AND playlist_tracks.album = '')
+           AND t.source = 'local'
+           AND t.title = playlist_tracks.title AND t.artist = playlist_tracks.artist
+           AND t.album = playlist_tracks.album
+           AND (SELECT COUNT(*) FROM tracks c WHERE c.source = 'local'
+                AND c.title = playlist_tracks.title AND c.artist = playlist_tracks.artist
+                AND c.album = playlist_tracks.album) = 1",
+        [],
+    )?;
+    Ok(by_path + by_tags)
 }
 
 /// A playlist in the sidebar list: its id, name, and how many tracks it holds.
@@ -114,8 +177,9 @@ pub struct PlaylistTrack {
     /// The 0-5 star rating, 0 when unrated. Read live from the catalog for
     /// the panel's rating cell, like the album grouping fields.
     pub rating: u8,
-    /// The file path, for the cover column's thumbnail; empty for a deleted
-    /// track the snapshot keeps but the catalog no longer holds.
+    /// The file path, for the cover column's thumbnail: the live catalog's
+    /// while the track exists, the snapshot's once it is gone, so a pruned
+    /// file whose bytes are still on disk keeps its cover.
     pub path: String,
 }
 
@@ -274,8 +338,8 @@ pub fn add(conn: &mut Connection, playlist_id: i64, track_ids: &[i64], now: i64)
     {
         let mut insert = tx.prepare_cached(
             "INSERT INTO playlist_tracks
-                (playlist_id, track_id, position, title, artist, album)
-             SELECT ?1, t.id, ?3, t.title, t.artist, t.album
+                (playlist_id, track_id, position, title, artist, album, path)
+             SELECT ?1, t.id, ?3, t.title, t.artist, t.album, t.path
              FROM tracks t WHERE t.id = ?2",
         )?;
         for &track_id in track_ids {
@@ -490,7 +554,7 @@ pub fn tracks(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<Playl
                 COALESCE(t.codec, ''),
                 COALESCE(t.bitrate, 0),
                 COALESCE(t.rating, 0),
-                COALESCE(t.path, '')
+                COALESCE(t.path, m.path)
          FROM playlist_tracks m LEFT JOIN tracks t ON t.id = m.track_id
          WHERE m.playlist_id = ?1
          ORDER BY m.position, m.id",
@@ -561,6 +625,8 @@ pub fn export_rows(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::{store, TrackRow};
 
@@ -741,6 +807,100 @@ mod tests {
         assert_eq!(rows[0].title, "Three");
     }
 
+    /// A member's stored path snapshot, for asserting on the column the
+    /// reattach passes maintain.
+    fn member_path(conn: &Connection, member_id: i64) -> String {
+        conn.query_row(
+            "SELECT path FROM playlist_tracks WHERE id = ?1",
+            [member_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn reattach_relinks_by_path_after_a_prune() {
+        let mut conn = seed();
+        let pl = create(&conn, "Mix", 100).unwrap();
+        add(&mut conn, pl, &[1], 100).unwrap();
+
+        // The file goes missing at scan time and its row prunes; later it
+        // comes back at the same path under a fresh id.
+        conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
+        assert!(ids(&conn, pl).unwrap().is_empty(), "the member dangles");
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First")]).unwrap();
+        let new_id = store::id_for_path(&conn, "/m/1.mp3").unwrap().unwrap();
+        assert_ne!(new_id, 1, "the returned file lands under a fresh id");
+
+        assert_eq!(reattach(&conn).unwrap(), 1);
+        assert_eq!(ids(&conn, pl).unwrap(), [new_id], "the member plays again");
+    }
+
+    #[test]
+    fn reattach_falls_back_to_the_tag_snapshot() {
+        let mut conn = seed();
+        let pl = create(&conn, "Mix", 100).unwrap();
+        add(&mut conn, pl, &[1], 100).unwrap();
+
+        // The file returns at a different path (a reorganize done with the
+        // app closed), so the path snapshot misses; its tags still name it.
+        conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
+        store::insert_batch(&mut conn, &[track("/new/1.mp3", "One", "A", "First")]).unwrap();
+        let new_id = store::id_for_path(&conn, "/new/1.mp3").unwrap().unwrap();
+
+        assert_eq!(reattach(&conn).unwrap(), 1);
+        let members = tracks(&conn, pl).unwrap();
+        assert_eq!(members[0].track_id, new_id);
+        assert_eq!(
+            member_path(&conn, members[0].member_id),
+            "/new/1.mp3",
+            "the tag match rewrites the path snapshot for next time"
+        );
+    }
+
+    #[test]
+    fn reattach_never_guesses_between_ambiguous_tags() {
+        let mut conn = seed();
+        let pl = create(&conn, "Mix", 100).unwrap();
+        add(&mut conn, pl, &[1], 100).unwrap();
+        conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
+        // Two candidates carry the snapshot's tags and neither sits at its
+        // path; picking one would be a coin flip, so neither is taken.
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/x/1.mp3", "One", "A", "First"),
+                track("/y/1.mp3", "One", "A", "First"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(reattach(&conn).unwrap(), 0);
+        assert!(ids(&conn, pl).unwrap().is_empty(), "the member stays a snapshot");
+        assert_eq!(tracks(&conn, pl).unwrap()[0].title, "One", "still readable");
+    }
+
+    #[test]
+    fn reattach_keeps_the_path_snapshot_current_across_renames() {
+        let mut conn = seed();
+        let pl = create(&conn, "Mix", 100).unwrap();
+        add(&mut conn, pl, &[1], 100).unwrap();
+
+        // A rename keeps the id, so the member never dangles; the refresh
+        // pass moves its path snapshot along so a later prune can still be
+        // matched back.
+        store::rename_within(&mut conn, Path::new("/m/1.mp3"), Path::new("/m/one.mp3")).unwrap();
+        assert_eq!(reattach(&conn).unwrap(), 0, "nothing dangles on a rename");
+        let member = tracks(&conn, pl).unwrap()[0].member_id;
+        assert_eq!(member_path(&conn, member), "/m/one.mp3");
+
+        conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/one.mp3", "One", "A", "First")]).unwrap();
+        let new_id = store::id_for_path(&conn, "/m/one.mp3").unwrap().unwrap();
+        assert_eq!(reattach(&conn).unwrap(), 1);
+        assert_eq!(ids(&conn, pl).unwrap(), [new_id], "the refreshed path relinks");
+    }
+
     #[test]
     fn snapshot_outlives_a_deleted_track() {
         let mut conn = seed();
@@ -750,6 +910,10 @@ mod tests {
 
         let rows = tracks(&conn, pl).unwrap();
         assert_eq!(rows[0].title, "One", "the snapshot keeps the row readable");
+        assert_eq!(
+            rows[0].path, "/m/1.mp3",
+            "and the snapshot path keeps the cover column resolvable"
+        );
         assert!(
             ids(&conn, pl).unwrap().is_empty(),
             "but a deleted track has no file to play"

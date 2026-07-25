@@ -5,6 +5,14 @@
 //! fixed tag re-buckets history with it; once the track is gone the
 //! snapshot keeps the row readable. Every stat is derived from these
 //! rows by SQL; nothing stores a counter as the source.
+//!
+//! Append-only covers the event itself: when it played and what the tags
+//! said then never change. The join back to the catalog is maintenance,
+//! not history: a prune kills the track id, and when the file returns
+//! under a fresh id [`reattach`] moves the events onto it by the path
+//! recorded at play time, so a track's play count survives its file
+//! leaving and coming back. The path column is that join hint, nothing a
+//! view shows.
 
 use std::collections::HashMap;
 
@@ -29,8 +37,58 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// The store ladder's snapshot-paths step, the listens half: events learn
+/// the path that played, the content key [`reattach`] matches on. Live
+/// rows backfill from the catalog; rows already dangling keep the empty
+/// default and rely on the tag fallback.
+pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE listens ADD COLUMN path TEXT NOT NULL DEFAULT '';
+         UPDATE listens SET path = COALESCE(
+             (SELECT t.path FROM tracks t
+              WHERE t.id = listens.track_id AND t.source = 'local'), '');",
+    )
+}
+
+/// Match events back to the catalog after a scan, the same maintenance
+/// [`crate::playlists::reattach`] runs for members: a pruned-and-returned
+/// file lands under a fresh id, and the events that played its old row
+/// relink to it - by the recorded path first, then by the tag snapshot
+/// when it names exactly one track. Events with a live track just keep
+/// their path current. The event itself (played_at, the tag snapshot)
+/// never changes. Returns how many events relinked.
+pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE listens SET path = t.path FROM tracks t
+         WHERE t.id = listens.track_id AND t.source = 'local'
+           AND listens.path <> t.path",
+        [],
+    )?;
+    let by_path = conn.execute(
+        "UPDATE listens SET track_id = t.id FROM tracks t
+         WHERE listens.path <> ''
+           AND t.source = 'local' AND t.path = listens.path
+           AND NOT EXISTS (SELECT 1 FROM tracks x WHERE x.id = listens.track_id)",
+        [],
+    )?;
+    let by_tags = conn.execute(
+        "UPDATE listens SET track_id = t.id, path = t.path FROM tracks t
+         WHERE NOT EXISTS (SELECT 1 FROM tracks x WHERE x.id = listens.track_id)
+           AND NOT (listens.title = '' AND listens.artist = '' AND listens.album = '')
+           AND t.source = 'local'
+           AND t.title = listens.title AND t.artist = listens.artist
+           AND t.album = listens.album
+           AND (SELECT COUNT(*) FROM tracks c WHERE c.source = 'local'
+                AND c.title = listens.title AND c.artist = listens.artist
+                AND c.album = listens.album) = 1",
+        [],
+    )?;
+    Ok(by_path + by_tags)
+}
+
 /// One listen as it lands: the track's identity, when the play began
-/// (unix seconds), and its tags at play time.
+/// (unix seconds), its tags at play time, and the path that played, the
+/// reattach key.
 pub struct Listen {
     pub track_id: i64,
     pub played_at: i64,
@@ -38,6 +96,7 @@ pub struct Listen {
     pub artist: String,
     pub album: String,
     pub genre: String,
+    pub path: String,
 }
 
 /// Build the listen for a playing path from the live catalog. Ok(None)
@@ -61,17 +120,18 @@ pub fn listen_for_path(
             artist: row.get(2)?,
             album: row.get(3)?,
             genre: row.get(4)?,
+            path: path.to_string(),
         })),
         None => Ok(None),
     }
 }
 
 /// Append one event row. Append-only: nothing ever updates or deletes a
-/// listen.
+/// listen; [`reattach`] only re-ties the track join.
 pub fn append(conn: &Connection, listen: &Listen) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
-        "INSERT INTO listens (track_id, played_at, title, artist, album, genre)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO listens (track_id, played_at, title, artist, album, genre, path)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
     stmt.execute(rusqlite::params![
         listen.track_id,
@@ -80,6 +140,7 @@ pub fn append(conn: &Connection, listen: &Listen) -> rusqlite::Result<()> {
         listen.artist,
         listen.album,
         listen.genre,
+        listen.path,
     ])?;
     Ok(())
 }
@@ -105,8 +166,9 @@ pub struct TrackPlays {
     pub codec: String,
     pub bitrate_kbps: u16,
     pub rating: u8,
-    /// The file path, for the cover column's thumbnail; empty once the track
-    /// is gone from the catalog.
+    /// The file path, for the cover column's thumbnail: the live catalog's
+    /// while the track exists, the snapshot's once it is gone, so a pruned
+    /// file whose bytes are still on disk keeps its cover.
     pub path: String,
 }
 
@@ -129,15 +191,15 @@ fn track_plays_row(row: &rusqlite::Row) -> rusqlite::Result<TrackPlays> {
     })
 }
 
-/// The tag columns of a listen read: title, artist, and album from the live
-/// catalog while the track exists, the snapshot once it is gone, then the
-/// album grouping and column metadata (and the file path) from the live
+/// The tag columns of a listen read: title, artist, album, and the file
+/// path from the live catalog while the track exists, the snapshot once it
+/// is gone, then the album grouping and column metadata from the live
 /// catalog only.
 const SNAPSHOT_COLUMNS: &str = "COALESCE(t.title, l.title),
      COALESCE(t.artist, l.artist), COALESCE(t.album, l.album),
      COALESCE(t.album_artist, ''), COALESCE(t.year, 0), COALESCE(t.genre, ''),
      COALESCE(t.duration_ms, 0), COALESCE(t.codec, ''), COALESCE(t.bitrate, 0),
-     COALESCE(t.rating, 0), COALESCE(t.path, '')";
+     COALESCE(t.rating, 0), COALESCE(t.path, l.path)";
 
 /// The newest events at or after `since` first, one row per event; 0
 /// reads them all.
@@ -437,6 +499,47 @@ mod tests {
     }
 
     #[test]
+    fn reattach_carries_history_to_a_returned_file() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "A", "First", "rock"),
+                // A second track keeps MAX(id) alive across the delete, so
+                // the returned file cannot just reuse its old rowid.
+                track("/m/2.mp3", "Two", "A", "First", "rock"),
+            ],
+        )
+        .unwrap();
+        listen(&conn, "/m/1.mp3", 100);
+        listen(&conn, "/m/1.mp3", 200);
+
+        // The file's row prunes and it comes back under a fresh id; its
+        // two plays must follow rather than restart at zero.
+        conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")])
+            .unwrap();
+        let new_id: i64 = conn
+            .query_row("SELECT id FROM tracks WHERE path = '/m/1.mp3'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_ne!(new_id, 1, "the returned file lands under a fresh id");
+
+        assert_eq!(reattach(&conn).unwrap(), 2);
+        let most = most_played(&conn, 10).unwrap();
+        assert_eq!((most[0].track_id, most[0].plays), (new_id, 2));
+        assert!(
+            never_played(&conn, 10)
+                .unwrap()
+                .iter()
+                .all(|t| t.track_id != new_id),
+            "the returned file is not a stranger to its own history"
+        );
+    }
+
+    #[test]
     fn snapshot_outlives_a_deleted_track() {
         let mut conn = Connection::open_in_memory().unwrap();
         store::init_schema(&conn).unwrap();
@@ -447,6 +550,10 @@ mod tests {
 
         let recent = recent(&conn, 0, 10).unwrap();
         assert_eq!(recent[0].title, "Gone", "the snapshot keeps the row readable");
+        assert_eq!(
+            recent[0].path, "/m/1.mp3",
+            "and the snapshot path keeps the cover column resolvable"
+        );
         let artists = rollup(&conn, Rollup::Artist, 0, 10).unwrap();
         assert_eq!(artists[0].name, "A");
     }

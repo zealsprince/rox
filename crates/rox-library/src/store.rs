@@ -21,10 +21,23 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
 /// converge, folding in every historical column probe; new schema changes
 /// append a clean forward step here rather than growing another probe. See
 /// [`crate::migrate`] for the versioning and downgrade policy.
-const MIGRATIONS: &[crate::migrate::Migration] = &[crate::migrate::Migration {
-    name: "baseline",
-    up: baseline,
-}];
+const MIGRATIONS: &[crate::migrate::Migration] = &[
+    crate::migrate::Migration {
+        name: "baseline",
+        up: baseline,
+    },
+    // Playlist members and listens snapshot the track's path beside its tags,
+    // the content key the post-scan reattach matches dangling rows back on
+    // when a pruned file returns under a fresh id. Backfilled from the live
+    // catalog so existing rows get the durability without a re-add.
+    crate::migrate::Migration {
+        name: "snapshot-paths",
+        up: |conn| {
+            crate::playlists::add_path_snapshot(conn)?;
+            crate::listens::add_path_snapshot(conn)
+        },
+    },
+];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     crate::migrate::run(conn, MIGRATIONS)
@@ -699,11 +712,51 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
 
         // A second open is a no-op: the baseline never re-probes a stamped file.
         init_schema(&conn).unwrap();
         assert_eq!(count(&conn).unwrap(), 1);
+    }
+
+    /// The snapshot-paths step backfills the new path columns from the live
+    /// catalog, so playlists and history made before the column carry the
+    /// reattach key without a re-add.
+    #[test]
+    fn snapshot_paths_backfill_from_the_live_catalog() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        // Stop the ladder at the baseline: the pre-step-2 shape, member and
+        // listen tables without a path column.
+        crate::migrate::run(&conn, &MIGRATIONS[..1]).unwrap();
+        insert_batch(&mut conn, &[row("/m/a/1.mp3", "X", "Album", 100)]).unwrap();
+        conn.execute(
+            "INSERT INTO playlists (name, created, updated) VALUES ('Mix', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position, title, artist, album)
+             VALUES (1, 1, 0, '', 'X', 'Album')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO listens (track_id, played_at, title, artist, album, genre)
+             VALUES (1, 100, '', 'X', 'Album', '')",
+            [],
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+
+        let member: String = conn
+            .query_row("SELECT path FROM playlist_tracks", [], |r| r.get(0))
+            .unwrap();
+        let listen: String = conn
+            .query_row("SELECT path FROM listens", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(member, "/m/a/1.mp3");
+        assert_eq!(listen, "/m/a/1.mp3");
     }
 
     #[test]

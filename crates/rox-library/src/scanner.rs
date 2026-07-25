@@ -130,6 +130,12 @@ pub fn scan(
     if !summary.aborted && std::fs::read_dir(root).is_ok() {
         summary.removed = store::prune_missing(conn, root, &present)?;
     }
+    // With the store squared against disk, match playlist members and listens
+    // whose track id died with an earlier prune back to files this pass
+    // brought back. One indexed sweep each; a pass with nothing dangling
+    // costs next to nothing.
+    crate::playlists::reattach(conn)?;
+    crate::listens::reattach(conn)?;
     Ok(summary)
 }
 
@@ -150,6 +156,11 @@ pub fn reindex(conn: &mut Connection, paths: &[PathBuf]) -> rusqlite::Result<usi
         .collect();
     if !rows.is_empty() {
         store::insert_batch(conn, &rows)?;
+        // A watched file coming back lands here as a fresh row; give any
+        // playlist members and listens still pointing at its old id the
+        // same reattach a full scan runs.
+        crate::playlists::reattach(conn)?;
+        crate::listens::reattach(conn)?;
     }
     Ok(rows.len())
 }

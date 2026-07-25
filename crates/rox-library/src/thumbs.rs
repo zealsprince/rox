@@ -1,10 +1,13 @@
 //! The artwork service's durable half per the components contract: 256px
 //! thumbnails generated once per cover and cached in a dedicated SQLite
-//! DB, keyed by file identity (path, mtime, size) so a changed file
-//! regenerates and an unchanged one never touches the audio file again.
-//! Tracks without art cache that answer too, so an artless album costs
-//! one cover search ever, not one per launch. Blocking file and DB work;
-//! run it off the UI thread.
+//! DB. A track's row is keyed by file identity (path, mtime, size) so a
+//! changed file regenerates and an unchanged one never touches the audio
+//! file again; the JPEG bytes live in a content-addressed pool shared by
+//! every track showing the same cover, so an album's twelve tracks (or
+//! the same cover copied across a discography) store one image and pay
+//! one decode, not twelve. Tracks without art cache that answer too, so
+//! an artless album costs one cover search ever, not one per launch.
+//! Blocking file and DB work; run it off the UI thread.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -31,17 +34,32 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     crate::migrate::run(&conn, MIGRATIONS)?;
+    // Track rows replaced since the last open (a changed cover re-keys the
+    // row to a new image) may have left their old image behind with nothing
+    // pointing at it; one sweep gives that disk back.
+    conn.execute(
+        "DELETE FROM images WHERE hash NOT IN
+             (SELECT art_hash FROM thumbs WHERE art_hash <> 0)",
+        [],
+    )?;
     Ok(conn)
 }
 
 /// The thumbnail cache's migration ladder. This is a cache, not a source of
 /// truth, so a future step that cannot cheaply ALTER through a shape change is
 /// free to drop and let the next scan regenerate, unlike the library store.
-/// For now step 1 is the baseline converge. See [`crate::migrate`].
-const MIGRATIONS: &[crate::migrate::Migration] = &[crate::migrate::Migration {
-    name: "baseline",
-    up: baseline,
-}];
+/// Step 1 is the baseline converge; step 2 pools the image bytes by content.
+/// See [`crate::migrate`].
+const MIGRATIONS: &[crate::migrate::Migration] = &[
+    crate::migrate::Migration {
+        name: "baseline",
+        up: baseline,
+    },
+    crate::migrate::Migration {
+        name: "dedup-images",
+        up: dedup_images,
+    },
+];
 
 /// The baseline cache schema, the whole thing as it stood before the version
 /// ladder. art_path/art_mtime/art_size pin the cover's own identity so a folder
@@ -76,6 +94,59 @@ fn baseline(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Step 2: the image bytes move out of the track rows into a pool keyed by
+/// content hash, so tracks sharing a cover share one row of JPEG instead of
+/// carrying a copy each. Existing thumbs are hashed and pooled in place -
+/// the encoder is deterministic, so byte-identical covers collapse - then
+/// the per-track blob column drops. (Migrated rows key on the encoded
+/// bytes, fresh ones on the source bytes; the two never need to agree, a
+/// row only has to find its own image, and a migrated row that invalidates
+/// re-keys onto the fresh scheme.)
+fn dedup_images(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS images (
+            hash  INTEGER PRIMARY KEY,
+            image BLOB NOT NULL
+        );
+        ALTER TABLE thumbs ADD COLUMN art_hash INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    // One streaming pass: pool each row's blob, remember which hash it got.
+    // Only (path, hash) pairs are held; the blobs stream through one at a
+    // time, so a big cache migrates without loading itself into memory.
+    let mut keyed: Vec<(String, i64)> = Vec::new();
+    {
+        let mut read = conn.prepare("SELECT path, image FROM thumbs WHERE length(image) > 0")?;
+        let mut pool = conn.prepare("INSERT OR IGNORE INTO images (hash, image) VALUES (?1, ?2)")?;
+        let mut rows = read.query([])?;
+        while let Some(row) = rows.next()? {
+            let path: String = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
+            let hash = content_hash(&blob);
+            pool.execute(rusqlite::params![hash, blob])?;
+            keyed.push((path, hash));
+        }
+    }
+    {
+        let mut set = conn.prepare("UPDATE thumbs SET art_hash = ?2 WHERE path = ?1")?;
+        for (path, hash) in keyed {
+            set.execute(rusqlite::params![path, hash])?;
+        }
+    }
+    conn.execute_batch("ALTER TABLE thumbs DROP COLUMN image;")?;
+    Ok(())
+}
+
+/// The pool key for one image's bytes: FNV-1a folded to a nonzero value,
+/// 0 staying free as a track row's no-art mark. A 64-bit content key over
+/// a library's covers has collision odds far below what a regeneratable
+/// cache needs to care about, at none of a cryptographic hash's cost.
+fn content_hash(bytes: &[u8]) -> i64 {
+    match crate::hash::fnv1a(bytes) {
+        0 => 1,
+        hash => hash as i64,
+    }
+}
+
 /// The (mtime, size) of a path, both zero when it will not stat. The cache
 /// keys art sources on this, so a changed cover reads as a fresh identity.
 fn identity_of(path: &Path) -> (i64, i64) {
@@ -94,10 +165,12 @@ fn identity_of(path: &Path) -> (i64, i64) {
 
 /// The thumbnail for one track: JPEG bytes, or None when the track has no
 /// art anywhere (or no longer stats). A hit is one point lookup; a miss
-/// reads the cover, downscales, and persists the result - the no-art
-/// answer stored as an empty blob - so the next request never opens the
-/// audio file. The connection is shared across workers; the lock is held
-/// for the lookups, never the decode.
+/// resolves the cover's bytes and checks the pool by their hash, so only
+/// the first sight of a cover pays the decode and re-encode - the rest of
+/// the album, and any other copy of the image, reuse the pooled row. The
+/// no-art answer is stored too, so the next request never opens the audio
+/// file. The connection is shared across workers; the lock is held for
+/// the lookups, never the file reads or the encode.
 pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
     let meta = std::fs::metadata(path).ok()?;
     let size = meta.len() as i64;
@@ -110,10 +183,11 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
     let key = path.to_string_lossy();
     {
         let conn = conn.lock().unwrap();
-        let cached: Option<(Vec<u8>, String, i64, i64)> = conn
+        let cached: Option<(String, i64, i64, Option<Vec<u8>>)> = conn
             .prepare_cached(
-                "SELECT image, art_path, art_mtime, art_size FROM thumbs \
-                 WHERE path = ?1 AND mtime = ?2 AND size = ?3",
+                "SELECT t.art_path, t.art_mtime, t.art_size, i.image
+                 FROM thumbs t LEFT JOIN images i ON i.hash = t.art_hash
+                 WHERE t.path = ?1 AND t.mtime = ?2 AND t.size = ?3",
             )
             .ok()?
             .query_row(rusqlite::params![key, mtime, size], |r| {
@@ -121,79 +195,112 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
             })
             .optional()
             .ok()?;
-        if let Some((bytes, art_path, art_mtime, art_size)) = cached {
+        if let Some((art_path, art_mtime, art_size, image)) = cached {
             // The audio file is unchanged; the row still holds only if the
             // cover it was built from is too. An embedded source (empty
             // art_path) rode the audio identity above and needs no re-stat.
+            // A no-art row references no image and an undecodable cover an
+            // empty one; both answer None.
             if art_path.is_empty()
                 || identity_of(Path::new(&art_path)) == (art_mtime, art_size)
             {
-                return (!bytes.is_empty()).then_some(bytes);
+                return image.filter(|bytes| !bytes.is_empty());
             }
         }
     }
-    let (thumb, art_path, art_mtime, art_size) = generate(path);
+    // A miss: resolve the cover source off the lock, then key its bytes.
+    let (art_hash, thumb, art_path, art_mtime, art_size) = match art::cover_art_source(path) {
+        Some((bytes, _mime, source)) => {
+            let hash = content_hash(&bytes);
+            // A cover seen before - the rest of this album, the same file
+            // in another folder - skips the decode and re-encode whole.
+            let pooled: Option<Vec<u8>> = {
+                let conn = conn.lock().unwrap();
+                let hit = conn
+                    .prepare_cached("SELECT image FROM images WHERE hash = ?1")
+                    .ok()?
+                    .query_row([hash], |r| r.get(0))
+                    .optional()
+                    .ok()?;
+                hit
+            };
+            let thumb = match pooled {
+                Some(image) => image,
+                None => {
+                    // First sight: encode off the lock, then pool the result.
+                    // Bytes that will not decode pool an empty image, so the
+                    // failure caches and dedups the same as a success.
+                    let encoded = encode(&bytes).unwrap_or_default();
+                    let conn = conn.lock().unwrap();
+                    conn.prepare_cached(
+                        "INSERT OR IGNORE INTO images (hash, image) VALUES (?1, ?2)",
+                    )
+                    .ok()?
+                    .execute(rusqlite::params![hash, encoded])
+                    .ok()?;
+                    encoded
+                }
+            };
+            let (art_path, art_mtime, art_size) = source_identity(&source);
+            (hash, thumb, art_path, art_mtime, art_size)
+        }
+        // No art: hash 0 references no pooled image, and the negative entry
+        // keys on the directory's identity, so a cover dropped in later
+        // bumps its mtime and forces a fresh look.
+        None => {
+            let (art_path, art_mtime, art_size) = no_art_identity(path);
+            (0, Vec::new(), art_path, art_mtime, art_size)
+        }
+    };
     let conn = conn.lock().unwrap();
     conn.prepare_cached(
         "INSERT OR REPLACE INTO thumbs \
-         (path, mtime, size, art_path, art_mtime, art_size, image) \
+         (path, mtime, size, art_path, art_mtime, art_size, art_hash) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )
     .ok()?
     .execute(rusqlite::params![
-        key,
-        mtime,
-        size,
-        art_path,
-        art_mtime,
-        art_size,
-        thumb.as_deref().unwrap_or_default()
+        key, mtime, size, art_path, art_mtime, art_size, art_hash
     ])
     .ok()?;
-    thumb
+    (!thumb.is_empty()).then_some(thumb)
 }
 
-/// Empty the store and give its disk back: every row deleted, then a
-/// VACUUM so the file shrinks instead of keeping the pages free.
-/// Thumbnails regenerate on demand. Blocking; run off the UI thread.
+/// Empty the store and give its disk back: every row and pooled image
+/// deleted, then a VACUUM so the file shrinks instead of keeping the
+/// pages free. Thumbnails regenerate on demand. Blocking; run off the
+/// UI thread.
 pub fn clear(conn: &Mutex<Connection>) {
     let conn = conn.lock().unwrap();
     let _ = conn.execute("DELETE FROM thumbs", []);
+    let _ = conn.execute("DELETE FROM images", []);
     let _ = conn.execute_batch("VACUUM;");
 }
 
-/// One cover into thumbnail form plus the cover's cache identity: decode,
-/// downscale to [`SIZE`] on the longest side, re-encode. The thumb is None
-/// when the track has no art or the art won't decode; the identity always
-/// comes back so the negative entry keys on the directory and a newly added
-/// cover invalidates it.
-///
-/// The identity is (art_path, art_mtime, art_size): empty path for embedded
-/// art (the audio file's own identity covers it), the cover file for folder
-/// art, the parent directory for no art at all.
-fn generate(path: &Path) -> (Option<Vec<u8>>, String, i64, i64) {
-    let (thumb, source) = match art::cover_art_source(path) {
-        Some((bytes, _mime, source)) => (encode(&bytes), Some(source)),
-        None => (None, None),
-    };
-    let (art_path, art_mtime, art_size) = match source {
-        Some(art::ArtSource::Embedded) => (String::new(), 0, 0),
-        Some(art::ArtSource::Folder(file)) => {
-            let (m, s) = identity_of(&file);
-            (file.to_string_lossy().into_owned(), m, s)
+/// A resolved cover's cache identity: empty path for embedded art (the
+/// audio file's own identity covers it), the cover file's identity for
+/// folder art.
+fn source_identity(source: &art::ArtSource) -> (String, i64, i64) {
+    match source {
+        art::ArtSource::Embedded => (String::new(), 0, 0),
+        art::ArtSource::Folder(file) => {
+            let (mtime, size) = identity_of(file);
+            (file.to_string_lossy().into_owned(), mtime, size)
         }
-        // No art: key the negative entry on the directory's identity, so a
-        // cover dropped in later bumps its mtime and forces a fresh look.
-        // Stored the same way it re-stats, so the two compare cleanly.
-        None => match path.parent() {
-            Some(dir) => {
-                let (m, s) = identity_of(dir);
-                (dir.to_string_lossy().into_owned(), m, s)
-            }
-            None => (String::new(), 0, 0),
-        },
-    };
-    (thumb, art_path, art_mtime, art_size)
+    }
+}
+
+/// The negative entry's identity for a track with no art anywhere: its
+/// parent directory, stored the same way it re-stats so the two compare
+/// cleanly.
+fn no_art_identity(path: &Path) -> (String, i64, i64) {
+    match path.parent() {
+        Some(dir) => {
+            let (mtime, size) = identity_of(dir);
+            (dir.to_string_lossy().into_owned(), mtime, size)
+        }
+        None => (String::new(), 0, 0),
+    }
 }
 
 /// One cover's bytes into a downscaled JPEG thumbnail. None when the bytes
@@ -216,6 +323,26 @@ fn encode(bytes: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn count(conn: &Mutex<Connection>, table: &str) -> i64 {
+        conn.lock()
+            .unwrap()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// A small real JPEG the thumbnail encoder accepts, its pixels seeded
+    /// so two calls with different seeds produce different files.
+    fn jpeg(side: u32, seed: u8) -> Vec<u8> {
+        let pixels: Vec<u8> = (0..side * side * 3)
+            .map(|i| (i as u8).wrapping_mul(7).wrapping_add(seed))
+            .collect();
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)
+            .encode(&pixels, side, side, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        out
+    }
 
     /// A cache written before the art_* columns must keep working: open()
     /// adds the columns in place, so an existing thumbnail still reads back
@@ -267,6 +394,116 @@ mod tests {
         assert_eq!(
             thumbnail(&conn, &track).as_deref(),
             Some(b"cached-cover".as_slice())
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pooling migration collapses byte-identical blobs to one image
+    /// row, re-keys every track row onto the pool, and drops the per-track
+    /// blob column.
+    #[test]
+    fn migration_pools_existing_duplicate_rows() {
+        let dir = std::env::temp_dir().join("rox-thumbs-pool-migrate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("thumbs.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE thumbs (
+                    path  TEXT PRIMARY KEY,
+                    mtime INTEGER NOT NULL,
+                    size  INTEGER NOT NULL,
+                    image BLOB NOT NULL
+                );",
+            )
+            .unwrap();
+            // Two tracks of one album sharing a cover, one track of another.
+            for (path, blob) in [
+                ("/m/a/1.mp3", b"cover-a".as_slice()),
+                ("/m/a/2.mp3", b"cover-a".as_slice()),
+                ("/m/b/1.mp3", b"cover-b".as_slice()),
+            ] {
+                conn.execute(
+                    "INSERT INTO thumbs (path, mtime, size, image) VALUES (?1, 1, 1, ?2)",
+                    rusqlite::params![path, blob],
+                )
+                .unwrap();
+            }
+        }
+
+        let conn = Mutex::new(open(&db).unwrap());
+        assert_eq!(count(&conn, "thumbs"), 3, "every track row survives");
+        assert_eq!(count(&conn, "images"), 2, "the shared cover pools to one");
+        let has_blob_column = conn
+            .lock()
+            .unwrap()
+            .prepare("SELECT 1 FROM pragma_table_info('thumbs') WHERE name = 'image'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(!has_blob_column, "the per-track blob column is gone");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tracks sharing a cover - the same album, or the same image copied
+    /// into another folder - pool one image row and all serve it.
+    #[test]
+    fn identical_covers_pool_one_image() {
+        let dir = std::env::temp_dir().join("rox-thumbs-pool");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let cover = jpeg(8, 1);
+        std::fs::write(a.join("cover.jpg"), &cover).unwrap();
+        std::fs::write(b.join("cover.jpg"), &cover).unwrap();
+        // Dummy audio: the tags will not read, so the folder cover answers.
+        for track in [a.join("1.mp3"), a.join("2.mp3"), b.join("1.mp3")] {
+            std::fs::write(track, b"not audio").unwrap();
+        }
+
+        let conn = Mutex::new(open(&dir.join("thumbs.db")).unwrap());
+        let first = thumbnail(&conn, &a.join("1.mp3")).expect("a thumbnail");
+        assert_eq!(thumbnail(&conn, &a.join("2.mp3")).as_ref(), Some(&first));
+        assert_eq!(thumbnail(&conn, &b.join("1.mp3")).as_ref(), Some(&first));
+        assert_eq!(count(&conn, "thumbs"), 3, "each track keeps its own row");
+        assert_eq!(count(&conn, "images"), 1, "one pooled image serves all three");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A changed folder cover regenerates under a new pool key, and the
+    /// image nothing references anymore is swept on the next open.
+    #[test]
+    fn changed_cover_regenerates_and_open_sweeps_orphans() {
+        let dir = std::env::temp_dir().join("rox-thumbs-sweep");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("thumbs.db");
+        std::fs::write(dir.join("cover.jpg"), jpeg(8, 1)).unwrap();
+        let track = dir.join("1.mp3");
+        std::fs::write(&track, b"not audio").unwrap();
+
+        let conn = Mutex::new(open(&db).unwrap());
+        let old = thumbnail(&conn, &track).expect("a thumbnail");
+
+        // A new cover with a different size, so the art identity misses
+        // even inside the same mtime second.
+        std::fs::write(dir.join("cover.jpg"), jpeg(16, 2)).unwrap();
+        let new = thumbnail(&conn, &track).expect("a regenerated thumbnail");
+        assert_ne!(old, new);
+        assert_eq!(count(&conn, "images"), 2, "the old image lingers orphaned");
+
+        drop(conn);
+        let conn = Mutex::new(open(&db).unwrap());
+        assert_eq!(count(&conn, "images"), 1, "reopening sweeps the orphan");
+        assert_eq!(
+            thumbnail(&conn, &track).as_ref(),
+            Some(&new),
+            "the live row still serves"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

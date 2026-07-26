@@ -29,7 +29,7 @@
              is_movable: context.is_movable,
              executor: context.executor.clone(),
              windows_version: context.windows_version,
-@@ -755,6 +757,41 @@
+@@ -755,6 +757,82 @@
              .ok();
      }
  
@@ -44,18 +44,59 @@
 +            return;
 +        }
 +        self.0.hide_title_bar.set(hide);
-+        unsafe {
-+            SetWindowPos(
-+                self.0.hwnd,
-+                None,
-+                0,
-+                0,
-+                0,
-+                0,
-+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-+            )
-+        }
-+        .log_err();
++        let hwnd = self.0.hwnd;
++        // Deferred to the executor, the way gpui's own toggle_fullscreen is:
++        // request_decorations runs inside a window update, and the frame change
++        // forces a WM_SIZE that Windows dispatches synchronously, whose resize
++        // callback re-enters that update and panics. On its own tick it settles
++        // safely. Re-passing the current outer size without SWP_NOSIZE is what
++        // makes Windows emit that WM_SIZE: the caption came or went, so the
++        // client area changed, and without the resize the reclaimed strip is
++        // left as a transparent gap until the next real resize.
++        self.0
++            .executor
++            .spawn(async move {
++                let mut rect = RECT::default();
++                unsafe {
++                    GetWindowRect(hwnd, &mut rect).log_err();
++                    SetWindowPos(
++                        hwnd,
++                        None,
++                        0,
++                        0,
++                        rect.right - rect.left,
++                        rect.bottom - rect.top,
++                        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
++                    )
++                    .log_err();
++                }
++            })
++            .detach();
++    }
++
++    fn start_window_move(&self) {
++        // gpui leaves this a no-op on Windows, so the app's drag grips never
++        // moved the window. Deferred to the executor: this runs inside the
++        // mouse-down update, and the OS move loop pumps WM_MOVE whose moved
++        // callback re-enters that update. On its own tick the drag runs clear.
++        // ReleaseCapture hands off gpui's click capture; WM_NCLBUTTONDOWN with
++        // HTCAPTION starts the OS move as if the title bar were grabbed, and it
++        // follows the mouse until the button lifts.
++        let hwnd = self.0.hwnd;
++        self.0
++            .executor
++            .spawn(async move {
++                unsafe {
++                    ReleaseCapture().log_err();
++                    SendMessageW(
++                        hwnd,
++                        WM_NCLBUTTONDOWN,
++                        Some(WPARAM(HTCAPTION as usize)),
++                        None,
++                    );
++                }
++            })
++            .detach();
 +    }
 +
 +    fn window_decorations(&self) -> Decorations {
@@ -100,3 +141,23 @@
              // If the OS draws the title bar, we don't need to handle hit test messages.
              return None;
          }
+--- a/src/platform/windows/util.rs
++++ b/src/platform/windows/util.rs
+@@ -117,6 +117,7 @@
+     static HAND: OnceLock<SafeCursor> = OnceLock::new();
+     static SIZEWE: OnceLock<SafeCursor> = OnceLock::new();
+     static SIZENS: OnceLock<SafeCursor> = OnceLock::new();
++    static SIZEALL: OnceLock<SafeCursor> = OnceLock::new();
+     static NO: OnceLock<SafeCursor> = OnceLock::new();
+     let (lock, name) = match style {
+         CursorStyle::IBeam | CursorStyle::IBeamCursorForVerticalLayout => (&IBEAM, IDC_IBEAM),
+@@ -130,6 +131,9 @@
+         | CursorStyle::ResizeDown
+         | CursorStyle::ResizeUpDown
+         | CursorStyle::ResizeRow => (&SIZENS, IDC_SIZENS),
++        // rox patch: Windows has no open-hand grab cursor; the four-way move
++        // cursor is its convention for a drag-to-move grip (the drag anchor).
++        CursorStyle::OpenHand | CursorStyle::ClosedHand => (&SIZEALL, IDC_SIZEALL),
+         CursorStyle::OperationNotAllowed => (&NO, IDC_NO),
+         CursorStyle::None => return None,
+         _ => (&ARROW, IDC_ARROW),

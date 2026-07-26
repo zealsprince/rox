@@ -1,0 +1,85 @@
+--- a/src/platform/mac/window.rs
++++ b/src/platform/mac/window.rs
+@@ -1376,6 +1376,82 @@
+         }
+     }
+ 
++    // rox patch: gpui 0.2.2 ships no macOS request_decorations, so the app's
++    // hide-decorations toggle never reached the window. Client hides the
++    // native chrome (full-height transparent titlebar, hidden title and
++    // traffic lights) so the app can draw its own controls; Server restores
++    // the standard titlebar. The window keeps NSTitledWindowMask either way,
++    // so it holds its shadow, rounded corners, and key-window behaviour - only
++    // the visible decoration comes and goes. The lock is dropped around the
++    // AppKit calls: changing the style mask can fire a resize delegate that
++    // re-locks the same mutex.
++    fn request_decorations(&self, decorations: crate::WindowDecorations) {
++        let client = matches!(decorations, crate::WindowDecorations::Client);
++        let window = self.0.lock().native_window;
++        unsafe {
++            let mut mask: NSWindowStyleMask = window.styleMask();
++            if client {
++                mask |= NSWindowStyleMask::NSFullSizeContentViewWindowMask;
++            } else {
++                mask &= !NSWindowStyleMask::NSFullSizeContentViewWindowMask;
++            }
++            let _: () = msg_send![window, setStyleMask: mask];
++            window.setTitlebarAppearsTransparent_(client as BOOL);
++            window.setTitleVisibility_(if client {
++                NSWindowTitleVisibility::NSWindowTitleHidden
++            } else {
++                NSWindowTitleVisibility::NSWindowTitleVisible
++            });
++            for button in [
++                NSWindowButton::NSWindowCloseButton,
++                NSWindowButton::NSWindowMiniaturizeButton,
++                NSWindowButton::NSWindowZoomButton,
++            ] {
++                let native_button: id = msg_send![window, standardWindowButton: button];
++                let _: () = msg_send![native_button, setHidden: client as BOOL];
++            }
++        }
++        let mut lock = self.0.lock();
++        lock.transparent_titlebar = client;
++        lock.move_traffic_light();
++    }
++
++    fn window_decorations(&self) -> crate::Decorations {
++        if self.0.lock().transparent_titlebar {
++            crate::Decorations::Client {
++                tiling: crate::Tiling::default(),
++            }
++        } else {
++            crate::Decorations::Server
++        }
++    }
++
++    // rox patch: gpui leaves this a no-op on macOS, so the app's drag grips
++    // showed the grab cursor but never moved the window. Hand the current
++    // mouse-down event to AppKit's own window drag. Deferred to the executor,
++    // the way gpui's own zoom is: this runs inside the mouse-down update, and
++    // the drag loop pumps windowDidMove whose callback re-enters that update.
++    // The event is retained so it outlives the current autorelease pool, then
++    // released once the drag returns. No-op if there's no current mouse event.
++    fn start_window_move(&self) {
++        let this = self.0.lock();
++        let window = this.native_window;
++        unsafe {
++            let app = NSApplication::sharedApplication(nil);
++            let event: id = msg_send![app, currentEvent];
++            if event == nil {
++                return;
++            }
++            let _: id = msg_send![event, retain];
++            this.executor
++                .spawn(async move {
++                    let _: () = msg_send![window, performWindowDragWithEvent: event];
++                    let _: () = msg_send![event, release];
++                })
++                .detach();
++        }
++    }
++
+     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+         self.0.as_ref().lock().request_frame_callback = Some(callback);
+     }

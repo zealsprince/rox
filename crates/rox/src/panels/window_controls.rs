@@ -197,15 +197,27 @@ impl WindowControlsPanel {
                 ControlStyle::Icons => d
                     .gap(tokens::SPACE_XS)
                     .child(icon_button(icons::MINUS, |_, w, _| w.minimize_window()))
-                    .child(icon_button(icons::STOP, |_, w, _| w.zoom_window()))
+                    .child(icon_button(icons::STOP, maximize))
                     .child(icon_button(icons::CLOSE, cx.listener(close))),
                 // macOS order: close, minimize, zoom.
                 ControlStyle::Traffic => d
                     .gap(tokens::SPACE_SM)
                     .child(traffic_light(TRAFFIC_CLOSE, cx.listener(close)))
                     .child(traffic_light(TRAFFIC_MIN, |_, w, _| w.minimize_window()))
-                    .child(traffic_light(TRAFFIC_ZOOM, |_, w, _| w.zoom_window())),
+                    .child(traffic_light(TRAFFIC_ZOOM, maximize)),
             })
+    }
+}
+
+/// The maximize control. On macOS it matches the native green button: native
+/// fullscreen (its own Space, honoring the user's Mission Control setup) by
+/// default, and zoom - fill the screen in place - on Option-click. Everywhere
+/// else it just maximizes.
+fn maximize(event: &MouseDownEvent, window: &mut Window, _: &mut App) {
+    if cfg!(target_os = "macos") && !event.modifiers.alt {
+        window.toggle_fullscreen();
+    } else {
+        window.zoom_window();
     }
 }
 

@@ -1,0 +1,102 @@
+--- a/src/platform/windows/window.rs
++++ b/src/platform/windows/window.rs
+@@ -1,7 +1,7 @@
+ #![deny(unsafe_op_in_unsafe_fn)]
+ 
+ use std::{
+-    cell::RefCell,
++    cell::{Cell, RefCell},
+     num::NonZeroIsize,
+     path::PathBuf,
+     rc::{Rc, Weak},
+@@ -67,7 +67,9 @@
+     pub(crate) state: RefCell<WindowsWindowState>,
+     pub(crate) system_settings: RefCell<WindowsSystemSettings>,
+     pub(crate) handle: AnyWindowHandle,
+-    pub(crate) hide_title_bar: bool,
++    // rox patch: Cell so request_decorations can flip the caption at runtime;
++    // gpui 0.2.2 fixed it at creation and shipped no Windows toggle.
++    pub(crate) hide_title_bar: Cell<bool>,
+     pub(crate) is_movable: bool,
+     pub(crate) executor: ForegroundExecutor,
+     pub(crate) windows_version: WindowsVersion,
+@@ -224,7 +226,7 @@
+             drop_target_helper: context.drop_target_helper.clone(),
+             state,
+             handle: context.handle,
+-            hide_title_bar: context.hide_title_bar,
++            hide_title_bar: Cell::new(context.hide_title_bar),
+             is_movable: context.is_movable,
+             executor: context.executor.clone(),
+             windows_version: context.windows_version,
+@@ -755,6 +757,41 @@
+             .ok();
+     }
+ 
++    // rox patch: gpui 0.2.2 has no Windows implementation, so the app's
++    // hide-decorations toggle never reached the caption. Flip the live
++    // hide_title_bar flag and re-run WM_NCCALCSIZE via SWP_FRAMECHANGED so the
++    // OS caption is stripped (Client) or restored (Server) in place, without
++    // reopening the window.
++    fn request_decorations(&self, decorations: WindowDecorations) {
++        let hide = matches!(decorations, WindowDecorations::Client);
++        if self.0.hide_title_bar.get() == hide {
++            return;
++        }
++        self.0.hide_title_bar.set(hide);
++        unsafe {
++            SetWindowPos(
++                self.0.hwnd,
++                None,
++                0,
++                0,
++                0,
++                0,
++                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
++            )
++        }
++        .log_err();
++    }
++
++    fn window_decorations(&self) -> Decorations {
++        if self.0.hide_title_bar.get() {
++            Decorations::Client {
++                tiling: Tiling::default(),
++            }
++        } else {
++            Decorations::Server
++        }
++    }
++
+     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
+         let hwnd = self.0.hwnd;
+ 
+--- a/src/platform/windows/events.rs
++++ b/src/platform/windows/events.rs
+@@ -702,7 +702,7 @@
+         wparam: WPARAM,
+         lparam: LPARAM,
+     ) -> Option<isize> {
+-        if !self.hide_title_bar || self.state.borrow().is_fullscreen() || wparam.0 == 0 {
++        if !self.hide_title_bar.get() || self.state.borrow().is_fullscreen() || wparam.0 == 0 {
+             return None;
+         }
+ 
+@@ -764,7 +764,7 @@
+     }
+ 
+     fn handle_create_msg(&self, handle: HWND) -> Option<isize> {
+-        if self.hide_title_bar {
++        if self.hide_title_bar.get() {
+             notify_frame_changed(handle);
+             Some(0)
+         } else {
+@@ -881,7 +881,7 @@
+             drop(lock);
+         }
+ 
+-        if !self.hide_title_bar {
++        if !self.hide_title_bar.get() {
+             // If the OS draws the title bar, we don't need to handle hit test messages.
+             return None;
+         }

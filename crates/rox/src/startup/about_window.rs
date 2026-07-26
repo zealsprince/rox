@@ -7,8 +7,9 @@
 
 use gpui::{
     div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, Div, Global, MouseButton,
-    SharedString, Subscription, Window, WindowHandle,
+    ScrollHandle, SharedString, Subscription, Window, WindowHandle,
 };
+use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::Root;
 
 use crate::assets::icons;
@@ -46,7 +47,12 @@ pub fn open(state: AppState, cx: &mut App) {
             return;
         }
     }
-    let bounds = Bounds::centered(None, size(px(820.), px(240.)), cx);
+    // Size the fixed window against the current font. The page is one set
+    // shape at the stock 16px rem; a larger app font grows the rem-based text
+    // past the 820x240 it was tuned at and strands the tail of the copy
+    // offscreen. Growing the bounds with the text keeps the whole page in view.
+    let scale = palette::font_scale();
+    let bounds = Bounds::centered(None, size(px(820. * scale), px(240. * scale)), cx);
     let handle = crate::panel::open_fixed_window(cx, "rox - About", bounds, move |_window, cx| {
         cx.new(|cx| AboutWindow::new(state, cx))
     });
@@ -92,6 +98,10 @@ struct AboutWindow {
     backdrop: WindowBackdrop,
     /// The update check, the status line's subject.
     update_check: UpdateCheck,
+    /// The page scrolls as a fallback: the window sizes itself to the font,
+    /// but a large enough font still outgrows the fixed titlebar and padding,
+    /// so this keeps the tail of the copy reachable instead of clipped.
+    scroll: ScrollHandle,
     /// This window pumps its own frames, so the backdrop needs its own
     /// wake on a new bake.
     _backdrop_changed: Subscription,
@@ -104,6 +114,7 @@ impl AboutWindow {
             state,
             backdrop: WindowBackdrop::default(),
             update_check: UpdateCheck::from_cache(&Settings::load()),
+            scroll: ScrollHandle::new(),
             _backdrop_changed,
         }
     }
@@ -277,7 +288,10 @@ impl Render for AboutWindow {
                 .child(
                     svg()
                         .path(icons::LOGO)
-                        .size(px(192.))
+                        // The logo is fixed px, not rem, so it holds while the
+                        // copy beside it grows with the font. Track the app
+                        // scale so it keeps pace and the balance holds.
+                        .size(px(192. * palette::font_scale()))
                         .flex_none()
                         .text_color(palette::text_bright()),
                 )
@@ -299,13 +313,27 @@ impl Render for AboutWindow {
                     div()
                         .flex_1()
                         .min_h_0()
+                        .relative()
                         // The page's own surface over the backdrop, the same
                         // one the settings pages sit on: opaque at full
                         // surface opacity, so the art only reads through as
                         // the surfaces thin, never straight under the copy.
                         .bg(palette::bg_elevated())
-                        .p(tokens::SPACE_MD)
-                        .child(page),
+                        .child(
+                            div()
+                                .id("about-page")
+                                .size_full()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll)
+                                .p(tokens::SPACE_MD)
+                                .child(page),
+                        )
+                        // The scrollbar rides over the page, the same overlay
+                        // the settings pages use: it only bites when a large
+                        // font pushes the copy past the window.
+                        .child(div().absolute().inset_0().child(
+                            Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
+                        )),
                 )
                 .into_any_element()
         })

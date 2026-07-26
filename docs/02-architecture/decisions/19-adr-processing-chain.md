@@ -1,6 +1,6 @@
 # ADR 19: Processing chain on the decode thread, output modes behind the backend seam
 
-**Status:** Proposed
+**Status:** Accepted
 
 Decision: audio processing runs on the decode thread, after the stereo fold and
 resample, immediately before the push into the sample ring, in two parts. Per-source
@@ -48,7 +48,8 @@ and the resampler is a passthrough at equal rates. That leaves the callback's vo
 multiply, the one-node chain that predates this ADR. It stays in the callback: volume
 must respond instantly, and a chain-side volume would lag by ring depth, up to 500 ms.
 Instead, unity short-circuits, at `volume == 1.0` the callback skips the multiply
-entirely. So the honest claim is: chain off, volume at 100%, device rate equal to
+entirely; that skip is new work this ADR adds, today the multiply always runs. So the
+honest claim is: chain off, volume at 100%, device rate equal to
 source rate, and the device receives bit-identical samples. The UI states those three
 conditions truthfully rather than showing a decoration; ReplayGain on is processing on
 and reads as such.
@@ -60,7 +61,9 @@ processes the mix, so an EQ shapes the fade like anything else. Which boundaries
 is adjacency the engine can already see: entries carry the group metadata
 [ADR 17](17-adr-queue-continuation.md) introduced, same group means the gapless splice
 untouched, different or absent group means fade, and a manual skip always fades since
-it arrives as a command. The position clock flips inside the fade window: the new
+it arrives as a command. ADR 17 decided that field but the engine's queue entries do
+not carry it yet; plumbing it through is a prerequisite for crossfade, not part of this
+ADR. The position clock flips inside the fade window: the new
 track's segment registers at the fade midpoint, the frame the mix crosses half, so
 MPRIS and the panels never announce a track before it is audible. The midpoint is a
 constant to tune at implementation; the principle, one flip inside the window, is
@@ -108,7 +111,9 @@ drags platform quirk surface (device claim failures, format negotiation) into th
 support burden.
 
 Open: whether the ring shortens while a chain editor is in the foreground to tighten
-parameter latency, decided if the 500 ms lag annoys in practice. The exact fade curve
+parameter latency, decided if the 500 ms lag annoys in practice; expect it to, half a
+second between slider and ear is well past where adjusting by ear feels connected, so
+this likely becomes real work when the EQ editor lands. The exact fade curve
 and the midpoint constant. Whether exclusive mode on Linux targets the ALSA device
 directly or through PipeWire's pro-audio profile, decided at implementation against
 what devices actually expose.

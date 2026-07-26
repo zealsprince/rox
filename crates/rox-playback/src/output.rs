@@ -108,8 +108,14 @@ where
                 frame.fill(T::from_sample(0.0f32));
                 continue;
             }
-            let l = ring.pop().unwrap() * volume;
-            let r = ring.pop().unwrap() * volume;
+            // Unity short-circuits (ADR 19's bypass rule): at volume 1.0 the
+            // samples pass through untouched, so chain off + volume at 100% +
+            // equal rates delivers the decoder's output bit-identically.
+            let (l, r) = if volume == 1.0 {
+                (ring.pop().unwrap(), ring.pop().unwrap())
+            } else {
+                (ring.pop().unwrap() * volume, ring.pop().unwrap() * volume)
+            };
 
             // Lossy PCM tap: if the visualizer side is behind, drop, never
             // wait. Push L and R together or not at all, so a single free

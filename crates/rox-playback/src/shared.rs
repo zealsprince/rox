@@ -35,6 +35,12 @@ pub struct QueueEntry {
     /// than the path, so a file that sits in the order more than once resolves
     /// to the right occurrence instead of the first one by path.
     pub idx: usize,
+    /// The album group this entry belongs to (ADR 17), supplied by the player
+    /// at insert time; the engine only ever compares ids. Adjacent entries
+    /// sharing a group are tracks that belong together: album shuffle keeps
+    /// them as a unit, and the crossfade boundary rule (ADR 19) leaves their
+    /// gapless splice untouched. None means ungrouped.
+    pub group: Option<u64>,
 }
 
 /// The play queue published for the UI: the whole timeline in play order and

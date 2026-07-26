@@ -493,6 +493,25 @@ pub fn paths_for(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<String>
     Ok(out)
 }
 
+/// Resolve a playable path to its album group id
+/// ([`crate::hash::album_group`]), the player's insert-time lookup. Ok(None)
+/// when the path is not in the library or the track has no album tag;
+/// ungrouped entries never claim album adjacency.
+pub fn group_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<u64>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT album_artist, album FROM tracks WHERE source = 'local' AND path = ?1",
+    )?;
+    let mut rows = stmt.query([path])?;
+    match rows.next()? {
+        Some(row) => {
+            let album_artist: String = row.get(0)?;
+            let album: String = row.get(1)?;
+            Ok(crate::hash::album_group(&album_artist, &album))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Resolve a playable path to its track id, for marking the playing row.
 /// Ok(None) when the path is not in the library.
 pub fn id_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<i64>> {

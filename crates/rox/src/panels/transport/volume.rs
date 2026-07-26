@@ -393,8 +393,12 @@ impl VolumePanel {
             .when(self.config.percent, |d| {
                 d.child(
                     div()
-                        .w(px(40.))
+                        // Track the font: at the stock size 40px holds "100%",
+                        // but a larger app font overruns it and drops the % to
+                        // a second line. Scale with the text and never wrap.
+                        .w(px(40.) * palette::row_scale())
                         .flex_none()
+                        .whitespace_nowrap()
                         .text_center()
                         .text_color(palette::text_muted())
                         .child(format!("{percent}%")),

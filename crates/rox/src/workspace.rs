@@ -347,6 +347,9 @@ actions!(
         OpenStats,
         OpenQuickPlay,
         FocusSearch,
+        IncreaseFontSize,
+        DecreaseFontSize,
+        ResetFontSize,
         Quit
     ]
 );
@@ -396,6 +399,17 @@ pub fn init(cx: &mut App) {
     } else {
         "ctrl-l"
     };
+    // Text-zoom chords, the browser's font shortcuts: Cmd/Ctrl with the +/-
+    // keys steps the app font size up and down, and 0 snaps it back to the
+    // stock size. The `=` key doubles for `+` so it works without reaching
+    // for shift, the way every browser binds it. Bound unscoped so they carry
+    // across every window - settings, about, popped-out panels - like Quit;
+    // the modifiers keep them out of the search boxes' typing.
+    let (zoom_in, zoom_in_shift, zoom_out, zoom_reset) = if cfg!(target_os = "macos") {
+        ("cmd-=", "cmd-+", "cmd--", "cmd-0")
+    } else {
+        ("ctrl-=", "ctrl-+", "ctrl--", "ctrl-0")
+    };
     cx.bind_keys([
         KeyBinding::new("space", TogglePlayback, PLAYBACK_KEY_SCOPE),
         KeyBinding::new("left", SeekBackward, PLAYBACK_KEY_SCOPE),
@@ -406,6 +420,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(quick_play_p, OpenQuickPlay, Some("Workspace")),
         KeyBinding::new(quick_play_f, OpenQuickPlay, Some("Workspace")),
         KeyBinding::new(focus_search_keys, FocusSearch, Some("Workspace")),
+        KeyBinding::new(zoom_in, IncreaseFontSize, None),
+        KeyBinding::new(zoom_in_shift, IncreaseFontSize, None),
+        KeyBinding::new(zoom_out, DecreaseFontSize, None),
+        KeyBinding::new(zoom_reset, ResetFontSize, None),
         // Fullscreens the last-clicked panel group over the whole dock
         // area; the same chord or a plain escape backs out. Shift keeps
         // it off the search boxes' bare-escape ladder. This is the dock's
@@ -423,6 +441,38 @@ pub fn init(cx: &mut App) {
     // panels); workspace windows persist their layout first via their own
     // handler, which stops the action before it gets here.
     cx.on_action(|_: &Quit, cx| cx.quit());
+    // The zoom chords are app-wide, so they hang off global handlers rather
+    // than any one window's view: whichever window has focus dispatches, and
+    // the size setter repaints them all.
+    cx.on_action(|_: &IncreaseFontSize, cx| nudge_font_size(1.0, cx));
+    cx.on_action(|_: &DecreaseFontSize, cx| nudge_font_size(-1.0, cx));
+    cx.on_action(|_: &ResetFontSize, cx| set_font_size(palette::FONT_SIZE_DEFAULT, cx));
+}
+
+/// Nudge the app font size by `delta` px from where it stands.
+fn nudge_font_size(delta: f32, cx: &mut App) {
+    set_font_size(palette::app_font_size() + delta, cx);
+}
+
+/// Set the app font size and persist it. The live setter clamps to the
+/// palette's range and repaints every window; the settings write keeps the
+/// new size across launches, the same pair the settings slider drives. A
+/// user-level readability choice, so it lives on `Settings` directly and
+/// rides out workspace switches, like the theme pick.
+fn set_font_size(size: f32, cx: &mut App) {
+    let size = size.clamp(palette::FONT_SIZE_MIN, palette::FONT_SIZE_MAX);
+    palette::set_app_font_size(size, cx);
+    Settings::update(move |s| s.app_font_size = size);
+    // The setter's repaint loop reaches every window but the one dispatching
+    // this action: we're mid-update inside it, so its re-entrant refresh is
+    // dropped and the resize would sit until the next input event. Defer a
+    // second pass that runs once this update has finished, so the focused
+    // window wakes now too.
+    cx.defer(|cx| {
+        for window in cx.windows() {
+            window.update(cx, |_, window, _| window.refresh()).ok();
+        }
+    });
 }
 
 /// Teach the dock's registry to rebuild every panel type from a layout

@@ -105,7 +105,6 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     palette::set_keep_theme(a.keep_theme, cx);
     palette::set_art_theming(a.art_theming, cx);
     settings::set_app_font(a.app_font.clone(), cx);
-    palette::set_app_font_size(a.app_font_size, cx);
     settings::set_rating_style(a.rating_style, cx);
     settings::set_hide_menubar(a.hide_menubar, cx);
     settings::set_os_decorations(a.os_decorations);

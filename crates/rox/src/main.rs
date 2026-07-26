@@ -174,6 +174,13 @@ fn open_workspace_window(
         window_decorations: Some(settings::window_decorations()),
         titlebar: Some(TitlebarOptions {
             title: Some(SharedString::from("rox")),
+            // On Windows the caption is driven by this creation-time flag, not
+            // the window_decorations option below (which is a no-op there until
+            // our gpui patch's request_decorations kicks in post-open). Opening
+            // in the right state avoids a caption flash on a hidden-chrome
+            // window. Linux ignores appears_transparent, and macOS keeps its own
+            // chrome, so only derive it on Windows.
+            appears_transparent: cfg!(target_os = "windows") && !settings::os_decorations(),
             ..Default::default()
         }),
         app_id: Some(APP_ID.into()),

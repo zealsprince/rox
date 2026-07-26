@@ -13,8 +13,9 @@ use std::time::Duration;
 
 use gpui::{Context, Entity, SharedString, Subscription, Task};
 
+use rox_library::store;
 use rox_playback::cpal::Stream;
-use rox_playback::engine::{self, Cmd, LoopMode};
+use rox_playback::engine::{self, Cmd, LoopMode, StartQueue};
 use rox_playback::output;
 use rox_playback::rtrb::Consumer;
 use rox_playback::shared::{QueueEntry, QueueSnapshot, Shared};
@@ -42,15 +43,13 @@ struct Session {
 
 impl Session {
     fn start(
-        queue: Vec<PathBuf>,
-        start: usize,
+        queue: StartQueue,
         volume: f32,
         loop_mode: LoopMode,
         shuffle: Option<bool>,
         paused_at: Option<f64>,
-        explicit: Vec<bool>,
     ) -> Result<Session, String> {
-        let shared = Arc::new(Shared::new(queue.len()));
+        let shared = Arc::new(Shared::new(queue.paths.len()));
         // Seed the session with the persisted playback state: volume lands
         // in the shared atomics before the stream opens, the loop and
         // shuffle modes queue on the channel so the engine picks them up
@@ -77,15 +76,8 @@ impl Session {
             let _ = tx.send(Cmd::Seek(secs));
             let _ = tx.send(Cmd::TogglePause);
         }
-        let engine = engine::Engine::new(
-            queue.clone(),
-            start,
-            shared.clone(),
-            out.producer,
-            device_rate,
-            rx,
-            explicit,
-        );
+        let paths = queue.paths.clone();
+        let engine = engine::Engine::new(queue, shared.clone(), out.producer, device_rate, rx);
         std::thread::Builder::new()
             .name("decode".into())
             .spawn(move || engine.run())
@@ -96,7 +88,7 @@ impl Session {
             tap: out.tap,
             _stream: out.stream,
             device_rate,
-            queue,
+            queue: paths,
         })
     }
 }
@@ -159,6 +151,12 @@ pub struct Player {
     /// Debounce generation for the volume persist; only the last edit in a
     /// burst writes the settings file. See [`Self::persist_volume_soon`].
     persist_gen: u64,
+    /// Read connection to the library for the insert-time album group lookup
+    /// (ADR 17): the engine sees bare paths, so the player resolves each
+    /// path's group here before handing it over. Opened lazily on the first
+    /// play; WAL keeps it current alongside the catalog's connections. None
+    /// until then, or when the library has no database.
+    group_conn: Option<rox_library::rusqlite::Connection>,
 }
 
 impl Player {
@@ -170,7 +168,28 @@ impl Player {
             settings: Settings::load(),
             pump: None,
             persist_gen: 0,
+            group_conn: None,
         }
+    }
+
+    /// The album group per path, for the engine's queue entries. Unknown
+    /// paths and untagged tracks resolve to None; a missing database means
+    /// everything does, and playback carries on ungrouped.
+    fn groups_for(&mut self, paths: &[PathBuf]) -> Vec<Option<u64>> {
+        if self.group_conn.is_none() {
+            let db = crate::settings::data_dir().join("library.db");
+            self.group_conn = db.exists().then(|| store::open(&db).ok()).flatten();
+        }
+        let Some(conn) = self.group_conn.as_ref() else {
+            return vec![None; paths.len()];
+        };
+        paths
+            .iter()
+            .map(|p| {
+                p.to_str()
+                    .and_then(|s| store::group_for_path(conn, s).ok().flatten())
+            })
+            .collect()
     }
 
     /// The audio feed the audio views read from.
@@ -400,14 +419,20 @@ impl Player {
         if paths.is_empty() {
             return;
         }
-        let Some(session) = self.session.as_mut() else {
+        if self.session.is_none() {
             self.play(paths, cx);
+            return;
+        }
+        // Group lookup before the session borrow; both want &mut self.
+        let groups = self.groups_for(&paths);
+        let Some(session) = self.session.as_mut() else {
             return;
         };
         session.queue.extend(paths.iter().cloned());
         let _ = session.tx.send(Cmd::Insert {
             after,
             paths,
+            groups,
             explicit: true,
             and_play,
         });
@@ -483,6 +508,9 @@ impl Player {
         // Remember what to prime the feed with so a frozen panel gets a real
         // frame at the load position instead of blank bars.
         let prime = paused_at.map(|secs| (queue[start].clone(), secs.max(0.0)));
+        // Album groups for the whole context (ADR 17). A restore re-derives
+        // them here too, so they never need persisting with the queue.
+        let groups = self.groups_for(&queue);
         self.session = None;
         // A fresh context takes the current shuffle mode; a restore preserves
         // the saved order and passes None so the engine leaves it untouched.
@@ -492,13 +520,16 @@ impl Player {
             Some(self.settings.shuffle)
         };
         match Session::start(
-            queue,
-            start,
+            StartQueue {
+                paths: queue,
+                start,
+                explicit,
+                groups,
+            },
             self.effective_volume(),
             self.settings.loop_mode(),
             shuffle,
             paused_at,
-            explicit,
         ) {
             Ok(session) => {
                 self.feed.set_sample_rate(session.device_rate);

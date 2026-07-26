@@ -170,8 +170,18 @@
             # lean on real Xcode instead. Xcode 26 users need to grab the
             # toolchain once: xcodebuild -downloadComponent MetalToolchain
             + lib.optionalString stdenv.isDarwin ''
-              unset SDKROOT
-              export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+              # The apple-sdk hook exported these to nix store paths, and
+              # xcode-select -p echoes DEVELOPER_DIR, so clear both before
+              # asking the system which Xcode is selected.
+              unset SDKROOT DEVELOPER_DIR
+              dev_dir=$(/usr/bin/xcode-select -p 2>/dev/null || true)
+              case $dev_dir in
+                "" | *CommandLineTools*) dev_dir=/Applications/Xcode.app/Contents/Developer ;;
+              esac
+              export DEVELOPER_DIR=$dev_dir
+              if [ ! -d "$DEVELOPER_DIR" ]; then
+                echo "rox: no Xcode at $DEVELOPER_DIR; gpui needs 'xcrun metal' from full Xcode" >&2
+              fi
               export PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v xcbuild | paste -sd: -)
             '';
           };

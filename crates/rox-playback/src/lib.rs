@@ -5,6 +5,7 @@
 //! this same engine from stdin in rox-prototype-playback (git history, commit
 //! bd22dc1).
 
+pub mod chain;
 pub mod engine;
 pub mod output;
 pub mod resample;

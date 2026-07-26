@@ -909,6 +909,12 @@ pub fn font_scale() -> f32 {
     BASE.read().unwrap().font_size / FONT_SIZE_DEFAULT
 }
 
+/// The app font size as it currently stands, in px. What the zoom shortcuts
+/// read to step from, and what a fresh window opens sized against.
+pub fn app_font_size() -> f32 {
+    BASE.read().unwrap().font_size
+}
+
 /// The total font scale in effect right now: the app size ([`font_scale`])
 /// times any panel override in scope. What a fixed row height or cover tile
 /// multiplies by to track the text. Equal to the window rem over the stock

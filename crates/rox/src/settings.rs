@@ -812,9 +812,11 @@ impl Default for WorkspaceBundle {
 /// The appearance a workspace carries: the visual knobs it dresses the app
 /// with, pulled from and pushed back to [`Settings`]. The subset that reads
 /// as pure look, so a bundle recolors and rearranges without dragging along
-/// another machine's folders or account. The theme pick stays out too: a
+/// another machine's folders or account. The theme pick stays out: a
 /// workspace brings both palettes and the user's dark/light/System choice
-/// decides which one shows.
+/// decides which one shows. The app font size stays out for the same reason -
+/// it's a per-user readability choice, not a look to hand around, so applying
+/// a workspace never resizes the text out from under someone.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceBundle {
@@ -825,7 +827,6 @@ pub struct AppearanceBundle {
     pub keep_theme: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_font: Option<String>,
-    pub app_font_size: f32,
     pub rating_style: RatingStyle,
     pub quick_play: QuickPlayConfig,
     pub hide_menubar: bool,
@@ -841,7 +842,6 @@ impl Default for AppearanceBundle {
             art_theming: false,
             keep_theme: false,
             app_font: None,
-            app_font_size: palette::FONT_SIZE_DEFAULT,
             rating_style: RatingStyle::default(),
             quick_play: QuickPlayConfig::default(),
             hide_menubar: false,
@@ -903,7 +903,6 @@ impl WorkspaceBundle {
                 art_theming: s.art_theming,
                 keep_theme: s.keep_theme,
                 app_font: s.app_font.clone(),
-                app_font_size: s.app_font_size,
                 rating_style: s.rating_style,
                 quick_play: s.quick_play.clone(),
                 hide_menubar: s.hide_menubar,
@@ -931,7 +930,6 @@ impl WorkspaceBundle {
         s.art_theming = a.art_theming;
         s.keep_theme = a.keep_theme;
         s.app_font = a.app_font;
-        s.app_font_size = a.app_font_size;
         s.rating_style = a.rating_style;
         s.quick_play = a.quick_play;
         s.hide_menubar = a.hide_menubar;
@@ -1228,6 +1226,7 @@ mod tests {
                 border: 1.0,
             },
             theme: Theme::Light,
+            app_font_size: 20.0,
             art_theming: true,
             keep_theme: true,
             rating_style: RatingStyle::Numeric,
@@ -1254,6 +1253,8 @@ mod tests {
         assert_eq!(dst.frame.padding, 8.0);
         // The theme pick is the user's alone; a bundle never moves it.
         assert!(dst.theme == Theme::default());
+        // Nor the font size: a readability choice, not a look to hand around.
+        assert_eq!(dst.app_font_size, Settings::default().app_font_size);
         assert!(dst.art_theming);
         assert!(dst.keep_theme);
         assert!(dst.rating_style == RatingStyle::Numeric);

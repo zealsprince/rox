@@ -26,6 +26,7 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Time, TimeBase, Timestamp};
 
+use crate::chain::Chain;
 use crate::resample::Resampler;
 use crate::shared::{QueueEntry, QueueSnapshot, Segment, Shared, TrackInfo};
 
@@ -45,6 +46,10 @@ pub enum Cmd {
     Insert {
         after: Option<u64>,
         paths: Vec<PathBuf>,
+        /// Album group per path, parallel to `paths` (ADR 17). The player
+        /// resolves these from the library at insert time; the engine only
+        /// compares them. Shorter than `paths` pads with None.
+        groups: Vec<Option<u64>>,
         explicit: bool,
         /// Jump to the first of the batch and play it now, keeping the rest of
         /// the queue behind it. A drag onto Play now sets this; Play Next and
@@ -109,6 +114,10 @@ pub struct Engine {
     /// Append-only pool of file paths. Order entries index into it; nothing is
     /// ever removed so `Segment.track` indices stay valid.
     queue: Vec<PathBuf>,
+    /// Album group per pool entry, parallel to `queue` (ADR 17). Grows with
+    /// the pool on insert, never shrinks. The engine never derives these,
+    /// only compares them: same group means tracks that belong together.
+    groups: Vec<Option<u64>>,
     idx: usize,
     /// The play order. All navigation walks this, so `order[pos]` is the
     /// playing entry and Prev retraces the path. Editable in place: insert,
@@ -131,23 +140,43 @@ pub struct Engine {
     /// Decoded, converted samples waiting for ring space.
     pending: Vec<f32>,
     pending_pos: usize,
+    /// The processing chain (ADR 19): runs over each decoded chunk after the
+    /// fold and resample, immediately before the ring, at the device rate.
+    /// Empty is the bypass rule: samples reach the ring untouched.
+    chain: Chain,
+}
+
+/// The playing context handed to a new engine: the ordered paths, where in
+/// them to start, which entries are user-queued rather than part of the
+/// context, and the album group per entry. `explicit` and `groups` shorter
+/// than `paths` pad out with false and None.
+pub struct StartQueue {
+    pub paths: Vec<PathBuf>,
+    pub start: usize,
+    pub explicit: Vec<bool>,
+    pub groups: Vec<Option<u64>>,
 }
 
 impl Engine {
     pub fn new(
-        queue: Vec<PathBuf>,
-        start: usize,
+        queue: StartQueue,
         shared: Arc<Shared>,
         producer: Producer<f32>,
         device_rate: u32,
         rx: Receiver<Cmd>,
-        explicit: Vec<bool>,
     ) -> Self {
+        let StartQueue {
+            paths: queue,
+            start,
+            explicit,
+            groups,
+        } = queue;
         // The starting queue is the playing context: an album, a library run,
         // whatever the caller handed over. A fresh context passes an empty
         // `explicit`, so every entry is context; a launch restore passes the
         // saved flags so the up-next queue comes back marked. Later Play Next
         // and Add to Queue splice in more explicit entries through Insert.
+        // `groups` runs parallel the same way; short vecs pad with None.
         let order = (0..queue.len())
             .map(|idx| OrderEntry {
                 id: idx as u64,
@@ -155,8 +184,11 @@ impl Engine {
                 explicit: explicit.get(idx).copied().unwrap_or(false),
             })
             .collect();
+        let mut groups = groups;
+        groups.resize(queue.len(), None);
         Engine {
             order,
+            groups,
             pos: 0,
             start: start.min(queue.len().saturating_sub(1)),
             next_id: queue.len() as u64,
@@ -170,10 +202,15 @@ impl Engine {
             pushed_playable: 0,
             pending: Vec::new(),
             pending_pos: 0,
+            chain: Chain::new(),
         }
     }
 
     pub fn run(mut self) {
+        // Stream open: the chain learns the device rate before any sample
+        // passes through it. It resets again on every flush, never at the
+        // gapless boundary, so filter history carries across a track splice.
+        self.chain.reset(self.device_rate);
         self.publish_queue();
         let mut source = self.open_at(self.start);
 
@@ -247,10 +284,11 @@ impl Engine {
                     Cmd::Insert {
                         after,
                         paths,
+                        groups,
                         explicit,
                         and_play,
                     } => {
-                        let at = self.insert(after, paths, explicit);
+                        let at = self.insert(after, paths, groups, explicit);
                         // From the ended state the source is None, so the new
                         // entries land in order but nothing opens them and we
                         // stay silent. Route the first of the batch through the
@@ -369,7 +407,13 @@ impl Engine {
             match source.as_mut() {
                 Some(src) => {
                     let device_rate = self.device_rate;
-                    if !src.next_chunk(device_rate, &mut self.pending) {
+                    let more = src.next_chunk(device_rate, &mut self.pending);
+                    // The last step before the ring (ADR 19): chain output
+                    // rides through flush, seek, and the gapless boundary
+                    // like any other sample data, and the tap downstream
+                    // sees what the chain produced.
+                    self.chain.process(&mut self.pending);
+                    if !more {
                         // EOF: swap the decoder under the live stream. No
                         // flush, no stream teardown; this IS the gapless
                         // boundary. Loop modes pick the next open: One
@@ -442,6 +486,7 @@ impl Engine {
                 path: self.queue[e.idx].clone(),
                 explicit: e.explicit,
                 idx: e.idx,
+                group: self.groups[e.idx],
             })
             .collect();
         *self.shared.queue.lock().unwrap() = QueueSnapshot {
@@ -490,7 +535,13 @@ impl Engine {
     /// along so the playing entry stays put. Returns the order position of the
     /// first appended entry, or None when nothing was inserted, so a revive
     /// from the ended state can navigate to it.
-    fn insert(&mut self, after: Option<u64>, paths: Vec<PathBuf>, explicit: bool) -> Option<usize> {
+    fn insert(
+        &mut self,
+        after: Option<u64>,
+        paths: Vec<PathBuf>,
+        groups: Vec<Option<u64>>,
+        explicit: bool,
+    ) -> Option<usize> {
         if paths.is_empty() {
             return None;
         }
@@ -502,9 +553,10 @@ impl Engine {
             None => self.order.len(),
         };
         let mut new = Vec::with_capacity(paths.len());
-        for path in paths {
+        for (i, path) in paths.into_iter().enumerate() {
             let idx = self.queue.len();
             self.queue.push(path);
+            self.groups.push(groups.get(i).copied().flatten());
             self.shared.tracks.lock().unwrap().push(None);
             new.push(OrderEntry {
                 id: self.next_id,
@@ -642,6 +694,9 @@ impl Engine {
     fn flush_ring(&mut self) {
         self.pending.clear();
         self.pending_pos = 0;
+        // A flush is a discontinuity: stateful nodes re-anchor rather than
+        // smear filter history across the jump.
+        self.chain.reset(self.device_rate);
         self.shared.flush.store(true, Ordering::Release);
         let cap = self.producer.buffer().capacity();
         // A live callback drains the ring in a few ms; bound the wait so a dead
@@ -1062,7 +1117,7 @@ mod tests {
         let (producer, _consumer) = rtrb::RingBuffer::<f32>::new(16);
         let (_tx, rx) = mpsc::channel::<Cmd>();
         let queue: Vec<PathBuf> = (0..n).map(|i| PathBuf::from(format!("t{i}"))).collect();
-        Engine::new(queue, 0, shared, producer, 48000, rx, Vec::new())
+        Engine::new(queue, 0, shared, producer, 48000, rx, Vec::new(), Vec::new())
     }
 
     /// Point the audible clock at pool index `track`, so `audible_pos` resolves
@@ -1165,6 +1220,34 @@ mod tests {
         assert!(!removed_runahead);
         // Cursor still on its own entry, re-found by id.
         assert_eq!(e.order[e.pos].id, 3);
+    }
+
+    #[test]
+    fn insert_carries_groups_into_pool_and_snapshot() {
+        let mut e = test_engine(2);
+        // Splice two grouped tracks and one ungrouped behind the head.
+        let at = e.insert(
+            Some(0),
+            vec!["a".into(), "b".into(), "c".into()],
+            vec![Some(7), Some(7), None],
+            true,
+        );
+        assert_eq!(at, Some(1));
+        let snap = e.shared.queue_snapshot();
+        let groups: Vec<Option<u64>> = snap.entries.iter().map(|en| en.group).collect();
+        // Seed entries came without groups; the spliced ones keep theirs in
+        // splice order.
+        assert_eq!(groups, vec![None, Some(7), Some(7), None, None]);
+    }
+
+    #[test]
+    fn insert_pads_missing_groups_with_none() {
+        let mut e = test_engine(1);
+        // A groups vec shorter than paths pads rather than panics.
+        e.insert(None, vec!["a".into(), "b".into()], vec![Some(3)], false);
+        let snap = e.shared.queue_snapshot();
+        assert_eq!(snap.entries[1].group, Some(3));
+        assert_eq!(snap.entries[2].group, None);
     }
 
     #[test]

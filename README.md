@@ -144,7 +144,7 @@ click away on the welcome window or in settings:
 
 Grab your platform's build from the [releases page](https://github.com/zealsprince/rox/releases/latest).
 
-- **Linux** 
+- **Linux**
   - **Arch Linux** - Available on the AUR as [`rox-player`](https://aur.archlinux.org/packages/rox-player).
   - **Tarball** - Unpack the tarball and run `./rox`.
 - **macOS** - Unzip and drop `rox.app` into Applications. The build is unsigned, so if

@@ -117,7 +117,7 @@ impl DiscordPresence {
         let now_playing = player.now_playing();
         let is_playing = player.is_playing();
 
-        let current_state = now_playing.and_then(|now| {
+        let current_state = now_playing.map(|now| {
             let meta = self.library.read(cx).meta_for(&now.path);
             let (title, artist, album) = match meta {
                 Some(m) => (
@@ -146,14 +146,14 @@ impl DiscordPresence {
                 ),
             };
 
-            Some(DiscordTrackState {
+            DiscordTrackState {
                 title,
                 artist,
                 album,
                 position_secs: now.position_secs,
                 duration_secs: now.duration_secs,
                 is_playing,
-            })
+            }
         });
 
         let now_time = SystemTime::now();

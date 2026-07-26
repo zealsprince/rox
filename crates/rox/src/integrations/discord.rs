@@ -297,17 +297,24 @@ impl DiscordPresence {
                             .large_text(large_text);
                         activity = activity.assets(assets);
 
-                        // Add clickable "View on Last.fm" button if enabled and artist/title available
+                        // Add clickable buttons if enabled and artist/title available
                         let lastfm_url = format!(
                             "https://www.last.fm/music/{}/_/{}",
+                            url_encode(&state.artist),
+                            url_encode(&state.title)
+                        );
+                        let youtube_url = format!(
+                            "https://www.youtube.com/results?search_query={}+{}",
                             url_encode(&state.artist),
                             url_encode(&state.title)
                         );
                         if state.show_button
                             && (!state.artist.is_empty() || !state.title.is_empty())
                         {
-                            activity = activity
-                                .buttons(vec![Button::new("View on Last.fm", &lastfm_url)]);
+                            activity = activity.buttons(vec![
+                                Button::new("View on Last.fm", &lastfm_url),
+                                Button::new("Search on YouTube", &youtube_url),
+                            ]);
                         }
 
                         if let Err(e) = cli.set_activity(activity) {

@@ -32,6 +32,7 @@ use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::composite;
 use crate::design::{palette, tokens};
 use crate::history::{History, HistoryEvent};
+use crate::integrations::discord::DiscordPresence;
 use crate::integrations::media_controls::{MediaCommand, MediaKeys, NowPlayingMeta};
 use crate::integrations::tray;
 use crate::lastfm::Scrobbler;
@@ -1182,10 +1183,12 @@ impl Workspace {
             let player = cx.new(Player::new);
             let library = cx.new(Library::new);
             let scrobbler = cx.new(|cx| Scrobbler::new(&player, &library, cx));
+            let discord = cx.new(|cx| DiscordPresence::new(&player, &library, cx));
             AppState {
                 thumbs: cx.new(|cx| Thumbs::new(&library, cx)),
                 history: cx.new(|cx| History::new(&scrobbler, cx)),
                 scrobbler,
+                discord,
                 library,
                 now_art: cx.new(|cx| NowPlayingArt::new(player.clone(), cx)),
                 player,

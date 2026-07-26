@@ -33,6 +33,7 @@ use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::palette::{self, Palette, Role, ROLES};
 use crate::design::tokens;
+use crate::integrations::discord::DiscordPresence;
 use crate::integrations::tray;
 use crate::lastfm::{self, AuthPhase, Scrobbler};
 use crate::panel::{self, AppState, ScrubState};
@@ -239,6 +240,10 @@ struct SettingsWindow {
     /// credential edits, the connect flow, and the knobs all go through
     /// it, and it persists them.
     scrobbler: Entity<Scrobbler>,
+    discord: Entity<DiscordPresence>,
+    discord_enabled: bool,
+    discord_show_timestamps: bool,
+    discord_show_details: bool,
     /// The api credential inputs; edits mirror into the scrobbler per
     /// keystroke, the pickers' cadence.
     lastfm_key: Entity<InputState>,
@@ -442,6 +447,10 @@ impl SettingsWindow {
             player,
             thumbs: state.thumbs,
             scrobbler,
+            discord: state.discord.clone(),
+            discord_enabled: settings.discord.enabled,
+            discord_show_timestamps: settings.discord.show_timestamps,
+            discord_show_details: settings.discord.show_details,
             lastfm_key,
             lastfm_secret,
             threshold_scrub: ScrubState::default(),
@@ -584,6 +593,27 @@ impl SettingsWindow {
         settings::set_quit_to_tray(on);
         Settings::update(move |s| s.quit_to_tray = on);
         tray::sync(cx);
+        cx.notify();
+    }
+
+    fn set_discord_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.discord_enabled = on;
+        Settings::update(move |s| s.discord.enabled = on);
+        self.discord.update(cx, |d, _| d.reload_config());
+        cx.notify();
+    }
+
+    fn set_discord_show_timestamps(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.discord_show_timestamps = on;
+        Settings::update(move |s| s.discord.show_timestamps = on);
+        self.discord.update(cx, |d, _| d.reload_config());
+        cx.notify();
+    }
+
+    fn set_discord_show_details(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.discord_show_details = on;
+        Settings::update(move |s| s.discord.show_details = on);
+        self.discord.update(cx, |d, _| d.reload_config());
         cx.notify();
     }
 
@@ -1433,6 +1463,37 @@ impl SettingsWindow {
                                     .update(cx, |s, cx| s.set_threshold(fraction, cx));
                                 cx.notify();
                             },
+                            cx,
+                        ),
+                    )),
+            ))
+            .child(section(
+                "Discord Rich Presence",
+                None,
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "Enable Rich Presence",
+                        Some("Show rox activity on Discord when playing music"),
+                        panel::toggle(self.discord_enabled, Self::set_discord_enabled, cx),
+                    ))
+                    .child(panel::setting_row(
+                        "Show Song Progress",
+                        Some("Display live progress bar and elapsed/duration timestamps"),
+                        panel::toggle(
+                            self.discord_show_timestamps,
+                            Self::set_discord_show_timestamps,
+                            cx,
+                        ),
+                    ))
+                    .child(panel::setting_row(
+                        "Show Song & Artist Details",
+                        Some("Include track title, artist, and album name in Discord activity"),
+                        panel::toggle(
+                            self.discord_show_details,
+                            Self::set_discord_show_details,
                             cx,
                         ),
                     )),

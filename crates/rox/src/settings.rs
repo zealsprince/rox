@@ -279,6 +279,8 @@ pub struct Settings {
     /// The online enrichment providers and their knobs (ADR 14), the
     /// settings window's Providers page.
     pub providers: Providers,
+    /// Discord Rich Presence options (enable toggle, timestamps, details).
+    pub discord: DiscordSettings,
     /// The quick-play modal's appearance knobs, edited from its own config
     /// panel.
     pub quick_play: QuickPlayConfig,
@@ -719,6 +721,28 @@ impl Default for Providers {
     }
 }
 
+/// Discord Rich Presence settings: enable toggle and metadata options.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscordSettings {
+    /// Whether Discord Rich Presence is enabled.
+    pub enabled: bool,
+    /// Whether track elapsed time is shown in Discord.
+    pub show_timestamps: bool,
+    /// Whether track title/artist details are shown.
+    pub show_details: bool,
+}
+
+impl Default for DiscordSettings {
+    fn default() -> Self {
+        DiscordSettings {
+            enabled: true,
+            show_timestamps: true,
+            show_details: true,
+        }
+    }
+}
+
 /// A dock layout the user saved as a named preset: a full dock dump under
 /// a name. The dump stays raw JSON like [`Settings::layout`] so the file
 /// survives layout-schema moves; the workspace validates it on apply.
@@ -1047,6 +1071,7 @@ impl Default for Settings {
             last_queue: None,
             lastfm: Lastfm::default(),
             providers: Providers::default(),
+            discord: DiscordSettings::default(),
             quick_play: QuickPlayConfig::default(),
             rating_style: RatingStyle::default(),
             check_updates: true,

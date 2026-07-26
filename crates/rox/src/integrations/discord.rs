@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use discord_rich_presence::activity::{Activity, ActivityType, Assets, Timestamps};
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use gpui::{Context, Entity, Subscription};
+use log::{error, info, warn};
 
 use crate::panels::library::Library;
 use crate::player::Player;
@@ -24,7 +25,7 @@ pub enum DiscordCommand {
 }
 
 /// Snapshot of the currently playing track state sent over channel.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct DiscordTrackState {
     pub title: String,
     pub artist: String,
@@ -34,11 +35,25 @@ pub struct DiscordTrackState {
     pub is_playing: bool,
 }
 
+impl PartialEq for DiscordTrackState {
+    fn eq(&self, other: &Self) -> bool {
+        self.title == other.title
+            && self.artist == other.artist
+            && self.album == other.album
+            && self.duration_secs == other.duration_secs
+            && self.is_playing == other.is_playing
+            // Only consider state changed if position jumped/seeked by more than 2 seconds
+            && (self.position_secs - other.position_secs).abs() < 2.0
+    }
+}
+
 pub struct DiscordPresence {
     library: Entity<Library>,
     config: DiscordSettings,
     sender: async_channel::Sender<DiscordCommand>,
-    last_state: Option<DiscordTrackState>,
+    last_sent_track: Option<DiscordTrackState>,
+    last_sent_time: Option<SystemTime>,
+    last_sent_position: f64,
     _player_changed: Subscription,
 }
 
@@ -62,11 +77,15 @@ impl DiscordPresence {
             this.tick(&player, cx);
         });
 
+        info!("Discord Rich Presence initialized");
+
         Self {
             library: library.clone(),
             config: Settings::load().discord,
             sender: tx,
-            last_state: None,
+            last_sent_track: None,
+            last_sent_time: None,
+            last_sent_position: 0.0,
             _player_changed,
         }
     }
@@ -74,13 +93,21 @@ impl DiscordPresence {
     /// Refresh settings from the active configuration.
     pub fn reload_config(&mut self) {
         self.config = Settings::load().discord;
+        info!(
+            "Discord RPC settings reloaded: enabled={}, timestamps={}, details={}",
+            self.config.enabled, self.config.show_timestamps, self.config.show_details
+        );
+        // Force update on next tick
+        self.last_sent_track = None;
     }
 
     /// React to player pump notifications on the main thread.
     fn tick(&mut self, player: &Entity<Player>, cx: &mut Context<Self>) {
         if !self.config.enabled {
-            if self.last_state.is_some() {
-                self.last_state = None;
+            if self.last_sent_track.is_some() {
+                self.last_sent_track = None;
+                self.last_sent_time = None;
+                info!("Discord RPC disabled; clearing presence");
                 let _ = self.sender.try_send(DiscordCommand::ClearPresence);
             }
             return;
@@ -129,9 +156,45 @@ impl DiscordPresence {
             })
         });
 
-        // State gating: avoid redundant updates if track state hasn't moved
-        if self.last_state != current_state {
-            self.last_state = current_state.clone();
+        let now_time = SystemTime::now();
+
+        let should_update = match (&self.last_sent_track, &current_state) {
+            (None, Some(_)) => true,
+            (Some(_), None) => true,
+            (Some(prev), Some(curr)) => {
+                let metadata_changed = prev.title != curr.title
+                    || prev.artist != curr.artist
+                    || prev.album != curr.album
+                    || prev.duration_secs != curr.duration_secs
+                    || prev.is_playing != curr.is_playing;
+
+                if metadata_changed {
+                    true
+                } else if curr.is_playing {
+                    // Detect manual user seek (> 3s drift from elapsed clock)
+                    let elapsed_real = self
+                        .last_sent_time
+                        .and_then(|t| now_time.duration_since(t).ok())
+                        .map(|d| d.as_secs_f64())
+                        .unwrap_or(0.0);
+                    let expected_pos = self.last_sent_position + elapsed_real;
+                    (curr.position_secs - expected_pos).abs() > 3.0
+                } else {
+                    false
+                }
+            }
+            (None, None) => false,
+        };
+
+        if should_update {
+            self.last_sent_track = current_state.clone();
+            self.last_sent_time = if current_state.is_some() {
+                Some(now_time)
+            } else {
+                None
+            };
+            self.last_sent_position = current_state.as_ref().map(|s| s.position_secs).unwrap_or(0.0);
+
             let cmd = match current_state {
                 Some(s) => DiscordCommand::UpdatePresence(Some(s)),
                 None => DiscordCommand::ClearPresence,
@@ -143,15 +206,30 @@ impl DiscordPresence {
     /// Background task managing socket lifecycle and activity updates.
     async fn run_ipc_loop(rx: async_channel::Receiver<DiscordCommand>) {
         let mut client: Option<DiscordIpcClient> = None;
+        let mut last_connect_attempt = SystemTime::UNIX_EPOCH;
 
         while let Ok(cmd) = rx.recv().await {
             match cmd {
                 DiscordCommand::UpdatePresence(Some(state)) => {
-                    // Ensure connected client
+                    // Rate-limit connect retries (5 seconds minimum backoff if client is disconnected)
                     if client.is_none() {
-                        let mut new_client = DiscordIpcClient::new(DISCORD_APP_ID);
-                        if new_client.connect().is_ok() {
-                            client = Some(new_client);
+                        let now = SystemTime::now();
+                        let time_since_last = now
+                            .duration_since(last_connect_attempt)
+                            .unwrap_or_default()
+                            .as_secs();
+                        if time_since_last >= 5 {
+                            last_connect_attempt = now;
+                            let mut new_client = DiscordIpcClient::new(DISCORD_APP_ID);
+                            match new_client.connect() {
+                                Ok(_) => {
+                                    info!("Discord IPC client connected successfully");
+                                    client = Some(new_client);
+                                }
+                                Err(e) => {
+                                    warn!("Failed to connect Discord IPC client: {e}");
+                                }
+                            }
                         }
                     }
 
@@ -170,7 +248,8 @@ impl DiscordPresence {
                                 .duration_since(UNIX_EPOCH)
                                 .map(|d| d.as_millis() as i64)
                                 .unwrap_or(0);
-                            let start_time = now_millis.saturating_sub((state.position_secs * 1000.0) as i64);
+                            let start_time =
+                                now_millis.saturating_sub((state.position_secs * 1000.0) as i64);
 
                             let mut timestamps = Timestamps::new().start(start_time);
                             if let Some(dur) = state.duration_secs {
@@ -180,7 +259,7 @@ impl DiscordPresence {
                             activity = activity.timestamps(timestamps);
                         }
 
-                        // Attempt to resolve cover art URL online via iTunes / Deezer providers
+                        // Attempt to resolve cover art URL online via iTunes / Deezer / Last.fm providers
                         let mut cover_url: Option<String> = None;
                         if !state.artist.is_empty() || !state.album.is_empty() {
                             let query = crate::providers::TrackQuery {
@@ -189,9 +268,18 @@ impl DiscordPresence {
                                 title: state.title.clone(),
                                 duration_secs: state.duration_secs,
                             };
-                            if let Ok(candidates) = crate::providers::search_art(&query) {
-                                if let Some(first) = candidates.first() {
-                                    cover_url = Some(first.thumb_url.clone());
+                            match crate::providers::search_art(&query) {
+                                Ok(candidates) => {
+                                    if let Some(first) = candidates.first() {
+                                        cover_url = Some(first.thumb_url.clone());
+                                        info!(
+                                            "Resolved cover art for '{}' via {}: {}",
+                                            state.title, first.provider, first.thumb_url
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Artwork search error for '{}': {e}", state.title);
                                 }
                             }
                         }
@@ -209,16 +297,18 @@ impl DiscordPresence {
                         activity = activity.assets(assets);
 
                         if let Err(e) = cli.set_activity(activity) {
-                            eprintln!("discord rpc set_activity failed: {e}");
-                            // Reconnect on failure next time
+                            error!("Discord RPC set_activity failed: {e}");
                             let _ = cli.close();
                             client = None;
+                        } else {
+                            info!("Discord RPC status updated: '{}' by '{}'", state.title, state.artist);
                         }
                     }
                 }
                 DiscordCommand::UpdatePresence(None) | DiscordCommand::ClearPresence => {
                     if let Some(cli) = client.as_mut() {
                         let _ = cli.clear_activity();
+                        info!("Discord RPC status cleared");
                     }
                 }
             }
@@ -226,6 +316,7 @@ impl DiscordPresence {
 
         if let Some(mut cli) = client {
             let _ = cli.close();
+            info!("Discord IPC loop closed");
         }
     }
 }

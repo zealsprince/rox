@@ -150,6 +150,8 @@ struct StorageInfo {
     waveforms: u64,
     /// Everything in the lyrics store (lyrics/).
     lyrics: u64,
+    /// The log file and its rolled back file (logs/).
+    logs: u64,
 }
 
 /// A confirm dialog waiting on the user: each variant names what a yes does,
@@ -1861,6 +1863,7 @@ impl SettingsWindow {
             thumbs: db_size(&data.join("thumbs.db")),
             waveforms: dir_size(&crate::peaks::cache_dir()),
             lyrics: dir_size(&settings::lyrics_dir()),
+            logs: dir_size(&data.join("logs")),
         });
         cx.notify();
     }
@@ -1966,6 +1969,30 @@ impl SettingsWindow {
                                 cx.listener(|this, _, _, cx| this.clear_waveforms(cx)),
                             )),
                     )),
+            ))
+            .child(section(
+                "Diagnostics",
+                None,
+                div().flex().flex_col().gap(tokens::SPACE_MD).child(
+                    panel::setting_row(
+                        "Logs",
+                        Some("What each run writes for bug reports (logs/rox.log), rolled at a size cap so it never grows large"),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(tokens::SPACE_SM)
+                            .child(readout(human_size(info.logs)))
+                            .child(small_button(
+                                "Reveal",
+                                icons::FILE_TEXT,
+                                false,
+                                cx.listener(|_, _, _, cx| {
+                                    cx.reveal_path(&crate::logging::log_path());
+                                }),
+                            )),
+                    ),
+                ),
             ))
     }
 

@@ -394,6 +394,7 @@ pub fn search_art(query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
         if deezer {
             providers.push(&deezer::Deezer);
         }
+        providers.push(&lastfm::LastfmArt);
         let mut found = collect_candidates(providers.iter().map(|p| p.search(query)))?;
         found.sort_by_key(|b| std::cmp::Reverse(b.width * b.height));
         Ok(found)

@@ -209,7 +209,7 @@ impl DiscordPresence {
                         activity = activity.assets(assets);
 
                         if let Err(e) = cli.set_activity(activity) {
-                            log::warn!("discord rpc set_activity failed: {e}");
+                            eprintln!("discord rpc set_activity failed: {e}");
                             // Reconnect on failure next time
                             let _ = cli.close();
                             client = None;

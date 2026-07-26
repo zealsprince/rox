@@ -144,11 +144,13 @@ click away on the welcome window or in settings:
 
 Grab your platform's build from the [releases page](https://github.com/zealsprince/rox/releases/latest).
 
-- **Linux** - unpack the tarball and run `./rox`.
-- **macOS** - unzip and drop `rox.app` into Applications. The build is unsigned, so if
+- **Linux** 
+  - **Arch Linux** - Available on the AUR as [`rox-player`](https://aur.archlinux.org/packages/rox-player).
+  - **Tarball** - Unpack the tarball and run `./rox`.
+- **macOS** - Unzip and drop `rox.app` into Applications. The build is unsigned, so if
   Gatekeeper blocks the first launch, allow it under System Settings > Privacy & Security >
   Open Anyway.
-- **Windows** - unzip anywhere and run `rox.exe`. If SmartScreen objects, More info >
+- **Windows** - Unzip anywhere and run `rox.exe`. If SmartScreen objects, More info >
   Run anyway.
 
 ## Command line

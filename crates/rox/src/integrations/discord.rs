@@ -30,6 +30,8 @@ pub struct DiscordTrackState {
     pub title: String,
     pub artist: String,
     pub album: String,
+    pub codec: String,
+    pub bitrate_kbps: u16,
     pub position_secs: f64,
     pub duration_secs: Option<f64>,
     pub is_playing: bool,
@@ -41,6 +43,8 @@ impl PartialEq for DiscordTrackState {
         self.title == other.title
             && self.artist == other.artist
             && self.album == other.album
+            && self.codec == other.codec
+            && self.bitrate_kbps == other.bitrate_kbps
             && self.duration_secs == other.duration_secs
             && self.is_playing == other.is_playing
             && self.show_button == other.show_button
@@ -119,7 +123,7 @@ impl DiscordPresence {
 
         let current_state = now_playing.map(|now| {
             let meta = self.library.read(cx).meta_for(&now.path);
-            let (title, artist, album) = match meta {
+            let (title, artist, album, codec, bitrate_kbps) = match meta {
                 Some(m) => (
                     if m.title.is_empty() {
                         now.path
@@ -135,6 +139,8 @@ impl DiscordPresence {
                         m.artist
                     },
                     m.album,
+                    m.codec,
+                    m.bitrate_kbps,
                 ),
                 None => (
                     now.path
@@ -143,6 +149,11 @@ impl DiscordPresence {
                         .unwrap_or_else(|| "Unknown Track".into()),
                     "Unknown Artist".to_string(),
                     String::new(),
+                    now.path
+                        .extension()
+                        .map(|e| e.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    0,
                 ),
             };
 
@@ -150,6 +161,8 @@ impl DiscordPresence {
                 title,
                 artist,
                 album,
+                codec,
+                bitrate_kbps,
                 position_secs: now.position_secs,
                 duration_secs: now.duration_secs,
                 is_playing,
@@ -286,15 +299,18 @@ impl DiscordPresence {
                         }
 
                         let image_key = cover_url.as_deref().unwrap_or("app_icon");
-                        let large_text = if state.album.is_empty() {
-                            state.title.as_str()
-                        } else {
-                            state.album.as_str()
+                        let format_str = format_quality(&state.codec, state.bitrate_kbps);
+
+                        let large_text = match (!state.album.is_empty(), !format_str.is_empty()) {
+                            (true, true) => format!("{} • {}", state.album, format_str),
+                            (true, false) => state.album.clone(),
+                            (false, true) => format_str,
+                            (false, false) => state.title.clone(),
                         };
 
                         let assets = Assets::new()
                             .large_image(image_key)
-                            .large_text(large_text);
+                            .large_text(&large_text);
                         activity = activity.assets(assets);
 
                         // Add clickable buttons if enabled and artist/title available
@@ -355,4 +371,31 @@ fn url_encode(input: &str) -> String {
         }
     }
     out
+}
+
+/// Format audio quality text based on codec and bitrate.
+fn format_quality(codec: &str, bitrate_kbps: u16) -> String {
+    if codec.is_empty() {
+        return String::new();
+    }
+    let codec_upper = codec.to_uppercase();
+    match codec_upper.as_str() {
+        "FLAC" | "ALAC" | "WAV" | "AIFF" | "PCM" => {
+            format!("{codec_upper} Lossless")
+        }
+        "MP3" | "AAC" | "OGG" | "OPUS" | "M4A" | "VORBIS" => {
+            if bitrate_kbps > 0 {
+                format!("{codec_upper} {bitrate_kbps} kbps")
+            } else {
+                format!("{codec_upper} VBR")
+            }
+        }
+        _ => {
+            if bitrate_kbps > 0 {
+                format!("{codec_upper} {bitrate_kbps} kbps")
+            } else {
+                codec_upper
+            }
+        }
+    }
 }

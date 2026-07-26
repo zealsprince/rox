@@ -124,6 +124,10 @@ pub mod icons {
     pub const MAXIMIZE: &str = "icons/maximize-2.svg";
     /// The Window menu's Empty Window entry: a blank dock.
     pub const SQUARE_DASHED: &str = "icons/square-dashed.svg";
+    /// The theme toggle panel's glyphs, the side a click lands on; both
+    /// resolve from the bundled widget set, no file of ours needed.
+    pub const SUN: &str = "icons/sun.svg";
+    pub const MOON: &str = "icons/moon.svg";
     /// The window controls panel's icon style, and the OS decorations
     /// menu entry.
     pub const MINUS: &str = "icons/minus.svg";
@@ -228,6 +232,8 @@ pub mod icons {
         MINIMIZE,
         MAXIMIZE,
         SQUARE_DASHED,
+        SUN,
+        MOON,
         MINUS,
         APP_WINDOW,
         MENU,

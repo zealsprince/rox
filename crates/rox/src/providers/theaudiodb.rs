@@ -10,7 +10,7 @@
 //! needs; a fork leaning on it harder registers for a supporter key and
 //! drops it in here, the last.fm identity's trade-off ([`crate::lastfm::keys`]).
 
-use super::{agent, normalize, string};
+use super::{agent, net_reason, normalize, string};
 
 /// TheAudioDB's public test key. Enough for the biography panel's
 /// one-artist-at-a-time lookups; swap in a supporter key for heavier use.
@@ -47,7 +47,7 @@ pub fn artist_art(name: &str) -> Result<Option<ArtistArt>, String> {
         .get(&url)
         .query("s", name.trim())
         .call()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| net_reason(&e))?
         .into_string()
         .map_err(|e| e.to_string())?;
     let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;

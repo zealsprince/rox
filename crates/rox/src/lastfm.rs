@@ -102,7 +102,7 @@ fn call(
         Err(ureq::Error::Status(_, response)) => {
             response.into_string().map_err(|e| e.to_string())?
         }
-        Err(e) => return Err(e.to_string()),
+        Err(e) => return Err(crate::providers::net_reason(&e)),
     };
     let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     if value.get("error").is_some() {
@@ -530,7 +530,7 @@ impl Scrobbler {
         cx.background_executor()
             .spawn(async move {
                 if let Err(e) = call(method, &secret, params) {
-                    eprintln!("lastfm: {method}: {e}");
+                    log::warn!("lastfm: {method}: {e}");
                 }
             })
             .detach();

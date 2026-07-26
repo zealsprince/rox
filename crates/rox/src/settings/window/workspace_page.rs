@@ -981,7 +981,6 @@ impl SettingsWindow {
         self.surface_opacity = a.surface_opacity;
         self.backdrop_strength = a.backdrop_strength;
         self.frame = a.frame;
-        self.theme = a.theme;
         self.keep_theme = a.keep_theme;
         self.rating_style = a.rating_style;
         // The mini-player roles; the workspace's apply already moved its own

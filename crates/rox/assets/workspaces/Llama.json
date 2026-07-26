@@ -214,13 +214,15 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "min_width": 310.0,
                           "max_height": 24.0,
                           "align": "left",
                           "seek": true,
                           "repeat": true,
                           "shuffle": true,
                           "stop": true,
-                          "random": true
+                          "random": true,
+                          "play_highlight": "none"
                         }
                       }
                     }
@@ -240,10 +242,14 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "min_width": 105.0,
                           "max_width": 200.0,
                           "max_height": 24.0,
                           "align": "right",
-                          "stretch": false
+                          "stretch": false,
+                          "icon": false,
+                          "slider": true,
+                          "percent": false
                         }
                       }
                     }
@@ -258,7 +264,7 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    306.0,
+                    310.0,
                     200.0
                   ],
                   "axis": 0
@@ -564,10 +570,12 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "min_width": 310.0,
                           "max_height": 24.0,
                           "align": "left",
                           "stop": true,
-                          "random": true
+                          "random": true,
+                          "play_highlight": "none"
                         }
                       }
                     }
@@ -587,10 +595,14 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "min_width": 105.0,
                           "max_width": 200.0,
                           "max_height": 24.0,
                           "align": "right",
-                          "stretch": false
+                          "stretch": false,
+                          "icon": false,
+                          "slider": true,
+                          "percent": false
                         }
                       }
                     }
@@ -605,8 +617,8 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    292.0,
-                    200.0
+                    310.0,
+                    182.0
                   ],
                   "axis": 0
                 }
@@ -628,7 +640,7 @@
       },
       "size": {
         "width": 510.0,
-        "height": 210.0
+        "height": 216.0
       }
     }
   ],
@@ -660,6 +672,32 @@
     "text_on_accent": "#001400",
     "text_secondary": "#00b400"
   },
+  "palette_light": {
+    "accent": "#008b00",
+    "accent_hover": "#006f00",
+    "bg_control": "#c9d2e8",
+    "bg_control_active": "#bac5e1",
+    "bg_control_hover": "#b1bedc",
+    "bg_elevated": "#dfe4f2",
+    "bg_input": "#f3f5fa",
+    "bg_menu": "#cfd7eb",
+    "bg_menu_hover": "#c1cbe4",
+    "bg_menubar": "#d3daed",
+    "bg_panel": "#e6eaf5",
+    "bg_root": "#eef0f8",
+    "bg_toolbar": "#dae0f0",
+    "border": "#a9b3d0",
+    "border_light": "#9ba7c8",
+    "gridline": "#7c987c",
+    "highlight": "#ffe000",
+    "text": "#006200",
+    "text_bright": "#003a00",
+    "text_dim": "#2e832e",
+    "text_faint": "#5da45d",
+    "text_muted": "#479447",
+    "text_on_accent": "#eaffea",
+    "text_secondary": "#197519"
+  },
   "appearance": {
     "surface_opacity": 1.0,
     "backdrop_strength": 1.0,
@@ -669,7 +707,6 @@
       "rounding": 0.0,
       "border": 0.0
     },
-    "theme": "dark",
     "keep_theme": true,
     "art_theming": false,
     "app_font": "Tahoma",

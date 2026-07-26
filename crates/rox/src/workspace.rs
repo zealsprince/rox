@@ -60,6 +60,7 @@ use crate::panels::search::{SearchConfig, SearchPanel};
 use crate::panels::slide::SlidePanel;
 use crate::panels::spacer::SpacerPanel;
 use crate::panels::spectrum::SpectrumPanel;
+use crate::panels::theme_toggle::ThemeTogglePanel;
 use crate::panels::transport::{
     SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
     VolumeConfig, VolumePanel,
@@ -535,6 +536,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured!("vu meter", VuPanel);
     configured!("drag anchor", DragAnchorPanel);
     configured!("spacer", SpacerPanel);
+    configured!("theme toggle", ThemeTogglePanel);
     // These two drive the workspace back, so their builders carry its
     // handle alongside the shared state.
     let s = state.clone();
@@ -568,6 +570,7 @@ pub(crate) enum MenuAction {
     Previous,
     OpenSettings,
     OpenStats,
+    OpenConsole,
     OpenWelcome,
     OpenAbout,
     ToggleMenubar,
@@ -670,6 +673,11 @@ pub(crate) const MENUS: &[Menu] = &[
                 label: "Stats",
                 icon: icons::CHART_PIE,
                 action: MenuAction::OpenStats,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Console",
+                icon: icons::FILE_TEXT,
+                action: MenuAction::OpenConsole,
             }),
             MenuEntry::Item(MenuItem {
                 label: "Welcome",
@@ -1527,9 +1535,13 @@ impl Workspace {
         // Except in a macOS fullscreen Space, where AppKit owns the frame and
         // a resize is dropped or fights the Space: swap the layout, leave the
         // frame alone. The mini toggle exits fullscreen before applying, so
-        // its resize still lands.
+        // its resize still lands. A `--window-size` launch also pins the
+        // frame: preset sizes stay stored, they just don't move the window
+        // that session, so every look screenshots at the flag's one size.
         if let Some(size) = size {
-            if !(cfg!(target_os = "macos") && window.is_fullscreen()) {
+            if !(cfg!(target_os = "macos") && window.is_fullscreen())
+                && crate::window_size_override().is_none()
+            {
                 resize_clamped(window, size);
             }
         }

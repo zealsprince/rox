@@ -27,6 +27,12 @@ rust-embed = "8"
 # background threads, and the md5 its request signatures require.
 ureq = "2"
 md5 = "0.7"
+# The logging facade the app and rox-playback write through; our own backend
+# (crate::logging) fans each line to stderr, a rolling file, and the console
+# window's ring. Already in the tree, and chrono for the wall-clock stamp on
+# each line so a reported log reads in real time.
+log = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # The tag editor's field suggestions ride the input widget's completion
 # menu, whose provider trait speaks these types; both already in the tree
 # through gpui-component.

@@ -2,7 +2,7 @@
 //! URLs at fixed sizes. `cover_big` is the 500px preview, `cover_xl` the
 //! 1000px image a save embeds.
 
-use super::{agent, string, ArtCandidate, ArtProvider, TrackQuery};
+use super::{agent, net_reason, string, ArtCandidate, ArtProvider, TrackQuery};
 
 const API: &str = "https://api.deezer.com/search/album";
 
@@ -83,7 +83,7 @@ pub fn artist_picture(name: &str) -> Result<Option<String>, String> {
         .query("q", name.trim())
         .query("limit", "8")
         .call()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| net_reason(&e))?
         .into_string()
         .map_err(|e| e.to_string())?;
     let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;

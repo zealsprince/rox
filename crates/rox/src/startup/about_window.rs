@@ -133,7 +133,7 @@ impl AboutWindow {
                         }
                     }
                     Err(e) => {
-                        eprintln!("update check: {e}");
+                        log::warn!("update check: {e}");
                         UpdateCheck::Failed
                     }
                 };

@@ -17,6 +17,7 @@ mod backdrop;
 mod catalog;
 mod charts;
 mod composite;
+mod console_window;
 mod cover;
 mod design;
 mod duplicates;
@@ -24,6 +25,7 @@ mod group_head;
 mod history;
 mod integrations;
 mod lastfm;
+mod logging;
 mod lyrics;
 mod matching;
 mod panel;
@@ -76,6 +78,26 @@ pub const MIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
     width: px(240.),
     height: px(140.),
 };
+
+/// The frame size pinned on the command line: `rox --window-size 1440x900`
+/// opens at exactly that and layout swaps leave it alone for the session. A
+/// dev flag for shooting the workspace previews at one consistent size; the
+/// window is a Wayland client, so nothing outside the process can size it.
+pub(crate) fn window_size_override() -> Option<gpui::Size<gpui::Pixels>> {
+    static SIZE: std::sync::OnceLock<Option<(f32, f32)>> = std::sync::OnceLock::new();
+    SIZE.get_or_init(|| {
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            if arg == "--window-size" {
+                let value = args.next()?;
+                let (w, h) = value.split_once('x')?;
+                return Some((w.parse().ok()?, h.parse().ok()?));
+            }
+        }
+        None
+    })
+    .map(|(w, h)| size(px(w).max(MIN_WINDOW_SIZE.width), px(h).max(MIN_WINDOW_SIZE.height)))
+}
 
 pub fn open_workspace(cx: &mut App) {
     open_workspace_with(workspace::WorkspaceStart::Restore, cx);
@@ -138,6 +160,14 @@ fn open_workspace_window(
             });
         }
     }
+    // The pinned dev size beats both the saved frame and a preset's size, so
+    // every window this session comes up at exactly what the flag asked for.
+    if let Some(s) = window_size_override() {
+        window_bounds = WindowBounds::Windowed(Bounds {
+            origin: window_bounds.get_bounds().origin,
+            size: s,
+        });
+    }
     let options = WindowOptions {
         window_bounds: Some(window_bounds),
         window_min_size: Some(MIN_WINDOW_SIZE),
@@ -197,6 +227,9 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
+        // The logging backend goes up first, so anything the rest of startup
+        // reports lands in the file and the console ring from the first line.
+        logging::init();
         // Whether this launch found a settings file decides the welcome
         // window later; recorded before anything can write one.
         settings::note_first_run();

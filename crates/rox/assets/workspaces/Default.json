@@ -127,7 +127,8 @@
                               "repeat": true,
                               "shuffle": true,
                               "stop": true,
-                              "random": true
+                              "random": true,
+                              "play_highlight": "square"
                             }
                           }
                         }
@@ -555,7 +556,9 @@
                           "min_width": 200.0,
                           "align": "right",
                           "stretch": false,
-                          "icon_only": false
+                          "icon": true,
+                          "slider": true,
+                          "percent": true
                         }
                       }
                     }
@@ -938,7 +941,6 @@
       "rounding": 0.0,
       "border": 0.0
     },
-    "theme": "dark",
     "keep_theme": false,
     "art_theming": false,
     "app_font_size": 16.0,

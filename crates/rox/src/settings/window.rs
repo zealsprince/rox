@@ -173,7 +173,6 @@ struct SettingsWindow {
     /// and the pickers when the live mode moves off it: a theme switch
     /// here, the OS flipping under System, a workspace apply.
     editor_mode: palette::Mode,
-    theme: Theme,
     keep_theme: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
@@ -412,7 +411,6 @@ impl SettingsWindow {
             page: Page::Appearance,
             base,
             editor_mode,
-            theme: settings.theme,
             keep_theme: settings.keep_theme,
             surface_opacity: settings.surface_opacity,
             backdrop_strength: settings.backdrop_strength,
@@ -508,8 +506,9 @@ impl SettingsWindow {
     /// The theme pick: which palette side renders, with System following
     /// the OS. Through the settings pipe so the side re-resolves and every
     /// window eases over; render then re-seeds the editor onto that side.
+    /// The radio reads the settings static, not a cached field, so this
+    /// and the theme toggle panel never show different states.
     fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
-        self.theme = theme;
         settings::set_theme(theme, cx);
         Settings::update(move |s| s.theme = theme);
         cx.notify();
@@ -941,7 +940,7 @@ impl SettingsWindow {
                                 ("Light", Theme::Light),
                                 ("System", Theme::System),
                             ],
-                            self.theme,
+                            settings::theme(),
                             Self::set_theme,
                             cx,
                         ),
@@ -1170,7 +1169,7 @@ impl SettingsWindow {
                     .update(cx, |input, cx| input.set_value("", window, cx));
                 self.set_icon_pack(Some(created), cx);
             }
-            Err(e) => eprintln!("icon pack: creating {name:?}: {e}"),
+            Err(e) => log::warn!("icon pack: creating {name:?}: {e}"),
         }
     }
 

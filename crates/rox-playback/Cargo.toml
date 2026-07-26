@@ -19,3 +19,7 @@ symphonia = { version = "0.6", default-features = false, features = [
 ] }
 # Wait-free SPSC ring for the RT boundary (ADR 3), both the sample ring and the PCM tap.
 rtrb = "0.3"
+# The logging facade: decode and output errors go through log macros the host
+# app's backend (crate::logging in rox) captures. A library only declares the
+# facade, never installs a logger.
+log = "0.4"

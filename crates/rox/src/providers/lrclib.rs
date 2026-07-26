@@ -6,7 +6,7 @@
 //! mistagged album would drop good candidates the confidence score can
 //! sort out instead.
 
-use super::{agent, LyricsCandidate, LyricsProvider, TrackQuery};
+use super::{agent, net_reason, LyricsCandidate, LyricsProvider, TrackQuery};
 
 const API: &str = "https://lrclib.net/api/search";
 
@@ -23,7 +23,7 @@ impl LyricsProvider for Lrclib {
             .query("artist_name", &query.artist)
             .query("track_name", &query.title)
             .call()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| net_reason(&e))?
             .into_string()
             .map_err(|e| e.to_string())?;
         let results: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;

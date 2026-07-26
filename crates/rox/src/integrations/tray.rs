@@ -220,7 +220,7 @@ pub(crate) fn sync(cx: &mut App) {
                 })
                 .detach();
             }
-            Err(err) => eprintln!("tray: no status notifier host, staying window-bound: {err}"),
+            Err(err) => log::warn!("tray: no status notifier host, staying window-bound: {err}"),
         }
     } else if !on && has {
         let service = cx.default_global::<TrayService>();

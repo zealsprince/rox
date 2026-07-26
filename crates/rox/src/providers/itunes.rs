@@ -4,7 +4,7 @@
 //! preview and a large image off the same source, so one result yields
 //! both without a second lookup.
 
-use super::{agent, string, ArtCandidate, ArtProvider, TrackQuery};
+use super::{agent, net_reason, string, ArtCandidate, ArtProvider, TrackQuery};
 
 const API: &str = "https://itunes.apple.com/search";
 
@@ -38,7 +38,7 @@ impl ArtProvider for Itunes {
             .query("entity", "album")
             .query("limit", "8")
             .call()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| net_reason(&e))?
             .into_string()
             .map_err(|e| e.to_string())?;
         let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;

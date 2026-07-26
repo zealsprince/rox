@@ -275,10 +275,13 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "min_width": 270.0,
+                          "max_width": 270.0,
                           "max_height": 24.0,
                           "align": "right",
                           "stop": true,
-                          "random": false
+                          "random": false,
+                          "play_highlight": "none"
                         }
                       }
                     }
@@ -298,10 +301,14 @@
                       "info": {
                         "panel": {
                           "locked": true,
-                          "max_width": 200.0,
+                          "min_width": 100.0,
+                          "max_width": 100.0,
                           "max_height": 24.0,
                           "align": "right",
-                          "stretch": false
+                          "stretch": false,
+                          "icon": true,
+                          "slider": false,
+                          "percent": true
                         }
                       }
                     }
@@ -316,9 +323,9 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    554.0,
-                    306.0,
-                    200.0
+                    690.0,
+                    270.0,
+                    100.0
                   ],
                   "axis": 0
                 }
@@ -453,9 +460,10 @@
                     "panel": {
                       "locked": true,
                       "max_height": 24.0,
-                      "align": "left",
+                      "align": "center",
                       "stop": true,
-                      "random": false
+                      "random": false,
+                      "play_highlight": "none"
                     }
                   }
                 }
@@ -537,6 +545,32 @@
     "text_faint": "#176a17",
     "gridline": "#124f12"
   },
+  "palette_light": {
+    "accent": "#157a15",
+    "accent_hover": "#0f5e0f",
+    "highlight": "#d6ffd0",
+    "border": "#a2bf98",
+    "border_light": "#96b58b",
+    "text_bright": "#0e300e",
+    "text_on_accent": "#eaf7e6",
+    "bg_root": "#f1f5ec",
+    "bg_panel": "#f1f5ec",
+    "bg_elevated": "#e8eee1",
+    "bg_menubar": "#e0e8d7",
+    "bg_menu": "#dce5d2",
+    "bg_control": "#d4dfc8",
+    "bg_menu_hover": "#cdd9bf",
+    "bg_control_active": "#c6d4b6",
+    "bg_control_hover": "#bfceae",
+    "bg_input": "#f5f8f2",
+    "bg_toolbar": "#e8eee1",
+    "text": "#1e5c1e",
+    "text_secondary": "#2b6b2b",
+    "text_dim": "#377837",
+    "text_muted": "#4a8a4a",
+    "text_faint": "#5f9c5f",
+    "gridline": "#78a878"
+  },
   "appearance": {
     "surface_opacity": 1.0,
     "backdrop_strength": 1.0,
@@ -546,7 +580,6 @@
       "rounding": 0.0,
       "border": 0.0
     },
-    "theme": "dark",
     "keep_theme": true,
     "art_theming": false,
     "rating_style": "stars",

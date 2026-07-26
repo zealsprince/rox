@@ -350,7 +350,8 @@
                           "repeat": true,
                           "shuffle": true,
                           "stop": true,
-                          "random": false
+                          "random": false,
+                          "play_highlight": "circle"
                         }
                       }
                     }
@@ -375,7 +376,9 @@
                           "min_width": 48.0,
                           "align": "left",
                           "stretch": false,
-                          "icon_only": true
+                          "icon": true,
+                          "slider": false,
+                          "percent": false
                         }
                       }
                     }
@@ -513,7 +516,8 @@
                           "repeat": false,
                           "shuffle": false,
                           "stop": false,
-                          "random": false
+                          "random": false,
+                          "play_highlight": "circle"
                         }
                       }
                     }
@@ -582,6 +586,32 @@
     "text_on_accent": "#ffffff",
     "text_secondary": "#a0a0a0"
   },
+  "palette_light": {
+    "accent": "#e4008a",
+    "accent_hover": "#b8006f",
+    "bg_control": "#ebebeb",
+    "bg_control_active": "#dfdfdf",
+    "bg_control_hover": "#dbdbdb",
+    "bg_elevated": "#f5f5f5",
+    "bg_input": "#f5f5f5",
+    "bg_menu": "#efefef",
+    "bg_menu_hover": "#e5e5e5",
+    "bg_menubar": "#ffffff",
+    "bg_panel": "#fafafa",
+    "bg_root": "#ffffff",
+    "bg_toolbar": "#fafafa",
+    "border": "#d0d0d0",
+    "border_light": "#c6c6c6",
+    "gridline": "#c2c2c2",
+    "highlight": "#1a1a1a",
+    "text": "#2d2d2d",
+    "text_bright": "#000000",
+    "text_dim": "#6b6b6b",
+    "text_faint": "#a4a4a4",
+    "text_muted": "#8a8a8a",
+    "text_on_accent": "#ffffff",
+    "text_secondary": "#555555"
+  },
   "appearance": {
     "surface_opacity": 1.0,
     "backdrop_strength": 1.0,
@@ -591,7 +621,6 @@
       "rounding": 0.0,
       "border": 0.0
     },
-    "theme": "dark",
     "keep_theme": true,
     "art_theming": true,
     "app_font": "Segoe UI",

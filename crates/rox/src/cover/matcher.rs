@@ -213,7 +213,10 @@ impl CoverMatch {
                 );
                 self.load_thumbs(cx);
             }
-            Err(e) => self.phase = Phase::Failed(format!("Search failed: {e}").into()),
+            Err(e) => {
+                log::warn!("cover search: {e}");
+                self.phase = Phase::Failed(format!("Search failed: {e}").into());
+            }
         }
         cx.notify();
     }
@@ -440,7 +443,7 @@ impl Render for CoverMatch {
 
         let content = match &self.phase {
             Phase::Searching => note("Searching...").into_any_element(),
-            Phase::Failed(e) => note(e.clone()).into_any_element(),
+            Phase::Failed(e) => crate::console_window::notice(e.clone()).into_any_element(),
             Phase::Ready(loaded) if loaded.is_empty() => note("No covers found").into_any_element(),
             Phase::Ready(loaded) => div()
                 .id("cover-grid")

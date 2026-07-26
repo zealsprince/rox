@@ -44,6 +44,26 @@ pub fn agent() -> &'static ureq::Agent {
     })
 }
 
+/// A ureq error folded to a short reason that's safe to show and safe to
+/// log. ureq's own Display prints the full request URL, and last.fm's URL
+/// carries the api key as a query param, so its string must never reach a
+/// panel or a log line - that leak is exactly what this exists to stop.
+/// A status failure reports the bare code; a transport failure maps to its
+/// kind, with the offline family (no dns, refused connection, dropped io)
+/// folded to one plain "no connection". This is the only sanctioned way to
+/// stringify a provider's ureq error; never call `.to_string()` on one.
+pub fn net_reason(e: &ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(code, _) => format!("service returned {code}"),
+        ureq::Error::Transport(t) => match t.kind() {
+            ureq::ErrorKind::Dns | ureq::ErrorKind::ConnectionFailed | ureq::ErrorKind::Io => {
+                "no connection".to_string()
+            }
+            other => other.to_string(),
+        },
+    }
+}
+
 /// Whether any lyrics provider is enabled, a static like the rating
 /// style's: the panel checks it in render and menu paths where a
 /// settings-file load has no place. Seeded at startup from the settings,
@@ -390,7 +410,7 @@ const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 /// all art traffic carries the app User-Agent like the rest.
 pub fn fetch_image(url: &str) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    let response = agent().get(url).call().map_err(|e| e.to_string())?;
+    let response = agent().get(url).call().map_err(|e| net_reason(&e))?;
     let mut bytes = Vec::new();
     // Read one byte past the cap: a body that fills that far is over the
     // limit, and silently truncating it would cache a corrupt image that

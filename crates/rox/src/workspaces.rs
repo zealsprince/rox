@@ -100,7 +100,6 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
         cx,
     );
     let a = &bundle.appearance;
-    settings::set_theme(a.theme, cx);
     palette::set_scalars(a.surface_opacity, a.backdrop_strength, cx);
     settings::set_app_frame(a.frame, cx);
     palette::set_keep_theme(a.keep_theme, cx);

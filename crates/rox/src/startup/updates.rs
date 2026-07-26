@@ -82,7 +82,7 @@ pub fn check_on_launch(cx: &mut gpui::App) {
         .spawn(async {
             match fetch_latest() {
                 Ok(release) => Settings::update(|s| s.update_cache = Some(cache(&release))),
-                Err(e) => eprintln!("update check: {e}"),
+                Err(e) => log::warn!("update check: {e}"),
             }
         })
         .detach();

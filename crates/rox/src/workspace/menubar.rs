@@ -40,6 +40,7 @@ impl Workspace {
                 }
             }
             MenuAction::OpenStats => crate::stats_window::open(self.state.clone(), cx),
+            MenuAction::OpenConsole => crate::console_window::open(cx),
             MenuAction::OpenWelcome => crate::startup::welcome_window::open(self.state.clone(), cx),
             MenuAction::OpenAbout => crate::startup::about_window::open(self.state.clone(), cx),
             MenuAction::ToggleMenubar => {

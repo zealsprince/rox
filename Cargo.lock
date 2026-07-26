@@ -5432,16 +5432,18 @@ dependencies = [
 
 [[package]]
 name = "rox"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
+ "chrono",
  "dirs 5.0.1",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
  "image",
  "ksni",
+ "log",
  "lsp-types",
  "md5",
  "notify-debouncer-full",
@@ -5462,7 +5464,7 @@ dependencies = [
 
 [[package]]
 name = "rox-dock"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5475,7 +5477,7 @@ dependencies = [
 
 [[package]]
 name = "rox-library"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "image",
  "lofty",
@@ -5486,16 +5488,17 @@ dependencies = [
 
 [[package]]
 name = "rox-playback"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "cpal",
+ "log",
  "rtrb",
  "symphonia",
 ]
 
 [[package]]
 name = "rox-viz"
-version = "1.4.1"
+version = "1.5.0"
 
 [[package]]
 name = "roxmltree"

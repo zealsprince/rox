@@ -132,7 +132,7 @@ fn store_in(dir: &Path, track: &Path, peaks: &[(f32, f32)]) {
     }
     let path = entry_path(dir, track);
     if let Err(e) = std::fs::write(&path, data) {
-        eprintln!("peaks cache: writing {}: {e}", path.display());
+        log::warn!("peaks cache: writing {}: {e}", path.display());
     }
 }
 

@@ -231,7 +231,10 @@ impl BiographyPanel {
                         this.loaded = Some((key, artist));
                         this.retire(old, cx);
                     }
-                    Err(e) => this.error = Some((key, format!("Lookup failed: {e}").into())),
+                    Err(e) => {
+                        log::warn!("biography: {name}: {e}");
+                        this.error = Some((key, format!("Couldn't load {name}: {e}").into()))
+                    }
                 }
                 // A fresh sheet reads from the top.
                 this.scroll.set_offset(point(px(0.), px(0.)));
@@ -614,7 +617,9 @@ impl BiographyPanel {
                 "Nothing found for {name}"
             )))),
             _ => match &self.error {
-                Some((k, error)) if *k == key => root.child(quiet(error.clone())),
+                Some((k, error)) if *k == key => {
+                    root.child(crate::console_window::notice(error.clone()))
+                }
                 _ => root.child(loading(SharedString::from(format!("Looking up {name}")))),
             },
         }

@@ -67,7 +67,7 @@ impl History {
             this.update(cx, |_, cx| match recorded {
                 Ok(Some(track_id)) => cx.emit(HistoryEvent::Recorded { track_id }),
                 Ok(None) => {}
-                Err(e) => eprintln!("history: {e}"),
+                Err(e) => log::warn!("history: {e}"),
             })
             .ok();
         })

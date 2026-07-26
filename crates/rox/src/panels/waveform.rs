@@ -202,7 +202,7 @@ impl WaveformPanel {
                 this.peaks = match result {
                     Ok(peaks) => Peaks::Ready(Arc::new(peaks)),
                     Err(e) => {
-                        eprintln!("waveform decode failed: {e}");
+                        log::warn!("waveform decode failed: {e}");
                         Peaks::Failed
                     }
                 };

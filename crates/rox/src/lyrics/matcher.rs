@@ -156,7 +156,10 @@ impl LyricsMatch {
                         this.selected = (!found.is_empty()).then_some(0);
                         this.phase = Phase::Ready(found);
                     }
-                    Err(e) => this.phase = Phase::Failed(format!("Search failed: {e}").into()),
+                    Err(e) => {
+                        log::warn!("lyrics search: {e}");
+                        this.phase = Phase::Failed(format!("Search failed: {e}").into());
+                    }
                 }
                 cx.notify();
             })
@@ -431,7 +434,7 @@ impl Render for LyricsMatch {
 
         let content = match &self.phase {
             Phase::Searching => note("Searching..."),
-            Phase::Failed(e) => note(e.clone()),
+            Phase::Failed(e) => crate::console_window::notice(e.clone()),
             Phase::Ready(found) if found.is_empty() => note("No matches found"),
             Phase::Ready(found) => div()
                 .flex()

@@ -145,9 +145,9 @@ where
         // The device dropped out or the backend faulted. The data callback
         // won't run again on this stream, so flag the loss and let the app
         // reopen; without this the ring fills, the engine parks, and the UI
-        // sits frozen on "playing". eprintln is fine here, this is the backend
+        // sits frozen on "playing". Logging is fine here, this is the backend
         // error thread, not the RT data path.
-        eprintln!("\nstream error: {err}");
+        log::error!("stream error: {err}");
         err_shared
             .device_lost
             .store(true, Ordering::Release);

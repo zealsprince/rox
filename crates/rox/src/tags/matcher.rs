@@ -341,7 +341,10 @@ impl TagMatch {
                 self.phase = Phase::Ready(found);
                 self.rearm();
             }
-            Err(e) => self.phase = Phase::Failed(format!("Search failed: {e}").into()),
+            Err(e) => {
+                log::warn!("metadata search: {e}");
+                self.phase = Phase::Failed(format!("Search failed: {e}").into());
+            }
         }
         cx.notify();
     }
@@ -659,7 +662,7 @@ impl Render for TagMatch {
 
         let content = match &self.phase {
             Phase::Searching => note("Searching..."),
-            Phase::Failed(e) => note(e.clone()),
+            Phase::Failed(e) => crate::console_window::notice(e.clone()),
             Phase::Ready(found) if found.is_empty() => note("No matches found"),
             Phase::Ready(found) => {
                 let compare = match self.selected.and_then(|ix| found.get(ix)) {

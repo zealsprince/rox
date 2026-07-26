@@ -35,6 +35,7 @@ use crate::panels::search::{SearchConfig, SearchPanel};
 use crate::panels::slide::{SlideConfig, SlidePanel};
 use crate::panels::spacer::{SpacerConfig, SpacerPanel};
 use crate::panels::spectrum::{SpectrumConfig, SpectrumPanel};
+use crate::panels::theme_toggle::{ThemeToggleConfig, ThemeTogglePanel};
 use crate::panels::transport::{
     SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
     VolumeConfig, VolumePanel,
@@ -368,6 +369,16 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
             build: |state, _, _, cx| {
                 Arc::new(cx.new(|cx| {
                     QueueWidgetPanel::new(state.clone(), QueueWidgetConfig::default(), cx)
+                }))
+            },
+        },
+        PanelDef {
+            label: "Theme Toggle",
+            icon: icons::CONTRAST,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| {
+                    ThemeTogglePanel::new(state.clone(), ThemeToggleConfig::default(), cx)
                 }))
             },
         },

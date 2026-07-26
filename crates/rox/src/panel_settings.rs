@@ -47,8 +47,11 @@ use crate::panels::queue::QueuePanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
 use crate::panels::search::SearchPanel;
 use crate::panels::slide::SlidePanel;
+use crate::panels::spacer::SpacerPanel;
 use crate::panels::spectrum::SpectrumPanel;
+use crate::panels::theme_toggle::ThemeTogglePanel;
 use crate::panels::transport::{SeekStripPanel, TrackInfoPanel, TransportPanel, VolumePanel};
+use crate::panels::vu::VuPanel;
 use crate::panels::waveform::WaveformPanel;
 use crate::panels::window_controls::WindowControlsPanel;
 use crate::settings;
@@ -165,6 +168,9 @@ macro_rules! with_settings_panel {
             SlidePanel,
             FolderTreePanel,
             MiniTogglePanel,
+            ThemeTogglePanel,
+            SpacerPanel,
+            VuPanel,
         )
     };
     (@try $view:expr, $panel:ident, $body:expr, $($ty:ty),+ $(,)?) => {

@@ -13,7 +13,7 @@ to trust with a real collection, and the whole thing stays fast at tens of thous
 tracks. Rust, built on gpui, with Linux, Mac, and Windows all first-class. If it doesn't
 start in under a second, it isn't rox.
 
-![rox](docs/0S-screenshots/nekorox.jpg)
+![rox](docs/0S-screenshots/Preview_Dark.png)
 
 <details>
 <summary><strong>The feature rundown</strong></summary>
@@ -126,16 +126,16 @@ click away on the welcome window or in settings:
     <th width="50%">Llama (WinAmp)</th>
   </tr>
   <tr>
-    <td><img src="crates/rox/assets/workspaces/Foobar.png" alt="Foobar" width="100%"></td>
-    <td><img src="crates/rox/assets/workspaces/Llama.png" alt="Llama" width="100%"></td>
+    <td><img src="crates/rox/assets/workspaces/Foobar_Light.png" alt="Foobar" width="100%"></td>
+    <td><img src="crates/rox/assets/workspaces/Llama_Dark.png" alt="Llama" width="100%"></td>
   </tr>
   <tr>
     <th>Metro</th>
     <th>Phosphor</th>
   </tr>
   <tr>
-    <td valign="top"><img src="crates/rox/assets/workspaces/Metro.png" alt="Metro" width="100%"></td>
-    <td valign="top"><img src="crates/rox/assets/workspaces/Phosphor.png" alt="Phosphor" width="100%"></td>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Metro_Dark.png" alt="Metro" width="100%"></td>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Phosphor_Dark.png" alt="Phosphor" width="100%"></td>
   </tr>
 </table>
 

@@ -25,6 +25,7 @@ pub mod search;
 pub mod slide;
 pub mod spacer;
 pub mod spectrum;
+pub mod theme_toggle;
 pub mod transport;
 pub mod vu;
 pub mod waveform;

@@ -12,7 +12,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use super::{agent, string, MetadataCandidate, MetadataProvider, TrackQuery};
+use super::{agent, net_reason, string, MetadataCandidate, MetadataProvider, TrackQuery};
 
 const API: &str = "https://musicbrainz.org/ws/2/recording";
 
@@ -51,7 +51,7 @@ impl MetadataProvider for MusicBrainz {
             .query("fmt", "json")
             .query("limit", "10")
             .call()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| net_reason(&e))?
             .into_string()
             .map_err(|e| e.to_string())?;
         let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;

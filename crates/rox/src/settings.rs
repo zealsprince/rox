@@ -302,6 +302,9 @@ pub struct Settings {
     /// The app settings window's last size, restored on the next open.
     /// None until the window closes.
     pub settings_window: Option<LayoutSize>,
+    /// The console window's last size, restored on the next open. None until
+    /// the window closes.
+    pub console_window: Option<LayoutSize>,
     /// The panel settings window's last size, shared across panels and
     /// restored on the next open. None until a window closes.
     pub panel_settings_window: Option<LayoutSize>,
@@ -316,12 +319,15 @@ pub struct Settings {
 /// The theme pick: dark, light, or the OS's own preference. Dark and
 /// light name the two user palettes directly; System resolves to one of
 /// them against the desktop's light/dark setting and follows it live.
+/// System is the default: a fresh install matches the desktop it lands
+/// on. The pick is the user's alone - workspace bundles carry no theme,
+/// so applying a look never flips it.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
-    #[default]
     Dark,
     Light,
+    #[default]
     System,
 }
 
@@ -806,14 +812,15 @@ impl Default for WorkspaceBundle {
 /// The appearance a workspace carries: the visual knobs it dresses the app
 /// with, pulled from and pushed back to [`Settings`]. The subset that reads
 /// as pure look, so a bundle recolors and rearranges without dragging along
-/// another machine's folders or account.
+/// another machine's folders or account. The theme pick stays out too: a
+/// workspace brings both palettes and the user's dark/light/System choice
+/// decides which one shows.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceBundle {
     pub surface_opacity: f32,
     pub backdrop_strength: f32,
     pub frame: Frame,
-    pub theme: Theme,
     pub art_theming: bool,
     pub keep_theme: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -831,7 +838,6 @@ impl Default for AppearanceBundle {
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
             frame: Frame::DEFAULT,
-            theme: Theme::default(),
             art_theming: false,
             keep_theme: false,
             app_font: None,
@@ -894,7 +900,6 @@ impl WorkspaceBundle {
                 surface_opacity: s.surface_opacity,
                 backdrop_strength: s.backdrop_strength,
                 frame: s.frame,
-                theme: s.theme,
                 art_theming: s.art_theming,
                 keep_theme: s.keep_theme,
                 app_font: s.app_font.clone(),
@@ -923,7 +928,6 @@ impl WorkspaceBundle {
         s.surface_opacity = a.surface_opacity;
         s.backdrop_strength = a.backdrop_strength;
         s.frame = a.frame;
-        s.theme = a.theme;
         s.art_theming = a.art_theming;
         s.keep_theme = a.keep_theme;
         s.app_font = a.app_font;
@@ -1052,6 +1056,7 @@ impl Default for Settings {
             tag_editor: None,
             stats_window: None,
             settings_window: None,
+            console_window: None,
             panel_settings_window: None,
             queue_view: None,
         }
@@ -1065,7 +1070,7 @@ impl Settings {
         let path = settings_path();
         let mut settings: Settings = match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
-                eprintln!("settings: resetting {}: {e}", path.display());
+                log::warn!("settings: resetting {}: {e}", path.display());
                 Settings::default()
             }),
             Err(_) => Settings::default(),
@@ -1149,7 +1154,7 @@ impl Settings {
             // A non-finite f32 would fail here; log and keep the old file
             // rather than panic the whole app mid-playback.
             Err(e) => {
-                eprintln!("settings: serializing: {e}");
+                log::warn!("settings: serializing: {e}");
                 return;
             }
         };
@@ -1159,11 +1164,11 @@ impl Settings {
         // within the same directory.
         let tmp = path.with_extension("json.tmp");
         if let Err(e) = std::fs::write(&tmp, &text) {
-            eprintln!("settings: writing {}: {e}", tmp.display());
+            log::warn!("settings: writing {}: {e}", tmp.display());
             return;
         }
         if let Err(e) = std::fs::rename(&tmp, &path) {
-            eprintln!("settings: replacing {}: {e}", path.display());
+            log::warn!("settings: replacing {}: {e}", path.display());
             let _ = std::fs::remove_file(&tmp);
         }
     }
@@ -1247,7 +1252,8 @@ mod tests {
         assert_eq!(dst.surface_opacity, 0.5);
         assert_eq!(dst.frame.rounding, 12.0);
         assert_eq!(dst.frame.padding, 8.0);
-        assert!(dst.theme == Theme::Light);
+        // The theme pick is the user's alone; a bundle never moves it.
+        assert!(dst.theme == Theme::default());
         assert!(dst.art_theming);
         assert!(dst.keep_theme);
         assert!(dst.rating_style == RatingStyle::Numeric);

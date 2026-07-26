@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::settings::Settings;
 
-use super::{agent, string};
+use super::{agent, net_reason, string};
 
 const API: &str = "https://ws.audioscrobbler.com/2.0/";
 
@@ -71,7 +71,7 @@ pub fn artist_info(name: &str) -> Result<Option<ArtistInfo>, String> {
         Err(ureq::Error::Status(_, response)) => {
             response.into_string().map_err(|e| e.to_string())?
         }
-        Err(e) => return Err(e.to_string()),
+        Err(e) => return Err(net_reason(&e)),
     };
     let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     if let Some(code) = body.get("error").and_then(|e| e.as_i64()) {

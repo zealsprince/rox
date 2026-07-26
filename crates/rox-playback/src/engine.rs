@@ -421,7 +421,7 @@ impl Engine {
                     return Some(src);
                 }
                 Err(e) => {
-                    eprintln!("\nskipping {}: {e}", self.queue[i].display());
+                    log::warn!("skipping {}: {e}", self.queue[i].display());
                     p += 1;
                 }
             }
@@ -939,7 +939,7 @@ impl Source {
                     return false;
                 }
                 Err(e) => {
-                    eprintln!("\npacket error, ending track: {e}");
+                    log::warn!("packet error, ending track: {e}");
                     self.resampler.flush(out);
                     return false;
                 }
@@ -963,15 +963,15 @@ impl Source {
                 }
                 // Corrupt or truncated packet: skip it, keep the track going.
                 Err(Error::DecodeError(e)) => {
-                    eprintln!("\ndecode error, skipping packet: {e}");
+                    log::warn!("decode error, skipping packet: {e}");
                     continue;
                 }
                 Err(Error::IoError(e)) => {
-                    eprintln!("\nio error, skipping packet: {e}");
+                    log::warn!("io error, skipping packet: {e}");
                     continue;
                 }
                 Err(e) => {
-                    eprintln!("\nfatal decode error, ending track: {e}");
+                    log::error!("fatal decode error, ending track: {e}");
                     self.resampler.flush(out);
                     return false;
                 }
@@ -1039,7 +1039,7 @@ impl Source {
                 )
             }
             Err(e) => {
-                eprintln!("\nseek failed: {e}");
+                log::warn!("seek failed: {e}");
                 // Position is unchanged; the reader never moved, so report no
                 // landing and let the caller leave the clock where it was.
                 None

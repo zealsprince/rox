@@ -21,10 +21,13 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "min_width": 310.0,
+                          "max_width": 360.0,
                           "max_height": 24.0,
                           "align": "left",
                           "stop": true,
-                          "random": true
+                          "random": true,
+                          "play_highlight": "none"
                         }
                       }
                     }
@@ -67,10 +70,14 @@
                       "info": {
                         "panel": {
                           "locked": true,
-                          "max_width": 200.0,
+                          "min_width": 140.0,
+                          "max_width": 260.0,
                           "max_height": 24.0,
                           "align": "right",
-                          "stretch": false
+                          "stretch": false,
+                          "icon": true,
+                          "slider": true,
+                          "percent": false
                         }
                       }
                     }
@@ -85,8 +92,8 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    300.0,
-                    660.0,
+                    310.0,
+                    650.0,
                     180.0
                   ],
                   "axis": 0
@@ -269,6 +276,32 @@
     }
   ],
   "primary_layout": "Foobar",
+  "palette_dark": {
+    "accent": "#4a8fd4",
+    "accent_hover": "#6da8e0",
+    "bg_control": "#2e2e2e",
+    "bg_control_active": "#383e45",
+    "bg_control_hover": "#3d434a",
+    "bg_elevated": "#232323",
+    "bg_input": "#262626",
+    "bg_menu": "#2b2b2b",
+    "bg_menu_hover": "#343a41",
+    "bg_menubar": "#262626",
+    "bg_panel": "#1e1e1e",
+    "bg_root": "#161616",
+    "bg_toolbar": "#1a1a1a",
+    "border": "#3c3c3c",
+    "border_light": "#464646",
+    "gridline": "#4e4e4e",
+    "highlight": "#ffffff",
+    "text": "#e0e0e0",
+    "text_bright": "#ffffff",
+    "text_dim": "#9a9a9a",
+    "text_faint": "#676767",
+    "text_muted": "#7e7e7e",
+    "text_on_accent": "#ffffff",
+    "text_secondary": "#b8b8b8"
+  },
   "palette_light": {
     "accent": "#3873b3",
     "accent_hover": "#5590cc",
@@ -304,7 +337,6 @@
       "rounding": 0.0,
       "border": 0.0
     },
-    "theme": "light",
     "keep_theme": false,
     "art_theming": false,
     "rating_style": "stars",

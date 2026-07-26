@@ -6,7 +6,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use discord_rich_presence::activity::{Activity, ActivityType, Assets, Timestamps};
+use discord_rich_presence::activity::{Activity, ActivityType, Assets, Button, Timestamps};
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use gpui::{Context, Entity, Subscription};
 use log::{error, info, warn};
@@ -33,6 +33,7 @@ pub struct DiscordTrackState {
     pub position_secs: f64,
     pub duration_secs: Option<f64>,
     pub is_playing: bool,
+    pub show_button: bool,
 }
 
 impl PartialEq for DiscordTrackState {
@@ -42,8 +43,7 @@ impl PartialEq for DiscordTrackState {
             && self.album == other.album
             && self.duration_secs == other.duration_secs
             && self.is_playing == other.is_playing
-            // Only consider state changed if position jumped/seeked by more than 2 seconds
-            && (self.position_secs - other.position_secs).abs() < 2.0
+            && self.show_button == other.show_button
     }
 }
 
@@ -153,6 +153,7 @@ impl DiscordPresence {
                 position_secs: now.position_secs,
                 duration_secs: now.duration_secs,
                 is_playing,
+                show_button: self.config.show_button,
             }
         });
 
@@ -296,6 +297,19 @@ impl DiscordPresence {
                             .large_text(large_text);
                         activity = activity.assets(assets);
 
+                        // Add clickable "View on Last.fm" button if enabled and artist/title available
+                        let lastfm_url = format!(
+                            "https://www.last.fm/music/{}/_/{}",
+                            url_encode(&state.artist),
+                            url_encode(&state.title)
+                        );
+                        if state.show_button
+                            && (!state.artist.is_empty() || !state.title.is_empty())
+                        {
+                            activity = activity
+                                .buttons(vec![Button::new("View on Last.fm", &lastfm_url)]);
+                        }
+
                         if let Err(e) = cli.set_activity(activity) {
                             error!("Discord RPC set_activity failed: {e}");
                             let _ = cli.close();
@@ -319,4 +333,19 @@ impl DiscordPresence {
             info!("Discord IPC loop closed");
         }
     }
+}
+
+/// Simple percent-encoding for URLs.
+fn url_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for b in input.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }

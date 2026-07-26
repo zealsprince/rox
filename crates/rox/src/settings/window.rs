@@ -244,6 +244,7 @@ struct SettingsWindow {
     discord_enabled: bool,
     discord_show_timestamps: bool,
     discord_show_details: bool,
+    discord_show_button: bool,
     /// The api credential inputs; edits mirror into the scrobbler per
     /// keystroke, the pickers' cadence.
     lastfm_key: Entity<InputState>,
@@ -451,6 +452,7 @@ impl SettingsWindow {
             discord_enabled: settings.discord.enabled,
             discord_show_timestamps: settings.discord.show_timestamps,
             discord_show_details: settings.discord.show_details,
+            discord_show_button: settings.discord.show_button,
             lastfm_key,
             lastfm_secret,
             threshold_scrub: ScrubState::default(),
@@ -613,6 +615,13 @@ impl SettingsWindow {
     fn set_discord_show_details(&mut self, on: bool, cx: &mut Context<Self>) {
         self.discord_show_details = on;
         Settings::update(move |s| s.discord.show_details = on);
+        self.discord.update(cx, |d, _| d.reload_config());
+        cx.notify();
+    }
+
+    fn set_discord_show_button(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.discord_show_button = on;
+        Settings::update(move |s| s.discord.show_button = on);
         self.discord.update(cx, |d, _| d.reload_config());
         cx.notify();
     }
@@ -1494,6 +1503,15 @@ impl SettingsWindow {
                         panel::toggle(
                             self.discord_show_details,
                             Self::set_discord_show_details,
+                            cx,
+                        ),
+                    ))
+                    .child(panel::setting_row(
+                        "Show Last.fm Button",
+                        Some("Include a clickable 'View on Last.fm' button in Discord status"),
+                        panel::toggle(
+                            self.discord_show_button,
+                            Self::set_discord_show_button,
                             cx,
                         ),
                     )),

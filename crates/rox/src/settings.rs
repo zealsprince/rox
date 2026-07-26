@@ -731,6 +731,8 @@ pub struct DiscordSettings {
     pub show_timestamps: bool,
     /// Whether track title/artist details are shown.
     pub show_details: bool,
+    /// Whether "View on Last.fm" button is shown.
+    pub show_button: bool,
 }
 
 impl Default for DiscordSettings {
@@ -739,6 +741,7 @@ impl Default for DiscordSettings {
             enabled: true,
             show_timestamps: true,
             show_details: true,
+            show_button: true,
         }
     }
 }

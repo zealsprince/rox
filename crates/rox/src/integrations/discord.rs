@@ -15,7 +15,7 @@ use crate::panels::library::Library;
 use crate::player::Player;
 use crate::settings::{DiscordSettings, Settings};
 
-/// Default Discord Client Application ID for rox.
+/// Discord Client Application ID for rox.
 const DISCORD_APP_ID: &str = "1530943456543772732";
 
 /// Commands sent from the GPUI main thread to the background IPC worker loop.
@@ -308,9 +308,17 @@ impl DiscordPresence {
                             (false, false) => state.title.clone(),
                         };
 
+                        let (small_key, small_text) = if state.is_playing {
+                            ("play", "Playing")
+                        } else {
+                            ("pause", "Paused")
+                        };
+
                         let assets = Assets::new()
                             .large_image(image_key)
-                            .large_text(&large_text);
+                            .large_text(&large_text)
+                            .small_image(small_key)
+                            .small_text(small_text);
                         activity = activity.assets(assets);
 
                         // Add clickable buttons if enabled and artist/title available

@@ -132,7 +132,7 @@ const PAGES: &[(Page, &str, &str)] = &[
     (Page::Workspace, "Workspace", icons::APP_WINDOW),
     (Page::Library, "Library", icons::LIST_MUSIC),
     (Page::Providers, "Providers", icons::DOWNLOAD),
-    (Page::Scrobbling, "Scrobbling", icons::RADIO),
+    (Page::Scrobbling, "Integrations", icons::RADIO),
     (Page::Storage, "Storage", icons::DATABASE),
 ];
 

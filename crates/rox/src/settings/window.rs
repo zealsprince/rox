@@ -122,7 +122,7 @@ enum Page {
     Workspace,
     Library,
     Providers,
-    Scrobbling,
+    Integrations,
     Storage,
 }
 
@@ -132,7 +132,7 @@ const PAGES: &[(Page, &str, &str)] = &[
     (Page::Workspace, "Workspace", icons::APP_WINDOW),
     (Page::Library, "Library", icons::LIST_MUSIC),
     (Page::Providers, "Providers", icons::DOWNLOAD),
-    (Page::Scrobbling, "Integrations", icons::RADIO),
+    (Page::Integrations, "Integrations", icons::RADIO),
     (Page::Storage, "Storage", icons::DATABASE),
 ];
 
@@ -1327,10 +1327,9 @@ impl SettingsWindow {
             ))
     }
 
-    /// The Scrobbling page: the last.fm account section - the user's own
-    /// api credentials, the connect flow, the connection readout - and
-    /// the scrobbling knobs under it.
-    fn scrobbling_page(&self, cx: &mut Context<Self>) -> Div {
+    /// The Integrations page: Last.fm account & scrobbling settings,
+    /// and Discord Rich Presence knobs.
+    fn integrations_page(&self, cx: &mut Context<Self>) -> Div {
         let scrobbler = self.scrobbler.read(cx);
         let config = scrobbler.config().clone();
         let phase = scrobbler.phase().clone();
@@ -2374,7 +2373,7 @@ impl Render for SettingsWindow {
                 Page::Workspace => self.workspace_page(cx),
                 Page::Library => self.library_page(cx),
                 Page::Providers => self.providers_page(cx),
-                Page::Scrobbling => self.scrobbling_page(cx),
+                Page::Integrations => self.integrations_page(cx),
                 Page::Storage => self.storage_page(cx),
             };
 

@@ -374,19 +374,9 @@ impl DiscordPresence {
     }
 }
 
-/// Simple percent-encoding for URLs.
+/// Standard UTF-8 percent-encoding for URLs.
 fn url_encode(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for b in input.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
+    url::form_urlencoded::byte_serialize(input.as_bytes()).collect()
 }
 
 /// Format audio quality text based on codec and bitrate.

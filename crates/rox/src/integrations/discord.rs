@@ -37,6 +37,7 @@ pub struct DiscordTrackState {
     pub is_playing: bool,
     pub show_lastfm_button: bool,
     pub show_youtube_button: bool,
+    pub cover_url: Option<String>,
 }
 
 impl PartialEq for DiscordTrackState {
@@ -50,6 +51,7 @@ impl PartialEq for DiscordTrackState {
             && self.is_playing == other.is_playing
             && self.show_lastfm_button == other.show_lastfm_button
             && self.show_youtube_button == other.show_youtube_button
+            && self.cover_url == other.cover_url
     }
 }
 
@@ -60,6 +62,7 @@ pub struct DiscordPresence {
     last_sent_track: Option<DiscordTrackState>,
     last_sent_time: Option<SystemTime>,
     last_sent_position: f64,
+    _art_task: Option<gpui::Task<()>>,
     _player_changed: Subscription,
 }
 
@@ -92,6 +95,7 @@ impl DiscordPresence {
             last_sent_track: None,
             last_sent_time: None,
             last_sent_position: 0.0,
+            _art_task: None,
             _player_changed,
         }
     }
@@ -170,6 +174,7 @@ impl DiscordPresence {
                 is_playing,
                 show_lastfm_button: self.config.show_lastfm_button,
                 show_youtube_button: self.config.show_youtube_button,
+                cover_url: self.last_sent_track.as_ref().and_then(|t| t.cover_url.clone()),
             }
         });
 
@@ -204,6 +209,14 @@ impl DiscordPresence {
         };
 
         if should_update {
+            let track_changed = match (&self.last_sent_track, &current_state) {
+                (Some(prev), Some(curr)) => {
+                    prev.title != curr.title || prev.artist != curr.artist || prev.album != curr.album
+                }
+                (None, Some(_)) => true,
+                _ => false,
+            };
+
             self.last_sent_track = current_state.clone();
             self.last_sent_time = if current_state.is_some() {
                 Some(now_time)
@@ -211,6 +224,33 @@ impl DiscordPresence {
                 None
             };
             self.last_sent_position = current_state.as_ref().map(|s| s.position_secs).unwrap_or(0.0);
+
+            if track_changed {
+                if let Some(curr) = current_state.clone() {
+                    if !curr.artist.is_empty() || !curr.album.is_empty() {
+                        let sender = self.sender.clone();
+                        let mut curr_state = curr;
+                        self._art_task = Some(cx.background_executor().spawn(async move {
+                            let query = crate::providers::TrackQuery {
+                                artist: curr_state.artist.clone(),
+                                album: curr_state.album.clone(),
+                                title: curr_state.title.clone(),
+                                duration_secs: curr_state.duration_secs,
+                            };
+                            if let Ok(candidates) = crate::providers::search_art(&query) {
+                                if let Some(first) = candidates.first() {
+                                    curr_state.cover_url = Some(first.thumb_url.clone());
+                                    info!(
+                                        "Resolved cover art for '{}' via {}: {}",
+                                        curr_state.title, first.provider, first.thumb_url
+                                    );
+                                    let _ = sender.try_send(DiscordCommand::UpdatePresence(Some(curr_state)));
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
 
             let cmd = match current_state {
                 Some(s) => DiscordCommand::UpdatePresence(Some(s)),
@@ -276,32 +316,7 @@ impl DiscordPresence {
                             activity = activity.timestamps(timestamps);
                         }
 
-                        // Attempt to resolve cover art URL online via iTunes / Deezer / Last.fm providers
-                        let mut cover_url: Option<String> = None;
-                        if !state.artist.is_empty() || !state.album.is_empty() {
-                            let query = crate::providers::TrackQuery {
-                                artist: state.artist.clone(),
-                                album: state.album.clone(),
-                                title: state.title.clone(),
-                                duration_secs: state.duration_secs,
-                            };
-                            match crate::providers::search_art(&query) {
-                                Ok(candidates) => {
-                                    if let Some(first) = candidates.first() {
-                                        cover_url = Some(first.thumb_url.clone());
-                                        info!(
-                                            "Resolved cover art for '{}' via {}: {}",
-                                            state.title, first.provider, first.thumb_url
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("Artwork search error for '{}': {e}", state.title);
-                                }
-                            }
-                        }
-
-                        let image_key = cover_url.as_deref().unwrap_or("app_icon");
+                        let image_key = state.cover_url.as_deref().unwrap_or("app_icon");
                         let format_str = format_quality(&state.codec, state.bitrate_kbps);
 
                         let large_text = match (!state.album.is_empty(), !format_str.is_empty()) {

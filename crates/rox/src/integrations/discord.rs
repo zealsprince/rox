@@ -35,7 +35,8 @@ pub struct DiscordTrackState {
     pub position_secs: f64,
     pub duration_secs: Option<f64>,
     pub is_playing: bool,
-    pub show_button: bool,
+    pub show_lastfm_button: bool,
+    pub show_youtube_button: bool,
 }
 
 impl PartialEq for DiscordTrackState {
@@ -47,7 +48,8 @@ impl PartialEq for DiscordTrackState {
             && self.bitrate_kbps == other.bitrate_kbps
             && self.duration_secs == other.duration_secs
             && self.is_playing == other.is_playing
-            && self.show_button == other.show_button
+            && self.show_lastfm_button == other.show_lastfm_button
+            && self.show_youtube_button == other.show_youtube_button
     }
 }
 
@@ -166,7 +168,8 @@ impl DiscordPresence {
                 position_secs: now.position_secs,
                 duration_secs: now.duration_secs,
                 is_playing,
-                show_button: self.config.show_button,
+                show_lastfm_button: self.config.show_lastfm_button,
+                show_youtube_button: self.config.show_youtube_button,
             }
         });
 
@@ -322,6 +325,7 @@ impl DiscordPresence {
                         activity = activity.assets(assets);
 
                         // Add clickable buttons if enabled and artist/title available
+                        let mut buttons = Vec::new();
                         let lastfm_url = format!(
                             "https://www.last.fm/music/{}/_/{}",
                             url_encode(&state.artist),
@@ -332,13 +336,17 @@ impl DiscordPresence {
                             url_encode(&state.artist),
                             url_encode(&state.title)
                         );
-                        if state.show_button
-                            && (!state.artist.is_empty() || !state.title.is_empty())
-                        {
-                            activity = activity.buttons(vec![
-                                Button::new("View on Last.fm", &lastfm_url),
-                                Button::new("Search on YouTube", &youtube_url),
-                            ]);
+                        let has_meta = !state.artist.is_empty() || !state.title.is_empty();
+
+                        if state.show_lastfm_button && has_meta {
+                            buttons.push(Button::new("View on Last.fm", &lastfm_url));
+                        }
+                        if state.show_youtube_button && has_meta {
+                            buttons.push(Button::new("Search on YouTube", &youtube_url));
+                        }
+
+                        if !buttons.is_empty() {
+                            activity = activity.buttons(buttons);
                         }
 
                         if let Err(e) = cli.set_activity(activity) {

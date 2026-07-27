@@ -244,7 +244,8 @@ struct SettingsWindow {
     discord_enabled: bool,
     discord_show_timestamps: bool,
     discord_show_details: bool,
-    discord_show_button: bool,
+    discord_show_lastfm_button: bool,
+    discord_show_youtube_button: bool,
     /// The api credential inputs; edits mirror into the scrobbler per
     /// keystroke, the pickers' cadence.
     lastfm_key: Entity<InputState>,
@@ -452,7 +453,8 @@ impl SettingsWindow {
             discord_enabled: settings.discord.enabled,
             discord_show_timestamps: settings.discord.show_timestamps,
             discord_show_details: settings.discord.show_details,
-            discord_show_button: settings.discord.show_button,
+            discord_show_lastfm_button: settings.discord.show_lastfm_button,
+            discord_show_youtube_button: settings.discord.show_youtube_button,
             lastfm_key,
             lastfm_secret,
             threshold_scrub: ScrubState::default(),
@@ -619,9 +621,16 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn set_discord_show_button(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.discord_show_button = on;
-        Settings::update(move |s| s.discord.show_button = on);
+    fn set_discord_show_lastfm_button(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.discord_show_lastfm_button = on;
+        Settings::update(move |s| s.discord.show_lastfm_button = on);
+        self.discord.update(cx, |d, _| d.reload_config());
+        cx.notify();
+    }
+
+    fn set_discord_show_youtube_button(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.discord_show_youtube_button = on;
+        Settings::update(move |s| s.discord.show_youtube_button = on);
         self.discord.update(cx, |d, _| d.reload_config());
         cx.notify();
     }
@@ -1509,8 +1518,17 @@ impl SettingsWindow {
                         "Show Last.fm Button",
                         Some("Include a clickable 'View on Last.fm' button in Discord status"),
                         panel::toggle(
-                            self.discord_show_button,
-                            Self::set_discord_show_button,
+                            self.discord_show_lastfm_button,
+                            Self::set_discord_show_lastfm_button,
+                            cx,
+                        ),
+                    ))
+                    .child(panel::setting_row(
+                        "Show YouTube Button",
+                        Some("Include a clickable 'Search on YouTube' button in Discord status"),
+                        panel::toggle(
+                            self.discord_show_youtube_button,
+                            Self::set_discord_show_youtube_button,
                             cx,
                         ),
                     )),

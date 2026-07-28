@@ -194,7 +194,7 @@ and applies the small patches under `patches/` (the nix shell does this on entry
 
 Copy `.env.template` to `.env` to bake service identities into the binary at
 compile time: `LASTFM_API_KEY` and `LASTFM_API_SECRET` for one-click scrobbler
-connect, `DISCORD_CLIENT_ID` for rich presence. Exported environment variables
+connect, `DISCORD_APPLICATION_ID` for rich presence. Exported environment variables
 win over the file, which is how the release workflow passes its secrets. A build
 without any of them works the same minus those integrations, and the last.fm
 settings page takes your own key pair at runtime either way.

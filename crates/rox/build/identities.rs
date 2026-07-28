@@ -7,7 +7,8 @@ use std::path::Path;
 
 /// The identities [`option_env!`] reads, the same set the release workflow
 /// passes as repository secrets and `.env.template` documents.
-pub const IDENTITY_KEYS: [&str; 3] = ["LASTFM_API_KEY", "LASTFM_API_SECRET", "DISCORD_CLIENT_ID"];
+pub const IDENTITY_KEYS: [&str; 3] =
+    ["LASTFM_API_KEY", "LASTFM_API_SECRET", "DISCORD_APPLICATION_ID"];
 
 /// The identities the crate should compile with, read out of `env_file`.
 /// `exported` answers what the surrounding environment already carries, and
@@ -76,13 +77,13 @@ mod tests {
     fn an_exported_value_beats_the_file() {
         let path = env_file(
             "shadowed",
-            "LASTFM_API_KEY=fromfile\nDISCORD_CLIENT_ID=123\n",
+            "LASTFM_API_KEY=fromfile\nDISCORD_APPLICATION_ID=123\n",
         );
         let env = HashMap::from([("LASTFM_API_KEY", "fromenv")]);
         let resolved = resolve(&path, |key| env.get(key).map(|v| v.to_string()));
         // The shadowed key drops out entirely: build.rs emits nothing for it,
         // so cargo passes the exported value through untouched.
-        assert_eq!(resolved, vec![("DISCORD_CLIENT_ID".into(), "123".into())]);
+        assert_eq!(resolved, vec![("DISCORD_APPLICATION_ID".into(), "123".into())]);
     }
 
     /// The unconfigured-secret case: the workflow's `env:` block still defines

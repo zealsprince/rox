@@ -1,1 +1,5 @@
 blank_issues_enabled: true
+contact_links:
+  - name: "Chat: #rox on IRC"
+    url: https://hivecom.net/chat?channel=rox
+    about: Quick questions and ideas that aren't issues yet. irc.hivecom.net, or the web chat right here.

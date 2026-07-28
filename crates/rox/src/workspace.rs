@@ -38,10 +38,12 @@ use crate::lastfm::Scrobbler;
 use crate::panel::{self, AppState, TabHosts};
 use crate::panel_catalog::{self as catalog, PanelDef, PanelPlacement, PanelSection};
 use crate::panels::art::{ArtConfig, ArtPanel};
+use crate::panels::artist_grid::{ArtistGridConfig, ArtistGridPanel};
 use crate::panels::biography::BiographyPanel;
 use crate::panels::cover::CoverArtPanel;
 use crate::panels::drag_anchor::DragAnchorPanel;
 use crate::panels::drawer::DrawerPanel;
+use crate::panels::favourite::FavouritePanel;
 use crate::panels::filter::{FilterConfig, FilterPanel};
 use crate::panels::folder_tree::FolderTreePanel;
 use crate::panels::grid::{GridConfig, GridPanel};
@@ -53,9 +55,11 @@ use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::metadata::MetadataPanel;
 use crate::panels::mini::{MiniToggleConfig, MiniTogglePanel};
 use crate::panels::overlay::OverlayPanel;
+use crate::panels::particles::ParticlesPanel;
 use crate::panels::playlists::PlaylistsPanel;
 use crate::panels::queue::QueuePanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
+use crate::panels::rating::RatingPanel;
 use crate::panels::search::{SearchConfig, SearchPanel};
 use crate::panels::slide::SlidePanel;
 use crate::panels::spacer::SpacerPanel;
@@ -262,7 +266,7 @@ pub(crate) fn add_panel_submenu(
         return menu;
     };
     let submenu = PopupMenu::build(window, cx, move |mut menu, window, cx| {
-        for section in catalog::CATALOG {
+        for section in catalog::sections() {
             match section.group {
                 None => {
                     for def in section.panels {
@@ -530,6 +534,8 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured_windowed!("history", HistoryPanel);
     configured_windowed!("queue", QueuePanel);
     configured!("queue widget", QueueWidgetPanel);
+    configured!("rating", RatingPanel);
+    configured!("favourite", FavouritePanel);
     configured_windowed!("playlists", PlaylistsPanel);
     // The composition hosts rebuild their children through this same
     // registry, and carry the workspace handle so their slot menus can
@@ -565,6 +571,13 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
         let config: GridConfig = panel::config_from_info(info);
         Box::new(cx.new(|cx| GridPanel::new(s.clone(), config, window, cx)))
     });
+    // The artist wall carries a search box too, so it takes the window like
+    // the album grid.
+    let s = state.clone();
+    register_panel(cx, "artist grid", move |_, _, info, window, cx| {
+        let config: ArtistGridConfig = panel::config_from_info(info);
+        Box::new(cx.new(|cx| ArtistGridPanel::new(s.clone(), config, window, cx)))
+    });
     // The art strip shares the grid's search box, so it takes the window
     // the same way.
     let s = state.clone();
@@ -584,6 +597,9 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured!("spectrum", SpectrumPanel);
     configured!("waveform", WaveformPanel);
     configured!("vu meter", VuPanel);
+    // Registered whether or not experimental features are on: the flag
+    // gates the panel menus, not a layout that already holds one.
+    configured!("particles", ParticlesPanel);
     configured!("drag anchor", DragAnchorPanel);
     configured!("spacer", SpacerPanel);
     configured!("theme toggle", ThemeTogglePanel);
@@ -1189,7 +1205,7 @@ impl Workspace {
                 library,
                 now_art: cx.new(|cx| NowPlayingArt::new(player.clone(), cx)),
                 player,
-                selection: cx.new(|_| Selection::default()),
+                selection: cx.new(|cx| Selection::new(cx)),
                 query: cx.new(|_| SharedQuery::default()),
                 tab_hosts: cx.new(|_| TabHosts::default()),
             }
@@ -2542,7 +2558,7 @@ impl Workspace {
                     )
                     // The panel catalog: one titled section per group; the
                     // bare center run reads under a plain "Panels".
-                    .children(catalog::CATALOG.iter().map(|section| {
+                    .children(catalog::sections().map(|section| {
                         let tiles = section.panels.iter().map(|def| {
                             launcher_tile(
                                 def.label,

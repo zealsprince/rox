@@ -483,7 +483,12 @@ mod tests {
             2,
             "a rollup name resolves to its library tracks"
         );
-        assert_eq!(ids_for_name(&conn, Rollup::Genre, "jazz", 10).unwrap().len(), 1);
+        assert_eq!(
+            ids_for_name(&conn, Rollup::Genre, "jazz", 10)
+                .unwrap()
+                .len(),
+            1
+        );
 
         assert_eq!(earliest(&conn).unwrap(), Some(100));
         assert_eq!(
@@ -518,8 +523,7 @@ mod tests {
         // The file's row prunes and it comes back under a fresh id; its
         // two plays must follow rather than restart at zero.
         conn.execute("DELETE FROM tracks WHERE id = 1", []).unwrap();
-        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")])
-            .unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
         let new_id: i64 = conn
             .query_row("SELECT id FROM tracks WHERE path = '/m/1.mp3'", [], |row| {
                 row.get(0)
@@ -543,13 +547,19 @@ mod tests {
     fn snapshot_outlives_a_deleted_track() {
         let mut conn = Connection::open_in_memory().unwrap();
         store::init_schema(&conn).unwrap();
-        store::insert_batch(&mut conn, &[track("/m/1.mp3", "Gone", "A", "First", "rock")])
-            .unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[track("/m/1.mp3", "Gone", "A", "First", "rock")],
+        )
+        .unwrap();
         listen(&conn, "/m/1.mp3", 100);
         conn.execute("DELETE FROM tracks", []).unwrap();
 
         let recent = recent(&conn, 0, 10).unwrap();
-        assert_eq!(recent[0].title, "Gone", "the snapshot keeps the row readable");
+        assert_eq!(
+            recent[0].title, "Gone",
+            "the snapshot keeps the row readable"
+        );
         assert_eq!(
             recent[0].path, "/m/1.mp3",
             "and the snapshot path keeps the cover column resolvable"

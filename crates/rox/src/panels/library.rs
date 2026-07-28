@@ -30,6 +30,7 @@ use crate::panel::{self, AppState, PanelChrome, ResumeIdle, ScrubState};
 use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
 use crate::thumbs::Thumb;
 use crate::track_ui::track_cells;
@@ -753,9 +754,13 @@ impl TrackTable {
             .filter_map(|&ix| self.track_at(ix))
             .map(|row| projection.db_id[row as usize])
             .collect();
+        // The delegate publishes on the panel's behalf, so the pick carries
+        // the panel's id: that is what a scoped drawer and a
+        // selection-following view match against.
+        let source = self.panel.entity_id();
         self.state
             .selection
-            .update(cx, |selection, cx| selection.set(ids, cx));
+            .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 }
 
@@ -1204,6 +1209,9 @@ pub struct LibraryPanel {
     /// box, but that needs a window, so the next render (which has one)
     /// applies it. Set on a source toggle or a shared-query change.
     resync_box: bool,
+    /// The tracks this panel is pinned to while following the selection.
+    /// Runtime only: a restore re-pins from whatever is picked then.
+    selection_ids: Vec<i64>,
     /// A panel-local error (a failed play), shown until the catalog updates.
     error: Option<SharedString>,
     /// The playing track's path, the change detector: the player notifies
@@ -1269,6 +1277,7 @@ pub struct LibraryPanel {
     _table_events: Subscription,
     _search_events: Subscription,
     _query_changed: Subscription,
+    _selection_changed: Subscription,
     _player_changed: Subscription,
     _thumbs_changed: Subscription,
 }
@@ -1355,7 +1364,7 @@ impl LibraryPanel {
         // one shows its own.
         let initial = match config.query_source {
             QuerySource::Global => state.query.read(cx).text().to_string(),
-            QuerySource::Local => config.query.clone(),
+            QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
         let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
@@ -1366,6 +1375,16 @@ impl LibraryPanel {
             &state.query,
             |this: &mut LibraryPanel, _, _: &SharedQueryEvent, cx| {
                 this.on_shared_query_changed(cx);
+            },
+        );
+        // Restored as selection-following, the table opens on whatever is
+        // picked now, rather than blank until the next pick.
+        let selection_ids = state.selection.read(cx).tracks().to_vec();
+        // Follow the app-wide selection while pinned to it.
+        let _selection_changed = cx.subscribe(
+            &state.selection,
+            |this: &mut Self, _, event: &SelectionEvent, cx| {
+                this.on_selection_changed(event.source, cx);
             },
         );
         let _player_changed = cx.observe(&state.player, |this: &mut LibraryPanel, _, cx| {
@@ -1385,6 +1404,7 @@ impl LibraryPanel {
             show_search: config.search,
             query_source: config.query_source,
             resync_box: false,
+            selection_ids,
             error: None,
             playing_path: None,
             type_ahead: String::new(),
@@ -1412,6 +1432,7 @@ impl LibraryPanel {
             _table_events,
             _search_events,
             _query_changed,
+            _selection_changed,
             _player_changed,
             _thumbs_changed,
         };
@@ -2527,6 +2548,15 @@ impl QueryFilter for LibraryPanel {
     fn set_query_resync(&mut self, pending: bool) {
         self.resync_box = pending;
     }
+    fn selection(&self) -> &Entity<crate::selection::Selection> {
+        &self.state.selection
+    }
+    fn selection_ids(&self) -> &[i64] {
+        &self.selection_ids
+    }
+    fn set_selection_ids(&mut self, ids: Vec<i64>) {
+        self.selection_ids = ids;
+    }
     fn after_query_change(&mut self, cx: &mut Context<Self>) {
         self.refresh_title_bar(cx);
     }
@@ -2793,7 +2823,7 @@ impl Panel for LibraryPanel {
         // same catalog and player.
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
-        let menu = panel_settings::settings_item(menu, &cx.entity());
+        let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         let menu = panel::duplicate_item(
             menu,
             &cx.entity(),

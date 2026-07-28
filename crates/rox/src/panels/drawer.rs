@@ -6,13 +6,22 @@
 //! edge and how much of the panel the open drawer covers are per-panel
 //! settings. Hosted through [`crate::composite`]; the drawer costs
 //! nothing once it settles home.
+//!
+//! A drawer can also open on a pick rather than a hover, which is what
+//! chains two panels into one surface: an album wall in the main slot, a
+//! track list in the drawer, and clicking a cover slides the tracks out
+//! over the wall. The pick that opens it lands outside the drawer, so a
+//! selection-opened drawer waits for the pointer to arrive before it
+//! treats leaving as a dismissal, and a click on the handle pins it out
+//! for the times the drawer is somewhere to work rather than glance.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
     canvas, div, point, prelude::*, px, size, Along, AnyElement, App, Axis, Bounds, Context, Div,
-    EventEmitter, FocusHandle, Focusable, MouseMoveEvent, Pixels, SharedString, WeakEntity, Window,
+    Entity, EntityId, EventEmitter, FocusHandle, Focusable, MouseButton, MouseMoveEvent, Pixels,
+    SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu};
@@ -25,6 +34,7 @@ use crate::composite::{self, Slot};
 use crate::design::{palette, tokens};
 use crate::panel::{self, choices, setting_row, AppState, PanelChrome, PanelSettings, ScrubState};
 use crate::panel_settings;
+use crate::selection::SelectionEvent;
 use crate::workspace::Workspace;
 
 /// The handle strip's thickness: enough for the grip and label to read,
@@ -36,7 +46,7 @@ const HANDLE: Pixels = px(18.);
 const MIN_REVEAL: f32 = 0.15;
 
 /// The edge the drawer rests against, and the direction it slides from.
-#[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DrawerEdge {
     Top,
@@ -64,6 +74,46 @@ const EDGE_CHOICES: &[(&str, DrawerEdge)] = &[
     ("Right", DrawerEdge::Right),
 ];
 
+/// What slides the drawer out. Resting on the handle always works; this
+/// picks whether a pick in the main panel is a second way in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DrawerTrigger {
+    /// The handle alone.
+    #[default]
+    Hover,
+    /// A pick in the main panel slides the drawer out, and clearing the
+    /// selection slides it home. The chaining mode.
+    Selection,
+}
+
+const TRIGGER_CHOICES: &[(&str, DrawerTrigger)] = &[
+    ("Hover", DrawerTrigger::Hover),
+    ("Selection", DrawerTrigger::Selection),
+];
+
+/// Which picks a selection-triggered drawer answers. The selection is
+/// app-wide, so without a scope every selection drawer in a layout opens on
+/// every pick anywhere in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DrawerScope {
+    /// Only picks made in this drawer's own main panel, nested hosts
+    /// included. What chains one wall to one list.
+    #[default]
+    Main,
+    /// Picks made anywhere else in the layout, for the drawer that answers a
+    /// panel it doesn't host - real dock tabs can't live in a slot, so a
+    /// tabbed browser drives its drawer this way. Its own contents are still
+    /// excluded, main included.
+    Any,
+}
+
+const SCOPE_CHOICES: &[(&str, DrawerScope)] = &[
+    ("Main Panel", DrawerScope::Main),
+    ("Elsewhere", DrawerScope::Any),
+];
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DrawerConfig {
@@ -77,6 +127,17 @@ pub struct DrawerConfig {
     /// How hard the scrim dims the main behind the open drawer, 0 leaving
     /// it bare to 1 blacking it out. Fades with the slide.
     pub dim: f32,
+    /// What slides the drawer out, on top of the handle.
+    pub open_on: DrawerTrigger,
+    /// Which picks the selection trigger answers.
+    pub scope: DrawerScope,
+    /// Drop the handle strip, so nothing of the drawer shows until a pick
+    /// brings it out. The edge lane stays reserved either way: the grip
+    /// comes back with the first pick, and if the lane came back with it the
+    /// main would relayout under the very click that opened the drawer. Only
+    /// honored on the selection trigger: with no handle and no pick there
+    /// would be nothing left to open it.
+    pub hide_handle: bool,
 }
 
 impl Default for DrawerConfig {
@@ -86,8 +147,30 @@ impl Default for DrawerConfig {
             edge: DrawerEdge::default(),
             reveal: 1.0,
             dim: 0.0,
+            open_on: DrawerTrigger::default(),
+            scope: DrawerScope::default(),
+            hide_handle: false,
         }
     }
+}
+
+impl DrawerConfig {
+    /// Whether the handle strip is dropped: what `hide_handle` asks for, but
+    /// only where a pick can still bring the drawer out. Asking for it on the
+    /// hover trigger would leave nothing to open the drawer with, so that
+    /// pairing is ignored rather than honored into a dead panel.
+    fn handle_hidden(&self) -> bool {
+        self.hide_handle && self.open_on == DrawerTrigger::Selection
+    }
+}
+
+/// Whether the handle strip is dropped right now: what the config asks for,
+/// held only while nothing is picked. Once a pick has primed the drawer the
+/// grip comes back and stays for as long as the selection does, so a drawer
+/// that folded closed can be pulled out again by hand instead of needing the
+/// same album clicked twice.
+fn handle_dropped(config: &DrawerConfig, primed: bool) -> bool {
+    config.handle_hidden() && !primed
 }
 
 pub struct DrawerPanel {
@@ -102,6 +185,25 @@ pub struct DrawerPanel {
     /// Whether the drawer is out. Hover-transient - never persisted, a
     /// restore always lands home.
     open: bool,
+    /// Held out by a click on the handle, until it is clicked again. As
+    /// transient as `open`: a restore lands home and unpinned.
+    pinned: bool,
+    /// Whether the pointer has been inside the drawer since it opened. A
+    /// pick opens the drawer with the pointer still out on the row that was
+    /// clicked, so the leave check has to wait for the pointer to arrive
+    /// before leaving can mean dismissal. A hover open sets it outright -
+    /// the pointer is on the handle already.
+    entered: bool,
+    /// A pick landed with no window in hand to hand the child its active
+    /// state; the next render opens or closes on it. The grid's resync
+    /// idiom, for the same reason.
+    pending_open: Option<bool>,
+    /// Whether something this drawer answers is picked. A dropped handle
+    /// comes back once it is, so the drawer stays reachable after it folds
+    /// home; clearing the selection takes the grip away again. Transient
+    /// like `open`, and only ever set by picks this drawer's scope lets
+    /// through.
+    primed: bool,
     /// Where the last glide started, in openness; with `open_at` this
     /// gives the animated openness without per-frame state.
     from: f32,
@@ -116,6 +218,7 @@ pub struct DrawerPanel {
     dim_scrub: ScrubState,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
+    _selection: Subscription,
 }
 
 impl DrawerPanel {
@@ -140,6 +243,12 @@ impl DrawerPanel {
         for (slot, restored) in fixed.iter_mut().zip(slots) {
             *slot = restored;
         }
+        let _selection = cx.subscribe(
+            &state.selection.clone(),
+            |this: &mut Self, selection, event: &SelectionEvent, cx| {
+                this.on_selection(&selection, event.source, cx);
+            },
+        );
         DrawerPanel {
             state,
             workspace,
@@ -147,6 +256,10 @@ impl DrawerPanel {
             slots: fixed,
             active: false,
             open: false,
+            pinned: false,
+            entered: false,
+            pending_open: None,
+            primed: false,
             from: 0.0,
             open_at: Instant::now() - std::time::Duration::from_secs_f32(tokens::EASE_SECS),
             bounds: Arc::default(),
@@ -154,6 +267,7 @@ impl DrawerPanel {
             dim_scrub: ScrubState::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
+            _selection,
         }
     }
 
@@ -184,6 +298,71 @@ impl DrawerPanel {
         if let Some(drawer) = &self.slots[1] {
             drawer.set_active(self.active && open, window, cx);
         }
+        cx.notify();
+    }
+
+    /// A pick landed on the app-wide selection. In selection mode it slides
+    /// the drawer out, and an emptied selection slides it home; the work
+    /// waits for the next render, which has the window the child's active
+    /// state needs.
+    fn on_selection(
+        &mut self,
+        selection: &Entity<crate::selection::Selection>,
+        source: EntityId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.config.open_on != DrawerTrigger::Selection || self.slots[1].is_none() {
+            return;
+        }
+        // Either way a pick inside the open drawer is ignored: clicking a row
+        // in there is working, not chaining, and re-answering it would pin
+        // the drawer to its own contents.
+        match self.config.scope {
+            // Scoped to the main, so the rest of the layout can't reach it
+            // and two chained drawers don't both answer one pick.
+            DrawerScope::Main => {
+                if !self.slot_holds(0, source, cx) {
+                    return;
+                }
+            }
+            // Driven from anywhere else in the layout, but never from its own
+            // contents - a main that publishes picks of its own (a queue, a
+            // library) would otherwise slide the drawer over itself.
+            DrawerScope::Any => {
+                if self.slot_holds(0, source, cx) || self.slot_holds(1, source, cx) {
+                    return;
+                }
+            }
+        }
+        let picked = !selection.read(cx).tracks().is_empty();
+        // A dropped handle comes back with the first pick and stays while
+        // the selection holds, so folding home doesn't strand the drawer.
+        self.primed = picked;
+        self.pending_open = Some(picked);
+        cx.notify();
+    }
+
+    /// Whether `id` is the panel in slot `ix` or anything nested under it. A
+    /// slot can host composites of its own, so this walks the whole subtree
+    /// rather than checking the one panel.
+    fn slot_holds(&self, ix: usize, id: EntityId, cx: &App) -> bool {
+        fn walk(slot: &Slot, id: EntityId, cx: &App) -> bool {
+            let Some(panel) = slot else {
+                return false;
+            };
+            if panel.panel_id(cx) == id {
+                return true;
+            }
+            composite::hosted_children(panel, cx)
+                .is_some_and(|kids| kids.iter().any(|kid| walk(kid, id, cx)))
+        }
+        walk(&self.slots[ix], id, cx)
+    }
+
+    /// Hold the drawer out, or let it go. The handle's click, so a drawer
+    /// worth working in stops sliding home the moment the pointer strays.
+    fn toggle_pin(&mut self, cx: &mut Context<Self>) {
+        self.pinned = !self.pinned;
         cx.notify();
     }
 
@@ -235,9 +414,15 @@ impl DrawerPanel {
         let name = child
             .tab_name(cx)
             .unwrap_or_else(|| SharedString::from(panel::display_name(child.panel_name(cx))));
+        // The grip takes the accent while pinned: the one mark that says the
+        // drawer is being held out rather than hovered out.
         let grip = div()
             .rounded_full()
-            .bg(palette::text_faint())
+            .bg(if self.pinned {
+                palette::accent()
+            } else {
+                palette::text_faint()
+            })
             .map(|d| match axis {
                 Axis::Vertical => d.w(px(32.)).h(px(4.)),
                 Axis::Horizontal => d.w(px(4.)).h(px(32.)),
@@ -255,8 +440,25 @@ impl DrawerPanel {
             .bg(palette::alpha(palette::bg_control(), 0xa0))
             .hover(|d| d.bg(palette::bg_control()))
             .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, cx| {
+                // The pointer is on the handle, so the drawer opens already
+                // arrived: leaving from here can dismiss it right away.
+                this.entered = true;
                 this.set_open(true, window, cx);
             }))
+            // Clicking the handle pins the open drawer out, and clicking it
+            // again lets go. On a closed drawer the click just opens it, the
+            // same as resting on it.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if this.open {
+                        this.toggle_pin(cx);
+                    } else {
+                        this.entered = true;
+                        this.set_open(true, window, cx);
+                    }
+                }),
+            )
             .child(grip)
             // The vertical handles are too thin for text; the grip alone
             // marks them.
@@ -304,9 +506,12 @@ impl DrawerPanel {
             .occlude();
         // The handle stays at the inner edge as the drawer grows, so the
         // stack order flips with the edge.
+        // A drawer with its handle dropped shows nothing at all until a pick
+        // brings it out, so the strip goes with it.
+        let handle = (!handle_dropped(&self.config, self.primed)).then_some(handle);
         match edge {
-            DrawerEdge::Bottom | DrawerEdge::Right => boxed.child(handle).child(content),
-            DrawerEdge::Top | DrawerEdge::Left => boxed.child(content).child(handle),
+            DrawerEdge::Bottom | DrawerEdge::Right => boxed.children(handle).child(content),
+            DrawerEdge::Top | DrawerEdge::Left => boxed.child(content).children(handle),
         }
     }
 
@@ -323,11 +528,40 @@ impl DrawerPanel {
             .map(|bounds| f32::from(bounds.size.along(axis)))
             .unwrap_or(0.0);
         let reveal = self.config.reveal.clamp(MIN_REVEAL, 1.0);
-        let reveal_px = (reveal * slot).max(f32::from(HANDLE));
-        f32::from(HANDLE) + u * (reveal_px - f32::from(HANDLE))
+        // What the drawer measures at home: its handle, or nothing at all
+        // when the handle is dropped.
+        let home = if handle_dropped(&self.config, self.primed) {
+            0.0
+        } else {
+            f32::from(HANDLE)
+        };
+        let reveal_px = (reveal * slot).max(home);
+        home + u * (reveal_px - home)
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        // Let the children reach this host from their own menus; the
+        // dock never sees a hosted panel, so nothing else offers it.
+        composite::report_hosted(
+            self.slots.iter().flatten(),
+            self.config.chrome.title.as_deref().unwrap_or("Drawer"),
+            cx,
+        );
+
+        // A pick from the last frame lands here, where there is a window to
+        // hand the child its active state.
+        if let Some(open) = self.pending_open.take() {
+            if open {
+                // The click that opened it landed out on the main panel, so
+                // the pointer has not arrived yet and the leave check stays
+                // disarmed until it does.
+                self.entered = false;
+            } else {
+                self.pinned = false;
+            }
+            self.set_open(open, window, cx);
+        }
+
         // Frames only while a glide is actually running; settled costs
         // zero either way.
         let u = self.openness();
@@ -349,6 +583,10 @@ impl DrawerPanel {
             // main fills.
             .child({
                 let edge = self.config.edge;
+                // The lane is held whether or not the handle is drawn. A
+                // dropped handle comes back the moment something is picked,
+                // and if the lane came back with it the main would relayout
+                // under the very click that opened the drawer.
                 let has_drawer = self.slots[1].is_some();
                 div()
                     .absolute()
@@ -384,7 +622,10 @@ impl DrawerPanel {
         let root = if self.slots[1].is_some() {
             let bounds_store = self.bounds.clone();
             let weak = cx.entity().downgrade();
-            let armed = self.open || u > 0.001;
+            // A pinned drawer is held out on purpose, so nothing arms
+            // against it.
+            let armed = (self.open || u > 0.001) && !self.pinned;
+            let entered = self.entered;
             let edge = self.config.edge;
             let extent = px(self.extent(u));
             root.child(
@@ -408,6 +649,25 @@ impl DrawerPanel {
                                 return;
                             }
                             if region.contains(&event.position) {
+                                // The pointer arrived. Mark it and repaint,
+                                // so the next frame's handler is the one
+                                // that can close - this closure captured
+                                // the old value and would never fire.
+                                if !entered {
+                                    if let Some(this) = weak.upgrade() {
+                                        this.update(cx, |this, cx| {
+                                            this.entered = true;
+                                            cx.notify();
+                                        });
+                                    }
+                                }
+                                return;
+                            }
+                            // A pick opens the drawer with the pointer still
+                            // out on the row that was clicked. Until it has
+                            // come inside once, being outside is where it
+                            // started, not a dismissal.
+                            if !entered {
                                 return;
                             }
                             if let Some(this) = weak.upgrade() {
@@ -424,9 +684,20 @@ impl DrawerPanel {
         };
 
         let root = match self.slots[1].clone() {
+            // A dropped handle leaves the box nothing to draw at home, but
+            // its border and shadow would still line the empty lane. It sits
+            // the frame out entirely until the glide starts.
+            Some(_) if handle_dropped(&self.config, self.primed) && u <= 0.001 => root,
             Some(drawer) => root.child(self.drawer_box(drawer, u, cx)),
             None => root,
         };
+
+        // A layout that ships as finished furniture drops the builder's
+        // buttons; its slots are still swapped from the tree on the
+        // Workspace settings page.
+        if self.config.chrome.hide_controls {
+            return root;
+        }
 
         // The corner controls: fill the drawer slot while it is empty,
         // and the shown slot's menu - the drawer's while it is out, the
@@ -505,6 +776,10 @@ fn drawer_region(edge: DrawerEdge, extent: Pixels, bounds: Bounds<Pixels>) -> Bo
 }
 
 impl PanelSettings for DrawerPanel {
+    fn composite(&self) -> bool {
+        true
+    }
+
     fn state(&self) -> AppState {
         self.state.clone()
     }
@@ -543,6 +818,46 @@ impl PanelSettings for DrawerPanel {
                         cx,
                     ),
                 ))
+                .child(setting_row(
+                    "Open On",
+                    Some("Resting on the handle always opens the drawer; selection adds a pick in the main panel"),
+                    choices(
+                        TRIGGER_CHOICES,
+                        self.config.open_on,
+                        |this: &mut Self, trigger, cx| {
+                            this.config.open_on = trigger;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+                .when(self.config.open_on == DrawerTrigger::Selection, |d| {
+                    d.child(setting_row(
+                        "Handle",
+                        Some("Show the grip at the panel's edge. Hidden, nothing of the drawer shows until a pick, and the grip then stays while the selection holds so a drawer that folded closed can be pulled back out"),
+                        panel::toggle(
+                            !self.config.hide_handle,
+                            |this: &mut Self, shown, cx| {
+                                this.config.hide_handle = !shown;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(setting_row(
+                        "Answers",
+                        Some("Which picks open the drawer: only its own main panel, or any panel outside it"),
+                        choices(
+                            SCOPE_CHOICES,
+                            self.config.scope,
+                            |this: &mut Self, scope, cx| {
+                                this.config.scope = scope;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                })
                 .child(setting_row(
                     "Reveal",
                     Some("How much of the panel the open drawer covers"),
@@ -659,9 +974,18 @@ impl Panel for DrawerPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
+        // The pin also lives on the handle; the row is here for the drawer
+        // that is already out and under the pointer.
+        let menu = menu.item(panel::check_row(
+            "Pin Open",
+            Some(icons::PIN),
+            |this: &Self| this.pinned,
+            |this, cx| this.toggle_pin(cx),
+            &cx.entity(),
+        ));
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
-        let menu = panel_settings::settings_item(menu, &cx.entity());
+        let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         panel::popout_item(
             menu,
             &cx.entity(),
@@ -675,5 +999,182 @@ impl Render for DrawerPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
         panel::themed(&chrome, || self.body(window, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A layout saved before the trigger knobs existed still loads, and lands
+    /// on the old behavior: hover only, so no drawer starts answering picks
+    /// on its own after an upgrade.
+    #[test]
+    fn old_dumps_load_as_hover_drawers() {
+        let dump = serde_json::json!({
+            "edge": "right",
+            "reveal": 0.4,
+            "dim": 0.0,
+        });
+        let config: DrawerConfig = serde_json::from_value(dump).unwrap();
+        assert_eq!(config.edge, DrawerEdge::Right);
+        assert_eq!(config.open_on, DrawerTrigger::Hover);
+        assert_eq!(config.scope, DrawerScope::Main);
+        assert!(!config.hide_handle);
+    }
+
+    /// Dropping the handle only holds where a pick can still bring the
+    /// drawer out. On the hover trigger the handle is the only way in, so
+    /// honoring the ask would leave a panel nothing could open.
+    #[test]
+    fn a_dropped_handle_needs_a_pick_to_replace_it() {
+        let hidden = DrawerConfig {
+            open_on: DrawerTrigger::Selection,
+            hide_handle: true,
+            ..DrawerConfig::default()
+        };
+        assert!(hidden.handle_hidden());
+
+        let no_way_in = DrawerConfig {
+            open_on: DrawerTrigger::Hover,
+            hide_handle: true,
+            ..DrawerConfig::default()
+        };
+        assert!(!no_way_in.handle_hidden());
+
+        // The default drawer keeps its handle either way.
+        assert!(!DrawerConfig::default().handle_hidden());
+    }
+
+    /// A dropped handle is only dropped until something is picked. Once the
+    /// drawer has been primed the grip stays, which is the whole point: the
+    /// drawer folds home when the pointer leaves, and without a grip left
+    /// behind there would be no way back to it short of picking the same
+    /// album again.
+    #[test]
+    fn a_pick_brings_the_dropped_handle_back() {
+        let config = DrawerConfig {
+            open_on: DrawerTrigger::Selection,
+            hide_handle: true,
+            ..DrawerConfig::default()
+        };
+        // Nothing picked yet, so the panel shows no trace of the drawer.
+        assert!(handle_dropped(&config, false));
+        // Primed by a pick, the grip is there whether the drawer is out or
+        // has folded back home.
+        assert!(!handle_dropped(&config, true));
+
+        // A drawer that keeps its handle is unaffected by priming.
+        let plain = DrawerConfig {
+            open_on: DrawerTrigger::Selection,
+            ..DrawerConfig::default()
+        };
+        assert!(!handle_dropped(&plain, false));
+        assert!(!handle_dropped(&plain, true));
+    }
+
+    /// The knobs round-trip through a layout dump, which is the only way they
+    /// persist.
+    #[test]
+    fn trigger_knobs_round_trip() {
+        let config = DrawerConfig {
+            edge: DrawerEdge::Left,
+            open_on: DrawerTrigger::Selection,
+            scope: DrawerScope::Any,
+            hide_handle: true,
+            ..DrawerConfig::default()
+        };
+        let value = serde_json::to_value(config).unwrap();
+        assert_eq!(value["open_on"], "selection");
+        assert_eq!(value["scope"], "any");
+        assert_eq!(value["hide_handle"], true);
+
+        let back: DrawerConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(back.open_on, DrawerTrigger::Selection);
+        assert_eq!(back.scope, DrawerScope::Any);
+        assert_eq!(back.edge, DrawerEdge::Left);
+        assert!(back.hide_handle);
+    }
+
+    /// Metro ships the chain, so its drawer is the one bundled layout that
+    /// has to keep parsing: the knobs read back as a selection drawer, and
+    /// the panel it slides out follows the selection. A hand-edited layout
+    /// that drifted from the config types would otherwise only show up as a
+    /// silently reset panel at runtime.
+    #[test]
+    fn metro_ships_a_working_selection_drawer() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("../../assets/workspaces/Metro.json")).unwrap();
+
+        fn collect<'a>(node: &'a serde_json::Value, out: &mut Vec<&'a serde_json::Value>) {
+            if node["panel_name"] == "drawer" {
+                out.push(node);
+            }
+            for kid in node["children"].as_array().into_iter().flatten() {
+                collect(kid, out);
+            }
+        }
+
+        let mut drawers = Vec::new();
+        collect(&doc["layouts"][0]["dump"]["center"], &mut drawers);
+        // Two per browser tab. One drawer is one edge and one pair of slots,
+        // so a wall that wants a list from the left and filters from the
+        // right needs the two nested; and a dock tab can't live in a slot, so
+        // each tab carries its own pair rather than sharing.
+        assert_eq!(drawers.len(), 4);
+
+        let mut titles = Vec::new();
+        for outer in drawers
+            .iter()
+            .filter(|d| !d["info"]["panel"]["title"].is_null())
+        {
+            let config: DrawerConfig =
+                serde_json::from_value(outer["info"]["panel"].clone()).unwrap();
+            // The outer one names the tab and holds the queue, on hover
+            // only: nothing about a pick should pull it out.
+            assert_eq!(config.open_on, DrawerTrigger::Hover);
+            assert_eq!(config.edge, DrawerEdge::Right);
+            titles.push(config.chrome.title.clone().expect("the tab is named"));
+            assert_eq!(outer["children"][1]["panel_name"], "queue");
+            // Metro ships finished, so no builder's buttons sit in its
+            // corners.
+            assert!(config.chrome.hide_controls);
+
+            let inner = &outer["children"][0];
+            let inner_config: DrawerConfig =
+                serde_json::from_value(inner["info"]["panel"].clone()).unwrap();
+            assert_eq!(inner_config.open_on, DrawerTrigger::Selection);
+            // The wall it hosts is exactly what drives it, so the two tabs
+            // stay independent and nothing else in the layout reaches them.
+            assert_eq!(inner_config.scope, DrawerScope::Main);
+            assert_eq!(inner_config.edge, DrawerEdge::Left);
+            assert!(inner_config.chrome.hide_controls);
+            // Nothing of it shows until a pick, so the wall gets the whole
+            // panel while you browse.
+            assert!(inner_config.handle_hidden());
+            // The queue keeps its grip: hover is the only way to that one.
+            assert!(!config.handle_hidden());
+
+            // Slot 0 is the wall that publishes picks; slot 1 is what slides
+            // out, and it only shows the pick if it follows the selection.
+            assert!(inner["children"][0]["panel_name"]
+                .as_str()
+                .is_some_and(|name| name.ends_with("grid")));
+            let slid_out = &inner["children"][1];
+            assert_eq!(slid_out["panel_name"], "library");
+            assert_eq!(slid_out["info"]["panel"]["query_source"], "selection");
+        }
+        assert_eq!(titles, ["Albums", "Artists"]);
+    }
+
+    /// The query source is what a chained drawer's hosted panel rides, so its
+    /// wire name has to survive too.
+    #[test]
+    fn selection_query_source_round_trips() {
+        use crate::query::shared_query::QuerySource;
+        let value = serde_json::to_value(QuerySource::Selection).unwrap();
+        assert_eq!(value, "selection");
+        let back: QuerySource = serde_json::from_value(value).unwrap();
+        assert!(back == QuerySource::Selection);
     }
 }

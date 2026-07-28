@@ -293,6 +293,11 @@ pub struct Settings {
     /// a recent one. None until the first check.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_cache: Option<UpdateCache>,
+    /// Whether the unfinished work shows: the experimental panels join the
+    /// Panels menu and the launcher. Off by default, flipped on the
+    /// Development page. A layout that already holds an experimental panel
+    /// still restores it either way.
+    pub experimental: bool,
     /// The tag editor's last window size and column widths, restored on
     /// the next open. None until an editor closes.
     pub tag_editor: Option<TagEditorState>,
@@ -494,6 +499,25 @@ pub fn quit_to_tray() -> bool {
 /// the tray icon (`tray::sync`).
 pub fn set_quit_to_tray(on: bool) {
     QUIT_TO_TRAY.store(on, Ordering::Relaxed);
+}
+
+/// The live experimental flag, a static like the ones above: the panel
+/// catalog is read while building menus, where a settings-file load has no
+/// place. Seeded at startup, flipped on the Development page.
+static EXPERIMENTAL: AtomicBool = AtomicBool::new(false);
+
+pub fn experimental() -> bool {
+    EXPERIMENTAL.load(Ordering::Relaxed)
+}
+
+/// Flip the live flag and repaint every window: the static sits outside
+/// gpui's reactivity, and the empty window's launcher draws its tiles
+/// straight from the catalog. Persisting is the caller's.
+pub fn set_experimental(on: bool, cx: &mut App) {
+    EXPERIMENTAL.store(on, Ordering::Relaxed);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
 }
 
 /// The live app font, a static like the rating style's: window and panel
@@ -1051,6 +1075,7 @@ impl Default for Settings {
             rating_style: RatingStyle::default(),
             check_updates: true,
             update_cache: None,
+            experimental: false,
             tag_editor: None,
             stats_window: None,
             settings_window: None,

@@ -565,9 +565,10 @@ impl SettingsWindow {
         if let Some(children) = children {
             for child in children {
                 match child {
-                    Some(child) => {
-                        rows.push(self.panel_row(child, depth + 1, TreeSlot::Hosted, cx))
-                    }
+                    // Recurse: a host can hold another host (a drawer
+                    // inside a drawer), and the tree should keep going
+                    // down instead of stopping at the inner line.
+                    Some(child) => self.panel_rows(child, depth + 1, TreeSlot::Hosted, rows, cx),
                     None => rows.push(chrome_row(depth + 1, "Empty slot", None)),
                 }
             }
@@ -972,9 +973,7 @@ impl SettingsWindow {
         self.editor_mode = palette::mode();
         let mirrored = match self.editor_mode {
             palette::Mode::Dark => Palette::from_map(&bundle.palette_dark),
-            palette::Mode::Light => {
-                Palette::from_map_over(Palette::light(), &bundle.palette_light)
-            }
+            palette::Mode::Light => Palette::from_map_over(Palette::light(), &bundle.palette_light),
         };
         self.apply_palette(mirrored, window, cx);
         let a = &bundle.appearance;

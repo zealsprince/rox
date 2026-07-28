@@ -1859,4 +1859,3 @@ mod tests {
         assert_eq!(serde_json::to_string(&theme).unwrap(), "{}");
     }
 }
-

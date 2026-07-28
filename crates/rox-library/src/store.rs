@@ -246,7 +246,11 @@ fn stats_row(r: &rusqlite::Row) -> rusqlite::Result<Stats> {
 
 /// The whole library's rollup.
 pub fn stats(conn: &Connection) -> rusqlite::Result<Stats> {
-    conn.query_row(&format!("SELECT {STATS_COLUMNS} FROM tracks"), [], stats_row)
+    conn.query_row(
+        &format!("SELECT {STATS_COLUMNS} FROM tracks"),
+        [],
+        stats_row,
+    )
 }
 
 /// The rollup for the local tracks under one folder.
@@ -345,8 +349,9 @@ pub fn prune_missing(
     // The stored paths under root the walk did not find. Collected first so
     // the delete runs off a plain list, not a live cursor over the table.
     let gone: Vec<String> = {
-        let mut stmt = conn
-            .prepare("SELECT path FROM tracks WHERE source = 'local' AND path >= ?1 AND path < ?2")?;
+        let mut stmt = conn.prepare(
+            "SELECT path FROM tracks WHERE source = 'local' AND path >= ?1 AND path < ?2",
+        )?;
         let rows = stmt.query_map(rusqlite::params![lo, hi], |r| r.get::<_, String>(0))?;
         rows.filter_map(Result::ok)
             .filter(|path| !present.contains(path))
@@ -886,9 +891,13 @@ mod tests {
         assert_eq!(paths, ["/m/a/1.mp3", "/n/d/1.mp3"]);
 
         // A pass that found everything removes nothing.
-        let present: HashSet<String> =
-            ["/m/a/1.mp3".to_string(), "/n/d/1.mp3".to_string()].into_iter().collect();
-        assert_eq!(prune_missing(&mut conn, Path::new("/m"), &present).unwrap(), 0);
+        let present: HashSet<String> = ["/m/a/1.mp3".to_string(), "/n/d/1.mp3".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            prune_missing(&mut conn, Path::new("/m"), &present).unwrap(),
+            0
+        );
     }
 
     /// A deleted file drops just its row; a deleted folder drops the whole
@@ -919,7 +928,10 @@ mod tests {
 
         // The deleted album folder: its remaining track, and nothing from the
         // "Album Two" sibling or the "Live" folder.
-        assert_eq!(remove_subtree(&conn, Path::new("/m/Artist/Album")).unwrap(), 1);
+        assert_eq!(
+            remove_subtree(&conn, Path::new("/m/Artist/Album")).unwrap(),
+            1
+        );
         let mut paths: Vec<String> = local_files(&conn).unwrap().into_keys().collect();
         paths.sort();
         assert_eq!(paths, ["/m/Artist/Album Two/1.mp3", "/m/Artist/Live/1.mp3"]);
@@ -945,7 +957,9 @@ mod tests {
         .unwrap();
 
         // A single file rename keeps the row's id.
-        let file_id = id_for_path(&conn, "/m/Artist/Album/1.mp3").unwrap().unwrap();
+        let file_id = id_for_path(&conn, "/m/Artist/Album/1.mp3")
+            .unwrap()
+            .unwrap();
         assert_eq!(
             rename_within(
                 &mut conn,
@@ -955,7 +969,9 @@ mod tests {
             .unwrap(),
             1
         );
-        assert!(id_for_path(&conn, "/m/Artist/Album/1.mp3").unwrap().is_none());
+        assert!(id_for_path(&conn, "/m/Artist/Album/1.mp3")
+            .unwrap()
+            .is_none());
         assert_eq!(
             id_for_path(&conn, "/m/Artist/Album/one.mp3").unwrap(),
             Some(file_id),
@@ -964,11 +980,19 @@ mod tests {
 
         // A folder rename moves the whole subtree, each row keeping its id,
         // and leaves the prefix-sibling folder untouched.
-        let sibling_id = id_for_path(&conn, "/m/Artist/Album Two/1.mp3").unwrap().unwrap();
-        let two_id = id_for_path(&conn, "/m/Artist/Album/2.mp3").unwrap().unwrap();
+        let sibling_id = id_for_path(&conn, "/m/Artist/Album Two/1.mp3")
+            .unwrap()
+            .unwrap();
+        let two_id = id_for_path(&conn, "/m/Artist/Album/2.mp3")
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            rename_within(&mut conn, Path::new("/m/Artist/Album"), Path::new("/m/Artist/Record"))
-                .unwrap(),
+            rename_within(
+                &mut conn,
+                Path::new("/m/Artist/Album"),
+                Path::new("/m/Artist/Record")
+            )
+            .unwrap(),
             2
         );
         assert_eq!(
@@ -1038,6 +1062,10 @@ mod tests {
             v.album_artist, "Someone",
             "a cleared album artist falls back to the artist"
         );
-        assert_eq!((v.artist, v.album), ("Someone", "Album"), "untouched columns hold");
+        assert_eq!(
+            (v.artist, v.album),
+            ("Someone", "Album"),
+            "untouched columns hold"
+        );
     }
 }

@@ -45,8 +45,19 @@ jobs:
           - os: windows-latest
             artifact: windows-x86_64
     runs-on: ${{ matrix.os }}
+    # Job-level so `cargo build` picks the api identities up without a per-step
+    # env block, and so the macOS steps can gate on `env.X != ''` (a step's own
+    # env isn't visible to its `if`). Every one is optional: a fork or a run
+    # without the secrets set builds fine, it just ships no built-in identity
+    # and signs the app ad-hoc.
     env:
       VERSION: ${{ needs.check.outputs.version }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+      LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
+      DISCORD_CLIENT_ID: ${{ secrets.DISCORD_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v7
 
@@ -80,6 +91,28 @@ jobs:
       - name: Build
         run: cargo build --release --package rox
 
+      # codesign only finds an identity in a keychain, and the runner starts
+      # with none, so import the Developer ID .p12 (stored base64-encoded in
+      # APPLE_CERTIFICATE) into a throwaway one for the rest of the job. The
+      # runner is torn down after, so the keychain goes with it.
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          # Only ever unlocks this one keychain on this one runner.
+          pass=$(uuidgen)
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          # Without this codesign prompts for keychain access and hangs.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$pass" "$keychain" >/dev/null
+          security list-keychain -d user -s "$keychain" login.keychain-db
+
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -100,7 +133,17 @@ jobs:
           cp crates/rox/assets/app/rox.icns rox.app/Contents/Resources/
           sed "s/__VERSION__/$VERSION/" crates/rox/assets/app/Info.plist \
             > rox.app/Contents/Info.plist
-          codesign --force --deep -s - rox.app
+          if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            # Hardened runtime and a timestamp are what notarization will want
+            # later; the signature alone still leaves Gatekeeper warning on a
+            # downloaded build until that step exists.
+            codesign --force --timestamp --options runtime \
+              -s "$APPLE_SIGNING_IDENTITY" rox.app
+            codesign --verify --strict --verbose=2 rox.app
+          else
+            echo "::warning::no Apple signing identity, falling back to ad-hoc"
+            codesign --force --deep -s - rox.app
+          fi
           ditto -c -k --keepParent rox.app "rox-v$VERSION-${{ matrix.artifact }}.zip"
 
       - name: Package (Windows)

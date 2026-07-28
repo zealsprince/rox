@@ -116,7 +116,8 @@ fn dedup_images(conn: &Connection) -> rusqlite::Result<()> {
     let mut keyed: Vec<(String, i64)> = Vec::new();
     {
         let mut read = conn.prepare("SELECT path, image FROM thumbs WHERE length(image) > 0")?;
-        let mut pool = conn.prepare("INSERT OR IGNORE INTO images (hash, image) VALUES (?1, ?2)")?;
+        let mut pool =
+            conn.prepare("INSERT OR IGNORE INTO images (hash, image) VALUES (?1, ?2)")?;
         let mut rows = read.query([])?;
         while let Some(row) = rows.next()? {
             let path: String = row.get(0)?;
@@ -201,9 +202,7 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
             // art_path) rode the audio identity above and needs no re-stat.
             // A no-art row references no image and an undecodable cover an
             // empty one; both answer None.
-            if art_path.is_empty()
-                || identity_of(Path::new(&art_path)) == (art_mtime, art_size)
-            {
+            if art_path.is_empty() || identity_of(Path::new(&art_path)) == (art_mtime, art_size) {
                 return image.filter(|bytes| !bytes.is_empty());
             }
         }
@@ -383,7 +382,12 @@ mod tests {
             .unwrap();
             conn.execute(
                 "INSERT INTO thumbs (path, mtime, size, image) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![track.to_string_lossy(), mtime, size, b"cached-cover".as_slice()],
+                rusqlite::params![
+                    track.to_string_lossy(),
+                    mtime,
+                    size,
+                    b"cached-cover".as_slice()
+                ],
             )
             .unwrap();
         }
@@ -470,7 +474,11 @@ mod tests {
         assert_eq!(thumbnail(&conn, &a.join("2.mp3")).as_ref(), Some(&first));
         assert_eq!(thumbnail(&conn, &b.join("1.mp3")).as_ref(), Some(&first));
         assert_eq!(count(&conn, "thumbs"), 3, "each track keeps its own row");
-        assert_eq!(count(&conn, "images"), 1, "one pooled image serves all three");
+        assert_eq!(
+            count(&conn, "images"),
+            1,
+            "one pooled image serves all three"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

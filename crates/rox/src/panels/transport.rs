@@ -120,7 +120,7 @@ macro_rules! transport_panel {
                     _window,
                     cx,
                 );
-                let menu = panel_settings::settings_item(menu, &cx.entity());
+                let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
                 let menu = panel::duplicate_item(
                     menu,
                     &cx.entity(),

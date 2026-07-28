@@ -1,0 +1,80 @@
+--- a/src/menu/context_menu.rs
++++ b/src/menu/context_menu.rs
+@@ -2,9 +2,9 @@
+ 
+ use gpui::{
+     AnyElement, App, Context, Corner, DismissEvent, Element, ElementId, Entity, Focusable,
+-    GlobalElementId, InspectorElementId, InteractiveElement, IntoElement, MouseButton,
+-    MouseDownEvent, ParentElement, Pixels, Point, StyleRefinement, Styled, Subscription, Window,
+-    anchored, deferred, div, prelude::FluentBuilder, px,
++    GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
++    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, StyleRefinement, Styled,
++    Subscription, Window, anchored, deferred, div, prelude::FluentBuilder, px,
+ };
+ 
+ use crate::menu::PopupMenu;
+@@ -129,7 +129,9 @@
+ 
+ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<E> {
+     type RequestLayoutState = ContextMenuState;
+-    type PrepaintState = ();
++    /// The element's own hitbox, so the right-click handler below can tell
++    /// whether anything is painted over it.
++    type PrepaintState = Option<Hitbox>;
+ 
+     fn id(&self) -> Option<ElementId> {
+         Some(self.id.clone())
+@@ -252,14 +254,19 @@
+         &mut self,
+         _: Option<&gpui::GlobalElementId>,
+         _: Option<&InspectorElementId>,
+-        _: gpui::Bounds<gpui::Pixels>,
++        bounds: gpui::Bounds<gpui::Pixels>,
+         request_layout: &mut Self::RequestLayoutState,
+         window: &mut Window,
+         cx: &mut App,
+     ) -> Self::PrepaintState {
++        // Claim a hitbox over our own area before the content prepaints, so
++        // the content's hitboxes stack above it and an occluder painted over
++        // this element later leaves it un-hovered.
++        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+         if let Some(element) = &mut request_layout.element {
+             element.prepaint(window, cx);
+         }
++        Some(hitbox)
+     }
+ 
+     fn paint(
+@@ -268,10 +275,11 @@
+         _: Option<&InspectorElementId>,
+         bounds: gpui::Bounds<gpui::Pixels>,
+         request_layout: &mut Self::RequestLayoutState,
+-        _: &mut Self::PrepaintState,
++        hitbox: &mut Self::PrepaintState,
+         window: &mut Window,
+         cx: &mut App,
+     ) {
++        let hitbox = hitbox.clone();
+         if let Some(element) = &mut request_layout.element {
+             element.paint(window, cx);
+         }
+@@ -288,9 +296,19 @@
+ 
+                 // When right mouse click, to build content menu, and show it at the mouse position.
+                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
++                    // This runs at the window level, which sees every right
++                    // click in the window whatever is painted on top. Bounds
++                    // alone would open every stacked menu under the pointer
++                    // at once, so the hitbox decides: it is only hovered when
++                    // nothing occludes this element, which is what keeps a
++                    // panel under an open drawer from answering the click.
++                    let on_top = hitbox
++                        .as_ref()
++                        .is_some_and(|hitbox| hitbox.is_hovered(window));
+                     if phase.bubble()
+                         && event.button == MouseButton::Right
+                         && bounds.contains(&event.position)
++                        && on_top
+                     {
+                         {
+                             let mut shared_state = shared_state.borrow_mut();

@@ -236,13 +236,15 @@ fn workspace_tile(
                     // Sweep time scales with the distance so a tall
                     // portrait shot drifts at the same pace as a squat one.
                     let duration = Duration::from_secs_f32((pan / 12.).clamp(4., 16.));
-                    d.child(frame(0.).with_animation(
-                        "pan",
-                        Animation::new(duration)
-                            .repeat()
-                            .with_easing(|t| 0.5 - 0.5 * (t * std::f32::consts::TAU).cos()),
-                        move |el, delta| el.top(px(-(delta * pan).round())),
-                    ))
+                    d.child(
+                        frame(0.).with_animation(
+                            "pan",
+                            Animation::new(duration)
+                                .repeat()
+                                .with_easing(|t| 0.5 - 0.5 * (t * std::f32::consts::TAU).cos()),
+                            move |el, delta| el.top(px(-(delta * pan).round())),
+                        ),
+                    )
                 } else {
                     d.child(frame(0.))
                 }
@@ -437,8 +439,7 @@ impl Render for WelcomeWindow {
             // their sources and turn soft.
             let gap = f32::from(tokens::SPACE_SM);
             let columns = (tiles_width / 400.).floor().max(1.);
-            let tile_width =
-                (((tiles_width - gap * (columns - 1.)) / columns).min(640.)).floor();
+            let tile_width = (((tiles_width - gap * (columns - 1.)) / columns).min(640.)).floor();
 
             // The quick-start column: every shipped workspace as a picture
             // tile, wrapping into the columns computed above, the reel

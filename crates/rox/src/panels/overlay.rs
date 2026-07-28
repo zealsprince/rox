@@ -166,6 +166,14 @@ impl OverlayPanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        // Let the children reach this host from their own menus; the
+        // dock never sees a hosted panel, so nothing else offers it.
+        composite::report_hosted(
+            self.slots.iter().flatten(),
+            self.config.chrome.title.as_deref().unwrap_or("Overlay"),
+            cx,
+        );
+
         // Frames only while a toggle is actually running; a settled panel
         // costs zero.
         let u = (self.fade_at.elapsed().as_secs_f32() / tokens::EASE_SECS).min(1.0);
@@ -260,6 +268,13 @@ impl OverlayPanel {
             root
         };
 
+        // A layout that ships as finished furniture drops the builder's
+        // buttons; its slots are still swapped from the tree on the
+        // Workspace settings page.
+        if self.config.chrome.hide_controls {
+            return root;
+        }
+
         let shown = self.shown_ix();
         let toggle = cx.entity().downgrade();
         let controls = composite::corner_controls()
@@ -294,6 +309,10 @@ impl OverlayPanel {
 }
 
 impl PanelSettings for OverlayPanel {
+    fn composite(&self) -> bool {
+        true
+    }
+
     fn state(&self) -> AppState {
         self.state.clone()
     }
@@ -436,7 +455,7 @@ impl Panel for OverlayPanel {
         );
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
-        let menu = panel_settings::settings_item(menu, &cx.entity());
+        let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         panel::popout_item(
             menu,
             &cx.entity(),

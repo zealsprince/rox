@@ -151,20 +151,18 @@ impl ConsoleWindow {
             });
             true
         });
-        cx.spawn(async move |view, cx| {
-            loop {
-                cx.background_executor().timer(POLL).await;
-                let alive = view.update(cx, |this, cx| {
-                    let seq = logging::seq();
-                    if seq != this.seen {
-                        this.seen = seq;
-                        this.lines = logging::snapshot();
-                        cx.notify();
-                    }
-                });
-                if alive.is_err() {
-                    break;
+        cx.spawn(async move |view, cx| loop {
+            cx.background_executor().timer(POLL).await;
+            let alive = view.update(cx, |this, cx| {
+                let seq = logging::seq();
+                if seq != this.seen {
+                    this.seen = seq;
+                    this.lines = logging::snapshot();
+                    cx.notify();
                 }
+            });
+            if alive.is_err() {
+                break;
             }
         })
         .detach();
@@ -202,7 +200,10 @@ impl ConsoleWindow {
     fn as_text(&self) -> String {
         let mut out = String::new();
         for line in self.shown() {
-            out.push_str(&format!("{} {:>5} {}\n", line.time, line.level, line.message));
+            out.push_str(&format!(
+                "{} {:>5} {}\n",
+                line.time, line.level, line.message
+            ));
         }
         out
     }

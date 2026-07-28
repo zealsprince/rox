@@ -11,8 +11,8 @@
 //! story.
 
 use gpui::{
-    div, prelude::*, px, svg, AnyElement, App, Context, Div, Entity, EventEmitter, SharedString,
-    Window,
+    div, prelude::*, px, svg, AnyElement, App, Context, Div, Entity, EntityId, EventEmitter,
+    SharedString, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Side;
@@ -23,6 +23,7 @@ use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::panel;
 use crate::query::search::SearchBox;
+use crate::selection::Selection;
 
 /// The shared query changed; global-following panels re-read it.
 pub enum SharedQueryEvent {
@@ -128,7 +129,9 @@ fn value_label(field: FilterField, value: &str) -> String {
 /// widen with the chips.
 pub fn filter_chips(query: &Entity<SharedQuery>, cx: &App) -> Option<Div> {
     let filter = query.read(cx).filter().clone();
-    if filter.is_empty() {
+    // Field picks only: an id pin has no chip to drop, and a strip of just
+    // Clear would be a control over nothing.
+    if filter.fields_empty() {
         return None;
     }
     let mut strip = div()
@@ -196,15 +199,21 @@ pub fn filter_chips(query: &Entity<SharedQuery>, cx: &App) -> Option<Div> {
     Some(strip)
 }
 
-/// Where a searching panel's query comes from: its own box, or the shared
-/// app-wide one. Shared by default, so the search panel filters a fresh
-/// layout with no per-panel setup.
+/// Where a searching panel's query comes from: its own box, the shared
+/// app-wide one, or the app-wide selection. Shared by default, so the search
+/// panel filters a fresh layout with no per-panel setup.
+///
+/// Selection is the chaining source: the view shows the tracks another panel
+/// last picked, which is what turns an album wall and a track list into one
+/// surface. It keeps its own box like [`QuerySource::Local`] does, so text
+/// still narrows within the pick.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum QuerySource {
     Local,
     #[default]
     Global,
+    Selection,
 }
 
 /// The query-source rows for a panel's dropdown menu: the box toggle over
@@ -235,6 +244,7 @@ fn source_items<P: 'static>(
     for (label, icon, source) in [
         ("Own Query", icons::SEARCH, QuerySource::Local),
         ("Shared Query", icons::GLOBE, QuerySource::Global),
+        ("Selection", icons::PIN, QuerySource::Selection),
     ] {
         let get = get.clone();
         let set = set.clone();
@@ -316,9 +326,13 @@ pub fn source_row<P: 'static>(
 ) -> Div {
     panel::setting_row(
         "Search Source",
-        Some("Follow the shared search query, or filter by this panel's own box"),
+        Some("Follow the shared search query, filter by this panel's own box, or show what another panel has selected"),
         panel::choices(
-            &[("Shared", QuerySource::Global), ("Own", QuerySource::Local)],
+            &[
+                ("Shared", QuerySource::Global),
+                ("Own", QuerySource::Local),
+                ("Selection", QuerySource::Selection),
+            ],
             current,
             on_pick,
             cx,
@@ -337,6 +351,13 @@ pub fn source_row<P: 'static>(
 pub trait QueryFilter: Sized + 'static {
     /// The shared query entity, from the panel's `AppState`.
     fn shared_query(&self) -> &Entity<SharedQuery>;
+    /// The app-wide selection, from the panel's `AppState`.
+    fn selection(&self) -> &Entity<Selection>;
+    /// The track ids this panel is pinned to while following the selection.
+    /// Held rather than read live because the panel's own picks must not
+    /// move it - see [`QueryFilter::on_selection_changed`].
+    fn selection_ids(&self) -> &[i64];
+    fn set_selection_ids(&mut self, ids: Vec<i64>);
     /// The panel's search box.
     fn query_box(&self) -> &Entity<SearchBox>;
     fn query_source(&self) -> QuerySource;
@@ -368,19 +389,24 @@ pub trait QueryFilter: Sized + 'static {
     fn effective_query(&self, cx: &App) -> String {
         match self.query_source() {
             QuerySource::Global => self.shared_query().read(cx).text().to_string(),
-            QuerySource::Local if self.query_box_shown() => self.local_query(),
-            QuerySource::Local => String::new(),
+            QuerySource::Local | QuerySource::Selection if self.query_box_shown() => {
+                self.local_query()
+            }
+            QuerySource::Local | QuerySource::Selection => String::new(),
         }
     }
 
     /// The structured filter the view narrows by, alongside the effective
     /// query: the shared picks while following the shared query, nothing on
     /// a panel's own - the filter is a shared-search surface, so an
-    /// own-query panel stays out of its reach.
+    /// own-query panel stays out of its reach. Following the selection pins
+    /// the view to the picked tracks instead, which rides the same filter
+    /// down to every panel's row scan.
     fn effective_filter(&self, cx: &App) -> FilterSet {
         match self.query_source() {
             QuerySource::Global => self.shared_query().read(cx).filter().clone(),
             QuerySource::Local => FilterSet::default(),
+            QuerySource::Selection => FilterSet::with_ids(self.selection_ids().to_vec()),
         }
     }
 
@@ -390,7 +416,7 @@ pub trait QueryFilter: Sized + 'static {
     fn query_box_text(&self, cx: &App) -> String {
         match self.query_source() {
             QuerySource::Global => self.shared_query().read(cx).text().to_string(),
-            QuerySource::Local => self.local_query(),
+            QuerySource::Local | QuerySource::Selection => self.local_query(),
         }
     }
 
@@ -413,6 +439,12 @@ pub trait QueryFilter: Sized + 'static {
             return;
         }
         self.set_query_source_value(source);
+        // Switching onto the selection lands on whatever is picked now,
+        // rather than an empty view until the next pick.
+        if source == QuerySource::Selection {
+            let ids = self.selection().read(cx).tracks().to_vec();
+            self.set_selection_ids(ids);
+        }
         self.set_query_resync(true);
         self.rebuild_query_view(cx);
         cx.notify();
@@ -430,7 +462,7 @@ pub trait QueryFilter: Sized + 'static {
                     .clone()
                     .update(cx, |q, cx| q.set(text, cx));
             }
-            QuerySource::Local => {
+            QuerySource::Local | QuerySource::Selection => {
                 self.set_local_query(text);
                 self.rebuild_query_view(cx);
             }
@@ -460,13 +492,35 @@ pub trait QueryFilter: Sized + 'static {
                     .clone()
                     .update(cx, |q, cx| q.set(query, cx));
             }
-            QuerySource::Local => {
+            // Following the selection, the jump narrows within the pick:
+            // the id pin still holds, so this searches what is selected
+            // rather than escaping it.
+            QuerySource::Local | QuerySource::Selection => {
                 self.set_query_box_shown(true);
                 self.set_local_query(query);
                 self.rebuild_query_view(cx);
             }
         }
         self.set_query_resync(true);
+        cx.notify();
+        self.after_query_change(cx);
+    }
+
+    /// Route the selection subscription here: re-pin and re-filter while
+    /// following the selection, ignore it otherwise.
+    ///
+    /// A panel's own picks are ignored on purpose. A selection-following
+    /// view still publishes what you click in it, which is what keeps the
+    /// chain running - click a track in the drawer and the cover art and
+    /// track info follow. If it also re-pinned itself to that click it would
+    /// narrow to the one row every time, and there would be no way back.
+    fn on_selection_changed(&mut self, source: EntityId, cx: &mut Context<Self>) {
+        if self.query_source() != QuerySource::Selection || source == cx.entity().entity_id() {
+            return;
+        }
+        let ids = self.selection().read(cx).tracks().to_vec();
+        self.set_selection_ids(ids);
+        self.rebuild_query_view(cx);
         cx.notify();
         self.after_query_change(cx);
     }

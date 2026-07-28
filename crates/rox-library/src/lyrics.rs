@@ -94,7 +94,13 @@ pub fn save(path: &Path, target: &Source, text: &str) -> Result<(), String> {
     match target {
         Source::Tag => {
             let value = (!text.trim().is_empty()).then(|| text.to_string());
-            writer::commit(path, &[Change { field: Field::Lyrics, value }])
+            writer::commit(
+                path,
+                &[Change {
+                    field: Field::Lyrics,
+                    value,
+                }],
+            )
         }
         Source::Sidecar(file) => save_file(file, text, false),
         Source::Store(file) => save_file(file, text, true),
@@ -169,7 +175,12 @@ pub fn strip_leading_stamps(line: &str) -> &str {
 
 fn build(text: String, source: Source) -> Lyrics {
     let (lines, synced) = parse(&text);
-    Lyrics { source, text, lines, synced }
+    Lyrics {
+        source,
+        text,
+        lines,
+        synced,
+    }
 }
 
 /// The sidecar paths to try for a track, in order.

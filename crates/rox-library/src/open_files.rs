@@ -9,13 +9,11 @@ use std::path::{Path, PathBuf};
 /// scanner's list so an opened or dropped file is judged the same way a
 /// scanned one is.
 fn is_audio_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| {
-            crate::scanner::EXTENSIONS
-                .iter()
-                .any(|x| e.eq_ignore_ascii_case(x))
-        })
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        crate::scanner::EXTENSIONS
+            .iter()
+            .any(|x| e.eq_ignore_ascii_case(x))
+    })
 }
 
 /// Every audio file directly under a directory, sorted so a dropped folder

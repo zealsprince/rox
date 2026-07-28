@@ -521,13 +521,7 @@ mod tests {
         // A pinned toolbar (min == max) holds its size while the container
         // grows; the flexible panel absorbs the rest. This is the pinned-panel
         // path the recent fix cared about.
-        let entity = cx.new(|_| {
-            make_state(
-                &[80., 200.],
-                &[px(80.)..px(80.), open()],
-                1000.,
-            )
-        });
+        let entity = cx.new(|_| make_state(&[80., 200.], &[px(80.)..px(80.), open()], 1000.));
         entity.update(cx, |state, cx| {
             state.adjust_to_container_size(cx);
             assert!((state.sizes[0].as_f32() - 80.).abs() < 0.5);
@@ -539,13 +533,7 @@ mod tests {
     #[gpui::test]
     fn adjust_respects_max_and_hands_slack_to_others(cx: &mut TestAppContext) {
         // First panel caps at 150; the second takes everything else.
-        let entity = cx.new(|_| {
-            make_state(
-                &[100., 100.],
-                &[px(40.)..px(150.), open()],
-                1000.,
-            )
-        });
+        let entity = cx.new(|_| make_state(&[100., 100.], &[px(40.)..px(150.), open()], 1000.));
         entity.update(cx, |state, cx| {
             state.adjust_to_container_size(cx);
             assert!(state.sizes[0].as_f32() <= 150.5);
@@ -632,13 +620,8 @@ mod tests {
     fn adjust_with_all_pinned_does_not_divide_by_zero(cx: &mut TestAppContext) {
         // Every panel is pinned, so the flex set empties on the first pass.
         // The solver must terminate and honor the pins, container be damned.
-        let entity = cx.new(|_| {
-            make_state(
-                &[80., 120.],
-                &[px(80.)..px(80.), px(120.)..px(120.)],
-                1000.,
-            )
-        });
+        let entity =
+            cx.new(|_| make_state(&[80., 120.], &[px(80.)..px(80.), px(120.)..px(120.)], 1000.));
         entity.update(cx, |state, cx| {
             state.adjust_to_container_size(cx);
             assert!((state.sizes[0].as_f32() - 80.).abs() < 0.5);

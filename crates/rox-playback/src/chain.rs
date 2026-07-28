@@ -114,8 +114,16 @@ mod tests {
         let mut chain = Chain::new();
         chain.reset(48000);
         // (x + 1) then (x * 2): order matters, 0.0 -> 2.0 not 1.0.
-        chain.push(Box::new(Affine { gain: 1.0, offset: 1.0, rate: 0 }));
-        chain.push(Box::new(Affine { gain: 2.0, offset: 0.0, rate: 0 }));
+        chain.push(Box::new(Affine {
+            gain: 1.0,
+            offset: 1.0,
+            rate: 0,
+        }));
+        chain.push(Box::new(Affine {
+            gain: 2.0,
+            offset: 0.0,
+            rate: 0,
+        }));
         let mut buf = vec![0.0f32, 0.5];
         chain.process(&mut buf);
         assert_eq!(buf, vec![2.0, 3.0]);

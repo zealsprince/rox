@@ -13,10 +13,12 @@ use rox_dock::PanelView;
 use crate::assets::icons;
 use crate::panel::AppState;
 use crate::panels::art::{ArtConfig, ArtPanel};
+use crate::panels::artist_grid::{ArtistGridConfig, ArtistGridPanel};
 use crate::panels::biography::{BiographyConfig, BiographyPanel};
 use crate::panels::cover::{CoverArtPanel, CoverConfig};
 use crate::panels::drag_anchor::{DragAnchorConfig, DragAnchorPanel};
 use crate::panels::drawer::{DrawerConfig, DrawerPanel};
+use crate::panels::favourite::{FavouriteConfig, FavouritePanel};
 use crate::panels::filter::{FilterConfig, FilterPanel};
 use crate::panels::folder_tree::{FolderTreeConfig, FolderTreePanel};
 use crate::panels::grid::{GridConfig, GridPanel};
@@ -28,9 +30,11 @@ use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::metadata::{MetadataConfig, MetadataPanel};
 use crate::panels::mini::{MiniToggleConfig, MiniTogglePanel};
 use crate::panels::overlay::{OverlayConfig, OverlayPanel};
+use crate::panels::particles::{ParticlesConfig, ParticlesPanel};
 use crate::panels::playlists::{PlaylistsConfig, PlaylistsPanel};
 use crate::panels::queue::{QueueConfig, QueuePanel};
 use crate::panels::queue_widget::{QueueWidgetConfig, QueueWidgetPanel};
+use crate::panels::rating::{RatingConfig, RatingPanel};
 use crate::panels::search::{SearchConfig, SearchPanel};
 use crate::panels::slide::{SlideConfig, SlidePanel};
 use crate::panels::spacer::{SpacerConfig, SpacerPanel};
@@ -132,6 +136,16 @@ pub(crate) static CATALOGUE: PanelSection =
                             GridPanel::new(state.clone(), GridConfig::default(), window, cx)
                         }),
                     )
+                },
+            },
+            PanelDef {
+                label: "Artist Grid",
+                icon: icons::USER,
+                placement: PanelPlacement::Center,
+                build: |state, _, window, cx| {
+                    Arc::new(cx.new(|cx| {
+                        ArtistGridPanel::new(state.clone(), ArtistGridConfig::default(), window, cx)
+                    }))
                 },
             },
             PanelDef {
@@ -363,6 +377,24 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
             },
         },
         PanelDef {
+            label: "Rating",
+            icon: icons::STAR,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| RatingPanel::new(state.clone(), RatingConfig::default(), cx)))
+            },
+        },
+        PanelDef {
+            label: "Favourite",
+            icon: icons::HEART,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(
+                    cx.new(|cx| FavouritePanel::new(state.clone(), FavouriteConfig::default(), cx)),
+                )
+            },
+        },
+        PanelDef {
             label: "Queue Widget",
             icon: icons::LIST_MUSIC,
             placement: PanelPlacement::Bottom,
@@ -419,6 +451,24 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
     ],
 };
 
+/// The unfinished work: panels that are real enough to use but not settled
+/// enough to ship. Hidden unless the Development page turns experimental
+/// features on. A panel graduating moves its entry into the section it
+/// belongs in, and nothing else about it changes.
+pub(crate) static EXPERIMENTAL: PanelSection = PanelSection {
+    group: Some(("Experimental", icons::FLASK)),
+    panels: &[PanelDef {
+        label: "Particles",
+        icon: icons::STAR,
+        placement: PanelPlacement::Bottom,
+        build: |state, _, _, cx| {
+            Arc::new(
+                cx.new(|cx| ParticlesPanel::new(state.clone(), ParticlesConfig::default(), cx)),
+            )
+        },
+    }],
+};
+
 /// Whether a section holds the composition hosts (group, overlay, slide).
 /// The composite slot pickers gray these out: a composite can sit in a
 /// tab, but not inside another composite's slot, so nesting stays one
@@ -427,13 +477,33 @@ pub(crate) fn is_arrangement(section: &PanelSection) -> bool {
     std::ptr::eq(section, &ARRANGEMENT)
 }
 
+/// Whether a section is gated behind the experimental flag.
+pub(crate) fn is_experimental(section: &PanelSection) -> bool {
+    std::ptr::eq(section, &EXPERIMENTAL)
+}
+
 /// Every section in menu order, the groups laid out alphabetically so the
-/// list reads the same in the menubar and the Add Panel flyout.
-pub(crate) static CATALOG: &[&PanelSection] = &[
+/// list reads the same in the menubar and the Add Panel flyout, with the
+/// experimental run last. Read it through [`sections`] rather than
+/// directly, so the gated entries stay out of the menus.
+static CATALOG: &[&PanelSection] = &[
     &APPLICATION,
     &ARRANGEMENT,
     &CONTROLS,
     &CATALOGUE,
     &DETAILS,
     &VISUALIZERS,
+    &EXPERIMENTAL,
 ];
+
+/// The sections a panel picker should offer: the whole catalog, minus the
+/// experimental run while the flag is off. Only discovery is gated - the
+/// restore builders in `workspace::register_panels` stay registered either
+/// way, so a layout holding an experimental panel keeps it after the flag
+/// goes back off.
+pub(crate) fn sections() -> impl Iterator<Item = &'static &'static PanelSection> {
+    let experimental = crate::settings::experimental();
+    CATALOG
+        .iter()
+        .filter(move |section| experimental || !is_experimental(section))
+}

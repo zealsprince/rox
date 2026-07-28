@@ -83,7 +83,9 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         .prepare("SELECT 1 FROM pragma_table_info('playlists') WHERE name = 'favourite'")?
         .exists([])?;
     if !has_favourite {
-        conn.execute_batch("ALTER TABLE playlists ADD COLUMN favourite INTEGER NOT NULL DEFAULT 0;")?;
+        conn.execute_batch(
+            "ALTER TABLE playlists ADD COLUMN favourite INTEGER NOT NULL DEFAULT 0;",
+        )?;
     }
     // The path snapshot column arrives via the store ladder's snapshot-paths
     // step, which runs after this baseline.
@@ -323,7 +325,12 @@ pub fn set_favourite(
 /// Append tracks to a playlist in the given order, snapshotting each track's
 /// tags from the live catalog. Duplicates are kept: a track already in the
 /// playlist gets a second member row. Stamps the playlist updated.
-pub fn add(conn: &mut Connection, playlist_id: i64, track_ids: &[i64], now: i64) -> rusqlite::Result<()> {
+pub fn add(
+    conn: &mut Connection,
+    playlist_id: i64,
+    track_ids: &[i64],
+    now: i64,
+) -> rusqlite::Result<()> {
     if track_ids.is_empty() {
         return Ok(());
     }
@@ -479,8 +486,9 @@ pub fn place_members(
     // The target's remaining members in order, without the dragged block.
     let moved: std::collections::HashSet<i64> = members.iter().copied().collect();
     let existing: Vec<i64> = {
-        let mut stmt = tx
-            .prepare("SELECT id FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY position, id")?;
+        let mut stmt = tx.prepare(
+            "SELECT id FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY position, id",
+        )?;
         let rows = stmt.query_map([playlist_id], |row| row.get::<_, i64>(0))?;
         rows.filter_map(Result::ok)
             .filter(|id| !moved.contains(id))
@@ -700,7 +708,11 @@ mod tests {
         add(&mut conn, a, &[1, 2, 3], 100).unwrap();
 
         let members = tracks(&conn, a).unwrap();
-        let order: Vec<i64> = vec![members[2].member_id, members[0].member_id, members[1].member_id];
+        let order: Vec<i64> = vec![
+            members[2].member_id,
+            members[0].member_id,
+            members[1].member_id,
+        ];
         reorder(&mut conn, a, &order, 110).unwrap();
         assert_eq!(ids(&conn, a).unwrap(), [3, 1, 2]);
 
@@ -717,7 +729,11 @@ mod tests {
         let fav = ensure_favourites(&conn, 100).unwrap();
         // Idempotent: a second call returns the same playlist, makes no other.
         assert_eq!(ensure_favourites(&conn, 100).unwrap(), fav);
-        assert_eq!(list(&conn).unwrap().len(), 1, "just the one favourites playlist");
+        assert_eq!(
+            list(&conn).unwrap().len(),
+            1,
+            "just the one favourites playlist"
+        );
         assert!(list(&conn).unwrap()[0].favourite, "and it carries the flag");
 
         assert!(!is_favourite(&conn, 1).unwrap());
@@ -738,7 +754,11 @@ mod tests {
         create(&conn, "Later", 200).unwrap();
         ensure_favourites(&conn, 100).unwrap();
         let names: Vec<String> = list(&conn).unwrap().into_iter().map(|p| p.name).collect();
-        assert_eq!(names, ["Favourites", "Later"], "favourites leads even though it is older");
+        assert_eq!(
+            names,
+            ["Favourites", "Later"],
+            "favourites leads even though it is older"
+        );
     }
 
     #[test]
@@ -748,9 +768,19 @@ mod tests {
         add(&mut conn, pl, &[1, 2, 3], 100).unwrap();
         let m = tracks(&conn, pl).unwrap();
         // Move members 1 and 3 (the block) to just before member 2.
-        place_members(&mut conn, pl, &[m[0].member_id, m[2].member_id], Some(m[1].member_id), 110)
-            .unwrap();
-        assert_eq!(ids(&conn, pl).unwrap(), [1, 3, 2], "the block lands before the target, in order");
+        place_members(
+            &mut conn,
+            pl,
+            &[m[0].member_id, m[2].member_id],
+            Some(m[1].member_id),
+            110,
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&conn, pl).unwrap(),
+            [1, 3, 2],
+            "the block lands before the target, in order"
+        );
     }
 
     #[test]
@@ -760,7 +790,11 @@ mod tests {
         add(&mut conn, pl, &[1, 2, 3], 100).unwrap();
         let m = tracks(&conn, pl).unwrap();
         place_members(&mut conn, pl, &[m[0].member_id], None, 110).unwrap();
-        assert_eq!(ids(&conn, pl).unwrap(), [2, 3, 1], "no target sends the block to the end");
+        assert_eq!(
+            ids(&conn, pl).unwrap(),
+            [2, 3, 1],
+            "no target sends the block to the end"
+        );
     }
 
     #[test]
@@ -774,7 +808,11 @@ mod tests {
         let target_b = tracks(&conn, b).unwrap()[0].member_id; // track 3
         place_members(&mut conn, b, &[from_a], Some(target_b), 110).unwrap();
         assert_eq!(ids(&conn, a).unwrap(), [2], "it leaves A");
-        assert_eq!(ids(&conn, b).unwrap(), [1, 3], "and lands before the target in B");
+        assert_eq!(
+            ids(&conn, b).unwrap(),
+            [1, 3],
+            "and lands before the target in B"
+        );
     }
 
     #[test]
@@ -876,7 +914,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(reattach(&conn).unwrap(), 0);
-        assert!(ids(&conn, pl).unwrap().is_empty(), "the member stays a snapshot");
+        assert!(
+            ids(&conn, pl).unwrap().is_empty(),
+            "the member stays a snapshot"
+        );
         assert_eq!(tracks(&conn, pl).unwrap()[0].title, "One", "still readable");
     }
 
@@ -898,7 +939,11 @@ mod tests {
         store::insert_batch(&mut conn, &[track("/m/one.mp3", "One", "A", "First")]).unwrap();
         let new_id = store::id_for_path(&conn, "/m/one.mp3").unwrap().unwrap();
         assert_eq!(reattach(&conn).unwrap(), 1);
-        assert_eq!(ids(&conn, pl).unwrap(), [new_id], "the refreshed path relinks");
+        assert_eq!(
+            ids(&conn, pl).unwrap(),
+            [new_id],
+            "the refreshed path relinks"
+        );
     }
 
     #[test]

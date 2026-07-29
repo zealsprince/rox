@@ -103,8 +103,15 @@ impl DiscordPresence {
             "Discord RPC settings reloaded: enabled={}, timestamps={}, details={}",
             self.config.enabled, self.config.show_timestamps, self.config.show_details
         );
-        // Force update on next tick
-        self.last_sent_track = None;
+        if !self.config.enabled {
+            self.last_sent_track = None;
+            self.last_sent_time = None;
+            info!("Discord RPC disabled via settings; clearing presence immediately");
+            let _ = self.sender.try_send(DiscordCommand::ClearPresence);
+        } else {
+            // Force update on next tick
+            self.last_sent_track = None;
+        }
     }
 
     /// React to player pump notifications on the main thread.

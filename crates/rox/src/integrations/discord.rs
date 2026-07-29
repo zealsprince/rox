@@ -25,7 +25,7 @@ pub enum DiscordCommand {
 }
 
 /// Snapshot of the currently playing track state sent over channel.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DiscordTrackState {
     pub title: String,
     pub artist: String,
@@ -39,8 +39,9 @@ pub struct DiscordTrackState {
     pub show_youtube_button: bool,
 }
 
-impl PartialEq for DiscordTrackState {
-    fn eq(&self, other: &Self) -> bool {
+impl DiscordTrackState {
+    /// Compare all track metadata fields except position_secs (which updates continuously).
+    pub fn same_metadata(&self, other: &Self) -> bool {
         self.title == other.title
             && self.artist == other.artist
             && self.album == other.album
@@ -186,13 +187,7 @@ impl DiscordPresence {
             (None, Some(_)) => true,
             (Some(_), None) => true,
             (Some(prev), Some(curr)) => {
-                let metadata_changed = prev.title != curr.title
-                    || prev.artist != curr.artist
-                    || prev.album != curr.album
-                    || prev.duration_secs != curr.duration_secs
-                    || prev.is_playing != curr.is_playing;
-
-                if metadata_changed {
+                if !prev.same_metadata(curr) {
                     true
                 } else if curr.is_playing {
                     // Detect manual user seek (> 3s drift from elapsed clock)

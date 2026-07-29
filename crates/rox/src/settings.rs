@@ -732,7 +732,6 @@ pub struct DiscordSettings {
     /// Whether track title/artist details are shown.
     pub show_details: bool,
     /// Whether "View on Last.fm" button is shown.
-    #[serde(alias = "show_button")]
     pub show_lastfm_button: bool,
     /// Whether "Search on YouTube" button is shown.
     pub show_youtube_button: bool,
@@ -741,7 +740,7 @@ pub struct DiscordSettings {
 impl Default for DiscordSettings {
     fn default() -> Self {
         DiscordSettings {
-            enabled: true,
+            enabled: false,
             show_timestamps: true,
             show_details: true,
             show_lastfm_button: true,

@@ -730,10 +730,6 @@ impl Default for Providers {
 pub struct DiscordSettings {
     /// Whether Discord Rich Presence is enabled.
     pub enabled: bool,
-    /// Whether track elapsed time is shown in Discord.
-    pub show_timestamps: bool,
-    /// Whether track title/artist details are shown.
-    pub show_details: bool,
     /// Whether "View on Last.fm" button is shown.
     pub show_lastfm_button: bool,
     /// Whether "Search on YouTube" button is shown.
@@ -744,8 +740,6 @@ impl Default for DiscordSettings {
     fn default() -> Self {
         DiscordSettings {
             enabled: false,
-            show_timestamps: true,
-            show_details: true,
             show_lastfm_button: true,
             show_youtube_button: true,
         }

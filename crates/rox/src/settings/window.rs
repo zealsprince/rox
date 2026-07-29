@@ -242,8 +242,6 @@ struct SettingsWindow {
     scrobbler: Entity<Scrobbler>,
     discord: Entity<DiscordPresence>,
     discord_enabled: bool,
-    discord_show_timestamps: bool,
-    discord_show_details: bool,
     discord_show_lastfm_button: bool,
     discord_show_youtube_button: bool,
     /// The api credential inputs; edits mirror into the scrobbler per
@@ -451,8 +449,6 @@ impl SettingsWindow {
             scrobbler,
             discord: state.discord.clone(),
             discord_enabled: settings.discord.enabled,
-            discord_show_timestamps: settings.discord.show_timestamps,
-            discord_show_details: settings.discord.show_details,
             discord_show_lastfm_button: settings.discord.show_lastfm_button,
             discord_show_youtube_button: settings.discord.show_youtube_button,
             lastfm_key,
@@ -603,35 +599,21 @@ impl SettingsWindow {
     fn set_discord_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
         self.discord_enabled = on;
         Settings::update(move |s| s.discord.enabled = on);
-        self.discord.update(cx, |d, _| d.reload_config());
-        cx.notify();
-    }
-
-    fn set_discord_show_timestamps(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.discord_show_timestamps = on;
-        Settings::update(move |s| s.discord.show_timestamps = on);
-        self.discord.update(cx, |d, _| d.reload_config());
-        cx.notify();
-    }
-
-    fn set_discord_show_details(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.discord_show_details = on;
-        Settings::update(move |s| s.discord.show_details = on);
-        self.discord.update(cx, |d, _| d.reload_config());
+        self.discord.update(cx, |d, cx| d.reload_config(cx));
         cx.notify();
     }
 
     fn set_discord_show_lastfm_button(&mut self, on: bool, cx: &mut Context<Self>) {
         self.discord_show_lastfm_button = on;
         Settings::update(move |s| s.discord.show_lastfm_button = on);
-        self.discord.update(cx, |d, _| d.reload_config());
+        self.discord.update(cx, |d, cx| d.reload_config(cx));
         cx.notify();
     }
 
     fn set_discord_show_youtube_button(&mut self, on: bool, cx: &mut Context<Self>) {
         self.discord_show_youtube_button = on;
         Settings::update(move |s| s.discord.show_youtube_button = on);
-        self.discord.update(cx, |d, _| d.reload_config());
+        self.discord.update(cx, |d, cx| d.reload_config(cx));
         cx.notify();
     }
 
@@ -1495,24 +1477,6 @@ impl SettingsWindow {
                         "Enable Rich Presence",
                         Some("Show rox activity on Discord when playing music"),
                         panel::toggle(self.discord_enabled, Self::set_discord_enabled, cx),
-                    ))
-                    .child(panel::setting_row(
-                        "Show Song Progress",
-                        Some("Display live progress bar and elapsed/duration timestamps"),
-                        panel::toggle(
-                            self.discord_show_timestamps,
-                            Self::set_discord_show_timestamps,
-                            cx,
-                        ),
-                    ))
-                    .child(panel::setting_row(
-                        "Show Song & Artist Details",
-                        Some("Include track title, artist, and album name in Discord activity"),
-                        panel::toggle(
-                            self.discord_show_details,
-                            Self::set_discord_show_details,
-                            cx,
-                        ),
                     ))
                     .child(panel::setting_row(
                         "Show Last.fm Button",

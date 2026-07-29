@@ -55,6 +55,7 @@ impl DiscordTrackState {
 }
 
 pub struct DiscordPresence {
+    player: Entity<Player>,
     library: Entity<Library>,
     config: DiscordSettings,
     sender: async_channel::Sender<DiscordCommand>,
@@ -87,6 +88,7 @@ impl DiscordPresence {
         info!("Discord Rich Presence initialized");
 
         Self {
+            player: player.clone(),
             library: library.clone(),
             config: Settings::load().discord,
             sender: tx,
@@ -97,22 +99,16 @@ impl DiscordPresence {
         }
     }
 
-    /// Refresh settings from the active configuration.
-    pub fn reload_config(&mut self) {
+    /// Refresh settings from the active configuration and force immediate presence update.
+    pub fn reload_config(&mut self, cx: &mut Context<Self>) {
         self.config = Settings::load().discord;
         info!(
-            "Discord RPC settings reloaded: enabled={}, timestamps={}, details={}",
-            self.config.enabled, self.config.show_timestamps, self.config.show_details
+            "Discord RPC settings reloaded: enabled={}, lastfm_button={}, youtube_button={}",
+            self.config.enabled, self.config.show_lastfm_button, self.config.show_youtube_button
         );
-        if !self.config.enabled {
-            self.last_sent_track = None;
-            self.last_sent_time = None;
-            info!("Discord RPC disabled via settings; clearing presence immediately");
-            let _ = self.sender.try_send(DiscordCommand::ClearPresence);
-        } else {
-            // Force update on next tick
-            self.last_sent_track = None;
-        }
+        self.last_sent_track = None;
+        let player = self.player.clone();
+        self.tick(&player, cx);
     }
 
     /// React to player pump notifications on the main thread.
@@ -264,7 +260,7 @@ impl DiscordPresence {
                             .details(&details)
                             .state(&state_str);
 
-                        // Add timestamp if enabled and playing
+                        // Add timestamp if playing
                         if state.is_playing {
                             let now_millis = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)

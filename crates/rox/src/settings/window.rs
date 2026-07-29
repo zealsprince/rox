@@ -236,7 +236,7 @@ struct SettingsWindow {
     /// The shared thumbnail service, whose durable store the storage
     /// page sizes and clears.
     thumbs: Entity<Thumbs>,
-    /// The workspace's scrobbler, the Scrobbling page's subject: the api
+    /// The workspace's scrobbler, the Integration page's subject: the api
     /// credential edits, the connect flow, and the knobs all go through
     /// it, and it persists them.
     scrobbler: Entity<Scrobbler>,

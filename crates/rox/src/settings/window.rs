@@ -33,6 +33,7 @@ use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::palette::{self, Palette, Role, ROLES};
 use crate::design::tokens;
+use crate::integrations::discord::DiscordPresence;
 use crate::integrations::tray;
 use crate::lastfm::{self, AuthPhase, Scrobbler};
 use crate::panel::{self, AppState, ScrubState};
@@ -121,7 +122,7 @@ enum Page {
     Workspace,
     Library,
     Providers,
-    Scrobbling,
+    Integrations,
     Storage,
 }
 
@@ -131,7 +132,7 @@ const PAGES: &[(Page, &str, &str)] = &[
     (Page::Workspace, "Workspace", icons::APP_WINDOW),
     (Page::Library, "Library", icons::LIST_MUSIC),
     (Page::Providers, "Providers", icons::DOWNLOAD),
-    (Page::Scrobbling, "Scrobbling", icons::RADIO),
+    (Page::Integrations, "Integrations", icons::RADIO),
     (Page::Storage, "Storage", icons::DATABASE),
 ];
 
@@ -235,10 +236,14 @@ struct SettingsWindow {
     /// The shared thumbnail service, whose durable store the storage
     /// page sizes and clears.
     thumbs: Entity<Thumbs>,
-    /// The workspace's scrobbler, the Scrobbling page's subject: the api
+    /// The workspace's scrobbler, the Integration page's subject: the api
     /// credential edits, the connect flow, and the knobs all go through
     /// it, and it persists them.
     scrobbler: Entity<Scrobbler>,
+    discord: Entity<DiscordPresence>,
+    discord_enabled: bool,
+    discord_show_lastfm_button: bool,
+    discord_show_youtube_button: bool,
     /// The api credential inputs; edits mirror into the scrobbler per
     /// keystroke, the pickers' cadence.
     lastfm_key: Entity<InputState>,
@@ -442,6 +447,10 @@ impl SettingsWindow {
             player,
             thumbs: state.thumbs,
             scrobbler,
+            discord: state.discord.clone(),
+            discord_enabled: settings.discord.enabled,
+            discord_show_lastfm_button: settings.discord.show_lastfm_button,
+            discord_show_youtube_button: settings.discord.show_youtube_button,
             lastfm_key,
             lastfm_secret,
             threshold_scrub: ScrubState::default(),
@@ -584,6 +593,27 @@ impl SettingsWindow {
         settings::set_quit_to_tray(on);
         Settings::update(move |s| s.quit_to_tray = on);
         tray::sync(cx);
+        cx.notify();
+    }
+
+    fn set_discord_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.discord_enabled = on;
+        Settings::update(move |s| s.discord.enabled = on);
+        self.discord.update(cx, |d, cx| d.reload_config(cx));
+        cx.notify();
+    }
+
+    fn set_discord_show_lastfm_button(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.discord_show_lastfm_button = on;
+        Settings::update(move |s| s.discord.show_lastfm_button = on);
+        self.discord.update(cx, |d, cx| d.reload_config(cx));
+        cx.notify();
+    }
+
+    fn set_discord_show_youtube_button(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.discord_show_youtube_button = on;
+        Settings::update(move |s| s.discord.show_youtube_button = on);
+        self.discord.update(cx, |d, cx| d.reload_config(cx));
         cx.notify();
     }
 
@@ -1288,10 +1318,9 @@ impl SettingsWindow {
             ))
     }
 
-    /// The Scrobbling page: the last.fm account section - the user's own
-    /// api credentials, the connect flow, the connection readout - and
-    /// the scrobbling knobs under it.
-    fn scrobbling_page(&self, cx: &mut Context<Self>) -> Div {
+    /// The Integrations page: Last.fm account & scrobbling settings,
+    /// and Discord Rich Presence knobs.
+    fn integrations_page(&self, cx: &mut Context<Self>) -> Div {
         let scrobbler = self.scrobbler.read(cx);
         let config = scrobbler.config().clone();
         let phase = scrobbler.phase().clone();
@@ -1437,6 +1466,37 @@ impl SettingsWindow {
                         ),
                     )),
             ))
+            .child(section(
+                "Discord Rich Presence",
+                None,
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "Enable Rich Presence",
+                        Some("Show rox activity on Discord when playing music"),
+                        panel::toggle(self.discord_enabled, Self::set_discord_enabled, cx),
+                    ))
+                    .child(panel::setting_row(
+                        "Show Last.fm Button",
+                        Some("Include a clickable 'View on Last.fm' button in Discord status"),
+                        panel::toggle(
+                            self.discord_show_lastfm_button,
+                            Self::set_discord_show_lastfm_button,
+                            cx,
+                        ),
+                    ))
+                    .child(panel::setting_row(
+                        "Show YouTube Button",
+                        Some("Include a clickable 'Search on YouTube' button in Discord status"),
+                        panel::toggle(
+                            self.discord_show_youtube_button,
+                            Self::set_discord_show_youtube_button,
+                            cx,
+                        ),
+                    )),
+            ))
     }
 
     /// The lrclib toggle: through the live static, so the lyrics panel's
@@ -1482,6 +1542,15 @@ impl SettingsWindow {
     fn set_deezer(&mut self, on: bool, cx: &mut Context<Self>) {
         self.providers.deezer = on;
         providers::set_deezer_online(on);
+        let config = self.providers.clone();
+        Settings::update(move |s| s.providers = config);
+        cx.notify();
+    }
+
+    /// The Last.fm cover-art toggle, Deezer's twin.
+    fn set_lastfm_art(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.providers.lastfm_art = on;
+        providers::set_lastfm_art_online(on);
         let config = self.providers.clone();
         Settings::update(move |s| s.providers = config);
         cx.notify();
@@ -1568,6 +1637,11 @@ impl SettingsWindow {
                     "Deezer",
                     Some("Search Deezer for cover art, up to 1000 pixels"),
                     panel::toggle(self.providers.deezer, Self::set_deezer, cx),
+                ))
+                .child(panel::setting_row(
+                    "Last.fm",
+                    Some("Search Last.fm for cover art"),
+                    panel::toggle(self.providers.lastfm_art, Self::set_lastfm_art, cx),
                 )),
         ))
         .child(section(
@@ -2295,7 +2369,7 @@ impl Render for SettingsWindow {
                 Page::Workspace => self.workspace_page(cx),
                 Page::Library => self.library_page(cx),
                 Page::Providers => self.providers_page(cx),
-                Page::Scrobbling => self.scrobbling_page(cx),
+                Page::Integrations => self.integrations_page(cx),
                 Page::Storage => self.storage_page(cx),
             };
 

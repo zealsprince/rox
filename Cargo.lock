@@ -1592,6 +1592,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "discord-rich-presence"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90c55d69cab17c19677ce3a5f8face993a9e6eaf847fecac3547f3a3ff4a2494"
+dependencies = [
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "serde_repr",
+ "thiserror 2.0.18",
+ "uuid 0.8.2",
+]
+
+[[package]]
 name = "dispatch"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2505,7 +2520,7 @@ dependencies = [
  "taffy",
  "thiserror 2.0.18",
  "usvg",
- "uuid",
+ "uuid 1.23.4",
  "waker-fn",
  "wayland-backend",
  "wayland-client",
@@ -2558,7 +2573,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-json",
  "unicode-segmentation",
- "uuid",
+ "uuid 1.23.4",
  "zed-sum-tree",
 ]
 
@@ -5432,12 +5447,13 @@ dependencies = [
 
 [[package]]
 name = "rox"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
  "chrono",
  "dirs 5.0.1",
+ "discord-rich-presence",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
@@ -5464,7 +5480,7 @@ dependencies = [
 
 [[package]]
 name = "rox-dock"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5477,7 +5493,7 @@ dependencies = [
 
 [[package]]
 name = "rox-library"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "image",
  "lofty",
@@ -5488,7 +5504,7 @@ dependencies = [
 
 [[package]]
 name = "rox-playback"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "cpal",
  "log",
@@ -5498,7 +5514,7 @@ dependencies = [
 
 [[package]]
 name = "rox-viz"
-version = "1.5.1"
+version = "1.5.2"
 
 [[package]]
 name = "roxmltree"
@@ -7472,6 +7488,15 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "uuid"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
+dependencies = [
+ "getrandom 0.2.17",
+]
+
+[[package]]
+name = "uuid"
 version = "1.23.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf80a72845275afea99e7f2b434723d3bc7e38470fcd1c7ed39a599c73319a53"
@@ -8733,7 +8758,7 @@ dependencies = [
  "serde_repr",
  "tracing",
  "uds_windows",
- "uuid",
+ "uuid 1.23.4",
  "windows-sys 0.61.2",
  "winnow 1.0.3",
  "zbus_macros 5.17.0",

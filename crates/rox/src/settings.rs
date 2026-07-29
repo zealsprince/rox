@@ -279,6 +279,8 @@ pub struct Settings {
     /// The online enrichment providers and their knobs (ADR 14), the
     /// settings window's Providers page.
     pub providers: Providers,
+    /// Discord Rich Presence options (enable toggle, timestamps, details).
+    pub discord: DiscordSettings,
     /// The quick-play modal's appearance knobs, edited from its own config
     /// panel.
     pub quick_play: QuickPlayConfig,
@@ -701,6 +703,8 @@ pub struct Providers {
     pub itunes: bool,
     /// Search Deezer for cover art when the cover lookup asks.
     pub deezer: bool,
+    /// Search Last.fm for cover art when the cover lookup asks.
+    pub lastfm_art: bool,
     /// Fetch artist biographies from last.fm, a Deezer portrait along,
     /// when the biography panel asks.
     pub artist: bool,
@@ -714,7 +718,30 @@ impl Default for Providers {
             musicbrainz: true,
             itunes: true,
             deezer: true,
+            lastfm_art: true,
             artist: true,
+        }
+    }
+}
+
+/// Discord Rich Presence settings: enable toggle and metadata options.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscordSettings {
+    /// Whether Discord Rich Presence is enabled.
+    pub enabled: bool,
+    /// Whether "View on Last.fm" button is shown.
+    pub show_lastfm_button: bool,
+    /// Whether "Search on YouTube" button is shown.
+    pub show_youtube_button: bool,
+}
+
+impl Default for DiscordSettings {
+    fn default() -> Self {
+        DiscordSettings {
+            enabled: false,
+            show_lastfm_button: true,
+            show_youtube_button: true,
         }
     }
 }
@@ -1047,6 +1074,7 @@ impl Default for Settings {
             last_queue: None,
             lastfm: Lastfm::default(),
             providers: Providers::default(),
+            discord: DiscordSettings::default(),
             quick_play: QuickPlayConfig::default(),
             rating_style: RatingStyle::default(),
             check_updates: true,

@@ -57,6 +57,8 @@ trash = "5"
 # transport; percent-encodes the path so spaces and unicode survive. Already
 # in the tree, same 2.x line.
 url = "2"
+# Rich Prescence for Discord
+discord-rich-presence = "1.x"
 
 # The quit-to-tray icon: StatusNotifierItem over D-Bus, pure Rust on the
 # same zbus 5 line souvlaki brought in. Runtime-agnostic via async-io

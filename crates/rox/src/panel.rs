@@ -29,6 +29,7 @@ use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::palette::PanelTheme;
 use crate::design::{palette, tokens};
 use crate::history::History;
+use crate::integrations::discord::DiscordPresence;
 use crate::lastfm::Scrobbler;
 use crate::panels::library::Library;
 use crate::player::{fmt_time, Player};
@@ -66,6 +67,8 @@ pub struct AppState {
     /// The listen recorder riding the scrobbler's listen signal; history
     /// views subscribe to it for the refresh when an event lands.
     pub history: Entity<History>,
+    /// Discord Rich Presence publisher watching the player.
+    pub discord: Entity<DiscordPresence>,
 }
 
 /// Every tab panel that has hosted one of our panels, reported from each

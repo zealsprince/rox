@@ -2,6 +2,7 @@
 //! tray for windowless residency, and the filesystem watcher for the
 //! library roots.
 
+pub mod discord;
 pub mod library_watch;
 pub mod media_controls;
 pub mod tray;

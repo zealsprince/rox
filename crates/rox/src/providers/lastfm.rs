@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::settings::Settings;
 
-use super::{agent, net_reason, string};
+use super::{agent, net_reason, string, ArtCandidate, ArtProvider, TrackQuery};
 
 const API: &str = "https://ws.audioscrobbler.com/2.0/";
 
@@ -171,6 +171,94 @@ fn strip_wiki(html: &str) -> String {
         blank = false;
     }
     out
+}
+
+pub struct LastfmArt;
+
+impl ArtProvider for LastfmArt {
+    fn name(&self) -> &'static str {
+        "lastfm"
+    }
+
+    fn search(&self, query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
+        let key = api_key();
+        if key.is_empty() || query.artist.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let album_name = if query.album.is_empty() {
+            &query.title
+        } else {
+            &query.album
+        };
+        if album_name.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let request = agent()
+            .get(API)
+            .query("method", "album.getinfo")
+            .query("artist", query.artist.trim())
+            .query("album", album_name.trim())
+            .query("autocorrect", "1")
+            .query("api_key", &key)
+            .query("format", "json");
+
+        let text = match request.call() {
+            Ok(response) => response.into_string().map_err(|e| e.to_string())?,
+            Err(ureq::Error::Status(_, response)) => {
+                response.into_string().map_err(|e| e.to_string())?
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+
+        let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        if body.get("error").is_some() {
+            return Ok(Vec::new());
+        }
+
+        let Some(album) = body.get("album") else {
+            return Ok(Vec::new());
+        };
+
+        let title = string(album.get("name"));
+        let images = album.get("image").and_then(|i| i.as_array());
+
+        let mut best_url = String::new();
+        if let Some(imgs) = images {
+            for img in imgs.iter().rev() {
+                let url = string(img.get("#text"));
+                if !url.is_empty() {
+                    best_url = url;
+                    break;
+                }
+            }
+        }
+
+        if best_url.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let full = full_size_url(&best_url);
+        Ok(vec![ArtCandidate {
+            provider: self.name(),
+            album: title,
+            thumb_url: best_url,
+            full_url: full,
+            width: 1000,
+            height: 1000,
+        }])
+    }
+}
+
+/// Rewrite Last.fm CDN size path segments (e.g. `/300x300/` or `/174s/`) to
+/// full resolution (`/ar0/`).
+fn full_size_url(url: &str) -> String {
+    for segment in &["/300x300/", "/174s/", "/64s/", "/34s/", "/mega/"] {
+        if url.contains(segment) {
+            return url.replace(segment, "/ar0/");
+        }
+    }
+    url.to_string()
 }
 
 #[cfg(test)]

@@ -270,6 +270,7 @@ fn main() {
         providers::set_metadata_online(settings.providers.musicbrainz);
         providers::set_itunes_online(settings.providers.itunes);
         providers::set_deezer_online(settings.providers.deezer);
+        providers::set_lastfm_art_online(settings.providers.lastfm_art);
         providers::set_artist_online(settings.providers.artist);
         // The daily update check, off the UI thread; the toggle and the
         // one-day cache both gate it, so most launches do nothing here.

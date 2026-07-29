@@ -48,7 +48,7 @@ pub fn checkbox(on: bool) -> Div {
 }
 
 /// The sidebar's width, room for a page name and no more.
-pub const SIDEBAR_W: Pixels = px(140.);
+pub const SIDEBAR_W: Pixels = px(160.);
 
 /// The scalar sliders' strip width; the percent readout rides beside it.
 pub const SLIDER_W: Pixels = px(140.);
@@ -115,7 +115,7 @@ pub fn nav_item<P: 'static>(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| on_pick(this, cx)),
         )
-        .child(svg().path(icon).size(px(14.)).text_color(palette::text()))
+        .child(svg().path(icon).size(px(14.)).flex_none().text_color(palette::text()))
         .child(label)
 }
 
@@ -184,7 +184,7 @@ pub fn small_button(
                     .on_mouse_down(MouseButton::Left, on_click)
             }
         })
-        .child(svg().path(icon).size(px(12.)).text_color(palette::text()))
+        .child(svg().path(icon).size(px(12.)).flex_none().text_color(palette::text()))
         .child(label.into())
 }
 
@@ -208,7 +208,7 @@ pub fn icon_button(
                     .on_mouse_down(MouseButton::Left, on_click)
             }
         })
-        .child(svg().path(icon).size(px(14.)).text_color(palette::text()))
+        .child(svg().path(icon).size(px(14.)).flex_none().text_color(palette::text()))
 }
 
 /// One scalar's slider: the shared slider chrome over a scrub strip,

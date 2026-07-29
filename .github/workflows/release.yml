@@ -1,11 +1,15 @@
 # Builds and publishes a release when a push to main bumps the workspace
-# version. The gate is tag existence, not commit diffing: if v<version> is
-# already tagged, nothing runs, so re-pushes and non-bump commits are no-ops
+# version. Triggers off the CI workflow finishing on main rather than the push
+# itself, so a release never ships from a commit that fails fmt, clippy, or
+# tests. The version gate is tag existence, not commit diffing: if v<version>
+# is already tagged, nothing runs, so re-runs and non-bump commits are no-ops
 # and a failed run can be retried safely.
-name: release
+name: Release
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -14,12 +18,21 @@ permissions:
 
 jobs:
   check:
+    # CI also runs on pull requests; the branches filter above matches the head
+    # branch, so require the triggering run to be a green push to be safe. A
+    # manual dispatch skips the gate on purpose: it's the escape hatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       release: ${{ steps.version.outputs.release }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Decide whether this version needs a release
         id: version
         run: |
@@ -55,11 +68,16 @@ jobs:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
       LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
       LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
       DISCORD_APPLICATION_ID: ${{ secrets.DISCORD_APPLICATION_ID }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -134,9 +152,8 @@ jobs:
           sed "s/__VERSION__/$VERSION/" crates/rox/assets/app/Info.plist \
             > rox.app/Contents/Info.plist
           if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
-            # Hardened runtime and a timestamp are what notarization will want
-            # later; the signature alone still leaves Gatekeeper warning on a
-            # downloaded build until that step exists.
+            # Hardened runtime and a timestamp are what notarization checks
+            # for, so they have to go on before the submit step below.
             codesign --force --timestamp --options runtime \
               -s "$APPLE_SIGNING_IDENTITY" rox.app
             codesign --verify --strict --verbose=2 rox.app
@@ -144,7 +161,39 @@ jobs:
             echo "::warning::no Apple signing identity, falling back to ad-hoc"
             codesign --force --deep -s - rox.app
           fi
-          ditto -c -k --keepParent rox.app "rox-v$VERSION-${{ matrix.artifact }}.zip"
+          # The /Applications symlink is what makes the mounted image a
+          # drag-to-install. The DMG gets its own signature so Gatekeeper
+          # judges the container as well as the app inside.
+          staging=$(mktemp -d)
+          cp -R rox.app "$staging/"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname "rox" -srcfolder "$staging" -ov \
+            -format UDZO "rox-v$VERSION-${{ matrix.artifact }}.dmg"
+          if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            codesign --force --timestamp -s "$APPLE_SIGNING_IDENTITY" \
+              "rox-v$VERSION-${{ matrix.artifact }}.dmg"
+          fi
+
+      # Notarization is what clears the Gatekeeper warning on downloaded
+      # builds; the stapled ticket keeps it cleared offline. Skipped without
+      # the API key or a real signing identity, since Apple rejects ad-hoc
+      # submissions anyway. Submit and wait are split so a rejection can pull
+      # the log, which is the only place Apple says why.
+      - name: Notarize (macOS)
+        if: runner.os == 'macOS' && env.APPLE_API_KEY != '' && env.APPLE_SIGNING_IDENTITY != ''
+        run: |
+          dmg="rox-v$VERSION-${{ matrix.artifact }}.dmg"
+          echo "$APPLE_API_KEY" > "$RUNNER_TEMP/notary-key.p8"
+          auth=(--key "$RUNNER_TEMP/notary-key.p8" \
+            --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
+          id=$(xcrun notarytool submit "$dmg" "${auth[@]}" \
+            --output-format json | jq -r '.id')
+          if ! xcrun notarytool wait "$id" "${auth[@]}" --timeout 30m; then
+            xcrun notarytool log "$id" "${auth[@]}"
+            exit 1
+          fi
+          rm "$RUNNER_TEMP/notary-key.p8"
+          xcrun stapler staple "$dmg"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -159,6 +208,7 @@ jobs:
           path: |
             rox-v*.tar.gz
             rox-v*.zip
+            rox-v*.dmg
           if-no-files-found: error
 
   release:
@@ -166,6 +216,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
@@ -173,9 +225,13 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          # Under workflow_run, github.sha is the default branch tip at trigger
+          # time, which can drift past the commit CI actually vetted. Tag the
+          # vetted one.
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           gh release create "v${{ needs.check.outputs.version }}" \
-            --target "$GITHUB_SHA" \
+            --target "$TARGET_SHA" \
             --title "v${{ needs.check.outputs.version }}" \
             --generate-notes \
             artifacts/*

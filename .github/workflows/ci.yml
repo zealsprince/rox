@@ -1,7 +1,7 @@
 # Checks every PR on Linux: fmt, clippy, tests. Pushes to main run the same job
 # so the default-branch build cache stays warm, which is what PR runs restore
 # from; a cold build compiles the whole vendored gpui tree.
-name: ci
+name: CI
 
 on:
   push:

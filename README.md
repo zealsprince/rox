@@ -147,9 +147,7 @@ Grab your platform's build from the [releases page](https://github.com/zealsprin
 - **Linux**
   - **Arch Linux** - Available on the AUR as [`rox-player`](https://aur.archlinux.org/packages/rox-player).
   - **Tarball** - Unpack the tarball and run `./rox`.
-- **macOS** - Unzip and drop `rox.app` into Applications. The build is unsigned, so if
-  Gatekeeper blocks the first launch, allow it under System Settings > Privacy & Security >
-  Open Anyway.
+- **macOS** - Open the DMG and drag `rox` into Applications.
 - **Windows** - Unzip anywhere and run `rox.exe`. If SmartScreen objects, More info >
   Run anyway.
 

@@ -1,0 +1,152 @@
+# Publishes release bumps to the two AUR packages: rox-player builds the
+# tagged tarball, rox-player-git builds HEAD. The PKGBUILDs live in their AUR
+# repos and have a primary maintainer of their own, so this edits them in
+# place instead of overwriting them from a template kept here: version,
+# pkgrel, and checksum for rox-player, just the displayed pkgver for
+# rox-player-git, whose pkgver() computes the real one at build time. The
+# rox-player update is test-built in a clean Arch container before either
+# package is pushed, so a missing system dep or a vendor script break stops
+# here instead of on every AUR user's machine.
+#
+# Runs as a job of the Release workflow (see the note there on why a
+# `release: published` trigger can't work). The manual dispatch is for
+# re-pushing a version when a run failed after the release itself shipped.
+#
+# Needs one secret, AUR_SSH_PRIVATE_KEY: a private key whose public half is
+# registered on an AUR account with co-maintainer access to both packages.
+# When it's unset the run warns and skips, same as the website rebuild.
+name: AUR
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version, without the leading v
+        required: true
+        type: string
+    secrets:
+      AUR_SSH_PRIVATE_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, without the leading v
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      # `if:` can't read secrets on a step, so gate through a step output.
+      - name: Check for the AUR key
+        id: gate
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -n "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::AUR_SSH_PRIVATE_KEY not set, skipping the AUR update"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # makepkg refuses to run as root, so the build side goes through a
+      # throwaway user with passwordless sudo (makepkg -s installs deps via
+      # pacman). Root keeps the git side; safe.directory covers the mixed
+      # ownership that leaves behind.
+      - name: Set up container
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          pacman -Syu --noconfirm git openssh
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          git config --global --add safe.directory '*'
+          git config --global user.name zealsprince
+          git config --global user.email andrew@zealsprince.com
+
+      - name: Set up SSH
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          {
+            echo "Host aur.archlinux.org"
+            echo "  User aur"
+            echo "  IdentityFile ~/.ssh/aur"
+          } > ~/.ssh/config
+          # Trust is pinned to the Ed25519 fingerprint aur.archlinux.org
+          # publishes on its home page, not whatever keyscan happens to see.
+          ssh-keyscan -t ed25519 aur.archlinux.org > ~/.ssh/known_hosts 2>/dev/null
+          fingerprint=$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')
+          if [ "$fingerprint" != "SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4" ]; then
+            echo "::error::aur.archlinux.org host key doesn't match the published fingerprint"
+            exit 1
+          fi
+
+      # The checksum comes from hashing the tag tarball ourselves, the same
+      # trust model updpkgsums uses. The download keeps makepkg's expected
+      # filename so the test build reuses it instead of fetching again.
+      - name: Update rox-player
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          git clone ssh://aur@aur.archlinux.org/rox-player.git
+          cd rox-player
+          curl -fsSLo "rox-player-$VERSION.tar.gz" \
+            "https://github.com/zealsprince/rox/archive/refs/tags/v$VERSION.tar.gz"
+          sha=$(sha256sum "rox-player-$VERSION.tar.gz" | cut -d' ' -f1)
+          sed -i \
+            -e "s/^pkgver=.*/pkgver=$VERSION/" \
+            -e "s/^pkgrel=.*/pkgrel=1/" \
+            -e "s/^sha256sums=.*/sha256sums=('$sha')/" \
+            PKGBUILD
+          chown -R builder .
+          sudo -Hu builder makepkg --printsrcinfo > .SRCINFO
+
+      - name: Test build rox-player
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          cd rox-player
+          sudo -Hu builder makepkg -s --noconfirm
+
+      # The repo's pkgver is only what the AUR page displays (pkgver() computes
+      # the real one at install time), but left stale it reads abandoned, so
+      # mirror pkgver()'s transform on the fresh tag.
+      - name: Update rox-player-git
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          git clone ssh://aur@aur.archlinux.org/rox-player-git.git
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/zealsprince/rox rox-src
+          gitver=$(git -C rox-src describe --long --tags "v$VERSION" |
+            sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g')
+          cd rox-player-git
+          sed -i \
+            -e "s/^pkgver=.*/pkgver=$gitver/" \
+            -e "s/^pkgrel=.*/pkgrel=1/" \
+            PKGBUILD
+          chown -R builder .
+          sudo -Hu builder makepkg --printsrcinfo > .SRCINFO
+
+      # Explicit adds so makepkg leftovers (src/, pkg/, the tarball) never
+      # ride along. Skipping a no-op diff keeps dispatch re-runs idempotent.
+      - name: Push
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          for pkg in rox-player rox-player-git; do
+            git -C "$pkg" add PKGBUILD .SRCINFO
+            if git -C "$pkg" diff --cached --quiet; then
+              echo "$pkg is already at v$VERSION"
+            else
+              git -C "$pkg" commit -m "Update to v$VERSION"
+              git -C "$pkg" push
+            fi
+          done

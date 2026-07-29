@@ -29,7 +29,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # vendor/ rides along in the cache so its mtimes survive between runs:
+      # a freshly re-extracted vendor tree looks dirty to cargo's fingerprints
+      # and forces a full gpui rebuild even when nothing changed.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: vendor
 
       # vendor/ is gitignored; [patch.crates-io] points at it, so rebuild it
       # from crates.io + patches/ before anything compiles.

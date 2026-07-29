@@ -15,9 +15,6 @@ use crate::panels::library::Library;
 use crate::player::Player;
 use crate::settings::{DiscordSettings, Settings};
 
-/// Discord Client Application ID for rox, injected at compile time via DISCORD_APP_ID env var.
-const DISCORD_APP_ID: Option<&'static str> = option_env!("DISCORD_APP_ID");
-
 /// Commands sent from the GPUI main thread to the background IPC worker loop.
 pub enum DiscordCommand {
     UpdatePresence(Option<DiscordTrackState>),
@@ -219,9 +216,11 @@ impl DiscordPresence {
 
     /// Background task managing socket lifecycle and activity updates.
     async fn run_ipc_loop(rx: async_channel::Receiver<DiscordCommand>) {
-        let Some(app_id) = DISCORD_APP_ID else {
+        if !crate::discord::has_builtin_application_id() {
+            info!("Discord presence disabled: no application id baked into this build");
             return;
-        };
+        }
+        let app_id = crate::discord::keys::APPLICATION_ID;
         let mut client: Option<DiscordIpcClient> = None;
         let mut last_connect_attempt = SystemTime::UNIX_EPOCH;
 

@@ -14,8 +14,8 @@ use std::time::Instant;
 
 use gpui::{
     canvas, div, point, prelude::*, px, size, AnyElement, App, BorderStyle, Bounds, Context, Div,
-    Entity, EventEmitter, FocusHandle, Focusable, Rgba, SharedString, Subscription, WeakEntity,
-    Window,
+    Entity, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, MouseMoveEvent,
+    Pixels, Rgba, SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
@@ -24,6 +24,7 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use rox_viz::analysis::{log_bands, Analyzer, MAX_FFT_SIZE, MIN_FFT_SIZE};
+use rox_viz::signal::{Binding, Signals, Source};
 use rox_viz::AudioFeed;
 
 use crate::assets::icons;
@@ -75,6 +76,11 @@ const RATE_MAX: f32 = 300.0;
 /// The launch speed slider's span, px per second.
 const SPEED_MIN: f32 = 0.0;
 const SPEED_MAX: f32 = 600.0;
+
+/// The burst slider's span, particles thrown per onset when an emitter
+/// fires on transients instead of a steady rate.
+const BURST_MIN: f32 = 1.0;
+const BURST_MAX: f32 = 120.0;
 
 /// The scene gravity slider's span, px per second squared.
 const GRAVITY_MAX: f32 = 900.0;
@@ -142,11 +148,67 @@ const SHAPE_CHOICES: &[(&str, Shape)] = &[
 
 const AIM_CHOICES: &[(&str, Aim)] = &[("Fixed", Aim::Fixed), ("Outward", Aim::Outward)];
 
+/// How an emitter turns activation into spawns: a steady stream scaled by
+/// how hard it fires, or a burst on each onset so a kick pops in one puff
+/// instead of dribbling while the hit sustains.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Trigger {
+    #[default]
+    Continuous,
+    Burst,
+}
+
+const TRIGGER_CHOICES: &[(&str, Trigger)] = &[
+    ("Continuous", Trigger::Continuous),
+    ("Burst", Trigger::Burst),
+];
+
+/// The scene and force knobs a binding may drive, label and target id. The
+/// ids are what the config persists, so they only ever grow.
+const TARGET_CHOICES: &[(&str, &str)] = &[
+    ("Gravity", "gravity"),
+    ("Drag", "drag"),
+    ("Size", "size"),
+    ("Life", "life"),
+    ("Turbulence", "turbulence"),
+    ("Scale", "scale"),
+    ("Drift", "drift"),
+];
+
+/// The knobs a binding may drive on one emitter, label and knob id; the
+/// persisted target is `e<id>.<knob>` against the emitter's stable id.
+const EMITTER_KNOB_CHOICES: &[(&str, &str)] = &[
+    ("Speed", "speed"),
+    ("Rate", "rate"),
+    ("Burst", "burst"),
+    ("Cone", "cone"),
+];
+
+/// The source picker's face for [`Source`], which carries band bounds the
+/// segmented control can't.
+#[derive(Clone, Copy, PartialEq)]
+enum SourceKind {
+    Band,
+    Level,
+    Onset,
+}
+
+const SOURCE_CHOICES: &[(&str, SourceKind)] = &[
+    ("Band", SourceKind::Band),
+    ("Level", SourceKind::Level),
+    ("Onset", SourceKind::Onset),
+];
+
 /// One emitter: the range it listens to, how loud that range has to get
 /// before it fires, where it sits, and which way it throws.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Emitter {
+    /// A stable handle bindings point at, unique within the panel and
+    /// persisted, so a route survives removals shifting the list under it.
+    /// 0 is unassigned; the panel assigns on load and on add.
+    pub id: u64,
     /// Whether the emitter fires. Off keeps it in the list, tuned, silent.
     pub enabled: bool,
     /// The watched range's bounds, Hz.
@@ -158,6 +220,11 @@ pub struct Emitter {
     /// Particles per second at full activation. The live rate scales with
     /// how far past the threshold the range sits.
     pub rate: f32,
+    /// Whether the emitter streams at `rate` or fires a `burst` on each
+    /// onset.
+    pub mode: Trigger,
+    /// Particles thrown per onset in burst mode.
+    pub burst: f32,
     /// The footprint particles spawn across.
     pub shape: Shape,
     /// The footprint's center, as fractions of the panel, so a resize
@@ -191,11 +258,14 @@ pub struct Emitter {
 impl Default for Emitter {
     fn default() -> Self {
         Emitter {
+            id: 0,
             enabled: true,
             freq_lo: 30.0,
             freq_hi: 120.0,
             threshold: 0.35,
             rate: 60.0,
+            mode: Trigger::Continuous,
+            burst: 24.0,
             shape: Shape::Line,
             x: 0.5,
             y: 1.0,
@@ -230,6 +300,10 @@ impl Emitter {
 
     fn rate(&self) -> f32 {
         self.rate.clamp(RATE_MIN, RATE_MAX)
+    }
+
+    fn burst(&self) -> f32 {
+        self.burst.clamp(BURST_MIN, BURST_MAX)
     }
 
     fn speed(&self) -> f32 {
@@ -295,6 +369,9 @@ pub struct Scene {
     pub life: f32,
     /// Draw particles as dots rather than squares.
     pub round: bool,
+    /// Lay a soft halo behind each particle so it reads as light rather than
+    /// a flat chip.
+    pub glow: bool,
     /// FFT window size the activations are read from.
     pub fft_size: usize,
     /// Freeze the field while playback is paused instead of letting it
@@ -311,6 +388,7 @@ impl Default for Scene {
             size: 4.0,
             life: 2.5,
             round: true,
+            glow: false,
             fft_size: 2048,
             freeze: false,
         }
@@ -392,6 +470,9 @@ pub struct ParticlesConfig {
     pub chrome: PanelChrome,
     /// The emitters, in the order the customize window lists them.
     pub emitters: Vec<Emitter>,
+    /// Routes from the music into scene and force knobs, index-aligned
+    /// with the signal engine's values.
+    pub bindings: Vec<Binding>,
     pub scene: Scene,
     pub forces: Forces,
 }
@@ -405,6 +486,7 @@ impl Default for ParticlesConfig {
         ParticlesConfig {
             chrome: PanelChrome::default(),
             emitters: vec![Emitter::default()],
+            bindings: Vec::new(),
             scene: Scene::default(),
             forces: Forces::default(),
         }
@@ -429,6 +511,69 @@ fn fmt_hz(hz: f32) -> String {
     } else {
         format!("{:.0} Hz", hz.round())
     }
+}
+
+/// Give every emitter a unique id, keeping the ones a loaded config
+/// carries: zeroes (configs from before ids existed) and hand-edited
+/// duplicates get fresh ones, and any binding that pointed at a replaced
+/// id goes quiet rather than firing at the wrong emitter.
+fn assign_emitter_ids(emitters: &mut [Emitter]) {
+    let mut next = emitters.iter().map(|e| e.id).max().unwrap_or(0) + 1;
+    for i in 0..emitters.len() {
+        let taken = emitters[..i].iter().any(|e| e.id == emitters[i].id);
+        if emitters[i].id == 0 || taken {
+            emitters[i].id = next;
+            next += 1;
+        }
+    }
+}
+
+/// A binding target's emitter route, `e<id>.<knob>`, if that is what it is.
+fn emitter_route(target: &str) -> Option<(u64, &str)> {
+    let (id, knob) = target.strip_prefix('e')?.split_once('.')?;
+    Some((id.parse().ok()?, knob))
+}
+
+/// Resolve the bindings against the live signals into the emitters, scene,
+/// and forces this frame runs with. A binding's span maps through the same
+/// range its target's slider covers, so a route can do exactly what a hand
+/// on the slider could and nothing more. Later routes to the same target
+/// win.
+fn modulated(config: &ParticlesConfig, signals: &[f32]) -> (Vec<Emitter>, Scene, Forces) {
+    let mut emitters = config.emitters.clone();
+    let mut scene = config.scene.clone();
+    let mut forces = config.forces.clone();
+    for (binding, &signal) in config.bindings.iter().zip(signals) {
+        if !binding.enabled {
+            continue;
+        }
+        let f = (binding.from + (binding.to - binding.from) * signal).clamp(0.0, 1.0);
+        if let Some((id, knob)) = emitter_route(&binding.target) {
+            if let Some(emitter) = emitters.iter_mut().find(|e| e.id == id) {
+                match knob {
+                    "speed" => emitter.speed = SPEED_MIN + f * (SPEED_MAX - SPEED_MIN),
+                    "rate" => emitter.rate = RATE_MIN + f * (RATE_MAX - RATE_MIN),
+                    "burst" => emitter.burst = BURST_MIN + f * (BURST_MAX - BURST_MIN),
+                    "cone" => emitter.cone = f * 360.0,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        match binding.target.as_str() {
+            "gravity" => scene.gravity = f * GRAVITY_MAX,
+            "drag" => scene.drag = f * DRAG_MAX,
+            "size" => scene.size = SIZE_MIN + f * (SIZE_MAX - SIZE_MIN),
+            "life" => scene.life = LIFE_MIN + f * (LIFE_MAX - LIFE_MIN),
+            "turbulence" => forces.turbulence = f * TURB_MAX,
+            "scale" => {
+                forces.turbulence_scale = TURB_SCALE_MIN + f * (TURB_SCALE_MAX - TURB_SCALE_MIN)
+            }
+            "drift" => forces.turbulence_speed = f * TURB_SPEED_MAX,
+            _ => {}
+        }
+    }
+    (emitters, scene, forces)
 }
 
 /// A heading in degrees clockwise from up as a unit vector in panel space,
@@ -507,6 +652,12 @@ struct Sim {
     /// so a slow rate still fires at its average instead of rounding to
     /// zero.
     carry: Vec<f32>,
+    /// Whether each burst emitter is ready to fire. Set once the band drops
+    /// back under the threshold, cleared on the pop, so one onset throws one
+    /// burst.
+    armed: Vec<bool>,
+    /// The binding signals, fed off the same spectrum as the emitters.
+    signals: Signals,
     particles: Vec<Particle>,
     /// Seconds the sim has run, for drifting the turbulence field.
     clock: f32,
@@ -526,6 +677,8 @@ impl Sim {
             mono: Vec::new(),
             levels: Vec::new(),
             carry: Vec::new(),
+            armed: Vec::new(),
+            signals: Signals::new(),
             particles: Vec::new(),
             clock: 0.0,
             rng: 0x9e37_79b9,
@@ -572,21 +725,30 @@ impl Sim {
         }
         self.levels.resize(config.emitters.len(), 0.0);
         self.carry.resize(config.emitters.len(), 0.0);
-        self.levels.truncate(config.emitters.len());
-        self.carry.truncate(config.emitters.len());
+        self.armed.resize(config.emitters.len(), true);
 
-        // One transform per frame, pooled per emitter. A range's bin span is
-        // a couple of float ops, so it is recomputed rather than cached
-        // against a mapping. The read is its own scope: the magnitudes
-        // borrow the analyzer, and firing below takes the whole sim.
+        // One transform per frame, shared by the emitters' activations and
+        // the bindings' signals. A range's bin span is a couple of float
+        // ops, so it is recomputed rather than cached against a mapping.
+        // The read is its own scope: the magnitudes borrow the analyzer,
+        // and firing below takes the whole sim.
         let rate = feed.sample_rate();
         let half = size / 2;
         let mut targets: Vec<Option<f32>> = vec![None; config.emitters.len()];
-        {
-            let Sim { analyzer, mono, .. } = self;
+        let (emitters, scene, forces) = {
+            let Sim {
+                analyzer,
+                mono,
+                signals,
+                ..
+            } = self;
             let analyzer = analyzer.as_mut().expect("analyzer built above");
-            if fresh && feed.latest_mono(mono) == mono.len() {
-                let mags = analyzer.magnitudes(mono);
+            let mags: Option<&[f32]> = if fresh && feed.latest_mono(mono) == mono.len() {
+                Some(analyzer.magnitudes(mono))
+            } else {
+                None
+            };
+            if let Some(mags) = mags {
                 for (target, emitter) in targets.iter_mut().zip(&config.emitters) {
                     let (freq_lo, freq_hi) = emitter.range();
                     let (lo, hi) = log_bands(1, freq_lo, freq_hi, rate, half)[0];
@@ -598,9 +760,11 @@ impl Sim {
                     *target = Some(((db - FLOOR_DB) / (MAX_DB - FLOOR_DB)).clamp(0.0, 1.0));
                 }
             }
-        }
+            let values = signals.step(mags, rate, stopped, dt, &config.bindings);
+            modulated(config, values)
+        };
 
-        for (i, emitter) in config.emitters.iter().enumerate() {
+        for (i, emitter) in emitters.iter().enumerate() {
             if let Some(target) = targets[i] {
                 let ease = if target > self.levels[i] {
                     ATTACK
@@ -619,21 +783,36 @@ impl Sim {
             let drive = ((self.levels[i] - threshold) / (1.0 - threshold)).clamp(0.0, 1.0);
             if !emitter.enabled || drive <= 0.0 {
                 self.carry[i] = 0.0;
+                // A burst emitter re-arms once its band falls back under the
+                // threshold, so the next transient fires a fresh pop.
+                self.armed[i] = true;
                 continue;
             }
-            self.carry[i] += drive * emitter.rate() * dt;
-            let due = self.carry[i].floor();
-            self.carry[i] -= due;
             let color = emitter.color();
-            for _ in 0..(due as usize) {
+            let due = match emitter.mode {
+                Trigger::Continuous => {
+                    self.carry[i] += drive * emitter.rate() * dt;
+                    let due = self.carry[i].floor();
+                    self.carry[i] -= due;
+                    due as usize
+                }
+                // The whole burst lands on the rising edge into the
+                // threshold, then holds until the band drops and re-arms.
+                Trigger::Burst if self.armed[i] => {
+                    self.armed[i] = false;
+                    emitter.burst().round() as usize
+                }
+                Trigger::Burst => 0,
+            };
+            for _ in 0..due {
                 if self.particles.len() >= MAX_PARTICLES {
                     break;
                 }
-                self.spawn(emitter, w, h, drive, color, &config.scene);
+                self.spawn(emitter, w, h, drive, color, &scene);
             }
         }
 
-        self.advance(w, h, dt, &config.scene, &config.forces);
+        self.advance(w, h, dt, &scene, &forces);
     }
 
     /// Launch one particle for an emitter: somewhere on its footprint,
@@ -731,6 +910,27 @@ impl Sim {
             // by dimming instead of blinking off mid-flight.
             let t = (p.age / p.life).clamp(0.0, 1.0);
             let fade = ((1.0 - t) * 2.0).min(1.0);
+            // A dim, wide halo under the core carries the same fade, so a
+            // particle glows out instead of blinking off.
+            if scene.glow {
+                let halo = p.size * 2.5;
+                let color = palette::alpha(p.color, (fade * 70.0) as u8);
+                let radius = if scene.round { halo / 2.0 } else { halo * 0.2 };
+                window.paint_quad(gpui::quad(
+                    Bounds::new(
+                        point(
+                            origin.x + px(p.x - halo / 2.0),
+                            origin.y + px(p.y - halo / 2.0),
+                        ),
+                        size(px(halo), px(halo)),
+                    ),
+                    radius,
+                    color,
+                    0.,
+                    gpui::transparent_black(),
+                    BorderStyle::default(),
+                ));
+            }
             let color = palette::alpha(p.color, (fade * 255.0) as u8);
             let radius = if scene.round { p.size / 2.0 } else { 0.0 };
             let rect = Bounds::new(
@@ -752,6 +952,197 @@ impl Sim {
     }
 }
 
+/// How close to an emitter's center a press has to land to grab it in the
+/// editor, px.
+const GRAB_RADIUS: f32 = 24.0;
+
+/// A thin live meter for the customize window: the value read off the sim
+/// at paint time, so tuning happens against the signal itself instead of
+/// blind. Keeps frames coming while the audio is fresh or the field is
+/// settling, since that window renders on its own clock, not the panel's.
+fn meter(
+    sim: Arc<Mutex<Sim>>,
+    read: impl Fn(&Sim) -> f32 + 'static,
+    fill: Rgba,
+    marker: Option<f32>,
+) -> Div {
+    div().h(px(6.)).w_full().child(
+        canvas(
+            move |_, _, _| {},
+            move |bounds, _, window, _| {
+                let (value, live) = {
+                    let sim = sim.lock().unwrap();
+                    let live = sim.alive
+                        || sim
+                            .last_fresh
+                            .is_some_and(|t| t.elapsed().as_secs_f32() < 0.3);
+                    (read(&sim).clamp(0.0, 1.0), live)
+                };
+                let radius = bounds.size.height / 2.0;
+                window.paint_quad(gpui::quad(
+                    bounds,
+                    radius,
+                    palette::bg_control(),
+                    0.,
+                    gpui::transparent_black(),
+                    BorderStyle::default(),
+                ));
+                if value > 0.0 {
+                    window.paint_quad(gpui::quad(
+                        Bounds::new(
+                            bounds.origin,
+                            size(bounds.size.width * value, bounds.size.height),
+                        ),
+                        radius,
+                        palette::alpha(fill, 210),
+                        0.,
+                        gpui::transparent_black(),
+                        BorderStyle::default(),
+                    ));
+                }
+                if let Some(marker) = marker {
+                    window.paint_quad(gpui::quad(
+                        Bounds::new(
+                            point(
+                                bounds.origin.x + bounds.size.width * marker - px(0.75),
+                                bounds.origin.y,
+                            ),
+                            size(px(1.5), bounds.size.height),
+                        ),
+                        0.,
+                        palette::text_faint(),
+                        0.,
+                        gpui::transparent_black(),
+                        BorderStyle::default(),
+                    ));
+                }
+                if live {
+                    window.request_animation_frame();
+                }
+            },
+        )
+        .size_full(),
+    )
+}
+
+/// One chip of a binding's scope row: the segmented control's look, built
+/// by hand because the scope list follows the live emitter list, which the
+/// static segmented options can't carry.
+fn scope_chip(
+    label: String,
+    picked: bool,
+    on_pick: impl Fn(&mut ParticlesPanel, &mut Context<ParticlesPanel>) + 'static,
+    cx: &mut Context<ParticlesPanel>,
+) -> Div {
+    div()
+        .px(tokens::SPACE_SM)
+        .py(tokens::SPACE_XS)
+        .rounded(tokens::RADIUS)
+        .bg(if picked {
+            palette::accent()
+        } else {
+            palette::bg_control()
+        })
+        .when(!picked, |d| d.hover(|d| d.bg(palette::bg_control_hover())))
+        .text_color(if picked {
+            palette::text_on_accent()
+        } else {
+            palette::text()
+        })
+        .cursor_pointer()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| on_pick(this, cx)),
+        )
+        .child(label)
+}
+
+/// The editor overlay: every emitter's footprint dotted onto the field and
+/// its center as the grab handle, in the emitter's own color so the markers
+/// read against the settings list. Disabled emitters dim; the dragged one
+/// swells. Dots are the one outline every shape can wear under
+/// axis-aligned quads, rotation included.
+fn paint_markers(
+    config: &ParticlesConfig,
+    drag: Option<usize>,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+) {
+    let w = f32::from(bounds.size.width);
+    let h = f32::from(bounds.size.height);
+    let dot = |window: &mut Window, x: f32, y: f32, r: f32, color: Rgba| {
+        window.paint_quad(gpui::quad(
+            Bounds::new(
+                point(bounds.origin.x + px(x - r), bounds.origin.y + px(y - r)),
+                size(px(r * 2.0), px(r * 2.0)),
+            ),
+            r,
+            color,
+            0.,
+            gpui::transparent_black(),
+            BorderStyle::default(),
+        ));
+    };
+    for (i, emitter) in config.emitters.iter().enumerate() {
+        let color = emitter.color();
+        let strong = palette::alpha(color, if emitter.enabled { 200 } else { 80 });
+        let faint = palette::alpha(color, if emitter.enabled { 120 } else { 50 });
+        let (fx, fy) = emitter.center();
+        let (ex, ey) = (fx * w, fy * h);
+        let rot = emitter.rotation.to_radians();
+        match emitter.shape {
+            Shape::Point => {}
+            Shape::Line => {
+                let len = emitter.width() * w;
+                let n = ((len / 14.0) as usize).clamp(8, 48);
+                for k in 0..=n {
+                    let t = (k as f32 / n as f32 - 0.5) * len;
+                    dot(window, ex + t * rot.cos(), ey + t * rot.sin(), 1.5, faint);
+                }
+            }
+            Shape::Box => {
+                let bw = emitter.width() * w;
+                let bh = emitter.height() * h;
+                let n = (((bw + bh) / 14.0) as usize).clamp(8, 64);
+                for k in 0..n {
+                    // Walk the perimeter as one 0..4 loop, a side per unit.
+                    let t = k as f32 / n as f32 * 4.0;
+                    let (lx, ly) = match t as usize {
+                        0 => ((t - 0.5) * bw, -bh / 2.0),
+                        1 => (bw / 2.0, (t - 1.5) * bh),
+                        2 => ((2.5 - t) * bw, bh / 2.0),
+                        _ => (-bw / 2.0, (3.5 - t) * bh),
+                    };
+                    dot(
+                        window,
+                        ex + lx * rot.cos() - ly * rot.sin(),
+                        ey + lx * rot.sin() + ly * rot.cos(),
+                        1.5,
+                        faint,
+                    );
+                }
+            }
+            Shape::Ring => {
+                let radius = emitter.width() * w.min(h) * 0.5;
+                let n = ((radius / 6.0) as usize).clamp(12, 64);
+                for k in 0..n {
+                    let a = k as f32 / n as f32 * std::f32::consts::TAU;
+                    dot(
+                        window,
+                        ex + radius * a.cos(),
+                        ey + radius * a.sin(),
+                        1.5,
+                        faint,
+                    );
+                }
+            }
+        }
+        let r = if drag == Some(i) { 7.0 } else { 5.0 };
+        dot(window, ex, ey, r + 2.5, palette::alpha(color, 60));
+        dot(window, ex, ey, r, strong);
+    }
+}
+
 /// The settings sliders' painted bounds and drag state for one emitter, one
 /// per slider so a drag on one never moves the others.
 #[derive(Default)]
@@ -760,6 +1151,7 @@ struct EmitterScrubs {
     hi: ScrubState,
     threshold: ScrubState,
     rate: ScrubState,
+    burst: ScrubState,
     x: ScrubState,
     y: ScrubState,
     width: ScrubState,
@@ -768,6 +1160,16 @@ struct EmitterScrubs {
     direction: ScrubState,
     cone: ScrubState,
     speed: ScrubState,
+}
+
+/// One binding's slider state, the [`EmitterScrubs`] arrangement.
+#[derive(Default)]
+struct BindingScrubs {
+    lo: ScrubState,
+    hi: ScrubState,
+    smooth: ScrubState,
+    from: ScrubState,
+    to: ScrubState,
 }
 
 /// A labelled config toggle for the Display menu: the row label, a getter
@@ -791,6 +1193,8 @@ pub struct ParticlesPanel {
     /// emitter shifts every index after it.
     emitter_pickers: Vec<Entity<ColorPickerState>>,
     _emitter_changes: Vec<Subscription>,
+    /// Per-binding slider state, kept the same length as the list.
+    binding_scrubs: Vec<BindingScrubs>,
     gravity_scrub: ScrubState,
     gravity_angle_scrub: ScrubState,
     drag_scrub: ScrubState,
@@ -800,6 +1204,14 @@ pub struct ParticlesPanel {
     turb_scale_scrub: ScrubState,
     turb_speed_scrub: ScrubState,
     focus: FocusHandle,
+    /// The editor overlay: markers over the field for arranging emitters
+    /// by hand. Session state, deliberately not persisted.
+    edit: bool,
+    /// The emitter riding the pointer while the editor is on.
+    drag: Option<usize>,
+    /// The field canvas's painted bounds, for mapping editor presses into
+    /// emitter fractions, the scrub strips' arrangement.
+    canvas_bounds: Arc<Mutex<Bounds<Pixels>>>,
     /// The tab panel this panel currently sits in, for duplicate and
     /// pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -809,8 +1221,9 @@ pub struct ParticlesPanel {
 }
 
 impl ParticlesPanel {
-    pub fn new(state: AppState, config: ParticlesConfig, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: AppState, mut config: ParticlesConfig, cx: &mut Context<Self>) -> Self {
         let _player_changed = cx.observe(&state.player, |_, _, cx| cx.notify());
+        assign_emitter_ids(&mut config.emitters);
         ParticlesPanel {
             config,
             feed: state.player.read(cx).feed(),
@@ -819,6 +1232,7 @@ impl ParticlesPanel {
             emitter_scrubs: Vec::new(),
             emitter_pickers: Vec::new(),
             _emitter_changes: Vec::new(),
+            binding_scrubs: Vec::new(),
             gravity_scrub: ScrubState::default(),
             gravity_angle_scrub: ScrubState::default(),
             drag_scrub: ScrubState::default(),
@@ -828,13 +1242,17 @@ impl ParticlesPanel {
             turb_scale_scrub: ScrubState::default(),
             turb_speed_scrub: ScrubState::default(),
             focus: cx.focus_handle(),
+            edit: false,
+            drag: None,
+            canvas_bounds: Arc::new(Mutex::new(Bounds::default())),
             tab_panel: None,
             _player_changed,
         }
     }
 
     fn add_emitter(&mut self, cx: &mut Context<Self>) {
-        let emitter = Emitter::next_after(self.config.emitters.last());
+        let mut emitter = Emitter::next_after(self.config.emitters.last());
+        emitter.id = self.config.emitters.iter().map(|e| e.id).max().unwrap_or(0) + 1;
         self.config.emitters.push(emitter);
         cx.notify();
     }
@@ -842,6 +1260,61 @@ impl ParticlesPanel {
     fn remove_emitter(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.config.emitters.len() {
             self.config.emitters.remove(index);
+            cx.notify();
+        }
+    }
+
+    fn add_binding(&mut self, cx: &mut Context<Self>) {
+        self.config.bindings.push(Binding {
+            target: "turbulence".into(),
+            ..Binding::default()
+        });
+        cx.notify();
+    }
+
+    fn remove_binding(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.config.bindings.len() {
+            self.config.bindings.remove(index);
+            cx.notify();
+        }
+    }
+
+    /// A press in the editor: pick the emitter whose center sits nearest,
+    /// within the grab radius, and let it ride the pointer.
+    fn editor_grab(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        let bounds = *self.canvas_bounds.lock().unwrap();
+        let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let mx = f32::from(position.x - bounds.origin.x);
+        let my = f32::from(position.y - bounds.origin.y);
+        let mut best: Option<(usize, f32)> = None;
+        for (i, emitter) in self.config.emitters.iter().enumerate() {
+            let (fx, fy) = emitter.center();
+            let (dx, dy) = (fx * w - mx, fy * h - my);
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist <= GRAB_RADIUS && best.is_none_or(|(_, d)| dist < d) {
+                best = Some((i, dist));
+            }
+        }
+        self.drag = best.map(|(i, _)| i);
+        if self.drag.is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Carry the dragged emitter with the pointer, clamped to the panel.
+    fn editor_drag(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(index) = self.drag else { return };
+        let bounds = *self.canvas_bounds.lock().unwrap();
+        let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        if let Some(emitter) = self.config.emitters.get_mut(index) {
+            emitter.x = (f32::from(position.x - bounds.origin.x) / w).clamp(0.0, 1.0);
+            emitter.y = (f32::from(position.y - bounds.origin.y) / h).clamp(0.0, 1.0);
             cx.notify();
         }
     }
@@ -860,6 +1333,11 @@ impl ParticlesPanel {
                 "Round Particles",
                 |this| this.config.scene.round,
                 |this| this.config.scene.round = !this.config.scene.round,
+            ),
+            (
+                "Glow",
+                |this| this.config.scene.glow,
+                |this| this.config.scene.glow = !this.config.scene.glow,
             ),
             (
                 "Hold on Pause",
@@ -907,6 +1385,7 @@ impl PanelSettings for ParticlesPanel {
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
         &[
             ("Emitters", icons::AUDIO_LINES),
+            ("Bindings", icons::AUDIO_WAVEFORM),
             ("Forces", icons::MOVE),
             ("Scene", icons::GLOBE),
         ]
@@ -919,6 +1398,7 @@ impl PanelSettings for ParticlesPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match page {
+            "Bindings" => self.bindings_page(cx).into_any_element(),
             "Forces" => self.forces_page(cx).into_any_element(),
             "Scene" => self.scene_page(cx).into_any_element(),
             _ => self.emitters_page(window, cx).into_any_element(),
@@ -1008,6 +1488,9 @@ impl ParticlesPanel {
         let direction = emitter.direction.rem_euclid(360.0);
         let cone = emitter.cone();
         let speed = emitter.speed();
+        let mode = emitter.mode;
+        let burst = emitter.burst();
+        let color = emitter.color();
 
         let header = div()
             .flex()
@@ -1073,6 +1556,14 @@ impl ParticlesPanel {
             .flex_col()
             .gap(tokens::SPACE_SM)
             .child(header)
+            // The band's live activation against the threshold tick, so the
+            // threshold tunes against the music instead of blind.
+            .child(meter(
+                self.sim.clone(),
+                move |sim| sim.levels.get(index).copied().unwrap_or(0.0),
+                color,
+                Some(threshold),
+            ))
             .child(setting_row(
                 "Low Bound",
                 None,
@@ -1131,21 +1622,56 @@ impl ParticlesPanel {
                 ),
             ))
             .child(setting_row(
-                "Rate",
+                "Trigger",
                 None,
-                panel::value_slider(
-                    &scrubs.rate,
-                    (rate - RATE_MIN) / (RATE_MAX - RATE_MIN),
-                    format!("{rate:.0}/s"),
-                    move |this: &mut Self, fraction, cx| {
+                panel::choices(
+                    TRIGGER_CHOICES,
+                    mode,
+                    move |this: &mut Self, mode, cx| {
                         if let Some(emitter) = this.config.emitters.get_mut(index) {
-                            emitter.rate = RATE_MIN + fraction * (RATE_MAX - RATE_MIN);
+                            emitter.mode = mode;
                         }
                         cx.notify();
                     },
                     cx,
                 ),
             ))
+            .when(mode == Trigger::Continuous, |d| {
+                d.child(setting_row(
+                    "Rate",
+                    None,
+                    panel::value_slider(
+                        &scrubs.rate,
+                        (rate - RATE_MIN) / (RATE_MAX - RATE_MIN),
+                        format!("{rate:.0}/s"),
+                        move |this: &mut Self, fraction, cx| {
+                            if let Some(emitter) = this.config.emitters.get_mut(index) {
+                                emitter.rate = RATE_MIN + fraction * (RATE_MAX - RATE_MIN);
+                            }
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+            })
+            .when(mode == Trigger::Burst, |d| {
+                d.child(setting_row(
+                    "Burst",
+                    None,
+                    panel::value_slider(
+                        &scrubs.burst,
+                        (burst - BURST_MIN) / (BURST_MAX - BURST_MIN),
+                        format!("{burst:.0}"),
+                        move |this: &mut Self, fraction, cx| {
+                            if let Some(emitter) = this.config.emitters.get_mut(index) {
+                                emitter.burst = BURST_MIN + fraction * (BURST_MAX - BURST_MIN);
+                            }
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+            })
             .child(setting_row(
                 "Shape",
                 None,
@@ -1317,6 +1843,321 @@ impl ParticlesPanel {
                 ),
             ))
             .child(setting_row("Color", None, color_row))
+    }
+
+    /// The Bindings page: routes from the music into the scene and force
+    /// knobs, each one a block of its own rows.
+    fn bindings_page(&mut self, cx: &mut Context<Self>) -> Div {
+        let count = self.config.bindings.len();
+        if self.binding_scrubs.len() != count {
+            self.binding_scrubs
+                .resize_with(count, BindingScrubs::default);
+        }
+        let add = settings_ui::small_button(
+            "Add Binding",
+            icons::PLUS,
+            false,
+            cx.listener(|this, _, _, cx| this.add_binding(cx)),
+        );
+        let mut list = div().flex().flex_col().gap(tokens::SPACE_MD);
+        if count == 0 {
+            list = list.child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child("No bindings yet - add one to drive a knob with the music."),
+            );
+        }
+        for i in 0..count {
+            list = list.child(self.binding_block(i, cx));
+        }
+        div().flex().flex_col().gap(SECTION_GAP).child(section(
+            "Bindings",
+            Some(add.into_any_element()),
+            list,
+        ))
+    }
+
+    /// One binding's block: the header carrying its switch and delete, then
+    /// what it listens to, how it responds, and the span it sweeps. While a
+    /// binding drives a knob, that knob's own slider sets nothing; the
+    /// binding's span is the whole say.
+    fn binding_block(&self, index: usize, cx: &mut Context<Self>) -> Div {
+        let binding = &self.config.bindings[index];
+        let scrubs = &self.binding_scrubs[index];
+        // The target splits into a scope (the scene, or one emitter) and a
+        // knob within it. A route whose emitter is gone reads as Scene here
+        // and stays quiet in the sim until the next pick rewrites it.
+        let scope = emitter_route(&binding.target)
+            .map(|(id, _)| id)
+            .filter(|id| self.config.emitters.iter().any(|e| e.id == *id));
+        let scene_knob = TARGET_CHOICES
+            .iter()
+            .map(|(_, id)| *id)
+            .find(|id| *id == binding.target)
+            .unwrap_or("turbulence");
+        let emitter_knob = emitter_route(&binding.target)
+            .and_then(|(_, knob)| {
+                EMITTER_KNOB_CHOICES
+                    .iter()
+                    .map(|(_, k)| *k)
+                    .find(|k| *k == knob)
+            })
+            .unwrap_or("speed");
+        let (kind, freq_lo, freq_hi) = match binding.source {
+            Source::Band { lo, hi } => (SourceKind::Band, lo, hi),
+            Source::Onset { lo, hi } => (SourceKind::Onset, lo, hi),
+            Source::Level => (SourceKind::Level, 30.0, 120.0),
+        };
+        let smooth = binding.smooth.clamp(0.0, 1.0);
+        let from = binding.from.clamp(0.0, 1.0);
+        let to = binding.to.clamp(0.0, 1.0);
+
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(format!("Binding {}", index + 1)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_XS)
+                    .child(toggle(
+                        binding.enabled,
+                        move |this: &mut Self, on, cx| {
+                            if let Some(binding) = this.config.bindings.get_mut(index) {
+                                binding.enabled = on;
+                            }
+                            cx.notify();
+                        },
+                        cx,
+                    ))
+                    .child(settings_ui::icon_button(
+                        icons::TRASH,
+                        false,
+                        cx.listener(move |this, _, _, cx| this.remove_binding(index, cx)),
+                    )),
+            );
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_SM)
+            .child(header)
+            // The route's live signal, so the span and smoothing tune
+            // against what the music is actually sending.
+            .child(meter(
+                self.sim.clone(),
+                move |sim| sim.signals.values().get(index).copied().unwrap_or(0.0),
+                palette::accent(),
+                None,
+            ))
+            .child(panel::setting_block(
+                "Target",
+                Some("The knob the signal drives; its own slider yields while bound"),
+                None,
+                {
+                    let mut col = div().flex().flex_col().gap(tokens::SPACE_XS);
+                    if !self.config.emitters.is_empty() {
+                        let mut row =
+                            div()
+                                .flex()
+                                .flex_row()
+                                .flex_wrap()
+                                .gap(px(1.))
+                                .child(scope_chip(
+                                    "Scene".to_string(),
+                                    scope.is_none(),
+                                    move |this, cx| {
+                                        if let Some(binding) = this.config.bindings.get_mut(index) {
+                                            if emitter_route(&binding.target).is_some() {
+                                                binding.target = "turbulence".to_string();
+                                            }
+                                        }
+                                        cx.notify();
+                                    },
+                                    cx,
+                                ));
+                        for (n, emitter) in self.config.emitters.iter().enumerate() {
+                            let id = emitter.id;
+                            row = row.child(scope_chip(
+                                format!("Emitter {}", n + 1),
+                                scope == Some(id),
+                                move |this, cx| {
+                                    if let Some(binding) = this.config.bindings.get_mut(index) {
+                                        if emitter_route(&binding.target)
+                                            .is_none_or(|(prev, _)| prev != id)
+                                        {
+                                            binding.target = format!("e{id}.speed");
+                                        }
+                                    }
+                                    cx.notify();
+                                },
+                                cx,
+                            ));
+                        }
+                        col = col.child(row);
+                    }
+                    col.child(if let Some(id) = scope {
+                        panel::choices(
+                            EMITTER_KNOB_CHOICES,
+                            emitter_knob,
+                            move |this: &mut Self, knob, cx| {
+                                if let Some(binding) = this.config.bindings.get_mut(index) {
+                                    binding.target = format!("e{id}.{knob}");
+                                }
+                                cx.notify();
+                            },
+                            cx,
+                        )
+                    } else {
+                        panel::choices(
+                            TARGET_CHOICES,
+                            scene_knob,
+                            move |this: &mut Self, target, cx| {
+                                if let Some(binding) = this.config.bindings.get_mut(index) {
+                                    binding.target = target.to_string();
+                                }
+                                cx.notify();
+                            },
+                            cx,
+                        )
+                        .flex_wrap()
+                    })
+                },
+            ))
+            .child(setting_row(
+                "Source",
+                None,
+                panel::choices(
+                    SOURCE_CHOICES,
+                    kind,
+                    move |this: &mut Self, kind, cx| {
+                        let Some(binding) = this.config.bindings.get_mut(index) else {
+                            return;
+                        };
+                        // Switching kinds carries the band along, so Band to
+                        // Onset keeps the range the ear already picked.
+                        let (lo, hi) = match binding.source {
+                            Source::Band { lo, hi } | Source::Onset { lo, hi } => (lo, hi),
+                            Source::Level => (30.0, 120.0),
+                        };
+                        binding.source = match kind {
+                            SourceKind::Band => Source::Band { lo, hi },
+                            SourceKind::Onset => Source::Onset { lo, hi },
+                            SourceKind::Level => Source::Level,
+                        };
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .when(kind != SourceKind::Level, |d| {
+                d.child(setting_row(
+                    "Low Bound",
+                    None,
+                    panel::value_slider(
+                        &scrubs.lo,
+                        hz_to_frac(freq_lo),
+                        fmt_hz(freq_lo),
+                        move |this: &mut Self, fraction, cx| {
+                            let Some(binding) = this.config.bindings.get_mut(index) else {
+                                return;
+                            };
+                            if let Source::Band { lo, hi } | Source::Onset { lo, hi } =
+                                &mut binding.source
+                            {
+                                let ceil = (*hi / MIN_RATIO).max(SLIDER_MIN_HZ);
+                                *lo = frac_to_hz(fraction).clamp(SLIDER_MIN_HZ, ceil);
+                            }
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+                .child(setting_row(
+                    "High Bound",
+                    None,
+                    panel::value_slider(
+                        &scrubs.hi,
+                        hz_to_frac(freq_hi),
+                        fmt_hz(freq_hi),
+                        move |this: &mut Self, fraction, cx| {
+                            let Some(binding) = this.config.bindings.get_mut(index) else {
+                                return;
+                            };
+                            if let Source::Band { lo, hi } | Source::Onset { lo, hi } =
+                                &mut binding.source
+                            {
+                                let floor = (*lo * MIN_RATIO).min(SLIDER_MAX_HZ);
+                                *hi = frac_to_hz(fraction).clamp(floor, SLIDER_MAX_HZ);
+                            }
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+            })
+            .child(setting_row(
+                "Response",
+                Some(if kind == SourceKind::Onset {
+                    "How long each pulse rings before it dies away"
+                } else {
+                    "0 snaps to the music, 100 drifts after it"
+                }),
+                panel::value_slider(
+                    &scrubs.smooth,
+                    smooth,
+                    format!("{}%", (smooth * 100.0).round() as i32),
+                    move |this: &mut Self, fraction, cx| {
+                        if let Some(binding) = this.config.bindings.get_mut(index) {
+                            binding.smooth = fraction.clamp(0.0, 1.0);
+                        }
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(setting_row(
+                "Quiet",
+                Some("Where the knob sits at silence"),
+                panel::value_slider(
+                    &scrubs.from,
+                    from,
+                    format!("{}%", (from * 100.0).round() as i32),
+                    move |this: &mut Self, fraction, cx| {
+                        if let Some(binding) = this.config.bindings.get_mut(index) {
+                            binding.from = fraction.clamp(0.0, 1.0);
+                        }
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(setting_row(
+                "Loud",
+                Some("Where it sits at full signal; below Quiet modulates down"),
+                panel::value_slider(
+                    &scrubs.to,
+                    to,
+                    format!("{}%", (to * 100.0).round() as i32),
+                    move |this: &mut Self, fraction, cx| {
+                        if let Some(binding) = this.config.bindings.get_mut(index) {
+                            binding.to = fraction.clamp(0.0, 1.0);
+                        }
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
     }
 
     /// The Forces page: the drift laid over the scene's steady pull.
@@ -1491,6 +2332,18 @@ impl ParticlesPanel {
                             },
                             cx,
                         ),
+                    ))
+                    .child(setting_row(
+                        "Glow",
+                        Some("Lay a soft halo behind each particle"),
+                        toggle(
+                            self.config.scene.glow,
+                            |this: &mut Self, on, cx| {
+                                this.config.scene.glow = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
                     )),
             ))
             .child(section(
@@ -1605,6 +2458,16 @@ impl Panel for ParticlesPanel {
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let menu = self.config_menu(menu, window, cx);
+        let menu = menu.item(panel::check_row(
+            "Edit Emitters",
+            None,
+            |this: &Self| this.edit,
+            |this, _| {
+                this.edit = !this.edit;
+                this.drag = None;
+            },
+            &cx.entity(),
+        ));
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
@@ -1656,9 +2519,14 @@ impl ParticlesPanel {
         let config = self.config.clone();
         let sim = self.sim.clone();
         let feed = self.feed.clone();
-        div().size_full().relative().bg(palette::bg_root()).child(
+        let edit = self.edit;
+        let drag = self.drag;
+        let canvas_bounds = self.canvas_bounds.clone();
+        let mut root = div().size_full().relative().bg(palette::bg_root()).child(
             canvas(
-                move |_, _, _| {},
+                move |bounds, _, _| {
+                    *canvas_bounds.lock().unwrap() = bounds;
+                },
                 move |bounds, _, window, _| {
                     let w = f32::from(bounds.size.width);
                     let h = f32::from(bounds.size.height);
@@ -1668,9 +2536,36 @@ impl ParticlesPanel {
                     let mut sim = sim.lock().unwrap();
                     sim.step(&feed, w, h, &config, hold);
                     sim.paint(bounds, window, &config.scene);
+                    if edit {
+                        paint_markers(&config, drag, bounds, window);
+                    }
                 },
             )
             .size_full(),
-        )
+        );
+        // The editor rides the panel itself: press near a center to grab,
+        // drag to place, release to drop. The markers paint in the same
+        // canvas, so arranging happens against the live field.
+        if edit {
+            root = root
+                .cursor_grab()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        this.editor_grab(event.position, cx)
+                    }),
+                )
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    this.editor_drag(event.position, cx)
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.drag = None;
+                        cx.notify();
+                    }),
+                );
+        }
+        root
     }
 }

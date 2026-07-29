@@ -256,3 +256,15 @@ jobs:
           gh api repos/zealsprince/rox.music/dispatches \
             --field event_type=rox-release \
             --field "client_payload[version]=${{ needs.check.outputs.version }}"
+
+  # The AUR update can't hang off `release: published` in its own workflow:
+  # the release above is created with github.token, and events made with that
+  # token never trigger other workflows. Chaining it as a job is what makes it
+  # run at all.
+  aur:
+    needs: [check, release]
+    permissions: {}
+    uses: ./.github/workflows/aur.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
+    secrets: inherit

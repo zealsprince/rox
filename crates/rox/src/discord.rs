@@ -1,10 +1,6 @@
 //! Discord rich presence: the "now playing" card rox publishes to the
-//! local Discord client. Only the build identity lives here so far
-//! ([`keys`]); the presence client itself is still to come, and until it
-//! exists nothing reads these.
-
-// The presence client is the consumer these are waiting on.
-#![allow(dead_code)]
+//! local Discord client. The build identity lives here ([`keys`]); the
+//! presence client that reads it is [`crate::integrations::discord`].
 
 pub mod keys;
 

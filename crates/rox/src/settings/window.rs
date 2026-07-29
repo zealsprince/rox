@@ -1583,6 +1583,15 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// The Last.fm cover-art toggle, Deezer's twin.
+    fn set_lastfm_art(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.providers.lastfm_art = on;
+        providers::set_lastfm_art_online(on);
+        let config = self.providers.clone();
+        Settings::update(move |s| s.providers = config);
+        cx.notify();
+    }
+
     /// The artist-lookup toggle: through the live static, so the
     /// biography panel's fetches follow it.
     fn set_artist(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -1664,6 +1673,11 @@ impl SettingsWindow {
                     "Deezer",
                     Some("Search Deezer for cover art, up to 1000 pixels"),
                     panel::toggle(self.providers.deezer, Self::set_deezer, cx),
+                ))
+                .child(panel::setting_row(
+                    "Last.fm",
+                    Some("Search Last.fm for cover art"),
+                    panel::toggle(self.providers.lastfm_art, Self::set_lastfm_art, cx),
                 )),
         ))
         .child(section(

@@ -90,11 +90,12 @@ pub fn set_metadata_online(on: bool) {
     METADATA_ONLINE.store(on, Ordering::Relaxed);
 }
 
-/// Whether each cover-art service is enabled. Two providers rather than
+/// Whether each cover-art service is enabled. Three providers rather than
 /// one domain flag, so a user can lean on whichever service covers their
 /// library better. Seeded at startup, flipped by the Providers page.
 static ITUNES_ONLINE: AtomicBool = AtomicBool::new(true);
 static DEEZER_ONLINE: AtomicBool = AtomicBool::new(true);
+static LASTFM_ART_ONLINE: AtomicBool = AtomicBool::new(true);
 
 pub fn itunes_online() -> bool {
     ITUNES_ONLINE.load(Ordering::Relaxed)
@@ -112,10 +113,18 @@ pub fn set_deezer_online(on: bool) {
     DEEZER_ONLINE.store(on, Ordering::Relaxed);
 }
 
+pub fn lastfm_art_online() -> bool {
+    LASTFM_ART_ONLINE.load(Ordering::Relaxed)
+}
+
+pub fn set_lastfm_art_online(on: bool) {
+    LASTFM_ART_ONLINE.store(on, Ordering::Relaxed);
+}
+
 /// Whether any cover-art service is on, the gate for offering the search
 /// at all.
 pub fn art_online() -> bool {
-    itunes_online() || deezer_online()
+    itunes_online() || deezer_online() || lastfm_art_online()
 }
 
 /// Whether the artist lookup is enabled - the biography panel's domain:
@@ -380,10 +389,17 @@ pub trait ArtProvider {
 /// rather than failing the lot; only when all fail and nothing came back
 /// does the error surface.
 pub fn search_art(query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
-    let (itunes, deezer) = (itunes_online(), deezer_online());
+    let (itunes, deezer, lastfm_art) = (
+        itunes_online(),
+        deezer_online(),
+        lastfm_art_online(),
+    );
     // Which services are on is part of the answer, so it rides the key: a
     // toggle since the last search is a different result, not a stale hit.
-    let key = format!("{}\u{1f}{itunes}\u{1f}{deezer}", query_key(query));
+    let key = format!(
+        "{}\u{1f}{itunes}\u{1f}{deezer}\u{1f}{lastfm_art}",
+        query_key(query)
+    );
     static CACHE: OnceLock<SessionCache<Vec<ArtCandidate>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     cache.get_or_compute(key, || {
@@ -394,7 +410,9 @@ pub fn search_art(query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
         if deezer {
             providers.push(&deezer::Deezer);
         }
-        providers.push(&lastfm::LastfmArt);
+        if lastfm_art {
+            providers.push(&lastfm::LastfmArt);
+        }
         let mut found = collect_candidates(providers.iter().map(|p| p.search(query)))?;
         found.sort_by_key(|b| std::cmp::Reverse(b.width * b.height));
         Ok(found)

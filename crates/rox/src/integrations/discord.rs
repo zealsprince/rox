@@ -287,11 +287,29 @@ impl DiscordPresence {
                             };
                             match crate::providers::search_art(&query) {
                                 Ok(candidates) => {
-                                    if let Some(first) = candidates.first() {
-                                        cover_url = Some(first.thumb_url.clone());
+                                    // Prioritize Deezer > Last.fm > iTunes for presence cover art,
+                                    // iTunes sometimes returns cover art for multiple albums 
+                                    // by the creator which makes us use the wrong art?
+                                    let chosen = candidates
+                                        .iter()
+                                        .find(|c| c.provider.eq_ignore_ascii_case("deezer"))
+                                        .or_else(|| {
+                                            candidates
+                                                .iter()
+                                                .find(|c| c.provider.eq_ignore_ascii_case("lastfm"))
+                                        })
+                                        .or_else(|| {
+                                            candidates
+                                                .iter()
+                                                .find(|c| c.provider.eq_ignore_ascii_case("itunes"))
+                                        })
+                                        .or_else(|| candidates.first());
+
+                                    if let Some(c) = chosen {
+                                        cover_url = Some(c.full_url.clone());
                                         info!(
                                             "Resolved cover art for '{}' via {}: {}",
-                                            state.title, first.provider, first.thumb_url
+                                            state.title, c.provider, c.full_url
                                         );
                                     }
                                 }

@@ -238,15 +238,27 @@ impl ArtProvider for LastfmArt {
             return Ok(Vec::new());
         }
 
+        let full = full_size_url(&best_url);
         Ok(vec![ArtCandidate {
             provider: self.name(),
             album: title,
-            thumb_url: best_url.clone(),
-            full_url: best_url,
-            width: 300,
-            height: 300,
+            thumb_url: best_url,
+            full_url: full,
+            width: 1000,
+            height: 1000,
         }])
     }
+}
+
+/// Rewrite Last.fm CDN size path segments (e.g. `/300x300/` or `/174s/`) to
+/// full resolution (`/ar0/`).
+fn full_size_url(url: &str) -> String {
+    for segment in &["/300x300/", "/174s/", "/64s/", "/34s/", "/mega/"] {
+        if url.contains(segment) {
+            return url.replace(segment, "/ar0/");
+        }
+    }
+    url.to_string()
 }
 
 #[cfg(test)]

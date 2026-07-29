@@ -703,6 +703,8 @@ pub struct Providers {
     pub itunes: bool,
     /// Search Deezer for cover art when the cover lookup asks.
     pub deezer: bool,
+    /// Search Last.fm for cover art when the cover lookup asks.
+    pub lastfm_art: bool,
     /// Fetch artist biographies from last.fm, a Deezer portrait along,
     /// when the biography panel asks.
     pub artist: bool,
@@ -716,6 +718,7 @@ impl Default for Providers {
             musicbrainz: true,
             itunes: true,
             deezer: true,
+            lastfm_art: true,
             artist: true,
         }
     }

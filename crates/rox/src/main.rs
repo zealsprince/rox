@@ -20,6 +20,7 @@ mod composite;
 mod console_window;
 mod cover;
 mod design;
+mod discord;
 mod duplicates;
 mod group_head;
 mod history;
@@ -96,7 +97,12 @@ pub(crate) fn window_size_override() -> Option<gpui::Size<gpui::Pixels>> {
         }
         None
     })
-    .map(|(w, h)| size(px(w).max(MIN_WINDOW_SIZE.width), px(h).max(MIN_WINDOW_SIZE.height)))
+    .map(|(w, h)| {
+        size(
+            px(w).max(MIN_WINDOW_SIZE.width),
+            px(h).max(MIN_WINDOW_SIZE.height),
+        )
+    })
 }
 
 pub fn open_workspace(cx: &mut App) {
@@ -262,6 +268,7 @@ fn main() {
         settings::set_hide_menubar(settings.hide_menubar, cx);
         settings::set_os_decorations(settings.os_decorations);
         settings::set_quit_to_tray(settings.quit_to_tray);
+        settings::set_experimental(settings.experimental, cx);
         integrations::tray::sync(cx);
         // Point the icon resolver at the chosen pack before any window
         // opens, so the first frame already draws it.

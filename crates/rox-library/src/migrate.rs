@@ -83,7 +83,8 @@ mod tests {
         run(&conn, ladder).unwrap();
         assert_eq!(version(&conn), 2);
         // Both columns exist, so the ladder ran end to end.
-        conn.execute("INSERT INTO t (a, b) VALUES (1, 2)", []).unwrap();
+        conn.execute("INSERT INTO t (a, b) VALUES (1, 2)", [])
+            .unwrap();
     }
 
     #[test]

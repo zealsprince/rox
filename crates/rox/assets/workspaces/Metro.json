@@ -129,25 +129,75 @@
                           "panel_name": "drawer",
                           "children": [
                             {
-                              "panel_name": "album grid",
-                              "children": [],
+                              "panel_name": "drawer",
+                              "children": [
+                                {
+                                  "panel_name": "album grid",
+                                  "children": [],
+                                  "info": {
+                                    "panel": {
+                                      "query": "",
+                                      "search": false,
+                                      "query_source": "global",
+                                      "vertical": true,
+                                      "tile": 208.0,
+                                      "follow_playing": true,
+                                      "resume_playing": false,
+                                      "smooth_follow": true,
+                                      "dim_playing": false,
+                                      "dim": 60.0,
+                                      "rounding": 0.0,
+                                      "gap": 8.0,
+                                      "labels": true,
+                                      "label_align": "left",
+                                      "scroll": 0
+                                    }
+                                  }
+                                },
+                                {
+                                  "panel_name": "library",
+                                  "children": [],
+                                  "info": {
+                                    "panel": {
+                                      "query": "",
+                                      "search": false,
+                                      "query_source": "selection",
+                                      "density": "compact",
+                                      "headers": "expanded",
+                                      "group_by": "album",
+                                      "column_layout": [
+                                        {
+                                          "key": "track",
+                                          "width": 40.0
+                                        },
+                                        {
+                                          "key": "title",
+                                          "width": 188.0
+                                        },
+                                        {
+                                          "key": "artist",
+                                          "width": 120.0
+                                        },
+                                        {
+                                          "key": "duration",
+                                          "width": 62.0
+                                        }
+                                      ],
+                                      "sort_key": null,
+                                      "sort_desc": false
+                                    }
+                                  }
+                                }
+                              ],
                               "info": {
                                 "panel": {
-                                  "query": "",
-                                  "search": false,
-                                  "query_source": "global",
-                                  "vertical": true,
-                                  "tile": 208.0,
-                                  "follow_playing": true,
-                                  "resume_playing": false,
-                                  "smooth_follow": true,
-                                  "dim_playing": false,
-                                  "dim": 60.0,
-                                  "rounding": 0.0,
-                                  "gap": 8.0,
-                                  "labels": true,
-                                  "label_align": "left",
-                                  "scroll": 4030
+                                  "edge": "left",
+                                  "reveal": 0.5,
+                                  "dim": 0.3,
+                                  "open_on": "selection",
+                                  "scope": "main",
+                                  "hide_controls": true,
+                                  "hide_handle": true
                                 }
                               }
                             },
@@ -171,9 +221,120 @@
                           ],
                           "info": {
                             "panel": {
+                              "title": "Albums",
                               "edge": "right",
-                              "reveal": 0.4,
-                              "dim": 0.0
+                              "reveal": 0.35,
+                              "dim": 0.2,
+                              "open_on": "hover",
+                              "hide_controls": true
+                            }
+                          }
+                        },
+                        {
+                          "panel_name": "drawer",
+                          "children": [
+                            {
+                              "panel_name": "drawer",
+                              "children": [
+                                {
+                                  "panel_name": "artist grid",
+                                  "children": [],
+                                  "info": {
+                                    "panel": {
+                                      "query": "",
+                                      "search": false,
+                                      "query_source": "global",
+                                      "group": "album_artist",
+                                      "vertical": true,
+                                      "tile": 160.0,
+                                      "pick_filters": true,
+                                      "portraits": true,
+                                      "follow_playing": true,
+                                      "resume_playing": false,
+                                      "smooth_follow": true,
+                                      "dim_playing": false,
+                                      "dim": 60.0,
+                                      "rounding": 100.0,
+                                      "gap": 8.0,
+                                      "labels": true,
+                                      "label_align": "center",
+                                      "counts": false
+                                    }
+                                  }
+                                },
+                                {
+                                  "panel_name": "library",
+                                  "children": [],
+                                  "info": {
+                                    "panel": {
+                                      "query": "",
+                                      "search": false,
+                                      "query_source": "selection",
+                                      "density": "compact",
+                                      "headers": "expanded",
+                                      "group_by": "album",
+                                      "column_layout": [
+                                        {
+                                          "key": "track",
+                                          "width": 40.0
+                                        },
+                                        {
+                                          "key": "title",
+                                          "width": 188.0
+                                        },
+                                        {
+                                          "key": "artist",
+                                          "width": 120.0
+                                        },
+                                        {
+                                          "key": "duration",
+                                          "width": 62.0
+                                        }
+                                      ],
+                                      "sort_key": null,
+                                      "sort_desc": false
+                                    }
+                                  }
+                                }
+                              ],
+                              "info": {
+                                "panel": {
+                                  "edge": "left",
+                                  "reveal": 0.5,
+                                  "dim": 0.3,
+                                  "open_on": "selection",
+                                  "scope": "main",
+                                  "hide_controls": true,
+                                  "hide_handle": true
+                                }
+                              }
+                            },
+                            {
+                              "panel_name": "queue",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "headers": "off",
+                                  "columns": [
+                                    "number",
+                                    "name",
+                                    "artist"
+                                  ],
+                                  "search": false,
+                                  "query_source": "global",
+                                  "query": ""
+                                }
+                              }
+                            }
+                          ],
+                          "info": {
+                            "panel": {
+                              "title": "Artists",
+                              "edge": "right",
+                              "reveal": 0.35,
+                              "dim": 0.2,
+                              "open_on": "hover",
+                              "hide_controls": true
                             }
                           }
                         }
@@ -205,6 +366,29 @@
                           "panel_name": "TabPanel",
                           "children": [
                             {
+                              "panel_name": "favourite",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "max_width": 48.0,
+                                  "max_height": 40.0,
+                                  "min_width": 48.0,
+                                  "source": "playing",
+                                  "align": "center"
+                                }
+                              }
+                            }
+                          ],
+                          "info": {
+                            "tabs": {
+                              "active_index": 0
+                            }
+                          }
+                        },
+                        {
+                          "panel_name": "TabPanel",
+                          "children": [
+                            {
                               "panel_name": "track info",
                               "children": [],
                               "info": {
@@ -230,7 +414,8 @@
                       "info": {
                         "stack": {
                           "sizes": [
-                            320.0
+                            48.0,
+                            272.0
                           ],
                           "axis": 0
                         }

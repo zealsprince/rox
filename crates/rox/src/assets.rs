@@ -124,6 +124,10 @@ pub mod icons {
     pub const MAXIMIZE: &str = "icons/maximize-2.svg";
     /// The Window menu's Empty Window entry: a blank dock.
     pub const SQUARE_DASHED: &str = "icons/square-dashed.svg";
+    /// The unfinished work: the settings sidebar's Development page, and
+    /// the panel menu's experimental group. Both wear the flask, so the two
+    /// surfaces read as the same thing.
+    pub const FLASK: &str = "icons/flask-conical.svg";
     /// The theme toggle panel's glyphs, the side a click lands on; both
     /// resolve from the bundled widget set, no file of ours needed.
     pub const SUN: &str = "icons/sun.svg";
@@ -149,6 +153,8 @@ pub mod icons {
     /// The layout tree's per-panel lock toggle, pinned and free.
     pub const LOCK: &str = "icons/lock.svg";
     pub const LOCK_OPEN: &str = "icons/lock-open.svg";
+    /// The drawer's pin, holding an open drawer out.
+    pub const PIN: &str = "icons/pin.svg";
     /// The layout tree's reorder arrows and lift-out, from the bundled
     /// widget set.
     pub const ARROW_UP: &str = "icons/arrow-up.svg";
@@ -232,6 +238,7 @@ pub mod icons {
         MINIMIZE,
         MAXIMIZE,
         SQUARE_DASHED,
+        FLASK,
         SUN,
         MOON,
         MINUS,
@@ -245,6 +252,7 @@ pub mod icons {
         CHEVRON_LEFT,
         LOCK,
         LOCK_OPEN,
+        PIN,
         ARROW_UP,
         ARROW_DOWN,
         ARROW_LEFT,

@@ -32,6 +32,7 @@ use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::selection::SelectionEvent;
 use crate::settings::Settings;
 use crate::track_ui::track_cells;
 use crate::track_ui::track_columns::{self, Column, ColumnHost, GroupTrack, HeadingHost};
@@ -259,6 +260,9 @@ pub struct QueuePanel {
     /// A pending box reset from a source toggle or a shared-query change,
     /// applied on the next render where a window exists to set the input.
     resync_box: bool,
+    /// The tracks this panel is pinned to while following the selection.
+    /// Runtime only: a restore re-pins from whatever is picked then.
+    selection_ids: Vec<i64>,
     /// The query and filter the rows are built for, snapshotted whenever the
     /// query changes so `rebuild_rows` filters without a `cx`.
     applied_query: String,
@@ -307,6 +311,7 @@ pub struct QueuePanel {
     _thumbs_changed: Subscription,
     _search_events: Subscription,
     _query_changed: Subscription,
+    _selection_changed: Subscription,
 }
 
 impl QueuePanel {
@@ -343,7 +348,7 @@ impl QueuePanel {
         // one shows its own.
         let initial = match config.query_source {
             QuerySource::Global => state.query.read(cx).text().to_string(),
-            QuerySource::Local => config.query.clone(),
+            QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
         let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
@@ -353,6 +358,16 @@ impl QueuePanel {
             &state.query,
             |this: &mut Self, _, _: &SharedQueryEvent, cx| this.on_shared_query_changed(cx),
         );
+        // Restored as selection-following, it opens on whatever is picked
+        // now, rather than blank until the next pick.
+        let selection_ids = state.selection.read(cx).tracks().to_vec();
+        // Follow the app-wide selection while pinned to it.
+        let _selection_changed = cx.subscribe(
+            &state.selection,
+            |this: &mut Self, _, event: &SelectionEvent, cx| {
+                this.on_selection_changed(event.source, cx);
+            },
+        );
         let mut this = QueuePanel {
             state,
             config,
@@ -360,6 +375,7 @@ impl QueuePanel {
             tracks: Vec::new(),
             search,
             resync_box: false,
+            selection_ids,
             applied_query: String::new(),
             applied_filter: FilterSet::default(),
             rows: Vec::new(),
@@ -382,6 +398,7 @@ impl QueuePanel {
             _thumbs_changed,
             _search_events,
             _query_changed,
+            _selection_changed,
         };
         this.sync(cx);
         this
@@ -637,6 +654,7 @@ impl QueuePanel {
     /// Whether a queue entry passes the active query and filter.
     fn matches(&self, terms: &[rox_library::projection::Term], t: &TrackRow) -> bool {
         let fields = TrackFields {
+            db_id: t.track_id.unwrap_or(0),
             title: &t.title,
             artist: &t.artist,
             album_artist: &t.album_artist,
@@ -846,9 +864,10 @@ impl QueuePanel {
         if ids.is_empty() {
             return;
         }
+        let source = cx.entity_id();
         self.state
             .selection
-            .update(cx, |selection, cx| selection.set(ids, cx));
+            .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 
     /// A double click plays that entry now. Through the player's
@@ -1247,6 +1266,15 @@ impl QueryFilter for QueuePanel {
     fn set_query_resync(&mut self, pending: bool) {
         self.resync_box = pending;
     }
+    fn selection(&self) -> &Entity<crate::selection::Selection> {
+        &self.state.selection
+    }
+    fn selection_ids(&self) -> &[i64] {
+        &self.selection_ids
+    }
+    fn set_selection_ids(&mut self, ids: Vec<i64>) {
+        self.selection_ids = ids;
+    }
     fn after_query_change(&mut self, cx: &mut Context<Self>) {
         panel::refresh_tab_panel(&self.tab_panel, cx);
     }
@@ -1462,7 +1490,7 @@ impl Panel for QueuePanel {
         );
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
-        let menu = panel_settings::settings_item(menu, &cx.entity());
+        let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         let menu = panel::duplicate_item(
             menu,
             &cx.entity(),

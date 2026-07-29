@@ -142,18 +142,24 @@ impl GroupPanel {
                 )
             }
         };
-        let controls = self.slots[ix].clone().map(|child| {
-            composite::corner_controls().child(composite::slot_button(
-                ("group-slot", ix),
-                child,
-                self.state.clone(),
-                self.workspace.clone(),
-                move |this: &mut Self, panel, cx| this.set_slot(ix, Some(panel), cx),
-                move |this: &mut Self, cx| this.set_slot(ix, None, cx),
-                |menu, _| menu,
-                cx,
-            ))
-        });
+        // A layout that ships as finished furniture drops the builder's
+        // buttons; its slots are still swapped from the tree on the
+        // Workspace settings page.
+        let controls = self.slots[ix]
+            .clone()
+            .filter(|_| !self.config.chrome.hide_controls)
+            .map(|child| {
+                composite::corner_controls().child(composite::slot_button(
+                    ("group-slot", ix),
+                    child,
+                    self.state.clone(),
+                    self.workspace.clone(),
+                    move |this: &mut Self, panel, cx| this.set_slot(ix, Some(panel), cx),
+                    move |this: &mut Self, cx| this.set_slot(ix, None, cx),
+                    |menu, _| menu,
+                    cx,
+                ))
+            });
         div()
             .relative()
             .min_w_0()
@@ -164,6 +170,14 @@ impl GroupPanel {
     }
 
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
+        // Let the children reach this host from their own menus; the
+        // dock never sees a hosted panel, so nothing else offers it.
+        composite::report_hosted(
+            self.slots.iter().flatten(),
+            self.config.chrome.title.as_deref().unwrap_or("Group"),
+            cx,
+        );
+
         let axis = self.axis();
         let ratio = self.config.ratio.clamp(RATIO_MIN, RATIO_MAX);
         let divider = self.divider.clone();
@@ -196,7 +210,8 @@ impl GroupPanel {
                 Axis::Vertical => d.h(px(1.)).w_full(),
             }));
 
-        let parent = composite::parent_button("Group", cx);
+        let parent = (!self.config.chrome.hide_controls)
+            .then(|| composite::parent_controls().child(composite::parent_button("Group", cx)));
         div()
             .size_full()
             .relative()
@@ -238,11 +253,15 @@ impl GroupPanel {
                     .child(divider_line)
                     .child(second),
             )
-            .child(composite::parent_controls().child(parent))
+            .children(parent)
     }
 }
 
 impl PanelSettings for GroupPanel {
+    fn composite(&self) -> bool {
+        true
+    }
+
     fn state(&self) -> AppState {
         self.state.clone()
     }
@@ -382,7 +401,7 @@ impl Panel for GroupPanel {
             );
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
-        let menu = panel_settings::settings_item(menu, &cx.entity());
+        let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         panel::popout_item(
             menu,
             &cx.entity(),

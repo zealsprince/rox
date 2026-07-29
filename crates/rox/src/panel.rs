@@ -777,6 +777,15 @@ pub struct PanelChrome {
     /// on an interactive one it competes with the controls.
     #[serde(default, skip_serializing_if = "is_false")]
     pub anchor: bool,
+    /// Drop the in-panel slot buttons a composition host draws in its
+    /// corners: the child menus and the host's own grip. Off by default, so
+    /// a composite stays editable where it sits. On, the panel reads as
+    /// finished furniture instead of a builder's frame, which is what a
+    /// shipped workspace wants; the layout is still edited from the
+    /// Workspace page's tree in Settings. Only the hosts draw these, so it
+    /// does nothing on a leaf panel.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hide_controls: bool,
     /// Cap the panel's width in px. Set, the dock won't grow the panel wider
     /// than this, and a growing window hands the extra room to its
     /// neighbors instead, so a toolbar pinned narrow stays narrow. None
@@ -919,6 +928,20 @@ pub trait PanelSettings: Panel {
     /// Turn the window-move handle on or off; `chrome().anchor` reads it.
     fn set_anchor(&mut self, on: bool, cx: &mut Context<Self>) {
         self.chrome_mut().anchor = on;
+        cx.notify();
+    }
+
+    /// Whether this panel hosts others and so draws the corner slot
+    /// controls. Only the composition hosts override it; it gates the
+    /// setting row that hides them, which would be a dead switch anywhere
+    /// else.
+    fn composite(&self) -> bool {
+        false
+    }
+
+    /// Show or hide the composition host's corner controls.
+    fn set_hide_controls(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.chrome_mut().hide_controls = on;
         cx.notify();
     }
 

@@ -230,16 +230,14 @@ impl PanelState {
             PanelInfo::Panel(_) if self.panel_name == "TabPanel" => {
                 DockItem::tabs(Vec::new(), &dock_area, window, cx)
             }
-            PanelInfo::Panel(_) if self.panel_name == "StackPanel" => {
-                DockItem::split_with_sizes(
-                    Axis::Horizontal,
-                    Vec::new(),
-                    Vec::new(),
-                    &dock_area,
-                    window,
-                    cx,
-                )
-            }
+            PanelInfo::Panel(_) if self.panel_name == "StackPanel" => DockItem::split_with_sizes(
+                Axis::Horizontal,
+                Vec::new(),
+                Vec::new(),
+                &dock_area,
+                window,
+                cx,
+            ),
             PanelInfo::Panel(_) => {
                 let view = PanelRegistry::build_panel(
                     &self.panel_name,
@@ -356,7 +354,10 @@ mod tests {
         assert_eq!(empty, back);
         // The name/info combo the repair path keys on is preserved.
         assert_eq!(back.panel_name, "TabPanel");
-        assert!(matches!(back.info, PanelInfo::Panel(serde_json::Value::Null)));
+        assert!(matches!(
+            back.info,
+            PanelInfo::Panel(serde_json::Value::Null)
+        ));
     }
 
     // Tiles carry per-tile bounds and z-index; those must survive a save/load

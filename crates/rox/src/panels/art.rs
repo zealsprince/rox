@@ -37,6 +37,7 @@ use crate::panel_settings;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
 use crate::thumbs::Thumb;
 
@@ -254,6 +255,9 @@ pub struct ArtPanel {
     /// A pending box reset from a source toggle or a shared-query change;
     /// applied on the next render, where a window exists to set the input.
     resync_box: bool,
+    /// The tracks this panel is pinned to while following the selection.
+    /// Runtime only: a restore re-pins from whatever is picked then.
+    selection_ids: Vec<i64>,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -261,6 +265,7 @@ pub struct ArtPanel {
     _thumbs_changed: Subscription,
     _search_events: Subscription,
     _query_changed: Subscription,
+    _selection_changed: Subscription,
     _player_changed: Subscription,
 }
 
@@ -294,7 +299,7 @@ impl ArtPanel {
         // own-query one shows its own.
         let initial = match config.query_source {
             QuerySource::Global => state.query.read(cx).text().to_string(),
-            QuerySource::Local => config.query.clone(),
+            QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
         let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
@@ -304,6 +309,16 @@ impl ArtPanel {
             &state.query,
             |this: &mut Self, _, _: &SharedQueryEvent, cx| {
                 this.on_shared_query_changed(cx);
+            },
+        );
+        // An art shelf restored as selection-following opens on whatever is
+        // picked now, rather than blank until the next pick.
+        let selection_ids = state.selection.read(cx).tracks().to_vec();
+        // Follow the app-wide selection while pinned to it.
+        let _selection_changed = cx.subscribe(
+            &state.selection,
+            |this: &mut Self, _, event: &SelectionEvent, cx| {
+                this.on_selection_changed(event.source, cx);
             },
         );
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| {
@@ -344,12 +359,14 @@ impl ArtPanel {
             dim_scrub: ScrubState::default(),
             error: None,
             resync_box: false,
+            selection_ids,
             focus: cx.focus_handle(),
             tab_panel: None,
             _library_changed,
             _thumbs_changed,
             _search_events,
             _query_changed,
+            _selection_changed,
             _player_changed,
         };
         this.rebuild(cx);
@@ -673,9 +690,10 @@ impl ArtPanel {
         let mut ixs: Vec<usize> = self.selected.iter().copied().collect();
         ixs.sort_unstable();
         let ids: Vec<i64> = ixs.iter().flat_map(|&ix| self.ids_for(ix, cx)).collect();
+        let source = cx.entity_id();
         self.state
             .selection
-            .update(cx, |selection, cx| selection.set(ids, cx));
+            .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 
     /// Queue the album on the shared player.
@@ -1241,6 +1259,15 @@ impl QueryFilter for ArtPanel {
     fn set_query_resync(&mut self, pending: bool) {
         self.resync_box = pending;
     }
+    fn selection(&self) -> &Entity<crate::selection::Selection> {
+        &self.state.selection
+    }
+    fn selection_ids(&self) -> &[i64] {
+        &self.selection_ids
+    }
+    fn set_selection_ids(&mut self, ids: Vec<i64>) {
+        self.selection_ids = ids;
+    }
     fn after_query_change(&mut self, cx: &mut Context<Self>) {
         self.refresh_title_bar(cx);
     }
@@ -1417,7 +1444,7 @@ impl Panel for ArtPanel {
         );
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
-        let menu = panel_settings::settings_item(menu, &cx.entity());
+        let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         let menu = panel::duplicate_item(
             menu,
             &cx.entity(),

@@ -379,7 +379,8 @@ impl StackPanel {
             return;
         };
         self.panels.remove(ix);
-        self.state.update(cx, |state, cx| state.remove_panel(ix, cx));
+        self.state
+            .update(cx, |state, cx| state.remove_panel(ix, cx));
         // insert_panel's deferred hookup repoints the lifted panel's
         // parent at the stack it lands in.
         parent.update(cx, |parent, cx| {

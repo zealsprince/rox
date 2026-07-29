@@ -117,9 +117,14 @@ impl PicKind {
     /// editor leaves alone. Derived from [`Self::owned_types`], so the read
     /// and write agree on which slot a type belongs to.
     fn from_type(kind: PictureType) -> Option<Self> {
-        [PicKind::Front, PicKind::Back, PicKind::Media, PicKind::Artist]
-            .into_iter()
-            .find(|slot| slot.owned_types().contains(&kind))
+        [
+            PicKind::Front,
+            PicKind::Back,
+            PicKind::Media,
+            PicKind::Artist,
+        ]
+        .into_iter()
+        .find(|slot| slot.owned_types().contains(&kind))
     }
 }
 
@@ -208,12 +213,18 @@ fn read_inner(path: &Path) -> Result<Vec<(Field, String)>, String> {
                     if f.description.eq_ignore_ascii_case(rating::FMPS_KEY) {
                         continue;
                     }
-                    out.push((Field::Custom(f.description.to_string()), f.content.to_string()));
+                    out.push((
+                        Field::Custom(f.description.to_string()),
+                        f.content.to_string(),
+                    ));
                 }
             }
         }
         FileType::Flac => {
-            let tag = parse_flac(path)?.vorbis_comments().cloned().unwrap_or_default();
+            let tag = parse_flac(path)?
+                .vorbis_comments()
+                .cloned()
+                .unwrap_or_default();
             named_fields(tag.clone().split_tag().1, &mut out);
             for (key, value) in tag.items() {
                 // Rating-shaped keys stay out of the customs; they show
@@ -341,8 +352,10 @@ pub fn commit(path: &Path, changes: &[Change]) -> Result<(), String> {
 /// the audio hash.
 pub fn commit_with(path: &Path, changes: &[Change], pictures: &[PicChange]) -> Result<(), String> {
     let tmp = tmp_path(path);
-    let result = catch_unwind(AssertUnwindSafe(|| commit_inner(path, &tmp, changes, pictures)))
-        .unwrap_or_else(|_| Err(format!("tag parser panicked on {}", path.display())));
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        commit_inner(path, &tmp, changes, pictures)
+    }))
+    .unwrap_or_else(|_| Err(format!("tag parser panicked on {}", path.display())));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
@@ -664,7 +677,10 @@ fn verify_fields(tmp: &Path, kind: FileType, changes: &[Change]) -> Result<(), S
             (tag.split_tag().1, customs)
         }
         FileType::Flac => {
-            let tag = parse_flac(tmp)?.vorbis_comments().cloned().unwrap_or_default();
+            let tag = parse_flac(tmp)?
+                .vorbis_comments()
+                .cloned()
+                .unwrap_or_default();
             let customs = custom_keys
                 .map(|key| {
                     let value = tag.get(&key).map(str::to_string);
@@ -835,17 +851,13 @@ pub(crate) fn tmp_path(path: &Path) -> PathBuf {
 /// metadata blocks, which is where every tag lives.
 fn audio_span(path: &Path, kind: FileType) -> Result<(u64, u64), String> {
     let mut file = fs::File::open(path).map_err(|e| format!("open: {e}"))?;
-    let len = file
-        .metadata()
-        .map_err(|e| format!("stat: {e}"))?
-        .len();
+    let len = file.metadata().map_err(|e| format!("stat: {e}"))?.len();
     match kind {
         FileType::Mpeg => {
             let mut start = 0u64;
             let mut header = [0u8; 10];
             if file.read_exact(&mut header).is_ok() && &header[..3] == b"ID3" {
-                let size = art::synchsafe(&header[6..10])
-                    .ok_or("malformed ID3v2 size")? as u64;
+                let size = art::synchsafe(&header[6..10]).ok_or("malformed ID3v2 size")? as u64;
                 let footer = if header[5] & 0x10 != 0 { 10 } else { 0 };
                 start = 10 + size + footer;
             }
@@ -1080,9 +1092,9 @@ mod tests {
             let fields = read(&path).unwrap();
             assert_eq!(value_of(&fields, &Field::Rating).as_deref(), Some("7.5"));
             assert!(
-                !fields
-                    .iter()
-                    .any(|(f, _)| matches!(f, Field::Custom(k) if k.eq_ignore_ascii_case("FMPS_Rating"))),
+                !fields.iter().any(
+                    |(f, _)| matches!(f, Field::Custom(k) if k.eq_ignore_ascii_case("FMPS_Rating"))
+                ),
                 "the FMPS carrier reads as the rating, not a custom"
             );
             assert_eq!(crate::rating::read_path(&path), Some(75));
@@ -1343,12 +1355,19 @@ mod tests {
             commit_with(
                 &path,
                 &[],
-                &[set_pic(PicKind::Back, back.clone()), set_pic(PicKind::Front, front2.clone())],
+                &[
+                    set_pic(PicKind::Back, back.clone()),
+                    set_pic(PicKind::Front, front2.clone()),
+                ],
             )
             .unwrap();
             let pics = read_pictures(&path).unwrap();
             assert_eq!(pics.len(), 2);
-            let of = |kind| pics.iter().find(|(k, _, _)| *k == kind).map(|(_, d, _)| d.clone());
+            let of = |kind| {
+                pics.iter()
+                    .find(|(k, _, _)| *k == kind)
+                    .map(|(_, d, _)| d.clone())
+            };
             assert_eq!(of(PicKind::Front).as_deref(), Some(front2.as_slice()));
             assert_eq!(of(PicKind::Back).as_deref(), Some(back.as_slice()));
 
@@ -1356,7 +1375,10 @@ mod tests {
             commit_with(
                 &path,
                 &[],
-                &[PicChange { kind: PicKind::Front, data: None }],
+                &[PicChange {
+                    kind: PicKind::Front,
+                    data: None,
+                }],
             )
             .unwrap();
             let pics = read_pictures(&path).unwrap();

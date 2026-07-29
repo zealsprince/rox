@@ -27,10 +27,12 @@ use crate::design::palette::{self, Palette, PanelTheme, ROLES};
 use crate::design::tokens;
 use crate::panel::{self, AppState, PanelSettings, ScrubState};
 use crate::panels::art::ArtPanel;
+use crate::panels::artist_grid::ArtistGridPanel;
 use crate::panels::biography::BiographyPanel;
 use crate::panels::cover::CoverArtPanel;
 use crate::panels::drag_anchor::DragAnchorPanel;
 use crate::panels::drawer::DrawerPanel;
+use crate::panels::favourite::FavouritePanel;
 use crate::panels::filter::FilterPanel;
 use crate::panels::folder_tree::FolderTreePanel;
 use crate::panels::grid::GridPanel;
@@ -45,6 +47,7 @@ use crate::panels::overlay::OverlayPanel;
 use crate::panels::playlists::PlaylistsPanel;
 use crate::panels::queue::QueuePanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
+use crate::panels::rating::RatingPanel;
 use crate::panels::search::SearchPanel;
 use crate::panels::slide::SlidePanel;
 use crate::panels::spacer::SpacerPanel;
@@ -76,15 +79,19 @@ impl Global for OpenPanelSettings {}
 
 /// The Panel Settings entry for a panel's dropdown menu: opens the
 /// panel's settings window. Sits in the panel section, above Duplicate.
-pub fn settings_item<P: PanelSettings>(menu: PopupMenu, panel: &Entity<P>) -> PopupMenu {
+/// A panel hosted in a composite gets its host's settings row right after
+/// its own, so the container is reachable from the child sitting in it.
+pub fn settings_item<P: PanelSettings>(menu: PopupMenu, panel: &Entity<P>, cx: &App) -> PopupMenu {
+    let child = panel.entity_id();
     let panel = panel.clone();
-    menu.item(
+    let menu = menu.item(
         PopupMenuItem::new("Panel Settings")
             .icon(Icon::default().path(icons::SETTINGS))
             .on_click(move |_, _, cx| {
                 open(panel.clone(), cx);
             }),
-    )
+    );
+    crate::composite::host_settings_item(menu, child, cx)
 }
 
 /// Open a panel's settings window, or bring its open one to the front.
@@ -144,6 +151,7 @@ macro_rules! with_settings_panel {
             SearchPanel,
             FilterPanel,
             GridPanel,
+            ArtistGridPanel,
             ArtPanel,
             PlaylistsPanel,
             QueuePanel,
@@ -157,6 +165,8 @@ macro_rules! with_settings_panel {
             SeekStripPanel,
             VolumePanel,
             QueueWidgetPanel,
+            RatingPanel,
+            FavouritePanel,
             SpectrumPanel,
             WaveformPanel,
             MenuPanel,
@@ -513,6 +523,14 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     fn set_panel_anchor(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(panel) = self.panel.upgrade() {
             panel.update(cx, |panel, cx| panel.set_anchor(on, cx));
+        }
+    }
+
+    /// Show or hide a composition host's corner slot controls. The toggle
+    /// reads as "show", so it stores the inverse.
+    fn set_panel_controls(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if let Some(panel) = self.panel.upgrade() {
+            panel.update(cx, |panel, cx| panel.set_hide_controls(!shown, cx));
         }
     }
 
@@ -885,6 +903,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         &mut self,
         locked: bool,
         anchor: bool,
+        hide_controls: bool,
+        composite: bool,
         limits: SizeLimits,
         extra: Option<AnyElement>,
         cx: &mut Context<Self>,
@@ -902,7 +922,19 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 "Drag Anchor",
                 Some("A drag anywhere on the panel moves the window, for decorations-off layouts"),
                 panel::toggle(anchor, Self::set_panel_anchor, cx),
-            ));
+            ))
+            // Only the composition hosts draw these, so the row would be a
+            // dead switch on a leaf panel.
+            .when(composite, |d| {
+                d.child(panel::setting_row(
+                    "Slot Controls",
+                    Some(
+                        "Show the corner buttons for swapping and removing the panels this one hosts. \
+                         Hidden, the layout is still edited from the tree on the Workspace page in Settings",
+                    ),
+                    panel::toggle(!hide_controls, Self::set_panel_controls, cx),
+                ))
+            });
         // The size limits: type a px value to hold the panel to a floor or a
         // cap, empty to leave it free. Only the axis the panel is resized
         // along takes effect, but both are offered since a panel can sit in a
@@ -1254,11 +1286,13 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                         // Read through chrome() so the call isn't ambiguous
                         // between PanelSettings::locked and the dock's
                         // Panel::locked, which share the name.
-                        let (locked, anchor, limits) = {
+                        let composite = panel.read(cx).composite();
+                        let (locked, anchor, hide_controls, limits) = {
                             let chrome = panel.read(cx).chrome();
                             (
                                 chrome.locked,
                                 chrome.anchor,
+                                chrome.hide_controls,
                                 SizeLimits {
                                     min_width: chrome.min_width,
                                     min_height: chrome.min_height,
@@ -1268,8 +1302,16 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                             )
                         };
                         let extra = panel.update(cx, |panel, cx| panel.behavior(window, cx));
-                        self.behavior_page(locked, anchor, limits, extra, cx)
-                            .into_any_element()
+                        self.behavior_page(
+                            locked,
+                            anchor,
+                            hide_controls,
+                            composite,
+                            limits,
+                            extra,
+                            cx,
+                        )
+                        .into_any_element()
                     }
                     _ => panel.update(cx, |panel, cx| panel.page(pages[picked - 2].0, window, cx)),
                 };

@@ -33,8 +33,7 @@ use crate::TrackRow;
 /// off the list so a scan never vacuums up a film library, and Opus is out
 /// until symphonia ships a decoder for it.
 pub const EXTENSIONS: &[&str] = &[
-    "flac", "mp3", "wav", "ogg", "oga", "m4a", "m4b", "aac", "aif", "aiff",
-    "aifc", "mka", "caf",
+    "flac", "mp3", "wav", "ogg", "oga", "m4a", "m4b", "aac", "aif", "aiff", "aifc", "mka", "caf",
 ];
 const BATCH: usize = 512;
 
@@ -74,8 +73,10 @@ pub fn scan(
     // its parent's directory entry, so it never counts as gone. Built before
     // the batch loop consumes `files`, keyed the same way process_file keys a
     // stored row so the two sets compare byte for byte.
-    let present: std::collections::HashSet<String> =
-        files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let present: std::collections::HashSet<String> = files
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
 
     let mut summary = ScanSummary::default();
     let scanned = AtomicUsize::new(0);
@@ -547,12 +548,16 @@ mod tests {
         let s = scan(&mut conn);
         assert_eq!(s.removed, 1);
         assert_eq!(store::count(&conn).unwrap(), 2);
-        assert!(store::id_for_path(&conn, dir.join("a/2.mp3").to_str().unwrap())
-            .unwrap()
-            .is_none());
-        assert!(store::id_for_path(&conn, dir.join("a/1.mp3").to_str().unwrap())
-            .unwrap()
-            .is_some());
+        assert!(
+            store::id_for_path(&conn, dir.join("a/2.mp3").to_str().unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store::id_for_path(&conn, dir.join("a/1.mp3").to_str().unwrap())
+                .unwrap()
+                .is_some()
+        );
 
         // The whole root gone (unplugged drive, dropped mount): the walk
         // reads empty, but the guard keeps the rows rather than wipe them.

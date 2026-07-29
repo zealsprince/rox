@@ -294,6 +294,13 @@ impl SlidePanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        // Let the slides reach this host from their own menus; the dock
+        // never sees a hosted panel, so nothing else offers it.
+        composite::report_hosted(
+            self.slides.iter(),
+            self.config.chrome.title.as_deref().unwrap_or("Slide"),
+            cx,
+        );
         let active = self.config.active;
         let count = self.slides.len();
         let root = div()
@@ -315,6 +322,9 @@ impl SlidePanel {
                     }
                 },
             );
+            if self.config.chrome.hide_controls {
+                return root.child(empty);
+            }
             let parent = composite::parent_button("Slide", cx);
             return root
                 .child(empty)
@@ -497,6 +507,14 @@ impl SlidePanel {
             )
         });
 
+        // A layout that ships as finished furniture drops the builder's
+        // buttons; its slides are still managed from the tree on the
+        // Workspace settings page. The rail and dots stay either way, since
+        // those are how the deck is read rather than how it is built.
+        if self.config.chrome.hide_controls {
+            return root;
+        }
+
         // The corner controls: add a slide, and the active slide's menu
         // with its reorder moves ahead of the shared rows.
         let add_weak = cx.entity().downgrade();
@@ -638,6 +656,10 @@ fn rail_on_paint(rail: &ScrubState, weak: &WeakEntity<SlidePanel>, window: &mut 
 }
 
 impl PanelSettings for SlidePanel {
+    fn composite(&self) -> bool {
+        true
+    }
+
     fn state(&self) -> AppState {
         self.state.clone()
     }
@@ -773,7 +795,7 @@ impl Panel for SlidePanel {
             );
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
-        let menu = panel_settings::settings_item(menu, &cx.entity());
+        let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         panel::popout_item(
             menu,
             &cx.entity(),

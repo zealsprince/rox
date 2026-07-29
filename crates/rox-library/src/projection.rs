@@ -347,9 +347,7 @@ pub fn parse_query(query: &str) -> Vec<Term> {
                 let name = &raw[..i];
                 if !name.contains('"') {
                     let name = name.to_lowercase();
-                    if let Some(&(_, field)) =
-                        QUERY_FIELDS.iter().find(|(n, _)| *n == name)
-                    {
+                    if let Some(&(_, field)) = QUERY_FIELDS.iter().find(|(n, _)| *n == name) {
                         return Term {
                             field: Some(field),
                             needle: strip(&raw[i + 1..]).to_lowercase(),
@@ -387,14 +385,46 @@ pub enum FilterField {
 /// exception to whole-value matching: a picked folder covers its whole
 /// subtree, so the folder tree scopes to a branch with a single value
 /// instead of enumerating every descendant.
+///
+/// A set can also pin an explicit list of track db ids, which is how a view
+/// following the app-wide selection narrows to it. That rides here rather
+/// than beside the filter because every searching panel already threads a
+/// `FilterSet` down to its row scan, so honoring it in the two matchers
+/// below reaches all of them at once. `None` is no id restriction at all;
+/// `Some` of an empty list matches nothing, which is what an emptied
+/// selection should show.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FilterSet {
     pub fields: Vec<(FilterField, Vec<String>)>,
+    pub ids: Option<Vec<i64>>,
 }
 
 impl FilterSet {
     pub fn is_empty(&self) -> bool {
+        self.ids.is_none() && self.fields.iter().all(|(_, values)| values.is_empty())
+    }
+
+    /// Whether any field value is picked, ignoring an id pin. The filter
+    /// chips read this: the ids are not the filter panel's doing and have no
+    /// chip to drop.
+    pub fn fields_empty(&self) -> bool {
         self.fields.iter().all(|(_, values)| values.is_empty())
+    }
+
+    /// Narrow to an explicit set of track db ids.
+    pub fn with_ids(ids: Vec<i64>) -> Self {
+        FilterSet {
+            fields: Vec::new(),
+            ids: Some(ids),
+        }
+    }
+
+    /// Whether one track's db id passes the id pin; no pin passes all.
+    fn id_ok(&self, db_id: i64) -> bool {
+        match &self.ids {
+            Some(ids) => ids.contains(&db_id),
+            None => true,
+        }
     }
 
     /// The picked values for one field; empty means the field passes all.
@@ -432,6 +462,9 @@ impl FilterSet {
     /// the projection. Values match whole, never as substrings, the same as
     /// the mask over the catalog.
     pub fn matches(&self, fields: &TrackFields) -> bool {
+        if !self.id_ok(fields.db_id) {
+            return false;
+        }
         self.fields.iter().all(|(field, values)| {
             if values.is_empty() {
                 return true;
@@ -457,6 +490,10 @@ impl FilterSet {
 /// rather than the column-optimized [`Projection::search`] and
 /// [`Projection::filter_mask`] over the whole catalog.
 pub struct TrackFields<'a> {
+    /// The track's library db id, for [`FilterSet`]'s id pin. Rows with no
+    /// db id of their own pass 0, which no track carries, so a pinned filter
+    /// leaves them out.
+    pub db_id: i64,
     pub title: &'a str,
     pub artist: &'a str,
     pub album_artist: &'a str,
@@ -582,7 +619,21 @@ impl Projection {
             conn,
             0,
             max,
-            |id, path, title, artist, album_artist, album, genre, year, dn, tn, dur, codec, kbps, rating, added| {
+            |id,
+             path,
+             title,
+             artist,
+             album_artist,
+             album,
+             genre,
+             year,
+             dn,
+             tn,
+             dur,
+             codec,
+             kbps,
+             rating,
+             added| {
                 b.push(
                     id,
                     path,
@@ -898,9 +949,7 @@ impl Projection {
                     column: &self.folder,
                     mask: hit(&self.folders, &t.needle),
                 },
-                Some(QueryField::Title) => {
-                    Hits::Title(memmem::Finder::new(t.needle.as_bytes()))
-                }
+                Some(QueryField::Title) => Hits::Title(memmem::Finder::new(t.needle.as_bytes())),
                 // A year needle matches on the digits, so `year:199`
                 // takes the whole decade; the mask covers every u16 once
                 // over the shared year arena, so a keystroke never formats
@@ -932,9 +981,7 @@ impl Projection {
                         || finder.find(self.title_lower.get(i).as_bytes()).is_some()
                 }
                 Hits::Sym { column, mask } => mask[column[i] as usize],
-                Hits::Title(finder) => {
-                    finder.find(self.title_lower.get(i).as_bytes()).is_some()
-                }
+                Hits::Title(finder) => finder.find(self.title_lower.get(i).as_bytes()).is_some(),
                 Hits::Year(mask) => mask[self.year[i] as usize],
             })
         })
@@ -1098,10 +1145,20 @@ impl Projection {
             })
             .collect();
 
+        // The id pin goes to a set first: the row scan runs the whole
+        // catalog, so a linear lookup per row would make it quadratic.
+        let pinned: Option<std::collections::HashSet<i64>> =
+            filter.ids.as_ref().map(|ids| ids.iter().copied().collect());
+
         Some(
             (0..self.len())
                 .into_par_iter()
                 .map(|i| {
+                    if let Some(pinned) = &pinned {
+                        if !pinned.contains(&self.db_id[i]) {
+                            return false;
+                        }
+                    }
                     checks.iter().all(|c| match c {
                         Check::Sym { column, ok } => ok[column[i] as usize],
                         Check::Year(ok) => ok[self.year[i] as usize],
@@ -1421,7 +1478,10 @@ mod tests {
     fn query_parses_free_and_pinned_terms() {
         let terms = parse_query(r#"stronger artist:"Daft Punk" ac:dc year:199"#);
         assert_eq!(terms.len(), 4);
-        assert_eq!((terms[0].field, terms[0].needle.as_str()), (None, "stronger"));
+        assert_eq!(
+            (terms[0].field, terms[0].needle.as_str()),
+            (None, "stronger")
+        );
         assert_eq!(
             (terms[1].field, terms[1].needle.as_str()),
             (Some(QueryField::Artist), "daft punk")
@@ -1469,6 +1529,7 @@ mod tests {
     #[test]
     fn track_matcher_mirrors_search() {
         let fields = TrackFields {
+            db_id: 1,
             title: "Stronger",
             artist: "Daft Punk",
             album_artist: "Daft Punk",
@@ -1486,7 +1547,10 @@ mod tests {
         assert!(track_matches(&parse_query("stronger daft"), &fields));
         assert!(!track_matches(&parse_query("stronger kanye"), &fields));
         // Pins isolate their field; a title term never matches the artist.
-        assert!(track_matches(&parse_query(r#"artist:"daft punk""#), &fields));
+        assert!(track_matches(
+            &parse_query(r#"artist:"daft punk""#),
+            &fields
+        ));
         assert!(!track_matches(&parse_query("title:discovery"), &fields));
         // Year matches on the digits; folder pins to the parent directory.
         assert!(track_matches(&parse_query("year:200"), &fields));
@@ -1571,6 +1635,7 @@ mod tests {
 
         // The per-track matcher agrees.
         let fields = |path| TrackFields {
+            db_id: 1,
             title: "",
             artist: "",
             album_artist: "",
@@ -1612,7 +1677,12 @@ mod tests {
         store::insert_batch(
             &mut conn,
             &[
-                full("/m/1.mp3", "Fleet Foxes", "Fleet Foxes", "White Winter Hymnal"),
+                full(
+                    "/m/1.mp3",
+                    "Fleet Foxes",
+                    "Fleet Foxes",
+                    "White Winter Hymnal",
+                ),
                 full("/m/2.mp3", "Fleet Foxes", "Helplessness Blues", "Montezuma"),
                 full("/m/3.mp3", "ODESZA", "A Moment Apart", "Line Of Sight"),
             ],
@@ -1698,6 +1768,56 @@ mod tests {
         f.toggle(FilterField::Year, "1998");
         f.toggle(FilterField::Artist, "Moby");
         assert_eq!(hits(&f), ["One", "Three"]);
+    }
+
+    /// The id pin narrows to an explicit track set, the channel a
+    /// selection-following view rides. It ANDs with the field picks, and an
+    /// empty pin matches nothing rather than everything.
+    #[test]
+    fn filter_mask_pins_explicit_ids() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "Air", 1998),
+                track("/m/2.mp3", "Two", "Airborne", 1998),
+                track("/m/3.mp3", "Three", "Air", 2001),
+            ],
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn).unwrap();
+
+        let hits = |filter: &FilterSet| -> Vec<&str> {
+            let mask = p.filter_mask(filter).unwrap();
+            (0..p.len() as u32)
+                .filter(|&i| mask[i as usize])
+                .map(|i| p.resolve(i).title)
+                .collect()
+        };
+        let id_of = |title: &str| -> i64 {
+            let row = (0..p.len() as u32)
+                .find(|&i| p.resolve(i).title == title)
+                .unwrap();
+            p.db_id[row as usize]
+        };
+
+        // A pin on its own is a filter, so the mask is built rather than
+        // skipped the way an all-empty set is.
+        let pinned = FilterSet::with_ids(vec![id_of("One"), id_of("Three")]);
+        assert!(!pinned.is_empty());
+        assert_eq!(hits(&pinned), ["One", "Three"]);
+
+        // An emptied selection shows nothing, not everything.
+        assert_eq!(hits(&FilterSet::with_ids(Vec::new())), Vec::<&str>::new());
+
+        // Field picks still AND across the pin.
+        let mut both = FilterSet::with_ids(vec![id_of("One"), id_of("Three")]);
+        both.toggle(FilterField::Year, "2001");
+        assert_eq!(hits(&both), ["Three"]);
+
+        // The chips read past the pin: it is not the filter panel's doing.
+        assert!(pinned.fields_empty());
     }
 
     /// The plays column loads the listens aggregate and sorts like any
@@ -1791,7 +1911,10 @@ mod tests {
             }
             let album_name = &p.albums.strings[al as usize];
             if album_name.is_empty()
-                || !matches(&p.album_artists.lower[aa as usize], &p.albums.lower[al as usize])
+                || !matches(
+                    &p.album_artists.lower[aa as usize],
+                    &p.albums.lower[al as usize],
+                )
             {
                 continue;
             }
@@ -1835,7 +1958,12 @@ mod tests {
         store::insert_batch(
             &mut conn,
             &[
-                full("/m/1.mp3", "Fleet Foxes", "Fleet Foxes", "White Winter Hymnal"),
+                full(
+                    "/m/1.mp3",
+                    "Fleet Foxes",
+                    "Fleet Foxes",
+                    "White Winter Hymnal",
+                ),
                 full("/m/2.mp3", "Fleet Foxes", "Helplessness Blues", "Montezuma"),
                 full("/m/3.mp3", "ODESZA", "A Moment Apart", "Line Of Sight"),
                 full("/m/4.mp3", "Daft Punk", "Discovery", "One More Time"),
@@ -1849,9 +1977,18 @@ mod tests {
             let got_artists: Vec<(String, u32)> = p
                 .search_artists(q)
                 .iter()
-                .map(|h| (p.album_artists.strings[h.album_artist as usize].clone(), h.row))
+                .map(|h| {
+                    (
+                        p.album_artists.strings[h.album_artist as usize].clone(),
+                        h.row,
+                    )
+                })
                 .collect();
-            assert_eq!(got_artists, ref_artists(&p, q), "artists mismatch for {q:?}");
+            assert_eq!(
+                got_artists,
+                ref_artists(&p, q),
+                "artists mismatch for {q:?}"
+            );
             let got_albums: Vec<(String, String, u32)> = p
                 .search_albums(q)
                 .iter()
@@ -1915,8 +2052,16 @@ mod tests {
         .unwrap();
         let p = Projection::load_serial(&conn).unwrap();
 
-        let artists1: Vec<u32> = p.search_artists("a").iter().map(|h| h.album_artist).collect();
-        let artists2: Vec<u32> = p.search_artists("a").iter().map(|h| h.album_artist).collect();
+        let artists1: Vec<u32> = p
+            .search_artists("a")
+            .iter()
+            .map(|h| h.album_artist)
+            .collect();
+        let artists2: Vec<u32> = p
+            .search_artists("a")
+            .iter()
+            .map(|h| h.album_artist)
+            .collect();
         assert_eq!(artists1, artists2);
 
         let albums1: Vec<(u32, u32)> = p

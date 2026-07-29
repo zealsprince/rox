@@ -27,6 +27,16 @@ use crate::settings::artists_dir;
 /// entry anyway.
 const TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
+/// The longest side of a portrait thumbnail, the artist wall's tile
+/// source. The same 256 the cover thumbnails use: enough for a tile at
+/// any density, small enough that a wall of a thousand faces decodes
+/// without eating the machine.
+const THUMB_SIZE: u32 = 256;
+
+/// Portrait thumbnails are JPEG at the cover store's quality; a face at
+/// this size gains nothing from lossless.
+const THUMB_QUALITY: u8 = 85;
+
 /// A decoded image with its width-over-height ratio, so a panel can size
 /// a frame to it and letterbox instead of cropping.
 pub type SizedImage = (Arc<Image>, f32);
@@ -64,6 +74,9 @@ struct Files {
     portrait: PathBuf,
     banner: PathBuf,
     background: PathBuf,
+    /// The portrait downscaled for a wall of tiles, generated from the
+    /// full one and kept beside it.
+    thumb: PathBuf,
 }
 
 fn files_for(name: &str) -> Files {
@@ -83,6 +96,7 @@ fn files_for(name: &str) -> Files {
         portrait: slot("img"),
         banner: slot("banner"),
         background: slot("bg"),
+        thumb: slot("thumb"),
     }
 }
 
@@ -148,6 +162,89 @@ pub fn get(name: &str, force: bool) -> Result<Option<Artist>, String> {
             None => Err(e),
         },
     }
+}
+
+/// The artist's face as a small square, the artist wall's tile: the
+/// deezer portrait downscaled once and kept beside the full one, so a
+/// grid of a thousand names costs a few hundred KB of disk instead of a
+/// gigabyte of full-size decodes. Reuses whatever the biography panel
+/// already pulled down, so a shown artist costs no network at all.
+///
+/// `Ok(None)` is a settled miss - deezer answered and carries no picture
+/// under the name - and an empty marker file makes it stick, so the wall
+/// asks once per artist ever rather than on every scroll past. A network
+/// failure is an `Err` and leaves the slots alone, so a blip doesn't pin a
+/// blank face. Blocking, background executor only.
+pub fn portrait_thumb(name: &str) -> Result<Option<Vec<u8>>, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let files = files_for(name);
+    if let Ok(bytes) = fs::read(&files.thumb) {
+        return Ok((!bytes.is_empty()).then_some(bytes));
+    }
+    let full = match fs::read(&files.portrait) {
+        Ok(bytes) if !bytes.is_empty() => bytes,
+        // An empty portrait slot is a settled miss the wall left behind
+        // last time; carry it into the thumbnail slot so this path is one
+        // read from now on.
+        Ok(_) => {
+            mark_miss(&files.thumb);
+            return Ok(None);
+        }
+        Err(_) => {
+            if !providers::artist_online() {
+                return Ok(None);
+            }
+            let Some(url) = providers::deezer::artist_picture(name)? else {
+                // Settle both slots: the full portrait's fetch would ask the
+                // same question and get the same nothing.
+                mark_miss(&files.portrait);
+                mark_miss(&files.thumb);
+                return Ok(None);
+            };
+            let bytes = providers::fetch_image(&url)?;
+            let _ = fs::create_dir_all(artists_dir());
+            let _ = fs::write(&files.portrait, &bytes);
+            bytes
+        }
+    };
+    // A portrait that won't decode is as good as none, and re-trying the
+    // decode every paint would burn the pool; settle it.
+    let Some(small) = downscale(&full) else {
+        mark_miss(&files.thumb);
+        return Ok(None);
+    };
+    let _ = fs::create_dir_all(artists_dir());
+    let _ = fs::write(&files.thumb, &small);
+    Ok(Some(small))
+}
+
+/// Settle a slot as a known miss: an empty file, which every reader here
+/// treats as "nothing to show" and which stops the next look from asking
+/// the network again. [`decode`] filters empty bytes, so a marker never
+/// reaches the biography panel as a broken image.
+fn mark_miss(file: &Path) {
+    let _ = fs::create_dir_all(artists_dir());
+    let _ = fs::write(file, []);
+}
+
+/// A full portrait's bytes into a square JPEG thumbnail, the cover store's
+/// encode. None when the bytes won't decode as an image.
+fn downscale(bytes: &[u8]) -> Option<Vec<u8>> {
+    let full = image::load_from_memory(bytes).ok()?;
+    let small = full.thumbnail(THUMB_SIZE, THUMB_SIZE).into_rgb8();
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, THUMB_QUALITY)
+        .encode(
+            small.as_raw(),
+            small.width(),
+            small.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .ok()?;
+    Some(out)
 }
 
 /// Land the artist's images beside the info file, quietly: the bio is the

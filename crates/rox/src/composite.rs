@@ -12,12 +12,14 @@
 //! are filled and changed through menus built from the panel catalog
 //! instead.
 
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    div, prelude::*, px, svg, Along, App, Axis, Bounds, Context, Div, MouseButton, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, WeakEntity, Window,
+    div, prelude::*, px, svg, Along, App, Axis, Bounds, Context, Div, EntityId, Global,
+    MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, WeakEntity, Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -26,7 +28,7 @@ use rox_dock::{DockArea, Panel, PanelRegistry, PanelState, PanelView};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
-use crate::panel::AppState;
+use crate::panel::{AppState, PanelSettings};
 use crate::panel_catalog::{self as catalog, PanelDef};
 use crate::panel_settings;
 use crate::workspace::Workspace;
@@ -34,6 +36,90 @@ use crate::workspace::Workspace;
 /// One hosted slot: a live child panel, or empty and showing the add
 /// affordance.
 pub type Slot = Option<Arc<dyn PanelView>>;
+
+/// Which composite a hosted panel sits in. A host reports its slots as it
+/// renders, so a child's own right-click can reach the panel that holds it.
+/// The dock never sees a hosted child, so without this a host with its
+/// corner controls hidden has no route to its settings at all, and even with
+/// them showing this is the shorter one.
+#[derive(Default)]
+struct Hosts(HashMap<EntityId, Host>);
+
+impl Global for Hosts {}
+
+struct Host {
+    /// The host itself, so a re-report can tell a fresh entry from its own.
+    id: EntityId,
+    /// What the row calls it: the host's rename when it has one, its panel
+    /// name otherwise.
+    label: SharedString,
+    /// Opens the host's settings window. Holds the host weakly, so an entry
+    /// left behind by a removed child just no-ops.
+    open: Rc<dyn Fn(&mut App)>,
+}
+
+/// Record a composite as the host of its filled slots. Called from the
+/// host's render, which is the one place that always sees the current
+/// children; the work settles to a couple of map lookups once the slots stop
+/// changing.
+pub fn report_hosted<'a, P: PanelSettings>(
+    children: impl IntoIterator<Item = &'a Arc<dyn PanelView>>,
+    label: &str,
+    cx: &mut Context<P>,
+) {
+    let ids: Vec<EntityId> = children
+        .into_iter()
+        .map(|child| child.panel_id(cx))
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let me = cx.entity().entity_id();
+    let stale = |hosts: &Hosts| {
+        ids.iter()
+            .any(|id| hosts.0.get(id).map(|h| h.id) != Some(me))
+    };
+    if !cx.try_global::<Hosts>().is_none_or(stale) {
+        return;
+    }
+
+    let weak = cx.entity().downgrade();
+    let open: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
+        if let Some(host) = weak.upgrade() {
+            panel_settings::open(host, cx);
+        }
+    });
+    let label = SharedString::from(label.to_string());
+    let hosts = cx.default_global::<Hosts>();
+    for id in ids {
+        hosts.0.insert(
+            id,
+            Host {
+                id: me,
+                label: label.clone(),
+                open: open.clone(),
+            },
+        );
+    }
+}
+
+/// The row that opens a hosted panel's host settings, for the end of the
+/// child's own menu. Nothing at all when the panel isn't hosted, which is
+/// every panel the dock holds directly.
+pub fn host_settings_item(menu: PopupMenu, child: EntityId, cx: &App) -> PopupMenu {
+    let Some(host) = cx
+        .try_global::<Hosts>()
+        .and_then(|hosts| hosts.0.get(&child))
+    else {
+        return menu;
+    };
+    let open = host.open.clone();
+    menu.item(
+        PopupMenuItem::new(SharedString::from(format!("{} Settings", host.label)))
+            .icon(Icon::default().path(icons::LAYOUT_DASHBOARD))
+            .on_click(move |_, _, cx| open(cx)),
+    )
+}
 
 /// Serialize a host's slots in order. An empty slot dumps as the default
 /// (empty-named) state, so slot positions survive the round-trip.
@@ -117,7 +203,7 @@ pub fn pick_items(
     cx: &mut Context<PopupMenu>,
     on_pick: impl Fn(Arc<dyn PanelView>, &mut Window, &mut App) + Clone + 'static,
 ) -> PopupMenu {
-    for section in catalog::CATALOG {
+    for section in catalog::sections() {
         // The arrangement panels stay in the slot picker but grayed: a
         // composite can't host another composite, one level of nesting.
         let disabled = catalog::is_arrangement(section);

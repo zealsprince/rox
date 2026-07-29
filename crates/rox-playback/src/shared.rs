@@ -123,8 +123,7 @@ impl Shared {
 
     /// The queue's revision, bumped on every rewrite. Cheap to poll each tick.
     pub fn queue_rev(&self) -> u64 {
-        self.queue_rev
-            .load(std::sync::atomic::Ordering::Acquire)
+        self.queue_rev.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn volume(&self) -> f32 {
@@ -134,8 +133,7 @@ impl Shared {
     /// Whether the output stream reported a fatal error and stopped. The app
     /// polls this to reopen the device instead of parking on a dead stream.
     pub fn device_lost(&self) -> bool {
-        self.device_lost
-            .load(std::sync::atomic::Ordering::Acquire)
+        self.device_lost.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Resolve the current position from the output clock: which track, and
@@ -188,7 +186,9 @@ mod tests {
         push_segment(&shared, 96000, 1, 24000);
         // A future segment for track 2 that hasn't been reached yet.
         push_segment(&shared, 200000, 2, 0);
-        shared.frames_consumed.store(96000 + 48000, Ordering::Relaxed);
+        shared
+            .frames_consumed
+            .store(96000 + 48000, Ordering::Relaxed);
         // On track 1: track_frame 24000 + 48000 played = 72000 frames = 1.5s.
         assert_eq!(shared.position(48000), Some((1, 1.5)));
     }

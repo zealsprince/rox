@@ -71,6 +71,21 @@ ksni = { version = "0.3.6", default-features = false, features = ["blocking", "a
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
 
+# Reads the workspace .env so a local build picks up the service identities the
+# release workflow passes as secrets. Zero dependencies of its own, and it gets
+# the quoting and escape rules right so build.rs doesn't hand-roll a parser.
+[build-dependencies]
+dotenvy = "0.15"
+
 # Embeds assets/app/rox.ico into the exe as the application icon.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+[dev-dependencies]
+# Pulls in gpui's headless TestAppContext and the #[gpui::test] macro, so the
+# shared selection can be driven against a real Context<Self> without a
+# display.
+gpui = { workspace = true, features = ["test-support"] }
+# tests/build_identities.rs compiles the build script's own module, so the test
+# binary needs what that module uses.
+dotenvy = "0.15"

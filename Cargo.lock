@@ -1643,6 +1643,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5447,13 +5453,14 @@ dependencies = [
 
 [[package]]
 name = "rox"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
  "chrono",
  "dirs 5.0.1",
  "discord-rich-presence",
+ "dotenvy",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
@@ -5480,7 +5487,7 @@ dependencies = [
 
 [[package]]
 name = "rox-dock"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5493,7 +5500,7 @@ dependencies = [
 
 [[package]]
 name = "rox-library"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "image",
  "lofty",
@@ -5504,7 +5511,7 @@ dependencies = [
 
 [[package]]
 name = "rox-playback"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "cpal",
  "log",
@@ -5514,7 +5521,7 @@ dependencies = [
 
 [[package]]
 name = "rox-viz"
-version = "1.5.2"
+version = "1.6.0"
 
 [[package]]
 name = "roxmltree"

@@ -389,11 +389,7 @@ pub trait ArtProvider {
 /// rather than failing the lot; only when all fail and nothing came back
 /// does the error surface.
 pub fn search_art(query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
-    let (itunes, deezer, lastfm_art) = (
-        itunes_online(),
-        deezer_online(),
-        lastfm_art_online(),
-    );
+    let (itunes, deezer, lastfm_art) = (itunes_online(), deezer_online(), lastfm_art_online());
     // Which services are on is part of the answer, so it rides the key: a
     // toggle since the last search is a different result, not a stale hit.
     let key = format!(

@@ -154,9 +154,7 @@ where
         // sits frozen on "playing". Logging is fine here, this is the backend
         // error thread, not the RT data path.
         log::error!("stream error: {err}");
-        err_shared
-            .device_lost
-            .store(true, Ordering::Release);
+        err_shared.device_lost.store(true, Ordering::Release);
     };
 
     device

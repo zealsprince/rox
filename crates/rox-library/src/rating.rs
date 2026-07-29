@@ -118,7 +118,10 @@ fn read_inner(path: &Path, kind: FileType) -> Option<u8> {
     match kind {
         FileType::Mpeg => {
             let mut source = crate::tag_source::open(path).ok()?;
-            let tag = MpegFile::read_from(&mut source, opts).ok()?.id3v2().cloned()?;
+            let tag = MpegFile::read_from(&mut source, opts)
+                .ok()?
+                .id3v2()
+                .cloned()?;
             from_id3v2(&tag)
         }
         FileType::Flac => {
@@ -186,7 +189,11 @@ pub fn from_vorbis(tag: &VorbisComments) -> Option<u8> {
 
 /// Probe a path's format and read its rating, the reindex-free entry.
 pub fn read_path(path: &Path) -> Option<u8> {
-    let kind = Probe::open(path).ok()?.guess_file_type().ok()?.file_type()?;
+    let kind = Probe::open(path)
+        .ok()?
+        .guess_file_type()
+        .ok()?
+        .file_type()?;
     read(path, kind)
 }
 
@@ -212,7 +219,11 @@ mod tests {
         assert_eq!(parse_popm_text("|4|0"), Some(80));
         assert_eq!(parse_popm_text("MusicBee|2|15"), Some(40));
         assert_eq!(parse_popm_text("80"), Some(80), "bare 0-100 passes through");
-        assert_eq!(parse_popm_text("4"), Some(80), "a small bare value reads as stars");
+        assert_eq!(
+            parse_popm_text("4"),
+            Some(80),
+            "a small bare value reads as stars"
+        );
         assert_eq!(parse_popm_text("|9|0"), None);
         assert_eq!(popm_text(75), "|4|0");
         assert_eq!(from_popm_byte(196), 80);

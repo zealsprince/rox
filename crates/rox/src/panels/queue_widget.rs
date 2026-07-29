@@ -332,7 +332,7 @@ impl Panel for QueueWidgetPanel {
         );
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
-        let menu = panel_settings::settings_item(menu, &cx.entity());
+        let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         panel::popout_item(
             menu,
             &cx.entity(),

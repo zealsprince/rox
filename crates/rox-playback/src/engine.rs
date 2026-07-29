@@ -58,17 +58,26 @@ pub enum Cmd {
     },
     /// Drop the entry with this id from the queue. Removing the playing entry
     /// is ignored; the UI never offers it.
-    Remove { id: u64 },
+    Remove {
+        id: u64,
+    },
     /// Drop a whole set of entries in one pass, with a single queue publish at
     /// the end. Clear Queue and multi-select delete route here so a big queue
     /// empties in one O(n) sweep instead of one O(n) remove per id. The playing
     /// entry is kept even if named.
-    RemoveMany { ids: Vec<u64> },
+    RemoveMany {
+        ids: Vec<u64>,
+    },
     /// Move the entry with this id to just after entry `after`, or to the
     /// front when `after` is None.
-    Move { id: u64, after: Option<u64> },
+    Move {
+        id: u64,
+        after: Option<u64>,
+    },
     /// Jump straight to the entry with this id and play it now.
-    Jump { id: u64 },
+    Jump {
+        id: u64,
+    },
     Quit,
 }
 
@@ -493,9 +502,7 @@ impl Engine {
             entries,
             cursor: self.pos,
         };
-        self.shared
-            .queue_rev
-            .fetch_add(1, Ordering::Release);
+        self.shared.queue_rev.fetch_add(1, Ordering::Release);
     }
 
     /// Order position of the entry with this id, if it is still queued.
@@ -628,8 +635,8 @@ impl Engine {
         let cursor = self.order.get(self.pos).map(|e| e.id);
         // The cursor entry is the runahead when it leads the audible track and
         // it's actually being dropped (not the kept audible one).
-        let removed_runahead = self.pos != audible
-            && cursor.is_some_and(|id| drop.contains(&id) && Some(id) != keep);
+        let removed_runahead =
+            self.pos != audible && cursor.is_some_and(|id| drop.contains(&id) && Some(id) != keep);
         let before = self.order.len();
         self.order
             .retain(|e| !drop.contains(&e.id) || Some(e.id) == keep);
@@ -1117,7 +1124,18 @@ mod tests {
         let (producer, _consumer) = rtrb::RingBuffer::<f32>::new(16);
         let (_tx, rx) = mpsc::channel::<Cmd>();
         let queue: Vec<PathBuf> = (0..n).map(|i| PathBuf::from(format!("t{i}"))).collect();
-        Engine::new(queue, 0, shared, producer, 48000, rx, Vec::new(), Vec::new())
+        Engine::new(
+            StartQueue {
+                paths: queue,
+                start: 0,
+                explicit: Vec::new(),
+                groups: Vec::new(),
+            },
+            shared,
+            producer,
+            48000,
+            rx,
+        )
     }
 
     /// Point the audible clock at pool index `track`, so `audible_pos` resolves
@@ -1137,10 +1155,26 @@ mod tests {
     #[test]
     fn prune_keeps_newest_reached_and_all_future() {
         let mut segments = vec![
-            Segment { at_frame: 0, track: 0, track_frame: 0 },
-            Segment { at_frame: 100, track: 1, track_frame: 0 },
-            Segment { at_frame: 200, track: 2, track_frame: 0 },
-            Segment { at_frame: 300, track: 3, track_frame: 0 },
+            Segment {
+                at_frame: 0,
+                track: 0,
+                track_frame: 0,
+            },
+            Segment {
+                at_frame: 100,
+                track: 1,
+                track_frame: 0,
+            },
+            Segment {
+                at_frame: 200,
+                track: 2,
+                track_frame: 0,
+            },
+            Segment {
+                at_frame: 300,
+                track: 3,
+                track_frame: 0,
+            },
         ];
         // Consumed sits between segment 1 and 2: drop segment 0, keep 1 (the
         // newest already reached) plus the two future ones.
@@ -1152,8 +1186,16 @@ mod tests {
     #[test]
     fn prune_before_any_segment_keeps_all() {
         let mut segments = vec![
-            Segment { at_frame: 100, track: 0, track_frame: 0 },
-            Segment { at_frame: 200, track: 1, track_frame: 0 },
+            Segment {
+                at_frame: 100,
+                track: 0,
+                track_frame: 0,
+            },
+            Segment {
+                at_frame: 200,
+                track: 1,
+                track_frame: 0,
+            },
         ];
         // Nothing reached yet, so there's no cutoff and every segment stays.
         prune_segments(&mut segments, 50);
@@ -1177,7 +1219,7 @@ mod tests {
         let mut e = test_engine(5);
         set_audible(&e, 2);
         e.pos = 3; // decode cursor ran ahead of the audible track
-        // id 2 is the audible track; removing it must be refused.
+                   // id 2 is the audible track; removing it must be refused.
         let removed_runahead = e.remove(2);
         assert!(!removed_runahead);
         assert_eq!(e.order.len(), 5, "audible entry stays");
@@ -1191,7 +1233,10 @@ mod tests {
         e.pos = 3;
         // id 3 is the pre-decoded next track the open source holds.
         let removed_runahead = e.remove(3);
-        assert!(removed_runahead, "the pre-decoded next track is the runahead");
+        assert!(
+            removed_runahead,
+            "the pre-decoded next track is the runahead"
+        );
         // Cursor re-anchors down onto the audible entry so the caller's reopen
         // lands on the right next track.
         assert_eq!(e.pos, 2);
@@ -1257,6 +1302,9 @@ mod tests {
         e.pos = 1;
         // Name the audible entry in the drop set; it must survive.
         let _ = e.remove_many(&[0, 1, 2]);
-        assert!(e.order.iter().any(|entry| entry.id == 1), "audible entry kept");
+        assert!(
+            e.order.iter().any(|entry| entry.id == 1),
+            "audible entry kept"
+        );
     }
 }

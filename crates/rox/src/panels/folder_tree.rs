@@ -1081,9 +1081,10 @@ impl FolderTreePanel {
                 _ => None,
             })
             .collect();
+        let source = cx.entity_id();
         self.state
             .selection
-            .update(cx, |selection, cx| selection.set(ids, cx));
+            .update(cx, |selection, cx| selection.set(ids, source, cx));
     }
 
     /// Put the cursor on a row and scroll it into view.
@@ -1673,7 +1674,7 @@ impl Panel for FolderTreePanel {
         let menu = menu.item(PopupMenuItem::submenu("Non-matching Songs", submenu));
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
-        let menu = panel_settings::settings_item(menu, &cx.entity());
+        let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         let menu = panel::duplicate_item(
             menu,
             &cx.entity(),

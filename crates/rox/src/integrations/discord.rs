@@ -66,11 +66,7 @@ pub struct DiscordPresence {
 }
 
 impl DiscordPresence {
-    pub fn new(
-        player: &Entity<Player>,
-        library: &Entity<Library>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(player: &Entity<Player>, library: &Entity<Library>, cx: &mut Context<Self>) -> Self {
         let (tx, rx) = async_channel::bounded::<DiscordCommand>(16);
 
         // Spawn background task to manage IPC client connection and event loop
@@ -208,7 +204,10 @@ impl DiscordPresence {
             } else {
                 None
             };
-            self.last_sent_position = current_state.as_ref().map(|s| s.position_secs).unwrap_or(0.0);
+            self.last_sent_position = current_state
+                .as_ref()
+                .map(|s| s.position_secs)
+                .unwrap_or(0.0);
 
             let cmd = match current_state {
                 Some(s) => DiscordCommand::UpdatePresence(Some(s)),
@@ -289,7 +288,7 @@ impl DiscordPresence {
                             match crate::providers::search_art(&query) {
                                 Ok(candidates) => {
                                     // Prioritize Deezer > Last.fm > iTunes for presence cover art,
-                                    // iTunes sometimes returns cover art for multiple albums 
+                                    // iTunes sometimes returns cover art for multiple albums
                                     // by the creator which makes us use the wrong art?
                                     let chosen = candidates
                                         .iter()
@@ -373,7 +372,10 @@ impl DiscordPresence {
                             let _ = cli.close();
                             client = None;
                         } else {
-                            info!("Discord RPC status updated: '{}' by '{}'", state.title, state.artist);
+                            info!(
+                                "Discord RPC status updated: '{}' by '{}'",
+                                state.title, state.artist
+                            );
                         }
                     }
                 }

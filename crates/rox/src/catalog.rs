@@ -723,6 +723,16 @@ impl Library {
             .unwrap_or_default()
     }
 
+    /// Whether one track is favourited, the read the favourite control
+    /// panel makes on the track it follows. The surfaces that check a whole
+    /// column of rows take [`Library::favourite_ids`] instead.
+    pub fn is_favourite(&self, track_id: i64) -> bool {
+        self.conn
+            .as_ref()
+            .and_then(|conn| playlists::is_favourite(conn, track_id).ok())
+            .unwrap_or(false)
+    }
+
     /// Turn favourite on or off for a set of tracks at once, the heart click
     /// and the Favourites menu. One event for the whole batch.
     pub fn set_favourites(&mut self, track_ids: &[i64], on: bool, cx: &mut Context<Self>) {

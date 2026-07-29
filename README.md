@@ -192,6 +192,13 @@ sudo apt-get install -y pkg-config libasound2-dev libfontconfig1-dev \
 Run `./scripts/vendor-gpui.sh` once before building: it fetches gpui and gpui-component
 and applies the small patches under `patches/` (the nix shell does this on entry).
 
+Copy `.env.template` to `.env` to bake service identities into the binary at
+compile time: `LASTFM_API_KEY` and `LASTFM_API_SECRET` for one-click scrobbler
+connect, `DISCORD_APPLICATION_ID` for rich presence. Exported environment variables
+win over the file, which is how the release workflow passes its secrets. A build
+without any of them works the same minus those integrations, and the last.fm
+settings page takes your own key pair at runtime either way.
+
 Debug builds accept a `--fresh` flag that runs rox against a wiped scratch data
 directory in the OS temp folder, so `cargo run -- --fresh` walks the first-run
 experience without touching your real settings or library. Release builds ignore it.
@@ -206,6 +213,14 @@ Something broke, or rox is missing the thing that would make it yours?
 [Open an issue](https://github.com/zealsprince/rox/issues/new/choose). The forms only ask
 for the essentials; repro steps, recordings, or a file that triggers the problem are all
 welcome extras. If neither form fits, a blank issue is fine too.
+
+## Chat
+
+`#rox` lives on `irc.hivecom.net`. Quick questions, workspace show-and-tell, or kicking an
+idea around before it's an issue all fit there. No client handy? The [web chat](https://hivecom.net/chat?channel=rox)
+works from the browser and lands you straight in the channel.
+
+Yes, IRC. You're looking at a Foobar2000 successor, what did you expect.
 
 ## AI
 

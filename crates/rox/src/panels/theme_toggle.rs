@@ -224,7 +224,7 @@ impl Panel for ThemeTogglePanel {
     ) -> PopupMenu {
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
-        let menu = panel_settings::settings_item(menu, &cx.entity());
+        let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         let menu = panel::duplicate_item(
             menu,
             &cx.entity(),

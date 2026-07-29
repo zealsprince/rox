@@ -124,6 +124,7 @@ enum Page {
     Providers,
     Integrations,
     Storage,
+    Development,
 }
 
 const PAGES: &[(Page, &str, &str)] = &[
@@ -134,6 +135,7 @@ const PAGES: &[(Page, &str, &str)] = &[
     (Page::Providers, "Providers", icons::DOWNLOAD),
     (Page::Integrations, "Integrations", icons::RADIO),
     (Page::Storage, "Storage", icons::DATABASE),
+    (Page::Development, "Development", icons::FLASK),
 ];
 
 /// The storage page's measurements, taken entering the page and after a
@@ -270,6 +272,9 @@ struct SettingsWindow {
     pending: Option<Pending>,
     /// Whether launch runs the daily update check, the Behavior page toggle.
     check_updates: bool,
+    /// Whether the experimental panels show in the panel menus, the
+    /// Development page toggle.
+    experimental: bool,
     /// The active icon pack, mirrored from settings so the Appearance page's
     /// pack list marks the current one without re-reading the settings file
     /// (which carries the dock dumps) on every render.
@@ -463,6 +468,7 @@ impl SettingsWindow {
             mini_layout: settings.mini_layout.clone(),
             pending: None,
             check_updates: settings.check_updates,
+            experimental: settings.experimental,
             active_icon_pack: settings.icon_pack.clone(),
             icon_packs: crate::startup::icon_packs::all(),
             persist_gen: 0,
@@ -2078,6 +2084,31 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    fn set_experimental(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.experimental = on;
+        Settings::update(move |s| s.experimental = on);
+        settings::set_experimental(on, cx);
+        cx.notify();
+    }
+
+    /// The Development page: the switches for work that isn't finished.
+    /// One row today; the section is the place the next one lands.
+    fn development_page(&self, cx: &mut Context<Self>) -> Div {
+        div().flex().flex_col().gap(SECTION_GAP).child(section(
+            "Features",
+            None,
+            panel::setting_row(
+                "Experimental Panels",
+                Some(
+                    "Show the panels still being built in the Panels menu and the \
+                         launcher; they change shape between releases, and a layout that \
+                         already holds one keeps it when this goes back off",
+                ),
+                panel::toggle(self.experimental, Self::set_experimental, cx),
+            ),
+        ))
+    }
+
     /// A sidebar footer row: hands something to the system - the raw
     /// settings file, the data folder - so it reads quieter than the
     /// pages above.
@@ -2371,6 +2402,7 @@ impl Render for SettingsWindow {
                 Page::Providers => self.providers_page(cx),
                 Page::Integrations => self.integrations_page(cx),
                 Page::Storage => self.storage_page(cx),
+                Page::Development => self.development_page(cx),
             };
 
             div()

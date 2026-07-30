@@ -74,23 +74,23 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        # Everything goes through GIT_SSH_COMMAND with explicit paths. In a
+        # container job $HOME is /github/home while ssh resolves ~/.ssh from
+        # the passwd entry (/root), so files placed in either one's .ssh are
+        # invisible to the other; naming the files sidesteps the split.
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
-          chmod 600 ~/.ssh/aur
-          {
-            echo "Host aur.archlinux.org"
-            echo "  User aur"
-            echo "  IdentityFile ~/.ssh/aur"
-          } > ~/.ssh/config
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
           # Trust is pinned to the Ed25519 fingerprint aur.archlinux.org
           # publishes on its home page, not whatever keyscan happens to see.
-          ssh-keyscan -t ed25519 aur.archlinux.org > ~/.ssh/known_hosts 2>/dev/null
-          fingerprint=$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')
+          ssh-keyscan -t ed25519 aur.archlinux.org > "$HOME/.ssh/aur_known_hosts" 2>/dev/null
+          fingerprint=$(ssh-keygen -lf "$HOME/.ssh/aur_known_hosts" | awk '{print $2}')
           if [ "$fingerprint" != "SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4" ]; then
             echo "::error::aur.archlinux.org host key doesn't match the published fingerprint"
             exit 1
           fi
+          echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/aur_known_hosts" >> "$GITHUB_ENV"
 
       # The checksum comes from hashing the tag tarball ourselves, the same
       # trust model updpkgsums uses. The download keeps makepkg's expected

@@ -1098,13 +1098,11 @@ impl MetadataPanel {
                             .flex()
                             .flex_col()
                             .py(tokens::SPACE_XS)
-                            .children(
-                                rows.into_iter()
-                                    .enumerate()
-                                    .map(move |(ix, (label, value))| {
-                                        table_row(ix, label, value, stripes, borders)
-                                    }),
-                            ),
+                            .children(rows.into_iter().enumerate().map(
+                                move |(ix, (label, value))| {
+                                    table_row(ix, label, value, stripes, borders)
+                                },
+                            )),
                     ),
             );
         }

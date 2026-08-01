@@ -1402,7 +1402,10 @@ mod tests {
 
         assert!(crate::tag_source::needs_repair(&path), "the gap flags");
         commit(&path, &[set(Field::Artist, "Redpill")]).unwrap();
-        assert!(!crate::tag_source::needs_repair(&path), "the fold clears it");
+        assert!(
+            !crate::tag_source::needs_repair(&path),
+            "the fold clears it"
+        );
         let fields = read(&path).unwrap();
         assert_eq!(
             value_of(&fields, &Field::Title).as_deref(),
@@ -1441,9 +1444,15 @@ mod tests {
         let path = dir.join("track.mp3");
         fs::write(&path, bytes).unwrap();
 
-        assert!(crate::tag_source::needs_repair(&path), "the stray null flags");
+        assert!(
+            crate::tag_source::needs_repair(&path),
+            "the stray null flags"
+        );
         commit(&path, &[]).unwrap();
-        assert!(!crate::tag_source::needs_repair(&path), "the rewrite clears it");
+        assert!(
+            !crate::tag_source::needs_repair(&path),
+            "the rewrite clears it"
+        );
         let fields = read(&path).unwrap();
         assert_eq!(value_of(&fields, &Field::Title).as_deref(), Some(title));
         assert!(fs::read(&path).unwrap().ends_with(&mpeg_audio()));

@@ -460,8 +460,7 @@ impl TrackTable {
     /// cancel, so the stock-size values carry the ratio.
     fn head_rows(&self) -> u8 {
         let lines = self.head_lines.len() as f32;
-        let content =
-            lines * self.head_height + self.header_gap_above + self.header_gap_below;
+        let content = lines * self.head_height + self.header_gap_above + self.header_gap_below;
         ((content / self.row_height).ceil() as usize).clamp(1, u8::MAX as usize) as u8
     }
 
@@ -576,8 +575,7 @@ impl TrackTable {
         let tile = has_tile.then(|| self.group_tile(g, cx));
         // The inline art piece resolves the same thumbnail as the tile;
         // album presentation, like the tile, so other groupings drop it.
-        let inline_art =
-            by_album && self.head_lines.iter().any(|l| l.contains(&HeadPiece::Art));
+        let inline_art = by_album && self.head_lines.iter().any(|l| l.contains(&HeadPiece::Art));
         let mut head = match (
             self.groups.get(g as usize),
             self.state.library.read(cx).projection(),
@@ -805,8 +803,7 @@ impl TrackTable {
                     Some(key) => Arc::new(projection.sort_view(&base, key, false)),
                     None => base,
                 };
-                let (rows, groups) =
-                    group_rows(&base, projection, self.head_rows(), self.group_by);
+                let (rows, groups) = group_rows(&base, projection, self.head_rows(), self.group_by);
                 (Arc::new(rows), groups)
             }
             None => (
@@ -2836,9 +2833,9 @@ impl panel::PanelSettings for LibraryPanel {
                         head_fraction,
                         format!("{head_height:.0} px"),
                         |this: &mut Self, fraction, cx| {
-                            let value =
-                                (ROW_HEIGHT_MIN + fraction * (HEAD_HEIGHT_MAX - ROW_HEIGHT_MIN))
-                                    .round();
+                            let value = (ROW_HEIGHT_MIN
+                                + fraction * (HEAD_HEIGHT_MAX - ROW_HEIGHT_MIN))
+                                .round();
                             this.set_head_height(value, cx);
                         },
                         cx,

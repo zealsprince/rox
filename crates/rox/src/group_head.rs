@@ -411,13 +411,11 @@ pub fn line_content(
                 row = flush_stats(row, &mut stats);
                 if let Some(thumb) = &head.thumb {
                     let side = look.line_px - tokens::SPACE_XS * 2.;
-                    row = row.child(
-                        div()
-                            .flex_none()
-                            .w(side)
-                            .h(side)
-                            .child(art_content(thumb.clone(), look.art_rounding, 12.)),
-                    );
+                    row = row.child(div().flex_none().w(side).h(side).child(art_content(
+                        thumb.clone(),
+                        look.art_rounding,
+                        12.,
+                    )));
                 }
             }
         }

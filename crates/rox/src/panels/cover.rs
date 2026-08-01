@@ -977,9 +977,7 @@ fn bake_disc(bytes: &[u8], shape: DiscShape) -> Option<RgbaImage> {
             disc
         }
         (DiscShape::Cd, Some(overlay)) => {
-            let mut disc = art
-                .thumbnail_exact(DISC_SIZE, DISC_SIZE)
-                .into_rgba8();
+            let mut disc = art.thumbnail_exact(DISC_SIZE, DISC_SIZE).into_rgba8();
             for (pixel, top) in disc.pixels_mut().zip(overlay.pixels()) {
                 pixel.0 = over(top.0, pixel.0);
             }
@@ -1195,7 +1193,11 @@ mod tests {
         ));
         let crop = bake_disc(&bytes, DiscShape::Crop).unwrap();
         assert_eq!(crop.get_pixel(0, 0).0[3], 0, "corner should mask out");
-        assert_eq!(crop.get_pixel(32, 32).0[3], 255, "the crop keeps its center");
+        assert_eq!(
+            crop.get_pixel(32, 32).0[3],
+            255,
+            "the crop keeps its center"
+        );
         let sample = crop.get_pixel(32, 32).0;
         assert!(
             sample[2] > sample[0],

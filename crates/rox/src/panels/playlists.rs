@@ -863,7 +863,7 @@ impl PlaylistsPanel {
     }
 
     /// Delete or Backspace drops the selected members. Ctrl+A takes every
-    /// visible track.
+    /// visible track; Escape drops the selection.
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
@@ -871,10 +871,31 @@ impl PlaylistsPanel {
             self.select_all(cx);
             return;
         }
+        if key == "escape" {
+            self.deselect(cx);
+            return;
+        }
         if key == "delete" || key == "backspace" {
             let members = self.selected_members();
             self.remove_members(members, cx);
         }
+    }
+
+    /// Escape drops the selection and the shared scope with it. The local
+    /// publish skips empty sets, so the clear goes to the selection
+    /// entity directly.
+    fn deselect(&mut self, cx: &mut Context<Self>) {
+        if self.selected.is_empty() {
+            return;
+        }
+        self.selected.clear();
+        self.anchor = None;
+        self.drag_gen += 1;
+        let source = cx.entity_id();
+        self.state
+            .selection
+            .update(cx, |selection, cx| selection.set(Vec::new(), source, cx));
+        cx.notify();
     }
 
     /// A dragged set dropped onto a row: onto a header, or a track, it lands as

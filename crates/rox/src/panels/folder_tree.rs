@@ -7,8 +7,9 @@
 //! from there, and the right-click menu carries the track actions every
 //! song surface shares plus the folder-scope filter, which narrows the
 //! shared query to the folder's whole subtree with a single pick. The
-//! shared text query and filter narrow the tree too: folders left with no
-//! matching songs drop out.
+//! active query narrows the tree too - the shared one by default, the
+//! panel's own box or the app-wide selection per config - and folders left
+//! with no matching songs drop out.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{PathBuf, MAIN_SEPARATOR};
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    div, prelude::*, px, svg, uniform_list, App, Context, Div, EventEmitter, FocusHandle,
+    div, prelude::*, px, svg, uniform_list, App, Context, Div, Entity, EventEmitter, FocusHandle,
     Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, ScrollStrategy,
     ScrollWheelEvent, SharedString, Stateful, Subscription, UniformListScrollHandle, WeakEntity,
     Window,
@@ -33,7 +34,9 @@ use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, PanelChrome, PanelSettings, ResumeIdle};
 use crate::panel_settings;
 use crate::panels::library::{fmt_ms, LibraryEvent, QUEUE_CAP};
-use crate::query::shared_query::SharedQueryEvent;
+use crate::query::search::{SearchBox, SearchEvent};
+use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
+use crate::selection::SelectionEvent;
 use crate::track_ui::track_columns;
 use crate::track_ui::track_drag::{PlayDrag, PlayDragPreview};
 
@@ -106,6 +109,12 @@ pub struct FolderTreeConfig {
     pub resume_playing: bool,
     /// Glide to the track instead of jumping.
     pub smooth_follow: bool,
+    /// Whether the search box shows; the query only filters while it does.
+    pub search: bool,
+    /// Follow the shared query, or filter by this panel's own box.
+    pub query_source: QuerySource,
+    /// The panel's own query, kept while following the shared one.
+    pub query: String,
 }
 
 impl Default for FolderTreeConfig {
@@ -121,6 +130,9 @@ impl Default for FolderTreeConfig {
             follow_playing: false,
             resume_playing: false,
             smooth_follow: false,
+            search: false,
+            query_source: QuerySource::default(),
+            query: String::new(),
         }
     }
 }
@@ -179,6 +191,14 @@ pub struct FolderTreePanel {
     state: AppState,
     config: FolderTreeConfig,
     focus: FocusHandle,
+    /// The panel's search box, shown per config; its query filters the tree
+    /// through whichever source is active.
+    search: Entity<SearchBox>,
+    /// A pending box reset from a source toggle or a shared-query change,
+    /// consumed in render where a window exists.
+    resync_box: bool,
+    /// The track ids pinned while following the app-wide selection.
+    selection_ids: Vec<i64>,
     /// The top-level folders after collapsing the shared prefix, structure
     /// rebuilt on a library update, counts on every query change.
     roots: Vec<Node>,
@@ -237,13 +257,15 @@ pub struct FolderTreePanel {
     _library_changed: Subscription,
     _query_changed: Subscription,
     _player_changed: Subscription,
+    _search_events: Subscription,
+    _selection_changed: Subscription,
 }
 
 impl FolderTreePanel {
     pub fn new(
         state: AppState,
         config: FolderTreeConfig,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         // The folder set changes when the library rescans; rebuild the
@@ -260,15 +282,35 @@ impl FolderTreePanel {
         );
         let _query_changed = cx.subscribe(
             &state.query,
-            |this: &mut Self, _, _: &SharedQueryEvent, cx| this.recount(cx),
+            |this: &mut Self, _, _: &SharedQueryEvent, cx| this.on_shared_query_changed(cx),
         );
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| {
             this.sync_playing(cx)
         });
+        // A panel restored as global opens showing the shared query; a local
+        // one shows its own.
+        let initial = match config.query_source {
+            QuerySource::Global => state.query.read(cx).text().to_string(),
+            QuerySource::Local | QuerySource::Selection => config.query.clone(),
+        };
+        let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
+        let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
+        // Restored as selection-following, it opens on whatever is picked
+        // now, rather than blank until the next pick.
+        let selection_ids = state.selection.read(cx).tracks().to_vec();
+        let _selection_changed = cx.subscribe(
+            &state.selection,
+            |this: &mut Self, _, event: &SelectionEvent, cx| {
+                this.on_selection_changed(event.source, cx);
+            },
+        );
         let mut this = FolderTreePanel {
             state,
             config,
             focus: cx.focus_handle(),
+            search,
+            resync_box: false,
+            selection_ids,
             roots: Vec::new(),
             folder_tracks: HashMap::new(),
             dimmed_songs: HashSet::new(),
@@ -294,6 +336,8 @@ impl FolderTreePanel {
             _library_changed,
             _query_changed,
             _player_changed,
+            _search_events,
+            _selection_changed,
         };
         this.rebuild(cx);
         // A duplicate opens with a track already playing; pick it up now
@@ -331,10 +375,9 @@ impl FolderTreePanel {
     fn recount(&mut self, cx: &mut Context<Self>) {
         {
             let song_hide = self.config.songs == FilterEffect::Hide;
-            let (text, facet) = {
-                let query = self.state.query.read(cx);
-                (query.text().to_string(), query.filter().clone())
-            };
+            // Whichever source is active: the shared query, the panel's own
+            // box, or the app-wide selection pinned as an id filter.
+            let (text, facet) = (self.effective_query(cx), self.effective_filter(cx));
             let library = self.state.library.read(cx);
             self.folder_tracks.clear();
             self.dimmed_songs.clear();
@@ -661,6 +704,39 @@ impl FolderTreePanel {
         }
     }
 
+    /// Map the box's events onto the panel: a changed query recounts the
+    /// tree, and a focus or dismiss repaints the tab title row where the
+    /// box lives.
+    fn on_search_event(
+        &mut self,
+        _search: &Entity<SearchBox>,
+        event: &SearchEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SearchEvent::Changed => self.on_query_box_changed(cx),
+            SearchEvent::FocusChanged => {
+                cx.notify();
+                panel::refresh_tab_panel(&self.tab_panel, cx);
+            }
+            SearchEvent::Dismissed => {
+                window.focus(&self.focus);
+                cx.notify();
+                panel::refresh_tab_panel(&self.tab_panel, cx);
+            }
+            SearchEvent::Submitted => {}
+        }
+    }
+
+    /// Show or hide the panel's own search box, recounting the tree. The
+    /// config rides the layout dump, so the tab-panel repaint carries it out.
+    fn set_search(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.config.search = on;
+        self.rebuild_query_view(cx);
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+    }
+
     /// The menu's follow toggle: flip the follow and catch up right away when
     /// turning it on, the same move as the settings switch.
     fn toggle_follow_playing(&mut self, cx: &mut Context<Self>) {
@@ -687,6 +763,17 @@ impl FolderTreePanel {
         self.flatten(cx);
     }
 
+    /// Fold every branch shut, leaving only the root rows. The follow glide
+    /// stops too - its target index just moved under it.
+    fn collapse_all(&mut self, cx: &mut Context<Self>) {
+        if self.expanded.is_empty() {
+            return;
+        }
+        self.expanded.clear();
+        self.glide_to = None;
+        self.flatten(cx);
+    }
+
     /// Scope the shared folder filter to one folder's subtree, or clear it
     /// if that folder is the scope already. One pick covers the branch -
     /// the filter matches folders by prefix - so this stays cheap at any
@@ -701,6 +788,10 @@ impl FolderTreePanel {
             }
             query.set_filter(filter, cx);
         });
+        // The scope highlight reads the shared filter live; while the panel
+        // follows its own query the shared-query echo returns early, so
+        // repaint here.
+        cx.notify();
     }
 
     /// Drop the folder scope, the panel menu's clear.
@@ -713,6 +804,7 @@ impl FolderTreePanel {
             filter.clear(FilterField::Folder);
             query.set_filter(filter, cx);
         });
+        cx.notify();
     }
 
     /// A folder's whole subtree as projection rows, in the tree's order:
@@ -1434,6 +1526,13 @@ impl PanelSettings for FolderTreePanel {
                     },
                     cx,
                 ))
+                .child(crate::query::shared_query::search_section(
+                    self.config.search,
+                    |this: &mut Self, on, cx| this.set_search(on, cx),
+                    self.config.query_source,
+                    |this: &mut Self, source, cx| this.pick_query_source(source, cx),
+                    cx,
+                ))
                 .child(crate::settings::ui::section(
                     "Filter",
                     None,
@@ -1492,6 +1591,51 @@ impl FolderTreePanel {
     }
 }
 
+impl QueryFilter for FolderTreePanel {
+    fn shared_query(&self) -> &Entity<crate::query::shared_query::SharedQuery> {
+        &self.state.query
+    }
+    fn query_box(&self) -> &Entity<SearchBox> {
+        &self.search
+    }
+    fn query_source(&self) -> QuerySource {
+        self.config.query_source
+    }
+    fn set_query_source_value(&mut self, source: QuerySource) {
+        self.config.query_source = source;
+    }
+    fn local_query(&self) -> String {
+        self.config.query.clone()
+    }
+    fn set_local_query(&mut self, query: String) {
+        self.config.query = query;
+    }
+    fn query_box_shown(&self) -> bool {
+        self.config.search
+    }
+    fn set_query_box_shown(&mut self, shown: bool) {
+        self.config.search = shown;
+    }
+    fn rebuild_query_view(&mut self, cx: &mut Context<Self>) {
+        self.recount(cx);
+    }
+    fn set_query_resync(&mut self, pending: bool) {
+        self.resync_box = pending;
+    }
+    fn selection(&self) -> &Entity<crate::selection::Selection> {
+        &self.state.selection
+    }
+    fn selection_ids(&self) -> &[i64] {
+        &self.selection_ids
+    }
+    fn set_selection_ids(&mut self, ids: Vec<i64>) {
+        self.selection_ids = ids;
+    }
+    fn after_query_change(&mut self, cx: &mut Context<Self>) {
+        panel::refresh_tab_panel(&self.tab_panel, cx);
+    }
+}
+
 impl EventEmitter<PanelEvent> for FolderTreePanel {}
 
 impl Focusable for FolderTreePanel {
@@ -1511,6 +1655,22 @@ impl Panel for FolderTreePanel {
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
         self.config.chrome.title.clone().map(SharedString::from)
+    }
+
+    /// The search box shares the title bar row, the playlists panel's spot.
+    fn title_suffix(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        if !self.config.search {
+            return None;
+        }
+        Some(
+            self.search
+                .update(cx, |search, cx| search.element(cx))
+                .w(px(180.)),
+        )
     }
 
     fn locked(&self, _cx: &App) -> bool {
@@ -1604,6 +1764,16 @@ impl Panel for FolderTreePanel {
         );
         let weak = cx.entity().downgrade();
         let menu = menu.item(
+            PopupMenuItem::new("Collapse All")
+                .icon(Icon::default().path(icons::MINIMIZE))
+                .disabled(self.expanded.is_empty())
+                .on_click(move |_, _, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    this.update(cx, |this, cx| this.collapse_all(cx));
+                }),
+        );
+        let weak = cx.entity().downgrade();
+        let menu = menu.item(
             PopupMenuItem::new("Clear Folder Scope")
                 .icon(Icon::default().path(icons::FUNNEL))
                 .disabled(!scoped)
@@ -1672,6 +1842,17 @@ impl Panel for FolderTreePanel {
             submenu
         });
         let menu = menu.item(PopupMenuItem::submenu("Non-matching Songs", submenu));
+        // Follow the shared search query, or filter by this panel's own box.
+        let menu = crate::query::shared_query::search_flyout(
+            menu,
+            |this: &Self| this.config.query_source,
+            |this: &Self| this.config.search,
+            &cx.entity(),
+            |this: &mut Self, source, cx| this.pick_query_source(source, cx),
+            |this: &mut Self, on, cx| this.set_search(on, cx),
+            window,
+            cx,
+        );
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
@@ -1705,6 +1886,12 @@ impl Render for FolderTreePanel {
 
 impl FolderTreePanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        // A pending box reset (a source toggle or a shared-query change)
+        // lands here, where a window exists to set the input's text.
+        if self.resync_box {
+            self.resync_box = false;
+            self.sync_query_box(window, cx);
+        }
         // The follow glide eases toward the playing row, stepped here in
         // render one frame at a time until it lands, the library's idiom.
         let dt = self.glide_tick.elapsed().as_secs_f32().min(0.05);
@@ -1739,6 +1926,14 @@ impl FolderTreePanel {
                 cx.listener(|this, _, _, cx| this.touch_resume(cx)),
             );
         if self.visible.is_empty() {
+            // A search that hit nothing reads differently from an empty tree.
+            let searching =
+                !self.effective_query(cx).is_empty() || !self.effective_filter(cx).is_empty();
+            let message = if searching {
+                "No matches"
+            } else {
+                "No folders in the library yet"
+            };
             return root.child(
                 div()
                     .flex_1()
@@ -1746,7 +1941,7 @@ impl FolderTreePanel {
                     .items_center()
                     .justify_center()
                     .text_color(palette::text_faint())
-                    .child("No folders in the library yet"),
+                    .child(message),
             );
         }
         let count = self.visible.len();

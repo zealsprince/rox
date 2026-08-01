@@ -1,16 +1,19 @@
-//! The album heading surface shared by the library table and the playlists
-//! tree. One album run reads as a two-line block: a name line with the album
-//! artist, year, and a cover tile, and a meta line with the album, genre,
-//! quality, track count, and total time under it. Each caller resolves a
-//! [`GroupHead`] from whatever metadata it holds (the library from its
-//! projection, the playlists tree from its member rows) and lays the content
-//! over its own row background, so the two headings stay one look.
+//! The album heading surface shared by the library table and the tree
+//! panels. An album run reads as a block of composed lines: each line is an
+//! ordered list of [`HeadPiece`]s, so a layout can put the artist, album,
+//! year, and stats wherever it wants them, with a cover tile spanning the
+//! block. Each caller resolves a [`GroupHead`] from whatever metadata it
+//! holds (the library from its projection, the playlists tree from its
+//! member rows) and lays the content over its own row background, so the
+//! headings stay one look. The stock lines here are the classic two-line
+//! arrangement; the library's config carries its own.
 
 use gpui::{div, img, prelude::*, px, svg, AnyElement, Div, ObjectFit, Pixels, SharedString};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
+use crate::panel::ArrangeSpec;
 use crate::thumbs::Thumb;
 
 /// How a group's header shows, shared by the library table and the playlists
@@ -26,8 +29,130 @@ pub enum Headers {
     Expanded,
 }
 
+/// One piece of a heading line, the arrange editor's unit. A panel's
+/// config carries each line as an ordered piece list; the resolved
+/// [`GroupHead`] supplies the text, and a piece whose field is empty just
+/// drops out of the line.
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HeadPiece {
+    /// The group's name field: the album artist, or whatever the grouping
+    /// keys on.
+    Artist,
+    Album,
+    Year,
+    Genre,
+    /// The codec and bitrate readout, from [`quality`].
+    Quality,
+    /// The track count.
+    Tracks,
+    /// The total running time.
+    Time,
+    /// A flexible gap that splits a line into a left and a right side.
+    Spacer,
+    /// A spacer that draws a hairline in the border color across its gap.
+    Divider,
+    /// An inline cover square, one line tall; the block tile's small
+    /// sibling, for layouts that want the art on a row instead.
+    Art,
+}
+
+/// Which side of the header block the cover tile sits on; the composed
+/// lines indent past it on the same side.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArtSide {
+    #[default]
+    Left,
+    Right,
+}
+
+/// The full piece catalog in stock order: what the arrange editors offer,
+/// and where a re-shown piece slots back in.
+pub const PIECES: &[ArrangeSpec<HeadPiece>] = &[
+    ArrangeSpec {
+        label: "Artist",
+        icon: Some(icons::MIC),
+        value: HeadPiece::Artist,
+    },
+    ArrangeSpec {
+        label: "Album",
+        icon: Some(icons::DISC),
+        value: HeadPiece::Album,
+    },
+    ArrangeSpec {
+        label: "Year",
+        icon: Some(icons::CALENDAR),
+        value: HeadPiece::Year,
+    },
+    ArrangeSpec {
+        label: "Genre",
+        icon: Some(icons::TAG),
+        value: HeadPiece::Genre,
+    },
+    ArrangeSpec {
+        label: "Quality",
+        icon: Some(icons::AUDIO_WAVEFORM),
+        value: HeadPiece::Quality,
+    },
+    ArrangeSpec {
+        label: "Tracks",
+        icon: Some(icons::LIST_MUSIC),
+        value: HeadPiece::Tracks,
+    },
+    ArrangeSpec {
+        label: "Time",
+        icon: Some(icons::CLOCK),
+        value: HeadPiece::Time,
+    },
+    ArrangeSpec {
+        label: "Spacer",
+        icon: Some(icons::MOVE_HORIZONTAL),
+        value: HeadPiece::Spacer,
+    },
+    ArrangeSpec {
+        label: "Divider",
+        icon: Some(icons::MINUS),
+        value: HeadPiece::Divider,
+    },
+    ArrangeSpec {
+        label: "Art",
+        icon: Some(icons::IMAGE),
+        value: HeadPiece::Art,
+    },
+];
+
+/// The compact header's stock row: the name and album packed left, the
+/// year opposite.
+pub fn stock_compact() -> Vec<HeadPiece> {
+    vec![
+        HeadPiece::Artist,
+        HeadPiece::Album,
+        HeadPiece::Spacer,
+        HeadPiece::Year,
+    ]
+}
+
+/// The expanded block's stock name line.
+pub fn stock_name_line() -> Vec<HeadPiece> {
+    vec![HeadPiece::Artist, HeadPiece::Spacer, HeadPiece::Year]
+}
+
+/// The expanded block's stock meta line.
+pub fn stock_meta_line() -> Vec<HeadPiece> {
+    vec![
+        HeadPiece::Album,
+        HeadPiece::Spacer,
+        HeadPiece::Genre,
+        HeadPiece::Quality,
+        HeadPiece::Tracks,
+        HeadPiece::Time,
+    ]
+}
+
 /// One album run's heading, resolved by the caller. The strings are the
 /// display text as-is; an empty `name` draws "Unknown".
+#[derive(Default)]
 pub struct GroupHead {
     /// The album artist, or the field a non-album grouping keys on.
     pub name: SharedString,
@@ -44,6 +169,9 @@ pub struct GroupHead {
     /// Whether this is an album grouping: the cover tile, the album text,
     /// and the trailing year are album presentation, off for the rest.
     pub by_album: bool,
+    /// The group's cover, resolved by the caller only when a line carries
+    /// the inline art piece; None drops the piece from the line.
+    pub thumb: Option<Thumb>,
 }
 
 /// The knobs that shape a heading's look, mirrored from the panel's config.
@@ -53,6 +181,14 @@ pub struct HeadLook {
     pub show_art: bool,
     pub show_year: bool,
     pub show_details: bool,
+    /// One composed line's height, what the inline art piece squares to.
+    pub line_px: Pixels,
+    /// Which side the block tile sits on, and how far the lines indent.
+    pub art_side: ArtSide,
+    /// The tile's inset from the block edges; part of the indent.
+    pub art_margin: Pixels,
+    /// The cover corners' radius, shared by the tile and the inline piece.
+    pub art_rounding: f32,
 }
 
 /// A group's codec and bitrate stat: "mp3 320 kbps" when everything agrees,
@@ -72,15 +208,51 @@ pub fn quality(codec: Option<&str>, min_kbps: u16, max_kbps: u16) -> String {
     }
 }
 
-/// One half of an expanded header's cover tile. The block draws as two
-/// fixed-height rows with no spanning cell, so each row clips its own half
-/// of a two-row-tall square: the name row the top (`bottom` false), the meta
-/// row the bottom. The same image handle both times decodes once. Pending
-/// and missing wear the same quiet placeholder, so a landing cover fills the
+/// One row's share of a heading block's cover tile. The block draws as
+/// fixed-height rows with no spanning cell, so every row paints the whole
+/// block-tall square at the same spot: `lift` is how far above this row
+/// the square starts, the line index times the row height. The rows paint
+/// in order, so the last one's draw is what shows - one unclipped quad,
+/// which is the point. Clipping a slice per row instead leaves hairline
+/// seams at the boundaries once a font scale puts the rows on fractional
+/// pixels. The same image handle every time decodes once. Pending and
+/// missing wear the same quiet placeholder, so a landing cover fills the
 /// tile without shifting the text beside it. The knob's radius rides the
 /// cover itself, since gpui content masks stay rectangular.
-pub fn tile(thumb: Thumb, side: Pixels, rounding: f32, bottom: bool) -> AnyElement {
-    let content: AnyElement = match thumb {
+pub fn tile(
+    thumb: Thumb,
+    side: Pixels,
+    rounding: f32,
+    lift: Pixels,
+    art_side: ArtSide,
+    margin: Pixels,
+) -> AnyElement {
+    let content = art_content(thumb, rounding, 16.);
+    div()
+        .absolute()
+        .top_0()
+        .map(|d| match art_side {
+            ArtSide::Left => d.left(margin),
+            ArtSide::Right => d.right(margin),
+        })
+        .w(side)
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .w(side)
+                .h(side)
+                .top(margin - lift)
+                .child(content),
+        )
+        .into_any_element()
+}
+
+/// A cover's face: the image rounded per the knob, or the quiet music-note
+/// placeholder both pending and missing wear, so a landing cover fills in
+/// without a layout shift. Shared by the block tile and the inline piece.
+fn art_content(thumb: Thumb, rounding: f32, icon_px: f32) -> AnyElement {
+    match thumb {
         Thumb::Ready(image) => img(image)
             .size_full()
             .object_fit(ObjectFit::Cover)
@@ -94,42 +266,46 @@ pub fn tile(thumb: Thumb, side: Pixels, rounding: f32, bottom: bool) -> AnyEleme
             .child(
                 svg()
                     .path(icons::MUSIC)
-                    .size(px(16.))
+                    .size(px(icon_px))
                     .text_color(palette::text_faint()),
             )
             .into_any_element(),
-    };
-    div()
-        .absolute()
-        .left_0()
-        .top_0()
-        .bottom_0()
-        .w(side)
-        .overflow_hidden()
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .w(side)
-                .h(side)
-                .map(|d| if bottom { d.bottom_0() } else { d.top_0() })
-                .child(content),
-        )
-        .into_any_element()
+    }
 }
 
-/// The heading's name line: the absolute-filled row a caller lays over its
-/// own background and (for album groupings) the top half of the cover tile.
-/// Expanded gives the name the line, larger, the year on the right, and
-/// hands the album to the meta line; compact packs the album and year
-/// alongside the name.
-pub fn name_content(head: &GroupHead, look: &HeadLook, expanded: bool) -> Div {
+/// Append a buffered run of stat pieces as one muted span, joined with the
+/// classic " | " separators, and clear the buffer.
+fn flush_stats(row: Div, stats: &mut Vec<String>) -> Div {
+    if stats.is_empty() {
+        return row;
+    }
+    let text = stats.join(" | ");
+    stats.clear();
+    row.child(
+        div()
+            .flex_none()
+            .text_color(palette::text_muted())
+            .child(SharedString::from(text)),
+    )
+}
+
+/// One heading line composed from its pieces: the absolute-filled row a
+/// caller lays over its own background and the cover tile's slice. The
+/// name and album shrink and truncate, the year pins, a spacer pushes the
+/// sides apart, and a run of adjacent stat pieces (genre, quality, tracks,
+/// time) joins into one muted span so the readout keeps its separators.
+/// An empty field's piece drops out, except the name, which reads
+/// "Unknown" unless a shown album already names the line.
+pub fn line_content(
+    pieces: &[HeadPiece],
+    head: &GroupHead,
+    look: &HeadLook,
+    expanded: bool,
+) -> Div {
     let has_tile = expanded && head.by_album && look.show_art;
-    let indent = look.tile_side + tokens::SPACE_SM;
-    let unknown = head.name.is_empty() && (expanded || head.album.is_empty());
-    let name = (!head.name.is_empty()).then(|| head.name.clone());
-    let album = (!expanded && !head.album.is_empty()).then(|| head.album.clone());
-    div()
+    let indent = look.art_margin + look.tile_side + tokens::SPACE_SM;
+    let album_here = !head.album.is_empty() && pieces.contains(&HeadPiece::Album);
+    let mut row = div()
         .absolute()
         .inset_0()
         .flex()
@@ -137,105 +313,146 @@ pub fn name_content(head: &GroupHead, look: &HeadLook, expanded: bool) -> Div {
         .items_center()
         .gap(tokens::SPACE_SM)
         .px(tokens::SPACE_SM)
-        // Clear of the cover tile, which spans the block.
-        .when(has_tile, |d| d.pl(indent))
-        .overflow_hidden()
-        .when(unknown, |d| {
-            d.child(
-                div()
-                    .flex_1()
-                    .text_color(palette::text_muted())
-                    .child("Unknown"),
-            )
+        // Clear of the cover tile, which spans the block on its side.
+        .when(has_tile, |d| match look.art_side {
+            ArtSide::Left => d.pl(indent),
+            ArtSide::Right => d.pr(indent),
         })
-        .when_some(name, |d, name| {
-            d.child(
-                div()
-                    .truncate()
-                    .text_color(palette::text_bright())
-                    .map(|d| {
-                        if expanded {
-                            d.flex_1().text_lg()
-                        } else {
-                            d.flex_none()
-                        }
-                    })
-                    .child(name),
-            )
-        })
-        .when_some(album, |d, album| {
-            d.child(
-                div()
-                    .truncate()
-                    .text_color(palette::text_secondary())
-                    .child(album),
-            )
-        })
-        .when(head.year != 0 && look.show_year, |d| {
-            d.child(
-                div()
-                    .flex_none()
-                    .text_color(if expanded {
-                        palette::text_secondary()
-                    } else {
-                        palette::text_muted()
-                    })
-                    .child(SharedString::from(head.year.to_string())),
-            )
-        })
-}
-
-/// The expanded header's second line: the album, then its genre, quality,
-/// track count, and total time on the right, over the tile's bottom half.
-/// A non-album grouping keeps the count and time, with an empty album
-/// spacer, since the album, genre, and quality describe one album.
-pub fn meta_content(head: &GroupHead, look: &HeadLook) -> Div {
-    let has_tile = head.by_album && look.show_art;
-    let indent = look.tile_side + tokens::SPACE_SM;
-    let mut stats = Vec::new();
-    if look.show_details {
-        if !head.genre.is_empty() {
-            stats.push(head.genre.to_string());
-        }
-        if !head.quality.is_empty() {
-            stats.push(head.quality.to_string());
+        .overflow_hidden();
+    let mut stats: Vec<String> = Vec::new();
+    for piece in pieces {
+        match piece {
+            HeadPiece::Artist => {
+                row = flush_stats(row, &mut stats);
+                if head.name.is_empty() {
+                    if !album_here {
+                        row = row.child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(palette::text_muted())
+                                .child("Unknown"),
+                        );
+                    }
+                } else {
+                    row = row.child(
+                        div()
+                            .text_color(palette::text_bright())
+                            // Expanded, the name is the block's lead and
+                            // gives way by truncating; compact keeps it
+                            // whole and lets the album truncate instead.
+                            .map(|d| {
+                                if expanded {
+                                    d.min_w_0().truncate().text_lg()
+                                } else {
+                                    d.flex_none()
+                                }
+                            })
+                            .child(head.name.clone()),
+                    );
+                }
+            }
+            HeadPiece::Album => {
+                row = flush_stats(row, &mut stats);
+                if !head.album.is_empty() {
+                    row = row.child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(palette::text_secondary())
+                            .child(head.album.clone()),
+                    );
+                }
+            }
+            HeadPiece::Year => {
+                row = flush_stats(row, &mut stats);
+                if head.year != 0 {
+                    row = row.child(
+                        div()
+                            .flex_none()
+                            .text_color(if expanded {
+                                palette::text_secondary()
+                            } else {
+                                palette::text_muted()
+                            })
+                            .child(SharedString::from(head.year.to_string())),
+                    );
+                }
+            }
+            HeadPiece::Genre => {
+                if !head.genre.is_empty() {
+                    stats.push(head.genre.to_string());
+                }
+            }
+            HeadPiece::Quality => {
+                if !head.quality.is_empty() {
+                    stats.push(head.quality.to_string());
+                }
+            }
+            HeadPiece::Tracks => {
+                stats.push(if head.tracks == 1 {
+                    "1 track".to_string()
+                } else {
+                    format!("{} tracks", head.tracks)
+                });
+            }
+            HeadPiece::Time => {
+                stats.push(fmt_total(head.total_ms));
+            }
+            HeadPiece::Spacer => {
+                row = flush_stats(row, &mut stats);
+                row = row.child(div().flex_1());
+            }
+            HeadPiece::Divider => {
+                row = flush_stats(row, &mut stats);
+                row = row.child(div().flex_1().h(px(1.)).bg(palette::border()));
+            }
+            HeadPiece::Art => {
+                row = flush_stats(row, &mut stats);
+                if let Some(thumb) = &head.thumb {
+                    let side = look.line_px - tokens::SPACE_XS * 2.;
+                    row = row.child(
+                        div()
+                            .flex_none()
+                            .w(side)
+                            .h(side)
+                            .child(art_content(thumb.clone(), look.art_rounding, 12.)),
+                    );
+                }
+            }
         }
     }
-    stats.push(if head.tracks == 1 {
-        "1 track".to_string()
+    flush_stats(row, &mut stats)
+}
+
+/// The heading's name line in the stock arrangement: expanded gives the
+/// name the line with the year opposite; compact packs the album in too.
+pub fn name_content(head: &GroupHead, look: &HeadLook, expanded: bool) -> Div {
+    let mut pieces = if expanded {
+        stock_name_line()
     } else {
-        format!("{} tracks", head.tracks)
-    });
-    stats.push(fmt_total(head.total_ms));
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(tokens::SPACE_SM)
-        .px(tokens::SPACE_SM)
-        // Clear of the cover tile, which spans the block.
-        .when(has_tile, |d| d.pl(indent))
-        .overflow_hidden()
-        .child(
-            div()
-                .flex_1()
-                .truncate()
-                .text_color(palette::text_secondary())
-                .child(head.album.clone()),
-        )
-        .child(
-            div()
-                .flex_none()
-                .text_color(palette::text_muted())
-                .child(SharedString::from(stats.join(" | "))),
-        )
+        stock_compact()
+    };
+    if !look.show_year {
+        pieces.retain(|p| *p != HeadPiece::Year);
+    }
+    line_content(&pieces, head, look, expanded)
+}
+
+/// The expanded block's stock meta line: the album, then the group's stats
+/// on the right. `show_details` drops the genre and quality while the
+/// track count and total time stay.
+pub fn meta_content(head: &GroupHead, look: &HeadLook) -> Div {
+    let mut pieces = stock_meta_line();
+    if !look.show_details {
+        pieces.retain(|p| !matches!(p, HeadPiece::Genre | HeadPiece::Quality));
+    }
+    line_content(&pieces, head, look, true)
 }
 
 /// A group's total time: minutes and seconds, growing an hours place once
 /// it earns one.
-fn fmt_total(ms: u64) -> String {
+pub(crate) fn fmt_total(ms: u64) -> String {
     let secs = ms / 1000;
     if secs >= 3600 {
         format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)

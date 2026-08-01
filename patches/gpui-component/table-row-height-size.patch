@@ -1,0 +1,11 @@
+--- a/src/styled.rs
++++ b/src/styled.rs
+@@ -250,6 +250,8 @@
+     #[inline]
+     pub fn table_row_height(&self) -> Pixels {
+         match self {
++            // rox patch: a custom size is the row height itself.
++            Size::Size(height) => *height,
+             Size::XSmall => px(26.),
+             Size::Small => px(30.),
+             Size::Large => px(40.),

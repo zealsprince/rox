@@ -634,8 +634,10 @@ impl TabPanel {
     /// Open the right-click menu for a panel: the panel's own dropdown
     /// items (which carry their own close), then zoom, all acting on that
     /// panel rather than the active one. One menu per tab panel; opening
-    /// replaces any open one.
-    fn open_panel_menu(
+    /// replaces any open one. Public so a composition host inside the tab
+    /// can serve the same fallback menu for a hosted child the dock never
+    /// sees.
+    pub fn open_panel_menu(
         &mut self,
         panel: Arc<dyn PanelView>,
         position: Point<Pixels>,

@@ -80,7 +80,10 @@ fn field_placeholder(field: &Field) -> &'static str {
 fn rating_field(input: &Entity<InputState>, cx: &App) -> Div {
     let current = rating::parse_display(input.read(cx).value().trim()).unwrap_or(0);
     let input = input.clone();
-    crate::rating_ui::control(current, move |value, window, cx| {
+    // The input's entity id keys the hover preview; unlike a track id it
+    // is unique per editor row.
+    let key = input.entity_id().as_u64();
+    crate::rating_ui::control(key, current, move |value, window, cx| {
         let text = if value == 0 {
             String::new()
         } else {
@@ -1221,16 +1224,16 @@ impl TagEditor {
                 ))
             })
             .child(settings_ui::small_button(
-                "Guess",
-                icons::FILE_TEXT,
-                self.saving || self.baselines.is_none(),
-                cx.listener(|this, _, window, cx| this.toggle_guess(window, cx)),
-            ))
-            .child(settings_ui::small_button(
                 if self.table { "Form" } else { "Table" },
                 icons::ROWS_3,
                 self.saving || self.baselines.is_none(),
                 cx.listener(|this, _, window, cx| this.toggle_table(window, cx)),
+            ))
+            .child(settings_ui::small_button(
+                "Guess",
+                icons::FILE_TEXT,
+                self.saving || self.baselines.is_none(),
+                cx.listener(|this, _, window, cx| this.toggle_guess(window, cx)),
             ))
             .child(settings_ui::small_button(
                 "Save",

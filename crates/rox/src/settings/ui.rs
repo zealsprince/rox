@@ -161,6 +161,44 @@ pub fn section(label: &'static str, trailing: Option<AnyElement>, body: impl Int
         .child(body)
 }
 
+/// One block's header inside a section's list: the label with whatever
+/// acts on the whole block riding its right edge, ruled off from the rows
+/// beneath the way [`section`] rules its own. The rule is lighter than a
+/// section's, so the two levels read apart rather than alike.
+pub fn block_header(label: impl IntoElement, trailing: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(tokens::SPACE_MD)
+        .pb(tokens::SPACE_XS)
+        .border_b_1()
+        .border_color(palette::alpha(palette::border(), 0x80))
+        .child(label)
+        .child(trailing)
+}
+
+/// A block nested under the row that owns it: an accent rail down the
+/// left edge with the content inset from it, so the block reads as
+/// belonging to the row above instead of carrying on the list. What a
+/// route's editor sits in, under the knob it drives.
+pub fn nested(body: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .gap(tokens::SPACE_SM)
+        .pt(tokens::SPACE_XS)
+        .child(
+            div()
+                .flex_none()
+                .w(px(2.))
+                .rounded_full()
+                .bg(palette::alpha(palette::accent(), 0x55)),
+        )
+        .child(div().flex_1().child(body))
+}
+
 /// The settings windows' text button, at the section header's scale
 /// where every one of them rides: an icon leading its label; inert ones
 /// dim and drop the click.
@@ -229,19 +267,33 @@ pub fn icon_button(
         )
 }
 
-/// One scalar's slider: the shared slider chrome over a scrub strip,
-/// applying live on click and drag, with the percent alongside.
-pub fn slider<P: 'static>(
+/// How far past a frame slider's top a typed value may reach: the strip
+/// covers the sensible everyday range, the input covers conviction.
+pub const FRAME_OVER: f32 = 4.0;
+
+/// A percent slider whose readout doubles as an input: click, type,
+/// Enter. Percent knobs stay bounded at 100; the strip's range is the law
+/// here.
+pub fn slider_edit<P: 'static>(
     scrub: &ScrubState,
+    edit: &panel::ValueEdit,
     value: f32,
     apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
-    let readout = format!("{}%", (value * 100.0).round() as u32);
-    slider_labeled(scrub, value, readout, apply, cx)
+    panel::value_slider_edit(
+        scrub,
+        edit,
+        value,
+        format!("{}%", (value * 100.0).round() as u32),
+        format!("{}", (value * 100.0).round() as u32),
+        |v| v / 100.0,
+        apply,
+        cx,
+    )
 }
 
-/// [`slider`] with the readout text exposed, for values whose natural
+/// A slider with the readout text exposed, for values whose natural
 /// unit is not a percent (a pixel size, a count). `value` stays the 0 to
 /// 1 strip fraction; the caller maps it to its range in `apply`.
 pub fn slider_labeled<P: 'static>(

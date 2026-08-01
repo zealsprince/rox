@@ -166,7 +166,10 @@ impl RatingPanel {
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
         let (id, value) = self.current(cx);
         let state = self.state.clone();
-        let control = rating_ui::control(value, move |rating, _, cx| {
+        // Keyed by the shown track so the hover preview matches every
+        // other surface rating the same track.
+        let key = id.unwrap_or(-1) as u64;
+        let control = rating_ui::control(key, value, move |rating, _, cx| {
             let Some(id) = id else { return };
             state
                 .library

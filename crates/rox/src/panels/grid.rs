@@ -740,7 +740,17 @@ impl GridPanel {
     /// stays its play/pause instead of starting a phrase with a blank.
     fn on_panel_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
+        // Select-all rides the platform chord, so it goes before the
+        // modifier bail below; Escape drops the selection.
+        if keystroke.modifiers.secondary() && keystroke.key.as_str() == "a" {
+            self.select_all(cx);
+            return;
+        }
         if keystroke.modifiers.control || keystroke.modifiers.platform || keystroke.modifiers.alt {
+            return;
+        }
+        if keystroke.key.as_str() == "escape" {
+            self.deselect(cx);
             return;
         }
         let Some(text) = &keystroke.key_char else {
@@ -750,6 +760,29 @@ impl GridPanel {
             return;
         }
         self.type_to(text.clone(), cx);
+    }
+
+    /// Ctrl/Cmd+A: every tile on the wall, anchored at the first.
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        if self.cells.is_empty() {
+            return;
+        }
+        self.selected = (0..self.cells.len()).collect();
+        self.anchor = Some(0);
+        self.publish_selection(cx);
+        cx.notify();
+    }
+
+    /// Escape drops the selection, handing the shared scope back to the
+    /// whole catalog.
+    fn deselect(&mut self, cx: &mut Context<Self>) {
+        if self.selected.is_empty() {
+            return;
+        }
+        self.selected.clear();
+        self.anchor = None;
+        self.publish_selection(cx);
+        cx.notify();
     }
 
     /// Grow or restart the type-ahead phrase and jump to the album it names.

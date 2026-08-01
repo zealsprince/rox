@@ -15,15 +15,16 @@ use gpui::{
     Focusable as _, Global, Hsla, ScrollHandle, SharedString, Subscription, WeakEntity, Window,
     WindowHandle,
 };
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{Icon, Root, Sizable as _};
 
 use crate::assets::icons;
 use crate::backdrop::WindowBackdrop;
-use crate::design::palette::{self, Palette, PanelTheme, ROLES};
+use crate::design::palette::{self, BorderEdge, BorderEdges, Palette, PanelTheme, ROLES};
 use crate::design::tokens;
 use crate::panel::{self, AppState, PanelSettings, ScrubState};
 use crate::panels::art::ArtPanel;
@@ -374,6 +375,8 @@ struct PanelSettingsWindow<P: PanelSettings> {
     /// when one is set, the app palette's resolved color otherwise.
     pickers: Vec<Entity<ColorPickerState>>,
     opacity_scrub: ScrubState,
+    /// The one readout being typed into across this window's sliders.
+    value_edit: panel::ValueEdit,
     margin_scrub: ScrubState,
     padding_scrub: ScrubState,
     rounding_scrub: ScrubState,
@@ -388,6 +391,11 @@ struct PanelSettingsWindow<P: PanelSettings> {
     _min_height_events: Subscription,
     _max_width_events: Subscription,
     _max_height_events: Subscription,
+    /// The palette the swatches were last seeded from, the change check
+    /// that keeps [`sync_swatches`](Self::sync_swatches) from re-seeding
+    /// every frame. None until the appearance page first renders under
+    /// the window's tint.
+    swatch_resolve: Option<Palette>,
     /// The page body's scroll position, shared with the scrollbar so it
     /// can show how much page hangs below the fold.
     scroll: ScrollHandle,
@@ -489,6 +497,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             page: 0,
             pickers,
             opacity_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             margin_scrub: ScrubState::default(),
             padding_scrub: ScrubState::default(),
             rounding_scrub: ScrubState::default(),
@@ -502,6 +511,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             _min_height_events,
             _max_width_events,
             _max_height_events,
+            swatch_resolve: None,
             scroll: ScrollHandle::new(),
             state,
             backdrop: WindowBackdrop::default(),
@@ -648,6 +658,58 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         self.pickers[index].update(cx, |picker, cx| picker.set_value(inherited, window, cx));
     }
 
+    /// Keep the swatches on the live palette: a swatch showing an
+    /// inherited or linked color re-seeds when the resolve it was seeded
+    /// from moves, the panel-window mirror of the app editor's side
+    /// sync. Literal overrides hold as written. Runs from the appearance
+    /// page's render, inside the window tint, since every palette change
+    /// path (song theming, theme switches, palette edits) repaints all
+    /// windows; the stored resolve keeps a settled palette from
+    /// re-seeding every frame.
+    fn sync_swatches(&mut self, theme: &PanelTheme, window: &mut Window, cx: &mut Context<Self>) {
+        let resolve = palette::resolved();
+        let moved = |last: &Palette| {
+            ROLES
+                .iter()
+                .any(|role| (role.get)(last) != (role.get)(&resolve))
+        };
+        if self
+            .swatch_resolve
+            .as_ref()
+            .is_some_and(|last| !moved(last))
+        {
+            return;
+        }
+        self.swatch_resolve = Some(resolve);
+        for (role, picker) in ROLES.iter().zip(&self.pickers) {
+            if theme.colors.contains_key(role.name) && theme.reference(role.name).is_none() {
+                continue;
+            }
+            let color = theme
+                .color(role.name)
+                .unwrap_or_else(|| (role.get)(&resolve));
+            picker.update(cx, |picker, cx| picker.set_value(color, window, cx));
+        }
+    }
+
+    /// Point one role at another app color instead of a literal. The
+    /// reference keeps tracking the live palette; the swatch takes the
+    /// target's current resolve so the cell shows what now renders.
+    fn set_role_reference(
+        &mut self,
+        index: usize,
+        target: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let role = &ROLES[index];
+        self.update_theme(|theme| theme.set_reference(role.name, target), cx);
+        if let Some(target) = ROLES.iter().find(|role| role.name == target) {
+            let color = (target.get)(&palette::resolved());
+            self.pickers[index].update(cx, |picker, cx| picker.set_value(color, window, cx));
+        }
+    }
+
     /// The opacity override's switch: forking starts from the app's
     /// current value, so nothing visibly jumps until the slider moves.
     fn set_opacity_override(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -703,6 +765,18 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         self.update_theme(|theme| theme.border = None, cx);
     }
 
+    /// Flip one side of the border mask. All four on is the default
+    /// look, so it stores as no mask at all and the config stays clean.
+    fn toggle_border_edge(&mut self, edge: BorderEdge, cx: &mut Context<Self>) {
+        self.update_theme(
+            |theme| {
+                let edges = theme.border_edges.unwrap_or(BorderEdges::ALL).toggled(edge);
+                theme.border_edges = (edges != BorderEdges::ALL).then_some(edges);
+            },
+            cx,
+        );
+    }
+
     /// The panel font size: the strip fraction mapped onto the multiplier
     /// range, forked as this panel's own override over the app size. The
     /// reset below sends it back to following the app.
@@ -718,8 +792,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
 
     /// The panel font-size row: the multiplier over its range, a percent
     /// readout alongside. Unset, the slider rests at 100% (follow the app
-    /// size); once the panel forks its own, an inline reset sends it back,
-    /// the frame sliders' pattern.
+    /// size); once the panel forks its own, a reset joins on the left,
+    /// where the row grows without nudging the slider or readout.
     fn font_scale_row(&self, value: Option<f32>, cx: &mut Context<Self>) -> Div {
         let min = palette::PANEL_FONT_SCALE_MIN;
         let max = palette::PANEL_FONT_SCALE_MAX;
@@ -733,27 +807,26 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             Self::set_font_scale,
             cx,
         );
-        let row = div()
+        div()
             .flex()
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_XS)
-            .child(slider);
-        if value.is_some() {
-            row.child(settings_ui::icon_button(
-                icons::REFRESH_CW,
-                false,
-                cx.listener(|this, _, _, cx| this.reset_font_scale(cx)),
-            ))
-        } else {
-            row
-        }
+            .when(value.is_some(), |row| {
+                row.child(settings_ui::icon_button(
+                    icons::REFRESH_CW,
+                    false,
+                    cx.listener(|this, _, _, cx| this.reset_font_scale(cx)),
+                ))
+            })
+            .child(slider)
     }
 
     /// One frame knob's slider row: the value over its 0 to `max` range,
     /// the px readout alongside. Unset, the slider rests at the app-wide
     /// default the panel inherits; once the panel forks its own, a reset
-    /// button rides the row to send it back to following the app.
+    /// joins on the left of the strip, the size rows' placement, so the
+    /// slider and readout hold still when it appears.
     #[allow(clippy::too_many_arguments)]
     fn frame_slider(
         &self,
@@ -766,22 +839,32 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         cx: &mut Context<Self>,
     ) -> Div {
         let shown = value.unwrap_or(inherited);
-        let slider = panel::value_slider(scrub, shown / max, format!("{shown:.0} px"), apply, cx);
-        let row = div()
+        // Typed values may run past the strip's top, the setters take the
+        // fraction as given.
+        let slider = panel::value_slider_edit_over(
+            scrub,
+            &self.value_edit,
+            shown / max,
+            format!("{shown:.0} px"),
+            format!("{shown:.0}"),
+            settings_ui::FRAME_OVER,
+            move |v| v / max,
+            apply,
+            cx,
+        );
+        div()
             .flex()
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_XS)
-            .child(slider);
-        if value.is_some() {
-            row.child(settings_ui::icon_button(
-                icons::REFRESH_CW,
-                false,
-                cx.listener(move |this, _, _, cx| reset(this, cx)),
-            ))
-        } else {
-            row
-        }
+            .when(value.is_some(), |row| {
+                row.child(settings_ui::icon_button(
+                    icons::REFRESH_CW,
+                    false,
+                    cx.listener(move |this, _, _, cx| reset(this, cx)),
+                ))
+            })
+            .child(slider)
     }
 
     /// Drop every color override: the panel follows the app palette
@@ -858,6 +941,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 theme.padding = None;
                 theme.rounding = None;
                 theme.border = None;
+                theme.border_edges = None;
             },
             cx,
         );
@@ -1021,7 +1105,13 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 d.child(panel::setting_row(
                     "Surface Opacity",
                     None,
-                    settings_ui::slider(&self.opacity_scrub, value, Self::set_opacity, cx),
+                    settings_ui::slider_edit(
+                        &self.opacity_scrub,
+                        &self.value_edit,
+                        value,
+                        Self::set_opacity,
+                        cx,
+                    ),
                 ))
             });
 
@@ -1081,9 +1171,28 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     Self::reset_border,
                     cx,
                 ),
+            ))
+            .child(panel::setting_row(
+                "Border edges",
+                Some("Which sides the border draws on"),
+                {
+                    let edges = theme.border_edges.unwrap_or(BorderEdges::ALL);
+                    panel::icon_toggles(
+                        &[
+                            (icons::PANEL_LEFT, BorderEdge::Left),
+                            (icons::PANEL_TOP, BorderEdge::Top),
+                            (icons::PANEL_BOTTOM, BorderEdge::Bottom),
+                            (icons::PANEL_RIGHT, BorderEdge::Right),
+                        ],
+                        move |edge| edges.get(edge),
+                        Self::toggle_border_edge,
+                        cx,
+                    )
+                },
             ));
 
         let overridden = |name: &str| theme.colors.contains_key(name);
+        let weak = cx.entity().downgrade();
         let grid = settings_ui::role_grid(columns, |j| {
             let role = &ROLES[j];
             // The picker pads a 4px margin around its swatch square; the
@@ -1091,6 +1200,51 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             let control = ColorPicker::new(&self.pickers[j])
                 .small()
                 .m(px(-4.))
+                .into_any_element();
+            // The link ties this role to another app color: its menu lists
+            // the palette by group, the current target checked. Linked
+            // cells fill the button with the accent so a reference reads
+            // apart from a literal fork at a glance.
+            let linked = theme.reference(role.name);
+            let pick = weak.clone();
+            let link = Button::new(("role-link", j))
+                .icon(Icon::default().path(icons::LINK))
+                .xsmall()
+                .map(|b| {
+                    if linked.is_some() {
+                        b.primary()
+                    } else {
+                        b.ghost()
+                    }
+                })
+                .dropdown_menu(move |mut menu, _, _| {
+                    menu = menu.scrollable(true).max_h(px(320.));
+                    let mut group = "";
+                    for target in ROLES {
+                        // A role following itself would just read as the
+                        // app value, so the cell's own role stays out.
+                        if target.name == ROLES[j].name {
+                            continue;
+                        }
+                        if target.group != group {
+                            group = target.group;
+                            menu = menu.item(PopupMenuItem::label(group));
+                        }
+                        let pick = pick.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(target.label)
+                                .checked(linked == Some(target.name))
+                                .on_click(move |_, window, cx| {
+                                    if let Some(this) = pick.upgrade() {
+                                        this.update(cx, |this, cx| {
+                                            this.set_role_reference(j, target.name, window, cx)
+                                        });
+                                    }
+                                }),
+                        );
+                    }
+                    menu
+                })
                 .into_any_element();
             // Overridden roles carry a reset button on the cell's right
             // edge, so it reads at a glance which colors have forked from
@@ -1103,7 +1257,15 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 )
                 .into_any_element()
             });
-            settings_ui::color_cell(control, role.label, overridden(role.name), reset)
+            let trailing = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(2.))
+                .child(link)
+                .when_some(reset, |d, reset| d.child(reset))
+                .into_any_element();
+            settings_ui::color_cell(control, role.label, overridden(role.name), Some(trailing))
                 .into_any_element()
         });
         let body = div()
@@ -1112,8 +1274,9 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .gap(tokens::SPACE_XS)
             .child(div().text_xs().text_color(palette::text_muted()).child(
                 "Overrides recolor just this panel and hold still under song \
-                 theming; reset a swatch or clear its hex field to follow \
-                 the app palette again",
+                 theming; a link follows another app color instead, moving \
+                 with the theme. Reset a swatch or clear its hex field to \
+                 follow the app palette again",
             ))
             .child(grid);
         // Each section resets its own knobs: recoloring can start over
@@ -1224,108 +1387,112 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let columns = grid_columns(window);
 
-        let (nav, body): (Div, AnyElement) = match self.panel.upgrade() {
-            None => (
-                sidebar(),
-                div()
-                    .text_color(palette::text_muted())
-                    .child("The panel was closed")
-                    .into_any_element(),
-            ),
-            Some(panel) => {
-                let pages = panel.read(cx).pages();
-                // Appearance and Behavior lead the nav on every panel, the
-                // app settings window's order, so how a panel looks and how
-                // it acts always sit in the same two spots no matter what
-                // pages it brings. `page` 0 is Appearance, 1 is Behavior,
-                // and the panel's own pages follow at 2..
-                let picked = self.page.min(pages.len() + 1);
-                let mut nav = sidebar()
-                    .child(settings_ui::nav_item(
-                        "Appearance",
-                        icons::PALETTE,
-                        picked == 0,
-                        move |this: &mut Self, cx| {
-                            this.page = 0;
-                            cx.notify();
-                        },
-                        cx,
-                    ))
-                    .child(settings_ui::nav_item(
-                        "Behavior",
-                        icons::SLIDERS,
-                        picked == 1,
-                        move |this: &mut Self, cx| {
-                            this.page = 1;
-                            cx.notify();
-                        },
-                        cx,
-                    ));
-                for (i, &(label, icon)) in pages.iter().enumerate() {
-                    let page = i + 2;
-                    nav = nav.child(settings_ui::nav_item(
-                        label,
-                        icon,
-                        picked == page,
-                        move |this: &mut Self, cx| {
-                            this.page = page;
-                            cx.notify();
-                        },
-                        cx,
-                    ));
-                }
-                let body = match picked {
-                    0 => {
-                        let theme = panel.read(cx).theme();
-                        let own_font = panel.read(cx).has_own_font();
-                        let extra = panel.update(cx, |panel, cx| panel.appearance(window, cx));
-                        self.appearance_page(&theme, extra, own_font, columns, cx)
-                            .into_any_element()
-                    }
-                    1 => {
-                        // Read through chrome() so the call isn't ambiguous
-                        // between PanelSettings::locked and the dock's
-                        // Panel::locked, which share the name.
-                        let composite = panel.read(cx).composite();
-                        let (locked, anchor, hide_controls, limits) = {
-                            let chrome = panel.read(cx).chrome();
-                            (
-                                chrome.locked,
-                                chrome.anchor,
-                                chrome.hide_controls,
-                                SizeLimits {
-                                    min_width: chrome.min_width,
-                                    min_height: chrome.min_height,
-                                    max_width: chrome.max_width,
-                                    max_height: chrome.max_height,
-                                },
-                            )
-                        };
-                        let extra = panel.update(cx, |panel, cx| panel.behavior(window, cx));
-                        self.behavior_page(
-                            locked,
-                            anchor,
-                            hide_controls,
-                            composite,
-                            limits,
-                            extra,
-                            cx,
-                        )
-                        .into_any_element()
-                    }
-                    _ => panel.update(cx, |panel, cx| panel.page(pages[picked - 2].0, window, cx)),
-                };
-                (nav, body)
-            }
-        };
-
         // The window renders under the player's art tint like the
         // workspace that opened it, and claims the widget theme while it
         // holds focus, so the panel's settings read in the playing track's
-        // colors like every other window.
+        // colors. Everything builds inside the tint: color reads resolve
+        // eagerly as the div chains build, so a nav or page built before
+        // the wrap would carry the untinted base palette instead.
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
         panel::window_body(player, || {
+            let (nav, body): (Div, AnyElement) = match self.panel.upgrade() {
+                None => (
+                    sidebar(),
+                    div()
+                        .text_color(palette::text_muted())
+                        .child("The panel was closed")
+                        .into_any_element(),
+                ),
+                Some(panel) => {
+                    let pages = panel.read(cx).pages();
+                    // Appearance and Behavior lead the nav on every panel, the
+                    // app settings window's order, so how a panel looks and how
+                    // it acts always sit in the same two spots no matter what
+                    // pages it brings. `page` 0 is Appearance, 1 is Behavior,
+                    // and the panel's own pages follow at 2..
+                    let picked = self.page.min(pages.len() + 1);
+                    let mut nav = sidebar()
+                        .child(settings_ui::nav_item(
+                            "Appearance",
+                            icons::PALETTE,
+                            picked == 0,
+                            move |this: &mut Self, cx| {
+                                this.page = 0;
+                                cx.notify();
+                            },
+                            cx,
+                        ))
+                        .child(settings_ui::nav_item(
+                            "Behavior",
+                            icons::SLIDERS,
+                            picked == 1,
+                            move |this: &mut Self, cx| {
+                                this.page = 1;
+                                cx.notify();
+                            },
+                            cx,
+                        ));
+                    for (i, &(label, icon)) in pages.iter().enumerate() {
+                        let page = i + 2;
+                        nav = nav.child(settings_ui::nav_item(
+                            label,
+                            icon,
+                            picked == page,
+                            move |this: &mut Self, cx| {
+                                this.page = page;
+                                cx.notify();
+                            },
+                            cx,
+                        ));
+                    }
+                    let body = match picked {
+                        0 => {
+                            let theme = panel.read(cx).theme();
+                            self.sync_swatches(&theme, window, cx);
+                            let own_font = panel.read(cx).has_own_font();
+                            let extra = panel.update(cx, |panel, cx| panel.appearance(window, cx));
+                            self.appearance_page(&theme, extra, own_font, columns, cx)
+                                .into_any_element()
+                        }
+                        1 => {
+                            // Read through chrome() so the call isn't ambiguous
+                            // between PanelSettings::locked and the dock's
+                            // Panel::locked, which share the name.
+                            let composite = panel.read(cx).composite();
+                            let (locked, anchor, hide_controls, limits) = {
+                                let chrome = panel.read(cx).chrome();
+                                (
+                                    chrome.locked,
+                                    chrome.anchor,
+                                    chrome.hide_controls,
+                                    SizeLimits {
+                                        min_width: chrome.min_width,
+                                        min_height: chrome.min_height,
+                                        max_width: chrome.max_width,
+                                        max_height: chrome.max_height,
+                                    },
+                                )
+                            };
+                            let extra = panel.update(cx, |panel, cx| panel.behavior(window, cx));
+                            self.behavior_page(
+                                locked,
+                                anchor,
+                                hide_controls,
+                                composite,
+                                limits,
+                                extra,
+                                cx,
+                            )
+                            .into_any_element()
+                        }
+                        _ => panel
+                            .update(cx, |panel, cx| panel.page(pages[picked - 2].0, window, cx)),
+                    };
+                    (nav, body)
+                }
+            };
+
             div()
                 .size_full()
                 .flex()

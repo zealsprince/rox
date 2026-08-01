@@ -408,7 +408,12 @@ impl Palette {
 /// role reads as written - song theming and palette easing pass it by -
 /// while every other role keeps following the app palette, so a panel
 /// that only recolors its accent still tracks edits and tinting
-/// everywhere else. The frame knobs ride along: margin insets the panel
+/// everywhere else. A value may also name another role instead of a hex
+/// color: the override then follows that app role live, easing and song
+/// theming included, so a panel can swap its surfaces around inside the
+/// palette and still move with the theme. References always point into
+/// the app palette, never at the panel's own overrides, so there is
+/// nothing to recurse through. The frame knobs ride along: margin insets the panel
 /// from its cell, padding opens space inside its own surface, rounding
 /// and border shape its edge. They are geometry, not colors, so the
 /// themed wrapper applies them directly instead of going through the
@@ -434,6 +439,12 @@ pub struct PanelTheme {
     /// A border around the panel, in px of width.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<f32>,
+    /// The sides the border draws on; unset draws all four. The mask
+    /// applies to whichever width wins, the panel's own or the app
+    /// default, so a panel can inherit the app border and still trim it
+    /// to one edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_edges: Option<BorderEdges>,
     /// The panel's font family, overriding the app font just here. None
     /// follows the app font. A name that is not installed falls back at
     /// render, so a config moved between machines still shows.
@@ -459,13 +470,21 @@ impl PanelTheme {
             && self.padding.is_none()
             && self.rounding.is_none()
             && self.border.is_none()
+            && self.border_edges.is_none()
             && self.font.is_none()
             && self.font_scale.is_none()
     }
 
-    /// A role's override, when one is set and parses.
+    /// A role's override resolved to a color right now: a hex literal as
+    /// written, a reference through the app palette's current resolve.
+    /// Seeds the settings pickers; the live read path resolves through
+    /// [`PanelTheme::scope`] instead, where a reference stays attached.
     pub fn color(&self, role: &str) -> Option<Rgba> {
-        self.colors.get(role).and_then(|hex| parse_hex(hex))
+        let value = self.colors.get(role)?;
+        if let Some(color) = parse_hex(value) {
+            return Some(color);
+        }
+        reference_role(value).map(|get| get(&resolved()))
     }
 
     /// Set or clear a role's override.
@@ -480,6 +499,27 @@ impl PanelTheme {
         }
     }
 
+    /// The app role an override follows, when it holds a reference
+    /// rather than a literal. A value that neither parses as hex nor
+    /// names a role reads as no reference, the same tolerance the hex
+    /// parse extends a hand-edited file.
+    pub fn reference(&self, role: &str) -> Option<&'static str> {
+        let value = self.colors.get(role)?;
+        if parse_hex(value).is_some() {
+            return None;
+        }
+        let value = value.trim();
+        ROLES
+            .iter()
+            .find(|role| role.name == value)
+            .map(|role| role.name)
+    }
+
+    /// Point a role at another app role instead of a literal color.
+    pub fn set_reference(&mut self, role: &str, target: &str) {
+        self.colors.insert(role.to_string(), target.to_string());
+    }
+
     /// The theme resolved for the read path: role names checked against
     /// the listing, unknown and unparsable entries dropped, so a
     /// hand-edited config degrades quietly. None while no color or
@@ -489,9 +529,16 @@ impl PanelTheme {
         if self.colors.is_empty() && self.surface_opacity.is_none() {
             return None;
         }
-        let colors: Vec<(&'static str, Rgba)> = ROLES
+        let colors: Vec<(&'static str, ScopeColor)> = ROLES
             .iter()
-            .filter_map(|role| self.color(role.name).map(|color| (role.name, color)))
+            .filter_map(|role| {
+                let value = self.colors.get(role.name)?;
+                let entry = match parse_hex(value) {
+                    Some(color) => ScopeColor::Literal(color),
+                    None => ScopeColor::Reference(reference_role(value)?),
+                };
+                Some((role.name, entry))
+            })
             .collect();
         Some(Scope {
             colors: colors.into(),
@@ -500,11 +547,96 @@ impl PanelTheme {
     }
 }
 
+/// The accessor behind a role name, the reference values' lookup.
+fn reference_role(name: &str) -> Option<fn(&Palette) -> Rgba> {
+    let name = name.trim();
+    ROLES
+        .iter()
+        .find(|role| role.name == name)
+        .map(|role| role.get)
+}
+
+/// One side of a panel border, the edge toggles' currency.
+#[derive(Clone, Copy, PartialEq)]
+pub enum BorderEdge {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+/// Which sides a panel's border draws on. A missing field reads as on,
+/// so a hand-edited config only has to list the edges it turns off; all
+/// four on is the same look as carrying no mask at all.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BorderEdges {
+    #[serde(default = "edge_on")]
+    pub top: bool,
+    #[serde(default = "edge_on")]
+    pub right: bool,
+    #[serde(default = "edge_on")]
+    pub bottom: bool,
+    #[serde(default = "edge_on")]
+    pub left: bool,
+}
+
+fn edge_on() -> bool {
+    true
+}
+
+impl BorderEdges {
+    /// Every side on, the look an unmasked border draws.
+    pub const ALL: BorderEdges = BorderEdges {
+        top: true,
+        right: true,
+        bottom: true,
+        left: true,
+    };
+
+    /// Whether any side draws at all; a mask with none skips the border
+    /// entirely.
+    pub fn any(self) -> bool {
+        self.top || self.right || self.bottom || self.left
+    }
+
+    /// One side's state.
+    pub fn get(self, edge: BorderEdge) -> bool {
+        match edge {
+            BorderEdge::Top => self.top,
+            BorderEdge::Right => self.right,
+            BorderEdge::Bottom => self.bottom,
+            BorderEdge::Left => self.left,
+        }
+    }
+
+    /// The mask with one side flipped.
+    pub fn toggled(mut self, edge: BorderEdge) -> BorderEdges {
+        match edge {
+            BorderEdge::Top => self.top = !self.top,
+            BorderEdge::Right => self.right = !self.right,
+            BorderEdge::Bottom => self.bottom = !self.bottom,
+            BorderEdge::Left => self.left = !self.left,
+        }
+        self
+    }
+}
+
+/// One override as the read path holds it: a literal reads as written
+/// and holds still, a reference keeps following its app role through
+/// easing and song theming. The reference carries the target's accessor
+/// into the app palette, never another override, so resolution is one
+/// hop by construction.
+#[derive(Clone, Copy)]
+enum ScopeColor {
+    Literal(Rgba),
+    Reference(fn(&Palette) -> Rgba),
+}
+
 /// A resolved [`PanelTheme`], what the accessors actually consult: cheap
 /// to clone, so the themed wrapper can carry it into every render phase.
 #[derive(Clone)]
 pub struct Scope {
-    colors: Arc<[(&'static str, Rgba)]>,
+    colors: Arc<[(&'static str, ScopeColor)]>,
     surface_opacity: Option<f32>,
 }
 
@@ -517,7 +649,9 @@ thread_local! {
     static SCOPES: RefCell<Vec<Scope>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The innermost scope's override for a role, if any.
+/// The innermost scope's override for a role, if any. A reference
+/// samples the live app palette here, at read time, so it moves with
+/// easing and song theming the way an unoverridden role does.
 fn scope_color(role: &str) -> Option<Rgba> {
     SCOPES.with(|scopes| {
         scopes.borrow().last().and_then(|scope| {
@@ -525,7 +659,10 @@ fn scope_color(role: &str) -> Option<Rgba> {
                 .colors
                 .iter()
                 .find(|(name, _)| *name == role)
-                .map(|(_, color)| *color)
+                .map(|(_, color)| match color {
+                    ScopeColor::Literal(color) => *color,
+                    ScopeColor::Reference(get) => active_role(get),
+                })
         })
     })
 }
@@ -1537,6 +1674,32 @@ mod tests {
         }
     }
 
+    /// A hand-edited edge mask only names the sides it turns off; the
+    /// missing ones read as on, and a theme without a mask draws all
+    /// four. The settings window stores all-on as no mask, so the
+    /// normalized form must roundtrip too.
+    #[test]
+    fn border_edges_parse() {
+        let theme: PanelTheme =
+            serde_json::from_str(r#"{"border": 2.0, "border_edges": {"top": false}}"#).unwrap();
+        let edges = theme.border_edges.unwrap();
+        assert!(!edges.top && edges.right && edges.bottom && edges.left);
+        assert!(edges.any());
+
+        let bare: PanelTheme = serde_json::from_str(r#"{"border": 2.0}"#).unwrap();
+        assert!(bare.border_edges.is_none());
+
+        let back: PanelTheme =
+            serde_json::from_str(&serde_json::to_string(&theme).unwrap()).unwrap();
+        assert_eq!(back.border_edges, theme.border_edges);
+        assert_eq!(
+            BorderEdges::ALL
+                .toggled(BorderEdge::Top)
+                .toggled(BorderEdge::Top),
+            BorderEdges::ALL
+        );
+    }
+
     /// A seed with only a primary color, at a cover lightness that keeps
     /// the dark ladder.
     fn dark_seed(color: Rgba) -> Seed {
@@ -1834,6 +1997,32 @@ mod tests {
         });
         assert_rgb_eq(accent(), outside_accent, "accent after the scope");
         assert!((bg_root().a - 1.0).abs() < 0.001, "opacity after the scope");
+    }
+
+    /// A reference override follows its app role: inside the scope the
+    /// panel's root reads as whatever the accent resolves to, and the
+    /// picker-seeding resolve answers the same. A value naming no role
+    /// drops out the way a bad hex does.
+    #[test]
+    fn scope_reference_follows_role() {
+        let mut theme = PanelTheme::default();
+        theme.set_reference("bg_root", "accent");
+        theme.set_reference("border", "no_such_role");
+        assert_eq!(theme.reference("bg_root"), Some("accent"));
+        assert_eq!(theme.reference("border"), None);
+        assert_eq!(theme.reference("accent"), None);
+        assert_rgb_eq(
+            theme.color("bg_root").unwrap(),
+            resolved().accent,
+            "seed resolve",
+        );
+
+        let scope = theme.scope().unwrap();
+        let outside_border = border();
+        scoped(&scope, || {
+            assert_rgb_eq(bg_root(), accent(), "referenced root");
+            assert_rgb_eq(border(), outside_border, "bad reference fell through");
+        });
     }
 
     /// The theme's map shape survives a config roundtrip, and an empty

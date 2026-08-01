@@ -65,11 +65,9 @@ use crate::panels::search::{SearchConfig, SearchPanel};
 use crate::panels::slide::SlidePanel;
 use crate::panels::spacer::SpacerPanel;
 use crate::panels::spectrum::SpectrumPanel;
+use crate::panels::status::StatusPanel;
 use crate::panels::theme_toggle::ThemeTogglePanel;
-use crate::panels::transport::{
-    SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
-    VolumeConfig, VolumePanel,
-};
+use crate::panels::transport::{SeekStripPanel, TrackInfoPanel, TransportPanel, VolumePanel};
 use crate::panels::vu::VuPanel;
 use crate::panels::waveform::WaveformPanel;
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
@@ -528,6 +526,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     });
     configured!("seek", SeekStripPanel);
     configured!("track info", TrackInfoPanel);
+    configured!("status", StatusPanel);
     configured!("cover art", CoverArtPanel);
     configured!("metadata", MetadataPanel);
     configured!("lyrics", LyricsPanel);
@@ -694,7 +693,7 @@ pub(crate) enum WorkspaceTarget {
 
 /// A dropdown row: an action item, a muted section heading over a divider,
 /// a run of panel-catalog entries, or a layout-presets flyout whose items
-/// come from the saved and shipped presets at open time.
+/// come from the saved presets at open time.
 pub(crate) enum MenuEntry {
     Item(MenuItem),
     Section(&'static str),
@@ -942,7 +941,7 @@ pub enum WorkspaceStart {
     Restore,
     /// A blank dock the user fills from the Panels menu.
     Empty,
-    /// Built from a named preset's dump, saved or shipped.
+    /// Built from a named preset's dump.
     Preset(String),
 }
 
@@ -977,6 +976,10 @@ pub struct Workspace {
     /// The debounce for layout saves; replacing it cancels the running
     /// timer, so only a quiet layout dumps.
     save_task: Option<Task<()>>,
+    /// Why this window's layout fell back to empty, shown by the empty
+    /// hint until a layout change leaves panels standing. None when the
+    /// empty start was asked for.
+    layout_error: Option<&'static str>,
     /// The mini-player button's two presets, by name. Cached off the settings
     /// file so the menubar never reads disk per frame; the settings window
     /// pushes changes back through [`Workspace::set_mini_roles`]. The button
@@ -1058,58 +1061,6 @@ fn split_view(item: &DockItem) -> Entity<StackPanel> {
 /// The starting layout: the library tab group over the transport row.
 /// Returns the center item plus the workspace's add targets: the root
 /// stack, the center tabs, and the transport row's stack.
-fn default_layout(
-    state: &AppState,
-    weak_dock: &WeakEntity<DockArea>,
-    window: &mut Window,
-    cx: &mut App,
-) -> (
-    DockItem,
-    Entity<StackPanel>,
-    Entity<TabPanel>,
-    Entity<StackPanel>,
-) {
-    let library_panel =
-        cx.new(|cx| LibraryPanel::new(state.clone(), LibraryConfig::default(), window, cx));
-    let (tabs, center_tabs) = tabs_item(vec![Arc::new(library_panel)], weak_dock, window, cx);
-
-    // The transport pieces as side-by-side tab groups in one row: the track
-    // info readout, the controls, the seek strip, and the volume strip.
-    let info = cx.new(|cx| TrackInfoPanel::new(state.clone(), TrackInfoConfig::default(), cx));
-    let playback = cx.new(|cx| TransportPanel::new(state.clone(), TransportConfig::default(), cx));
-    let seek = cx.new(|cx| SeekStripPanel::new(state.clone(), SeekConfig::default(), cx));
-    let volume = cx.new(|cx| VolumePanel::new(state.clone(), VolumeConfig::default(), cx));
-    let (info_item, _) = tabs_item(vec![Arc::new(info)], weak_dock, window, cx);
-    let (playback_item, _) = tabs_item(vec![Arc::new(playback)], weak_dock, window, cx);
-    let (seek_item, _) = tabs_item(vec![Arc::new(seek)], weak_dock, window, cx);
-    let (volume_item, _) = tabs_item(vec![Arc::new(volume)], weak_dock, window, cx);
-    let transport_row = DockItem::split_with_sizes(
-        Axis::Horizontal,
-        vec![info_item, playback_item, seek_item, volume_item],
-        vec![None, Some(px(420.)), None, Some(px(280.))],
-        weak_dock,
-        window,
-        cx,
-    );
-    let bottom_stack = split_view(&transport_row);
-
-    // One vertical tree: the center tabs over the transport row, no
-    // separate bottom dock. Closing or moving everything out of one region
-    // hands its space to the rest instead of leaving a hole, and a parent
-    // stack is also what makes tab dragging, splitting, and closing
-    // possible at all.
-    let center = DockItem::split_with_sizes(
-        Axis::Vertical,
-        vec![tabs, transport_row],
-        vec![None, Some(px(TRANSPORT_ROW_H))],
-        weak_dock,
-        window,
-        cx,
-    );
-    let stack = split_view(&center);
-    (center, stack, center_tabs, bottom_stack)
-}
-
 /// A blank starting layout: one empty tab group in the root stack, no
 /// transport row. The group renders to nothing while empty, so the window
 /// is bare until the Panels menu adds something; the detached transport
@@ -1211,6 +1162,7 @@ impl Workspace {
                 selection: cx.new(|cx| Selection::new(cx)),
                 query: cx.new(|_| SharedQuery::default()),
                 tab_hosts: cx.new(|_| TabHosts::default()),
+                signals: Arc::new(rox_viz::signal::SignalHub::new(Settings::load().signals)),
             }
         });
         let focus = cx.focus_handle();
@@ -1318,6 +1270,10 @@ impl Workspace {
             }
             WorkspaceStart::Empty => None,
         };
+        // A dump that exists but will not restore, or a preset whose name no
+        // longer resolves, is a failure the window should say out loud; a
+        // plain start with nothing saved is not.
+        let expected = source.is_some() || matches!(start, WorkspaceStart::Preset(_));
         let restored = source
             .and_then(|value| serde_json::from_value::<DockAreaState>(value).ok())
             .filter(|dump| {
@@ -1325,6 +1281,16 @@ impl Workspace {
                     && matches!(dump.center.info, PanelInfo::Stack { .. })
             })
             .map(|dump| dump.center.to_item(weak_dock.clone(), window, cx));
+        let layout_error = (restored.is_none() && expected).then(|| {
+            let message = match &start {
+                WorkspaceStart::Preset(_) => {
+                    "This window's layout preset couldn't be restored, so it starts empty."
+                }
+                _ => "The saved layout couldn't be restored, so this window starts empty.",
+            };
+            log::warn!("workspace: {message}");
+            message
+        });
 
         let (center, stack, center_tabs, bottom_stack) = match restored {
             Some(item) => {
@@ -1337,26 +1303,23 @@ impl Workspace {
                     .unwrap_or_else(|| cx.new(|cx| StackPanel::new(Axis::Horizontal, window, cx)));
                 (item, stack, tabs, bottom)
             }
-            // An empty window starts blank, and so does the first launch's
-            // primary window: no settings file yet, so we show the empty
-            // layout with its onboarding instructions rather than the default
-            // arrangement. Scoped to is_primary so a New Window opened later in
-            // that same first session still gets the default. Everything else
-            // that has no trustworthy dump falls back to the default too.
-            None if matches!(start, WorkspaceStart::Empty)
-                || (is_primary && settings::first_run()) =>
-            {
-                empty_layout(&weak_dock, window, cx)
-            }
-            None => default_layout(&state, &weak_dock, window, cx),
+            // Everything without a restorable dump starts empty: the blank
+            // window and the first run by design, a broken dump because an
+            // empty window that says why beats a default arrangement nobody
+            // arranged.
+            None => empty_layout(&weak_dock, window, cx),
         };
 
         // Save the layout when it settles after a change, and once more on
         // close, which also catches window moves and resizes: those emit no
-        // dock events.
+        // dock events. A change that leaves panels standing also retires the
+        // fallback notice: the layout is the user's again.
         let _layout_changed =
             cx.subscribe_in(&dock, window, |this, _, event: &DockEvent, window, cx| {
                 if matches!(event, DockEvent::LayoutChanged) {
+                    if this.layout_error.is_some() && !this.dock_is_empty(cx) {
+                        this.layout_error = None;
+                    }
                     this.save_layout_soon(window, cx);
                 }
             });
@@ -1426,6 +1389,7 @@ impl Workspace {
             center_tabs,
             bottom_stack,
             save_task: None,
+            layout_error,
             primary_layout,
             mini_layout,
             active_layout,
@@ -1489,22 +1453,25 @@ impl Workspace {
         true
     }
 
-    /// Rebuild the built-in default arrangement on a live workspace, the reset
-    /// a workspace with no layout of its own applies. Same swap as
-    /// [`apply_layout`], but the center comes from [`default_layout`] instead
-    /// of a dump, so there is no registry rebuild to re-register for.
-    fn apply_default_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Fall a live workspace back to the blank layout: the reset a workspace
+    /// bundle with no resolvable layout applies. Same swap as
+    /// [`apply_layout`], but the center is the empty start and the empty
+    /// hint says why it is empty, rather than a stand-in arrangement nobody
+    /// arranged.
+    fn apply_empty_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Keep the outgoing layout's tweaks the same as any other swap.
         self.stash_active_edits(window, cx);
         let weak_dock = self.dock.downgrade();
-        let (center, stack, center_tabs, bottom_stack) =
-            default_layout(&self.state, &weak_dock, window, cx);
+        let (center, stack, center_tabs, bottom_stack) = empty_layout(&weak_dock, window, cx);
         self.stack = stack;
         self.center_tabs = center_tabs;
         self.bottom_stack = bottom_stack;
         self.dock
             .update(cx, |dock, cx| dock.set_center(center, window, cx));
-        // The default build has no name of its own.
+        self.layout_error =
+            Some("The workspace's layout couldn't be restored, so this window starts empty.");
+        log::warn!("workspace: applied workspace has no restorable layout, starting empty");
+        // The empty build has no name of its own.
         self.set_active_layout(None);
         self.save_layout_soon(window, cx);
     }
@@ -1557,7 +1524,7 @@ impl Workspace {
         });
     }
 
-    /// Apply a named preset, user or shipped, by name. Returns false when
+    /// Apply a saved preset by name. Returns false when
     /// no preset carries the name or its dump is one [`apply_layout`]
     /// refuses.
     pub fn apply_named_layout(
@@ -1642,6 +1609,9 @@ impl Workspace {
             return;
         };
         crate::workspaces::apply_look(&bundle, cx);
+        // The look's signal pool replaces the live one the same wholesale
+        // way; apply_look already persisted it into settings.
+        self.state.signals.set_pool(bundle.signals.clone());
         // A whole-look swap drops the previous layout's unsaved edits along
         // with the rest of the old look (apply_look cleared the store); forget
         // the old active name too, so the apply below doesn't stash a stale
@@ -1652,15 +1622,16 @@ impl Workspace {
         self.primary_layout = bundle.primary_layout.clone();
         self.mini_layout = bundle.mini_layout.clone();
         // The bundle's primary layout fills the window. A bundle without one
-        // (or whose named layout no longer resolves) resets to the built-in
-        // default arrangement rather than leaving the previous workspace's
-        // dock in place, since applying a workspace replaces the look wholesale.
+        // (or whose named layout no longer resolves) resets to the empty
+        // layout with the fallback notice rather than leaving the previous
+        // workspace's dock in place, since applying a workspace replaces the
+        // look wholesale.
         let applied = bundle
             .primary_layout
             .clone()
             .is_some_and(|primary| self.apply_named_layout(&primary, window, cx));
         if !applied {
-            self.apply_default_layout(window, cx);
+            self.apply_empty_layout(window, cx);
         }
         cx.notify();
     }
@@ -1745,8 +1716,11 @@ impl Workspace {
     }
 
     /// Save the current look under the dialog's name as a new workspace. An
-    /// empty name waits; a name already in use routes through the overwrite
-    /// confirm, matching the settings window's Save Current.
+    /// empty name waits; a name already saved routes through the overwrite
+    /// confirm, matching the settings window's Save Current. A shipped
+    /// bundle's name saves straight through with no confirm: the new user
+    /// bundle shadows it wherever names resolve, which is the expected way
+    /// to fork a shipped look.
     fn commit_save_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(LayoutDialog::SaveWorkspace(input)) = &self.layout_dialog else {
             return;
@@ -1771,8 +1745,8 @@ impl Workspace {
     }
 
     /// Replace the pending workspace with the current look, the confirm
-    /// dialog's yes. A shipped bundle has no entry to edit, so this saves a
-    /// user bundle of the same name, which shadows it everywhere.
+    /// dialog's yes. Only user bundles reach this confirm; the push fallback
+    /// covers one deleted since the dialog opened.
     fn overwrite_workspace_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = match &self.layout_dialog {
             Some(LayoutDialog::ConfirmOverwriteWorkspace(name)) => name.clone(),
@@ -1931,9 +1905,8 @@ impl Workspace {
         self.close_layout_dialog(window, cx);
     }
 
-    /// Replace a preset with the current arrangement and window size. A
-    /// shipped preset has no entry to edit, so this saves a user preset of
-    /// the same name, which shadows it everywhere presets resolve.
+    /// Replace a preset with the current arrangement and window size. The
+    /// push fallback covers a preset deleted since the menu listed it.
     fn overwrite_layout(&mut self, name: &str, window: &Window, cx: &mut Context<Self>) {
         let name = name.to_string();
         let Ok(dump) = self.dock_dump(cx) else {
@@ -2556,7 +2529,21 @@ impl Workspace {
                                             "Add your first panel to start building; or chose a preset \
                                             under Workspace > Apply Workspace",
                                         ),
-                                    ),
+                                    )
+                                    // The fallback notice: this window is
+                                    // empty because a layout would not
+                                    // restore, not because the user asked.
+                                    // Accent rather than a status red: the
+                                    // app recovered, this is emphasis.
+                                    .when_some(self.layout_error, |d, message| {
+                                        d.child(
+                                            div()
+                                                .pt(tokens::SPACE_XS)
+                                                .text_xs()
+                                                .text_color(palette::accent())
+                                                .child(message),
+                                        )
+                                    }),
                             ),
                     )
                     // The panel catalog: one titled section per group; the

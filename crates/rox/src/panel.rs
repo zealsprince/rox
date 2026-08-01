@@ -19,6 +19,7 @@ use gpui::{
     WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use gpui_component::button::Button;
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_component::{h_flex, Icon, IconName, Root, Sizable};
 use rox_dock::{Panel, PanelInfo, PanelView, TabPanel};
@@ -37,6 +38,9 @@ use crate::query::shared_query::SharedQuery;
 use crate::selection::Selection;
 use crate::thumbs::Thumbs;
 use crate::workspace::{SeekBackward, SeekForward, TogglePlayback};
+
+mod arrange;
+pub use arrange::*;
 
 mod gesture;
 pub use gesture::*;
@@ -69,6 +73,10 @@ pub struct AppState {
     pub history: Entity<History>,
     /// Discord Rich Presence publisher watching the player.
     pub discord: Entity<DiscordPresence>,
+    /// The shared signal pool and its engine: the app-wide modulation
+    /// sources any panel's parameters can ride. Panels tick it from their
+    /// paint and read values; edits persist through settings.
+    pub signals: Arc<rox_viz::signal::SignalHub>,
 }
 
 /// Every tab panel that has hosted one of our panels, reported from each
@@ -777,13 +785,12 @@ pub struct PanelChrome {
     /// on an interactive one it competes with the controls.
     #[serde(default, skip_serializing_if = "is_false")]
     pub anchor: bool,
-    /// Drop the in-panel slot buttons a composition host draws in its
-    /// corners: the child menus and the host's own grip. Off by default, so
-    /// a composite stays editable where it sits. On, the panel reads as
-    /// finished furniture instead of a builder's frame, which is what a
-    /// shipped workspace wants; the layout is still edited from the
-    /// Workspace page's tree in Settings. Only the hosts draw these, so it
-    /// does nothing on a leaf panel.
+    /// Drop the in-panel controls a panel floats over its content: a
+    /// composition host's corner slot buttons and grip, the metadata
+    /// panel's edit toolbar. Off by default, so a panel stays editable
+    /// where it sits. On, it reads as finished furniture instead of a
+    /// builder's frame, which is what a shipped workspace wants; the
+    /// layout is still edited from the Workspace page's tree in Settings.
     #[serde(default, skip_serializing_if = "is_false")]
     pub hide_controls: bool,
     /// Cap the panel's width in px. Set, the dock won't grow the panel wider
@@ -1021,6 +1028,9 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
         let padding = theme.padding.unwrap_or(app.padding);
         let rounding = theme.rounding.unwrap_or(app.rounding);
         let border = theme.border.unwrap_or(app.border);
+        // The edge mask is the panel's alone; there is no app-wide one to
+        // inherit, so unset just means all four sides.
+        let edges = theme.border_edges.unwrap_or(palette::BorderEdges::ALL);
         let font = theme.font.clone();
         move || {
             let mut body = build();
@@ -1035,13 +1045,21 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
             if rounding > 0.0 {
                 body = body.rounded(px(rounding));
             }
-            if border > 0.0 {
+            if border > 0.0 && edges.any() {
                 let width: AbsoluteLength = px(border).into();
                 let widths = &mut body.style().border_widths;
-                widths.top = Some(width);
-                widths.right = Some(width);
-                widths.bottom = Some(width);
-                widths.left = Some(width);
+                if edges.top {
+                    widths.top = Some(width);
+                }
+                if edges.right {
+                    widths.right = Some(width);
+                }
+                if edges.bottom {
+                    widths.bottom = Some(width);
+                }
+                if edges.left {
+                    widths.left = Some(width);
+                }
                 body = body.border_color(palette::border());
             }
             // The outer element takes layout and, when the panel is an
@@ -1360,19 +1378,17 @@ pub fn setting_block(
 pub const SLIDER_W: Pixels = px(150.);
 pub const READOUT_W: Pixels = px(60.);
 
-/// One scalar's slider row: the shared slider chrome over a scrub strip,
-/// applying the strip fraction live on click and drag, the readout riding
-/// alongside. Callers map the fraction into their own range and format
-/// their own readout.
-pub fn value_slider<P: 'static>(
+/// The scrub strip alone: the shared slider chrome over a drag surface,
+/// applying the strip fraction live on click and drag. The row builders
+/// below pair it with their readout.
+fn slider_strip<P: 'static>(
     scrub: &ScrubState,
     fraction: f32,
-    readout: String,
     apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
     let entity = cx.entity();
-    let strip = div()
+    div()
         .w(SLIDER_W)
         .h(tokens::CONTROL_H)
         .flex_none()
@@ -1412,13 +1428,26 @@ pub fn value_slider<P: 'static>(
                 },
             )
             .size_full(),
-        );
+        )
+}
+
+/// One scalar's slider row: the shared slider chrome over a scrub strip,
+/// applying the strip fraction live on click and drag, the readout riding
+/// alongside. Callers map the fraction into their own range and format
+/// their own readout.
+pub fn value_slider<P: 'static>(
+    scrub: &ScrubState,
+    fraction: f32,
+    readout: String,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
     div()
         .flex()
         .flex_row()
         .items_center()
         .gap(tokens::SPACE_SM)
-        .child(strip)
+        .child(slider_strip(scrub, fraction, apply, cx))
         .child(
             div()
                 .w(READOUT_W)
@@ -1427,6 +1456,225 @@ pub fn value_slider<P: 'static>(
                 .text_color(palette::text_muted())
                 .child(readout),
         )
+}
+
+/// One in-flight readout edit across a panel's settings sliders: which
+/// strip is being typed into and the input holding the text. One per
+/// panel, behind Arcs like [`ScrubState`], so the row builders only need
+/// a read and a second click simply moves the edit.
+#[derive(Clone, Default)]
+pub struct ValueEdit {
+    inner: Arc<Mutex<ValueEditInner>>,
+}
+
+#[derive(Default)]
+struct ValueEditInner {
+    active: Option<usize>,
+    input: Option<Entity<InputState>>,
+    /// Keeps the enter/blur subscription alive exactly as long as the
+    /// edit; replaced wholesale when the edit moves to another strip.
+    events: Option<Subscription>,
+    /// Where the input painted, for the click-outside cancel: a press
+    /// anywhere else abandons the edit without committing.
+    bounds: Option<Bounds<Pixels>>,
+}
+
+impl ValueEdit {
+    /// The input to render for strip `id` while it is the one being
+    /// edited.
+    pub fn editing(&self, id: usize) -> Option<Entity<InputState>> {
+        let inner = self.inner.lock().unwrap();
+        if inner.active == Some(id) {
+            inner.input.clone()
+        } else {
+            None
+        }
+    }
+
+    fn active_id(&self) -> Option<usize> {
+        self.inner.lock().unwrap().active
+    }
+
+    fn set_bounds(&self, bounds: Bounds<Pixels>) {
+        self.inner.lock().unwrap().bounds = Some(bounds);
+    }
+
+    fn contains(&self, position: Point<Pixels>) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .bounds
+            .is_some_and(|bounds| bounds.contains(&position))
+    }
+
+    fn begin(&self, id: usize, input: Entity<InputState>, events: Subscription) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.active = Some(id);
+        inner.input = Some(input);
+        inner.events = Some(events);
+        inner.bounds = None;
+    }
+
+    fn end(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.active = None;
+        inner.input = None;
+        inner.events = None;
+        inner.bounds = None;
+    }
+}
+
+/// [`value_slider`] whose readout doubles as an input: click the number,
+/// type, Enter commits, blur cancels. `edit_text` seeds the field with the
+/// bare number, no unit; `to_fraction` maps the typed value back into the
+/// strip's 0..1 through the row's own mapping (linear, log, whatever the
+/// slider itself runs), and the result clamps to the strip before it
+/// applies.
+#[allow(clippy::too_many_arguments)]
+pub fn value_slider_edit<P: 'static>(
+    scrub: &ScrubState,
+    edit: &ValueEdit,
+    fraction: f32,
+    readout: String,
+    edit_text: String,
+    to_fraction: impl Fn(f32) -> f32 + Clone + 'static,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    value_slider_edit_over(
+        scrub,
+        edit,
+        fraction,
+        readout,
+        edit_text,
+        1.0,
+        to_fraction,
+        apply,
+        cx,
+    )
+}
+
+/// [`value_slider_edit`] with typed headroom past the strip's top: `over`
+/// is the highest fraction a typed value may reach, for knobs whose
+/// slider range is a sensible reach rather than a law. The strip still
+/// scrubs its own span and pins full while the value sits beyond it.
+#[allow(clippy::too_many_arguments)]
+pub fn value_slider_edit_over<P: 'static>(
+    scrub: &ScrubState,
+    edit: &ValueEdit,
+    fraction: f32,
+    readout: String,
+    edit_text: String,
+    over: f32,
+    to_fraction: impl Fn(f32) -> f32 + Clone + 'static,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    let row = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_SM)
+        .child(slider_strip(scrub, fraction, apply.clone(), cx));
+    if let Some(input) = edit.editing(scrub.id()) {
+        // While the edit is live, a one-frame window handler (the
+        // scrub_on_paint idiom) watches for a press outside the input and
+        // abandons the edit uncommitted: nothing else in the settings
+        // window takes focus, so blur alone never fires.
+        let id = scrub.id();
+        let entity = cx.entity();
+        return row.child(
+            div()
+                .w(READOUT_W)
+                // Pinned to the strip's height with the input centered: the
+                // small input is 2px taller than CONTROL_H (its border), and
+                // left to size the row it nudges the whole page on toggle.
+                .h(tokens::CONTROL_H)
+                .flex_none()
+                .relative()
+                .flex()
+                .items_center()
+                .child(
+                    canvas(
+                        {
+                            let edit = edit.clone();
+                            move |bounds, _, _| edit.set_bounds(bounds)
+                        },
+                        {
+                            let edit = edit.clone();
+                            move |_, _, window, _| {
+                                let edit = edit.clone();
+                                let entity = entity.clone();
+                                window.on_mouse_event(
+                                    move |event: &MouseDownEvent, phase, _, cx| {
+                                        if !phase.bubble()
+                                            || edit.active_id() != Some(id)
+                                            || edit.contains(event.position)
+                                        {
+                                            return;
+                                        }
+                                        edit.end();
+                                        entity.update(cx, |_, cx| cx.notify());
+                                    },
+                                );
+                            }
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .child(Input::new(&input).small().w_full()),
+        );
+    }
+    let id = scrub.id();
+    row.child(
+        div()
+            .w(READOUT_W)
+            .flex_none()
+            .text_right()
+            .text_color(palette::text_muted())
+            // The hover cue is a background, never a text restyle: a hover
+            // text refinement re-shapes the line with its own metrics and
+            // the number visibly shifts under the pointer.
+            .rounded(tokens::RADIUS)
+            .hover(|d| d.bg(palette::bg_control()))
+            .cursor_text()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener({
+                    let edit = edit.clone();
+                    move |_: &mut P, _, window, cx| {
+                        let input = cx
+                            .new(|cx| InputState::new(window, cx).default_value(edit_text.clone()));
+                        let events = cx.subscribe_in(&input, window, {
+                            let edit = edit.clone();
+                            let to_fraction = to_fraction.clone();
+                            let apply = apply.clone();
+                            move |this: &mut P, input, event: &InputEvent, _, cx| match event {
+                                InputEvent::PressEnter { .. } => {
+                                    let text = input.read(cx).value().trim().replace(',', ".");
+                                    if let Ok(value) = text.parse::<f32>() {
+                                        let ceiling = over.max(1.0);
+                                        apply(this, to_fraction(value).clamp(0.0, ceiling), cx);
+                                    }
+                                    edit.end();
+                                    cx.notify();
+                                }
+                                InputEvent::Blur => {
+                                    edit.end();
+                                    cx.notify();
+                                }
+                                _ => {}
+                            }
+                        });
+                        window.focus(&input.read(cx).focus_handle(cx));
+                        edit.begin(id, input, events);
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(readout),
+    )
 }
 
 /// The switch pill and knob without any interaction, shared by [`toggle`] and
@@ -1602,11 +1850,14 @@ pub fn font_picker<P: 'static>(
         })
 }
 
-/// The chrome shared by the segmented pickers: a joined group of segments,
-/// the picked one filled with the accent, hairline gaps between the rest.
+/// The chrome shared by the segmented pickers and the toggle groups: a
+/// joined group of segments, the picked ones filled with the accent,
+/// hairline gaps between the rest. The predicate says which segments
+/// read as on; the exclusive pickers pass equality with the current
+/// value, the toggle groups each flag's own state.
 fn segments<P: 'static, V: PartialEq + Copy + 'static>(
     options: &'static [(&'static str, V)],
-    current: V,
+    picked: impl Fn(V) -> bool,
     render: impl Fn(&'static str, bool) -> AnyElement,
     on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
@@ -1615,7 +1866,7 @@ fn segments<P: 'static, V: PartialEq + Copy + 'static>(
     let mut group = div().flex().flex_row().flex_none().items_center();
     for (i, (key, value)) in options.iter().enumerate() {
         let value = *value;
-        let picked = value == current;
+        let picked = picked(value);
         let on_pick = on_pick.clone();
         group = group.child(
             div()
@@ -1650,7 +1901,7 @@ pub fn choices<P: 'static, V: PartialEq + Copy + 'static>(
 ) -> Div {
     segments(
         options,
-        current,
+        move |value| value == current,
         |label, picked| {
             div()
                 .text_color(if picked {
@@ -1676,21 +1927,37 @@ pub fn icon_choices<P: 'static, V: PartialEq + Copy + 'static>(
 ) -> Div {
     segments(
         options,
-        current,
-        |icon, picked| {
-            svg()
-                .path(icon)
-                .size_4()
-                .text_color(if picked {
-                    palette::text_on_accent()
-                } else {
-                    palette::text()
-                })
-                .into_any_element()
-        },
+        move |value| value == current,
+        icon_segment,
         on_pick,
         cx,
     )
+}
+
+/// A joined group of independent icon toggles: the segmented pickers'
+/// chrome, but each segment flips its own flag instead of one pick
+/// excluding the rest.
+pub fn icon_toggles<P: 'static, V: PartialEq + Copy + 'static>(
+    options: &'static [(&'static str, V)],
+    active: impl Fn(V) -> bool,
+    on_toggle: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    segments(options, active, icon_segment, on_toggle, cx)
+}
+
+/// One icon segment's face, shared by the exclusive picker and the
+/// toggle group.
+fn icon_segment(icon: &'static str, picked: bool) -> AnyElement {
+    svg()
+        .path(icon)
+        .size_4()
+        .text_color(if picked {
+            palette::text_on_accent()
+        } else {
+            palette::text()
+        })
+        .into_any_element()
 }
 
 /// Where a panel's content sits horizontally, the cross-panel

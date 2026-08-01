@@ -8,31 +8,111 @@
 //! art to the disc stand-in - is a short cross-fade, never a pop, the same
 //! move the waveform makes.
 
+use std::f32::consts::TAU;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use gpui::{
-    div, img, prelude::*, px, relative, svg, AnyElement, App, Context, Div, EventEmitter,
-    FocusHandle, Focusable, Image, ImageFormat, ObjectFit, SharedString, Subscription, WeakEntity,
-    Window,
+    canvas, div, img, prelude::*, px, radians, relative, svg, AnyElement, App, Context, Corners,
+    Div, EventEmitter, FocusHandle, Focusable, Image, ImageFormat, ObjectFit, RenderImage,
+    SharedString, Subscription, Transformation, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use gpui_component::Icon;
+use image::{Frame, RgbaImage};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
-use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
+use crate::panel::{
+    self, align_row, justify, Align, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit,
+};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
 use crate::selection::SelectionEvent;
 use crate::source::{self, ResolvedTrack, TrackSource};
 
+/// The disc bake's square side, in pixels: big enough that the panel's
+/// letterboxed fit stays sharp, small enough that the per-frame rotation
+/// stays a couple of milliseconds.
+const DISC_SIZE: u32 = 512;
+
+/// The spin speed slider's range and default, in revolutions per minute.
+/// A real disc spins far too fast to watch; the default is a lazy
+/// turntable pace that keeps the art readable.
+const SPIN_RPM_MIN: f32 = 1.0;
+const SPIN_RPM_MAX: f32 = 60.0;
+const SPIN_RPM_DEFAULT: f32 = 10.0;
+
+/// The ramp slider's ceiling and default, in seconds from rest to full
+/// speed; zero snaps straight to speed.
+const SPIN_RAMP_MAX: f32 = 10.0;
+const SPIN_RAMP_DEFAULT: f32 = 2.0;
+
+/// The CD's hole cut as a fraction of the disc radius, matched to the
+/// transparent hole in `assets/disc/cd.png`.
+const CD_HOLE: f32 = 0.132;
+
+/// The vinyl's label window and spindle hole as fractions of the record
+/// radius: an LP's 100 mm label and 7.24 mm hole on the 300 mm record.
+/// The window matches the transparent center of `assets/disc/vinyl.png`.
+const VINYL_LABEL: f32 = 0.33;
+const VINYL_HOLE: f32 = 0.024;
+
+/// The mask edges' anti-alias falloff, in bake pixels.
+const DISC_AA: f32 = 1.5;
+
+/// Which picture slot the panel shows. Disc is the tag's "media"
+/// picture, the CD scan; every pick falls back through the front cover,
+/// any embedded picture, and folder art in the art module, so a slot the
+/// file doesn't carry still shows something.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArtPick {
+    #[default]
+    Front,
+    Disc,
+    Back,
+    Artist,
+}
+
+impl ArtPick {
+    fn kind(self) -> rox_library::art::ArtKind {
+        match self {
+            ArtPick::Front => rox_library::art::ArtKind::Front,
+            ArtPick::Disc => rox_library::art::ArtKind::Media,
+            ArtPick::Back => rox_library::art::ArtKind::Back,
+            ArtPick::Artist => rox_library::art::ArtKind::Artist,
+        }
+    }
+}
+
+/// Dress the artwork as a physical disc, whatever picture the slot
+/// carries: the face of a CD under its translucent plastic, or the label
+/// of a vinyl record. Off leaves the picture flat.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiscStyle {
+    #[default]
+    Off,
+    Cd,
+    Vinyl,
+}
+
+/// The shape a disc bake takes: the styles above, plus the bare circular
+/// crop a spinning disc scan gets, since a real scan carries its own hole
+/// and label.
+#[derive(Clone, Copy, PartialEq)]
+enum DiscShape {
+    Crop,
+    Cd,
+    Vinyl,
+}
+
 /// The cover panel's per-view config: what a saved layout restores, and
 /// what the settings window edits.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CoverConfig {
     /// The rename, theme override, and placement locks shared by every
     /// panel.
@@ -40,12 +120,53 @@ pub struct CoverConfig {
     pub chrome: PanelChrome,
     #[serde(default)]
     pub source: TrackSource,
+    /// The picture slot to show, front by default.
+    #[serde(default)]
+    pub art: ArtPick,
     #[serde(default)]
     pub align: Align,
     /// Stretch the art to fill the panel, ignoring its aspect ratio,
     /// instead of letterboxing it to fit.
     #[serde(default)]
     pub stretch: bool,
+    /// Spin the disc while a track plays, ramping up to speed and coasting
+    /// back down on pause like a real player. Applies when the panel shows
+    /// a disc: the disc art slot, or any art in a disc style.
+    #[serde(default)]
+    pub spin: bool,
+    /// Full spin speed, in revolutions per minute.
+    #[serde(default = "default_spin_rpm")]
+    pub spin_rpm: f32,
+    /// Seconds the spin takes from rest to full speed, and back.
+    #[serde(default = "default_spin_ramp")]
+    pub spin_ramp: f32,
+    /// The disc dress-up: off, CD, or vinyl.
+    #[serde(default)]
+    pub disc_style: DiscStyle,
+}
+
+fn default_spin_rpm() -> f32 {
+    SPIN_RPM_DEFAULT
+}
+
+fn default_spin_ramp() -> f32 {
+    SPIN_RAMP_DEFAULT
+}
+
+impl Default for CoverConfig {
+    fn default() -> Self {
+        CoverConfig {
+            chrome: PanelChrome::default(),
+            source: TrackSource::default(),
+            art: ArtPick::default(),
+            align: Align::default(),
+            stretch: false,
+            spin: false,
+            spin_rpm: SPIN_RPM_DEFAULT,
+            spin_ramp: SPIN_RAMP_DEFAULT,
+            disc_style: DiscStyle::Off,
+        }
+    }
 }
 
 /// One thing the panel can show. The fade runs between two of these.
@@ -58,26 +179,45 @@ enum Slide {
     /// The track has no art anywhere: the dim disc stand-in.
     Disc,
     /// A track's artwork, with its width over height so the art layer can
-    /// size itself to the letterboxed fit.
-    Art(Arc<Image>, f32),
+    /// size itself to the letterboxed fit, and the disc bake when the
+    /// panel shows it as one.
+    Art(Arc<Image>, f32, Option<Arc<RenderImage>>),
 }
 
 impl Slide {
     /// Same visual target; art compares by content id so a cache drop and
-    /// re-read of the same bytes never fades a cover into itself.
+    /// re-read of the same bytes never fades a cover into itself, plus the
+    /// bake's identity so flipping the disc shape does fade over.
     fn same(&self, other: &Slide) -> bool {
         match (self, other) {
             (Slide::Blank, Slide::Blank)
             | (Slide::Empty, Slide::Empty)
             | (Slide::Disc, Slide::Disc) => true,
-            (Slide::Art(a, _), Slide::Art(b, _)) => a.id() == b.id(),
+            (Slide::Art(a, _, base_a), Slide::Art(b, _, base_b)) => {
+                a.id() == b.id()
+                    && match (base_a, base_b) {
+                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            }
             _ => false,
+        }
+    }
+
+    /// The disc bake behind the slide, if it carries one.
+    fn disc_base(&self) -> Option<&Arc<RenderImage>> {
+        match self {
+            Slide::Art(_, _, Some(base)) => Some(base),
+            _ => None,
         }
     }
 }
 
-/// Loaded cover art with its aspect ratio; None means the track has no art.
-type LoadedArt = Option<(Arc<Image>, f32)>;
+/// Loaded cover art with its aspect ratio and, when the panel shows it as
+/// a disc, the masked square bake the GPU spins; None means the track has
+/// no art.
+type LoadedArt = Option<(Arc<Image>, f32, Option<Arc<RenderImage>>)>;
 
 pub struct CoverArtPanel {
     state: AppState,
@@ -98,6 +238,16 @@ pub struct CoverArtPanel {
     from: Slide,
     to: Slide,
     fade_at: Instant,
+    /// The disc's rotation and angular velocity in radians, and the last
+    /// frame's clock for the per-frame step.
+    angle: f32,
+    velocity: f32,
+    spin_tick: Instant,
+    /// The spin speed and ramp sliders' drag state, and the panel's one
+    /// in-flight readout edit.
+    rpm_scrub: ScrubState,
+    ramp_scrub: ScrubState,
+    value_edit: ValueEdit,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -144,8 +294,14 @@ impl CoverArtPanel {
                 std::mem::replace(&mut this.from, Slide::Blank),
                 std::mem::replace(&mut this.to, Slide::Blank),
             ] {
-                if let Slide::Art(image, _) = slide {
+                if let Slide::Art(image, _, disc) = slide {
                     image.remove_asset(cx);
+                    // The disc bake bypasses the asset cache, so it leaves
+                    // the sprite atlases directly; dropping an already
+                    // dropped bake is a no-op.
+                    if let Some(disc) = disc {
+                        cx.drop_image(disc, None);
+                    }
                 }
             }
         });
@@ -161,6 +317,12 @@ impl CoverArtPanel {
             // Backdated so a fresh panel starts settled instead of fading
             // blank into blank.
             fade_at: Instant::now() - std::time::Duration::from_secs_f32(tokens::EASE_SECS),
+            angle: 0.0,
+            velocity: 0.0,
+            spin_tick: Instant::now(),
+            rpm_scrub: ScrubState::default(),
+            ramp_scrub: ScrubState::default(),
+            value_edit: ValueEdit::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
@@ -182,13 +344,15 @@ impl CoverArtPanel {
         self.generation += 1;
         let generation = self.generation;
         let path = path.to_path_buf();
+        let kind = self.config.art.kind();
+        let disc = self.disc_mode();
         cx.spawn(async move |this, cx| {
             let loaded = cx
                 .background_executor()
                 .spawn({
                     let path = path.clone();
                     async move {
-                        rox_library::art::cover_art(&path).and_then(|(bytes, mime)| {
+                        rox_library::art::cover_art_of(&path, kind).and_then(|(bytes, mime)| {
                             let format = ImageFormat::from_mime_type(&mime)?;
                             // The shape off the header alone, no decode:
                             // the art layer sizes itself by it so alignment
@@ -198,7 +362,10 @@ impl CoverArtPanel {
                                 .ok()
                                 .and_then(|reader| reader.into_dimensions().ok())
                                 .map_or(1.0, |(w, h)| w as f32 / h.max(1) as f32);
-                            Some((Arc::new(Image::from_bytes(format, bytes)), ratio))
+                            let base = disc
+                                .and_then(|shape| bake_disc(&bytes, shape))
+                                .map(|disc| Arc::new(RenderImage::new(vec![Frame::new(disc)])));
+                            Some((Arc::new(Image::from_bytes(format, bytes)), ratio, base))
                         })
                     }
                 })
@@ -245,19 +412,106 @@ impl CoverArtPanel {
     /// cache and never evicts on its own, so without this a long session
     /// pins one full-size bitmap per album played.
     fn retire(&self, slide: Slide, cx: &mut App) {
-        let Slide::Art(image, _) = slide else {
+        let Slide::Art(image, _, disc) = slide else {
             return;
         };
+        // The disc bake goes straight into the sprite atlases, not the
+        // asset cache, so it drops from them directly unless another slide
+        // still shows the same bake.
+        if let Some(disc) = disc {
+            let showing =
+                |s: &Slide| matches!(s, Slide::Art(_, _, Some(d)) if Arc::ptr_eq(d, &disc));
+            if !showing(&self.from) && !showing(&self.to) {
+                cx.drop_image(disc, None);
+            }
+        }
         let id = image.id();
-        let showing = |s: &Slide| matches!(s, Slide::Art(img, _) if img.id() == id);
+        let showing = |s: &Slide| matches!(s, Slide::Art(img, ..) if img.id() == id);
         if showing(&self.from) || showing(&self.to) {
             return;
         }
         image.remove_asset(cx);
     }
 
-    /// The panel's own dropdown entries: the source pick, the same knob the
-    /// customize window edits.
+    /// Point the panel at a different picture slot: drop the cached art
+    /// and the load in flight so the next render fetches the new slot,
+    /// fading over once it lands.
+    fn set_art(&mut self, art: ArtPick, cx: &mut Context<Self>) {
+        if self.config.art == art {
+            return;
+        }
+        self.config.art = art;
+        self.reload_art(cx);
+    }
+
+    /// Drop the cached art and the load in flight so the next render
+    /// fetches afresh, fading over once it lands.
+    fn reload_art(&mut self, cx: &mut Context<Self>) {
+        self.art = None;
+        self.pending = None;
+        self.generation += 1;
+        cx.notify();
+    }
+
+    /// Whether the loaded art gets a disc bake, and in which shape: None
+    /// for the plain picture, the bare crop for a spinning disc scan, or
+    /// the picked dress-up style.
+    fn disc_mode(&self) -> Option<DiscShape> {
+        match self.config.disc_style {
+            DiscStyle::Cd => Some(DiscShape::Cd),
+            DiscStyle::Vinyl => Some(DiscShape::Vinyl),
+            DiscStyle::Off if self.config.spin && self.config.art == ArtPick::Disc => {
+                Some(DiscShape::Crop)
+            }
+            DiscStyle::Off => None,
+        }
+    }
+
+    /// Pick the disc dress-up, reloading the art when the bake changes.
+    fn set_disc_style(&mut self, style: DiscStyle, cx: &mut Context<Self>) {
+        self.edit_disc_config(|config| config.disc_style = style, cx);
+    }
+
+    /// Flip the spin: turning it off also rests the disc upright, so a
+    /// motionless disc never sits at a stray angle.
+    fn set_spin(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.edit_disc_config(|config| config.spin = on, cx);
+        if !on {
+            self.angle = 0.0;
+            self.velocity = 0.0;
+        }
+    }
+
+    /// Flip a config knob that may change the disc bake: when it does, the
+    /// art reloads so the new shape fades over.
+    fn edit_disc_config(&mut self, edit: impl FnOnce(&mut CoverConfig), cx: &mut Context<Self>) {
+        let before = self.disc_mode();
+        edit(&mut self.config);
+        if self.disc_mode() != before {
+            self.reload_art(cx);
+        }
+        cx.notify();
+    }
+
+    /// The labelled art slots, the settings row's and the flyout's one
+    /// list.
+    const ART_PICKS: [(&'static str, ArtPick); 4] = [
+        ("Front", ArtPick::Front),
+        ("Disc", ArtPick::Disc),
+        ("Back", ArtPick::Back),
+        ("Artist", ArtPick::Artist),
+    ];
+
+    /// The labelled disc styles, the settings row's and the flyout's one
+    /// list.
+    const DISC_STYLES: [(&'static str, DiscStyle); 3] = [
+        ("Off", DiscStyle::Off),
+        ("CD", DiscStyle::Cd),
+        ("Vinyl", DiscStyle::Vinyl),
+    ];
+
+    /// The panel's own dropdown entries: the source and artwork picks,
+    /// the same knobs the customize window edits.
     fn config_menu(
         &self,
         menu: PopupMenu,
@@ -275,19 +529,61 @@ impl CoverArtPanel {
             window,
             cx,
         );
-        let weak = cx.entity().downgrade();
-        menu.separator().item(
-            PopupMenuItem::new("Stretch to Fill")
-                .icon(Icon::default().path(icons::MAXIMIZE))
-                .checked(self.config.stretch)
-                .on_click(move |_, _, cx| {
-                    let Some(this) = weak.upgrade() else { return };
-                    this.update(cx, |this, cx| {
-                        this.config.stretch = !this.config.stretch;
-                        cx.notify();
-                    });
-                }),
-        )
+        let panel = cx.entity();
+        let submenu = PopupMenu::build(window, cx, move |submenu, _, cx| {
+            // Follow the panel so the picked row's tick swaps live, the
+            // source flyout's rule.
+            panel::follow_panel(&panel, cx);
+            let mut submenu = submenu.check_side(gpui_component::Side::Right);
+            for (label, pick) in Self::ART_PICKS {
+                submenu = submenu.item(panel::check_row(
+                    label,
+                    None,
+                    move |this: &Self| this.config.art == pick,
+                    move |this, cx| this.set_art(pick, cx),
+                    &panel,
+                ));
+            }
+            submenu
+        });
+        let menu = menu.item(PopupMenuItem::submenu("Artwork", submenu));
+        let panel = cx.entity();
+        let submenu = PopupMenu::build(window, cx, move |submenu, _, cx| {
+            // Follow the panel so the picked row's tick swaps live, the
+            // source flyout's rule.
+            panel::follow_panel(&panel, cx);
+            let mut submenu = submenu.check_side(gpui_component::Side::Right);
+            for (label, style) in Self::DISC_STYLES {
+                submenu = submenu.item(panel::check_row(
+                    label,
+                    None,
+                    move |this: &Self| this.config.disc_style == style,
+                    move |this, cx| this.set_disc_style(style, cx),
+                    &panel,
+                ));
+            }
+            submenu
+        });
+        let menu = menu.item(PopupMenuItem::submenu("Disc Style", submenu));
+        let panel = cx.entity();
+        menu.separator()
+            .item(panel::check_row(
+                "Stretch to Fill",
+                Some(icons::MAXIMIZE),
+                |this: &Self| this.config.stretch,
+                |this, cx| {
+                    this.config.stretch = !this.config.stretch;
+                    cx.notify();
+                },
+                &panel,
+            ))
+            .item(panel::check_row(
+                "Spin Disc",
+                Some(icons::REFRESH_CW),
+                |this: &Self| this.config.spin,
+                |this, cx| this.set_spin(!this.config.spin, cx),
+                &panel,
+            ))
     }
 }
 
@@ -332,6 +628,16 @@ impl PanelSettings for CoverArtPanel {
                 },
                 cx,
             ))
+            .child(panel::setting_row(
+                "Artwork",
+                Some("Which picture to show; a slot the file doesn't carry falls back to the front cover"),
+                panel::choices(
+                    &Self::ART_PICKS,
+                    self.config.art,
+                    |this: &mut Self, art, cx| this.set_art(art, cx),
+                    cx,
+                ),
+            ))
             .child(align_row(
                 self.config.align,
                 |this: &mut Self, align, cx| {
@@ -352,6 +658,66 @@ impl PanelSettings for CoverArtPanel {
                     cx,
                 ),
             ))
+            .child(panel::setting_row(
+                "Disc Style",
+                Some("Dress the artwork as a CD or as a vinyl record's label"),
+                panel::choices(
+                    &Self::DISC_STYLES,
+                    self.config.disc_style,
+                    |this: &mut Self, style, cx| this.set_disc_style(style, cx),
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Spin",
+                Some("Rotate the disc while a track plays; applies to the disc slot or a disc style"),
+                panel::toggle(
+                    self.config.spin,
+                    |this: &mut Self, on, cx| this.set_spin(on, cx),
+                    cx,
+                ),
+            ))
+            .when(self.config.spin, |page| {
+                let rpm = ((self.config.spin_rpm - SPIN_RPM_MIN) / (SPIN_RPM_MAX - SPIN_RPM_MIN))
+                    .clamp(0., 1.);
+                let ramp = (self.config.spin_ramp / SPIN_RAMP_MAX).clamp(0., 1.);
+                page.child(panel::setting_row(
+                    "Spin Speed",
+                    Some("Full speed, in revolutions per minute"),
+                    panel::value_slider_edit(
+                        &self.rpm_scrub,
+                        &self.value_edit,
+                        rpm,
+                        format!("{} rpm", self.config.spin_rpm.round() as u32),
+                        format!("{}", self.config.spin_rpm.round() as u32),
+                        |v| (v - SPIN_RPM_MIN) / (SPIN_RPM_MAX - SPIN_RPM_MIN),
+                        |this: &mut Self, fraction, cx| {
+                            this.config.spin_rpm =
+                                (SPIN_RPM_MIN + fraction * (SPIN_RPM_MAX - SPIN_RPM_MIN)).round();
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    "Spin Ramp",
+                    Some("How long the disc takes to reach full speed, and to coast back down"),
+                    panel::value_slider_edit(
+                        &self.ramp_scrub,
+                        &self.value_edit,
+                        ramp,
+                        format!("{:.1}s", self.config.spin_ramp),
+                        format!("{:.1}", self.config.spin_ramp),
+                        |v| v / SPIN_RAMP_MAX,
+                        |this: &mut Self, fraction, cx| {
+                            this.config.spin_ramp =
+                                (fraction * SPIN_RAMP_MAX * 10.0).round() / 10.0;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+            })
             .into_any_element()
     }
 }
@@ -466,6 +832,7 @@ impl Panel for CoverArtPanel {
 /// by a cover running edge to edge.
 fn layer(
     slide: &Slide,
+    angle: f32,
     opacity: f32,
     align: Align,
     rounding: Option<f32>,
@@ -530,18 +897,44 @@ fn layer(
                 ),
             )
         }
+        // The disc'd art: the square bake in the same letterboxed fit,
+        // spun on the GPU about its center. A disc keeps its circle, so
+        // the stretch and the corner rounding don't apply.
+        Slide::Art(_, _, Some(disc)) => {
+            let disc = disc.clone();
+            let mut frame = div().w_full().max_h_full();
+            frame.style().aspect_ratio = Some(1.0);
+            base.child(
+                frame.child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            let _ = window.paint_image_transformed(
+                                bounds,
+                                Corners::default(),
+                                disc,
+                                0,
+                                false,
+                                Transformation::rotate(radians(angle)),
+                            );
+                        },
+                    )
+                    .size_full(),
+                ),
+            )
+        }
         // The frame hugs the letterboxed fit instead of filling the panel -
         // full width, the height cap transferring back through the art's
         // own ratio - so the alignment above has something to place.
         // Stretch fills the panel edge to edge, dropping the aspect ratio
         // and the alignment along with it; the letterboxed fit keeps both.
-        Slide::Art(image, _) if stretch => base.child(
+        Slide::Art(image, _, None) if stretch => base.child(
             img(image.clone())
                 .object_fit(ObjectFit::Fill)
                 .size_full()
                 .when_some(rounding, |d, radius| d.rounded(px(radius))),
         ),
-        Slide::Art(image, ratio) => {
+        Slide::Art(image, ratio, None) => {
             let mut frame = div().w_full().max_h_full();
             frame.style().aspect_ratio = Some(*ratio);
             base.child(
@@ -555,6 +948,125 @@ fn layer(
         }
     }
     .into_any_element()
+}
+
+/// One cover into disc form, run off the UI thread once per art load.
+/// Crop is the bare anti-aliased circle for a real disc scan, which
+/// carries its own hole and label. CD lays the translucent plastic
+/// overlay over the art and cuts the hole; Vinyl shrinks the art into
+/// the record's label window and punches the spindle. With an overlay
+/// missing or unreadable the styles fall back to the bare crop.
+fn bake_disc(bytes: &[u8], shape: DiscShape) -> Option<RgbaImage> {
+    let art = image::load_from_memory(bytes).ok()?;
+    let (width, height) = (art.width(), art.height());
+    let side = width.min(height);
+    if side == 0 {
+        return None;
+    }
+    let art = art.crop_imm((width - side) / 2, (height - side) / 2, side, side);
+    let overlay = match shape {
+        DiscShape::Crop => None,
+        DiscShape::Cd => disc_overlay(DiscStyle::Cd),
+        DiscShape::Vinyl => disc_overlay(DiscStyle::Vinyl),
+    };
+    let mut disc = match (shape, overlay) {
+        (DiscShape::Crop, _) | (_, None) => {
+            let size = side.min(DISC_SIZE);
+            let mut disc = art.thumbnail_exact(size, size).into_rgba8();
+            mask_circle(&mut disc, None);
+            disc
+        }
+        (DiscShape::Cd, Some(overlay)) => {
+            let mut disc = art
+                .thumbnail_exact(DISC_SIZE, DISC_SIZE)
+                .into_rgba8();
+            for (pixel, top) in disc.pixels_mut().zip(overlay.pixels()) {
+                pixel.0 = over(top.0, pixel.0);
+            }
+            mask_circle(&mut disc, Some(CD_HOLE));
+            disc
+        }
+        (DiscShape::Vinyl, Some(overlay)) => {
+            // The art shrinks to the label window; its square corners
+            // reach past the window's circle but stay under the opaque
+            // record, so the window's own edge does the masking.
+            let label = (VINYL_LABEL * DISC_SIZE as f32) as u32;
+            let label_art = art.thumbnail_exact(label, label).into_rgba8();
+            let offset = (DISC_SIZE - label) / 2;
+            let mut disc = RgbaImage::new(DISC_SIZE, DISC_SIZE);
+            for (x, y, pixel) in disc.enumerate_pixels_mut() {
+                let base = if (offset..offset + label).contains(&x)
+                    && (offset..offset + label).contains(&y)
+                {
+                    label_art.get_pixel(x - offset, y - offset).0
+                } else {
+                    [0, 0, 0, 0]
+                };
+                pixel.0 = over(overlay.get_pixel(x, y).0, base);
+            }
+            mask_circle(&mut disc, Some(VINYL_HOLE));
+            disc
+        }
+    };
+    // The renderer's BGRA, the same swizzle gpui's own decode does.
+    for pixel in disc.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    Some(disc)
+}
+
+/// The disc overlay art, decoded and sized to the bake once per run.
+fn disc_overlay(style: DiscStyle) -> Option<&'static RgbaImage> {
+    static CD: OnceLock<Option<RgbaImage>> = OnceLock::new();
+    static VINYL: OnceLock<Option<RgbaImage>> = OnceLock::new();
+    let (cell, path) = match style {
+        DiscStyle::Cd => (&CD, "disc/cd.png"),
+        DiscStyle::Vinyl => (&VINYL, "disc/vinyl.png"),
+        DiscStyle::Off => return None,
+    };
+    cell.get_or_init(|| {
+        let file = crate::assets::Assets::get(path)?;
+        let overlay = image::load_from_memory(&file.data).ok()?;
+        Some(overlay.thumbnail_exact(DISC_SIZE, DISC_SIZE).into_rgba8())
+    })
+    .as_ref()
+}
+
+/// Straight-alpha "over": `top` composited onto `base`.
+fn over(top: [u8; 4], base: [u8; 4]) -> [u8; 4] {
+    let top_a = top[3] as f32 / 255.0;
+    let base_a = base[3] as f32 / 255.0 * (1.0 - top_a);
+    let alpha = top_a + base_a;
+    if alpha <= 0.0 {
+        return [0, 0, 0, 0];
+    }
+    let mix = |t: u8, b: u8| ((t as f32 * top_a + b as f32 * base_a) / alpha).round() as u8;
+    [
+        mix(top[0], base[0]),
+        mix(top[1], base[1]),
+        mix(top[2], base[2]),
+        (alpha * 255.0).round() as u8,
+    ]
+}
+
+/// The bake's geometry mask: the anti-aliased outer circle, and the
+/// center hole when the shape cuts one.
+fn mask_circle(disc: &mut RgbaImage, hole: Option<f32>) {
+    let size = disc.width();
+    let center = (size as f32 - 1.0) / 2.0;
+    let radius = center;
+    for (x, y, pixel) in disc.enumerate_pixels_mut() {
+        let dx = x as f32 - center;
+        let dy = y as f32 - center;
+        let r = (dx * dx + dy * dy).sqrt();
+        let mut alpha = ((radius - r) / DISC_AA).clamp(0.0, 1.0);
+        if let Some(hole) = hole {
+            alpha *= ((r - hole * radius) / DISC_AA).clamp(0.0, 1.0);
+        }
+        if alpha < 1.0 {
+            pixel.0[3] = (pixel.0[3] as f32 * alpha).round() as u8;
+        }
+    }
 }
 
 impl Render for CoverArtPanel {
@@ -572,7 +1084,9 @@ impl CoverArtPanel {
                 self.ensure_art(&path, cx);
                 let target = match &self.art {
                     Some((cached, art)) if *cached == path => Some(match art {
-                        Some((image, ratio)) => Slide::Art(image.clone(), *ratio),
+                        Some((image, ratio, base)) => {
+                            Slide::Art(image.clone(), *ratio, base.clone())
+                        }
                         None => Slide::Disc,
                     }),
                     // A load is still on its way; the current slide stays up
@@ -585,33 +1099,155 @@ impl CoverArtPanel {
             }
         }
 
-        // Frames only while a fade is actually running; a settled panel
-        // costs zero.
+        // The spin: velocity ramps toward full speed while a track plays
+        // and back to rest when it stops, the angle integrating per frame.
+        // Runs only with a disc bake on screen, so the plain picture never
+        // pays for it.
+        let has_disc = self.to.disc_base().is_some() || self.from.disc_base().is_some();
+        let mut spinning = false;
+        if has_disc {
+            let dt = self.spin_tick.elapsed().as_secs_f32().min(0.1);
+            let full = self.config.spin_rpm.max(0.0) * TAU / 60.0;
+            let target = if self.config.spin && self.state.player.read(cx).is_playing() {
+                full
+            } else {
+                0.0
+            };
+            if self.config.spin_ramp <= f32::EPSILON || full <= f32::EPSILON {
+                self.velocity = target;
+            } else {
+                let step = full / self.config.spin_ramp * dt;
+                self.velocity += (target - self.velocity).clamp(-step, step);
+            }
+            self.angle = (self.angle + self.velocity * dt).rem_euclid(TAU);
+            spinning = self.velocity != 0.0 || target != 0.0;
+        }
+        self.spin_tick = Instant::now();
+
+        // Frames only while a fade or the spin is actually running; a
+        // settled panel costs zero.
         let u = (self.fade_at.elapsed().as_secs_f32() / tokens::EASE_SECS).min(1.0);
-        if u < 1.0 {
+        if u < 1.0 || spinning {
             window.request_animation_frame();
         }
         // Smoothstepped so the fade eases out instead of stopping dead.
         let u = u * u * (3.0 - 2.0 * u);
 
+        let angle = self.angle;
         let align = self.config.align;
         let rounding = self.config.chrome.theme.rounding;
         let stretch = self.config.stretch;
-        let root = div().size_full().bg(palette::bg_root()).relative();
-        if u >= 1.0 {
-            root.child(layer(&self.to, 1.0, align, rounding, stretch))
+        // The layers hang off an in-flow inner wrapper, not the root the
+        // theme pads: absolute insets resolve against the container minus
+        // its border only, so on the root the frame padding would never
+        // reach them.
+        let inner = div().size_full().relative();
+        let inner = if u >= 1.0 {
+            inner.child(layer(&self.to, angle, 1.0, align, rounding, stretch))
         } else {
             // Hold the outgoing cover at full under an incoming one so a
             // same-art track change never dips toward the background, the
-            // backdrop's move. When what's coming isn't a cover (the disc
-            // stand-in, the empty sleeve), fade the old one out instead.
-            let floor = if matches!(self.to, Slide::Art(..)) {
+            // backdrop's move. A disc'd incoming has transparent surround
+            // the old art would show through, and everything else coming in
+            // (the stand-ins) covers nothing, so both cross-fade instead.
+            let floor = if matches!(self.to, Slide::Art(_, _, None)) {
                 1.0
             } else {
                 1.0 - u
             };
-            root.child(layer(&self.from, floor, align, rounding, stretch))
-                .child(layer(&self.to, u, align, rounding, stretch))
+            inner
+                .child(layer(&self.from, angle, floor, align, rounding, stretch))
+                .child(layer(&self.to, angle, u, align, rounding, stretch))
+        };
+        div()
+            .size_full()
+            .bg(palette::bg_root())
+            .relative()
+            .child(inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png_of(image: RgbaImage) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
+
+    /// Each shape masks as its physical object: the crop keeps its center
+    /// (a scan carries its own hole), the CD shows the art through the
+    /// plastic and cuts the hole, the vinyl shrinks the art to the label
+    /// window, stays dark across the grooves, and punches the spindle.
+    #[test]
+    fn bake_shapes_the_disc() {
+        let bytes = png_of(RgbaImage::from_pixel(
+            64,
+            64,
+            image::Rgba([200, 10, 10, 255]),
+        ));
+        let crop = bake_disc(&bytes, DiscShape::Crop).unwrap();
+        assert_eq!(crop.get_pixel(0, 0).0[3], 0, "corner should mask out");
+        assert_eq!(crop.get_pixel(32, 32).0[3], 255, "the crop keeps its center");
+        let sample = crop.get_pixel(32, 32).0;
+        assert!(
+            sample[2] > sample[0],
+            "red should land in the BGRA red slot"
+        );
+
+        let center = DISC_SIZE / 2;
+        let at = |fraction: f32| center + (fraction * center as f32) as u32;
+        let cd = bake_disc(&bytes, DiscShape::Cd).unwrap();
+        assert_eq!(cd.width(), DISC_SIZE, "styles bake at full size");
+        assert_eq!(cd.get_pixel(center, center).0[3], 0, "the CD cuts its hole");
+        let face = cd.get_pixel(at(0.6), center).0;
+        assert_eq!(face[3], 255);
+        assert!(face[2] > face[0], "the art shows through the plastic");
+
+        let vinyl = bake_disc(&bytes, DiscShape::Vinyl).unwrap();
+        assert_eq!(
+            vinyl.get_pixel(center, center).0[3],
+            0,
+            "the vinyl punches its spindle hole"
+        );
+        let label = vinyl.get_pixel(at(0.2), center).0;
+        assert!(label[2] > 100, "the label window shows the art");
+        let groove = vinyl.get_pixel(at(0.7), center).0;
+        assert_eq!(groove[3], 255);
+        assert!(groove[2] < 60, "the record stays dark");
+    }
+
+    /// Not a test: dumps the bakes to /tmp for eyeballing. Run by hand
+    /// with --ignored.
+    #[test]
+    #[ignore]
+    fn dump_bakes() {
+        let art = RgbaImage::from_fn(400, 400, |x, y| {
+            let checker = ((x / 50) + (y / 50)) % 2 == 0;
+            image::Rgba(if checker {
+                [200, 60, 30, 255]
+            } else {
+                [240, 220, 200, 255]
+            })
+        });
+        let bytes = png_of(art);
+        for (name, shape) in [
+            ("crop", DiscShape::Crop),
+            ("cd", DiscShape::Cd),
+            ("vinyl", DiscShape::Vinyl),
+        ] {
+            let mut disc = bake_disc(&bytes, shape).unwrap();
+            for pixel in disc.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+            disc.save(format!("/tmp/bake-{name}.png")).unwrap();
         }
     }
 }

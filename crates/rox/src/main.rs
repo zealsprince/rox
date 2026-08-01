@@ -260,11 +260,13 @@ fn main() {
         settings::set_theme(settings.theme, cx);
         palette::set_scalars(settings.surface_opacity, settings.backdrop_strength, cx);
         settings::set_app_frame(settings.frame, cx);
+        settings::set_seams(settings.seams, cx);
         palette::set_keep_theme(settings.keep_theme, cx);
         palette::set_art_theming(settings.art_theming, cx);
         settings::set_app_font(settings.app_font.clone(), cx);
         palette::set_app_font_size(settings.app_font_size, cx);
         settings::set_rating_style(settings.rating_style, cx);
+        settings::set_rating_dots(settings.rating_dots, cx);
         settings::set_hide_menubar(settings.hide_menubar, cx);
         settings::set_os_decorations(settings.os_decorations);
         settings::set_quit_to_tray(settings.quit_to_tray);

@@ -1,20 +1,24 @@
-//! The tag repair window: find and rewrite the files carrying the ID3v2.4
-//! double-unsync tag shape lofty (through 0.24) reads mangled. Reads
-//! already tolerate the shape through `tag_source`, so the library shows
-//! these files right; the bytes on disk stay broken, and any tool without
-//! the same workaround trips on them. A commit through the writer repairs a
-//! file for good (it clears the header unsync flag on write), so this
-//! window is the way to run that repair across a selection without editing
-//! a field by hand.
+//! The tag repair window: find and rewrite the files carrying tag shapes
+//! lofty (through 0.24) reads mangled or refuses to write: the ID3v2.4
+//! double-unsync shape, the stray null on a UTF-16 text frame, and zero
+//! padding left outside the declared tag size. Reads already tolerate
+//! these through `tag_source`, so the library shows such files right; the
+//! bytes on disk stay broken, and any tool without the same workarounds
+//! trips on them. A commit through the writer repairs a file for good, so
+//! this window is the way to run that repair across a selection without
+//! editing a field by hand.
 //!
 //! Scope is the whole library (every remembered folder) or one folder the
-//! user picks. A scan walks the scope, flags each file the same gate
-//! `tag_source::open` clears the header flag for, and lists the hits with a
-//! checkbox each. Repair commits a no-op edit to every checked file through
-//! the writer's atomic layer, so the copy-verify-rename safety guards every
-//! rewrite. Repaired files that live under a library root reindex so their
-//! stored mtime and size match the rewrite and the next scan leaves them
-//! alone.
+//! user picks. A scan walks the scope, flags each file the writer's
+//! rewrite would repair (the `tag_source::needs_repair` gate), and lists
+//! the hits with a checkbox each. A file whose tags fail to parse even
+//! through the sanitiser is listed too, unchecked, with its error in
+//! place of its folder: the rewrite cannot mend it yet, but it should
+//! not pass a repair scan silently. Repair commits a no-op edit to every
+//! checked file through the writer's atomic layer, so the
+//! copy-verify-rename safety guards every rewrite. Repaired files that
+//! live under a library root reindex so their stored mtime and size
+//! match the rewrite and the next scan leaves them alone.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -54,15 +58,17 @@ enum Scope {
 
 /// One affected file: the path to repair, its file name, and the folder it
 /// sits in, so the list disambiguates the many "01. ....mp3" that share a
-/// name across albums.
+/// name across albums. A file the rewrite cannot repair carries its parse
+/// error instead, shown in the folder's place.
 struct RepairRow {
     path: PathBuf,
     name: SharedString,
     folder: SharedString,
+    issue: Option<SharedString>,
 }
 
 impl RepairRow {
-    fn from_path(path: PathBuf) -> Self {
+    fn from_path(path: PathBuf, issue: Option<String>) -> Self {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -76,7 +82,15 @@ impl RepairRow {
             path,
             name: name.into(),
             folder: folder.into(),
+            issue: issue.map(Into::into),
         }
+    }
+
+    /// Whether the writer's rewrite can repair this file; an unparseable
+    /// one is listed for visibility but starts unchecked, since its
+    /// commit would only fail.
+    fn repairable(&self) -> bool {
+        self.issue.is_none()
     }
 }
 
@@ -263,7 +277,20 @@ impl TagRepair {
                     .spawn(async move {
                         chunk
                             .into_iter()
-                            .filter(|path| rox_library::tag_source::needs_unsync_repair(path))
+                            .filter_map(|path| {
+                                // The repairable shapes first, then the
+                                // files whose tags fail to parse even
+                                // sanitised: those cannot be rewritten yet,
+                                // but a repair scan must not pass them
+                                // silently.
+                                if rox_library::tag_source::needs_repair(&path) {
+                                    return Some((path, None));
+                                }
+                                match rox_library::writer::readable(&path) {
+                                    Ok(()) => None,
+                                    Err(e) => Some((path, Some(e))),
+                                }
+                            })
                             .collect::<Vec<_>>()
                     })
                     .await;
@@ -274,9 +301,10 @@ impl TagRepair {
                 // nothing.
                 if this
                     .update(cx, |this, cx| {
-                        for path in hits {
-                            this.found.push(RepairRow::from_path(path));
-                            this.checked.push(true);
+                        for (path, issue) in hits {
+                            let row = RepairRow::from_path(path, issue);
+                            this.checked.push(row.repairable());
+                            this.found.push(row);
                         }
                         this.scan_done = (this.scan_done + n).min(this.scan_total);
                         cx.notify();
@@ -414,7 +442,7 @@ impl TagRepair {
                     .filter(|row| !done.contains(&row.path))
                     .collect();
                 this.found = kept;
-                this.checked = vec![true; this.found.len()];
+                this.checked = this.found.iter().map(RepairRow::repairable).collect();
                 this.repairing = false;
                 let n = done.len();
                 this.result = Some(if failures > 0 {
@@ -481,7 +509,7 @@ impl TagRepair {
         let region = div().flex_1().min_h_0().flex().flex_col();
         if self.found.is_empty() {
             let message = if !self.scanned {
-                "Scan to find files carrying the broken ID3v2.4 tag shape."
+                "Scan to find files with tag damage a rewrite repairs."
             } else {
                 "No affected files found."
             };
@@ -581,23 +609,27 @@ impl TagRepair {
                         .hover(|d| d.bg(palette::bg_control_hover()))
                         .on_click(cx.listener(move |this, _, _, cx| this.toggle(i, cx)))
                         .child(checkbox(checked))
-                        .child(
+                        .child({
+                            // The parse error outranks the folder on the
+                            // second line: an unrepairable file's row has
+                            // to say why it sits here unchecked.
+                            let detail = row.issue.clone().unwrap_or_else(|| row.folder.clone());
                             div()
                                 .flex_1()
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
                                 .child(div().truncate().child(row.name.clone()))
-                                .when(!row.folder.is_empty(), |d| {
+                                .when(!detail.is_empty(), |d| {
                                     d.child(
                                         div()
                                             .text_xs()
                                             .text_color(palette::text_muted())
                                             .truncate()
-                                            .child(row.folder.clone()),
+                                            .child(detail),
                                     )
-                                }),
-                        ),
+                                })
+                        }),
                 )
             })
             .collect()

@@ -1,0 +1,57 @@
+--- a/src/table/mod.rs
++++ b/src/table/mod.rs
+@@ -35,6 +35,8 @@
+     stripe: bool,
+     /// Set to use border style of the table.
+     bordered: bool,
++    /// rox patch: whether each row draws its bottom hairline.
++    row_borders: bool,
+     /// The cell size of the table.
+     size: Size,
+ }
+@@ -45,6 +47,7 @@
+             scrollbar_visible: Edges::all(true),
+             stripe: false,
+             bordered: true,
++            row_borders: true,
+             size: Size::default(),
+         }
+     }
+@@ -81,6 +84,12 @@
+         self
+     }
+ 
++    /// rox patch: set to draw each row's bottom hairline, default to true.
++    pub fn row_borders(mut self, row_borders: bool) -> Self {
++        self.options.row_borders = row_borders;
++        self
++    }
++
+     /// Set scrollbar visibility.
+     pub fn scrollbar_visible(mut self, vertical: bool, horizontal: bool) -> Self {
+         self.options.scrollbar_visible = Edges {
+--- a/src/table/state.rs
++++ b/src/table/state.rs
+@@ -988,7 +988,8 @@
+             tr.h_flex()
+                 .w_full()
+                 .h(row_height)
+-                .when(need_render_border, |this| {
++                // rox patch: the row hairline follows the row_borders knob.
++                .when(need_render_border && self.options.row_borders, |this| {
+                     this.border_b_1().border_color(cx.theme().table_row_border)
+                 })
+                 .when(is_stripe_row, |this| this.bg(cx.theme().table_even))
+@@ -1128,8 +1129,10 @@
+                 .h_flex()
+                 .w_full()
+                 .h(row_height)
+-                .border_b_1()
+-                .border_color(cx.theme().table_row_border)
++                // rox patch: the filler rows' hairline follows the knob too.
++                .when(self.options.row_borders, |this| {
++                    this.border_b_1().border_color(cx.theme().table_row_border)
++                })
+                 .when(is_stripe_row, |this| this.bg(cx.theme().table_even))
+                 .children((0..columns_count).map(|col_ix| {
+                     h_flex()

@@ -17,10 +17,11 @@ pub const ROW_GROUP: &str = "track-row";
 
 /// The rating control over a track's value, writing a click straight into
 /// the catalog by id. An unrated track keeps the cell invisible until its
-/// row is hovered; the control stops the mouse-down itself, so rating never
-/// reselects or plays the row.
+/// row is hovered, except when the unrated-dots setting marks the empty
+/// slots: then the dots are the point and the cell stays put. The control
+/// stops the mouse-down itself, so rating never reselects or plays the row.
 pub fn rating(state: AppState, id: i64, value: u8) -> Div {
-    crate::rating_ui::control(value, move |rating, _, cx| {
+    crate::rating_ui::control(id as u64, value, move |rating, _, cx| {
         state
             .library
             .update(cx, |library, cx| library.rate(id, rating, cx));
@@ -28,7 +29,7 @@ pub fn rating(state: AppState, id: i64, value: u8) -> Div {
     // Fill the cell height so the control's own items_center lands the stars
     // on the row centerline.
     .h_full()
-    .when(value == 0, |d| {
+    .when(value == 0 && !crate::settings::rating_dots(), |d| {
         d.opacity(0.).group_hover(ROW_GROUP, |s| s.opacity(1.))
     })
 }

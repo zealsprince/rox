@@ -36,6 +36,7 @@ const POOL: usize = 16;
 const SWEEP_WORKERS: usize = 4;
 
 /// What a render gets for a track's thumbnail.
+#[derive(Clone)]
 pub enum Thumb {
     Ready(Arc<Image>),
     /// A load is in flight or waiting on a slot; re-ask next paint.

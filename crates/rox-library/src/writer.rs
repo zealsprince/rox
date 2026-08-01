@@ -24,7 +24,7 @@
 //! that shape fails verification instead of writing quietly.
 
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
@@ -328,7 +328,7 @@ fn read_pictures_inner(path: &Path) -> Result<Vec<(PicKind, Vec<u8>, String)>, S
     // the real image, not the corruption the write itself would repair.
     if kind == FileType::Mpeg {
         if let Some(front) = out.iter_mut().find(|(k, _, _)| *k == PicKind::Front) {
-            if let Some((data, mime)) = art::unsync_apic(path) {
+            if let Some((data, mime)) = art::unsync_apic(path, art::ArtKind::Front) {
                 front.1 = data;
                 front.2 = mime;
             }
@@ -390,7 +390,7 @@ fn commit_inner(
     // standing in for the front cover lofty mangles.
     let audio_hash = hash_span(path, audio_span(path, kind)?)?;
     let rescue = if kind == FileType::Mpeg {
-        art::unsync_apic(path)
+        art::unsync_apic(path, art::ArtKind::Front)
     } else {
         None
     };
@@ -440,6 +440,11 @@ fn write_tags(
         .map_err(|e| format!("open for write: {e}"))?;
     match kind {
         FileType::Mpeg => {
+            // Zero padding a tagger left outside the declared tag size
+            // makes lofty's write probe give up before it finds the audio,
+            // so every save fails; fold it into the tag first. Only the
+            // clone changes, and only its size field.
+            fold_tag_gap(&mut file)?;
             // Read through the sanitiser so a tag lofty would de-unsync
             // twice parses clean; the write below zeroes the header flag,
             // so the saved clone no longer carries the shape at all.
@@ -809,6 +814,49 @@ fn file_type(path: &Path) -> Result<FileType, String> {
     }
 }
 
+/// Fold the junk sitting between the declared ID3v2 tag end and the
+/// first MPEG sync back into the tag, by growing the header's size field
+/// over it. The junk is a tagger's leavings, padding written outside the
+/// tag size or the headless carcass of a frame the tag was written over,
+/// and it breaks every write, because lofty re-detects the format
+/// mid-save and gives up after 1024 junk bytes. Growing the size makes
+/// the save's rewrite of the tag region swallow the junk for good. Runs
+/// on the writer's clone only, and only when a sync actually follows;
+/// anything else is left to fail as it would today.
+fn fold_tag_gap(file: &mut fs::File) -> Result<(), String> {
+    let Some(gap) = crate::tag_source::tag_gap(file).map_err(|e| format!("gap scan: {e}"))? else {
+        return Ok(());
+    };
+    if gap.junk == 0 || !gap.sync {
+        return Ok(());
+    }
+    let grown = u64::from(gap.size) + gap.junk;
+    if grown >= 1 << 28 {
+        return Ok(()); // past the synchsafe ceiling; leave the file alone
+    }
+    file.seek(SeekFrom::Start(6))
+        .and_then(|_| file.write_all(&art::synchsafe_encode(grown as u32)))
+        .map_err(|e| format!("fold junk: {e}"))
+}
+
+/// Whether the writer's parser reads `path` clean, for the repair scan:
+/// `Err` carries the parse error a repair pass should surface. A format
+/// outside the writer's matrix reads as fine, since a rewrite could do
+/// nothing for it anyway.
+pub fn readable(path: &Path) -> Result<(), String> {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Ok(kind) = file_type(path) else {
+            return Ok(());
+        };
+        match kind {
+            FileType::Mpeg => parse_mpeg(path).map(drop),
+            FileType::Flac => parse_flac(path).map(drop),
+            _ => Ok(()),
+        }
+    }))
+    .unwrap_or_else(|_| Err(format!("tag parser panicked on {}", path.display())))
+}
+
 /// Tags only; the writer never needs the stream properties, and skipping
 /// them lets a file with a garbled stream still get its tags fixed.
 fn parse_opts() -> ParseOptions {
@@ -860,6 +908,21 @@ fn audio_span(path: &Path, kind: FileType) -> Result<(u64, u64), String> {
                 let size = art::synchsafe(&header[6..10]).ok_or("malformed ID3v2 size")? as u64;
                 let footer = if header[5] & 0x10 != 0 { 10 } else { 0 };
                 start = 10 + size + footer;
+            }
+            // Junk between the declared tag end and the first sync (a
+            // tagger's out-of-tag padding, a frame carcass the tag was
+            // written over) is not audio, and a repair write drops it:
+            // hash from the sync, the same boundary the fold uses, so
+            // the span agrees before and after. A file with no sync at
+            // all keeps its declared start; no write survives on it
+            // anyway.
+            file.seek(SeekFrom::Start(start.min(len)))
+                .map_err(|e| format!("seek: {e}"))?;
+            let (junk, sync) =
+                crate::tag_source::scan_to_sync(&mut file, crate::tag_source::GAP_SCAN_CAP)
+                    .map_err(|e| format!("read: {e}"))?;
+            if sync {
+                start += junk;
             }
             let mut end = len;
             if end >= start + 128 {
@@ -1301,17 +1364,88 @@ mod tests {
         fs::write(&path, bytes).unwrap();
 
         assert!(
-            crate::tag_source::needs_unsync_repair(&path),
+            crate::tag_source::needs_repair(&path),
             "the shape flags before repair"
         );
         commit(&path, &[]).unwrap();
         assert!(
-            !crate::tag_source::needs_unsync_repair(&path),
+            !crate::tag_source::needs_repair(&path),
             "the rewrite clears the shape"
         );
         let (cover, mime) = crate::art::cover_art(&path).expect("the cover survives the repair");
         assert_eq!(cover, image);
         assert_eq!(mime, "image/jpeg");
+        assert!(fs::read(&path).unwrap().ends_with(&mpeg_audio()));
+    }
+
+    /// The out-of-tag padding shape: a tagger left zeros between the
+    /// declared tag end and the first MPEG frame, deeper than lofty's
+    /// write probe searches, so every save died before writing a byte.
+    /// The commit folds the padding into the tag and lands the edit,
+    /// with the audio carried through untouched.
+    #[test]
+    fn commit_folds_padding_left_outside_the_tag() {
+        let mut frames = b"TIT2".to_vec();
+        frames.extend(synch("Warchief".len() as u32 + 1));
+        frames.extend([0x00, 0x00]);
+        frames.push(0x00); // latin-1
+        frames.extend(b"Warchief");
+        let mut bytes = b"ID3\x04\x00\x00".to_vec();
+        bytes.extend(synch(frames.len() as u32));
+        bytes.extend(&frames);
+        bytes.extend(std::iter::repeat_n(0u8, 1500)); // past the 1024-byte probe limit
+        bytes.extend(mpeg_audio());
+
+        let dir = scratch("fold-gap");
+        let path = dir.join("track.mp3");
+        fs::write(&path, bytes).unwrap();
+
+        assert!(crate::tag_source::needs_repair(&path), "the gap flags");
+        commit(&path, &[set(Field::Artist, "Redpill")]).unwrap();
+        assert!(!crate::tag_source::needs_repair(&path), "the fold clears it");
+        let fields = read(&path).unwrap();
+        assert_eq!(
+            value_of(&fields, &Field::Title).as_deref(),
+            Some("Warchief")
+        );
+        assert_eq!(
+            value_of(&fields, &Field::Artist).as_deref(),
+            Some("Redpill")
+        );
+        assert!(fs::read(&path).unwrap().ends_with(&mpeg_audio()));
+    }
+
+    /// The stray-null shape: one surplus byte on a UTF-16 text frame
+    /// blanked the whole tag through lofty. A no-op commit reads through
+    /// the sanitiser's trim and rewrites the tag clean.
+    #[test]
+    fn no_op_commit_repairs_the_stray_utf16_null() {
+        let title = "Everybody's Safe Until\u{2026}";
+        let mut body = vec![0x01]; // utf16 encoding byte
+        body.extend([0xFF, 0xFE]); // little-endian BOM
+        for ch in title.encode_utf16() {
+            body.extend(ch.to_le_bytes());
+        }
+        body.extend([0x00, 0x00]); // terminator
+        body.push(0x00); // the stray byte
+        let mut frames = b"TIT2".to_vec();
+        frames.extend((body.len() as u32).to_be_bytes()); // v2.3: a plain word
+        frames.extend([0x00, 0x00]);
+        frames.extend(&body);
+        let mut bytes = b"ID3\x03\x00\x00".to_vec();
+        bytes.extend(synch(frames.len() as u32));
+        bytes.extend(&frames);
+        bytes.extend(mpeg_audio());
+
+        let dir = scratch("stray-null");
+        let path = dir.join("track.mp3");
+        fs::write(&path, bytes).unwrap();
+
+        assert!(crate::tag_source::needs_repair(&path), "the stray null flags");
+        commit(&path, &[]).unwrap();
+        assert!(!crate::tag_source::needs_repair(&path), "the rewrite clears it");
+        let fields = read(&path).unwrap();
+        assert_eq!(value_of(&fields, &Field::Title).as_deref(), Some(title));
         assert!(fs::read(&path).unwrap().ends_with(&mpeg_audio()));
     }
 

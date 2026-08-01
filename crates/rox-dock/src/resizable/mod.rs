@@ -10,6 +10,9 @@ mod panel;
 mod resize_handle;
 pub use panel::*;
 pub(crate) use resize_handle::*;
+// rox addition: the seam visibility flag, the one piece of the handle the
+// host app drives.
+pub use resize_handle::{seams, set_seams};
 
 // Small enough that a panel can shrink to a tab bar plus one line of
 // controls; upstream ships 100, far too coarse for compact strips. Panels

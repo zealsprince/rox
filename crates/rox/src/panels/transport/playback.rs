@@ -20,64 +20,197 @@ use crate::player::observe_view;
 
 use super::{default_true, transport_panel};
 
+/// One button of the playback strip, the arrange editor's unit. The
+/// config's list carries the shown ones in display order.
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaybackItem {
+    /// The previous-track button.
+    Prev,
+    /// The ten-second back nudge.
+    SeekBack,
+    /// The play/pause button, the primary transport action.
+    Play,
+    /// The ten-second forward nudge.
+    SeekForward,
+    /// The next-track button.
+    Next,
+    /// The stop button that ejects the playing track.
+    Stop,
+    /// The loop button that cycles off, all, one.
+    Repeat,
+    /// The shuffle button.
+    Shuffle,
+    /// The random button that plays one track from anywhere in the library.
+    Random,
+    /// The stop-after-current toggle: armed, the playing track ends the
+    /// motion and the next one cues up paused.
+    StopAfter,
+    /// A flexible gap that pushes the buttons around it apart. One per
+    /// strip under the unique-item model.
+    Spacer,
+}
+
+/// The strip's full catalog in stock order: what the arrange editor
+/// offers, and where a menu toggle slots a re-shown button back in.
+const ITEMS: &[panel::ArrangeSpec<PlaybackItem>] = &[
+    panel::ArrangeSpec {
+        label: "Previous",
+        icon: Some(icons::SKIP_BACK),
+        value: PlaybackItem::Prev,
+    },
+    panel::ArrangeSpec {
+        label: "Seek Back",
+        icon: Some(icons::REWIND),
+        value: PlaybackItem::SeekBack,
+    },
+    panel::ArrangeSpec {
+        label: "Play",
+        icon: Some(icons::PLAY),
+        value: PlaybackItem::Play,
+    },
+    panel::ArrangeSpec {
+        label: "Seek Forward",
+        icon: Some(icons::FAST_FORWARD),
+        value: PlaybackItem::SeekForward,
+    },
+    panel::ArrangeSpec {
+        label: "Next",
+        icon: Some(icons::SKIP_FORWARD),
+        value: PlaybackItem::Next,
+    },
+    panel::ArrangeSpec {
+        label: "Stop",
+        icon: Some(icons::STOP),
+        value: PlaybackItem::Stop,
+    },
+    panel::ArrangeSpec {
+        label: "Loop",
+        icon: Some(icons::REPEAT),
+        value: PlaybackItem::Repeat,
+    },
+    panel::ArrangeSpec {
+        label: "Shuffle",
+        icon: Some(icons::SHUFFLE),
+        value: PlaybackItem::Shuffle,
+    },
+    panel::ArrangeSpec {
+        label: "Random",
+        icon: Some(icons::DICE),
+        value: PlaybackItem::Random,
+    },
+    panel::ArrangeSpec {
+        label: "Stop After",
+        icon: Some(icons::SQUARE_DASHED),
+        value: PlaybackItem::StopAfter,
+    },
+    panel::ArrangeSpec {
+        label: "Spacer",
+        icon: Some(icons::MOVE_HORIZONTAL),
+        value: PlaybackItem::Spacer,
+    },
+];
+
 /// The playback panel's per-view config: what a saved layout restores,
-/// and what the settings window edits.
+/// and what the settings window edits. Deserialization routes through
+/// [`TransportConfigDump`] so layouts from before the buttons became an
+/// ordered list still read.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(from = "TransportConfigDump")]
 pub struct TransportConfig {
     /// The rename, theme override, and placement locks shared by every
     /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    #[serde(default)]
     pub align: Align,
-    /// The previous-track button.
-    #[serde(default = "default_true")]
-    pub prev: bool,
-    /// The play/pause button, the primary transport action.
-    #[serde(default = "default_true")]
-    pub play: bool,
     /// The play button's accent highlight shape, or none for a flat
     /// button like the rest of the strip.
-    #[serde(default)]
     pub play_highlight: PlayHighlight,
-    /// The next-track button.
-    #[serde(default = "default_true")]
-    pub next: bool,
-    /// The seek nudge buttons that jump back and forward ten seconds. On by
-    /// default; drop them on a compact bar that only needs prev/play/next.
-    #[serde(default = "default_true")]
-    pub seek: bool,
-    /// The loop button that cycles off, all, one.
-    #[serde(default = "default_true")]
-    pub repeat: bool,
-    /// The shuffle button.
-    #[serde(default = "default_true")]
-    pub shuffle: bool,
-    /// The stop button that ejects the playing track.
-    #[serde(default)]
-    pub stop: bool,
-    /// The random button that plays one track from anywhere in the library.
-    #[serde(default)]
-    pub random: bool,
+    /// The shown buttons in display order; one not listed is hidden.
+    pub items: Vec<PlaybackItem>,
 }
 
 impl Default for TransportConfig {
     fn default() -> Self {
-        // The seek/loop/shuffle buttons ship on, matching what a layout with
-        // none of these fields set decodes to; only stop and random are
-        // opt-in.
+        // Everything but stop and random ships on, in the order the strip
+        // always rendered: nudges around play, the modes trailing.
         TransportConfig {
             chrome: PanelChrome::default(),
             align: Align::default(),
-            prev: true,
-            play: true,
             play_highlight: PlayHighlight::default(),
-            next: true,
-            seek: true,
-            repeat: true,
-            shuffle: true,
-            stop: false,
-            random: false,
+            items: vec![
+                PlaybackItem::Prev,
+                PlaybackItem::SeekBack,
+                PlaybackItem::Play,
+                PlaybackItem::SeekForward,
+                PlaybackItem::Next,
+                PlaybackItem::Repeat,
+                PlaybackItem::Shuffle,
+            ],
+        }
+    }
+}
+
+/// The dump shape [`TransportConfig`] deserializes through: the ordered
+/// list newer layouts write, or the per-button toggles older ones carried,
+/// folded back in the order the strip used to render. The one `seek`
+/// toggle was both nudges around play.
+#[derive(Deserialize)]
+struct TransportConfigDump {
+    #[serde(flatten)]
+    chrome: PanelChrome,
+    #[serde(default)]
+    align: Align,
+    #[serde(default)]
+    play_highlight: PlayHighlight,
+    #[serde(default)]
+    items: Option<Vec<PlaybackItem>>,
+    #[serde(default = "default_true")]
+    prev: bool,
+    #[serde(default = "default_true")]
+    play: bool,
+    #[serde(default = "default_true")]
+    next: bool,
+    #[serde(default = "default_true")]
+    seek: bool,
+    #[serde(default = "default_true")]
+    repeat: bool,
+    #[serde(default = "default_true")]
+    shuffle: bool,
+    #[serde(default)]
+    stop: bool,
+    #[serde(default)]
+    random: bool,
+}
+
+impl From<TransportConfigDump> for TransportConfig {
+    fn from(dump: TransportConfigDump) -> Self {
+        let items = match dump.items {
+            Some(items) => panel::dedup(items),
+            None => {
+                let mut items = Vec::new();
+                let mut on = |on, item| {
+                    if on {
+                        items.push(item)
+                    }
+                };
+                on(dump.prev, PlaybackItem::Prev);
+                on(dump.seek, PlaybackItem::SeekBack);
+                on(dump.play, PlaybackItem::Play);
+                on(dump.seek, PlaybackItem::SeekForward);
+                on(dump.next, PlaybackItem::Next);
+                on(dump.stop, PlaybackItem::Stop);
+                on(dump.repeat, PlaybackItem::Repeat);
+                on(dump.shuffle, PlaybackItem::Shuffle);
+                on(dump.random, PlaybackItem::Random);
+                items
+            }
+        };
+        TransportConfig {
+            chrome: dump.chrome,
+            align: dump.align,
+            play_highlight: dump.play_highlight,
+            items,
         }
     }
 }
@@ -126,33 +259,30 @@ impl TransportPanel {
         }
     }
 
-    /// The panel's own dropdown entries: the optional button toggles, the
-    /// same knobs the customize window edits.
+    /// The panel's own dropdown entries: quick show/hide for the opt-in
+    /// buttons. A re-shown one slots back at its stock position; the
+    /// settings window's arrange editor is where the order changes.
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
-        let weak = cx.entity().downgrade();
-        let menu = menu.item(
-            PopupMenuItem::new("Stop Button")
-                .checked(self.config.stop)
-                .on_click(move |_, _, cx| {
-                    let Some(this) = weak.upgrade() else { return };
-                    this.update(cx, |this, cx| {
-                        this.config.stop = !this.config.stop;
-                        cx.notify();
-                    });
-                }),
-        );
-        let weak = cx.entity().downgrade();
-        menu.item(
-            PopupMenuItem::new("Random Button")
-                .checked(self.config.random)
-                .on_click(move |_, _, cx| {
-                    let Some(this) = weak.upgrade() else { return };
-                    this.update(cx, |this, cx| {
-                        this.config.random = !this.config.random;
-                        cx.notify();
-                    });
-                }),
-        )
+        let mut menu = menu;
+        for (name, value) in [
+            ("Stop Button", PlaybackItem::Stop),
+            ("Random Button", PlaybackItem::Random),
+            ("Stop After Button", PlaybackItem::StopAfter),
+        ] {
+            let weak = cx.entity().downgrade();
+            menu = menu.item(
+                PopupMenuItem::new(name)
+                    .checked(self.config.items.contains(&value))
+                    .on_click(move |_, _, cx| {
+                        let Some(this) = weak.upgrade() else { return };
+                        this.update(cx, |this, cx| {
+                            this.config.items = panel::toggled(ITEMS, &this.config.items, value);
+                            cx.notify();
+                        });
+                    }),
+            );
+        }
+        menu
     }
 
     /// Pick one track from anywhere in the library and play it as a fresh
@@ -227,31 +357,25 @@ impl PanelSettings for TransportPanel {
                 },
                 cx,
             ))
-            .child(panel::setting_row(
-                "Previous",
-                Some("The previous-track button"),
-                panel::toggle(
-                    self.config.prev,
-                    |this: &mut Self, prev, cx| {
-                        this.config.prev = prev;
+            .child(panel::setting_block(
+                "Buttons",
+                Some(
+                    "Drag along the bar to reorder; drag between the rows, \
+                     or use a chip's x and plus, to hide and show",
+                ),
+                None,
+                panel::arrange_editor(
+                    "playback-items",
+                    ITEMS,
+                    &self.config.items,
+                    |this: &mut Self, items, cx| {
+                        this.config.items = items;
                         cx.notify();
                     },
                     cx,
                 ),
             ))
-            .child(panel::setting_row(
-                "Play",
-                Some("The play and pause button"),
-                panel::toggle(
-                    self.config.play,
-                    |this: &mut Self, play, cx| {
-                        this.config.play = play;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when(self.config.play, |d| {
+            .when(self.config.items.contains(&PlaybackItem::Play), |d| {
                 d.child(panel::setting_row(
                     "Play Highlight",
                     Some("The play button's accent fill: a circle, a soft square, or none"),
@@ -270,78 +394,6 @@ impl PanelSettings for TransportPanel {
                     ),
                 ))
             })
-            .child(panel::setting_row(
-                "Next",
-                Some("The next-track button"),
-                panel::toggle(
-                    self.config.next,
-                    |this: &mut Self, next, cx| {
-                        this.config.next = next;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                "Seek Buttons",
-                Some("The back and forward ten-second nudges around play"),
-                panel::toggle(
-                    self.config.seek,
-                    |this: &mut Self, seek, cx| {
-                        this.config.seek = seek;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                "Loop",
-                Some("The loop button that cycles off, all, one"),
-                panel::toggle(
-                    self.config.repeat,
-                    |this: &mut Self, repeat, cx| {
-                        this.config.repeat = repeat;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                "Shuffle",
-                Some("The shuffle button"),
-                panel::toggle(
-                    self.config.shuffle,
-                    |this: &mut Self, shuffle, cx| {
-                        this.config.shuffle = shuffle;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                "Stop",
-                Some("The stop button that ejects the playing track"),
-                panel::toggle(
-                    self.config.stop,
-                    |this: &mut Self, stop, cx| {
-                        this.config.stop = stop;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .child(panel::setting_row(
-                "Random",
-                Some("The random button that plays one track from anywhere in the library"),
-                panel::toggle(
-                    self.config.random,
-                    |this: &mut Self, random, cx| {
-                        this.config.random = random;
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
             .into_any_element()
     }
 }
@@ -371,47 +423,136 @@ impl TransportPanel {
         } else {
             palette::text_faint()
         };
+        // Stop-after too: dim until armed, the accent while it waits.
+        let stop_after_color = if player.stop_after() {
+            palette::accent()
+        } else {
+            palette::text_faint()
+        };
 
-        // Play/pause is the primary action, so it gets the accent fill
-        // while everything around it stays flat; the config picks the
-        // fill's shape, or drops it to match the neighbors.
+        // The strip renders the config's list as-is: each shown button in
+        // its place, whatever order the arrange editor left them in.
         let highlight = self.config.play_highlight;
-        let play_pause = div()
-            .size(tokens::PLAY_SIZE)
-            .flex_none()
-            .map(|d| match highlight {
-                PlayHighlight::Circle => d
-                    .rounded_full()
-                    .bg(palette::accent())
-                    .hover(|d| d.bg(palette::accent_hover())),
-                PlayHighlight::Square => d
-                    .rounded(tokens::RADIUS)
-                    .bg(palette::accent())
-                    .hover(|d| d.bg(palette::accent_hover())),
-                PlayHighlight::None => d
-                    .rounded(tokens::RADIUS)
-                    .hover(|d| d.bg(palette::bg_control())),
-            })
-            .cursor_pointer()
-            .flex()
-            .items_center()
-            .justify_center()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this: &mut Self, _, _, cx| {
-                    this.state.player.update(cx, |p, _| p.toggle_pause())
-                }),
-            )
-            .child(
-                svg()
-                    .path(if playing { icons::PAUSE } else { icons::PLAY })
-                    .size_4()
-                    .text_color(if highlight == PlayHighlight::None {
+        let mut controls: Vec<AnyElement> = Vec::new();
+        for item in self.config.items.clone() {
+            controls.push(match item {
+                PlaybackItem::Prev => panel::icon_control(
+                    icons::SKIP_BACK,
+                    palette::text(),
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.prev()),
+                    cx,
+                )
+                .into_any_element(),
+                PlaybackItem::SeekBack => panel::icon_control(
+                    icons::REWIND,
+                    palette::text(),
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(-10.0)),
+                    cx,
+                )
+                .into_any_element(),
+                // Play/pause is the primary action, so it gets the accent
+                // fill while everything around it stays flat; the config
+                // picks the fill's shape, or drops it to match the
+                // neighbors.
+                PlaybackItem::Play => div()
+                    .size(tokens::PLAY_SIZE)
+                    .flex_none()
+                    .map(|d| match highlight {
+                        PlayHighlight::Circle => d
+                            .rounded_full()
+                            .bg(palette::accent())
+                            .hover(|d| d.bg(palette::accent_hover())),
+                        PlayHighlight::Square => d
+                            .rounded(tokens::RADIUS)
+                            .bg(palette::accent())
+                            .hover(|d| d.bg(palette::accent_hover())),
+                        PlayHighlight::None => d
+                            .rounded(tokens::RADIUS)
+                            .hover(|d| d.bg(palette::bg_control())),
+                    })
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut Self, _, _, cx| {
+                            this.state.player.update(cx, |p, _| p.toggle_pause())
+                        }),
+                    )
+                    .child(
+                        svg()
+                            .path(if playing { icons::PAUSE } else { icons::PLAY })
+                            .size_4()
+                            .text_color(if highlight == PlayHighlight::None {
+                                palette::text()
+                            } else {
+                                palette::text_on_accent()
+                            }),
+                    )
+                    .into_any_element(),
+                PlaybackItem::SeekForward => panel::icon_control(
+                    icons::FAST_FORWARD,
+                    palette::text(),
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(10.0)),
+                    cx,
+                )
+                .into_any_element(),
+                PlaybackItem::Next => panel::icon_control(
+                    icons::SKIP_FORWARD,
+                    palette::text(),
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.next()),
+                    cx,
+                )
+                .into_any_element(),
+                // Stop ejects the track: the session drops and every view
+                // over it goes idle. Dim while nothing is loaded.
+                PlaybackItem::Stop => panel::icon_control(
+                    icons::STOP,
+                    if active {
                         palette::text()
                     } else {
-                        palette::text_on_accent()
-                    }),
-            );
+                        palette::text_faint()
+                    },
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, cx| p.stop(cx)),
+                    cx,
+                )
+                .into_any_element(),
+                PlaybackItem::Repeat => panel::icon_control(
+                    loop_icon,
+                    loop_color,
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.cycle_loop()),
+                    cx,
+                )
+                .into_any_element(),
+                PlaybackItem::Shuffle => panel::icon_control(
+                    icons::SHUFFLE,
+                    shuffle_color,
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.toggle_shuffle()),
+                    cx,
+                )
+                .into_any_element(),
+                PlaybackItem::Random => panel::icon_control(
+                    icons::DICE,
+                    palette::text(),
+                    |this: &mut Self, cx| this.play_random(cx),
+                    cx,
+                )
+                .into_any_element(),
+                PlaybackItem::StopAfter => panel::icon_control(
+                    icons::SQUARE_DASHED,
+                    stop_after_color,
+                    |this: &mut Self, cx| {
+                        this.state
+                            .player
+                            .update(cx, |p, cx| p.toggle_stop_after(cx))
+                    },
+                    cx,
+                )
+                .into_any_element(),
+                PlaybackItem::Spacer => div().flex_1().into_any_element(),
+            });
+        }
 
         div()
             .size_full()
@@ -421,77 +562,7 @@ impl TransportPanel {
             .map(|d| justify(d, self.config.align))
             .gap(tokens::SPACE_XS)
             .px(tokens::SPACE_SM)
-            .when(self.config.prev, |d| {
-                d.child(panel::icon_control(
-                    icons::SKIP_BACK,
-                    palette::text(),
-                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.prev()),
-                    cx,
-                ))
-            })
-            .when(self.config.seek, |d| {
-                d.child(panel::icon_control(
-                    icons::REWIND,
-                    palette::text(),
-                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(-10.0)),
-                    cx,
-                ))
-            })
-            .when(self.config.play, |d| d.child(play_pause))
-            .when(self.config.seek, |d| {
-                d.child(panel::icon_control(
-                    icons::FAST_FORWARD,
-                    palette::text(),
-                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(10.0)),
-                    cx,
-                ))
-            })
-            .when(self.config.next, |d| {
-                d.child(panel::icon_control(
-                    icons::SKIP_FORWARD,
-                    palette::text(),
-                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.next()),
-                    cx,
-                ))
-            })
-            // Stop ejects the track: the session drops and every view over
-            // it goes idle. Dim while nothing is loaded.
-            .when(self.config.stop, |d| {
-                d.child(panel::icon_control(
-                    icons::STOP,
-                    if active {
-                        palette::text()
-                    } else {
-                        palette::text_faint()
-                    },
-                    |this: &mut Self, cx| this.state.player.update(cx, |p, cx| p.stop(cx)),
-                    cx,
-                ))
-            })
-            .when(self.config.repeat, |d| {
-                d.child(panel::icon_control(
-                    loop_icon,
-                    loop_color,
-                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.cycle_loop()),
-                    cx,
-                ))
-            })
-            .when(self.config.shuffle, |d| {
-                d.child(panel::icon_control(
-                    icons::SHUFFLE,
-                    shuffle_color,
-                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.toggle_shuffle()),
-                    cx,
-                ))
-            })
-            .when(self.config.random, |d| {
-                d.child(panel::icon_control(
-                    icons::DICE,
-                    palette::text(),
-                    |this: &mut Self, cx| this.play_random(cx),
-                    cx,
-                ))
-            })
+            .children(controls)
     }
 }
 
@@ -503,3 +574,48 @@ transport_panel!(
     "Playback",
     min_w = |_: &TransportPanel| rox_dock::resizable::PANEL_MIN_SIZE
 );
+
+#[cfg(test)]
+mod tests {
+    use super::{PlaybackItem, TransportConfig};
+
+    /// A layout with no button fields at all decodes to the stock strip:
+    /// nudges around play, the modes trailing, stop and random off.
+    #[test]
+    fn missing_toggles_default_to_the_stock_strip() {
+        let config: TransportConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.items == TransportConfig::default().items);
+    }
+
+    /// The per-button toggles older layouts wrote fold into the list in
+    /// the order the strip used to render; the one seek toggle was both
+    /// nudges.
+    #[test]
+    fn legacy_toggles_fold_in_render_order() {
+        let config: TransportConfig =
+            serde_json::from_str(r#"{"seek": false, "shuffle": false, "stop": true}"#).unwrap();
+        assert!(
+            config.items
+                == vec![
+                    PlaybackItem::Prev,
+                    PlaybackItem::Play,
+                    PlaybackItem::Next,
+                    PlaybackItem::Stop,
+                    PlaybackItem::Repeat,
+                ]
+        );
+    }
+
+    /// A layout that carries the list uses it as-is, duplicates dropped,
+    /// and round-trips through a save.
+    #[test]
+    fn item_lists_read_ordered_and_deduped() {
+        let config: TransportConfig =
+            serde_json::from_str(r#"{"items": ["shuffle", "play", "shuffle"]}"#).unwrap();
+        assert!(config.items == vec![PlaybackItem::Shuffle, PlaybackItem::Play]);
+
+        let saved = serde_json::to_value(&config).unwrap();
+        let back: TransportConfig = serde_json::from_value(saved).unwrap();
+        assert!(back.items == config.items);
+    }
+}

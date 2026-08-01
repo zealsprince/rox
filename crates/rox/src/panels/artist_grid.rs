@@ -1105,6 +1105,13 @@ impl ArtistGridPanel {
         if keystroke.modifiers.control || keystroke.modifiers.platform || keystroke.modifiers.alt {
             return;
         }
+        // Escape drops the picks. No select-all here: every artist picked
+        // is the whole catalog anyway, and it would pour every name into
+        // the shared filter.
+        if keystroke.key.as_str() == "escape" {
+            self.deselect(cx);
+            return;
+        }
         let Some(text) = &keystroke.key_char else {
             return;
         };
@@ -1112,6 +1119,19 @@ impl ArtistGridPanel {
             return;
         }
         self.type_to(text.clone(), cx);
+    }
+
+    /// Escape drops the picks: the shared selection empties and the
+    /// filter names clear with it, the same road the single-click
+    /// deselect takes.
+    fn deselect(&mut self, cx: &mut Context<Self>) {
+        if self.selected.is_empty() {
+            return;
+        }
+        self.selected.clear();
+        self.anchor = None;
+        self.publish(cx);
+        cx.notify();
     }
 
     /// Grow or restart the type-ahead phrase and jump to the artist it

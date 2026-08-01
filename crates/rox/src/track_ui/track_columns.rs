@@ -261,6 +261,10 @@ fn look() -> group_head::HeadLook {
         show_art: true,
         show_year: true,
         show_details: true,
+        line_px: palette::scaled_px(ROW_H),
+        art_side: group_head::ArtSide::Left,
+        art_margin: px(0.),
+        art_rounding: 0.,
     }
 }
 
@@ -274,6 +278,7 @@ fn head_of(g: &AlbumGroup) -> group_head::GroupHead {
         tracks: g.tracks,
         total_ms: g.total_ms,
         by_album: true,
+        thumb: None,
     }
 }
 
@@ -308,7 +313,19 @@ fn tile<P: 'static>(
         Some(path) => state.thumbs.update(cx, |thumbs, cx| thumbs.get(&path, cx)),
         None => Thumb::Missing,
     };
-    group_head::tile(thumb, palette::scaled_px(ROW_H * 2.), 0., bottom)
+    let lift = if bottom {
+        palette::scaled_px(ROW_H)
+    } else {
+        px(0.)
+    };
+    group_head::tile(
+        thumb,
+        palette::scaled_px(ROW_H * 2.),
+        0.,
+        lift,
+        group_head::ArtSide::Left,
+        px(0.),
+    )
 }
 
 /// An album run's name line. Expanded opens the two-row cover tile and gives

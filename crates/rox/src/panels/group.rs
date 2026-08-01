@@ -123,6 +123,26 @@ impl GroupPanel {
     /// affordance, under the floating slot controls.
     fn cell(&self, ix: usize, cx: &mut Context<Self>) -> Div {
         let content = match &self.slots[ix] {
+            // A child that serves its own content menu keeps the
+            // right-click; for the rest the slot routes it to the hosting
+            // tab panel's fallback menu with the child as its subject, the
+            // exact overlay a lone docked panel gets, since the group
+            // opted the dock's own fallback out for its whole body.
+            Some(child) if !child.content_context_menu(cx) => {
+                let target = child.clone();
+                let tabs = self.tab_panel.clone();
+                div().size_full().child(child.view()).on_mouse_down(
+                    gpui::MouseButton::Right,
+                    move |event: &gpui::MouseDownEvent, window, cx| {
+                        let Some(tabs) = tabs.as_ref().and_then(|tabs| tabs.upgrade()) else {
+                            return;
+                        };
+                        tabs.update(cx, |tabs, cx| {
+                            tabs.open_panel_menu(target.clone(), event.position, window, cx)
+                        });
+                    },
+                )
+            }
             Some(child) => div().size_full().child(child.view()),
             None => {
                 let weak = cx.entity().downgrade();
@@ -189,6 +209,17 @@ impl GroupPanel {
         });
         let second = self.cell(1, cx).flex_1();
 
+        // The split draws at the panel's own frame border width, so a
+        // bordered group divides in the same stroke (and the same border
+        // role color, which the panel's theme can recolor). Borderless
+        // groups keep the 1px hairline.
+        let split = self
+            .config
+            .chrome
+            .theme
+            .border
+            .unwrap_or_else(|| crate::settings::app_frame().border)
+            .clamp(1.0, DIVIDER_W);
         let divider_line = div()
             .flex_none()
             .flex()
@@ -206,8 +237,8 @@ impl GroupPanel {
                 }),
             )
             .child(div().bg(palette::border()).map(|d| match axis {
-                Axis::Horizontal => d.w(px(1.)).h_full(),
-                Axis::Vertical => d.h(px(1.)).w_full(),
+                Axis::Horizontal => d.w(px(split)).h_full(),
+                Axis::Vertical => d.h(px(split)).w_full(),
             }));
 
         let parent = (!self.config.chrome.hide_controls)

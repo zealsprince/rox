@@ -204,6 +204,7 @@ struct SettingsWindow {
     /// lands.
     portable_busy: bool,
     rating_style: RatingStyle,
+    rating_dots: bool,
     /// The Providers page's working copy of the enrichment config.
     providers: Providers,
     /// One picker per palette role, in [`ROLES`] order.
@@ -215,6 +216,8 @@ struct SettingsWindow {
     padding_scrub: ScrubState,
     rounding_scrub: ScrubState,
     border_scrub: ScrubState,
+    /// The one readout being typed into across this window's sliders.
+    value_edit: panel::ValueEdit,
     /// The page body's scroll position, shared with the scrollbar so it
     /// can show how much page hangs below the fold.
     scroll: ScrollHandle,
@@ -434,6 +437,7 @@ impl SettingsWindow {
             portable_writable: settings::portable_available(),
             portable_busy: false,
             rating_style: settings.rating_style,
+            rating_dots: settings.rating_dots,
             providers: settings.providers.clone(),
             pickers,
             surface_scrub: ScrubState::default(),
@@ -443,6 +447,7 @@ impl SettingsWindow {
             padding_scrub: ScrubState::default(),
             rounding_scrub: ScrubState::default(),
             border_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             scroll: ScrollHandle::new(),
             library,
             workspace,
@@ -687,6 +692,15 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// The seams switch: through the live static in the dock crate so
+    /// every window's panel dividers repaint, and into the file. The
+    /// toggle reads the static, like the menubar's.
+    fn set_seams(&mut self, on: bool, cx: &mut Context<Self>) {
+        settings::set_seams(on, cx);
+        Settings::update(move |s| s.seams = on);
+        cx.notify();
+    }
+
     /// The decorations switch, the Window menu toggle's twin: flip the
     /// flag, persist, and renegotiate the workspace windows.
     fn set_os_decorations(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -711,6 +725,14 @@ impl SettingsWindow {
         self.rating_style = style;
         settings::set_rating_style(style, cx);
         Settings::update(move |s| s.rating_style = style);
+        cx.notify();
+    }
+
+    /// The unrated dots, the scale's sibling: same live-static route.
+    fn set_rating_dots(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.rating_dots = on;
+        settings::set_rating_dots(on, cx);
+        Settings::update(move |s| s.rating_dots = on);
         cx.notify();
     }
 
@@ -823,7 +845,8 @@ impl SettingsWindow {
     /// One app-frame knob's slider row: the value over its 0 to `max`
     /// range, the px readout alongside. Always set, since these are the
     /// defaults themselves; a panel's own settings are where an override
-    /// forks off them.
+    /// forks off them. Typed values may run past the strip's top, the
+    /// setters take the fraction as given.
     fn frame_row(
         &self,
         scrub: &ScrubState,
@@ -832,7 +855,17 @@ impl SettingsWindow {
         apply: fn(&mut Self, f32, &mut Context<Self>),
         cx: &mut Context<Self>,
     ) -> Div {
-        settings_ui::slider_labeled(scrub, value / max, format!("{value:.0} px"), apply, cx)
+        panel::value_slider_edit_over(
+            scrub,
+            &self.value_edit,
+            value / max,
+            format!("{value:.0} px"),
+            format!("{value:.0}"),
+            settings_ui::FRAME_OVER,
+            move |v| v / max,
+            apply,
+            cx,
+        )
     }
 
     /// A whole palette into the editor at once: the working copy, every
@@ -1014,11 +1047,17 @@ impl SettingsWindow {
                     .child(panel::setting_row(
                         "Font Size",
                         Some("The base text size every panel's text scales from; controls and icons hold their size"),
-                        settings_ui::slider_labeled(
+                        panel::value_slider_edit(
                             &self.font_size_scrub,
+                            &self.value_edit,
                             (self.font_size - palette::FONT_SIZE_MIN)
                                 / (palette::FONT_SIZE_MAX - palette::FONT_SIZE_MIN),
                             format!("{:.0} px", self.font_size),
+                            format!("{:.0}", self.font_size),
+                            |v| {
+                                (v - palette::FONT_SIZE_MIN)
+                                    / (palette::FONT_SIZE_MAX - palette::FONT_SIZE_MIN)
+                            },
                             Self::set_font_size,
                             cx,
                         ),
@@ -1035,8 +1074,9 @@ impl SettingsWindow {
                     .child(panel::setting_row(
                         "Surface Opacity",
                         Some("How opaque the app's surfaces read over the backdrop"),
-                        settings_ui::slider(
+                        settings_ui::slider_edit(
                             &self.surface_scrub,
+                            &self.value_edit,
                             self.surface_opacity,
                             Self::set_surface,
                             cx,
@@ -1045,8 +1085,9 @@ impl SettingsWindow {
                     .child(panel::setting_row(
                         "Backdrop Strength",
                         Some("How strongly the cover backdrop shows behind them"),
-                        settings_ui::slider(
+                        settings_ui::slider_edit(
                             &self.backdrop_scrub,
+                            &self.value_edit,
                             self.backdrop_strength,
                             Self::set_backdrop,
                             cx,
@@ -1079,6 +1120,11 @@ impl SettingsWindow {
                         "Border",
                         Some("A line around every panel's edge, in the Border role's color"),
                         self.frame_row(&self.border_scrub, self.frame.border, BORDER_MAX, Self::set_border, cx),
+                    ))
+                    .child(panel::setting_row(
+                        "Panel Seams",
+                        Some("The hairline between panel tiles; off leaves the resize grips invisible but still draggable"),
+                        panel::toggle(settings::seams(), Self::set_seams, cx),
                     )),
             ))
             .child(self.colors_section(columns, cx))
@@ -1308,19 +1354,28 @@ impl SettingsWindow {
             .child(section(
                 "Ratings",
                 None,
-                panel::setting_row(
-                    "Rating Scale",
-                    Some("Stars for quick clicks, 0-10 in half steps for finer review scores"),
-                    panel::choices(
-                        &[
-                            ("Stars", RatingStyle::Stars),
-                            ("0-10", RatingStyle::Numeric),
-                        ],
-                        self.rating_style,
-                        Self::set_rating_style,
-                        cx,
-                    ),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "Rating Scale",
+                        Some("Stars for quick clicks, 0-10 in half steps for finer review scores"),
+                        panel::choices(
+                            &[
+                                ("Stars", RatingStyle::Stars),
+                                ("0-10", RatingStyle::Numeric),
+                            ],
+                            self.rating_style,
+                            Self::set_rating_style,
+                            cx,
+                        ),
+                    ))
+                    .child(panel::setting_row(
+                        "Unrated Dots",
+                        Some("Mark unfilled star slots with a faint dot instead of leaving them empty"),
+                        panel::toggle(self.rating_dots, Self::set_rating_dots, cx),
+                    )),
             ))
     }
 
@@ -1460,8 +1515,9 @@ impl SettingsWindow {
                             "How much of a track has to play before it scrobbles; \
                              the seek strip and waveform can mark it",
                         ),
-                        settings_ui::slider(
+                        settings_ui::slider_edit(
                             &self.threshold_scrub,
+                            &self.value_edit,
                             config.threshold,
                             |this: &mut Self, fraction, cx| {
                                 this.scrobbler

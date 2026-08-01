@@ -18,6 +18,12 @@ pub struct ScrubState {
 }
 
 impl ScrubState {
+    /// A stable identity for this strip, shared by every clone of it:
+    /// which strip a readout edit belongs to.
+    pub fn id(&self) -> usize {
+        Arc::as_ptr(&self.bounds) as usize
+    }
+
     /// Remember where the strip landed, from its prepaint.
     pub fn set_bounds(&self, bounds: Bounds<Pixels>) {
         *self.bounds.lock().unwrap() = Some(bounds);

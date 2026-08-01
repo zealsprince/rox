@@ -39,6 +39,7 @@ use crate::panels::search::{SearchConfig, SearchPanel};
 use crate::panels::slide::{SlideConfig, SlidePanel};
 use crate::panels::spacer::{SpacerConfig, SpacerPanel};
 use crate::panels::spectrum::{SpectrumConfig, SpectrumPanel};
+use crate::panels::status::{StatusConfig, StatusPanel};
 use crate::panels::theme_toggle::{ThemeToggleConfig, ThemeTogglePanel};
 use crate::panels::transport::{
     SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
@@ -348,6 +349,14 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
                 Arc::new(
                     cx.new(|cx| TrackInfoPanel::new(state.clone(), TrackInfoConfig::default(), cx)),
                 )
+            },
+        },
+        PanelDef {
+            label: "Status",
+            icon: icons::CHART_PIE,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| StatusPanel::new(state.clone(), StatusConfig::default(), cx)))
             },
         },
         PanelDef {

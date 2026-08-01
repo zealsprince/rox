@@ -281,7 +281,7 @@ impl MenuPanel {
     }
 
     /// The layouts flyout row: like [`MenuPanel::group_row`] but its items
-    /// are the saved and shipped presets, read when it opens, each doing the
+    /// are the saved presets, read when it opens, each doing the
     /// flyout's `target`. With `with_new` the list leads with a "New..." row
     /// that opens the save dialog.
     fn layouts_row(

@@ -92,7 +92,12 @@ pub mod icons {
     pub const RADIO: &str = "icons/radio.svg";
     pub const DATABASE: &str = "icons/database.svg";
     pub const CLOCK: &str = "icons/clock.svg";
+    pub const CALENDAR: &str = "icons/calendar.svg";
+    pub const TAG: &str = "icons/tag.svg";
     pub const IMAGE: &str = "icons/image.svg";
+    /// The color grid's role link: an override following another app
+    /// color instead of holding a literal.
+    pub const LINK: &str = "icons/link.svg";
     pub const PALETTE: &str = "icons/palette.svg";
     pub const CONTRAST: &str = "icons/contrast.svg";
     pub const LAYOUT_DASHBOARD: &str = "icons/layout-dashboard.svg";
@@ -149,6 +154,11 @@ pub mod icons {
     pub const COLUMNS_2: &str = "icons/columns-2.svg";
     pub const LAYERS: &str = "icons/layers-2.svg";
     pub const PANEL_BOTTOM: &str = "icons/panel-bottom.svg";
+    /// The rest of the panel-side family: the border edge toggles wear
+    /// all four, one per side the line can draw on.
+    pub const PANEL_TOP: &str = "icons/panel-top.svg";
+    pub const PANEL_LEFT: &str = "icons/panel-left.svg";
+    pub const PANEL_RIGHT: &str = "icons/panel-right.svg";
     pub const CHEVRON_LEFT: &str = "icons/chevron-left.svg";
     /// The layout tree's per-panel lock toggle, pinned and free.
     pub const LOCK: &str = "icons/lock.svg";
@@ -216,6 +226,7 @@ pub mod icons {
         DATABASE,
         CLOCK,
         IMAGE,
+        LINK,
         PALETTE,
         CONTRAST,
         LAYOUT_DASHBOARD,
@@ -249,6 +260,9 @@ pub mod icons {
         COLUMNS_2,
         LAYERS,
         PANEL_BOTTOM,
+        PANEL_TOP,
+        PANEL_LEFT,
+        PANEL_RIGHT,
         CHEVRON_LEFT,
         LOCK,
         LOCK_OPEN,
@@ -267,6 +281,7 @@ pub mod icons {
 #[include = "app/rox-music.svg"]
 #[include = "workspaces/**/*.json"]
 #[include = "workspaces/**/*.png"]
+#[include = "disc/*.png"]
 pub struct Assets;
 
 /// The shipped workspace bundles: every JSON file under `assets/workspaces`,

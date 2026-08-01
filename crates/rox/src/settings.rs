@@ -21,6 +21,7 @@ use gpui::{App, SharedString, WindowAppearance, WindowDecorations};
 use serde::{Deserialize, Serialize};
 
 use rox_playback::engine::LoopMode;
+use rox_viz::signal::Signal;
 
 use crate::design::palette::{self, Palette};
 
@@ -163,6 +164,10 @@ pub struct Settings {
     /// workspace validates and versions it on restore. None until a layout
     /// has been saved.
     pub layout: Option<serde_json::Value>,
+    /// The shared signal pool: the app-wide modulation sources routes ride.
+    /// The hub loads from here at launch, and every live pool edit writes
+    /// back through.
+    pub signals: Vec<Signal>,
     /// The user's saved layout presets, each a full dock dump under a name.
     /// Shipped presets live in the app's assets and are not stored here; the
     /// settings window merges the two for its list. Empty until one is saved.
@@ -220,6 +225,9 @@ pub struct Settings {
     /// rounding, and border, all in px. A panel's own theme overrides any
     /// of them; unset there, the panel takes these.
     pub frame: Frame,
+    /// Whether the 1px seams between panel tiles paint. Off leaves the
+    /// resize grips invisible but still draggable, so panels sit flush.
+    pub seams: bool,
     /// The theme pick: which of the two user palettes renders, with
     /// System following the OS's light/dark preference live.
     pub theme: Theme,
@@ -286,6 +294,9 @@ pub struct Settings {
     pub quick_play: QuickPlayConfig,
     /// How ratings read and click everywhere they show.
     pub rating_style: RatingStyle,
+    /// Whether unfilled star slots draw a faint dot, so an unrated row
+    /// reads as a quiet row of dots instead of empty space.
+    pub rating_dots: bool,
     /// Whether launch checks GitHub for a newer release, at most once a
     /// day. The About page's toggle flips it; off leaves only the manual
     /// button.
@@ -444,6 +455,22 @@ pub fn set_rating_style(style: RatingStyle, cx: &mut App) {
     }
 }
 
+/// The live unrated-dots flag, a static beside the style's, read in the
+/// same render paths.
+static RATING_DOTS: AtomicBool = AtomicBool::new(false);
+
+pub fn rating_dots() -> bool {
+    RATING_DOTS.load(Ordering::Relaxed)
+}
+
+/// Flip the dots and repaint, the style setter's twin.
+pub fn set_rating_dots(on: bool, cx: &mut App) {
+    RATING_DOTS.store(on, Ordering::Relaxed);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
 /// The live menubar-hidden flag, a static like the rating style's: the
 /// workspace reads it per frame where a settings-file load has no place.
 /// Seeded at startup, flipped by the settings window.
@@ -486,6 +513,21 @@ pub fn window_decorations() -> WindowDecorations {
 /// (`workspace::apply_decorations`).
 pub fn set_os_decorations(on: bool) {
     OS_DECORATIONS.store(on, Ordering::Relaxed);
+}
+
+/// The live panel-seams flag lives in the dock crate, where the resize
+/// handles render; these wrappers keep the settings surface in one place.
+pub fn seams() -> bool {
+    rox_dock::resizable::seams()
+}
+
+/// Flip the seams and repaint, the rating-dots setter's twin. Persisting
+/// is the caller's, startup seeds from the file through here too.
+pub fn set_seams(on: bool, cx: &mut App) {
+    rox_dock::resizable::set_seams(on);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
 }
 
 /// The live quit-to-tray flag, a static like the ones above: the window
@@ -841,6 +883,11 @@ pub struct WorkspaceBundle {
     pub palette_dark: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub palette_light: BTreeMap<String, String>,
+    /// The shared signal pool the workspace's looks ride: a layout that
+    /// pulses to the kick is meaningless without "Kick", so the pool
+    /// travels with the look and an apply replaces it wholesale.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<Signal>,
     /// The appearance knobs the workspace dresses the app with.
     pub appearance: AppearanceBundle,
 }
@@ -855,6 +902,7 @@ impl Default for WorkspaceBundle {
             mini_layout: None,
             palette_dark: BTreeMap::new(),
             palette_light: BTreeMap::new(),
+            signals: Vec::new(),
             appearance: AppearanceBundle::default(),
         }
     }
@@ -874,11 +922,13 @@ pub struct AppearanceBundle {
     pub surface_opacity: f32,
     pub backdrop_strength: f32,
     pub frame: Frame,
+    pub seams: bool,
     pub art_theming: bool,
     pub keep_theme: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_font: Option<String>,
     pub rating_style: RatingStyle,
+    pub rating_dots: bool,
     pub quick_play: QuickPlayConfig,
     pub hide_menubar: bool,
     pub os_decorations: bool,
@@ -890,10 +940,12 @@ impl Default for AppearanceBundle {
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
             frame: Frame::DEFAULT,
+            seams: true,
             art_theming: false,
             keep_theme: false,
             app_font: None,
             rating_style: RatingStyle::default(),
+            rating_dots: false,
             quick_play: QuickPlayConfig::default(),
             hide_menubar: false,
             os_decorations: true,
@@ -947,14 +999,17 @@ impl WorkspaceBundle {
             mini_layout: s.mini_layout.clone(),
             palette_dark: s.palette_dark.clone(),
             palette_light: s.palette_light.clone(),
+            signals: s.signals.clone(),
             appearance: AppearanceBundle {
                 surface_opacity: s.surface_opacity,
                 backdrop_strength: s.backdrop_strength,
                 frame: s.frame,
+                seams: s.seams,
                 art_theming: s.art_theming,
                 keep_theme: s.keep_theme,
                 app_font: s.app_font.clone(),
                 rating_style: s.rating_style,
+                rating_dots: s.rating_dots,
                 quick_play: s.quick_play.clone(),
                 hide_menubar: s.hide_menubar,
                 os_decorations: s.os_decorations,
@@ -974,14 +1029,17 @@ impl WorkspaceBundle {
         s.mini_layout = self.mini_layout;
         s.palette_dark = self.palette_dark;
         s.palette_light = self.palette_light;
+        s.signals = self.signals;
         let a = self.appearance;
         s.surface_opacity = a.surface_opacity;
         s.backdrop_strength = a.backdrop_strength;
         s.frame = a.frame;
+        s.seams = a.seams;
         s.art_theming = a.art_theming;
         s.keep_theme = a.keep_theme;
         s.app_font = a.app_font;
         s.rating_style = a.rating_style;
+        s.rating_dots = a.rating_dots;
         s.quick_play = a.quick_play;
         s.hide_menubar = a.hide_menubar;
         s.os_decorations = a.os_decorations;
@@ -1071,6 +1129,7 @@ impl Default for Settings {
             hide_menubar: false,
             os_decorations: true,
             layout: None,
+            signals: Vec::new(),
             layouts: Vec::new(),
             primary_layout: None,
             mini_layout: None,
@@ -1084,6 +1143,7 @@ impl Default for Settings {
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
             frame: Frame::DEFAULT,
+            seams: true,
             theme: Theme::default(),
             palette_dark: BTreeMap::new(),
             palette_light: BTreeMap::new(),
@@ -1101,6 +1161,7 @@ impl Default for Settings {
             discord: DiscordSettings::default(),
             quick_play: QuickPlayConfig::default(),
             rating_style: RatingStyle::default(),
+            rating_dots: false,
             check_updates: true,
             update_cache: None,
             experimental: false,
@@ -1283,6 +1344,7 @@ mod tests {
             art_theming: true,
             keep_theme: true,
             rating_style: RatingStyle::Numeric,
+            rating_dots: true,
             hide_menubar: true,
             primary_layout: Some("one".into()),
             ..Default::default()
@@ -1311,6 +1373,7 @@ mod tests {
         assert!(dst.art_theming);
         assert!(dst.keep_theme);
         assert!(dst.rating_style == RatingStyle::Numeric);
+        assert!(dst.rating_dots);
         assert!(dst.hide_menubar);
         assert_eq!(
             dst.palette_dark.get("accent").map(String::as_str),

@@ -1,0 +1,85 @@
+--- a/src/table/mod.rs
++++ b/src/table/mod.rs
+@@ -37,6 +37,8 @@
+     bordered: bool,
+     /// rox patch: whether each row draws its bottom hairline.
+     row_borders: bool,
++    /// rox patch: whether the column header row draws.
++    header_visible: bool,
+     /// The cell size of the table.
+     size: Size,
+ }
+@@ -48,6 +50,7 @@
+             stripe: false,
+             bordered: true,
+             row_borders: true,
++            header_visible: true,
+             size: Size::default(),
+         }
+     }
+@@ -90,6 +93,12 @@
+         self
+     }
+ 
++    /// rox patch: set to draw the column header row, default to true.
++    pub fn header_visible(mut self, visible: bool) -> Self {
++        self.options.header_visible = visible;
++        self
++    }
++
+     /// Set scrollbar visibility.
+     pub fn scrollbar_visible(mut self, vertical: bool, horizontal: bool) -> Self {
+         self.options.scrollbar_visible = Edges {
+--- a/src/table/state.rs
++++ b/src/table/state.rs
+@@ -1213,8 +1213,13 @@
+             div()
+                 .occlude()
+                 .absolute()
+-                // rox patch: clear the header at its rem-scaled height.
+-                .top(self.options.size.table_row_height_scaled(window))
++                // rox patch: clear the header at its rem-scaled height,
++                // or hug the top while it is hidden.
++                .top(if self.options.header_visible {
++                    self.options.size.table_row_height_scaled(window)
++                } else {
++                    Pixels::ZERO
++                })
+                 .right_0()
+                 .bottom_0()
+                 .w(Scrollbar::width())
+@@ -1310,7 +1315,10 @@
+             .id("table-inner")
+             .size_full()
+             .overflow_hidden()
+-            .child(self.render_table_header(left_columns_count, window, cx))
++            // rox patch: the column header row follows the header_visible knob.
++            .when(self.options.header_visible, |this| {
++                this.child(self.render_table_header(left_columns_count, window, cx))
++            })
+             .context_menu({
+                 let view = cx.entity().clone();
+                 move |this, window: &mut Window, cx: &mut Context<PopupMenu>| {
+@@ -1336,12 +1344,21 @@
+                                     move |table, visible_range: Range<usize>, window, cx| {
+                                         // We must calculate the col sizes here, because the col sizes
+                                         // need render_th first, then that method will set the bounds of each col.
++                                        // rox patch: a header that never rendered (hidden from the
++                                        // start) recorded no bounds, so an unmeasured column falls
++                                        // back to its configured width.
+                                         let col_sizes: Rc<Vec<gpui::Size<Pixels>>> = Rc::new(
+                                             table
+                                                 .col_groups
+                                                 .iter()
+                                                 .skip(left_columns_count)
+-                                                .map(|col| col.bounds.size)
++                                                .map(|col| {
++                                                    let mut size = col.bounds.size;
++                                                    if size.width <= px(0.) {
++                                                        size.width = col.width;
++                                                    }
++                                                    size
++                                                })
+                                                 .collect(),
+                                         );
+ 

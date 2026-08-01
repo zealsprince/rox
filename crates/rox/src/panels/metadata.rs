@@ -17,8 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    div, img, prelude::*, px, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    Image, ImageFormat, KeyDownEvent, ObjectFit, SharedString, Subscription, WeakEntity, Window,
+    div, img, prelude::*, px, AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle,
+    Focusable, Image, ImageFormat, KeyDownEvent, ObjectFit, SharedString, Stateful, Subscription,
+    WeakEntity, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
@@ -37,6 +38,7 @@ use crate::providers;
 use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
 use crate::source::{self, ResolvedTrack, TrackSource};
+use crate::track_ui::track_columns::{self, Column};
 
 /// The metadata panel's per-view config: what a saved layout restores, and
 /// what the settings window edits. Missing fields take the defaults, so a
@@ -52,6 +54,17 @@ pub struct MetadataConfig {
     pub align: Align,
     /// The track's cover art behind the fields, dimmed under a scrim.
     pub cover: bool,
+    /// How the fields lay out; see [`MetadataDisplay`].
+    pub display: MetadataDisplay,
+    /// Tint every other row of the table face; the sheet never stripes.
+    pub stripes: bool,
+    /// Draw the hairline under each table row. Off by default: the table
+    /// face has always drawn bare, the stripes alone carrying the rhythm.
+    pub row_borders: bool,
+    /// The shown field keys out of [`FIELDS`]; the registry's default-on
+    /// set for a fresh panel. Title and artist head the sheet and are not
+    /// listed.
+    pub fields: Vec<String>,
 }
 
 impl Default for MetadataConfig {
@@ -61,9 +74,90 @@ impl Default for MetadataConfig {
             source: TrackSource::default(),
             align: Align::default(),
             cover: true,
+            display: MetadataDisplay::default(),
+            stripes: true,
+            row_borders: false,
+            fields: track_columns::default_columns(FIELDS),
         }
     }
 }
+
+/// How the fields lay out: the title-led sheet, or a flat label and
+/// value table from the top, the classic file-info pane. The table
+/// folds the title and artist in as rows of their own.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MetadataDisplay {
+    #[default]
+    Sheet,
+    Table,
+}
+
+/// The sheet's toggleable fields in display order, the library-column
+/// registry shape so the shared checklist and Fields submenu drive them.
+/// The file facts sit off by default; the tag sheet is the stock face.
+const FIELDS: &[Column] = &[
+    Column {
+        key: "album",
+        label: "Album",
+        default_on: true,
+    },
+    Column {
+        key: "album_artist",
+        label: "Album Artist",
+        default_on: true,
+    },
+    Column {
+        key: "disc",
+        label: "Disc",
+        default_on: true,
+    },
+    Column {
+        key: "track",
+        label: "Track",
+        default_on: true,
+    },
+    Column {
+        key: "genre",
+        label: "Genre",
+        default_on: true,
+    },
+    Column {
+        key: "year",
+        label: "Year",
+        default_on: true,
+    },
+    Column {
+        key: "duration",
+        label: "Duration",
+        default_on: true,
+    },
+    Column {
+        key: "codec",
+        label: "Codec",
+        default_on: true,
+    },
+    Column {
+        key: "bitrate",
+        label: "Bitrate",
+        default_on: true,
+    },
+    Column {
+        key: "file",
+        label: "File",
+        default_on: false,
+    },
+    Column {
+        key: "plays",
+        label: "Plays",
+        default_on: false,
+    },
+    Column {
+        key: "rating",
+        label: "Rating",
+        default_on: false,
+    },
+];
 
 /// The shown track's full projection row, owned so it outlives the borrow
 /// of the library.
@@ -80,6 +174,8 @@ struct Details {
     duration_ms: u32,
     codec: String,
     bitrate_kbps: u16,
+    plays: u32,
+    rating: u8,
 }
 
 /// The editable fields in sheet order, each with its input row's label:
@@ -160,6 +256,13 @@ impl MetadataPanel {
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
+                // A rating click or a landed listen moves two of the sheet's
+                // fields; re-resolve the row, nothing else changed.
+                if matches!(event, LibraryEvent::Rated | LibraryEvent::Played) {
+                    this.details = None;
+                    cx.notify();
+                    return;
+                }
                 if !matches!(event, LibraryEvent::Updated) {
                     return;
                 }
@@ -208,6 +311,8 @@ impl MetadataPanel {
                     duration_ms: v.duration_ms,
                     codec: v.codec.to_owned(),
                     bitrate_kbps: v.bitrate_kbps,
+                    plays: v.plays,
+                    rating: v.rating,
                 })
             });
             self.details = Some((path.to_path_buf(), details));
@@ -254,6 +359,8 @@ impl MetadataPanel {
             window,
             cx,
         );
+        let submenu = track_columns::columns_submenu(FIELDS, window, cx);
+        let menu = menu.item(PopupMenuItem::submenu("Fields", submenu));
         let weak = cx.entity().downgrade();
         menu.separator().item(
             PopupMenuItem::new("Cover Background")
@@ -430,6 +537,30 @@ impl MetadataPanel {
     }
 }
 
+/// The shared column machinery drives the sheet's field set: the
+/// settings checklist and the right-click Fields submenu both edit
+/// through here. Turning a field on rebuilds the list in registry order,
+/// so the sheet never shuffles with toggle order.
+impl track_columns::ColumnHost for MetadataPanel {
+    fn column_shown(&self, key: &str) -> bool {
+        self.config.fields.iter().any(|k| k == key)
+    }
+
+    fn set_column(&mut self, key: &'static str, on: bool, cx: &mut Context<Self>) {
+        if on {
+            let shown: Vec<&str> = self.config.fields.iter().map(String::as_str).collect();
+            self.config.fields = FIELDS
+                .iter()
+                .filter(|c| c.key == key || shown.contains(&c.key))
+                .map(|c| c.key.to_string())
+                .collect();
+        } else {
+            self.config.fields.retain(|k| k != key);
+        }
+        cx.notify();
+    }
+}
+
 impl PanelSettings for MetadataPanel {
     fn state(&self) -> AppState {
         self.state.clone()
@@ -480,6 +611,22 @@ impl PanelSettings for MetadataPanel {
                 cx,
             ))
             .child(panel::setting_row(
+                "Display",
+                Some("The title-led sheet, or a flat label and value table from the top"),
+                panel::choices(
+                    &[
+                        ("Sheet", MetadataDisplay::Sheet),
+                        ("Table", MetadataDisplay::Table),
+                    ],
+                    self.config.display,
+                    |this: &mut Self, display, cx| {
+                        this.config.display = display;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
                 "Cover Background",
                 Some("The track's cover art behind the fields"),
                 panel::toggle(
@@ -491,7 +638,57 @@ impl PanelSettings for MetadataPanel {
                     cx,
                 ),
             ))
+            .child(panel::setting_block(
+                "Fields",
+                Some("Which fields the sheet lists; a field the track doesn't carry stays hidden"),
+                None,
+                track_columns::checklist(FIELDS, self, cx),
+            ))
             .into_any_element()
+    }
+
+    /// The table face's row look on the shared Appearance page, the
+    /// library's Rows section for this panel. The sheet has no rows, so
+    /// the section only shows with the table.
+    fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.config.display != MetadataDisplay::Table {
+            return None;
+        }
+        Some(
+            settings_ui::section(
+                "Rows",
+                None,
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_MD)
+                    .child(panel::setting_row(
+                        "Alternating Highlights",
+                        Some("Tint every other row of the table"),
+                        panel::toggle(
+                            self.config.stripes,
+                            |this: &mut Self, on, cx| {
+                                this.config.stripes = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(panel::setting_row(
+                        "Row Borders",
+                        Some("The hairline under each row of the table"),
+                        panel::toggle(
+                            self.config.row_borders,
+                            |this: &mut Self, on, cx| {
+                                this.config.row_borders = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )),
+            )
+            .into_any_element(),
+        )
     }
 }
 
@@ -665,6 +862,55 @@ fn field(label: &'static str, value: String) -> Div {
         .child(div().min_w_0().truncate().child(value))
 }
 
+/// One row of the table face: the label column, the value beside it,
+/// faint striping and a bottom hairline as the knobs ask, both in the
+/// library rows' colors. The stripe is translucent so the cover
+/// background keeps showing through.
+fn table_row(ix: usize, label: &'static str, value: String, stripes: bool, borders: bool) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_SM)
+        .px(tokens::SPACE_MD)
+        .py(px(3.))
+        .when(stripes && ix % 2 == 1, |d| {
+            d.bg(palette::alpha(palette::bg_elevated(), 0x80))
+        })
+        .when(borders, |d| d.border_b_1().border_color(palette::border()))
+        .child(
+            div()
+                .w(px(110.))
+                .flex_none()
+                .text_color(palette::text_muted())
+                .child(label),
+        )
+        .child(div().min_w_0().truncate().child(value))
+}
+
+/// The scrolling frame every face sits in: pinned over the background,
+/// centering its content while it fits and scrolling once it doesn't.
+/// Plain absolute centering clips both ends when the content outgrows
+/// the panel (the title vanished first); growing the inner column to at
+/// least the frame keeps the centering honest and hands the overflow to
+/// the scroll instead.
+fn scroll_frame(id: &'static str, align: Align, content: impl IntoElement) -> Stateful<Div> {
+    div().id(id).absolute().inset_0().overflow_y_scroll().child(
+        div()
+            .min_h_full()
+            .w_full()
+            .flex()
+            .flex_col()
+            .justify_center()
+            .map(|d| match align {
+                Align::Left => d.items_start(),
+                Align::Center => d.items_center(),
+                Align::Right => d.items_end(),
+            })
+            .child(content),
+    )
+}
+
 impl Render for MetadataPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
@@ -684,12 +930,14 @@ impl MetadataPanel {
             .and_then(|tabs| tabs.upgrade())
             .is_none_or(|tabs| tabs.read(cx).panels_count() < 2);
         // Same show rule as the suffix: hidden while the panel shows no
-        // track, unless an edit is already open.
-        let show_toggle = self.edit.is_some()
-            || self
-                .resolved
-                .get(self.config.source, &self.state, cx)
-                .is_some();
+        // track, unless an edit is already open. The chrome's finished-
+        // furniture flag drops it too, for a slot in a shipped layout.
+        let show_toggle = !self.config.chrome.hide_controls
+            && (self.edit.is_some()
+                || self
+                    .resolved
+                    .get(self.config.source, &self.state, cx)
+                    .is_some());
         div()
             .size_full()
             .flex()
@@ -772,10 +1020,7 @@ impl MetadataPanel {
         });
 
         if self.edit.is_some() {
-            return root.child(
-                justify(div().absolute().inset_0().flex().items_center(), align)
-                    .child(self.edit_sheet(cx)),
-            );
+            return root.child(scroll_frame("metadata-edit", align, self.edit_sheet(cx)));
         }
 
         // An untagged file still shows something: its file name for the
@@ -790,40 +1035,79 @@ impl MetadataPanel {
                     .unwrap_or_else(|| path.display().to_string())
             });
 
+        // The shown fields in registry order, each skipped when its value
+        // is empty: absence reads cleaner than a labeled blank.
         let mut fields: Vec<(&'static str, String)> = Vec::new();
-        if let Some(d) = &details {
-            if !d.album.is_empty() {
-                fields.push(("Album", d.album.clone()));
+        for col in FIELDS {
+            if !self.config.fields.iter().any(|k| k == col.key) {
+                continue;
             }
-            if !d.album_artist.is_empty() && d.album_artist != d.artist {
-                fields.push(("Album Artist", d.album_artist.clone()));
-            }
-            if d.disc_no > 0 {
-                fields.push(("Disc", d.disc_no.to_string()));
-            }
-            if d.track_no > 0 {
-                fields.push(("Track", format!("{:02}", d.track_no)));
-            }
-            if !d.genre.is_empty() {
-                fields.push(("Genre", d.genre.clone()));
-            }
-            if d.year > 0 {
-                fields.push(("Year", d.year.to_string()));
-            }
-            if d.duration_ms > 0 {
-                fields.push(("Duration", fmt_time(d.duration_ms as f64 / 1000.0)));
-            }
-            if !d.codec.is_empty() {
-                fields.push(("Codec", d.codec.clone()));
-            }
-            if d.bitrate_kbps > 0 {
-                fields.push(("Bitrate", format!("{} kbps", d.bitrate_kbps)));
+            let value = match col.key {
+                // The file name comes off the path, so it shows even for
+                // a track the library doesn't know.
+                "file" => path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()),
+                key => details.as_ref().and_then(|d| match key {
+                    "album" => (!d.album.is_empty()).then(|| d.album.clone()),
+                    "album_artist" => (!d.album_artist.is_empty() && d.album_artist != d.artist)
+                        .then(|| d.album_artist.clone()),
+                    "disc" => (d.disc_no > 0).then(|| d.disc_no.to_string()),
+                    "track" => (d.track_no > 0).then(|| format!("{:02}", d.track_no)),
+                    "genre" => (!d.genre.is_empty()).then(|| d.genre.clone()),
+                    "year" => (d.year > 0).then(|| d.year.to_string()),
+                    "duration" => {
+                        (d.duration_ms > 0).then(|| fmt_time(d.duration_ms as f64 / 1000.0))
+                    }
+                    "codec" => (!d.codec.is_empty()).then(|| d.codec.clone()),
+                    "bitrate" => (d.bitrate_kbps > 0).then(|| format!("{} kbps", d.bitrate_kbps)),
+                    "plays" => (d.plays > 0).then(|| track_columns::fmt_plays(d.plays)),
+                    "rating" => (d.rating > 0).then(|| crate::rating_ui::fmt(d.rating).to_string()),
+                    _ => None,
+                }),
+            };
+            if let Some(value) = value {
+                fields.push((col.label, value));
             }
         }
         let artist = details
             .as_ref()
             .map(|d| d.artist.clone())
             .filter(|a| !a.is_empty());
+
+        // The table face: title and artist fold in as rows and the list
+        // reads from the top, scrolling when the panel runs short.
+        if self.config.display == MetadataDisplay::Table {
+            let mut rows: Vec<(&'static str, String)> = Vec::new();
+            rows.push(("Title", title));
+            if let Some(artist) = artist {
+                rows.push(("Artist", artist));
+            }
+            rows.extend(fields);
+            let stripes = self.config.stripes;
+            let borders = self.config.row_borders;
+            return root.child(
+                div()
+                    .id("metadata-table")
+                    .absolute()
+                    .inset_0()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .py(tokens::SPACE_XS)
+                            .children(
+                                rows.into_iter()
+                                    .enumerate()
+                                    .map(move |(ix, (label, value))| {
+                                        table_row(ix, label, value, stripes, borders)
+                                    }),
+                            ),
+                    ),
+            );
+        }
 
         // The sheet: title over artist, the fields below, placed by the
         // alignment knob and centered vertically like the cover.
@@ -862,7 +1146,7 @@ impl MetadataPanel {
                 )
             });
 
-        root.child(justify(div().absolute().inset_0().flex().items_center(), align).child(sheet))
+        root.child(scroll_frame("metadata-sheet", align, sheet))
     }
 
     /// The sheet's edit face: one input per editable field, the save and

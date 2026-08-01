@@ -47,6 +47,7 @@ impl Session {
         volume: f32,
         loop_mode: LoopMode,
         shuffle: Option<bool>,
+        stop_after: bool,
         paused_at: Option<f64>,
     ) -> Result<Session, String> {
         let shared = Arc::new(Shared::new(queue.paths.len()));
@@ -67,6 +68,11 @@ impl Session {
         // the not-yet-played tail out from under the saved queue.
         if let Some(on) = shuffle {
             let _ = tx.send(Cmd::SetShuffle(on));
+        }
+        // An armed stop-after carries into the fresh session, so queueing a
+        // new context does not silently disarm it.
+        if stop_after {
+            let _ = tx.send(Cmd::SetStopAfter(true));
         }
         // The launch restore's seek and pause queue here too, ahead of the
         // decode thread: the engine drains commands before it decodes, so
@@ -126,6 +132,7 @@ pub struct PlayerView {
     pub ended: bool,
     pub loop_mode: LoopMode,
     pub shuffle: bool,
+    pub stop_after: bool,
     pub muted: bool,
     pub volume: f32,
     pub error: Option<SharedString>,
@@ -157,6 +164,10 @@ pub struct Player {
     /// play; WAL keeps it current alongside the catalog's connections. None
     /// until then, or when the library has no database.
     group_conn: Option<rox_library::rusqlite::Connection>,
+    /// Stop at the end of the playing track, next one cued and paused.
+    /// Deliberately not persisted: an armed stop that survived a restart
+    /// would read as a broken player days later.
+    stop_after: bool,
 }
 
 impl Player {
@@ -169,6 +180,7 @@ impl Player {
             pump: None,
             persist_gen: 0,
             group_conn: None,
+            stop_after: false,
         }
     }
 
@@ -529,6 +541,7 @@ impl Player {
             self.effective_volume(),
             self.settings.loop_mode(),
             shuffle,
+            self.stop_after,
             paused_at,
         ) {
             Ok(session) => {
@@ -864,6 +877,20 @@ impl Player {
         Settings::update(move |s| s.shuffle = on);
     }
 
+    /// Whether stop-after-current is armed.
+    pub fn stop_after(&self) -> bool {
+        self.stop_after
+    }
+
+    /// Arm or clear stop-after-current: armed, the playing track ends the
+    /// motion - the engine plays it out, pauses, and cues the next track.
+    /// Sticky until cleared, and session-local by design.
+    pub fn toggle_stop_after(&mut self, cx: &mut Context<Self>) {
+        self.stop_after = !self.stop_after;
+        self.send(Cmd::SetStopAfter(self.stop_after));
+        cx.notify();
+    }
+
     /// Step off -> all -> one -> off and persist the pick.
     pub fn cycle_loop(&mut self) {
         let mode = match self.settings.loop_mode() {
@@ -893,6 +920,7 @@ impl Player {
             ended: self.queue_ended(),
             loop_mode: self.loop_mode(),
             shuffle: self.shuffle(),
+            stop_after: self.stop_after(),
             muted: self.muted(),
             volume: self.volume(),
             error: self.error(),

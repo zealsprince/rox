@@ -34,6 +34,15 @@ macro_rules! transport_panel {
         transport_panel!($panel, $name, $title, min_w = |_: &$panel| px($min_w));
     };
     ($panel:ty, $name:literal, $title:literal, min_w = $min_w:expr) => {
+        transport_panel!(
+            $panel,
+            $name,
+            $title,
+            min_w = $min_w,
+            min_h = |_: &$panel| rox_dock::resizable::PANEL_MIN_SIZE
+        );
+    };
+    ($panel:ty, $name:literal, $title:literal, min_w = $min_w:expr, min_h = $min_h:expr) => {
         impl EventEmitter<PanelEvent> for $panel {}
 
         impl Focusable for $panel {
@@ -70,7 +79,7 @@ macro_rules! transport_panel {
             fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
                 crate::panel::chrome_min_size(
                     &self.config.chrome,
-                    gpui::size(($min_w)(self), rox_dock::resizable::PANEL_MIN_SIZE),
+                    gpui::size(($min_w)(self), ($min_h)(self)),
                 )
             }
 

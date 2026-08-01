@@ -453,7 +453,7 @@ impl Workspace {
     }
 
     /// The layout-presets flyout: like [`Workspace::submenu_row`] but its
-    /// items are the saved and shipped presets, read when it opens, each
+    /// items are the saved presets, read when it opens, each
     /// doing the flyout's `target` with that preset. With `with_new` the
     /// list leads with a "New..." row that opens the save dialog, so the
     /// Save Layout flyout can start a fresh preset as well as overwrite.
@@ -672,8 +672,13 @@ impl Workspace {
             )
             .when(open, |d| {
                 // Read the workspaces only once the flyout opens, not on every
-                // parent-menu paint.
-                let entries = crate::workspaces::all(&Settings::load());
+                // parent-menu paint. The Save flyout can't overwrite shipped
+                // bundles, so it drops them, matching the settings window
+                // where shipped rows carry no Overwrite.
+                let mut entries = crate::workspaces::all(&Settings::load());
+                if target == WorkspaceTarget::Overwrite {
+                    entries.retain(|entry| !entry.builtin);
+                }
                 let mut flyout = div()
                     .absolute()
                     .left_full()

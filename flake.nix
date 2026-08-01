@@ -73,51 +73,72 @@
       mkRox =
         pkgs:
         let
-          gpui = vendoredCrate pkgs "gpui" "0.2.2"
-            "979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707";
-          gpuiComponent = vendoredCrate pkgs "gpui-component" "0.5.1"
-            "d021d46b4088d3d93a57ccdf443da85695a77272108caca2f6fe5369f584966a";
+          gpui =
+            vendoredCrate pkgs "gpui" "0.2.2"
+              "979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707";
+          gpuiComponent =
+            vendoredCrate pkgs "gpui-component" "0.5.1"
+              "d021d46b4088d3d93a57ccdf443da85695a77272108caca2f6fe5369f584966a";
         in
-        pkgs.rustPlatform.buildRustPackage {
-          pname = "rox";
-          version = (lib.importTOML ./Cargo.toml).workspace.package.version;
-          src = self;
+        lib.makeOverridable (
+          # Service identities build.rs bakes in (see .env.template). Already
+          # public: the binary carries them, and the AUR PKGBUILD prints its
+          # own. The last.fm pair is minted for the nix channel so it revokes
+          # independently of the release workflow's; the Discord app id is
+          # shared across channels and public by design. Forks swap in their
+          # own with rox.override { lastfmApiKey = "..."; }.
+          {
+            lastfmApiKey ? "88e26d5b524f6a7b61734350d32afc32",
+            lastfmApiSecret ? "51ece542496dc6b5641eb3feb2735f3b",
+            discordApplicationId ? "1531533372051030036",
+          }:
+          pkgs.rustPlatform.buildRustPackage {
+            pname = "rox";
+            version = (lib.importTOML ./Cargo.toml).workspace.package.version;
+            src = self;
 
-          # gpui and gpui-component resolve as path deps in the lock, so no
-          # extra hashes are needed for them here.
-          cargoLock.lockFile = ./Cargo.lock;
+            env = {
+              LASTFM_API_KEY = lastfmApiKey;
+              LASTFM_API_SECRET = lastfmApiSecret;
+              DISCORD_APPLICATION_ID = discordApplicationId;
+            };
 
-          # Materialize the patched vendor copies [patch.crates-io] points
-          # at, in place of the script run the dev shellHook does.
-          postPatch = ''
-            mkdir -p vendor
-            cp -r ${gpui} vendor/gpui
-            cp -r ${gpuiComponent} vendor/gpui-component
-          '';
+            # gpui and gpui-component resolve as path deps in the lock, so no
+            # extra hashes are needed for them here.
+            cargoLock.lockFile = ./Cargo.lock;
 
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = linuxBuildInputs pkgs;
+            # Materialize the patched vendor copies [patch.crates-io] points
+            # at, in place of the script run the dev shellHook does.
+            postPatch = ''
+              mkdir -p vendor
+              cp -r ${gpui} vendor/gpui
+              cp -r ${gpuiComponent} vendor/gpui-component
+            '';
 
-          # The dlopened libs are unused at link time, so the fixup phase's
-          # rpath shrink would strip them; append after it runs.
-          postFixup = ''
-            patchelf --add-rpath ${lib.makeLibraryPath (runtimeLibs pkgs)} $out/bin/rox
-          '';
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = linuxBuildInputs pkgs;
 
-          postInstall = ''
-            install -Dm644 crates/rox/assets/app/rox.desktop $out/share/applications/rox.desktop
-            install -Dm644 crates/rox/assets/app/rox-music.svg $out/share/icons/hicolor/scalable/apps/rox.svg
-            install -Dm644 crates/rox/assets/app/rox.png $out/share/pixmaps/rox.png
-          '';
+            # The dlopened libs are unused at link time, so the fixup phase's
+            # rpath shrink would strip them; append after it runs.
+            postFixup = ''
+              patchelf --add-rpath ${lib.makeLibraryPath (runtimeLibs pkgs)} $out/bin/rox
+            '';
 
-          meta = {
-            description = "A desktop music player for large, carefully tagged local libraries";
-            homepage = "https://github.com/zealsprince/rox";
-            license = lib.licenses.agpl3Only;
-            mainProgram = "rox";
-            platforms = lib.platforms.linux;
-          };
-        };
+            postInstall = ''
+              install -Dm644 crates/rox/assets/app/rox.desktop $out/share/applications/rox.desktop
+              install -Dm644 crates/rox/assets/app/rox-music.svg $out/share/icons/hicolor/scalable/apps/rox.svg
+              install -Dm644 crates/rox/assets/app/rox.png $out/share/pixmaps/rox.png
+            '';
+
+            meta = {
+              description = "A desktop music player for large, carefully tagged local libraries";
+              homepage = "https://github.com/zealsprince/rox";
+              license = lib.licenses.agpl3Only;
+              mainProgram = "rox";
+              platforms = lib.platforms.linux;
+            };
+          }
+        ) { };
     in
     {
       packages = forEachSystem (

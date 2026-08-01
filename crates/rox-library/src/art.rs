@@ -23,11 +23,71 @@ const FOLDER_ART: &[&str] = &["cover", "folder", "front", "album"];
 /// Image extensions folder art may carry.
 const ART_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 
+/// The picture slot a caller asks for, the tag picture types a player
+/// shows. Every pick falls back through the front cover, any embedded
+/// picture, and folder art, so asking for a slot a file doesn't carry
+/// still resolves to something.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArtKind {
+    #[default]
+    Front,
+    Back,
+    /// The disc scan, ID3's "media" picture.
+    Media,
+    Artist,
+}
+
+impl ArtKind {
+    /// The lofty picture types that satisfy this slot exactly, best
+    /// first; APIC keeps two artist types, so that pick accepts both.
+    fn types(self) -> &'static [PictureType] {
+        match self {
+            ArtKind::Front => &[PictureType::CoverFront],
+            ArtKind::Back => &[PictureType::CoverBack],
+            ArtKind::Media => &[PictureType::Media],
+            ArtKind::Artist => &[PictureType::Artist, PictureType::LeadArtist],
+        }
+    }
+
+    /// The raw APIC type bytes for the same slot, the unsync path's copy
+    /// of [`ArtKind::types`].
+    fn apic_bytes(self) -> &'static [u8] {
+        match self {
+            ArtKind::Front => &[3],
+            ArtKind::Back => &[4],
+            ArtKind::Media => &[6],
+            ArtKind::Artist => &[8, 7],
+        }
+    }
+
+    /// The folder-art stems this slot prefers, ranked ahead of the
+    /// generic cover names so a disc.jpg beside the track wins the media
+    /// pick but a lone cover.jpg still answers.
+    fn stems(self) -> &'static [&'static str] {
+        match self {
+            ArtKind::Front => FOLDER_ART,
+            ArtKind::Back => &["back", "cover", "folder", "front", "album"],
+            ArtKind::Media => &["disc", "media", "cd", "cover", "folder", "front", "album"],
+            ArtKind::Artist => &["artist", "cover", "folder", "front", "album"],
+        }
+    }
+}
+
 /// The cover art for a track: the front cover from its tags (any embedded
 /// picture failing that), else a cover image file in its folder. None when
 /// neither exists or nothing identifies as an image.
 pub fn cover_art(path: &Path) -> Option<(Vec<u8>, String)> {
     cover_art_source(path).map(|(bytes, mime, _)| (bytes, mime))
+}
+
+/// [`cover_art`] with the slot pick: the asked-for picture type from the
+/// tags, falling back through the front cover, any embedded picture, and
+/// the folder art ranked for the slot.
+pub fn cover_art_of(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
+    if let Some(art) = embedded(path, kind) {
+        return Some(art);
+    }
+    folder_art(path, kind).map(|(bytes, mime, _)| (bytes, mime))
 }
 
 /// Where a track's resolved cover came from, so a cache keyed on file
@@ -45,18 +105,19 @@ pub enum ArtSource {
 /// or adding cover.jpg invalidates a thumb the audio file's own mtime/size
 /// would never notice.
 pub fn cover_art_source(path: &Path) -> Option<(Vec<u8>, String, ArtSource)> {
-    if let Some((bytes, mime)) = embedded(path) {
+    if let Some((bytes, mime)) = embedded(path, ArtKind::Front) {
         return Some((bytes, mime, ArtSource::Embedded));
     }
-    let (bytes, mime, file) = folder_art(path)?;
+    let (bytes, mime, file) = folder_art(path, ArtKind::Front)?;
     Some((bytes, mime, ArtSource::Folder(file)))
 }
 
-/// The embedded picture, isolated like the scanner's tag reads: a file
-/// that errors or panics lofty's parser just has no art. Tags lofty is
-/// known to mangle take the raw path first.
-fn embedded(path: &Path) -> Option<(Vec<u8>, String)> {
-    if let Some(art) = unsync_apic(path) {
+/// The embedded picture for a slot, isolated like the scanner's tag
+/// reads: a file that errors or panics lofty's parser just has no art.
+/// Tags lofty is known to mangle take the raw path first. The pick runs
+/// the slot's exact types, then the front cover, then any picture.
+fn embedded(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
+    if let Some(art) = unsync_apic(path, kind) {
         return Some(art);
     }
     let file = catch_unwind(AssertUnwindSafe(|| {
@@ -65,9 +126,15 @@ fn embedded(path: &Path) -> Option<(Vec<u8>, String)> {
     .ok()?
     .ok()?;
     let pictures: Vec<_> = file.tags().iter().flat_map(|tag| tag.pictures()).collect();
-    let picture = pictures
+    let picture = kind
+        .types()
         .iter()
-        .find(|p| p.pic_type() == PictureType::CoverFront)
+        .find_map(|t| pictures.iter().find(|p| p.pic_type() == *t))
+        .or_else(|| {
+            pictures
+                .iter()
+                .find(|p| p.pic_type() == PictureType::CoverFront)
+        })
         .or_else(|| pictures.first())?;
     // Tags lie about mime types often enough that a missing or unknown one
     // is worth rescuing off the magic bytes.
@@ -78,9 +145,11 @@ fn embedded(path: &Path) -> Option<(Vec<u8>, String)> {
     Some((picture.data().to_vec(), mime))
 }
 
-/// A cover image sitting next to the track, the best-ranked stem winning.
-/// Hands back the file it read so a cache can key on that file's identity.
-fn folder_art(path: &Path) -> Option<(Vec<u8>, String, std::path::PathBuf)> {
+/// A cover image sitting next to the track, the slot's best-ranked stem
+/// winning. Hands back the file it read so a cache can key on that
+/// file's identity.
+fn folder_art(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String, std::path::PathBuf)> {
+    let stems = kind.stems();
     let dir = path.parent()?;
     let mut best: Option<(usize, std::path::PathBuf)> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
@@ -95,7 +164,7 @@ fn folder_art(path: &Path) -> Option<(Vec<u8>, String, std::path::PathBuf)> {
         let Some(rank) = candidate
             .file_stem()
             .and_then(|s| s.to_str())
-            .and_then(|stem| FOLDER_ART.iter().position(|n| stem.eq_ignore_ascii_case(n)))
+            .and_then(|stem| stems.iter().position(|n| stem.eq_ignore_ascii_case(n)))
         else {
             continue;
         };
@@ -120,7 +189,7 @@ fn folder_art(path: &Path) -> Option<(Vec<u8>, String, std::path::PathBuf)> {
 /// None means the tag is not this shape; the lofty path takes over. The
 /// writer leans on the same probe to carry the picture through a commit,
 /// since lofty would hand it the mangled bytes to write back.
-pub(crate) fn unsync_apic(path: &Path) -> Option<(Vec<u8>, String)> {
+pub(crate) fn unsync_apic(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut header = [0u8; 10];
     file.read_exact(&mut header).ok()?;
@@ -135,7 +204,8 @@ pub(crate) fn unsync_apic(path: &Path) -> Option<(Vec<u8>, String)> {
     if header[5] & 0x40 != 0 {
         pos = synchsafe(tag.get(..4)?)? as usize;
     }
-    let mut fallback = None;
+    let preferred = kind.apic_bytes();
+    let mut best: Option<(usize, (Vec<u8>, String))> = None;
     while pos + 10 <= tag.len() {
         let id = &tag[pos..pos + 4];
         if !id
@@ -160,14 +230,24 @@ pub(crate) fn unsync_apic(path: &Path) -> Option<(Vec<u8>, String)> {
         let Some((pic_type, art)) = parse_apic(&resync(body)) else {
             continue;
         };
-        // The front cover wins outright, any other picture stands in,
-        // mirroring the lofty path's pick.
-        if pic_type == 3 {
+        // The slot's own types win outright, the front cover stands in,
+        // any other picture last, mirroring the lofty path's pick.
+        let rank = preferred
+            .iter()
+            .position(|b| *b == pic_type)
+            .unwrap_or(if pic_type == 3 {
+                preferred.len()
+            } else {
+                preferred.len() + 1
+            });
+        if rank == 0 {
             return Some(art);
         }
-        fallback.get_or_insert(art);
+        if best.as_ref().is_none_or(|(r, _)| rank < *r) {
+            best = Some((rank, art));
+        }
     }
-    fallback
+    best.map(|(_, art)| art)
 }
 
 /// A de-unsynchronised APIC body split into its picture type and the
@@ -226,6 +306,17 @@ pub(crate) fn synchsafe(bytes: &[u8]) -> Option<u32> {
         return None;
     }
     Some(quad.iter().fold(0u32, |acc, b| acc << 7 | u32::from(*b)))
+}
+
+/// The 4-byte synchsafe encode, the write-side mirror of [`synchsafe`].
+/// The value must fit 28 bits; callers bound it before asking.
+pub(crate) fn synchsafe_encode(n: u32) -> [u8; 4] {
+    [
+        (n >> 21) as u8 & 0x7F,
+        (n >> 14) as u8 & 0x7F,
+        (n >> 7) as u8 & 0x7F,
+        n as u8 & 0x7F,
+    ]
 }
 
 /// The mime type off an image's magic bytes.

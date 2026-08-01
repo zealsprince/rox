@@ -1,9 +1,14 @@
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use gpui::{
     AnyElement, App, Axis, Element, ElementId, Entity, GlobalElementId, InteractiveElement,
     IntoElement, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
     StatefulInteractiveElement, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    transparent_black,
 };
 
 use crate::DockPlacement;
@@ -11,6 +16,22 @@ use gpui_component::{ActiveTheme as _, AxisExt as _};
 
 pub(crate) const HANDLE_PADDING: Pixels = px(4.);
 pub(crate) const HANDLE_SIZE: Pixels = px(1.);
+
+/// rox addition: whether the resting 1px seam between panel tiles paints.
+/// Off leaves the handles invisible but still draggable, for looks that
+/// want panels to sit flush; an active drag still shows its line. A static
+/// like the host app's own appearance flags, since the handle render has
+/// no path to app settings; the host seeds it and repaints.
+static SEAMS: AtomicBool = AtomicBool::new(true);
+
+pub fn seams() -> bool {
+    SEAMS.load(Ordering::Relaxed)
+}
+
+/// Set seam visibility. Repainting open windows is the caller's.
+pub fn set_seams(on: bool) {
+    SEAMS.store(on, Ordering::Relaxed);
+}
 
 /// Create a resize handle for a resizable panel.
 pub(crate) fn resize_handle<T: 'static, E: 'static + Render>(
@@ -108,8 +129,10 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
 
             let bg_color = if state.is_active() {
                 cx.theme().drag_border
-            } else {
+            } else if seams() {
                 cx.theme().border
+            } else {
+                transparent_black()
             };
 
             let mut el = div()

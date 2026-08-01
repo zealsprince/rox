@@ -38,6 +38,11 @@ pub enum Cmd {
     Volume(f32),
     SetLoop(LoopMode),
     SetShuffle(bool),
+    /// Arm or clear stop-after-current: armed, the track playing now ends
+    /// the session's motion - the engine lets the ring drain so the last
+    /// samples play out, then pauses with the next track cued at 0:00.
+    /// Sticky until cleared, so every track end stops while armed.
+    SetStopAfter(bool),
     /// Splice tracks into the queue right after entry `after` (its stable id),
     /// or at the end when `after` is None. `explicit` marks them as user-queued
     /// (Play Next, Add to Queue) rather than part of the playing context, so
@@ -144,6 +149,12 @@ pub struct Engine {
     device_rate: u32,
     rx: Receiver<Cmd>,
     loop_mode: LoopMode,
+    /// Stop at the end of the playing track instead of rolling on. Sticky:
+    /// stays armed until cleared, so every boundary stops.
+    stop_after: bool,
+    /// An armed stop cut the gapless open at EOF; consumed once the ring
+    /// drains, where the pause lands and the next track cues up.
+    stop_pending: bool,
     /// Frames pushed on the frames_consumed clock; resynced after each flush.
     pushed_playable: u64,
     /// Decoded, converted samples waiting for ring space.
@@ -208,6 +219,8 @@ impl Engine {
             device_rate,
             rx,
             loop_mode: LoopMode::default(),
+            stop_after: false,
+            stop_pending: false,
             pushed_playable: 0,
             pending: Vec::new(),
             pending_pos: 0,
@@ -290,6 +303,7 @@ impl Engine {
                         }
                     }
                     Cmd::SetShuffle(on) => self.set_shuffle(on),
+                    Cmd::SetStopAfter(on) => self.stop_after = on,
                     Cmd::Insert {
                         after,
                         paths,
@@ -426,8 +440,14 @@ impl Engine {
                         // EOF: swap the decoder under the live stream. No
                         // flush, no stream teardown; this IS the gapless
                         // boundary. Loop modes pick the next open: One
-                        // reopens the same track, All wraps the queue.
-                        source = if self.loop_mode == LoopMode::One {
+                        // reopens the same track, All wraps the queue. An
+                        // armed stop-after skips the open instead - the
+                        // drain below is where the pause lands, so the
+                        // track's tail still plays out of the ring.
+                        source = if self.stop_after {
+                            self.stop_pending = true;
+                            None
+                        } else if self.loop_mode == LoopMode::One {
                             self.open_at(self.pos)
                         } else if self.pos + 1 < self.order.len() {
                             self.open_at(self.pos + 1)
@@ -439,9 +459,37 @@ impl Engine {
                     }
                 }
                 None => {
-                    // Queue exhausted: report ended once the ring drains.
+                    // Queue exhausted, or an armed stop-after cut the
+                    // gapless open: either way the ring drains first so the
+                    // last samples play out.
                     let cap = self.producer.buffer().capacity();
                     if self.producer.slots() == cap {
+                        if self.stop_pending {
+                            // The stop landed: pause, then cue what EOF
+                            // would have opened so Play resumes right
+                            // there. A stop disarmed during the drain just
+                            // rolls on. With nothing to cue (last track,
+                            // loop off) fall through to the ended state.
+                            self.stop_pending = false;
+                            let next = if self.loop_mode == LoopMode::One {
+                                Some(self.pos)
+                            } else if self.pos + 1 < self.order.len() {
+                                Some(self.pos + 1)
+                            } else if self.loop_mode == LoopMode::All && !self.order.is_empty() {
+                                Some(0)
+                            } else {
+                                None
+                            };
+                            if let Some(p) = next {
+                                if self.stop_after {
+                                    self.shared.playing.store(false, Ordering::Relaxed);
+                                }
+                                source = self.open_at(p);
+                                if source.is_some() {
+                                    continue;
+                                }
+                            }
+                        }
                         self.shared.ended.store(true, Ordering::Relaxed);
                     }
                     std::thread::sleep(StdDuration::from_millis(20));

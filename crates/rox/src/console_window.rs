@@ -68,7 +68,8 @@ fn open_now(cx: &mut App) {
     let player = crate::workspace::front_workspace(cx).map(|(_, state)| state.player.entity_id());
     let min = settings_ui::MIN_SIZE;
     let (width, height) = Settings::load()
-        .console_window
+        .windows
+        .console
         .filter(|s| s.width >= f32::from(min.width) && s.height >= f32::from(min.height))
         .map(|s| (s.width, s.height))
         .unwrap_or((720., 480.));
@@ -144,7 +145,7 @@ impl ConsoleWindow {
         window.on_window_should_close(cx, |window, _| {
             let frame = window.window_bounds().get_bounds();
             Settings::update(move |s| {
-                s.console_window = Some(LayoutSize {
+                s.windows.console = Some(LayoutSize {
                     width: frame.size.width.into(),
                     height: frame.size.height.into(),
                 });

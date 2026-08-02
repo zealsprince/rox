@@ -176,7 +176,7 @@ impl Scrobbler {
         });
         Scrobbler {
             library: library.clone(),
-            config: Settings::load().lastfm,
+            config: Settings::load().accounts.lastfm,
             phase: AuthPhase::Idle,
             watch: None,
             _player_changed,
@@ -227,7 +227,7 @@ impl Scrobbler {
 
     fn persist(&self) {
         let lastfm = self.config.clone();
-        Settings::update(move |s| s.lastfm = lastfm);
+        Settings::update(move |s| s.accounts.lastfm = lastfm);
     }
 
     pub fn set_api_key(&mut self, key: String, cx: &mut Context<Self>) {

@@ -49,8 +49,7 @@ impl SettingsWindow {
     /// a whole look to apply, export, or delete. Saving the current state as
     /// a named workspace, and importing one, ride the header.
     fn workspaces_section(&self, live: bool, cx: &mut Context<Self>) -> Div {
-        let settings = Settings::load();
-        let entries = crate::workspaces::all(&settings);
+        let entries = crate::workspaces::all();
 
         // Save-current-as and import ride the header, so a workspace is one
         // name away and a shared file one pick away.
@@ -106,7 +105,7 @@ impl SettingsWindow {
         live: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let name = entry.bundle.name.clone();
+        let name = entry.name.clone();
         div()
             .flex()
             .flex_row()
@@ -273,7 +272,13 @@ impl SettingsWindow {
         if name.is_empty() {
             return;
         }
-        if Settings::load().layouts.iter().any(|l| l.name == name) {
+        if Settings::load()
+            .look
+            .bundle
+            .layouts
+            .iter()
+            .any(|l| l.name == name)
+        {
             self.pending = Some(Pending::OverwritePreset(name));
             cx.notify();
             return;
@@ -283,7 +288,7 @@ impl SettingsWindow {
             return;
         };
         let size = self.workspace_window_size(cx);
-        Settings::update(move |s| s.layouts.push(NamedLayout { name, dump, size }));
+        Settings::update(move |s| s.look.bundle.layouts.push(NamedLayout { name, dump, size }));
         self.layout_name
             .update(cx, |input, cx| input.set_value("", window, cx));
         cx.notify();
@@ -297,7 +302,9 @@ impl SettingsWindow {
             if let Ok(dump) = serde_json::to_value(dump) {
                 let size = self.workspace_window_size(cx);
                 Settings::update(move |s| {
-                    if let Some(existing) = s.layouts.iter_mut().find(|l| l.name == name) {
+                    if let Some(existing) =
+                        s.look.bundle.layouts.iter_mut().find(|l| l.name == name)
+                    {
                         existing.dump = dump;
                         existing.size = size;
                     }
@@ -346,7 +353,7 @@ impl SettingsWindow {
         let clear = self.primary_layout.as_deref() == Some(name);
         self.primary_layout = (!clear).then(|| name.to_string());
         let value = self.primary_layout.clone();
-        Settings::update(move |s| s.primary_layout = value);
+        Settings::update(move |s| s.look.bundle.primary_layout = value);
         self.sync_roles_to_workspace(cx);
         cx.notify();
     }
@@ -357,7 +364,7 @@ impl SettingsWindow {
         let clear = self.mini_layout.as_deref() == Some(name);
         self.mini_layout = (!clear).then(|| name.to_string());
         let value = self.mini_layout.clone();
-        Settings::update(move |s| s.mini_layout = value);
+        Settings::update(move |s| s.look.bundle.mini_layout = value);
         self.sync_roles_to_workspace(cx);
         cx.notify();
     }
@@ -373,13 +380,13 @@ impl SettingsWindow {
             self.mini_layout = None;
         }
         Settings::update(|s| {
-            s.layout_edits.remove(name.as_str());
-            s.layouts.retain(|l| l.name != name);
-            if s.primary_layout.as_deref() == Some(name.as_str()) {
-                s.primary_layout = None;
+            s.look.layout_edits.remove(name.as_str());
+            s.look.bundle.layouts.retain(|l| l.name != name);
+            if s.look.bundle.primary_layout.as_deref() == Some(name.as_str()) {
+                s.look.bundle.primary_layout = None;
             }
-            if s.mini_layout.as_deref() == Some(name.as_str()) {
-                s.mini_layout = None;
+            if s.look.bundle.mini_layout.as_deref() == Some(name.as_str()) {
+                s.look.bundle.mini_layout = None;
             }
         });
         self.sync_roles_to_workspace(cx);
@@ -817,7 +824,7 @@ impl SettingsWindow {
                     .any(|p| p.name == candidate)
             });
             Settings::update(move |s| {
-                s.layouts.push(NamedLayout {
+                s.look.bundle.layouts.push(NamedLayout {
                     name,
                     dump,
                     size: None,
@@ -851,13 +858,12 @@ impl SettingsWindow {
             return;
         }
         self.flush_workspace_layout(cx);
-        if Settings::load().workspaces.iter().any(|w| w.name == name) {
+        if crate::workspaces::path_for(&name).exists() {
             self.pending = Some(Pending::OverwriteWorkspace(name));
             cx.notify();
             return;
         }
-        let bundle = WorkspaceBundle::from_settings(name, &Settings::load());
-        Settings::update(move |s| s.workspaces.push(bundle));
+        crate::workspaces::store(&WorkspaceBundle::from_settings(name, &Settings::load()));
         self.workspace_name
             .update(cx, |input, cx| input.set_value("", window, cx));
         cx.notify();
@@ -867,12 +873,9 @@ impl SettingsWindow {
     /// yes. Clears the name field.
     fn overwrite_workspace(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         self.flush_workspace_layout(cx);
-        let bundle = WorkspaceBundle::from_settings(name.clone(), &Settings::load());
-        Settings::update(move |s| {
-            if let Some(existing) = s.workspaces.iter_mut().find(|w| w.name == name) {
-                *existing = bundle;
-            }
-        });
+        // The bundle's name picks its file, so the overwrite lands back on the
+        // one the first save wrote.
+        crate::workspaces::store(&WorkspaceBundle::from_settings(name, &Settings::load()));
         self.workspace_name
             .update(cx, |input, cx| input.set_value("", window, cx));
         cx.notify();
@@ -880,15 +883,14 @@ impl SettingsWindow {
 
     /// Delete a user workspace. Shipped ones carry no delete.
     fn delete_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
-        let name = name.to_string();
-        Settings::update(move |s| s.workspaces.retain(|w| w.name != name));
+        crate::workspaces::remove(name);
         cx.notify();
     }
 
     /// Export a workspace bundle to a file, the whole look as one shareable
     /// artifact. Works for shipped bundles too.
     fn export_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
-        let Some(mut bundle) = crate::workspaces::resolve(&Settings::load(), name) else {
+        let Some(mut bundle) = crate::workspaces::resolve(name) else {
             return;
         };
         // Same denoise as the preset export: clean any widened f64 tails in the
@@ -929,10 +931,10 @@ impl SettingsWindow {
             let Some(path) = paths.pop() else {
                 return;
             };
-            let Some(bundle) = crate::workspaces::read_bundle(&path, &Settings::load()) else {
+            let Some(bundle) = crate::workspaces::read_bundle(&path) else {
                 return;
             };
-            Settings::update(move |s| s.workspaces.push(bundle));
+            crate::workspaces::store(&bundle);
             this.update(cx, |_, cx| cx.notify()).ok();
         })
         .detach();
@@ -944,7 +946,7 @@ impl SettingsWindow {
     /// This window only mirrors the applied look into its own editor state
     /// on top.
     fn apply_workspace(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(bundle) = crate::workspaces::resolve(&Settings::load(), name) else {
+        let Some(bundle) = crate::workspaces::resolve(name) else {
             return;
         };
         let workspace = self.workspace.clone();

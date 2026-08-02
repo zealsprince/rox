@@ -19,7 +19,7 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_component::scroll::{Scrollbar, ScrollbarShow};
+use gpui_component::scroll::Scrollbar;
 use gpui_component::{Icon, Root, Sizable as _};
 
 use crate::assets::icons;
@@ -120,7 +120,8 @@ pub fn open<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
     // stale small frame never opens under the layout's minimum.
     let min = settings_ui::MIN_SIZE;
     let (width, height) = settings::Settings::load()
-        .panel_settings_window
+        .windows
+        .panel_settings
         .filter(|s| s.width >= f32::from(min.width) && s.height >= f32::from(min.height))
         .map(|s| (s.width, s.height))
         .unwrap_or((640., 480.));
@@ -433,7 +434,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         window.on_window_should_close(cx, move |window, _| {
             let frame = window.window_bounds().get_bounds();
             settings::Settings::update(move |s| {
-                s.panel_settings_window = Some(settings::LayoutSize {
+                s.windows.panel_settings = Some(settings::LayoutSize {
                     width: frame.size.width.into(),
                     height: frame.size.height.into(),
                 });
@@ -1525,11 +1526,13 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                                 .p(tokens::SPACE_MD)
                                 .child(body),
                         )
-                        // Always visible, not fading in on scroll: the thumb
-                        // is what says more page hangs below the fold.
-                        .child(div().absolute().inset_0().child(
-                            Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
-                        )),
+                        // Fades out when idle, same as the panels.
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .child(Scrollbar::vertical(&self.scroll)),
+                        ),
                 )
                 .into_any_element()
         })

@@ -13,12 +13,16 @@
 //! writer's atomic layer. A successful commit lands in the catalog too,
 //! so the library shows the edit without a rescan.
 //!
-//! The values that map to a query field (title, artist, album artist,
-//! album, genre, year) click through to the app-wide search, the same
-//! `field:"value"` jump the library's context menu writes, so the sheet
-//! doubles as a way into the rest of the library. A genre list splits, so
-//! a click takes the one value it landed on. The hit areas only show while
-//! a search panel is up somewhere to display the query.
+//! The tag values click through to the app-wide search, so the sheet
+//! doubles as a way into the rest of the library. Artist, album artist,
+//! album, genre, and year go through the shared filter, the filter
+//! panel's path: the pick lands as a chip beside the search box, whatever
+//! is typed there keeps narrowing alongside it, and a second click drops
+//! it again. The title has no filter column, so it rides the query text
+//! as a `title:"value"` term instead, appended and removed the same way.
+//! A genre list splits, so a click takes the one value it landed on. The
+//! hit areas only show while a search panel is up somewhere to display
+//! what a click writes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,6 +36,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Sizable};
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::projection::FilterField;
 use rox_library::writer::{self, Change, Field};
 use serde::{Deserialize, Serialize};
 
@@ -175,19 +180,31 @@ const FIELDS: &[Column] = &[
     },
 ];
 
-/// The `field:` prefix a shown value searches under when it's clicked,
-/// keyed by [`FIELDS`] plus the sheet's two head rows. The rest of the
-/// sheet describes the file rather than tagging it, and the query has no
-/// prefix for those, so duration, codec, bitrate, plays, rating, and the
-/// file name stay inert text.
-fn query_field(key: &str) -> Option<&'static str> {
+/// What a click on a value does to the shared query: pin the exact value
+/// on the structured filter, the filter panel's own path, or - for the
+/// title, which the filter keeps no column for - add the `title:"value"`
+/// term to the text. Either way it adds to what's already narrowed
+/// instead of replacing it, and clicking the same value again takes it
+/// back off.
+#[derive(Clone, Copy)]
+enum Search {
+    Pick(FilterField),
+    Term(&'static str),
+}
+
+/// How a shown value searches when it's clicked, keyed by [`FIELDS`] plus
+/// the sheet's two head rows. The rest of the sheet describes the file
+/// rather than tagging it, and neither the filter nor the query syntax
+/// reaches those, so duration, codec, bitrate, plays, rating, and the file
+/// name stay inert text.
+fn query_field(key: &str) -> Option<Search> {
     match key {
-        "title" => Some("title"),
-        "artist" => Some("artist"),
-        "album_artist" => Some("albumartist"),
-        "album" => Some("album"),
-        "genre" => Some("genre"),
-        "year" => Some("year"),
+        "title" => Some(Search::Term("title")),
+        "artist" => Some(Search::Pick(FilterField::Artist)),
+        "album_artist" => Some(Search::Pick(FilterField::AlbumArtist)),
+        "album" => Some(Search::Pick(FilterField::Album)),
+        "genre" => Some(Search::Pick(FilterField::Genre)),
+        "year" => Some(Search::Pick(FilterField::Year)),
         _ => None,
     }
 }
@@ -887,26 +904,26 @@ impl Panel for MetadataPanel {
 }
 
 /// The value side of a row: plain truncating text, or the same text as
-/// hit areas that drive the app-wide search. `query` carries the shared
+/// hit areas that narrow the app-wide search. `query` carries the shared
 /// query only while a search panel is up to show what a click writes;
 /// without one every follower would narrow with nothing on screen saying
-/// why, so the values render inert. `field` is the query prefix from
-/// [`query_field`], and `next_id` walks the sheet so each hit area gets
-/// an element id of its own.
+/// why, so the values render inert. `search` is [`query_field`]'s verdict,
+/// and `next_id` walks the sheet so each hit area gets an element id of
+/// its own.
 ///
 /// The genre column is a "; " list, so it splits: a click picks the value
-/// it landed on rather than searching for the whole list at once.
+/// it landed on rather than filtering on the whole list at once.
 fn value_cell(
     value: &str,
-    field: Option<&'static str>,
+    search: Option<Search>,
     query: Option<&Entity<SharedQuery>>,
     next_id: &mut usize,
 ) -> Div {
-    let (Some(field), Some(query)) = (field, query) else {
+    let (Some(search), Some(query)) = (search, query) else {
         return div().min_w_0().truncate().child(value.to_string());
     };
-    let terms: Vec<String> = match field {
-        "genre" => rox_library::genre::split(value)
+    let terms: Vec<String> = match search {
+        Search::Pick(FilterField::Genre) => rox_library::genre::split(value)
             .map(str::to_string)
             .collect(),
         _ => vec![value.to_string()],
@@ -924,7 +941,7 @@ fn value_cell(
         let id = *next_id;
         *next_id += 1;
         let query = query.clone();
-        let search = shared_query::field_term(field, &term);
+        let value = term.clone();
         row = row.child(
             div()
                 .id(("metadata-value", id))
@@ -932,9 +949,9 @@ fn value_cell(
                 .truncate()
                 .cursor_pointer()
                 .hover(|d| d.text_color(palette::accent()))
-                .on_click(move |_, _, cx| {
-                    let search = search.clone();
-                    query.update(cx, |query, cx| query.set(search, cx));
+                .on_click(move |_, _, cx| match search {
+                    Search::Pick(field) => shared_query::toggle_pick(&query, field, &value, cx),
+                    Search::Term(field) => shared_query::toggle_term(&query, field, &value, cx),
                 })
                 .child(term),
         );
@@ -1140,10 +1157,11 @@ impl MetadataPanel {
                     .unwrap_or_else(|| path.display().to_string())
             });
 
-        // A click on a taggable value drives the app-wide search, but only
-        // while a search panel is up somewhere to show the query it writes.
-        // With no box in the tree the followers would narrow with nothing on
-        // screen saying why, so the values stay inert text instead.
+        // A click on a taggable value narrows the app-wide search, but only
+        // while a search panel is up somewhere to show the pick it writes -
+        // the chips ride beside that box. With none in the tree the followers
+        // would narrow with nothing on screen saying why, or how to undo it,
+        // so the values stay inert text instead.
         let query = self
             .state
             .query
@@ -1157,7 +1175,7 @@ impl MetadataPanel {
         // is empty: absence reads cleaner than a labeled blank. The key
         // rides along for [`query_field`], which decides whether the value
         // is clickable.
-        let mut fields: Vec<(&'static str, String, Option<&'static str>)> = Vec::new();
+        let mut fields: Vec<(&'static str, String, Option<Search>)> = Vec::new();
         for col in FIELDS {
             if !self.config.fields.iter().any(|k| k == col.key) {
                 continue;
@@ -1202,7 +1220,7 @@ impl MetadataPanel {
         // where the vertical knob puts it, and it scrolls when the panel
         // runs short.
         if self.config.display == MetadataDisplay::Table {
-            let mut rows: Vec<(&'static str, String, Option<&'static str>)> = Vec::new();
+            let mut rows: Vec<(&'static str, String, Option<Search>)> = Vec::new();
             rows.push(("Title", title, title_field));
             if let Some(artist) = artist {
                 rows.push(("Artist", artist, query_field("artist")));

@@ -410,6 +410,7 @@ impl QueuePanel {
     /// and a relaunch the way a docked panel's ride the layout dump.
     pub fn windowed(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let config = Settings::load()
+            .windows
             .queue_view
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default();
@@ -433,7 +434,7 @@ impl QueuePanel {
             }
             Persist::Settings => {
                 let value = serde_json::to_value(self.config.clone()).ok();
-                Settings::update(move |s| s.queue_view = value);
+                Settings::update(move |s| s.windows.queue_view = value);
             }
         }
     }

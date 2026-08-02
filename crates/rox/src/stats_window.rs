@@ -14,7 +14,7 @@ use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, Div, Global, Rgba, ScrollHandle, SharedString,
     Subscription, Window, WindowHandle,
 };
-use gpui_component::scroll::{Scrollbar, ScrollbarShow};
+use gpui_component::scroll::Scrollbar;
 use gpui_component::Root;
 
 use rox_library::listens::{NamePlays, Rollup, TrackPlays};
@@ -124,7 +124,8 @@ pub fn open(state: AppState, cx: &mut App) {
     // The last closed window's size, sanity-floored, the tag editor's
     // restore shape.
     let (width, height) = Settings::load()
-        .stats_window
+        .windows
+        .stats
         .filter(|s| s.width >= 400. && s.height >= 300.)
         .map(|s| (s.width, s.height))
         .unwrap_or((640., 720.));
@@ -205,14 +206,15 @@ impl StatsWindow {
         window.on_window_should_close(cx, move |window, _| {
             let frame = window.window_bounds().get_bounds();
             Settings::update(move |s| {
-                let state = s.stats_window.get_or_insert_with(Default::default);
+                let state = s.windows.stats.get_or_insert_with(Default::default);
                 state.width = frame.size.width.into();
                 state.height = frame.size.height.into();
             });
             true
         });
         let range = Settings::load()
-            .stats_window
+            .windows
+            .stats
             .map(|s| StatsRange::from_key(&s.range))
             .unwrap_or_default();
         let mut this = StatsWindow {
@@ -279,7 +281,10 @@ impl StatsWindow {
         // The pick persists as it lands, so it survives a quit that
         // never runs the close hook; the frame keeps writing on close.
         Settings::update(move |s| {
-            let state = s.stats_window.get_or_insert_with(StatsWindowState::default);
+            let state = s
+                .windows
+                .stats
+                .get_or_insert_with(StatsWindowState::default);
             state.range = range.key().into();
         });
         self.refresh(cx);
@@ -723,11 +728,13 @@ impl Render for StatsWindow {
                                 .pr(tokens::SPACE_MD + px(16.))
                                 .child(page),
                         )
-                        // Always visible, not fading in on scroll: the thumb
-                        // is what says more page hangs below the fold.
-                        .child(div().absolute().inset_0().child(
-                            Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
-                        )),
+                        // Fades out when idle, same as the panels.
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .child(Scrollbar::vertical(&self.scroll)),
+                        ),
                 )
                 .into_any_element()
         })

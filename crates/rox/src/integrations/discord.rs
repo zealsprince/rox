@@ -83,7 +83,7 @@ impl DiscordPresence {
         Self {
             player: player.clone(),
             library: library.clone(),
-            config: Settings::load().discord,
+            config: Settings::load().accounts.discord,
             sender: tx,
             last_sent_track: None,
             last_sent_time: None,
@@ -94,7 +94,7 @@ impl DiscordPresence {
 
     /// Refresh settings from the active configuration and force immediate presence update.
     pub fn reload_config(&mut self, cx: &mut Context<Self>) {
-        self.config = Settings::load().discord;
+        self.config = Settings::load().accounts.discord;
         info!(
             "Discord RPC settings reloaded: enabled={}, lastfm_button={}, youtube_button={}",
             self.config.enabled, self.config.show_lastfm_button, self.config.show_youtube_button

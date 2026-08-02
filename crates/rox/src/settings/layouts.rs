@@ -1,7 +1,8 @@
-//! Named dock layouts the user saved into settings. Each is a full dock dump
-//! under a name; the settings window lists them, and the mini-player button
-//! toggles between the two a user picks as primary and mini. Shareable presets
-//! live one level up, bundled into workspaces.
+//! Named dock layouts the user saved into the live look. Each is a full dock
+//! dump under a name; the settings window lists them, and the mini-player
+//! button toggles between the two a user picks as primary and mini. Presets
+//! belong to the workspace they were saved in, so they ride `workspace.json`
+//! with the rest of the look and travel inside a shared bundle.
 
 use serde_json::Value;
 
@@ -18,6 +19,8 @@ pub struct Preset {
 /// Every saved preset for the settings list, in save order.
 pub fn all(settings: &Settings) -> Vec<Preset> {
     settings
+        .look
+        .bundle
         .layouts
         .iter()
         .map(|saved| Preset {
@@ -32,6 +35,8 @@ pub fn all(settings: &Settings) -> Vec<Preset> {
 /// name.
 pub fn resolve(settings: &Settings, name: &str) -> Option<Preset> {
     settings
+        .look
+        .bundle
         .layouts
         .iter()
         .find(|l| l.name == name)
@@ -49,7 +54,7 @@ mod tests {
 
     fn settings_with_presets() -> Settings {
         let mut s = Settings::default();
-        s.layouts.push(NamedLayout {
+        s.look.bundle.layouts.push(NamedLayout {
             name: "Compact".into(),
             dump: serde_json::json!({ "dock": "compact" }),
             size: Some(LayoutSize {
@@ -57,7 +62,7 @@ mod tests {
                 height: 600.0,
             }),
         });
-        s.layouts.push(NamedLayout {
+        s.look.bundle.layouts.push(NamedLayout {
             name: "Wide".into(),
             dump: serde_json::json!({ "dock": "wide" }),
             size: None,

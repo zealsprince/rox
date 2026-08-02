@@ -4,8 +4,8 @@
 //! lists the candidates best first with a confidence bar, and previews
 //! the selected sheet on the right. Apply saves the picked candidate
 //! through the same lyrics save the editor uses, honoring the Providers
-//! page's tag/sidecar/store destination, then tells the panel to re-read
-//! and closes. Nothing is written until Apply; closing walks away clean.
+//! page's tag/sidecar/store destination, then tells every lyrics panel to
+//! re-read and closes. Nothing is written until Apply; closing walks away clean.
 //!
 //! One window per track path, registered like the cover editor, so asking
 //! again focuses the open one instead of stacking a twin.
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, Div, Entity, Global, ScrollHandle,
-    SharedString, Subscription, WeakEntity, Window, WindowHandle,
+    SharedString, Subscription, Window, WindowHandle,
 };
 use gpui_component::Root;
 
@@ -28,7 +28,6 @@ use crate::matching::{
 };
 use crate::panel::AppState;
 use crate::panels::library::fmt_ms;
-use crate::panels::lyrics::LyricsPanel;
 use crate::player::fmt_time;
 use crate::providers::{self, LyricsCandidate, TrackQuery};
 use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
@@ -52,10 +51,10 @@ impl WindowRegistry for OpenMatchers {
     }
 }
 
-/// Open a lyrics match window on `path`, or focus the one already on it.
-/// The panel handle is weak: a save pokes it to re-read, and a closed
-/// panel just no-ops.
-pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: &mut App) {
+/// Open a lyrics match window on `path`, or focus the one already on it. A
+/// save broadcasts through [`crate::lyrics::saved`], so the window never
+/// holds a panel of its own.
+pub fn open(state: AppState, path: PathBuf, cx: &mut App) {
     open_or_focus::<OpenMatchers>(
         path.clone(),
         move |cx| {
@@ -65,7 +64,7 @@ pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: 
                 "rox - Find Lyrics",
                 bounds,
                 Some(settings_ui::MIN_SIZE),
-                move |window, cx| cx.new(|cx| LyricsMatch::new(state, panel, path, window, cx)),
+                move |window, cx| cx.new(|cx| LyricsMatch::new(state, path, window, cx)),
             )
         },
         cx,
@@ -73,9 +72,6 @@ pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: 
 }
 
 struct LyricsMatch {
-    /// The panel that opened this, to re-read after a save. Weak, so the
-    /// window never keeps a closed panel alive.
-    panel: WeakEntity<LyricsPanel>,
     /// The track the words save back to.
     path: PathBuf,
     /// The track as the header shows it, and what the candidates scored
@@ -98,13 +94,7 @@ struct LyricsMatch {
 }
 
 impl LyricsMatch {
-    fn new(
-        state: AppState,
-        panel: WeakEntity<LyricsPanel>,
-        path: PathBuf,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    fn new(state: AppState, path: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         // The query is the track's library tags, and the duration comes off
         // the projection so it scores whether or not the track is playing.
         let query = query_for(&state, &path, cx);
@@ -118,7 +108,6 @@ impl LyricsMatch {
         }
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         let this = LyricsMatch {
-            panel,
             path,
             line: line.into(),
             duration_ms,
@@ -169,7 +158,7 @@ impl LyricsMatch {
     }
 
     /// Save the selected candidate where the Providers page says, off the
-    /// UI thread. Success re-reads the panel and closes; a failure keeps
+    /// UI thread. Success re-reads the panels and closes; a failure keeps
     /// the window open with the error, the file untouched.
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
@@ -189,7 +178,6 @@ impl LyricsMatch {
         self.saving = true;
         self.error = None;
         cx.notify();
-        let panel = self.panel.clone();
         cx.spawn_in(window, async move |this, cx| {
             let saved = cx
                 .background_executor()
@@ -201,9 +189,9 @@ impl LyricsMatch {
             this.update_in(cx, |this, window, cx| {
                 match saved {
                     Ok(()) => {
-                        // The panel caches lyrics off the projection, so a
-                        // save it did not make needs a poke to re-read.
-                        panel.update(cx, |panel, cx| panel.reload(&path, cx)).ok();
+                        // Panels cache lyrics off the projection, so every
+                        // one of them needs a poke to re-read.
+                        crate::lyrics::saved(&path, cx);
                         window.remove_window();
                     }
                     Err(e) => {
@@ -392,7 +380,7 @@ pub fn query_for(state: &AppState, path: &Path, cx: &App) -> TrackQuery {
 /// choice. Shared by Apply and the panel's auto-search so both honor the
 /// one destination setting.
 pub fn save_target(path: &Path) -> Source {
-    match Settings::load().providers.lyrics_save {
+    match Settings::load().accounts.providers.lyrics_save {
         LyricsSave::Tag => Source::Tag,
         LyricsSave::Sidecar => Source::Sidecar(lyrics::default_sidecar(path)),
         LyricsSave::Store => Source::Store(lyrics::store_file(&lyrics_dir(), path)),

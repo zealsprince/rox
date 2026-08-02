@@ -362,6 +362,9 @@ impl LyricsPanel {
                 cx.notify();
             },
         );
+        // A sheet saved anywhere reaches every panel, not just the one whose
+        // pencil opened the window.
+        crate::lyrics::watch(cx.weak_entity(), cx);
         LyricsPanel {
             state,
             config,
@@ -522,13 +525,13 @@ impl LyricsPanel {
 
     /// Open the edit window on the shown track: it reads the file's words
     /// into a multi-line input, stamps lines against playback, and saves
-    /// back where they came from, then pokes [`Self::reload`]. One window
-    /// per track; a second request focuses the open one.
+    /// back where they came from, then rings [`crate::lyrics::saved`]. One
+    /// window per track; a second request focuses the open one.
     fn open_edit(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
             return;
         };
-        crate::lyrics::edit::open(self.state.clone(), cx.entity().downgrade(), path, cx);
+        crate::lyrics::edit::open(self.state.clone(), path, cx);
     }
 
     /// The timestamp `steps` sung lines away from the active one: forward
@@ -608,19 +611,19 @@ impl LyricsPanel {
 
     /// Open the match window on the shown track: it searches online,
     /// ranks candidates by confidence, and saves the one the user
-    /// confirms, so nothing is written before a look. The window pokes
-    /// [`Self::reload`] on save.
+    /// confirms, so nothing is written before a look. The window rings
+    /// [`crate::lyrics::saved`] on save.
     fn open_match(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
             return;
         };
-        crate::lyrics::matcher::open(self.state.clone(), cx.entity().downgrade(), path, cx);
+        crate::lyrics::matcher::open(self.state.clone(), path, cx);
     }
 
     /// Drop the cached sheet for `path` and repaint, so a save made
-    /// outside the panel (the match window) shows on the next render.
-    /// Lyrics do not ride the projection, so this is the panel's only
-    /// signal to re-read.
+    /// outside the panel (the edit or match window, in this panel or any
+    /// other) shows on the next render. Lyrics do not ride the projection,
+    /// so [`crate::lyrics::saved`] is the panel's only signal to re-read.
     pub fn reload(&mut self, path: &Path, cx: &mut Context<Self>) {
         if self.loaded.as_ref().is_some_and(|(p, _)| p == path) {
             self.loaded = None;

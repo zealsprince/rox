@@ -100,7 +100,7 @@ impl WelcomeWindow {
                     dark: entry.preview_dark.map(sized),
                     light: entry.preview_light.map(sized),
                 };
-                (SharedString::from(entry.bundle.name.clone()), previews)
+                (SharedString::from(entry.name.clone()), previews)
             })
             .collect();
         WelcomeWindow {

@@ -135,7 +135,7 @@ fn open_workspace_window(
 ) {
     // Windows open on the saved frame, so a restart, and every New Window,
     // comes back where the last-closed window sat.
-    let mut window_bounds = match Settings::load().window {
+    let mut window_bounds = match Settings::load().windows.main {
         Some(w) => {
             let bounds = Bounds {
                 origin: point(px(w.x), px(w.y)),
@@ -258,30 +258,35 @@ fn main() {
         palette::set_palettes(settings.palette_dark(), settings.palette_light(), cx);
         settings::seed_os_appearance(cx);
         settings::set_theme(settings.theme, cx);
-        palette::set_scalars(settings.surface_opacity, settings.backdrop_strength, cx);
-        settings::set_app_frame(settings.frame, cx);
-        settings::set_seams(settings.seams, cx);
-        palette::set_keep_theme(settings.keep_theme, cx);
-        palette::set_art_theming(settings.art_theming, cx);
-        settings::set_app_font(settings.app_font.clone(), cx);
+        palette::set_scalars(
+            settings.look.bundle.appearance.surface_opacity,
+            settings.look.bundle.appearance.backdrop_strength,
+            cx,
+        );
+        settings::set_app_frame(settings.look.bundle.appearance.frame, cx);
+        settings::set_seams(settings.look.bundle.appearance.seams, cx);
+        palette::set_keep_theme(settings.look.bundle.appearance.keep_theme, cx);
+        palette::set_art_theming(settings.look.bundle.appearance.art_theming, cx);
+        settings::set_app_font(settings.look.bundle.appearance.app_font.clone(), cx);
         palette::set_app_font_size(settings.app_font_size, cx);
-        settings::set_rating_style(settings.rating_style, cx);
-        settings::set_rating_dots(settings.rating_dots, cx);
-        settings::set_hide_menubar(settings.hide_menubar, cx);
-        settings::set_os_decorations(settings.os_decorations);
+        settings::set_rating_style(settings.look.bundle.appearance.rating_style, cx);
+        settings::set_rating_dots(settings.look.bundle.appearance.rating_dots, cx);
+        settings::set_hide_menubar(settings.look.bundle.appearance.hide_menubar, cx);
+        settings::set_os_decorations(settings.look.bundle.appearance.os_decorations);
         settings::set_fold_case(settings.fold_case);
+        rox_library::genre::set_split_compounds(settings.split_genre_compounds);
         settings::set_quit_to_tray(settings.quit_to_tray);
         settings::set_experimental(settings.experimental, cx);
         integrations::tray::sync(cx);
         // Point the icon resolver at the chosen pack before any window
         // opens, so the first frame already draws it.
         startup::icon_packs::activate(settings.icon_pack.as_deref());
-        providers::set_lyrics_online(settings.providers.lrclib);
-        providers::set_metadata_online(settings.providers.musicbrainz);
-        providers::set_itunes_online(settings.providers.itunes);
-        providers::set_deezer_online(settings.providers.deezer);
-        providers::set_lastfm_art_online(settings.providers.lastfm_art);
-        providers::set_artist_online(settings.providers.artist);
+        providers::set_lyrics_online(settings.accounts.providers.lrclib);
+        providers::set_metadata_online(settings.accounts.providers.musicbrainz);
+        providers::set_itunes_online(settings.accounts.providers.itunes);
+        providers::set_deezer_online(settings.accounts.providers.deezer);
+        providers::set_lastfm_art_online(settings.accounts.providers.lastfm_art);
+        providers::set_artist_online(settings.accounts.providers.artist);
         // The daily update check, off the UI thread; the toggle and the
         // one-day cache both gate it, so most launches do nothing here.
         startup::updates::check_on_launch(cx);

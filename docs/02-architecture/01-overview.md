@@ -123,3 +123,4 @@ Each ADR records the call, the alternatives weighed, and what it costs. They liv
 | [17 - Queue continuation](decisions/17-adr-queue-continuation.md) | Single provider feeding the live timeline | Decided |
 | [18 - Tag editor](decisions/18-adr-tag-editor.md) | Shared batch form plus a per-file table, not foobar's per-field step-in | Decided |
 | [19 - Processing chain](decisions/19-adr-processing-chain.md) | DSP chain pre-ring on the decode thread, exclusive output behind the seam | Proposed |
+| [20 - Settings split](decisions/20-adr-settings-split.md) | Preferences, look, windows, session, and accounts each in a file of their own | Decided |

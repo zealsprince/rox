@@ -173,7 +173,7 @@ impl QuickPlay {
             cover_paths: HashMap::new(),
             scroll: UniformListScrollHandle::new(),
             error: None,
-            config: Settings::load().quick_play,
+            config: Settings::load().look.bundle.appearance.quick_play,
             show_config: false,
             _input_events,
             _library_changed,
@@ -235,7 +235,7 @@ impl QuickPlay {
     fn edit_config(&mut self, edit: impl FnOnce(&mut QuickPlayConfig), cx: &mut Context<Self>) {
         edit(&mut self.config);
         let config = self.config.clone();
-        Settings::update(move |s| s.quick_play = config);
+        Settings::update(move |s| s.look.bundle.appearance.quick_play = config);
         cx.notify();
     }
 

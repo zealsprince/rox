@@ -25,7 +25,7 @@ use gpui::{
     WindowHandle,
 };
 use gpui_component::input::{Enter, Input, InputEvent, InputState};
-use gpui_component::scroll::{Scrollbar, ScrollbarShow};
+use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableEvent, TableState};
 use gpui_component::{Root, Sizable, Size};
@@ -165,6 +165,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
             // The last closed editor's size, sanity-floored; the default is
             // wide enough that the table's columns fit without scrolling.
             let (width, height) = Settings::load()
+                .windows
                 .tag_editor
                 .filter(|s| s.width >= 400. && s.height >= 300.)
                 .map(|s| (s.width, s.height))
@@ -360,6 +361,7 @@ impl TagEditor {
         // the guesses rather than saving - the preview is right there and
         // an accidental save would close the window.
         let saved_pattern = Settings::load()
+            .windows
             .tag_editor
             .map(|s| s.pattern)
             .filter(|p| !p.is_empty())
@@ -521,7 +523,7 @@ impl TagEditor {
             .unwrap_or_default();
         let pattern = self.pattern.read(cx).value().to_string();
         Settings::update(move |s| {
-            let state = s.tag_editor.get_or_insert_with(Default::default);
+            let state = s.windows.tag_editor.get_or_insert_with(Default::default);
             state.width = frame.size.width.into();
             state.height = frame.size.height.into();
             // A form-only session has no table; keep the saved widths.
@@ -593,6 +595,7 @@ impl TagEditor {
                 cells.push(row);
             }
             let saved = Settings::load()
+                .windows
                 .tag_editor
                 .map(|s| s.columns)
                 .unwrap_or_default();
@@ -1615,12 +1618,14 @@ impl Render for TagEditor {
                     .relative()
                     .bg(palette::bg_elevated())
                     .child(page)
-                    // Always visible, not fading in on scroll: the thumb
-                    // is what says more page hangs below the fold.
+                    // Fades out when idle, same as the panels.
                     .when(!self.table, |d| {
-                        d.child(div().absolute().inset_0().child(
-                            Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
-                        ))
+                        d.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .child(Scrollbar::vertical(&self.scroll)),
+                        )
                     }),
             )
     }

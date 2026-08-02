@@ -7,7 +7,21 @@
 //! keep the joined string whole.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+
+/// Whether `,` and `/` split genre lists alongside the `;` that always
+/// does - real libraries carry "Dubstep, Trap, Grime" and "Drum & Bass /
+/// Neurofunk" as often as the semicolon form. Module state like the
+/// alias map, seeded from the library setting at launch and flipped by
+/// its toggle; on by default because the compound tags are the common
+/// case, off for taggers whose slashes name single genres.
+static SPLIT_COMPOUNDS: AtomicBool = AtomicBool::new(true);
+
+/// Flip whether `,` and `/` split, the library setting's write-through.
+pub fn set_split_compounds(on: bool) {
+    SPLIT_COMPOUNDS.store(on, Ordering::Relaxed);
+}
 
 /// The live alias map off the library's genre_meta table, folded name ->
 /// canonical display. Module state rather than a parameter because every
@@ -41,12 +55,17 @@ pub fn resolve(value: &str) -> String {
     }
 }
 
-/// The values inside one genre string: split on ';', trimmed, empties
-/// dropped. A plain single genre comes back as itself. Raw values, no
-/// alias applied: callers building display surfaces run each part
-/// through [`resolve`]; [`has`] resolves internally.
+/// The values inside one genre string: split on ';' always, on ',' and
+/// '/' while [`SPLIT_COMPOUNDS`] says so, trimmed, empties dropped. A
+/// plain single genre comes back as itself; '&' and '+' never split, an
+/// "and" is not a list. Raw values, no alias applied: callers building
+/// display surfaces run each part through [`resolve`]; [`has`] resolves
+/// internally.
 pub fn split(s: &str) -> impl Iterator<Item = &str> {
-    s.split(';').map(str::trim).filter(|part| !part.is_empty())
+    let compounds = SPLIT_COMPOUNDS.load(Ordering::Relaxed);
+    s.split(move |c: char| c == ';' || (compounds && (c == ',' || c == '/')))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
 }
 
 /// One display string from many values: joined with "; ", each value
@@ -93,6 +112,28 @@ mod tests {
         assert_eq!(parts, ["Rock", "Pop"]);
         assert_eq!(split("").count(), 0);
         assert_eq!(split(" ; ").count(), 0);
+    }
+
+    /// Commas and slashes split while the compound setting is on (the
+    /// default) and stay whole when it is off; the semicolon and the
+    /// ampersand never change their minds either way. The flag is
+    /// process-global, so the test restores the default on its way out.
+    #[test]
+    fn compound_separators_follow_the_setting() {
+        let parts: Vec<&str> = split("Dubstep, Trap, Grime").collect();
+        assert_eq!(parts, ["Dubstep", "Trap", "Grime"]);
+        let parts: Vec<&str> = split("Drum & Bass / Neurofunk").collect();
+        assert_eq!(parts, ["Drum & Bass", "Neurofunk"]);
+        assert_eq!(canonical("Dubstep/Grime"), "Dubstep; Grime");
+
+        set_split_compounds(false);
+        let parts: Vec<&str> = split("Dubstep, Trap; Grime").collect();
+        assert_eq!(parts, ["Dubstep, Trap", "Grime"], "only ';' splits now");
+        assert!(has("Rock/Pop; Jazz", "Rock/Pop", false));
+        set_split_compounds(true);
+
+        assert!(has("Rock/Pop; Jazz", "Pop", false));
+        assert!(!has("Rock/Pop; Jazz", "Rock/Pop", false));
     }
 
     #[test]

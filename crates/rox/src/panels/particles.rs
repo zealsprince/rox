@@ -898,7 +898,7 @@ const GRAB_RADIUS: f32 = 24.0;
 /// Write the shared pool through to settings, the hub's one persistence
 /// path, so a relaunch finds what every open panel was riding.
 fn persist_pool(pool: Vec<Signal>) {
-    crate::settings::Settings::update(move |s| s.signals = pool);
+    crate::settings::Settings::update(move |s| s.look.bundle.signals = pool);
 }
 
 /// Apply one edit to a pool signal through the hub and persist the result.

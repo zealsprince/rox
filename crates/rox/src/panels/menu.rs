@@ -404,11 +404,12 @@ impl MenuPanel {
             .child(label_with_icon(icon_path, label))
             .child(chevron())
             .when(open, |d| {
-                // Read the workspaces only once the flyout opens. The Save
-                // flyout can't overwrite shipped bundles, so it drops them,
-                // matching the settings window where shipped rows carry no
-                // Overwrite.
-                let mut entries = crate::workspaces::all(&Settings::load());
+                // Read the workspaces only once the flyout opens. Names come
+                // off the filenames, so this costs a directory read and never
+                // parses a bundle. The Save flyout can't overwrite shipped
+                // bundles, so it drops them, matching the settings window
+                // where shipped rows carry no Overwrite.
+                let mut entries = crate::workspaces::all();
                 if target == WorkspaceTarget::Overwrite {
                     entries.retain(|entry| !entry.builtin);
                 }
@@ -429,9 +430,10 @@ impl MenuPanel {
                         );
                     }
                 } else {
-                    flyout = flyout.children(entries.into_iter().map(|entry| {
-                        self.workspace_row(entry.bundle.name, entry.builtin, target, cx)
-                    }));
+                    flyout =
+                        flyout.children(entries.into_iter().map(|entry| {
+                            self.workspace_row(entry.name, entry.builtin, target, cx)
+                        }));
                 }
                 d.child(flyout)
             })

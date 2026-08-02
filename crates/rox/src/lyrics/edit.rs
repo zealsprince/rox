@@ -5,8 +5,8 @@
 //! position on Shift+Enter for a play-along tag pass, and Save writes back
 //! where the sheet came from: the embedded tag through the writer's atomic
 //! layer, or the `.lrc` sidecar or app lyrics store as a plain file. On a
-//! save it pokes the panel to re-read and closes. Nothing is written until
-//! Save; closing walks away clean.
+//! save it rings the app-wide lyrics signal so every panel re-reads, then
+//! closes. Nothing is written until Save; closing walks away clean.
 //!
 //! One window per track path, registered like the match window, so asking
 //! again focuses the open one instead of stacking a twin.
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, Entity, Focusable, Global, KeyDownEvent,
-    SharedString, Subscription, WeakEntity, Window, WindowHandle,
+    SharedString, Subscription, Window, WindowHandle,
 };
 use gpui_component::input::{Input, InputState, Position};
 use gpui_component::{Root, Sizable};
@@ -27,7 +27,7 @@ use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::design::{palette, tokens};
 use crate::matching::{open_or_focus, WindowRegistry};
 use crate::panel::AppState;
-use crate::panels::lyrics::{LyricsPanel, StampLine};
+use crate::panels::lyrics::StampLine;
 use crate::player::fmt_time;
 use crate::settings::lyrics_dir;
 use crate::settings::ui as settings_ui;
@@ -50,10 +50,10 @@ impl WindowRegistry for OpenEditors {
     }
 }
 
-/// Open a lyrics edit window on `path`, or focus the one already on it. The
-/// panel handle is weak: a save pokes it to re-read, and a closed panel
-/// just no-ops.
-pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: &mut App) {
+/// Open a lyrics edit window on `path`, or focus the one already on it. A
+/// save broadcasts through [`crate::lyrics::saved`], so the window never
+/// holds a panel of its own.
+pub fn open(state: AppState, path: PathBuf, cx: &mut App) {
     open_or_focus::<OpenEditors>(
         path.clone(),
         move |cx| {
@@ -63,7 +63,7 @@ pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: 
                 "rox - Edit Lyrics",
                 bounds,
                 Some(settings_ui::MIN_SIZE),
-                move |window, cx| cx.new(|cx| LyricsEdit::new(state, panel, path, window, cx)),
+                move |window, cx| cx.new(|cx| LyricsEdit::new(state, path, window, cx)),
             )
         },
         cx,
@@ -72,9 +72,6 @@ pub fn open(state: AppState, panel: WeakEntity<LyricsPanel>, path: PathBuf, cx: 
 
 struct LyricsEdit {
     state: AppState,
-    /// The panel that opened this, to re-read after a save. Weak, so the
-    /// window never keeps a closed panel alive.
-    panel: WeakEntity<LyricsPanel>,
     /// The track the words save back to.
     path: PathBuf,
     /// The track as the header shows it.
@@ -96,13 +93,7 @@ struct LyricsEdit {
 }
 
 impl LyricsEdit {
-    fn new(
-        state: AppState,
-        panel: WeakEntity<LyricsPanel>,
-        path: PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    fn new(state: AppState, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).multi_line(true));
         window.focus(&input.read(cx).focus_handle(cx));
         // The header names the track off its library tags, so the window
@@ -117,7 +108,6 @@ impl LyricsEdit {
         let now_art = state.now_art.clone();
         let this = LyricsEdit {
             state,
-            panel,
             path,
             line: line.into(),
             input,
@@ -220,7 +210,8 @@ impl LyricsEdit {
 
     /// Save the edited text back where it came from, off the UI thread.
     /// Nothing moved closes the window; a failed save keeps it open with the
-    /// error inline, the file untouched. Success pokes the panel to re-read.
+    /// error inline, the file untouched. Success pokes every panel to
+    /// re-read.
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(baseline), false) = (&self.baseline, self.saving) else {
             return;
@@ -234,7 +225,6 @@ impl LyricsEdit {
         self.error = None;
         let path = self.path.clone();
         let target = self.target.clone();
-        let panel = self.panel.clone();
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
@@ -249,9 +239,9 @@ impl LyricsEdit {
             this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) => {
-                        // The panel caches lyrics off the projection, so a
-                        // save it did not make needs a poke to re-read.
-                        panel.update(cx, |panel, cx| panel.reload(&path, cx)).ok();
+                        // Panels cache lyrics off the projection, so every
+                        // one of them needs a poke to re-read.
+                        crate::lyrics::saved(&path, cx);
                         window.remove_window();
                     }
                     Err(e) => {

@@ -26,7 +26,7 @@ use gpui::{
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::{Scrollbar, ScrollbarShow};
+use gpui_component::scroll::Scrollbar;
 use gpui_component::{Root, Sizable as _};
 
 use crate::assets::icons;
@@ -97,7 +97,8 @@ pub fn open(
     // frame never opens under the layout's minimum.
     let min = settings_ui::MIN_SIZE;
     let (width, height) = Settings::load()
-        .settings_window
+        .windows
+        .settings
         .filter(|s| s.width >= f32::from(min.width) && s.height >= f32::from(min.height))
         .map(|s| (s.width, s.height))
         .unwrap_or((720., 520.));
@@ -196,6 +197,16 @@ struct SettingsWindow {
     /// case toggle. Mirrors the setting; flipping it reloads the
     /// projection so the symbol tables re-intern under the new rule.
     fold_case: bool,
+    /// Whether commas and slashes split genre lists, the Folders page's
+    /// separator toggle. Mirrors the setting; flipping it reloads the
+    /// projection so the genre surfaces re-derive under the new rule.
+    split_genre_compounds: bool,
+    /// The separator toggle's value when the window opened. While the
+    /// live value differs, the page shows the rescan note: matching
+    /// follows the flip right away, but genre lists canonicalized into
+    /// the database by earlier scans keep their old shape until a
+    /// rescan re-reads the tags.
+    split_genre_compounds_at_open: bool,
     /// The portable marker's presence, what the Behavior toggle shows;
     /// the running app stays on the data folder it started with either
     /// way, so a flip only lands on the next launch.
@@ -356,7 +367,7 @@ impl SettingsWindow {
         window.on_window_should_close(cx, move |window, _| {
             let frame = window.window_bounds().get_bounds();
             Settings::update(move |s| {
-                s.settings_window = Some(LayoutSize {
+                s.windows.settings = Some(LayoutSize {
                     width: frame.size.width.into(),
                     height: frame.size.height.into(),
                 });
@@ -382,13 +393,13 @@ impl SettingsWindow {
         let lastfm_key = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("API key")
-                .default_value(settings.lastfm.api_key.clone())
+                .default_value(settings.accounts.lastfm.api_key.clone())
         });
         let lastfm_secret = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Shared secret")
                 .masked(true)
-                .default_value(settings.lastfm.api_secret.clone())
+                .default_value(settings.accounts.lastfm.api_secret.clone())
         });
         let scrobbler = state.scrobbler.clone();
         let mut _lastfm_changes = Vec::with_capacity(2);
@@ -430,20 +441,22 @@ impl SettingsWindow {
             page: Page::Appearance,
             base,
             editor_mode,
-            keep_theme: settings.keep_theme,
-            surface_opacity: settings.surface_opacity,
-            backdrop_strength: settings.backdrop_strength,
+            keep_theme: settings.look.bundle.appearance.keep_theme,
+            surface_opacity: settings.look.bundle.appearance.surface_opacity,
+            backdrop_strength: settings.look.bundle.appearance.backdrop_strength,
             font_size: settings.app_font_size,
-            frame: settings.frame,
+            frame: settings.look.bundle.appearance.frame,
             restore_last_track: settings.restore_last_track,
             watch_library: settings.watch_library,
             fold_case: settings.fold_case,
+            split_genre_compounds: settings.split_genre_compounds,
+            split_genre_compounds_at_open: settings.split_genre_compounds,
             portable: settings::portable_marker().is_some_and(|marker| marker.exists()),
             portable_writable: settings::portable_available(),
             portable_busy: false,
-            rating_style: settings.rating_style,
-            rating_dots: settings.rating_dots,
-            providers: settings.providers.clone(),
+            rating_style: settings.look.bundle.appearance.rating_style,
+            rating_dots: settings.look.bundle.appearance.rating_dots,
+            providers: settings.accounts.providers.clone(),
             pickers,
             surface_scrub: ScrubState::default(),
             backdrop_scrub: ScrubState::default(),
@@ -463,9 +476,9 @@ impl SettingsWindow {
             thumbs: state.thumbs,
             scrobbler,
             discord: state.discord.clone(),
-            discord_enabled: settings.discord.enabled,
-            discord_show_lastfm_button: settings.discord.show_lastfm_button,
-            discord_show_youtube_button: settings.discord.show_youtube_button,
+            discord_enabled: settings.accounts.discord.enabled,
+            discord_show_lastfm_button: settings.accounts.discord.show_lastfm_button,
+            discord_show_youtube_button: settings.accounts.discord.show_youtube_button,
             lastfm_key,
             lastfm_secret,
             threshold_scrub: ScrubState::default(),
@@ -474,8 +487,8 @@ impl SettingsWindow {
             layout_name: cx.new(|cx| InputState::new(window, cx).placeholder("Layout name")),
             workspace_name: cx.new(|cx| InputState::new(window, cx).placeholder("Workspace name")),
             pack_name: cx.new(|cx| InputState::new(window, cx).placeholder("Pack name")),
-            primary_layout: settings.primary_layout.clone(),
-            mini_layout: settings.mini_layout.clone(),
+            primary_layout: settings.look.bundle.primary_layout.clone(),
+            mini_layout: settings.look.bundle.mini_layout.clone(),
             pending: None,
             check_updates: settings.check_updates,
             experimental: settings.experimental,
@@ -526,7 +539,7 @@ impl SettingsWindow {
     /// so the two entry points never show different states.
     fn set_art_theming(&mut self, on: bool, cx: &mut Context<Self>) {
         palette::set_art_theming(on, cx);
-        Settings::update(move |s| s.art_theming = on);
+        Settings::update(move |s| s.look.bundle.appearance.art_theming = on);
         cx.notify();
     }
 
@@ -547,7 +560,7 @@ impl SettingsWindow {
     fn set_keep_theme(&mut self, on: bool, cx: &mut Context<Self>) {
         self.keep_theme = on;
         palette::set_keep_theme(on, cx);
-        Settings::update(move |s| s.keep_theme = on);
+        Settings::update(move |s| s.look.bundle.appearance.keep_theme = on);
         cx.notify();
     }
 
@@ -613,6 +626,19 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// The genre-separator switch, the case-fold's twin: flip the live
+    /// flag in the genre module, persist, and reload the projection so
+    /// every genre surface re-splits under the new rule. Files and the
+    /// database never change; matching splits stored strings at read.
+    fn set_split_genre_compounds(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.split_genre_compounds = on;
+        rox_library::genre::set_split_compounds(on);
+        Settings::update(move |s| s.split_genre_compounds = on);
+        self.library
+            .update(cx, |library, cx| library.reload_projection(cx));
+        cx.notify();
+    }
+
     /// The quit-to-tray switch, the Window menu toggle's twin: flips the
     /// live flag the close path reads, persists, and puts the tray icon up
     /// or takes it down on the spot. The toggle reads the static, not a
@@ -626,21 +652,21 @@ impl SettingsWindow {
 
     fn set_discord_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
         self.discord_enabled = on;
-        Settings::update(move |s| s.discord.enabled = on);
+        Settings::update(move |s| s.accounts.discord.enabled = on);
         self.discord.update(cx, |d, cx| d.reload_config(cx));
         cx.notify();
     }
 
     fn set_discord_show_lastfm_button(&mut self, on: bool, cx: &mut Context<Self>) {
         self.discord_show_lastfm_button = on;
-        Settings::update(move |s| s.discord.show_lastfm_button = on);
+        Settings::update(move |s| s.accounts.discord.show_lastfm_button = on);
         self.discord.update(cx, |d, cx| d.reload_config(cx));
         cx.notify();
     }
 
     fn set_discord_show_youtube_button(&mut self, on: bool, cx: &mut Context<Self>) {
         self.discord_show_youtube_button = on;
-        Settings::update(move |s| s.discord.show_youtube_button = on);
+        Settings::update(move |s| s.accounts.discord.show_youtube_button = on);
         self.discord.update(cx, |d, cx| d.reload_config(cx));
         cx.notify();
     }
@@ -705,7 +731,7 @@ impl SettingsWindow {
     /// field, so the two entry points never show different states.
     fn set_hide_menubar(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_hide_menubar(on, cx);
-        Settings::update(move |s| s.hide_menubar = on);
+        Settings::update(move |s| s.look.bundle.appearance.hide_menubar = on);
         cx.notify();
     }
 
@@ -714,7 +740,7 @@ impl SettingsWindow {
     /// toggle reads the static, like the menubar's.
     fn set_seams(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_seams(on, cx);
-        Settings::update(move |s| s.seams = on);
+        Settings::update(move |s| s.look.bundle.appearance.seams = on);
         cx.notify();
     }
 
@@ -722,7 +748,7 @@ impl SettingsWindow {
     /// flag, persist, and renegotiate the workspace windows.
     fn set_os_decorations(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_os_decorations(on);
-        Settings::update(move |s| s.os_decorations = on);
+        Settings::update(move |s| s.look.bundle.appearance.os_decorations = on);
         crate::workspace::apply_decorations(cx);
         cx.notify();
     }
@@ -732,7 +758,7 @@ impl SettingsWindow {
     /// platform default.
     fn set_app_font(&mut self, font: Option<String>, cx: &mut Context<Self>) {
         settings::set_app_font(font.clone(), cx);
-        Settings::update(move |s| s.app_font = font);
+        Settings::update(move |s| s.look.bundle.appearance.app_font = font);
         cx.notify();
     }
 
@@ -741,7 +767,7 @@ impl SettingsWindow {
     fn set_rating_style(&mut self, style: RatingStyle, cx: &mut Context<Self>) {
         self.rating_style = style;
         settings::set_rating_style(style, cx);
-        Settings::update(move |s| s.rating_style = style);
+        Settings::update(move |s| s.look.bundle.appearance.rating_style = style);
         cx.notify();
     }
 
@@ -749,7 +775,7 @@ impl SettingsWindow {
     fn set_rating_dots(&mut self, on: bool, cx: &mut Context<Self>) {
         self.rating_dots = on;
         settings::set_rating_dots(on, cx);
-        Settings::update(move |s| s.rating_dots = on);
+        Settings::update(move |s| s.look.bundle.appearance.rating_dots = on);
         cx.notify();
     }
 
@@ -816,9 +842,9 @@ impl SettingsWindow {
                 .unwrap_or((gen, palette));
             if latest == gen {
                 Settings::update(move |s| {
-                    s.surface_opacity = surface;
-                    s.backdrop_strength = backdrop;
-                    s.frame = frame;
+                    s.look.bundle.appearance.surface_opacity = surface;
+                    s.look.bundle.appearance.backdrop_strength = backdrop;
+                    s.look.bundle.appearance.frame = frame;
                     s.app_font_size = font_size;
                     if let Some((mode, palette)) = palette {
                         *s.palette_map_mut(mode) = palette;
@@ -1579,7 +1605,7 @@ impl SettingsWindow {
         self.providers.lrclib = on;
         providers::set_lyrics_online(on);
         let config = self.providers.clone();
-        Settings::update(move |s| s.providers = config);
+        Settings::update(move |s| s.accounts.providers = config);
         cx.notify();
     }
 
@@ -1588,7 +1614,7 @@ impl SettingsWindow {
     fn set_lyrics_save(&mut self, save: LyricsSave, cx: &mut Context<Self>) {
         self.providers.lyrics_save = save;
         let config = self.providers.clone();
-        Settings::update(move |s| s.providers = config);
+        Settings::update(move |s| s.accounts.providers = config);
         cx.notify();
     }
 
@@ -1598,7 +1624,7 @@ impl SettingsWindow {
         self.providers.musicbrainz = on;
         providers::set_metadata_online(on);
         let config = self.providers.clone();
-        Settings::update(move |s| s.providers = config);
+        Settings::update(move |s| s.accounts.providers = config);
         cx.notify();
     }
 
@@ -1608,7 +1634,7 @@ impl SettingsWindow {
         self.providers.itunes = on;
         providers::set_itunes_online(on);
         let config = self.providers.clone();
-        Settings::update(move |s| s.providers = config);
+        Settings::update(move |s| s.accounts.providers = config);
         cx.notify();
     }
 
@@ -1617,7 +1643,7 @@ impl SettingsWindow {
         self.providers.deezer = on;
         providers::set_deezer_online(on);
         let config = self.providers.clone();
-        Settings::update(move |s| s.providers = config);
+        Settings::update(move |s| s.accounts.providers = config);
         cx.notify();
     }
 
@@ -1626,7 +1652,7 @@ impl SettingsWindow {
         self.providers.lastfm_art = on;
         providers::set_lastfm_art_online(on);
         let config = self.providers.clone();
-        Settings::update(move |s| s.providers = config);
+        Settings::update(move |s| s.accounts.providers = config);
         cx.notify();
     }
 
@@ -1636,7 +1662,7 @@ impl SettingsWindow {
         self.providers.artist = on;
         providers::set_artist_online(on);
         let config = self.providers.clone();
-        Settings::update(move |s| s.providers = config);
+        Settings::update(move |s| s.accounts.providers = config);
         cx.notify();
     }
 
@@ -1896,7 +1922,37 @@ impl SettingsWindow {
                      tags as written",
                 ),
                 panel::toggle(self.fold_case, Self::set_fold_case, cx),
-            ));
+            ))
+            .child(panel::setting_row(
+                "Split genres on commas and slashes",
+                Some(
+                    "\"Dubstep, Trap\" and \"Drum & Bass / Neurofunk\" count \
+                     each value as its own genre; semicolons always split. \
+                     Off keeps slashed names whole for tags where they mean \
+                     one genre. Files keep their tags as written",
+                ),
+                panel::toggle(
+                    self.split_genre_compounds,
+                    Self::set_split_genre_compounds,
+                    cx,
+                ),
+            ))
+            // The rescan nudge, only while the separator rule has moved
+            // this session: filtering and the genre wall follow the flip
+            // right away, but genre lists earlier scans wrote into the
+            // database keep their old shape until a rescan re-reads the
+            // tags.
+            .when(
+                self.split_genre_compounds != self.split_genre_compounds_at_open,
+                |d| {
+                    d.child(div().text_xs().text_color(palette::text_muted()).child(
+                        "Separators changed: browsing follows right away, but \
+                                 genre lists stored by earlier scans keep their old \
+                                 shape until the library is rescanned - the Rescan \
+                                 button below does it",
+                    ))
+                },
+            );
         // The folder table: a column header line, then a hairlined row
         // per folder.
         let mut table = div().flex().flex_col().child(
@@ -2516,13 +2572,15 @@ impl Render for SettingsWindow {
                                 .p(tokens::SPACE_MD)
                                 .child(page),
                         )
-                        // Always visible, not fading in on scroll: the thumb
-                        // is what says more page hangs below the fold. The
-                        // absolute wrapper gives the scrollbar its bounds; on
-                        // its own it lays out to nothing.
-                        .child(div().absolute().inset_0().child(
-                            Scrollbar::vertical(&self.scroll).scrollbar_show(ScrollbarShow::Always),
-                        )),
+                        // Fades out when idle, same as the panels. The absolute
+                        // wrapper gives the scrollbar its bounds; on its own it
+                        // lays out to nothing.
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .child(Scrollbar::vertical(&self.scroll)),
+                        ),
                 )
                 // The overwrite confirm floats over the whole window on its own
                 // occluding layer, last so it paints on top of the page.

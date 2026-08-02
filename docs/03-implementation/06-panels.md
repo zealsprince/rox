@@ -65,18 +65,20 @@ through the `PanelRegistry` to build the panel, feeding the config blob back in.
 unknown name comes back as an invalid-panel placeholder rather than failing the whole
 restore.
 
-The dump is stored raw. The live working layout is `Settings::layout`
-(`serde_json::Value`) in the settings file; saved presets are `Settings::layouts`, a
-`Vec<NamedLayout>` (a `name`, a raw `dump`, and an optional window `size`); unsaved edits
-per preset are `Settings::layout_edits`. Keeping the dump as raw JSON is deliberate: the
+The dump is stored raw, in `workspace.json` rather than the settings file
+([ADR 20](../02-architecture/decisions/20-adr-settings-split.md)). The live working
+layout is `LookState::layout` (`serde_json::Value`); saved presets are
+`LookState::bundle.layouts`, a `Vec<NamedLayout>` (a `name`, a raw `dump`, and an
+optional window `size`); unsaved edits per preset are `LookState::layout_edits`. Keeping
+the dump as raw JSON is deliberate: the
 file survives a layout-schema move, and the workspace validates a dump against
 `LAYOUT_VERSION` = 1 on apply, falling back to the default layout when the version
 doesn't match.
 
 Persistence is debounced. `save_layout_soon` waits out `SAVE_DEBOUNCE` = 500 ms of quiet,
-then `persist` writes `to_value(dock.dump())` into `Settings::layout` alongside the
-window frame, the last track, and the queue. With several windows open the last writer
-wins.
+then `persist` writes `to_value(dock.dump())` into `LookState::layout`, along with the
+window frame, the last track, and the queue, which land in their own files. With several
+windows open the last writer wins.
 
 ## The panel config model
 
@@ -116,11 +118,15 @@ panel only carries what it overrides.
 
 ## Customize windows
 
-Settings split by scope. The app settings window edits the settings file (appearance,
-behavior, library folders, scrobbling, storage). A per-panel customize window edits that
-one panel's config: `panel_settings::open` (`crates/rox/src/panel_settings.rs`) opens an
-OS window keyed to the panel's entity id, reusing the existing one if already open, sized
-around 640x480. It shows the panel's own pages (from `PanelSettings::pages`) then a shared
+Settings split by scope. The app settings window edits the app-wide state, which is
+itself split across files by what each one is for
+([ADR 20](../02-architecture/decisions/20-adr-settings-split.md)): preferences and
+library folders in `settings.json`, the look in `workspace.json`, window shapes in
+`windows.json`, playback state in `session.json`, connections in `accounts.json`.
+
+A per-panel customize window edits that one panel's config: `panel_settings::open`
+(`crates/rox/src/panel_settings.rs`) opens an OS window keyed to the panel's entity id,
+reusing the existing one if already open, sized around 640x480. It shows the panel's own pages (from `PanelSettings::pages`) then a shared
 Appearance page editing the chrome's palette and frame override. Edits apply live to the
 panel and ride into its next layout dump.
 

@@ -81,7 +81,7 @@ pub fn check_on_launch(cx: &mut gpui::App) {
     cx.background_executor()
         .spawn(async {
             match fetch_latest() {
-                Ok(release) => Settings::update(|s| s.update_cache = Some(cache(&release))),
+                Ok(release) => Settings::update(|s| s.session.update_cache = Some(cache(&release))),
                 Err(e) => log::warn!("update check: {e}"),
             }
         })
@@ -102,6 +102,7 @@ pub fn cache(release: &Release) -> UpdateCache {
 fn auto_check_due(settings: &Settings) -> bool {
     settings.check_updates
         && settings
+            .session
             .update_cache
             .as_ref()
             .is_none_or(|c| now().saturating_sub(c.checked_at) >= CHECK_INTERVAL)

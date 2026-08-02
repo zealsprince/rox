@@ -139,9 +139,11 @@ Contract:
 - Layouts and themes serialize to disk as shareable artifacts. A layout is an arrangement
   of panels and their configs; a theme is a token set (colors, fonts, spacing, accent).
   Neither carries executable behavior.
-- Settings split by scope: an app settings window edits the settings file (appearance,
-  behavior, library folders, scrobbling, storage), and a per-panel customize window edits
-  that panel's config. Per-view state lives in panel config: columns, sort, density,
+- Settings split by scope: an app settings window edits the app-wide state, and a
+  per-panel customize window edits that panel's config. The app-wide half is split again
+  on disk by what each file is for, so preferences travel between machines while window
+  geometry, playback state, and credentials stay put
+  ([ADR 20](decisions/20-adr-settings-split.md)). Per-view state lives in panel config: columns, sort, density,
   theme overrides, and the search query, entered through one shared box component, so
   duplicated panels diverge and a layout carries all of it.
 

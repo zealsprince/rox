@@ -1,8 +1,15 @@
-//! Persisted app settings: one JSON file in the app's data directory, next
-//! to the library database. Writers each own a few fields (the player its
-//! playback state, the workspace its window and layout) and write through
-//! [`Settings::update`], which reloads the file first so one writer's save
-//! never reverts another's fields to what they were at startup.
+//! Persisted app settings, in the app's data directory next to the library
+//! database. Three pieces: `settings.json` holds the machine state (playback,
+//! library folders, accounts, window frames), `workspace.json` holds the look
+//! the app is wearing, and `workspaces/` holds the saved workspaces, one file
+//! each. Writers each own a few fields (the player its playback state, the
+//! workspace its window and layout) and write through [`Settings::update`],
+//! which reloads first so one writer's save never reverts another's fields to
+//! what they were at startup.
+//!
+//! The split keeps `settings.json` small enough to read and hand-edit: the
+//! dock dumps and palettes that dwarfed it now sit in their own files, and a
+//! saved workspace on disk is already an exported one.
 //!
 //! The config subsystem lives under here: `ui` is the shared settings chrome,
 //! `window` the settings window and its pages, `layouts` the named dock
@@ -13,7 +20,7 @@ pub mod ui;
 pub mod window;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
 
@@ -124,80 +131,232 @@ pub fn first_run() -> bool {
 }
 
 /// The settings file inside [`data_dir`], public so the settings window
-/// can hand the raw file to the system editor.
+/// can hand the raw file to the system editor. Preferences and the library
+/// setup only: the things a person would actually want to read, change, or
+/// carry to another machine.
 pub fn settings_path() -> PathBuf {
     data_dir().join("settings.json")
 }
 
-/// Everything the app persists outside the library database. Unknown fields
-/// are dropped on load and missing ones take defaults, so the file survives
-/// version drift in both directions.
+/// The live look's own file: the workspace the app is wearing plus its
+/// working state. The dock dumps and palettes that dwarfed everything else
+/// live here.
+pub fn look_path() -> PathBuf {
+    data_dir().join("workspace.json")
+}
+
+/// Where the windows sit on this machine: the main frame plus what each
+/// auxiliary window remembers. Never worth carrying anywhere, and safe to
+/// delete - the windows just reopen at their defaults.
+pub fn windows_path() -> PathBuf {
+    data_dir().join("windows.json")
+}
+
+/// What was playing and where the library stood: the volatile half that
+/// changes on every track and would otherwise churn the preferences file.
+/// Safe to delete; it all regenerates.
+pub fn session_path() -> PathBuf {
+    data_dir().join("session.json")
+}
+
+/// The account connections and their keys. Its own file so the file people
+/// are invited to open and hand around carries no credentials, and a sync
+/// setup can leave the secrets behind.
+pub fn accounts_path() -> PathBuf {
+    data_dir().join("accounts.json")
+}
+
+/// The folder the user's saved workspaces live in, one JSON file each. A
+/// bundle on disk is already an exported bundle: drop a shared file in here
+/// and it joins the list, delete one and it's gone.
+pub fn workspaces_dir() -> PathBuf {
+    data_dir().join("workspaces")
+}
+
+/// Write pretty JSON through a sibling temp file, then rename over the real
+/// one. A crash mid-write can't truncate a file and take every layout,
+/// palette, and the last.fm session down with it; rename is atomic within the
+/// same directory. Failures log under `what` and move on: losing a write is
+/// not worth interrupting playback for.
+pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T, what: &str) -> bool {
+    let text = match serde_json::to_string_pretty(value) {
+        Ok(text) => text,
+        // A non-finite f32 would fail here; log and keep the old file rather
+        // than panic the whole app mid-playback.
+        Err(e) => {
+            log::warn!("{what}: serializing: {e}");
+            return false;
+        }
+    };
+    if let Some(dir) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            log::warn!("{what}: creating {}: {e}", dir.display());
+            return false;
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    if let Err(e) = std::fs::write(&tmp, &text) {
+        log::warn!("{what}: writing {}: {e}", tmp.display());
+        return false;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        log::warn!("{what}: replacing {}: {e}", path.display());
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    true
+}
+
+/// Deserializers that keep a file readable when one piece of it isn't.
+///
+/// Serde's default is all or nothing: a preset whose dump went missing fails
+/// the list, which fails the look, which resets a whole file to defaults over
+/// one bad entry. These narrow that blast radius to the piece that's actually
+/// broken. A collection drops the entries that don't parse and keeps the rest;
+/// an optional field reads as None. Both say what they dropped, since a
+/// silent one is a preset or a queue vanishing with no thread back to why.
+///
+/// Which of the two a field takes is not a style choice. A list of presets is
+/// independent, so dropping one costs one preset. A queue's `cursor` indexes
+/// its `entries`, so dropping an entry shifts the cursor and resumes the wrong
+/// track: that one has to fail whole, as an option, or not at all.
+mod lenient {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer};
+
+    pub fn vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: serde::de::DeserializeOwned,
+    {
+        let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+        Ok(raw.into_iter().filter_map(parse).collect())
+    }
+
+    pub fn map<'de, D, T>(deserializer: D) -> Result<BTreeMap<String, T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: serde::de::DeserializeOwned,
+    {
+        let raw = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+        Ok(raw
+            .into_iter()
+            .filter_map(|(key, value)| parse(value).map(|parsed| (key, parsed)))
+            .collect())
+    }
+
+    pub fn option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: serde::de::DeserializeOwned,
+    {
+        Ok(Option::<serde_json::Value>::deserialize(deserializer)?.and_then(parse))
+    }
+
+    fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Option<T> {
+        match serde_json::from_value(value) {
+            Ok(parsed) => Some(parsed),
+            Err(e) => {
+                log::warn!("settings: dropping a value that no longer parses: {e}");
+                None
+            }
+        }
+    }
+}
+
+/// Each file's serialized contents at one moment, so a write can tell which
+/// ones an edit actually touched.
+#[derive(PartialEq)]
+struct Shards {
+    core: Option<String>,
+    look: Option<String>,
+    windows: Option<String>,
+    session: Option<String>,
+    accounts: Option<String>,
+}
+
+/// Read one shard file, or fall back to reading it out of a pre-split
+/// `settings.json` where its fields sat flat beside everything else. A file
+/// that no longer parses resets to defaults rather than blocking start, and
+/// never falls through to the legacy read: the shard's contents are gone
+/// either way, and a stale copy would only resurrect an older version of them.
+fn load_shard<T, F>(path: &Path, what: &str, legacy: &serde_json::Value, from_legacy: F) -> T
+where
+    T: Default + serde::de::DeserializeOwned,
+    F: FnOnce(&serde_json::Value) -> T,
+{
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+            log::warn!("{what}: resetting {}: {e}", path.display());
+            T::default()
+        }),
+        Err(_) => from_legacy(legacy),
+    }
+}
+
+/// Read a shard straight out of a pre-split map. Every field kept its name
+/// through the move, so this is the whole migration for three of the four
+/// shards; the look needs its own because its appearance knobs went from flat
+/// siblings to a nested object.
+///
+/// A map this can't read costs the whole shard, so it says so rather than
+/// quietly handing back defaults: that's an upgrade losing someone's playback
+/// state or last.fm session, and a log line is the only thread back to why.
+fn from_legacy<T: Default + serde::de::DeserializeOwned>(value: &serde_json::Value) -> T {
+    if value.is_null() {
+        return T::default();
+    }
+    serde_json::from_value(value.clone()).unwrap_or_else(|e| {
+        log::warn!("settings: reading the old file's contents: {e}");
+        T::default()
+    })
+}
+
+/// Write one shard when the edit moved it, or when its file isn't there yet.
+fn write_shard<T: Serialize>(
+    path: PathBuf,
+    what: &str,
+    before: &Option<String>,
+    after: &Option<String>,
+    forced: bool,
+    value: &T,
+) {
+    if forced || before != after || !path.exists() {
+        write_json(&path, value, what);
+    }
+}
+
+/// The preferences and the library setup, `settings.json`'s own contents,
+/// plus the four states that live in files of their own. Unknown fields are
+/// dropped on load and missing ones take defaults, so every file survives
+/// version drift in both directions. The shards below are skipped here and
+/// written separately; this struct holds them so callers still see one
+/// settings object and go through one [`Settings::update`].
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Linear playback volume, same range the engine clamps to (0 to 2).
-    pub volume: f32,
-    /// Whether output is muted. The volume above is the level mute returns
-    /// to, so muting never loses the setting.
-    pub muted: bool,
-    /// Loop mode as its wire name: "off", "all", or "one". The engine's
-    /// `LoopMode` stays serde-free; convert through the accessors.
-    pub loop_mode: String,
-    /// Whether playback shuffles: the queue plays in a random order
-    /// instead of front to back.
-    pub shuffle: bool,
-    /// The main window's last frame, restored on open. None until the first
-    /// window closes.
-    pub window: Option<WindowState>,
-    /// Whether the in-window menubar stays hidden, showing only while alt
-    /// is held or a menu is open. Off by default: the bar is the way into
-    /// everything.
-    pub hide_menubar: bool,
-    /// Whether the main workspace windows carry the OS's own decorations
-    /// (titlebar, borders). Off asks the compositor for a bare
-    /// client-drawn window; the window controls panel stands in for the
-    /// missing buttons. Child windows (settings, popouts, editors) keep
-    /// the OS chrome either way.
-    pub os_decorations: bool,
-    /// The dock layout as the dock crate's own serialized state, kept as raw
-    /// JSON so settings stay readable even when the layout schema moves; the
-    /// workspace validates and versions it on restore. None until a layout
-    /// has been saved.
-    pub layout: Option<serde_json::Value>,
-    /// The shared signal pool: the app-wide modulation sources routes ride.
-    /// The hub loads from here at launch, and every live pool edit writes
-    /// back through.
-    pub signals: Vec<Signal>,
-    /// The user's saved layout presets, each a full dock dump under a name.
-    /// Shipped presets live in the app's assets and are not stored here; the
-    /// settings window merges the two for its list. Empty until one is saved.
-    pub layouts: Vec<NamedLayout>,
-    /// The preset the mini-player button toggles back to, by name. None
-    /// leaves the button hidden. Resolved against the saved and shipped
-    /// presets on use, so a name that no longer exists just no-ops.
-    pub primary_layout: Option<String>,
-    /// The preset the mini-player button toggles to, by name. None leaves
-    /// the button hidden.
-    pub mini_layout: Option<String>,
-    /// The named preset the window is currently on, by name, so a workspace
-    /// save captures the layout in front of you and the mini button knows
-    /// which side it is on. None means an unnamed arrangement (the default
-    /// build, an empty window, or a one-off import).
-    pub active_layout: Option<String>,
-    /// Per-layout working copies: the unsaved dock tweaks for each named
-    /// layout that is not the one in front of you, keyed by layout name.
-    /// Switching layouts stashes the outgoing one here and restores the
-    /// incoming one's copy, so edits survive a switch and a relaunch without
-    /// touching the saved preset. The layout in front of you keeps its live
-    /// dock in `layout` instead; an explicit save folds a copy into its
-    /// preset and clears it here.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub layout_edits: BTreeMap<String, LayoutEdit>,
-    /// The user's saved workspaces: full shareable bundles of layout presets,
-    /// palette, and appearance, the sharing ecosystem's trade unit. Shipped
-    /// bundles live in the app's assets and are not stored here; the settings
-    /// window merges the two for its list. Empty until one is saved.
-    pub workspaces: Vec<WorkspaceBundle>,
+    /// The look the app is wearing: the live workspace bundle plus the dock
+    /// state it's working on. Persisted to [`look_path`].
+    #[serde(skip)]
+    pub look: LookState,
+    /// Where this machine's windows sit. Persisted to [`windows_path`].
+    #[serde(skip)]
+    pub windows: WindowsState,
+    /// What was playing and where the library stood. Persisted to
+    /// [`session_path`].
+    #[serde(skip)]
+    pub session: SessionState,
+    /// The account connections. Persisted to [`accounts_path`].
+    #[serde(skip)]
+    pub accounts: AccountsState,
+    /// Whether this was read out of a pre-split file. The shards are all
+    /// missing in that case so they write themselves, but this file is
+    /// already on disk holding the old flat shape, and a no-op edit
+    /// serializes to the same bytes it would have anyway. Without this the
+    /// stale keys, credentials included, would sit there forever.
+    #[serde(skip)]
+    migrated: bool,
     /// The folders the library scans, in the order they were added. Empty
     /// until one has been opened.
     pub library_roots: Vec<PathBuf>,
@@ -215,40 +374,15 @@ pub struct Settings {
     /// shown under the casing most tracks carry. Off keeps values exact,
     /// today's behavior; flipping it reloads the projection.
     pub fold_case: bool,
-    /// When the library last reconciled with disk through a full scan, unix
-    /// seconds. Launch catches up on edits made while the app was closed by
-    /// scanning, but only when this is stale, so a quick restart does not walk
-    /// the whole library again. 0 means never, which always catches up.
-    pub last_scan: i64,
-    /// ADR 10's transparency pair, both 0 to 1. How opaque the app's
-    /// surfaces read, 1 fully opaque...
-    pub surface_opacity: f32,
-    /// ...and how strongly the backdrop shows behind them, 1 the bare
-    /// bake, 0 sunk into the floor.
-    pub backdrop_strength: f32,
-    /// The app-wide frame defaults every panel inherits: margin, padding,
-    /// rounding, and border, all in px. A panel's own theme overrides any
-    /// of them; unset there, the panel takes these.
-    pub frame: Frame,
-    /// Whether the 1px seams between panel tiles paint. Off leaves the
-    /// resize grips invisible but still draggable, so panels sit flush.
-    pub seams: bool,
+    /// Whether commas and slashes split genre lists alongside the
+    /// semicolon that always does: "Dubstep, Trap" and "Drum & Bass /
+    /// Neurofunk" count each value on their own. On by default; off for
+    /// libraries whose slashes name single genres. Flipping it reloads
+    /// the projection.
+    pub split_genre_compounds: bool,
     /// The theme pick: which of the two user palettes renders, with
     /// System following the OS's light/dark preference live.
     pub theme: Theme,
-    /// The dark theme's user palette as role-name-to-`#rrggbb` entries,
-    /// [`Palette::to_map`]'s shape. Empty means the default palette;
-    /// unknown roles fall away on load, like the file's own fields.
-    pub palette_dark: BTreeMap<String, String>,
-    /// The light theme's counterpart, filling in over [`Palette::light`]
-    /// where the dark map fills in over the defaults.
-    pub palette_light: BTreeMap<String, String>,
-    /// The app-wide font family, the base every window and panel inherits.
-    /// None follows the platform default. A panel's own font override layers
-    /// over this; a name that is not installed falls back at render, so the
-    /// file survives moving between machines.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_font: Option<String>,
     /// The app-wide text size in px, the rem every window's rem-based text
     /// scales from. Clamped to the palette's shared range on apply; 16 is
     /// the stock size the app has always drawn at.
@@ -259,15 +393,6 @@ pub struct Settings {
     /// on the next launch, since rendered icons keep their cached tiles.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_pack: Option<String>,
-    /// Whether the playing track's art re-tints the palette and backs
-    /// the windows (ADR 10's derived mode). Off by default: the look
-    /// only follows the music when asked to.
-    pub art_theming: bool,
-    /// Whether song theming is held to the active theme. Song theming
-    /// still tints hue and chroma, but a cover's brightness never swaps
-    /// the light and dark palettes. Off by default: the app follows a
-    /// bright album all the way.
-    pub keep_theme: bool,
     /// Whether launch loads the last playing track back up, paused where
     /// it left off. The track below is written either way; this only
     /// gates the restore.
@@ -277,15 +402,108 @@ pub struct Settings {
     /// back in. Off quits, the default. Ignored on Windows until a tray
     /// backend exists there; a headless process would have no way back.
     pub quit_to_tray: bool,
+    /// Whether launch checks GitHub for a newer release, at most once a
+    /// day. The About page's toggle flips it; off leaves only the manual
+    /// button.
+    pub check_updates: bool,
+    /// Whether the unfinished work shows: the experimental panels join the
+    /// Panels menu and the launcher. Off by default, flipped on the
+    /// Development page. A layout that already holds an experimental panel
+    /// still restores it either way.
+    pub experimental: bool,
+}
+
+/// Where this machine's windows sit: `windows.json`'s whole contents. Pure
+/// machine state, and the one file here that's disposable - delete it and
+/// every window reopens at its default shape, nothing else notices.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowsState {
+    /// The main window's last frame, restored on open. None until the first
+    /// window closes.
+    #[serde(alias = "window", deserialize_with = "lenient::option")]
+    pub main: Option<WindowState>,
+    /// The tag editor's last window size and column widths, restored on
+    /// the next open. None until an editor closes.
+    #[serde(deserialize_with = "lenient::option")]
+    pub tag_editor: Option<TagEditorState>,
+    /// The stats window's last size and range pick, restored on the next
+    /// open. None until the window closes.
+    #[serde(alias = "stats_window", deserialize_with = "lenient::option")]
+    pub stats: Option<StatsWindowState>,
+    /// The app settings window's last size, restored on the next open.
+    /// None until the window closes.
+    #[serde(alias = "settings_window", deserialize_with = "lenient::option")]
+    pub settings: Option<LayoutSize>,
+    /// The console window's last size, restored on the next open. None until
+    /// the window closes.
+    #[serde(alias = "console_window", deserialize_with = "lenient::option")]
+    pub console: Option<LayoutSize>,
+    /// The panel settings window's last size, shared across panels and
+    /// restored on the next open. None until a window closes.
+    #[serde(alias = "panel_settings_window", deserialize_with = "lenient::option")]
+    pub panel_settings: Option<LayoutSize>,
+    /// The view for the queue window the widget opens (its columns and album
+    /// headings), so the modal and popped-out queue come back the way you
+    /// left them. A docked queue panel keeps its own view in the layout dump
+    /// instead. Kept as raw JSON, like the dock layout, so the file stays
+    /// readable when the queue's config schema moves. None until edited.
+    pub queue_view: Option<serde_json::Value>,
+}
+
+/// What was playing and where the library stood: `session.json`'s whole
+/// contents. The volatile half, rewritten as the music moves, kept off the
+/// preferences file so a volume nudge doesn't churn it. Disposable like the
+/// windows: delete it and playback starts cold and the library rescans.
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionState {
+    /// Linear playback volume, same range the engine clamps to (0 to 2).
+    pub volume: f32,
+    /// Whether output is muted. The volume above is the level mute returns
+    /// to, so muting never loses the setting.
+    pub muted: bool,
+    /// Loop mode as its wire name: "off", "all", or "one". The engine's
+    /// `LoopMode` stays serde-free; convert through the accessors.
+    pub loop_mode: String,
+    /// Whether playback shuffles: the queue plays in a random order
+    /// instead of front to back.
+    pub shuffle: bool,
     /// What was playing when the app closed, as a library track id so it
     /// survives path changes, plus where the clock sat. None when nothing
     /// was playing; a stale id degrades to the cold start on restore.
+    #[serde(deserialize_with = "lenient::option")]
     pub last_track: Option<LastTrack>,
     /// The whole play queue as it stood at close, restored on the next launch
     /// so Prev/Next and the queue panel come back. Preferred over
-    /// [`Settings::last_track`]; None when nothing was playing or an older
+    /// [`SessionState::last_track`]; None when nothing was playing or an older
     /// file predates it, when the single-track fallback takes over.
+    #[serde(deserialize_with = "lenient::option")]
     pub last_queue: Option<QueueState>,
+    /// When the library last reconciled with disk through a full scan, unix
+    /// seconds. Launch catches up on edits made while the app was closed by
+    /// scanning, but only when this is stale, so a quick restart does not walk
+    /// the whole library again. 0 means never, which always catches up. Kept
+    /// here rather than beside the library folders: it describes this
+    /// machine's disk, so it must not travel with a copied settings file.
+    pub last_scan: i64,
+    /// The last update check that landed, so the About page shows an answer
+    /// without hitting the network and a launch can tell a fresh check from
+    /// a recent one. None until the first check.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::option"
+    )]
+    pub update_cache: Option<UpdateCache>,
+}
+
+/// The account connections: `accounts.json`'s whole contents. Split off so
+/// the settings file people are pointed at, and might hand to someone or sync
+/// between machines, holds no session keys or API secrets. Not disposable -
+/// deleting it means connecting everything again.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccountsState {
     /// The last.fm connection and scrobbling knobs, the settings window's
     /// Scrobbling page.
     pub lastfm: Lastfm,
@@ -294,49 +512,42 @@ pub struct Settings {
     pub providers: Providers,
     /// Discord Rich Presence options (enable toggle, timestamps, details).
     pub discord: DiscordSettings,
-    /// The quick-play modal's appearance knobs, edited from its own config
-    /// panel.
-    pub quick_play: QuickPlayConfig,
-    /// How ratings read and click everywhere they show.
-    pub rating_style: RatingStyle,
-    /// Whether unfilled star slots draw a faint dot, so an unrated row
-    /// reads as a quiet row of dots instead of empty space.
-    pub rating_dots: bool,
-    /// Whether launch checks GitHub for a newer release, at most once a
-    /// day. The About page's toggle flips it; off leaves only the manual
-    /// button.
-    pub check_updates: bool,
-    /// The last update check that landed, so the About page shows an answer
-    /// without hitting the network and a launch can tell a fresh check from
-    /// a recent one. None until the first check.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub update_cache: Option<UpdateCache>,
-    /// Whether the unfinished work shows: the experimental panels join the
-    /// Panels menu and the launcher. Off by default, flipped on the
-    /// Development page. A layout that already holds an experimental panel
-    /// still restores it either way.
-    pub experimental: bool,
-    /// The tag editor's last window size and column widths, restored on
-    /// the next open. None until an editor closes.
-    pub tag_editor: Option<TagEditorState>,
-    /// The stats window's last size and range pick, restored on the next
-    /// open. None until the window closes.
-    pub stats_window: Option<StatsWindowState>,
-    /// The app settings window's last size, restored on the next open.
-    /// None until the window closes.
-    pub settings_window: Option<LayoutSize>,
-    /// The console window's last size, restored on the next open. None until
-    /// the window closes.
-    pub console_window: Option<LayoutSize>,
-    /// The panel settings window's last size, shared across panels and
-    /// restored on the next open. None until a window closes.
-    pub panel_settings_window: Option<LayoutSize>,
-    /// The view for the queue window the widget opens (its columns and album
-    /// headings), so the modal and popped-out queue come back the way you
-    /// left them. A docked queue panel keeps its own view in the layout dump
-    /// instead. Kept as raw JSON, like the dock layout, so settings stay
-    /// readable when the queue's config schema moves. None until edited.
-    pub queue_view: Option<serde_json::Value>,
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        SessionState {
+            // Full volume, not silence: a derived default would open the app
+            // muted-sounding on a fresh install.
+            volume: 1.0,
+            muted: false,
+            loop_mode: "off".into(),
+            shuffle: false,
+            last_track: None,
+            last_queue: None,
+            last_scan: 0,
+            update_cache: None,
+        }
+    }
+}
+
+impl SessionState {
+    pub fn loop_mode(&self) -> LoopMode {
+        match self.loop_mode.as_str() {
+            "all" => LoopMode::All,
+            "one" => LoopMode::One,
+            _ => LoopMode::Off,
+        }
+    }
+
+    pub fn set_loop_mode(&mut self, mode: LoopMode) {
+        self.loop_mode = match mode {
+            LoopMode::Off => "off",
+            LoopMode::All => "all",
+            LoopMode::One => "one",
+        }
+        .into();
+    }
 }
 
 /// The theme pick: dark, light, or the OS's own preference. Dark and
@@ -427,7 +638,8 @@ pub enum RatingStyle {
 /// release GitHub reported rather than a yes/no, so the About page derives
 /// up-to-date from the running build - a cached "available" turns to
 /// up-to-date on its own once the user updates.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UpdateCache {
     /// Unix seconds of the check, for the once-a-day spacing.
     pub checked_at: u64,
@@ -848,7 +1060,8 @@ pub struct NamedLayout {
 
 /// A window size in logical pixels, stored with a layout preset so applying
 /// it can size the window to match.
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LayoutSize {
     pub width: f32,
     pub height: f32,
@@ -888,7 +1101,10 @@ pub struct WorkspaceBundle {
     /// this is empty, the layouts' own convention.
     pub name: String,
     /// The layout presets the workspace carries, each a named dock dump.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient::vec"
+    )]
     pub layouts: Vec<NamedLayout>,
     /// The mini-player button's two roles, by preset name, scoped to this
     /// workspace's own layouts.
@@ -906,7 +1122,10 @@ pub struct WorkspaceBundle {
     /// The shared signal pool the workspace's looks ride: a layout that
     /// pulses to the kick is meaningless without "Kick", so the pool
     /// travels with the look and an apply replaces it wholesale.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient::vec"
+    )]
     pub signals: Vec<Signal>,
     /// The appearance knobs the workspace dresses the app with.
     pub appearance: AppearanceBundle,
@@ -939,18 +1158,51 @@ impl Default for WorkspaceBundle {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceBundle {
+    /// ADR 10's transparency pair, both 0 to 1. How opaque the app's
+    /// surfaces read, 1 fully opaque...
     pub surface_opacity: f32,
+    /// ...and how strongly the backdrop shows behind them, 1 the bare
+    /// bake, 0 sunk into the floor.
     pub backdrop_strength: f32,
+    /// The app-wide frame defaults every panel inherits: margin, padding,
+    /// rounding, and border, all in px. A panel's own theme overrides any
+    /// of them; unset there, the panel takes these.
     pub frame: Frame,
+    /// Whether the 1px seams between panel tiles paint. Off leaves the
+    /// resize grips invisible but still draggable, so panels sit flush.
     pub seams: bool,
+    /// Whether the playing track's art re-tints the palette and backs
+    /// the windows (ADR 10's derived mode). Off by default: the look
+    /// only follows the music when asked to.
     pub art_theming: bool,
+    /// Whether song theming is held to the active theme. Song theming
+    /// still tints hue and chroma, but a cover's brightness never swaps
+    /// the light and dark palettes. Off by default: the app follows a
+    /// bright album all the way.
     pub keep_theme: bool,
+    /// The app-wide font family, the base every window and panel inherits.
+    /// None follows the platform default. A panel's own font override layers
+    /// over this; a name that is not installed falls back at render, so the
+    /// file survives moving between machines.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_font: Option<String>,
+    /// How ratings read and click everywhere they show.
     pub rating_style: RatingStyle,
+    /// Whether unfilled star slots draw a faint dot, so an unrated row
+    /// reads as a quiet row of dots instead of empty space.
     pub rating_dots: bool,
+    /// The quick-play modal's appearance knobs, edited from its own config
+    /// panel.
     pub quick_play: QuickPlayConfig,
+    /// Whether the in-window menubar stays hidden, showing only while alt
+    /// is held or a menu is open. Off by default: the bar is the way into
+    /// everything.
     pub hide_menubar: bool,
+    /// Whether the main workspace windows carry the OS's own decorations
+    /// (titlebar, borders). Off asks the compositor for a bare
+    /// client-drawn window; the window controls panel stands in for the
+    /// missing buttons. Child windows (settings, popouts, editors) keep
+    /// the OS chrome either way.
     pub os_decorations: bool,
 }
 
@@ -973,6 +1225,74 @@ impl Default for AppearanceBundle {
     }
 }
 
+/// The look the app is wearing: `workspace.json`'s whole contents. The bundle
+/// half is the shareable look, the same shape a saved workspace file holds, so
+/// saving one out is a copy rather than a field-by-field transcription. The
+/// working state under it never travels: it's about this dock on this machine,
+/// not about how the app looks.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LookState {
+    /// The live look. Its `name` records the workspace it was applied from,
+    /// so the UI can say which one you're on; empty for a look that was never
+    /// applied from a saved workspace.
+    pub bundle: WorkspaceBundle,
+    /// The dock layout as the dock crate's own serialized state, kept as raw
+    /// JSON so the file stays readable even when the layout schema moves; the
+    /// workspace validates and versions it on restore. None until a layout
+    /// has been saved.
+    pub layout: Option<serde_json::Value>,
+    /// The named preset the window is currently on, by name, so a workspace
+    /// save captures the layout in front of you and the mini button knows
+    /// which side it is on. None means an unnamed arrangement (the default
+    /// build, an empty window, or a one-off import).
+    pub active_layout: Option<String>,
+    /// Per-layout working copies: the unsaved dock tweaks for each named
+    /// layout that is not the one in front of you, keyed by layout name.
+    /// Switching layouts stashes the outgoing one here and restores the
+    /// incoming one's copy, so edits survive a switch and a relaunch without
+    /// touching the saved preset. The layout in front of you keeps its live
+    /// dock in `layout` instead; an explicit save folds a copy into its
+    /// preset and clears it here.
+    #[serde(
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "lenient::map"
+    )]
+    pub layout_edits: BTreeMap<String, LayoutEdit>,
+}
+
+impl LookState {
+    /// Rebuild the look from a pre-split `settings.json`, where every look
+    /// field sat flat beside the machine state. The bundle's own fields kept
+    /// their names through the move, and so did the appearance knobs, so both
+    /// halves deserialize straight out of the old flat map without a field
+    /// list to keep in sync. Runs while `workspace.json` is missing; the next
+    /// save writes the split files and the stale keys drop as unknown fields.
+    fn from_legacy(value: &serde_json::Value) -> LookState {
+        let mut bundle: WorkspaceBundle = serde_json::from_value(value.clone()).unwrap_or_default();
+        // The appearance knobs were top-level siblings before the split, not
+        // a nested object, so they need their own pass over the same map.
+        bundle.appearance = serde_json::from_value(value.clone()).unwrap_or_default();
+        // A pre-split file records no workspace name: the look is whatever it
+        // has been edited into, not a named one.
+        bundle.name = String::new();
+        bundle.version = WORKSPACE_VERSION;
+        LookState {
+            bundle,
+            layout: value.get("layout").cloned().filter(|v| !v.is_null()),
+            active_layout: value
+                .get("active_layout")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            layout_edits: value
+                .get("layout_edits")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+        }
+    }
+}
+
 impl WorkspaceBundle {
     /// Snapshot the current shareable state into a named bundle: the layouts
     /// and their roles, the palette, and the appearance. Reads the persisted
@@ -986,83 +1306,46 @@ impl WorkspaceBundle {
     /// bundle has no primary the captured layout becomes it, so it fills the
     /// window on apply. No live dock yet leaves the layouts as they are.
     pub fn from_settings(name: String, s: &Settings) -> WorkspaceBundle {
-        let mut layouts = s.layouts.clone();
-        let mut primary_layout = s.primary_layout.clone();
-        if let Some(dump) = s.layout.clone() {
+        let mut bundle = s.look.bundle.clone();
+        bundle.version = WORKSPACE_VERSION;
+        bundle.name = name;
+        if let Some(dump) = s.look.layout.clone() {
             let active = s
+                .look
                 .active_layout
                 .clone()
                 .unwrap_or_else(|| "Untitled".to_string());
-            let size = s.window.as_ref().map(|w| LayoutSize {
+            let size = s.windows.main.as_ref().map(|w| LayoutSize {
                 width: w.width,
                 height: w.height,
             });
-            if let Some(existing) = layouts.iter_mut().find(|l| l.name == active) {
+            if let Some(existing) = bundle.layouts.iter_mut().find(|l| l.name == active) {
                 existing.dump = dump;
                 existing.size = size;
             } else {
-                layouts.push(NamedLayout {
+                bundle.layouts.push(NamedLayout {
                     name: active.clone(),
                     dump,
                     size,
                 });
             }
-            if primary_layout.is_none() {
-                primary_layout = Some(active);
+            if bundle.primary_layout.is_none() {
+                bundle.primary_layout = Some(active);
             }
         }
-        WorkspaceBundle {
-            version: WORKSPACE_VERSION,
-            name,
-            layouts,
-            primary_layout,
-            mini_layout: s.mini_layout.clone(),
-            palette_dark: s.palette_dark.clone(),
-            palette_light: s.palette_light.clone(),
-            signals: s.signals.clone(),
-            appearance: AppearanceBundle {
-                surface_opacity: s.surface_opacity,
-                backdrop_strength: s.backdrop_strength,
-                frame: s.frame,
-                seams: s.seams,
-                art_theming: s.art_theming,
-                keep_theme: s.keep_theme,
-                app_font: s.app_font.clone(),
-                rating_style: s.rating_style,
-                rating_dots: s.rating_dots,
-                quick_play: s.quick_play.clone(),
-                hide_menubar: s.hide_menubar,
-                os_decorations: s.os_decorations,
-            },
-        }
+        bundle
     }
 
     /// Replace the settings' shareable state with this bundle's, the apply's
-    /// persistence half. The live statics stay the caller's, since they need
-    /// an `App` this layer doesn't reach.
+    /// persistence half. The live dock and the preset it sits under stay put:
+    /// the layout swap belongs to the caller, which has the workspace whose
+    /// dock it changes. The live statics stay the caller's too, since they
+    /// need an `App` this layer doesn't reach.
     pub fn apply_to(self, s: &mut Settings) {
-        s.layouts = self.layouts;
         // A workspace brings its own presets; drop any working copies keyed to
         // the old look so they can't shadow the incoming layouts.
-        s.layout_edits.clear();
-        s.primary_layout = self.primary_layout;
-        s.mini_layout = self.mini_layout;
-        s.palette_dark = self.palette_dark;
-        s.palette_light = self.palette_light;
-        s.signals = self.signals;
-        let a = self.appearance;
-        s.surface_opacity = a.surface_opacity;
-        s.backdrop_strength = a.backdrop_strength;
-        s.frame = a.frame;
-        s.seams = a.seams;
-        s.art_theming = a.art_theming;
-        s.keep_theme = a.keep_theme;
-        s.app_font = a.app_font;
-        s.rating_style = a.rating_style;
-        s.rating_dots = a.rating_dots;
-        s.quick_play = a.quick_play;
-        s.hide_menubar = a.hide_menubar;
-        s.os_decorations = a.os_decorations;
+        s.look.layout_edits.clear();
+        s.look.bundle = self;
     }
 }
 
@@ -1070,7 +1353,8 @@ impl WorkspaceBundle {
 /// position clock in seconds. Superseded by [`QueueState`] for files written
 /// since; kept as the single-track fallback so an older settings file still
 /// restores something.
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LastTrack {
     pub id: i64,
     pub position_secs: f64,
@@ -1129,7 +1413,8 @@ pub struct StatsWindowState {
 
 /// A window frame in logical pixels, plus whether the window was maximized
 /// (the frame is then the restore size).
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WindowState {
     pub x: f32,
     pub y: f32,
@@ -1141,57 +1426,23 @@ pub struct WindowState {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            volume: 1.0,
-            muted: false,
-            loop_mode: "off".into(),
-            shuffle: false,
-            window: None,
-            hide_menubar: false,
-            os_decorations: true,
-            layout: None,
-            signals: Vec::new(),
-            layouts: Vec::new(),
-            primary_layout: None,
-            mini_layout: None,
-            active_layout: None,
-            layout_edits: BTreeMap::new(),
-            workspaces: Vec::new(),
+            look: LookState::default(),
+            migrated: false,
+            windows: WindowsState::default(),
+            session: SessionState::default(),
+            accounts: AccountsState::default(),
             library_roots: Vec::new(),
             library_root: None,
             watch_library: true,
             fold_case: false,
-            last_scan: 0,
-            surface_opacity: 1.0,
-            backdrop_strength: 1.0,
-            frame: Frame::DEFAULT,
-            seams: true,
+            split_genre_compounds: true,
             theme: Theme::default(),
-            palette_dark: BTreeMap::new(),
-            palette_light: BTreeMap::new(),
-            app_font: None,
             app_font_size: palette::FONT_SIZE_DEFAULT,
             icon_pack: None,
-            art_theming: false,
-            keep_theme: false,
             restore_last_track: true,
             quit_to_tray: false,
-            last_track: None,
-            last_queue: None,
-            lastfm: Lastfm::default(),
-            providers: Providers::default(),
-            discord: DiscordSettings::default(),
-            quick_play: QuickPlayConfig::default(),
-            rating_style: RatingStyle::default(),
-            rating_dots: false,
             check_updates: true,
-            update_cache: None,
             experimental: false,
-            tag_editor: None,
-            stats_window: None,
-            settings_window: None,
-            console_window: None,
-            panel_settings_window: None,
-            queue_view: None,
         }
     }
 }
@@ -1201,25 +1452,51 @@ impl Settings {
     /// unreadable. A corrupt file logs and resets rather than blocking start.
     pub fn load() -> Settings {
         let path = settings_path();
-        let mut settings: Settings = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+        // Parsed to a Value first, not straight to Settings: a pre-split file
+        // carries the look flat beside the machine state, and the migration
+        // below reads it back out of this same map.
+        let raw = std::fs::read_to_string(&path).ok();
+        let value: serde_json::Value = match raw.as_deref() {
+            Some(text) => serde_json::from_str(text).unwrap_or_else(|e| {
+                log::warn!("settings: resetting {}: {e}", path.display());
+                serde_json::Value::Null
+            }),
+            None => serde_json::Value::Null,
+        };
+        let mut settings: Settings = if value.is_null() {
+            Settings::default()
+        } else {
+            serde_json::from_value(value.clone()).unwrap_or_else(|e| {
                 log::warn!("settings: resetting {}: {e}", path.display());
                 Settings::default()
-            }),
-            Err(_) => Settings::default(),
+            })
         };
+        // A pre-split file carries all four shards flat beside the
+        // preferences; back it up and drain its workspaces before any of them
+        // read out of it.
+        settings.migrated = raw.is_some() && Self::shard_missing();
+        if let Some(text) = raw.as_deref() {
+            if settings.migrated {
+                Self::migrate_split(&value, text);
+            }
+        }
+        settings.look = load_shard(&look_path(), "look", &value, LookState::from_legacy);
+        settings.windows = load_shard(&windows_path(), "windows", &value, from_legacy);
+        settings.session = load_shard(&session_path(), "session", &value, from_legacy);
+        settings.accounts = load_shard(&accounts_path(), "accounts", &value, from_legacy);
         // A hand-edited volume seeds the engine's atomics directly, so the
         // engine's clamp range applies here too.
-        settings.volume = if settings.volume.is_finite() {
-            settings.volume.clamp(0.0, 2.0)
+        settings.session.volume = if settings.session.volume.is_finite() {
+            settings.session.volume.clamp(0.0, 2.0)
         } else {
             1.0
         };
+        let appearance = &mut settings.look.bundle.appearance;
         // The transparency pair reads straight into color math, so
         // hand-edited values clamp to the unit range.
         for scalar in [
-            &mut settings.surface_opacity,
-            &mut settings.backdrop_strength,
+            &mut appearance.surface_opacity,
+            &mut appearance.backdrop_strength,
         ] {
             *scalar = if scalar.is_finite() {
                 scalar.clamp(0.0, 1.0)
@@ -1229,11 +1506,12 @@ impl Settings {
         }
         // The frame knobs feed div sizes straight, so a hand-edited file
         // clamps each to its ceiling.
-        settings.frame = settings.frame.clamped();
+        appearance.frame = appearance.frame.clamped();
         // The threshold reads straight into the scrobble math and the
         // marker paint, so a hand-edited value clamps to a sane band.
-        settings.lastfm.threshold = if settings.lastfm.threshold.is_finite() {
-            settings.lastfm.threshold.clamp(0.1, 1.0)
+        let lastfm = &mut settings.accounts.lastfm;
+        lastfm.threshold = if lastfm.threshold.is_finite() {
+            lastfm.threshold.clamp(0.1, 1.0)
         } else {
             0.5
         };
@@ -1243,12 +1521,13 @@ impl Settings {
         // open an invisible window. Negative origins are real on
         // multi-monitor setups, so finite ones stand.
         let bad_frame = settings
-            .window
+            .windows
+            .main
             .as_ref()
             .is_some_and(|w| [w.x, w.y, w.width, w.height].iter().any(|v| !v.is_finite()));
         if bad_frame {
-            settings.window = None;
-        } else if let Some(w) = settings.window.as_mut() {
+            settings.windows.main = None;
+        } else if let Some(w) = settings.windows.main.as_mut() {
             w.width = w.width.max(f32::from(crate::MIN_WINDOW_SIZE.width));
             w.height = w.height.max(f32::from(crate::MIN_WINDOW_SIZE.height));
         }
@@ -1262,9 +1541,48 @@ impl Settings {
         settings
     }
 
-    /// Change some fields and persist: reload the file, apply, write it
+    /// Whether any shard file has yet to be written, the signal that the
+    /// settings file still holds the pre-split shape.
+    fn shard_missing() -> bool {
+        [look_path(), windows_path(), session_path(), accounts_path()]
+            .iter()
+            .any(|path| !path.exists())
+    }
+
+    /// The one-shot move off the single-file format: keep a copy of the file
+    /// as it stood, then write each workspace it holds out to its own file.
+    /// The shards themselves need no move, since each reads its own fields
+    /// straight out of the old flat map. Guarded to once per process, and the
+    /// drain leaves a workspace already on disk alone, so a crash between here
+    /// and the first save can't duplicate one on the next launch.
+    fn migrate_split(value: &serde_json::Value, raw: &str) {
+        static DONE: AtomicBool = AtomicBool::new(false);
+        if DONE.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let backup = settings_path().with_extension("json.bak-presplit");
+        if !backup.exists() {
+            if let Err(e) = std::fs::write(&backup, raw) {
+                log::warn!("settings: backing up to {}: {e}", backup.display());
+            }
+        }
+        let saved: Vec<WorkspaceBundle> = value
+            .get("workspaces")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        if saved.is_empty() {
+            return;
+        }
+        log::info!("settings: moving {} workspaces to files", saved.len());
+        for bundle in saved {
+            crate::workspaces::migrate_saved(bundle);
+        }
+    }
+
+    /// Change some fields and persist: reload the files, apply, write them
     /// back. Writers hold their own in-memory copies for reads, so going
-    /// through the file here is what keeps one writer's save from
+    /// through the files here is what keeps one writer's save from
     /// reverting another's fields.
     pub fn update(f: impl FnOnce(&mut Settings)) {
         // Serialize the load-modify-save so a background writer (the update
@@ -1274,73 +1592,94 @@ impl Settings {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut settings = Settings::load();
+        // Most writes touch one file: a volume nudge shouldn't rewrite every
+        // dock dump, and a layout drag shouldn't rewrite the last.fm session.
+        // Compare each across the edit and write only what moved.
+        let before = settings.prints();
         f(&mut settings);
-        settings.save();
+        settings.save_changed(&before);
     }
 
-    /// Write the whole file. Failures log and move on; settings loss is not
-    /// worth interrupting playback for.
-    fn save(&self) {
-        let path = settings_path();
-        let text = match serde_json::to_string_pretty(self) {
-            Ok(text) => text,
-            // A non-finite f32 would fail here; log and keep the old file
-            // rather than panic the whole app mid-playback.
-            Err(e) => {
-                log::warn!("settings: serializing: {e}");
-                return;
-            }
-        };
-        // Write a sibling temp file then rename over the real one. A crash
-        // mid-write can't truncate settings and take every layout, workspace,
-        // palette, and the last.fm session down with it; rename is atomic
-        // within the same directory.
-        let tmp = path.with_extension("json.tmp");
-        if let Err(e) = std::fs::write(&tmp, &text) {
-            log::warn!("settings: writing {}: {e}", tmp.display());
-            return;
+    /// Each file's serialized contents, the before-and-after a write compares.
+    fn prints(&self) -> Shards {
+        Shards {
+            core: serde_json::to_string(self).ok(),
+            look: serde_json::to_string(&self.look).ok(),
+            windows: serde_json::to_string(&self.windows).ok(),
+            session: serde_json::to_string(&self.session).ok(),
+            accounts: serde_json::to_string(&self.accounts).ok(),
         }
-        if let Err(e) = std::fs::rename(&tmp, &path) {
-            log::warn!("settings: replacing {}: {e}", path.display());
-            let _ = std::fs::remove_file(&tmp);
-        }
+    }
+
+    /// Write every file whose contents moved since `before`, plus any that
+    /// isn't on disk yet (a fresh install, or the first save after the split).
+    ///
+    /// The writes aren't atomic across files: a crash partway leaves one of
+    /// them an edit behind the others. Each is independent enough that this
+    /// costs a repaint's worth of drift and never a corrupt file.
+    fn save_changed(&self, before: &Shards) {
+        let after = self.prints();
+        let forced = self.migrated;
+        write_shard(
+            settings_path(),
+            "settings",
+            &before.core,
+            &after.core,
+            forced,
+            self,
+        );
+        write_shard(
+            look_path(),
+            "look",
+            &before.look,
+            &after.look,
+            forced,
+            &self.look,
+        );
+        write_shard(
+            windows_path(),
+            "windows",
+            &before.windows,
+            &after.windows,
+            forced,
+            &self.windows,
+        );
+        write_shard(
+            session_path(),
+            "session",
+            &before.session,
+            &after.session,
+            forced,
+            &self.session,
+        );
+        write_shard(
+            accounts_path(),
+            "accounts",
+            &before.accounts,
+            &after.accounts,
+            forced,
+            &self.accounts,
+        );
     }
 
     /// The dark theme's user palette, its map over the defaults.
     pub fn palette_dark(&self) -> Palette {
-        Palette::from_map(&self.palette_dark)
+        Palette::from_map(&self.look.bundle.palette_dark)
     }
 
     /// The light theme's user palette, its map over the designed light
     /// ladder.
     pub fn palette_light(&self) -> Palette {
-        Palette::from_map_over(Palette::light(), &self.palette_light)
+        Palette::from_map_over(Palette::light(), &self.look.bundle.palette_light)
     }
 
     /// The stored palette map for a theme side, where the editor's edits
     /// land.
     pub fn palette_map_mut(&mut self, mode: palette::Mode) -> &mut BTreeMap<String, String> {
         match mode {
-            palette::Mode::Dark => &mut self.palette_dark,
-            palette::Mode::Light => &mut self.palette_light,
+            palette::Mode::Dark => &mut self.look.bundle.palette_dark,
+            palette::Mode::Light => &mut self.look.bundle.palette_light,
         }
-    }
-
-    pub fn loop_mode(&self) -> LoopMode {
-        match self.loop_mode.as_str() {
-            "all" => LoopMode::All,
-            "one" => LoopMode::One,
-            _ => LoopMode::Off,
-        }
-    }
-
-    pub fn set_loop_mode(&mut self, mode: LoopMode) {
-        self.loop_mode = match mode {
-            LoopMode::Off => "off",
-            LoopMode::All => "all",
-            LoopMode::One => "one",
-        }
-        .into();
     }
 }
 
@@ -1348,64 +1687,73 @@ impl Settings {
 mod tests {
     use super::*;
 
-    /// A bundle must survive the file trip and land back on a fresh settings
-    /// intact, or a shared workspace drifts on every hop.
-    #[test]
-    fn workspace_bundle_roundtrips() {
+    /// A settings object wearing a look worth capturing, the source every
+    /// bundle test snapshots from.
+    fn dressed() -> Settings {
         let mut src = Settings {
-            surface_opacity: 0.5,
-            frame: Frame {
-                margin: 4.0,
-                padding: 8.0,
-                rounding: 12.0,
-                border: 1.0,
-            },
             theme: Theme::Light,
             app_font_size: 20.0,
-            art_theming: true,
-            keep_theme: true,
-            rating_style: RatingStyle::Numeric,
-            rating_dots: true,
-            hide_menubar: true,
-            primary_layout: Some("one".into()),
             ..Default::default()
         };
-        src.palette_dark.insert("accent".into(), "#336699".into());
-        src.palette_light.insert("accent".into(), "#663399".into());
-        src.layouts.push(NamedLayout {
+        let look = &mut src.look.bundle;
+        look.primary_layout = Some("one".into());
+        look.palette_dark.insert("accent".into(), "#336699".into());
+        look.palette_light.insert("accent".into(), "#663399".into());
+        look.layouts.push(NamedLayout {
             name: "one".into(),
             dump: serde_json::json!({ "k": "v" }),
             size: None,
         });
+        look.appearance.surface_opacity = 0.5;
+        look.appearance.frame = Frame {
+            margin: 4.0,
+            padding: 8.0,
+            rounding: 12.0,
+            border: 1.0,
+        };
+        look.appearance.art_theming = true;
+        look.appearance.keep_theme = true;
+        look.appearance.rating_style = RatingStyle::Numeric;
+        look.appearance.rating_dots = true;
+        look.appearance.hide_menubar = true;
+        src
+    }
 
+    /// A bundle must survive the file trip and land back on a fresh settings
+    /// intact, or a shared workspace drifts on every hop.
+    #[test]
+    fn workspace_bundle_roundtrips() {
+        let src = dressed();
         let bundle = WorkspaceBundle::from_settings("mine".into(), &src);
         let json = serde_json::to_string(&bundle).unwrap();
         let back: WorkspaceBundle = serde_json::from_str(&json).unwrap();
 
         let mut dst = Settings::default();
         back.apply_to(&mut dst);
-        assert_eq!(dst.surface_opacity, 0.5);
-        assert_eq!(dst.frame.rounding, 12.0);
-        assert_eq!(dst.frame.padding, 8.0);
+        let look = &dst.look.bundle;
+        assert_eq!(look.name, "mine");
+        assert_eq!(look.appearance.surface_opacity, 0.5);
+        assert_eq!(look.appearance.frame.rounding, 12.0);
+        assert_eq!(look.appearance.frame.padding, 8.0);
         // The theme pick is the user's alone; a bundle never moves it.
         assert!(dst.theme == Theme::default());
         // Nor the font size: a readability choice, not a look to hand around.
         assert_eq!(dst.app_font_size, Settings::default().app_font_size);
-        assert!(dst.art_theming);
-        assert!(dst.keep_theme);
-        assert!(dst.rating_style == RatingStyle::Numeric);
-        assert!(dst.rating_dots);
-        assert!(dst.hide_menubar);
+        assert!(look.appearance.art_theming);
+        assert!(look.appearance.keep_theme);
+        assert!(look.appearance.rating_style == RatingStyle::Numeric);
+        assert!(look.appearance.rating_dots);
+        assert!(look.appearance.hide_menubar);
         assert_eq!(
-            dst.palette_dark.get("accent").map(String::as_str),
+            look.palette_dark.get("accent").map(String::as_str),
             Some("#336699")
         );
         assert_eq!(
-            dst.palette_light.get("accent").map(String::as_str),
+            look.palette_light.get("accent").map(String::as_str),
             Some("#663399")
         );
-        assert_eq!(dst.layouts.len(), 1);
-        assert_eq!(dst.primary_layout.as_deref(), Some("one"));
+        assert_eq!(look.layouts.len(), 1);
+        assert_eq!(look.primary_layout.as_deref(), Some("one"));
     }
 
     /// The bundle carries only the look, never machine- or account-bound
@@ -1464,53 +1812,243 @@ mod tests {
     #[test]
     fn settings_roundtrip_preserves_fields() {
         let mut src = Settings {
-            volume: 1.5,
-            muted: true,
-            loop_mode: "all".into(),
-            shuffle: true,
-            surface_opacity: 0.4,
-            backdrop_strength: 0.7,
-            art_theming: true,
-            last_scan: 12345,
+            theme: Theme::Light,
+            app_font_size: 20.0,
+            watch_library: false,
+            fold_case: true,
+            quit_to_tray: true,
             ..Default::default()
         };
-        src.lastfm.threshold = 0.8;
         src.library_roots.push(PathBuf::from("/music"));
 
         let json = serde_json::to_string_pretty(&src).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.volume, 1.5);
-        assert!(back.muted);
-        assert!(back.loop_mode() == LoopMode::All);
-        assert!(back.shuffle);
-        assert_eq!(back.surface_opacity, 0.4);
-        assert_eq!(back.backdrop_strength, 0.7);
-        assert!(back.art_theming);
-        assert_eq!(back.last_scan, 12345);
-        assert_eq!(back.lastfm.threshold, 0.8);
+        assert!(back.theme == Theme::Light);
+        assert_eq!(back.app_font_size, 20.0);
+        assert!(!back.watch_library);
+        assert!(back.fold_case);
+        assert!(back.quit_to_tray);
         assert_eq!(back.library_roots, vec![PathBuf::from("/music")]);
     }
 
-    /// Unknown fields drop and missing ones take defaults, so the file
+    /// Each of the three plain shards round-trips through its own file.
+    #[test]
+    fn shard_files_roundtrip() {
+        let mut session = SessionState {
+            volume: 1.5,
+            muted: true,
+            shuffle: true,
+            last_scan: 12345,
+            ..Default::default()
+        };
+        session.set_loop_mode(LoopMode::All);
+        let back: SessionState =
+            serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+        assert_eq!(back.volume, 1.5);
+        assert!(back.muted);
+        assert!(back.shuffle);
+        assert!(back.loop_mode() == LoopMode::All);
+        assert_eq!(back.last_scan, 12345);
+
+        let mut accounts = AccountsState::default();
+        accounts.lastfm.threshold = 0.8;
+        accounts.lastfm.username = "zealsprince".into();
+        let back: AccountsState =
+            serde_json::from_str(&serde_json::to_string(&accounts).unwrap()).unwrap();
+        assert_eq!(back.lastfm.threshold, 0.8);
+        assert_eq!(back.lastfm.username, "zealsprince");
+
+        let windows = WindowsState {
+            main: Some(WindowState {
+                x: 10.0,
+                y: 20.0,
+                width: 800.0,
+                height: 600.0,
+                maximized: true,
+            }),
+            queue_view: Some(serde_json::json!({ "columns": ["title"] })),
+            ..Default::default()
+        };
+        let back: WindowsState =
+            serde_json::from_str(&serde_json::to_string(&windows).unwrap()).unwrap();
+        assert_eq!(back.main.map(|w| w.width), Some(800.0));
+        assert!(back.queue_view.is_some());
+    }
+
+    /// Nothing that lives in a file of its own rides the settings file: the
+    /// look's dock dumps, the window frames, the volatile playback state, and
+    /// above all the credentials, which is the whole point of the accounts
+    /// file. The settings file is the one people are pointed at.
+    #[test]
+    fn settings_file_carries_only_preferences() {
+        let mut src = dressed();
+        src.accounts.lastfm.session_key = "a-real-secret".into();
+        src.session.volume = 0.5;
+        src.windows.main = Some(WindowState {
+            x: 1.0,
+            y: 2.0,
+            width: 800.0,
+            height: 600.0,
+            maximized: false,
+        });
+        let json = serde_json::to_string(&src).unwrap();
+        for key in [
+            // the look
+            "look",
+            "layouts",
+            "palette_dark",
+            "surface_opacity",
+            "rating_style",
+            "workspaces",
+            // the windows
+            "windows",
+            "main",
+            "tag_editor",
+            "queue_view",
+            // the session
+            "session",
+            "volume",
+            "muted",
+            "shuffle",
+            "last_queue",
+            "last_scan",
+            // the accounts
+            "accounts",
+            "lastfm",
+            "providers",
+            "discord",
+            "session_key",
+            "a-real-secret",
+        ] {
+            assert!(!json.contains(key), "settings.json still carries {key}");
+        }
+    }
+
+    /// The look round-trips through its own file, the other half of the
+    /// split: what `workspace.json` holds comes back whole.
+    #[test]
+    fn look_file_roundtrips() {
+        let mut src = dressed().look;
+        src.active_layout = Some("one".into());
+        src.layout = Some(serde_json::json!({ "dock": "live" }));
+        src.layout_edits.insert(
+            "two".into(),
+            LayoutEdit {
+                dump: serde_json::json!({ "k": "edited" }),
+                size: None,
+            },
+        );
+
+        let json = serde_json::to_string_pretty(&src).unwrap();
+        let back: LookState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.active_layout.as_deref(), Some("one"));
+        assert_eq!(back.layout, src.layout);
+        assert_eq!(back.layout_edits.len(), 1);
+        assert_eq!(back.bundle.layouts.len(), 1);
+        assert_eq!(back.bundle.appearance.surface_opacity, 0.5);
+        assert!(back.bundle.appearance.rating_style == RatingStyle::Numeric);
+        assert_eq!(
+            back.bundle.palette_dark.get("accent").map(String::as_str),
+            Some("#336699")
+        );
+    }
+
+    /// A pre-split settings file carried the look flat beside the machine
+    /// state. Reading one has to find every piece of it, or an upgrade loses
+    /// the user's layouts, palette, and appearance in one go.
+    #[test]
+    fn legacy_settings_yields_its_look() {
+        // The shape the old single file wrote: look keys as top-level
+        // siblings of the machine state.
+        let json = serde_json::json!({
+            "volume": 0.8,
+            "library_roots": ["/music"],
+            "layout": { "dock": "live" },
+            "active_layout": "one",
+            "layout_edits": { "two": { "dump": { "k": "edited" } } },
+            "layouts": [{ "name": "one", "dump": { "k": "v" } }],
+            "primary_layout": "one",
+            "mini_layout": "small",
+            "palette_dark": { "accent": "#336699" },
+            "palette_light": { "accent": "#663399" },
+            "surface_opacity": 0.5,
+            "frame": { "margin": 4.0, "padding": 8.0, "rounding": 12.0, "border": 1.0 },
+            "seams": false,
+            "art_theming": true,
+            "rating_style": "numeric",
+            "hide_menubar": true,
+            "os_decorations": false,
+        });
+
+        let look = LookState::from_legacy(&json);
+        assert_eq!(look.active_layout.as_deref(), Some("one"));
+        assert!(look.layout.is_some());
+        assert_eq!(look.layout_edits.len(), 1);
+        assert_eq!(look.bundle.layouts.len(), 1);
+        assert_eq!(look.bundle.primary_layout.as_deref(), Some("one"));
+        assert_eq!(look.bundle.mini_layout.as_deref(), Some("small"));
+        assert_eq!(
+            look.bundle.palette_dark.get("accent").map(String::as_str),
+            Some("#336699")
+        );
+        assert_eq!(
+            look.bundle.palette_light.get("accent").map(String::as_str),
+            Some("#663399")
+        );
+        // The appearance knobs sat flat too, so they need their own pass.
+        let a = &look.bundle.appearance;
+        assert_eq!(a.surface_opacity, 0.5);
+        assert_eq!(a.frame.rounding, 12.0);
+        assert!(!a.seams);
+        assert!(a.art_theming);
+        assert!(a.rating_style == RatingStyle::Numeric);
+        assert!(a.hide_menubar);
+        assert!(!a.os_decorations);
+        // A pre-split file names no workspace: the look is whatever it was
+        // edited into, not one you can point at.
+        assert!(look.bundle.name.is_empty());
+    }
+
+    /// A fresh install has no settings file at all, which reads as the
+    /// default look rather than anything half-migrated.
+    #[test]
+    fn legacy_look_from_nothing_is_the_default() {
+        let look = LookState::from_legacy(&serde_json::Value::Null);
+        assert!(look.layout.is_none());
+        assert!(look.bundle.layouts.is_empty());
+        assert_eq!(look.bundle.version, WORKSPACE_VERSION);
+        assert_eq!(
+            look.bundle.appearance.surface_opacity,
+            AppearanceBundle::default().surface_opacity
+        );
+    }
+
+    /// Unknown fields drop and missing ones take defaults, so every file
     /// survives version drift in both directions rather than failing to load.
     #[test]
     fn settings_deserialize_tolerates_drift() {
         // A field the current build never wrote, plus a subset of real ones.
-        let json = r#"{ "volume": 0.3, "some_future_knob": 42, "shuffle": true }"#;
+        let json = r#"{ "fold_case": true, "some_future_knob": 42, "quit_to_tray": true }"#;
         let s: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(s.volume, 0.3);
-        assert!(s.shuffle);
+        assert!(s.fold_case);
+        assert!(s.quit_to_tray);
         // A field absent from the file falls back to its default.
-        assert!(!s.muted);
-        assert!(s.loop_mode() == LoopMode::Off);
+        assert!(s.watch_library);
+        assert!(s.theme == Theme::default());
+
+        // And the same for a shard, where a missing volume must not read as
+        // silence.
+        let session: SessionState = serde_json::from_str(r#"{ "muted": true }"#).unwrap();
+        assert!(session.muted);
+        assert_eq!(session.volume, SessionState::default().volume);
+        assert!(session.loop_mode() == LoopMode::Off);
     }
 
-    /// The single-track fallback (`last_track`) still restores from an older
-    /// file that predates the full queue snapshot, so a restore isn't lost on
-    /// the format bump.
+    /// The loop mode rides its file as a wire name, so the engine's enum stays
+    /// serde-free. An unrecognized value degrades rather than erroring.
     #[test]
     fn loop_mode_wire_names_round_trip() {
-        let mut s = Settings::default();
+        let mut s = SessionState::default();
         for (mode, wire) in [
             (LoopMode::Off, "off"),
             (LoopMode::All, "all"),
@@ -1520,8 +2058,212 @@ mod tests {
             assert_eq!(s.loop_mode, wire);
             assert!(s.loop_mode() == mode);
         }
-        // An unrecognized wire value degrades to Off rather than erroring.
         s.loop_mode = "garbage".into();
         assert!(s.loop_mode() == LoopMode::Off);
+    }
+
+    /// A pre-split file carried the windows, session, and accounts flat
+    /// alongside everything else. Each reads straight back out of that map
+    /// because every field kept its name, and the window fields that did get
+    /// renamed carry an alias for the one they had.
+    #[test]
+    fn legacy_settings_yields_the_plain_shards() {
+        let json = serde_json::json!({
+            "volume": 0.3,
+            "muted": true,
+            "loop_mode": "all",
+            "shuffle": true,
+            "last_scan": 12345,
+            "update_cache": { "checked_at": 99, "latest": "1.9.0", "url": "https://x" },
+            "lastfm": { "username": "zealsprince", "threshold": 0.8 },
+            "discord": { "enabled": true },
+            "window": { "x": 1.0, "y": 2.0, "width": 800.0, "height": 600.0, "maximized": true },
+            "stats_window": { "width": 500.0, "height": 400.0, "range": "year" },
+            "console_window": { "width": 700.0, "height": 300.0 },
+            "panel_settings_window": { "width": 640.0, "height": 480.0 },
+            "settings_window": { "width": 900.0, "height": 700.0 },
+            "queue_view": { "columns": ["title"] },
+        });
+
+        let session: SessionState = from_legacy(&json);
+        assert_eq!(session.volume, 0.3);
+        assert!(session.muted);
+        assert!(session.loop_mode() == LoopMode::All);
+        assert!(session.shuffle);
+        assert_eq!(session.last_scan, 12345);
+        assert!(session.update_cache.is_some());
+
+        let accounts: AccountsState = from_legacy(&json);
+        assert_eq!(accounts.lastfm.username, "zealsprince");
+        assert_eq!(accounts.lastfm.threshold, 0.8);
+        assert!(accounts.discord.enabled);
+
+        // The renamed window fields come across on their aliases.
+        let windows: WindowsState = from_legacy(&json);
+        assert_eq!(windows.main.map(|w| w.width), Some(800.0));
+        assert_eq!(windows.stats.map(|s| s.range), Some("year".to_string()));
+        assert_eq!(windows.console.map(|s| s.width), Some(700.0));
+        assert_eq!(windows.panel_settings.map(|s| s.width), Some(640.0));
+        assert_eq!(windows.settings.map(|s| s.width), Some(900.0));
+        assert!(windows.queue_view.is_some());
+    }
+
+    /// One sub-object short of a field must not cost the whole shard. An old
+    /// file written before a field existed is exactly what a migration reads,
+    /// and without a default on the nested type the miss fails the shard and
+    /// takes every unrelated value in it: volume, loop mode, last scan.
+    #[test]
+    fn a_short_sub_object_costs_only_itself() {
+        let json = serde_json::json!({
+            "volume": 0.3,
+            "shuffle": true,
+            "last_scan": 12345,
+            // No "url": the shape an older build wrote.
+            "update_cache": { "checked_at": 99, "latest": "1.9.0" },
+        });
+        let session: SessionState = from_legacy(&json);
+        assert_eq!(session.volume, 0.3);
+        assert!(session.shuffle);
+        assert_eq!(session.last_scan, 12345);
+        assert_eq!(
+            session.update_cache.map(|c| c.latest),
+            Some("1.9.0".to_string())
+        );
+
+        // Same for a window frame missing the flag that came later.
+        let json = serde_json::json!({
+            "window": { "x": 1.0, "y": 2.0, "width": 800.0, "height": 600.0 },
+        });
+        let windows: WindowsState = from_legacy(&json);
+        assert_eq!(windows.main.map(|w| w.height), Some(600.0));
+    }
+
+    /// One broken preset costs that preset. Without the lenient list it fails
+    /// the whole `layouts` array, which fails the look, which resets
+    /// `workspace.json` to defaults: every other preset, the palette, and the
+    /// appearance gone over one entry missing its dump.
+    #[test]
+    fn a_broken_preset_costs_only_that_preset() {
+        let json = serde_json::json!({
+            "layouts": [
+                { "name": "good", "dump": { "k": "v" } },
+                // No dump: the shape a truncated write or a hand-edit leaves.
+                { "name": "broken" },
+                { "name": "also good", "dump": { "k": "v2" } },
+            ],
+            "primary_layout": "good",
+            "palette_dark": { "accent": "#336699" },
+        });
+        let bundle: WorkspaceBundle = serde_json::from_value(json).unwrap();
+        let names: Vec<&str> = bundle.layouts.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["good", "also good"]);
+        // The rest of the look is untouched, which is the whole point.
+        assert_eq!(bundle.primary_layout.as_deref(), Some("good"));
+        assert_eq!(
+            bundle.palette_dark.get("accent").map(String::as_str),
+            Some("#336699")
+        );
+    }
+
+    /// Same for the per-layout working copies, keyed by name rather than
+    /// ordered, and for the signal pool a look's routes ride.
+    #[test]
+    fn a_broken_working_copy_costs_only_that_copy() {
+        let json = serde_json::json!({
+            "bundle": {
+                "signals": [
+                    { "id": 1, "name": "Kick" },
+                    { "source": { "nonsense": true } },
+                ],
+            },
+            "layout_edits": {
+                "good": { "dump": { "k": "v" } },
+                "broken": { "size": { "width": 100.0, "height": 100.0 } },
+            },
+            "active_layout": "good",
+        });
+        let look: LookState = serde_json::from_value(json).unwrap();
+        assert_eq!(look.layout_edits.len(), 1);
+        assert!(look.layout_edits.contains_key("good"));
+        assert_eq!(look.bundle.signals.len(), 1);
+        assert_eq!(look.bundle.signals[0].name, "Kick");
+        assert_eq!(look.active_layout.as_deref(), Some("good"));
+    }
+
+    /// A queue that no longer parses reads as no queue, and takes nothing with
+    /// it. Dropping the bad entry instead would be worse than useless: the
+    /// cursor indexes the entries, so a short list resumes the wrong track.
+    #[test]
+    fn a_broken_queue_costs_only_the_queue() {
+        let json = serde_json::json!({
+            "volume": 0.4,
+            "loop_mode": "all",
+            "shuffle": true,
+            "last_scan": 12345,
+            "last_queue": { "entries": [{ "id": 1, "explicit": false }, { "id": "not a number" }] },
+        });
+        let session: SessionState = serde_json::from_value(json).unwrap();
+        assert!(session.last_queue.is_none());
+        // Everything that has nothing to do with the queue survives it.
+        assert_eq!(session.volume, 0.4);
+        assert!(session.loop_mode() == LoopMode::All);
+        assert!(session.shuffle);
+        assert_eq!(session.last_scan, 12345);
+    }
+
+    /// A window shape that no longer parses costs that window's remembered
+    /// size, not every window's.
+    #[test]
+    fn a_broken_window_shape_costs_only_that_window() {
+        let json = serde_json::json!({
+            "main": { "x": 1.0, "y": 2.0, "width": 800.0, "height": 600.0, "maximized": false },
+            "stats": { "width": "wide" },
+            "console": { "width": 700.0, "height": 300.0 },
+        });
+        let windows: WindowsState = serde_json::from_value(json).unwrap();
+        assert!(windows.stats.is_none());
+        assert_eq!(windows.main.map(|w| w.width), Some(800.0));
+        assert_eq!(windows.console.map(|s| s.width), Some(700.0));
+    }
+
+    /// A migrated load rewrites its files even though the edit moved nothing.
+    /// Skipping the write is right in steady state, and wrong exactly once:
+    /// the settings file is sitting there in the pre-split shape, a no-op edit
+    /// serializes to the same bytes either way, and without the force the old
+    /// flat keys, credentials among them, would never be stripped.
+    #[test]
+    fn a_migrated_load_rewrites_an_unmoved_file() {
+        let dir = std::env::temp_dir().join(format!("rox-shard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shard.json");
+        // The file on disk still holds the old shape.
+        std::fs::write(&path, r#"{"stale": true}"#).unwrap();
+        let print = serde_json::to_string(&SessionState::default()).ok();
+
+        // Unmoved and present: normally nothing to do.
+        write_shard(
+            path.clone(),
+            "shard",
+            &print,
+            &print,
+            false,
+            &SessionState::default(),
+        );
+        assert!(std::fs::read_to_string(&path).unwrap().contains("stale"));
+
+        // Same edit, but the load came out of a pre-split file.
+        write_shard(
+            path.clone(),
+            "shard",
+            &print,
+            &print,
+            true,
+            &SessionState::default(),
+        );
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("stale"));
+        assert!(written.contains("volume"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

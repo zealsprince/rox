@@ -46,18 +46,18 @@ impl Workspace {
             MenuAction::ToggleMenubar => {
                 let on = !settings::hide_menubar();
                 settings::set_hide_menubar(on, cx);
-                Settings::update(move |s| s.hide_menubar = on);
+                Settings::update(move |s| s.look.bundle.appearance.hide_menubar = on);
             }
             MenuAction::ToggleDecorations => {
                 let on = !settings::os_decorations();
                 settings::set_os_decorations(on);
-                Settings::update(move |s| s.os_decorations = on);
+                Settings::update(move |s| s.look.bundle.appearance.os_decorations = on);
                 apply_decorations(cx);
             }
             MenuAction::ToggleArtTheming => {
                 let on = !palette::art_theming();
                 palette::set_art_theming(on, cx);
-                Settings::update(move |s| s.art_theming = on);
+                Settings::update(move |s| s.look.bundle.appearance.art_theming = on);
             }
             MenuAction::ImportWorkspace => self.import_workspace(window, cx),
             MenuAction::ToggleQuitToTray => {
@@ -672,10 +672,11 @@ impl Workspace {
             )
             .when(open, |d| {
                 // Read the workspaces only once the flyout opens, not on every
-                // parent-menu paint. The Save flyout can't overwrite shipped
-                // bundles, so it drops them, matching the settings window
-                // where shipped rows carry no Overwrite.
-                let mut entries = crate::workspaces::all(&Settings::load());
+                // parent-menu paint, and only far enough to name them: the
+                // bundles stay on disk until one is applied. The Save flyout
+                // can't overwrite shipped bundles, so it drops them, matching
+                // the settings window where shipped rows carry no Overwrite.
+                let mut entries = crate::workspaces::all();
                 if target == WorkspaceTarget::Overwrite {
                     entries.retain(|entry| !entry.builtin);
                 }
@@ -708,9 +709,10 @@ impl Workspace {
                         );
                     }
                 } else {
-                    flyout = flyout.children(entries.into_iter().map(|entry| {
-                        self.workspace_item(entry.bundle.name, entry.builtin, target, cx)
-                    }));
+                    flyout =
+                        flyout.children(entries.into_iter().map(|entry| {
+                            self.workspace_item(entry.name, entry.builtin, target, cx)
+                        }));
                 }
                 d.child(flyout)
             })

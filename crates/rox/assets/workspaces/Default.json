@@ -416,7 +416,8 @@
                           "art_rounding": 0.0,
                           "header_art": true,
                           "header_year": true,
-                          "header_details": true
+                          "header_details": true,
+                          "compact_plays": true
                         }
                       }
                     },

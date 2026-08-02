@@ -121,11 +121,53 @@ fn value_label(field: FilterField, value: &str) -> String {
 }
 
 /// The query text that pins one field to an exact value, the `field:"value"`
-/// form. What a faceted jump writes, and what the metadata panel's clickable
-/// values write straight to the shared query. Quoted so a value with spaces
-/// stays one term.
+/// form. What a faceted jump writes. Quoted so a value with spaces stays one
+/// term.
 pub fn field_term(field: &str, value: &str) -> String {
     format!("{field}:\"{value}\"")
+}
+
+/// Toggle one exact value on the shared filter, the filter panel's own path:
+/// a second click drops it, the chips show it either way, and whatever is
+/// typed in the box keeps narrowing alongside it. What a clicked value in a
+/// panel writes when the filter has a field for it.
+pub fn toggle_pick(query: &Entity<SharedQuery>, field: FilterField, value: &str, cx: &mut App) {
+    query.update(cx, |query, cx| {
+        let mut filter = query.filter().clone();
+        filter.toggle(field, value);
+        query.set_filter(filter, cx);
+    });
+}
+
+/// Add a `field:"value"` term to the query text for the fields the filter
+/// has no column for - the title. Appends rather than replaces, so it reads
+/// like a filter pick: what's already typed stays and the term narrows it
+/// further. Already there, it comes back off, the pick's toggle.
+pub fn toggle_term(query: &Entity<SharedQuery>, field: &str, value: &str, cx: &mut App) {
+    query.update(cx, |query, cx| {
+        let next = toggled_term(query.text(), &field_term(field, value));
+        query.set(next, cx);
+    });
+}
+
+/// [`toggle_term`]'s string half: the query text with `term` added on the
+/// end, or dropped if it's already in there, and the spacing tidied either
+/// way. The quoted `field:"value"` form is distinctive enough that a plain
+/// find is the whole match.
+fn toggled_term(text: &str, term: &str) -> String {
+    let Some(at) = text.find(term) else {
+        return match text.trim_end() {
+            "" => term.to_string(),
+            head => format!("{head} {term}"),
+        };
+    };
+    let head = text[..at].trim_end();
+    let tail = text[at + term.len()..].trim_start();
+    match (head.is_empty(), tail.is_empty()) {
+        (true, _) => tail.to_string(),
+        (false, true) => head.to_string(),
+        (false, false) => format!("{head} {tail}"),
+    }
 }
 
 /// The active-filter chips: one removable chip per picked value in the
@@ -543,5 +585,36 @@ pub trait QueryFilter: Sized + 'static {
         self.rebuild_query_view(cx);
         cx.notify();
         self.after_query_change(cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_term_lands_on_the_end_of_whats_typed() {
+        assert_eq!(toggled_term("", "title:\"Dockside\""), "title:\"Dockside\"");
+        assert_eq!(
+            toggled_term("remix", "title:\"Dockside\""),
+            "remix title:\"Dockside\""
+        );
+    }
+
+    #[test]
+    fn the_same_term_again_comes_back_off() {
+        assert_eq!(toggled_term("title:\"Dockside\"", "title:\"Dockside\""), "");
+        assert_eq!(
+            toggled_term("remix title:\"Dockside\"", "title:\"Dockside\""),
+            "remix"
+        );
+        assert_eq!(
+            toggled_term("remix title:\"Dockside\" 2013", "title:\"Dockside\""),
+            "remix 2013"
+        );
+        assert_eq!(
+            toggled_term("title:\"Dockside\" remix", "title:\"Dockside\""),
+            "remix"
+        );
     }
 }

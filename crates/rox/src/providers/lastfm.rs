@@ -41,7 +41,7 @@ pub struct ArtistInfo {
 /// order. Empty when neither exists, which reads as the lookup being
 /// unavailable rather than as an error.
 fn api_key() -> String {
-    let key = Settings::load().lastfm.api_key;
+    let key = Settings::load().accounts.lastfm.api_key;
     if key.is_empty() {
         crate::lastfm::keys::API_KEY.to_string()
     } else {

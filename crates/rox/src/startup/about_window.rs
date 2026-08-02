@@ -75,7 +75,7 @@ impl UpdateCheck {
     /// up-to-date or an available release against the running build, or Idle
     /// when nothing has been checked yet.
     fn from_cache(settings: &Settings) -> Self {
-        match &settings.update_cache {
+        match &settings.session.update_cache {
             Some(cache) => {
                 let release = updates::Release {
                     version: cache.latest.clone(),
@@ -136,7 +136,7 @@ impl AboutWindow {
                 this.update_check = match result {
                     Ok(release) => {
                         let entry = updates::cache(&release);
-                        Settings::update(move |s| s.update_cache = Some(entry));
+                        Settings::update(move |s| s.session.update_cache = Some(entry));
                         if release.is_new() {
                             UpdateCheck::Available(release)
                         } else {

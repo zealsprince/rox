@@ -529,7 +529,7 @@ impl Player {
         let shuffle = if preserve_order {
             None
         } else {
-            Some(self.settings.shuffle)
+            Some(self.settings.session.shuffle)
         };
         match Session::start(
             StartQueue {
@@ -539,7 +539,7 @@ impl Player {
                 groups,
             },
             self.effective_volume(),
-            self.settings.loop_mode(),
+            self.settings.session.loop_mode(),
             shuffle,
             self.stop_after,
             paused_at,
@@ -768,26 +768,26 @@ impl Player {
     /// The persisted volume, the engine's clamp range (0 to 2). The level
     /// mute returns to, not what the engine currently applies.
     pub fn volume(&self) -> f32 {
-        self.settings.volume
+        self.settings.session.volume
     }
 
     /// Whether output is muted.
     pub fn muted(&self) -> bool {
-        self.settings.muted
+        self.settings.session.muted
     }
 
     /// What the engine should actually apply: the volume, or silence.
     fn effective_volume(&self) -> f32 {
-        if self.settings.muted {
+        if self.settings.session.muted {
             0.0
         } else {
-            self.settings.volume
+            self.settings.session.volume
         }
     }
 
     /// The persisted loop mode.
     pub fn loop_mode(&self) -> LoopMode {
-        self.settings.loop_mode()
+        self.settings.session.loop_mode()
     }
 
     /// Relative seek within the playing track.
@@ -806,8 +806,8 @@ impl Player {
         // Same clamp range the engine applies, so the persisted value and
         // the audible one never drift apart.
         let volume = volume.clamp(0.0, 2.0);
-        self.settings.volume = volume;
-        self.settings.muted = false;
+        self.settings.session.volume = volume;
+        self.settings.session.muted = false;
         self.send(Cmd::Volume(volume));
         self.persist_volume_soon(cx);
         cx.notify();
@@ -830,14 +830,18 @@ impl Player {
             // edit in a burst writes. Read the values at write time, not
             // capture time, so a mute toggled during the wait persists as is.
             let Ok((latest, volume, muted)) = this.update(cx, |this, _| {
-                (this.persist_gen, this.settings.volume, this.settings.muted)
+                (
+                    this.persist_gen,
+                    this.settings.session.volume,
+                    this.settings.session.muted,
+                )
             }) else {
                 return;
             };
             if latest == gen {
                 Settings::update(move |s| {
-                    s.volume = volume;
-                    s.muted = muted;
+                    s.session.volume = volume;
+                    s.session.muted = muted;
                 });
             }
         })
@@ -846,22 +850,22 @@ impl Player {
 
     /// Silence the output without losing the level; unmute restores it.
     pub fn toggle_mute(&mut self, cx: &mut Context<Self>) {
-        let muted = !self.settings.muted;
-        self.settings.muted = muted;
+        let muted = !self.settings.session.muted;
+        self.settings.session.muted = muted;
         self.send(Cmd::Volume(self.effective_volume()));
-        Settings::update(move |s| s.muted = muted);
+        Settings::update(move |s| s.session.muted = muted);
         cx.notify();
     }
 
     /// Whether shuffle is on, the persisted mode.
     pub fn shuffle(&self) -> bool {
-        self.settings.shuffle
+        self.settings.session.shuffle
     }
 
     /// Flip shuffle and persist the pick. The running session reshuffles in
     /// place; the playing track keeps playing.
     pub fn toggle_shuffle(&mut self) {
-        self.set_shuffle(!self.settings.shuffle);
+        self.set_shuffle(!self.settings.session.shuffle);
     }
 
     /// Force shuffle to `on` and persist it, without toggling relative to the
@@ -869,12 +873,12 @@ impl Player {
     /// so the transport toggle reflects the mode they chose. A no-op when the
     /// mode already matches.
     pub fn set_shuffle(&mut self, on: bool) {
-        if self.settings.shuffle == on {
+        if self.settings.session.shuffle == on {
             return;
         }
-        self.settings.shuffle = on;
+        self.settings.session.shuffle = on;
         self.send(Cmd::SetShuffle(on));
-        Settings::update(move |s| s.shuffle = on);
+        Settings::update(move |s| s.session.shuffle = on);
     }
 
     /// Whether stop-after-current is armed.
@@ -893,14 +897,14 @@ impl Player {
 
     /// Step off -> all -> one -> off and persist the pick.
     pub fn cycle_loop(&mut self) {
-        let mode = match self.settings.loop_mode() {
+        let mode = match self.settings.session.loop_mode() {
             LoopMode::Off => LoopMode::All,
             LoopMode::All => LoopMode::One,
             LoopMode::One => LoopMode::Off,
         };
-        self.settings.set_loop_mode(mode);
+        self.settings.session.set_loop_mode(mode);
         self.send(Cmd::SetLoop(mode));
-        Settings::update(|s| s.set_loop_mode(mode));
+        Settings::update(|s| s.session.set_loop_mode(mode));
     }
 
     /// The last session-start failure, shown while nothing plays.

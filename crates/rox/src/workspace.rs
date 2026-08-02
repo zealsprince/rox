@@ -1169,7 +1169,9 @@ impl Workspace {
                 selection: cx.new(|cx| Selection::new(cx)),
                 query: cx.new(|_| SharedQuery::default()),
                 tab_hosts: cx.new(|_| TabHosts::default()),
-                signals: Arc::new(rox_viz::signal::SignalHub::new(Settings::load().signals)),
+                signals: Arc::new(rox_viz::signal::SignalHub::new(
+                    Settings::load().look.bundle.signals,
+                )),
             }
         });
         let focus = cx.focus_handle();
@@ -1184,15 +1186,15 @@ impl Workspace {
         // The mini-player roles ride in the struct so the menubar never
         // reads the file per frame; captured before the layout field moves
         // out below.
-        let primary_layout = settings.primary_layout.clone();
-        let mini_layout = settings.mini_layout.clone();
+        let primary_layout = settings.look.bundle.primary_layout.clone();
+        let mini_layout = settings.look.bundle.mini_layout.clone();
         // Which named preset this window opens on: the persisted one on a
         // restore, the named preset a preset window built from, and nothing
         // for an empty window. A restore that falls back to the default
         // arrangement below still claims the saved name, which the next apply
         // or save corrects.
         let active_layout = match &start {
-            WorkspaceStart::Restore => settings.active_layout.clone(),
+            WorkspaceStart::Restore => settings.look.active_layout.clone(),
             WorkspaceStart::Preset(name) => Some(name.clone()),
             WorkspaceStart::Empty => None,
         };
@@ -1207,7 +1209,7 @@ impl Workspace {
             // the explicit flags parallel and realigning the cursor past any
             // entry whose file has left the library. An older file with only
             // last_track falls through to the single-track restore.
-            let queue = settings.last_queue.as_ref().and_then(|q| {
+            let queue = settings.session.last_queue.as_ref().and_then(|q| {
                 let library = state.library.read(cx);
                 let mut paths = Vec::with_capacity(q.entries.len());
                 let mut explicit = Vec::with_capacity(q.entries.len());
@@ -1231,7 +1233,7 @@ impl Workspace {
                 state.player.update(cx, |player, cx| {
                     player.restore_queue(paths, explicit, cursor, position_secs, cx)
                 });
-            } else if let Some(last) = settings.last_track {
+            } else if let Some(last) = settings.session.last_track {
                 let path = state
                     .library
                     .read(cx)
@@ -1271,7 +1273,7 @@ impl Workspace {
         // blank fallback below. A dump it can't trust (wrong version, no
         // stack root) falls through the same as none.
         let source = match &start {
-            WorkspaceStart::Restore => settings.layout.clone(),
+            WorkspaceStart::Restore => settings.look.layout.clone(),
             WorkspaceStart::Preset(name) => {
                 crate::settings::layouts::resolve(&settings, name).map(|preset| preset.dump)
             }
@@ -1490,12 +1492,12 @@ impl Workspace {
         self.active_layout = name.clone();
         Settings::update(move |s| {
             // The layout in front of you keeps its live dock in
-            // `settings.layout`, not the working-copy store, so clear any
+            // `settings.look.layout`, not the working-copy store, so clear any
             // stale copy as it becomes active.
             if let Some(name) = &name {
-                s.layout_edits.remove(name.as_str());
+                s.look.layout_edits.remove(name.as_str());
             }
-            s.active_layout = name;
+            s.look.active_layout = name;
         });
     }
 
@@ -1513,7 +1515,7 @@ impl Workspace {
     /// Fold this window's live dock into the active layout's working copy,
     /// the unsaved-tweaks store a later switch reads back. A window on an
     /// unnamed arrangement (the default build, a one-off import) has no name
-    /// to key on, so this no-ops; its live dock rides in `settings.layout`
+    /// to key on, so this no-ops; its live dock rides in `settings.look.layout`
     /// for the launch restore instead.
     fn stash_active_edits(&self, window: &Window, cx: &mut Context<Self>) {
         let Some(name) = self.active_layout.clone() else {
@@ -1523,11 +1525,11 @@ impl Workspace {
             return;
         };
         // The current window size rides along, live off the window rather than
-        // the debounced `settings.window`, so a resize made just before the
+        // the debounced `settings.windows.main`, so a resize made just before the
         // switch comes back with the layout.
         let size = Some(window_size(window));
         Settings::update(move |s| {
-            s.layout_edits.insert(name, LayoutEdit { dump, size });
+            s.look.layout_edits.insert(name, LayoutEdit { dump, size });
         });
     }
 
@@ -1551,7 +1553,7 @@ impl Workspace {
         // last time it was in front of you, over the pristine preset. A
         // missing copy, or one an older version can no longer load, falls
         // back to the saved dump.
-        let edited = settings.layout_edits.get(name).cloned();
+        let edited = settings.look.layout_edits.get(name).cloned();
         let mut applied = false;
         if let Some(edit) = &edited {
             if let Ok(dump) = serde_json::from_value::<DockAreaState>(edit.dump.clone()) {
@@ -1612,7 +1614,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(bundle) = crate::workspaces::resolve(&Settings::load(), name) else {
+        let Some(bundle) = crate::workspaces::resolve(name) else {
             return;
         };
         crate::workspaces::apply_look(&bundle, cx);
@@ -1740,20 +1742,20 @@ impl Workspace {
         // arrangement only reaches the settings file on the next layout dump,
         // so without this the bundle would capture whatever's stale on disk.
         self.persist(window, cx);
-        if Settings::load().workspaces.iter().any(|w| w.name == name) {
+        if crate::workspaces::path_for(&name).exists() {
             self.layout_dialog = Some(LayoutDialog::ConfirmOverwriteWorkspace(name));
             self._layout_input = None;
             cx.notify();
             return;
         }
-        let bundle = WorkspaceBundle::from_settings(name, &Settings::load());
-        Settings::update(move |s| s.workspaces.push(bundle));
+        crate::workspaces::store(&WorkspaceBundle::from_settings(name, &Settings::load()));
         self.close_layout_dialog(window, cx);
     }
 
     /// Replace the pending workspace with the current look, the confirm
-    /// dialog's yes. Only user bundles reach this confirm; the push fallback
-    /// covers one deleted since the dialog opened.
+    /// dialog's yes. Only user bundles reach this confirm, and one deleted
+    /// since the dialog opened just comes back: the write lands on the file
+    /// the name picks either way.
     fn overwrite_workspace_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = match &self.layout_dialog {
             Some(LayoutDialog::ConfirmOverwriteWorkspace(name)) => name.clone(),
@@ -1762,14 +1764,9 @@ impl Workspace {
         // Flush the live dock so the overwrite captures current panel config,
         // not the stale disk copy. See commit_save_workspace.
         self.persist(window, cx);
-        let bundle = WorkspaceBundle::from_settings(name.clone(), &Settings::load());
-        Settings::update(move |s| {
-            if let Some(existing) = s.workspaces.iter_mut().find(|w| w.name == name) {
-                *existing = bundle;
-            } else {
-                s.workspaces.push(bundle);
-            }
-        });
+        // The bundle's name picks its file, so an overwrite lands back on the
+        // same one a first save wrote: both are the one write.
+        crate::workspaces::store(&WorkspaceBundle::from_settings(name, &Settings::load()));
         self.close_layout_dialog(window, cx);
     }
 
@@ -1799,10 +1796,10 @@ impl Workspace {
             let Some(path) = paths.pop() else {
                 return;
             };
-            let Some(bundle) = crate::workspaces::read_bundle(&path, &Settings::load()) else {
+            let Some(bundle) = crate::workspaces::read_bundle(&path) else {
                 return;
             };
-            Settings::update(move |s| s.workspaces.push(bundle));
+            crate::workspaces::store(&bundle);
             this.update(cx, |_, cx| cx.notify()).ok();
         })
         .detach();
@@ -1901,12 +1898,12 @@ impl Workspace {
         Settings::update(move |s| {
             // Committing the edits clears the working copy; the saved preset
             // is the state now.
-            s.layout_edits.remove(name.as_str());
-            if let Some(existing) = s.layouts.iter_mut().find(|l| l.name == name) {
+            s.look.layout_edits.remove(name.as_str());
+            if let Some(existing) = s.look.bundle.layouts.iter_mut().find(|l| l.name == name) {
                 existing.dump = dump;
                 existing.size = size;
             } else {
-                s.layouts.push(NamedLayout { name, dump, size });
+                s.look.bundle.layouts.push(NamedLayout { name, dump, size });
             }
         });
         self.close_layout_dialog(window, cx);
@@ -1923,12 +1920,12 @@ impl Workspace {
         Settings::update(move |s| {
             // Overwriting is a save under the pending name; the working copy
             // it replaces is now the saved preset.
-            s.layout_edits.remove(name.as_str());
-            if let Some(existing) = s.layouts.iter_mut().find(|l| l.name == name) {
+            s.look.layout_edits.remove(name.as_str());
+            if let Some(existing) = s.look.bundle.layouts.iter_mut().find(|l| l.name == name) {
                 existing.dump = dump;
                 existing.size = size;
             } else {
-                s.layouts.push(NamedLayout { name, dump, size });
+                s.look.bundle.layouts.push(NamedLayout { name, dump, size });
             }
         });
         cx.notify();
@@ -2367,10 +2364,10 @@ impl Workspace {
             },
         );
         Settings::update(move |s| {
-            s.layout = layout;
-            s.window = Some(window_state);
-            s.last_track = last_track;
-            s.last_queue = last_queue;
+            s.look.layout = layout;
+            s.windows.main = Some(window_state);
+            s.session.last_track = last_track;
+            s.session.last_queue = last_queue;
         });
     }
 

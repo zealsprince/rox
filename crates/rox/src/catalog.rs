@@ -272,7 +272,7 @@ impl Library {
         // the "no manual rescan" promise holds across restarts. A recent scan
         // skips it, so a quick restart does not walk the whole library again;
         // off, or with no roots, the plain load stands.
-        let last_scan = crate::settings::Settings::load().last_scan;
+        let last_scan = crate::settings::Settings::load().session.last_scan;
         let stale = now_secs().saturating_sub(last_scan) > CATCH_UP_STALE;
         let catch_up = this.watch_on && !this.scan_roots.is_empty() && stale;
         if this.conn.is_some() {
@@ -1149,7 +1149,7 @@ impl Library {
                         let aborted = summary.as_ref().is_some_and(|s| s.aborted);
                         if was_scan && !aborted {
                             let now = now_secs();
-                            crate::settings::Settings::update(move |s| s.last_scan = now);
+                            crate::settings::Settings::update(move |s| s.session.last_scan = now);
                         }
                     }
                     Err(e) => {

@@ -35,6 +35,7 @@ use crate::design::{palette, tokens};
 use crate::panel::{self, choices, setting_row, AppState, PanelChrome, PanelSettings, ScrubState};
 use crate::panel_settings;
 use crate::selection::SelectionEvent;
+use crate::settings::ui as settings_ui;
 use crate::workspace::Workspace;
 
 /// The handle strip's thickness: enough for the grip and label to read,
@@ -216,6 +217,8 @@ pub struct DrawerPanel {
     reveal_scrub: ScrubState,
     /// The settings page's dim slider strip.
     dim_scrub: ScrubState,
+    /// The one readout being typed into across the settings sliders.
+    value_edit: panel::ValueEdit,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
     _selection: Subscription,
@@ -265,6 +268,7 @@ impl DrawerPanel {
             bounds: Arc::default(),
             reveal_scrub: ScrubState::default(),
             dim_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
             _selection,
@@ -371,8 +375,8 @@ impl DrawerPanel {
         cx.notify();
     }
 
-    fn set_reveal(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.reveal = MIN_REVEAL + fraction * (1.0 - MIN_REVEAL);
+    fn set_reveal(&mut self, reveal: f32, cx: &mut Context<Self>) {
+        self.config.reveal = reveal;
         cx.notify();
     }
 
@@ -861,22 +865,24 @@ impl PanelSettings for DrawerPanel {
                 .child(setting_row(
                     "Reveal",
                     Some("How much of the panel the open drawer covers"),
-                    panel::value_slider(
+                    settings_ui::scalar(
                         &self.reveal_scrub,
-                        (reveal - MIN_REVEAL) / (1.0 - MIN_REVEAL),
-                        format!("{:.0} %", reveal * 100.0),
-                        Self::set_reveal,
+                        &self.value_edit,
+                        reveal * 100.0,
+                        settings_ui::span(MIN_REVEAL * 100., 100., "%").hard(),
+                        |this: &mut Self, percent, cx| this.set_reveal(percent / 100.0, cx),
                         cx,
                     ),
                 ))
                 .child(setting_row(
                     "Dim",
                     Some("How hard the main panel dims behind the open drawer"),
-                    panel::value_slider(
+                    settings_ui::scalar(
                         &self.dim_scrub,
-                        self.config.dim.clamp(0.0, 1.0),
-                        format!("{:.0} %", self.config.dim.clamp(0.0, 1.0) * 100.0),
-                        Self::set_dim,
+                        &self.value_edit,
+                        self.config.dim.clamp(0.0, 1.0) * 100.0,
+                        settings_ui::span(0., 100., "%").hard(),
+                        |this: &mut Self, percent, cx| this.set_dim(percent / 100.0, cx),
                         cx,
                     ),
                 ))
@@ -1121,7 +1127,7 @@ mod tests {
         // so a wall that wants a list from the left and filters from the
         // right needs the two nested; and a dock tab can't live in a slot, so
         // each tab carries its own pair rather than sharing.
-        assert_eq!(drawers.len(), 4);
+        assert_eq!(drawers.len(), 6);
 
         let mut titles = Vec::new();
         for outer in drawers
@@ -1164,7 +1170,7 @@ mod tests {
             assert_eq!(slid_out["panel_name"], "library");
             assert_eq!(slid_out["info"]["panel"]["query_source"], "selection");
         }
-        assert_eq!(titles, ["Albums", "Artists"]);
+        assert_eq!(titles, ["Albums", "Artists", "Genres"]);
     }
 
     /// The query source is what a chained drawer's hosted panel rides, so its

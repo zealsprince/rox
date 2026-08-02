@@ -47,6 +47,7 @@ use crate::panels::drawer::DrawerPanel;
 use crate::panels::favourite::FavouritePanel;
 use crate::panels::filter::{FilterConfig, FilterPanel};
 use crate::panels::folder_tree::FolderTreePanel;
+use crate::panels::genre_grid::{GenreGridConfig, GenreGridPanel};
 use crate::panels::grid::{GridConfig, GridPanel};
 use crate::panels::group::GroupPanel;
 use crate::panels::history::HistoryPanel;
@@ -577,6 +578,12 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     register_panel(cx, "artist grid", move |_, _, info, window, cx| {
         let config: ArtistGridConfig = panel::config_from_info(info);
         Box::new(cx.new(|cx| ArtistGridPanel::new(s.clone(), config, window, cx)))
+    });
+    // The genre wall, the artist grid's sibling over the "; " lists.
+    let s = state.clone();
+    register_panel(cx, "genre grid", move |_, _, info, window, cx| {
+        let config: GenreGridConfig = panel::config_from_info(info);
+        Box::new(cx.new(|cx| GenreGridPanel::new(s.clone(), config, window, cx)))
     });
     // The art strip shares the grid's search box, so it takes the window
     // the same way.

@@ -567,7 +567,10 @@ impl PlaylistsPanel {
             year: t.year,
             path: &t.path,
         };
-        track_matches(terms, &fields) && self.applied_filter.matches(&fields)
+        track_matches(terms, &fields)
+            && self
+                .applied_filter
+                .matches(&fields, crate::settings::fold_case())
     }
 
     /// Follow the player: resolve the playing path to its track id, so every

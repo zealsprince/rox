@@ -21,6 +21,7 @@ use crate::panels::drawer::{DrawerConfig, DrawerPanel};
 use crate::panels::favourite::{FavouriteConfig, FavouritePanel};
 use crate::panels::filter::{FilterConfig, FilterPanel};
 use crate::panels::folder_tree::{FolderTreeConfig, FolderTreePanel};
+use crate::panels::genre_grid::{GenreGridConfig, GenreGridPanel};
 use crate::panels::grid::{GridConfig, GridPanel};
 use crate::panels::group::{GroupConfig, GroupPanel};
 use crate::panels::history::{HistoryConfig, HistoryPanel};
@@ -146,6 +147,16 @@ pub(crate) static CATALOGUE: PanelSection =
                 build: |state, _, window, cx| {
                     Arc::new(cx.new(|cx| {
                         ArtistGridPanel::new(state.clone(), ArtistGridConfig::default(), window, cx)
+                    }))
+                },
+            },
+            PanelDef {
+                label: "Genre Grid",
+                icon: icons::TAG,
+                placement: PanelPlacement::Center,
+                build: |state, _, window, cx| {
+                    Arc::new(cx.new(|cx| {
+                        GenreGridPanel::new(state.clone(), GenreGridConfig::default(), window, cx)
                     }))
                 },
             },

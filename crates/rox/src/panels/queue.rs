@@ -663,7 +663,10 @@ impl QueuePanel {
             year: t.year,
             path: t.path.to_str().unwrap_or_default(),
         };
-        track_matches(terms, &fields) && self.applied_filter.matches(&fields)
+        track_matches(terms, &fields)
+            && self
+                .applied_filter
+                .matches(&fields, crate::settings::fold_case())
     }
 
     /// Lay the display rows over the entries that pass the active query:

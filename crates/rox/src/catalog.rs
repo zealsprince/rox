@@ -208,6 +208,11 @@ impl Library {
         // and it shows in the playlists panel from a cold start.
         if let Some(conn) = &conn {
             let _ = playlists::ensure_favourites(conn, now_secs());
+            // Seed the genre alias map before the first projection load,
+            // so merged values tile and match merged from the first paint.
+            if let Ok(aliases) = rox_library::genre_meta::aliases(conn) {
+                rox_library::genre::set_aliases(aliases);
+            }
         }
 
         // The same never-nests rule add_root keeps, applied to the loaded
@@ -339,6 +344,59 @@ impl Library {
         scan.cancel.store(true, Ordering::Relaxed);
         self.busy = Some("stopping...".into());
         cx.notify();
+    }
+
+    /// Reload the projection off the unchanged database, for a setting
+    /// that changes how it interns (the case-fold toggle); a no-op while
+    /// another refresh runs.
+    pub fn reload_projection(&mut self, cx: &mut Context<Self>) {
+        self.reload(Refresh::Load, cx);
+    }
+
+    /// Merge genre values: each source counts as `target` everywhere from
+    /// here on, an opinion written to the library's genre_meta table. The
+    /// files keep their tags as written; the tag editor still shows them.
+    pub fn merge_genres(&mut self, sources: &[String], target: &str, cx: &mut Context<Self>) {
+        let Some(conn) = &self.conn else {
+            return;
+        };
+        for source in sources {
+            if let Err(e) = rox_library::genre_meta::set_alias(conn, source, target) {
+                self.status = format!("genre merge: {e}").into();
+            }
+        }
+        self.refresh_genre_aliases(cx);
+    }
+
+    /// Undo every merge pointing at `target`: the folded-away values come
+    /// back as their own genres on the reload this triggers.
+    pub fn unmerge_genre(&mut self, target: &str, cx: &mut Context<Self>) {
+        let Some(conn) = &self.conn else {
+            return;
+        };
+        if let Err(e) = rox_library::genre_meta::clear_aliases_into(conn, target) {
+            self.status = format!("genre unmerge: {e}").into();
+        }
+        self.refresh_genre_aliases(cx);
+    }
+
+    /// The values folded into `target`, for the unmerge menu's tally.
+    pub fn genre_aliases_into(&self, target: &str) -> Vec<String> {
+        self.conn
+            .as_ref()
+            .and_then(|conn| rox_library::genre_meta::aliases_into(conn, target).ok())
+            .unwrap_or_default()
+    }
+
+    /// Reinstall the live alias map off the table and reload the
+    /// projection, so every surface re-derives under the new opinions.
+    fn refresh_genre_aliases(&mut self, cx: &mut Context<Self>) {
+        if let Some(conn) = &self.conn {
+            if let Ok(aliases) = rox_library::genre_meta::aliases(conn) {
+                rox_library::genre::set_aliases(aliases);
+            }
+        }
+        self.reload_projection(cx);
     }
 
     /// Scan every remembered folder again; a no-op until one has been
@@ -639,7 +697,8 @@ impl Library {
         since: i64,
         limit: usize,
     ) -> Vec<listens::NamePlays> {
-        self.listen_query(|conn| listens::rollup(conn, by, since, limit))
+        let fold = crate::settings::fold_case();
+        self.listen_query(|conn| listens::rollup(conn, by, since, limit, fold))
     }
 
     /// How many listens landed at or after `since` (unix seconds).
@@ -666,7 +725,8 @@ impl Library {
     /// Resolve a rollup name to its library tracks in browse order, so
     /// a stats row can queue what it counts.
     pub fn ids_for_rollup(&self, by: listens::Rollup, name: &str, limit: usize) -> Vec<i64> {
-        self.listen_query(|conn| listens::ids_for_name(conn, by, name, limit))
+        let fold = crate::settings::fold_case();
+        self.listen_query(|conn| listens::ids_for_name(conn, by, name, limit, fold))
     }
 
     fn listen_query<T>(
@@ -1377,7 +1437,7 @@ fn load_projection(
     let shards = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let projection = Projection::load_parallel(db_path, shards)?;
+    let projection = Projection::load_parallel(db_path, shards, crate::settings::fold_case())?;
     let order = projection.sort_canonical();
     Ok((projection, order))
 }

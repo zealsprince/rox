@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::group_head::{self, ArtSide, HeadPiece, Headers};
 use crate::panel::{dedup, PanelChrome};
 use crate::query::shared_query::QuerySource;
+use crate::settings::ui as settings_ui;
 
 /// One column the library can show: its stable key, header label, default
 /// width, and whether it renders right-aligned. The registry order is the
@@ -230,11 +231,12 @@ pub(crate) const HEAD_HEIGHT_MAX: f32 = 72.;
 pub(crate) const HEAD_GAP_MAX: f32 = 24.;
 pub(crate) const ART_MARGIN_MAX: f32 = 16.;
 
-/// A saved margin knob read back clamped to its slider; nonsense in a
-/// hand-edited dump falls to zero.
+/// A saved margin knob read back clamped to the band its input reaches,
+/// not the strip's own top, so a typed value survives a reload; nonsense
+/// in a hand-edited dump falls to zero.
 pub(crate) fn fold_margin(v: f32, max: f32) -> f32 {
     if v.is_finite() {
-        v.clamp(0., max)
+        v.clamp(0., settings_ui::ceiling(0., max))
     } else {
         0.
     }
@@ -251,7 +253,9 @@ pub(crate) fn fold_row_heights(config: &LibraryConfig) -> (f32, f32) {
         _ => 30.,
     };
     let clamp = |v: Option<f32>, default: f32, max: f32| match v {
-        Some(v) if v.is_finite() => v.clamp(ROW_HEIGHT_MIN, max),
+        Some(v) if v.is_finite() => {
+            v.clamp(ROW_HEIGHT_MIN, settings_ui::ceiling(ROW_HEIGHT_MIN, max))
+        }
         _ => default,
     };
     let row = clamp(config.row_height, stock, ROW_HEIGHT_MAX);
@@ -522,7 +526,10 @@ pub(crate) fn sort_key(key: &str) -> Option<SortKey> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fold_head_lines, HeadPiece, LibraryConfig, HEAD_LINE_SLOTS};
+    use super::{
+        fold_head_lines, settings_ui, HeadPiece, LibraryConfig, HEAD_HEIGHT_MAX, HEAD_LINE_SLOTS,
+        ROW_HEIGHT_MIN,
+    };
 
     /// A layout saved before composition folds its year and details
     /// toggles into the stock lines, so old headers look unchanged.
@@ -579,13 +586,21 @@ mod tests {
         assert!(super::fold_row_heights(&config) == (30., 30.));
     }
 
-    /// Saved heights read back clamped to the slider bounds, nonsense
-    /// falls to the stock shape, and a save drops the legacy density.
+    /// Saved heights read back clamped to the band the readout's input
+    /// reaches, not the strip's own top, so a typed height survives the
+    /// reload. Nonsense falls to the stock shape, and a save drops the
+    /// legacy density.
     #[test]
     fn heights_clamp_and_round_trip() {
         let config: LibraryConfig =
-            serde_json::from_str(r#"{"row_height": 4.0, "head_height": 500.0}"#).unwrap();
-        assert!(super::fold_row_heights(&config) == (18., 72.));
+            serde_json::from_str(r#"{"row_height": 4.0, "head_height": 5000.0}"#).unwrap();
+        let ceiling = settings_ui::ceiling(ROW_HEIGHT_MIN, HEAD_HEIGHT_MAX);
+        assert!(super::fold_row_heights(&config) == (18., ceiling));
+
+        // A height typed past the strip's top comes back whole.
+        let config: LibraryConfig =
+            serde_json::from_str(r#"{"row_height": 96.0, "head_height": 120.0}"#).unwrap();
+        assert!(super::fold_row_heights(&config) == (96., 120.));
 
         let config: LibraryConfig =
             serde_json::from_str(r#"{"row_height": 24.0, "density": "comfortable"}"#).unwrap();

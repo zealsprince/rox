@@ -30,6 +30,7 @@ use crate::design::{palette, tokens};
 use crate::panel::{self, setting_row, toggle, AppState, PanelChrome, PanelSettings, ScrubState};
 use crate::panel_settings;
 use crate::peaks;
+use crate::settings::ui as settings_ui;
 
 /// Resolution of the in-memory peaks. The paint resamples these down to
 /// however many bars fit the width.
@@ -78,12 +79,15 @@ impl Default for WaveformConfig {
 }
 
 impl WaveformConfig {
-    /// The bar rhythm, clamped to the slider spans so a hand-edited file
-    /// can't collapse the step to nothing.
+    /// The bar rhythm, clamped to as far as the knobs reach, typed
+    /// values past the strip included, so a hand-edited file can't
+    /// collapse the step to nothing.
     fn bars(&self) -> (f32, f32) {
         (
-            self.bar_width.clamp(BAR_W_MIN, BAR_W_MAX),
-            self.bar_gap.clamp(0.0, BAR_GAP_MAX),
+            self.bar_width
+                .clamp(BAR_W_MIN, settings_ui::ceiling(BAR_W_MIN, BAR_W_MAX)),
+            self.bar_gap
+                .clamp(0.0, settings_ui::ceiling(0., BAR_GAP_MAX)),
         )
     }
 }
@@ -143,6 +147,8 @@ pub struct WaveformPanel {
     /// never moves the other.
     bar_w_scrub: ScrubState,
     gap_scrub: ScrubState,
+    /// The one readout being typed into across the settings sliders.
+    value_edit: panel::ValueEdit,
     /// Time zero for the generating animation's phase.
     epoch: Instant,
     focus: FocusHandle,
@@ -168,6 +174,7 @@ impl WaveformPanel {
             scrub: ScrubState::default(),
             bar_w_scrub: ScrubState::default(),
             gap_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             epoch: Instant::now(),
             focus: cx.focus_handle(),
             tab_panel: None,
@@ -231,13 +238,13 @@ impl WaveformPanel {
         self.morph_at = Instant::now();
     }
 
-    fn set_bar_width(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.bar_width = (BAR_W_MIN + fraction * (BAR_W_MAX - BAR_W_MIN)).round();
+    fn set_bar_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        self.config.bar_width = width;
         cx.notify();
     }
 
-    fn set_bar_gap(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.bar_gap = (fraction * BAR_GAP_MAX).round();
+    fn set_bar_gap(&mut self, gap: f32, cx: &mut Context<Self>) {
+        self.config.bar_gap = gap;
         cx.notify();
     }
 
@@ -507,10 +514,11 @@ impl PanelSettings for WaveformPanel {
             .child(setting_row(
                 "Bar Width",
                 Some("How thick each bar draws"),
-                panel::value_slider(
+                settings_ui::scalar(
                     &self.bar_w_scrub,
-                    (bar_w - BAR_W_MIN) / (BAR_W_MAX - BAR_W_MIN),
-                    format!("{bar_w:.0} px"),
+                    &self.value_edit,
+                    bar_w,
+                    settings_ui::span(BAR_W_MIN, BAR_W_MAX, " px"),
                     Self::set_bar_width,
                     cx,
                 ),
@@ -518,10 +526,11 @@ impl PanelSettings for WaveformPanel {
             .child(setting_row(
                 "Bar Gap",
                 Some("Space between bars, zero merges them into a solid shape"),
-                panel::value_slider(
+                settings_ui::scalar(
                     &self.gap_scrub,
-                    gap / BAR_GAP_MAX,
-                    format!("{gap:.0} px"),
+                    &self.value_edit,
+                    gap,
+                    settings_ui::span(0., BAR_GAP_MAX, " px"),
                     Self::set_bar_gap,
                     cx,
                 ),

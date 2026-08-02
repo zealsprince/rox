@@ -71,12 +71,48 @@ impl Arena {
 
 #[derive(Default)]
 struct Interner {
+    /// Whether values differing only by case intern to one symbol. Keys
+    /// in `map` are lowercased when set; the display casing gets picked
+    /// from `variants` when the table finalizes.
+    fold: bool,
     map: HashMap<Box<str>, u32>,
     table: Vec<String>,
+    /// Per symbol, every casing seen and how many rows carry it, so the
+    /// most common spelling wins the display. Only filled when folding,
+    /// so the exact path pays nothing.
+    variants: Vec<HashMap<String, u32>>,
 }
 
 impl Interner {
+    fn folded(fold: bool) -> Self {
+        Interner {
+            fold,
+            ..Default::default()
+        }
+    }
+
     fn intern(&mut self, s: &str) -> u32 {
+        self.intern_weighted(s, 1)
+    }
+
+    /// Intern with a pre-counted weight, the shard merge's path: a shard
+    /// hands over each casing with the row count it saw, so the display
+    /// pick still reflects rows, not shards.
+    fn intern_weighted(&mut self, s: &str, weight: u32) -> u32 {
+        if self.fold {
+            let key = s.to_lowercase();
+            if let Some(&sym) = self.map.get(key.as_str()) {
+                *self.variants[sym as usize]
+                    .entry(s.to_string())
+                    .or_default() += weight;
+                return sym;
+            }
+            let sym = self.table.len() as u32;
+            self.map.insert(key.into_boxed_str(), sym);
+            self.table.push(s.to_string());
+            self.variants.push(HashMap::from([(s.to_string(), weight)]));
+            return sym;
+        }
         if let Some(&sym) = self.map.get(s) {
             return sym;
         }
@@ -84,6 +120,26 @@ impl Interner {
         self.map.insert(s.into(), sym);
         self.table.push(s.to_string());
         sym
+    }
+
+    /// Fold another interner's symbols in, returning the old-to-new
+    /// symbol map the shard merge remaps columns with.
+    fn absorb(&mut self, other: &Interner) -> Vec<u32> {
+        if !self.fold {
+            return other.table.iter().map(|s| self.intern(s)).collect();
+        }
+        other
+            .table
+            .iter()
+            .enumerate()
+            .map(|(sym, s)| {
+                let mut mapped = self.intern_weighted(s, 0);
+                for (variant, &weight) in &other.variants[sym] {
+                    mapped = self.intern_weighted(variant, weight);
+                }
+                mapped
+            })
+            .collect()
     }
 }
 
@@ -95,15 +151,26 @@ pub struct SymTable {
 
 impl From<Interner> for SymTable {
     fn from(interner: Interner) -> Self {
-        let lower = interner
-            .table
-            .par_iter()
-            .map(|s| s.to_lowercase())
-            .collect();
-        SymTable {
-            strings: interner.table,
-            lower,
-        }
+        // Folded symbols display as the casing the most rows carry, ties
+        // to the lexicographically smaller so reloads stay stable.
+        let strings: Vec<String> = if interner.fold {
+            interner
+                .table
+                .into_iter()
+                .zip(&interner.variants)
+                .map(|(first, variants)| {
+                    variants
+                        .iter()
+                        .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+                        .map(|(s, _)| s.clone())
+                        .unwrap_or(first)
+                })
+                .collect()
+        } else {
+            interner.table
+        };
+        let lower = strings.par_iter().map(|s| s.to_lowercase()).collect();
+        SymTable { strings, lower }
     }
 }
 
@@ -145,6 +212,20 @@ pub struct Builder {
 }
 
 impl Builder {
+    /// A builder whose name fields (artist, album artist, album, genre)
+    /// fold case per the library setting. Codecs are lowercase by
+    /// construction and folders are filesystem paths, so those two stay
+    /// exact either way.
+    fn new(fold: bool) -> Self {
+        Builder {
+            artists: Interner::folded(fold),
+            album_artists: Interner::folded(fold),
+            albums: Interner::folded(fold),
+            genres: Interner::folded(fold),
+            ..Default::default()
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
@@ -191,6 +272,11 @@ impl Builder {
 }
 
 pub struct Projection {
+    /// Whether the name symbols interned case-folded, the library's
+    /// case-insensitive setting at load time. Matching against symbol
+    /// strings folds the same way when set, so a stale pick made under
+    /// the other casing still lands.
+    pub fold: bool,
     pub db_id: Vec<i64>,
     pub title: Arena,
     pub title_lower: Arena,
@@ -245,6 +331,11 @@ pub struct Projection {
     /// loaded, so first-seen never shifts.
     distinct_artists: OnceLock<Vec<ArtistHit>>,
     distinct_albums: OnceLock<Vec<AlbumHit>>,
+    /// The distinct genre values with the "; " lists split apart, for
+    /// value suggestions: the symbol table holds the lists whole, but a
+    /// completion should offer "Shoegaze", never "Rock; Shoegaze". Built
+    /// lazily like the ranks, safe to memoize the same way.
+    genre_terms: OnceLock<SymTable>,
 }
 
 pub struct RowView<'a> {
@@ -460,8 +551,10 @@ impl FilterSet {
     /// whole-value counterpart to [`Projection::filter_mask`], for a panel
     /// filtering its own row list (the queue, history, playlists) instead of
     /// the projection. Values match whole, never as substrings, the same as
-    /// the mask over the catalog.
-    pub fn matches(&self, fields: &TrackFields) -> bool {
+    /// the mask over the catalog. `fold` is the library's case rule: these
+    /// rows carry raw strings while picks carry the folded tables' display
+    /// casing, so a case-insensitive library must compare folded here.
+    pub fn matches(&self, fields: &TrackFields, fold: bool) -> bool {
         if !self.id_ok(fields.db_id) {
             return false;
         }
@@ -470,10 +563,20 @@ impl FilterSet {
                 return true;
             }
             match field {
-                FilterField::Artist => values.iter().any(|v| v == fields.artist),
-                FilterField::AlbumArtist => values.iter().any(|v| v == fields.album_artist),
-                FilterField::Album => values.iter().any(|v| v == fields.album),
-                FilterField::Genre => values.iter().any(|v| v == fields.genre),
+                FilterField::Artist => values
+                    .iter()
+                    .any(|v| crate::value_eq(v, fields.artist, fold)),
+                FilterField::AlbumArtist => values
+                    .iter()
+                    .any(|v| crate::value_eq(v, fields.album_artist, fold)),
+                FilterField::Album => values
+                    .iter()
+                    .any(|v| crate::value_eq(v, fields.album, fold)),
+                // Genre picks match against the "; " list's values, so a
+                // "Shoegaze" pick takes a "Rock; Shoegaze" track too.
+                FilterField::Genre => values
+                    .iter()
+                    .any(|v| crate::genre::has(fields.genre, v, fold)),
                 FilterField::Folder => {
                     let folder = fields.folder();
                     values.iter().any(|v| folder_in_subtree(&folder, v))
@@ -612,9 +715,11 @@ impl Projection {
     }
 
     /// Load on one connection, one thread: the ADR 5 shape as written.
-    pub fn load_serial(conn: &rusqlite::Connection) -> rusqlite::Result<Self> {
+    /// `fold` merges values differing only by case into one symbol, the
+    /// case-insensitive library setting.
+    pub fn load_serial(conn: &rusqlite::Connection, fold: bool) -> rusqlite::Result<Self> {
         let max = store::max_rowid(conn)?;
-        let mut b = Builder::default();
+        let mut b = Builder::new(fold);
         store::scan_range(
             conn,
             0,
@@ -653,14 +758,14 @@ impl Projection {
                 );
             },
         )?;
-        let projection = Self::merge(vec![b]);
+        let projection = Self::merge(vec![b], fold);
         projection.fill_plays(conn)?;
         Ok(projection)
     }
 
     /// Load with one reader per shard over disjoint rowid ranges (WAL allows
     /// concurrent readers), then merge shards by remapping local symbols.
-    pub fn load_parallel(db_path: &Path, shards: usize) -> rusqlite::Result<Self> {
+    pub fn load_parallel(db_path: &Path, shards: usize, fold: bool) -> rusqlite::Result<Self> {
         let conn = store::open(db_path)?;
         let max = store::max_rowid(&conn)?;
         drop(conn);
@@ -673,7 +778,7 @@ impl Projection {
                     let hi = (lo + step).min(max);
                     scope.spawn(move || {
                         let conn = store::open(db_path)?;
-                        let mut b = Builder::default();
+                        let mut b = Builder::new(fold);
                         store::scan_range(
                             &conn,
                             lo,
@@ -723,7 +828,7 @@ impl Projection {
         for b in builders {
             shards.push(b?);
         }
-        let projection = Self::merge(shards);
+        let projection = Self::merge(shards, fold);
         let conn = store::open(db_path)?;
         projection.fill_plays(&conn)?;
         Ok(projection)
@@ -744,11 +849,11 @@ impl Projection {
         Ok(())
     }
 
-    fn merge(shards: Vec<Builder>) -> Self {
-        let mut artists = Interner::default();
-        let mut album_artists = Interner::default();
-        let mut albums = Interner::default();
-        let mut genres = Interner::default();
+    fn merge(shards: Vec<Builder>, fold: bool) -> Self {
+        let mut artists = Interner::folded(fold);
+        let mut album_artists = Interner::folded(fold);
+        let mut albums = Interner::folded(fold);
+        let mut genres = Interner::folded(fold);
         let mut codecs = Interner::default();
         let mut folders = Interner::default();
         let total: usize = shards.iter().map(|s| s.db_id.len()).sum();
@@ -770,42 +875,12 @@ impl Projection {
         out.folder.reserve(total);
 
         for shard in shards {
-            let map_a: Vec<u32> = shard
-                .artists
-                .table
-                .iter()
-                .map(|s| artists.intern(s))
-                .collect();
-            let map_aa: Vec<u32> = shard
-                .album_artists
-                .table
-                .iter()
-                .map(|s| album_artists.intern(s))
-                .collect();
-            let map_b: Vec<u32> = shard
-                .albums
-                .table
-                .iter()
-                .map(|s| albums.intern(s))
-                .collect();
-            let map_g: Vec<u32> = shard
-                .genres
-                .table
-                .iter()
-                .map(|s| genres.intern(s))
-                .collect();
-            let map_c: Vec<u32> = shard
-                .codecs
-                .table
-                .iter()
-                .map(|s| codecs.intern(s))
-                .collect();
-            let map_f: Vec<u32> = shard
-                .folders
-                .table
-                .iter()
-                .map(|s| folders.intern(s))
-                .collect();
+            let map_a = artists.absorb(&shard.artists);
+            let map_aa = album_artists.absorb(&shard.album_artists);
+            let map_b = albums.absorb(&shard.albums);
+            let map_g = genres.absorb(&shard.genres);
+            let map_c = codecs.absorb(&shard.codecs);
+            let map_f = folders.absorb(&shard.folders);
             out.db_id.extend_from_slice(&shard.db_id);
             out.title.append(&shard.title);
             out.title_lower.append(&shard.title_lower);
@@ -832,6 +907,7 @@ impl Projection {
 
         let plays = (0..out.db_id.len()).map(|_| AtomicU32::new(0)).collect();
         Projection {
+            fold,
             db_id: out.db_id,
             title: out.title,
             title_lower: out.title_lower,
@@ -862,6 +938,7 @@ impl Projection {
             codec_ranks: OnceLock::new(),
             distinct_artists: OnceLock::new(),
             distinct_albums: OnceLock::new(),
+            genre_terms: OnceLock::new(),
         }
     }
 
@@ -1094,11 +1171,12 @@ impl Projection {
             Year(Vec<bool>),
         }
 
+        let fold = self.fold;
         let sym_ok = |table: &SymTable, values: &[String]| -> Vec<bool> {
             table
                 .strings
                 .iter()
-                .map(|s| values.iter().any(|v| v == s))
+                .map(|s| values.iter().any(|v| crate::value_eq(v, s, fold)))
                 .collect()
         };
         let checks: Vec<Check> = filter
@@ -1118,9 +1196,17 @@ impl Projection {
                     column: &self.album,
                     ok: sym_ok(&self.albums, values),
                 },
+                // Genre symbols are "; " lists; a pick passes any symbol
+                // carrying it as one of its values, the same per-symbol
+                // trick the folder subtree check plays below.
                 FilterField::Genre => Check::Sym {
                     column: &self.genre,
-                    ok: sym_ok(&self.genres, values),
+                    ok: self
+                        .genres
+                        .strings
+                        .iter()
+                        .map(|s| values.iter().any(|v| crate::genre::has(s, v, fold)))
+                        .collect(),
                 },
                 // Folder picks cover their subtree, so the per-symbol check
                 // is a prefix test instead of the exact match.
@@ -1168,14 +1254,19 @@ impl Projection {
         )
     }
 
+    /// The rows carrying one genre value, "; " lists included: asking for
+    /// "Shoegaze" takes a "Rock; Shoegaze" track along with the plain ones.
     pub fn filter_genre(&self, genre: &str) -> Vec<u32> {
-        match self.genres.strings.iter().position(|g| g == genre) {
-            Some(sym) => {
-                let sym = sym as u32;
-                self.scan_rows(|i| self.genre[i] == sym)
-            }
-            None => Vec::new(),
+        let ok: Vec<bool> = self
+            .genres
+            .strings
+            .iter()
+            .map(|s| crate::genre::has(s, genre, self.fold))
+            .collect();
+        if !ok.contains(&true) {
+            return Vec::new();
         }
+        self.scan_rows(|i| ok[self.genre[i] as usize])
     }
 
     pub fn filter_year(&self, lo: u16, hi: u16) -> Vec<u32> {
@@ -1258,6 +1349,61 @@ impl Projection {
                 }
             }
             out
+        })
+    }
+
+    /// The distinct genre values across the library, "; " lists split
+    /// into their parts, each once in first-seen order with the lowered
+    /// copy suggestion filtering wants. A folded library merges case
+    /// variants here too, the display going to the casing the most rows
+    /// carry - the symbols only folded whole strings, so parts shared
+    /// across different lists still need their own pass.
+    pub fn genre_terms(&self) -> &SymTable {
+        self.genre_terms.get_or_init(|| {
+            if !self.fold {
+                let mut seen: HashSet<String> = HashSet::new();
+                let mut strings: Vec<String> = Vec::new();
+                for s in &self.genres.strings {
+                    for part in crate::genre::split(s) {
+                        let part = crate::genre::resolve(part);
+                        if seen.insert(part.clone()) {
+                            strings.push(part);
+                        }
+                    }
+                }
+                let lower = strings.iter().map(|s| s.to_lowercase()).collect();
+                return SymTable { strings, lower };
+            }
+            let mut rows = vec![0u32; self.genres.strings.len()];
+            for &sym in &self.genre {
+                rows[sym as usize] += 1;
+            }
+            // Folded part -> (first-seen order, casing -> row count).
+            let mut order: Vec<String> = Vec::new();
+            let mut casings: HashMap<String, HashMap<String, u32>> = HashMap::new();
+            for (sym, s) in self.genres.strings.iter().enumerate() {
+                for part in crate::genre::split(s) {
+                    let part = crate::genre::resolve(part);
+                    let key = part.to_lowercase();
+                    let entry = casings.entry(key.clone()).or_insert_with(|| {
+                        order.push(key);
+                        HashMap::new()
+                    });
+                    *entry.entry(part).or_default() += rows[sym];
+                }
+            }
+            let strings: Vec<String> = order
+                .iter()
+                .map(|key| {
+                    casings[key]
+                        .iter()
+                        .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+                        .map(|(s, _)| s.to_string())
+                        .expect("every ordered key has at least one casing")
+                })
+                .collect();
+            let lower = strings.iter().map(|s| s.to_lowercase()).collect();
+            SymTable { strings, lower }
         })
     }
 
@@ -1509,7 +1655,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let p = Projection::load_serial(&conn).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
 
         // Free text still matches across fields.
         assert_eq!(titles_for(&p, "daft").len(), 2);
@@ -1560,17 +1706,17 @@ mod tests {
         // The structured filter matches whole values, never substrings.
         let mut filter = FilterSet::default();
         filter.toggle(FilterField::Artist, "Daft Punk");
-        assert!(filter.matches(&fields));
+        assert!(filter.matches(&fields, false));
         let mut narrower = filter.clone();
         narrower.toggle(FilterField::Artist, "Air");
         // Values OR within a field, so the extra pick still passes.
-        assert!(narrower.matches(&fields));
+        assert!(narrower.matches(&fields, false));
         let mut year = FilterSet::default();
         year.toggle(FilterField::Year, "2001");
-        assert!(year.matches(&fields));
+        assert!(year.matches(&fields, false));
         year.clear(FilterField::Year);
         year.toggle(FilterField::Year, "1999");
-        assert!(!year.matches(&fields));
+        assert!(!year.matches(&fields, false));
     }
 
     /// `folder:` pins a term to the track's parent directory, case-folded
@@ -1590,7 +1736,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let p = Projection::load_serial(&conn).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
 
         // The pin isolates just the one folder's files, case-folded.
         assert_eq!(titles_for(&p, r#"folder:"wrong album""#).len(), 2);
@@ -1620,7 +1766,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let p = Projection::load_serial(&conn).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
 
         let mut filter = FilterSet::default();
         filter.toggle(FilterField::Folder, "/music/Air");
@@ -1644,8 +1790,132 @@ mod tests {
             year: 0,
             path,
         };
-        assert!(filter.matches(&fields("/music/Air/Moon Safari/2.mp3")));
-        assert!(!filter.matches(&fields("/music/Airborne/3.mp3")));
+        assert!(filter.matches(&fields("/music/Air/Moon Safari/2.mp3"), false));
+        assert!(!filter.matches(&fields("/music/Airborne/3.mp3"), false));
+    }
+
+    /// Genre picks match values inside "; " lists: the mask, the
+    /// per-track matcher, filter_genre, and the suggestion terms all
+    /// split the same way, and the empty pick keeps its untagged bucket.
+    #[test]
+    fn genre_filter_splits_lists() {
+        fn genre_track(path: &str, title: &str, genre: &str) -> TrackRow {
+            let mut row = track(path, title, "A", 2000);
+            row.genre = genre.into();
+            row
+        }
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                genre_track("/m/1.mp3", "One", "Rock; Shoegaze"),
+                genre_track("/m/2.mp3", "Two", "Rock"),
+                genre_track("/m/3.mp3", "Three", "Electronic"),
+                genre_track("/m/4.mp3", "Four", ""),
+            ],
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
+
+        let hits = |filter: &FilterSet| -> Vec<String> {
+            let mask = p.filter_mask(filter).unwrap();
+            (0..p.len())
+                .filter(|&i| mask[i])
+                .map(|i| p.title.get(i).to_string())
+                .collect()
+        };
+        let mut filter = FilterSet::default();
+        filter.toggle(FilterField::Genre, "Shoegaze");
+        assert_eq!(hits(&filter), ["One"]);
+        // Values OR within the field, lists and plain symbols alike.
+        filter.toggle(FilterField::Genre, "Electronic");
+        assert_eq!(hits(&filter), ["One", "Three"]);
+        // The empty pick is the untagged bucket, not a substring of all.
+        let mut unknown = FilterSet::default();
+        unknown.toggle(FilterField::Genre, "");
+        assert_eq!(hits(&unknown), ["Four"]);
+
+        // The per-track matcher agrees with the mask.
+        let fields = TrackFields {
+            db_id: 1,
+            title: "One",
+            artist: "A",
+            album_artist: "A",
+            album: "",
+            genre: "Rock; Shoegaze",
+            year: 2000,
+            path: "/m/1.mp3",
+        };
+        assert!(filter.matches(&fields, false));
+        assert!(!unknown.matches(&fields, false));
+
+        // filter_genre takes list members; the terms table splits them.
+        assert_eq!(p.filter_genre("Rock").len(), 2);
+        assert!(p.filter_genre("Rock; Shoegaze").is_empty());
+        assert_eq!(p.genre_terms().strings, ["Rock", "Shoegaze", "Electronic"]);
+    }
+
+    /// A folded load merges values differing only by case into one
+    /// symbol whose display is the casing most rows carry, picks match
+    /// across casings, and the genre terms fold their parts the same
+    /// way. An exact load keeps the variants apart.
+    #[test]
+    fn folded_load_merges_case_variants() {
+        fn full(path: &str, artist: &str, genre: &str) -> TrackRow {
+            let mut row = track(path, "T", artist, 2000);
+            row.genre = genre.into();
+            row
+        }
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                full("/m/1.mp3", "Daft Punk", "Rock; Pop"),
+                full("/m/2.mp3", "Daft Punk", "rock"),
+                full("/m/3.mp3", "daft punk", "rock"),
+            ],
+        )
+        .unwrap();
+
+        let exact = Projection::load_serial(&conn, false).unwrap();
+        assert_eq!(exact.artists.strings.len(), 2, "exact keeps casings apart");
+
+        let folded = Projection::load_serial(&conn, true).unwrap();
+        assert_eq!(
+            folded.artists.strings,
+            ["Daft Punk"],
+            "one symbol, the majority casing"
+        );
+        // Two rows say "rock", one "Rock; Pop": the whole-string symbols
+        // stay distinct, but the terms fold to two values and the casing
+        // with more rows wins the display.
+        assert_eq!(folded.genre_terms().strings, ["rock", "Pop"]);
+
+        // A pick in either casing takes all three rows through the mask,
+        // and the per-track matcher agrees over raw row strings.
+        let mut filter = FilterSet::default();
+        filter.toggle(FilterField::Artist, "daft punk");
+        let mask = folded.filter_mask(&filter).unwrap();
+        assert_eq!(mask.iter().filter(|&&b| b).count(), 3);
+        let fields = TrackFields {
+            db_id: 1,
+            title: "T",
+            artist: "DAFT PUNK",
+            album_artist: "",
+            album: "",
+            genre: "ROCK",
+            year: 2000,
+            path: "/m/1.mp3",
+        };
+        assert!(filter.matches(&fields, true));
+        assert!(!filter.matches(&fields, false));
+        let mut genre_pick = FilterSet::default();
+        genre_pick.toggle(FilterField::Genre, "Rock");
+        let mask = folded.filter_mask(&genre_pick).unwrap();
+        assert_eq!(mask.iter().filter(|&&b| b).count(), 3);
+        assert_eq!(folded.filter_genre("POP").len(), 1);
     }
 
     /// The search surfaces whole albums and artists whose name matches,
@@ -1688,7 +1958,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let p = Projection::load_serial(&conn).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
 
         // A free term surfaces the one matching artist.
         let artists = p.search_artists("fleet");
@@ -1738,7 +2008,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let p = Projection::load_serial(&conn).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
 
         let hits = |filter: &FilterSet| -> Vec<&str> {
             let mask = p.filter_mask(filter).unwrap();
@@ -1786,7 +2056,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let p = Projection::load_serial(&conn).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
 
         let hits = |filter: &FilterSet| -> Vec<&str> {
             let mask = p.filter_mask(filter).unwrap();
@@ -1840,7 +2110,7 @@ mod tests {
         crate::listens::append(&conn, &listen).unwrap();
         crate::listens::append(&conn, &listen).unwrap();
 
-        let p = Projection::load_serial(&conn).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
         assert_eq!(p.resolve(0).plays, 0);
         assert_eq!(p.resolve(1).plays, 2);
         let by_plays = p.sort_view(&[0, 1], SortKey::Plays, true);
@@ -1971,7 +2241,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let p = Projection::load_serial(&conn).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
 
         let check = |q: &str| {
             let got_artists: Vec<(String, u32)> = p
@@ -2050,7 +2320,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let p = Projection::load_serial(&conn).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
 
         let artists1: Vec<u32> = p
             .search_artists("a")
@@ -2096,7 +2366,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let p = Projection::load_serial(&conn).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
 
         // The decade needle takes the one nineties row.
         assert_eq!(titles_for(&p, "year:199"), ["Nineties"]);
@@ -2115,7 +2385,7 @@ mod tests {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         store::init_schema(&conn).unwrap();
         store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", 2000)]).unwrap();
-        let small = Projection::load_serial(&conn).unwrap();
+        let small = Projection::load_serial(&conn, false).unwrap();
 
         store::insert_batch(
             &mut conn,
@@ -2126,7 +2396,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let big = Projection::load_serial(&conn).unwrap();
+        let big = Projection::load_serial(&conn, false).unwrap();
 
         assert!(big.added.len() > small.added.len());
         assert!(big.heap_bytes() > small.heap_bytes());
@@ -2149,7 +2419,7 @@ mod tests {
         )
         .unwrap();
 
-        let p = Projection::load_serial(&conn).unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
         let keys: Vec<(u16, u16)> = p
             .sort_canonical()
             .iter()

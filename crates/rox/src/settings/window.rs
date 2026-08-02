@@ -192,6 +192,10 @@ struct SettingsWindow {
     /// toggle. Mirrors the setting; flipping it arms or drops the watcher on
     /// the shared library.
     watch_library: bool,
+    /// Whether values differing only by case merge, the Folders page's
+    /// case toggle. Mirrors the setting; flipping it reloads the
+    /// projection so the symbol tables re-intern under the new rule.
+    fold_case: bool,
     /// The portable marker's presence, what the Behavior toggle shows;
     /// the running app stays on the data folder it started with either
     /// way, so a flip only lands on the next launch.
@@ -433,6 +437,7 @@ impl SettingsWindow {
             frame: settings.frame,
             restore_last_track: settings.restore_last_track,
             watch_library: settings.watch_library,
+            fold_case: settings.fold_case,
             portable: settings::portable_marker().is_some_and(|marker| marker.exists()),
             portable_writable: settings::portable_available(),
             portable_busy: false,
@@ -596,6 +601,18 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// The case-fold switch: flip the live flag, persist, and reload the
+    /// projection so every symbol table re-interns under the new rule.
+    /// The database never changes; this is a read-model rebuild.
+    fn set_fold_case(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.fold_case = on;
+        settings::set_fold_case(on);
+        Settings::update(move |s| s.fold_case = on);
+        self.library
+            .update(cx, |library, cx| library.reload_projection(cx));
+        cx.notify();
+    }
+
     /// The quit-to-tray switch, the Window menu toggle's twin: flips the
     /// live flag the close path reads, persists, and puts the tray icon up
     /// or takes it down on the spot. The toggle reads the static, not a
@@ -739,9 +756,8 @@ impl SettingsWindow {
     /// The app font size: the strip fraction mapped onto whole px across
     /// the shared range, through the palette pipe so every window's rem
     /// follows the scrub live.
-    fn set_font_size(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        let range = palette::FONT_SIZE_MAX - palette::FONT_SIZE_MIN;
-        self.font_size = (palette::FONT_SIZE_MIN + fraction * range).round();
+    fn set_font_size(&mut self, value: f32, cx: &mut Context<Self>) {
+        self.font_size = value;
         palette::set_app_font_size(self.font_size, cx);
         self.persist_appearance_soon(cx);
         cx.notify();
@@ -813,26 +829,26 @@ impl SettingsWindow {
         .detach();
     }
 
-    // The app-wide frame setters: the strip fraction mapped onto whole px,
-    // the new default every panel that sets no override of its own takes.
+    // The app-wide frame setters: whole px in, the new default every
+    // panel that sets no override of its own takes.
 
-    fn set_margin(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.frame.margin = (fraction * MARGIN_MAX).round();
+    fn set_margin(&mut self, value: f32, cx: &mut Context<Self>) {
+        self.frame.margin = value;
         self.frame_edited(cx);
     }
 
-    fn set_padding(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.frame.padding = (fraction * PADDING_MAX).round();
+    fn set_padding(&mut self, value: f32, cx: &mut Context<Self>) {
+        self.frame.padding = value;
         self.frame_edited(cx);
     }
 
-    fn set_rounding(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.frame.rounding = (fraction * ROUNDING_MAX).round();
+    fn set_rounding(&mut self, value: f32, cx: &mut Context<Self>) {
+        self.frame.rounding = value;
         self.frame_edited(cx);
     }
 
-    fn set_border(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.frame.border = (fraction * BORDER_MAX).round();
+    fn set_border(&mut self, value: f32, cx: &mut Context<Self>) {
+        self.frame.border = value;
         self.frame_edited(cx);
     }
 
@@ -846,7 +862,7 @@ impl SettingsWindow {
     /// range, the px readout alongside. Always set, since these are the
     /// defaults themselves; a panel's own settings are where an override
     /// forks off them. Typed values may run past the strip's top, the
-    /// setters take the fraction as given.
+    /// setters take what lands.
     fn frame_row(
         &self,
         scrub: &ScrubState,
@@ -855,14 +871,11 @@ impl SettingsWindow {
         apply: fn(&mut Self, f32, &mut Context<Self>),
         cx: &mut Context<Self>,
     ) -> Div {
-        panel::value_slider_edit_over(
+        settings_ui::scalar(
             scrub,
             &self.value_edit,
-            value / max,
-            format!("{value:.0} px"),
-            format!("{value:.0}"),
-            settings_ui::FRAME_OVER,
-            move |v| v / max,
+            value,
+            settings_ui::span(0., max, " px"),
             apply,
             cx,
         )
@@ -1047,17 +1060,16 @@ impl SettingsWindow {
                     .child(panel::setting_row(
                         "Font Size",
                         Some("The base text size every panel's text scales from; controls and icons hold their size"),
-                        panel::value_slider_edit(
+                        settings_ui::scalar(
                             &self.font_size_scrub,
                             &self.value_edit,
-                            (self.font_size - palette::FONT_SIZE_MIN)
-                                / (palette::FONT_SIZE_MAX - palette::FONT_SIZE_MIN),
-                            format!("{:.0} px", self.font_size),
-                            format!("{:.0}", self.font_size),
-                            |v| {
-                                (v - palette::FONT_SIZE_MIN)
-                                    / (palette::FONT_SIZE_MAX - palette::FONT_SIZE_MIN)
-                            },
+                            self.font_size,
+                            settings_ui::span(
+                                palette::FONT_SIZE_MIN,
+                                palette::FONT_SIZE_MAX,
+                                " px",
+                            )
+                            .hard(),
                             Self::set_font_size,
                             cx,
                         ),
@@ -1874,7 +1886,17 @@ impl SettingsWindow {
                 "Folders scanned into the library; removing one drops its \
                      tracks from the catalog and leaves the files alone",
             ))
-            .child(watch_row);
+            .child(watch_row)
+            .child(panel::setting_row(
+                "Merge case variants",
+                Some(
+                    "Treat values differing only by case as one - Rock and \
+                     rock become the same genre, artist, and album, shown \
+                     under the casing most tracks carry. Files keep their \
+                     tags as written",
+                ),
+                panel::toggle(self.fold_case, Self::set_fold_case, cx),
+            ));
         // The folder table: a column header line, then a hairlined row
         // per folder.
         let mut table = div().flex().flex_col().child(

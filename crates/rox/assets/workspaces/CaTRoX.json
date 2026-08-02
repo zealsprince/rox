@@ -198,6 +198,7 @@
                               "hide_controls": true,
                               "source": "playing",
                               "align": "center",
+                              "valign": "top",
                               "cover": false,
                               "display": "table",
                               "stripes": false,

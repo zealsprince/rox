@@ -32,6 +32,7 @@ use crate::panel_settings;
 use crate::panels::spectrum::{
     ramp_color, Gradient, Orientation, GRADIENT_CHOICES, ORIENTATION_CHOICES,
 };
+use crate::settings::ui as settings_ui;
 
 /// The most meters the panel draws: stereo is two, mono folds to one.
 const MAX_METERS: usize = 2;
@@ -196,12 +197,17 @@ impl Default for VuConfig {
 }
 
 impl VuConfig {
+    /// The cell depth and seam read back to the typed ceiling rather than
+    /// the strip's own top, or every value typed past the top would drop
+    /// on the next load.
     fn seg_h(&self) -> f32 {
-        self.seg_height.clamp(SEG_H_MIN, SEG_H_MAX)
+        self.seg_height
+            .clamp(SEG_H_MIN, settings_ui::ceiling(SEG_H_MIN, SEG_H_MAX))
     }
 
     fn seg_gap(&self) -> f32 {
-        self.seg_gap.clamp(SEG_GAP_MIN, SEG_GAP_MAX)
+        self.seg_gap
+            .clamp(SEG_GAP_MIN, settings_ui::ceiling(SEG_GAP_MIN, SEG_GAP_MAX))
     }
 
     fn gravity(&self) -> f32 {
@@ -523,6 +529,8 @@ pub struct VuPanel {
     seg_h_scrub: ScrubState,
     seg_gap_scrub: ScrubState,
     gravity_scrub: ScrubState,
+    /// The one readout being typed into across the settings sliders.
+    value_edit: panel::ValueEdit,
     /// The custom ramp's pickers, base then tip, built on the first settings
     /// render - the panel itself constructs without a window, which the picker
     /// state needs.
@@ -547,6 +555,7 @@ impl VuPanel {
             seg_h_scrub: ScrubState::default(),
             seg_gap_scrub: ScrubState::default(),
             gravity_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             ramp_pickers: None,
             _ramp_changes: Vec::new(),
             focus: cx.focus_handle(),
@@ -555,13 +564,13 @@ impl VuPanel {
         }
     }
 
-    fn set_seg_height(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.seg_height = (SEG_H_MIN + fraction * (SEG_H_MAX - SEG_H_MIN)).round();
+    fn set_seg_height(&mut self, height: f32, cx: &mut Context<Self>) {
+        self.config.seg_height = height;
         cx.notify();
     }
 
-    fn set_seg_gap(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.seg_gap = (SEG_GAP_MIN + fraction * (SEG_GAP_MAX - SEG_GAP_MIN)).round();
+    fn set_seg_gap(&mut self, gap: f32, cx: &mut Context<Self>) {
+        self.config.seg_gap = gap;
         cx.notify();
     }
 
@@ -757,10 +766,11 @@ impl PanelSettings for VuPanel {
                 d.child(setting_row(
                     "Segment Height",
                     Some("How tall each cell in a stack draws"),
-                    panel::value_slider(
+                    settings_ui::scalar(
                         &self.seg_h_scrub,
-                        (seg_h - SEG_H_MIN) / (SEG_H_MAX - SEG_H_MIN),
-                        format!("{seg_h:.0} px"),
+                        &self.value_edit,
+                        seg_h,
+                        settings_ui::span(SEG_H_MIN, SEG_H_MAX, " px"),
                         Self::set_seg_height,
                         cx,
                     ),
@@ -768,10 +778,11 @@ impl PanelSettings for VuPanel {
                 .child(setting_row(
                     "Segment Gap",
                     Some("The seam between cells in a stack"),
-                    panel::value_slider(
+                    settings_ui::scalar(
                         &self.seg_gap_scrub,
-                        (seg_gap - SEG_GAP_MIN) / (SEG_GAP_MAX - SEG_GAP_MIN),
-                        format!("{seg_gap:.0} px"),
+                        &self.value_edit,
+                        seg_gap,
+                        settings_ui::span(SEG_GAP_MIN, SEG_GAP_MAX, " px"),
                         Self::set_seg_gap,
                         cx,
                     ),
@@ -822,10 +833,13 @@ impl PanelSettings for VuPanel {
             .child(setting_row(
                 "Cap Gravity",
                 Some("How hard the peak marks fall once the meter drops away"),
-                panel::value_slider(
+                panel::value_slider_edit(
                     &self.gravity_scrub,
+                    &self.value_edit,
                     (gravity / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
                     format!("{gravity:.2}"),
+                    format!("{gravity:.2}"),
+                    |v| (v / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
                     Self::set_gravity,
                     cx,
                 ),

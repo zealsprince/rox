@@ -37,6 +37,12 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
             crate::listens::add_path_snapshot(conn)
         },
     },
+    // The library's genre opinions (aliases, display, art) beside the
+    // tracks they describe, never touching a file's tags.
+    crate::migrate::Migration {
+        name: "genre-meta",
+        up: crate::genre_meta::init_schema,
+    },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -736,7 +742,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
 
         // A second open is a no-op: the baseline never re-probes a stamped file.
         init_schema(&conn).unwrap();
@@ -828,7 +834,7 @@ mod tests {
         set_rating(&conn, id, 75).unwrap();
         insert_batch(&mut conn, &[track()]).unwrap();
 
-        let p = crate::projection::Projection::load_serial(&conn).unwrap();
+        let p = crate::projection::Projection::load_serial(&conn, false).unwrap();
         assert_eq!(p.resolve(0).rating, 75);
     }
 
@@ -858,7 +864,7 @@ mod tests {
             .unwrap();
         assert_eq!(after, 123, "a rescan keeps the first-seen scan time");
 
-        let p = crate::projection::Projection::load_serial(&conn).unwrap();
+        let p = crate::projection::Projection::load_serial(&conn, false).unwrap();
         assert_eq!(p.resolve(0).added, 123, "the projection carries it through");
     }
 
@@ -1053,7 +1059,7 @@ mod tests {
         )
         .unwrap();
 
-        let p = crate::projection::Projection::load_serial(&conn).unwrap();
+        let p = crate::projection::Projection::load_serial(&conn, false).unwrap();
         let v = p.resolve(0);
         assert_eq!(v.title, "After");
         assert_eq!(v.year, 2020, "the date's leading digits land as the year");

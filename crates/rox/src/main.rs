@@ -269,6 +269,7 @@ fn main() {
         settings::set_rating_dots(settings.rating_dots, cx);
         settings::set_hide_menubar(settings.hide_menubar, cx);
         settings::set_os_decorations(settings.os_decorations);
+        settings::set_fold_case(settings.fold_case);
         settings::set_quit_to_tray(settings.quit_to_tray);
         settings::set_experimental(settings.experimental, cx);
         integrations::tray::sync(cx);

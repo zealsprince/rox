@@ -33,6 +33,7 @@ use crate::panel::{
     self, choices, setting_row, toggle, AppState, PanelChrome, PanelSettings, ScrubState,
 };
 use crate::panel_settings;
+use crate::settings::ui as settings_ui;
 
 // Bars follow the visualizer rhythm at the configured width over the shared
 // gap (`tokens::BAR_GAP`); the count collapses on narrow panels instead of
@@ -377,22 +378,30 @@ impl SpectrumConfig {
         (lo.min(hi / MIN_RATIO), hi)
     }
 
-    /// The bar thickness, outline stroke, and cap gravity, clamped to
-    /// their slider spans like [`Self::range`] clamps the bounds.
+    /// The bar thickness, outline stroke, and cap gravity, clamped the way
+    /// [`Self::range`] clamps the bounds. The px knobs read back to the
+    /// typed ceiling rather than the strip's own top, or every value typed
+    /// past the top would drop on the next load.
     fn bar_w(&self) -> f32 {
-        self.bar_width.clamp(BAR_W_MIN, BAR_W_MAX)
+        self.bar_width
+            .clamp(BAR_W_MIN, settings_ui::ceiling(BAR_W_MIN, BAR_W_MAX))
     }
 
     fn bar_gap(&self) -> f32 {
-        self.bar_gap.clamp(BAR_GAP_MIN, BAR_GAP_MAX)
+        self.bar_gap
+            .clamp(BAR_GAP_MIN, settings_ui::ceiling(BAR_GAP_MIN, BAR_GAP_MAX))
     }
 
     fn outline_w(&self) -> f32 {
-        self.outline_width.clamp(OUTLINE_W_MIN, OUTLINE_W_MAX)
+        self.outline_width.clamp(
+            OUTLINE_W_MIN,
+            settings_ui::ceiling(OUTLINE_W_MIN, OUTLINE_W_MAX),
+        )
     }
 
     fn block_h(&self) -> f32 {
-        self.block_height.clamp(BLOCK_H_MIN, BLOCK_H_MAX)
+        self.block_height
+            .clamp(BLOCK_H_MIN, settings_ui::ceiling(BLOCK_H_MIN, BLOCK_H_MAX))
     }
 
     /// The custom ramp's ends parsed, falling back to the theme ramp's
@@ -406,7 +415,10 @@ impl SpectrumConfig {
     }
 
     fn block_gap(&self) -> f32 {
-        self.block_gap.clamp(BLOCK_GAP_MIN, BLOCK_GAP_MAX)
+        self.block_gap.clamp(
+            BLOCK_GAP_MIN,
+            settings_ui::ceiling(BLOCK_GAP_MIN, BLOCK_GAP_MAX),
+        )
     }
 
     fn gravity(&self) -> f32 {
@@ -1065,6 +1077,8 @@ pub struct SpectrumPanel {
     outline_w_scrub: ScrubState,
     gravity_scrub: ScrubState,
     split_scrub: ScrubState,
+    /// The one readout being typed into across the settings sliders.
+    value_edit: panel::ValueEdit,
     /// The custom ramp's pickers, base then tip, built on the first
     /// settings render: the panel itself constructs without a window,
     /// which the picker state needs.
@@ -1095,6 +1109,7 @@ impl SpectrumPanel {
             outline_w_scrub: ScrubState::default(),
             gravity_scrub: ScrubState::default(),
             split_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             ramp_pickers: None,
             _ramp_changes: Vec::new(),
             focus: cx.focus_handle(),
@@ -1121,30 +1136,28 @@ impl SpectrumPanel {
         cx.notify();
     }
 
-    fn set_bar_width(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.bar_width = (BAR_W_MIN + fraction * (BAR_W_MAX - BAR_W_MIN)).round();
+    fn set_bar_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        self.config.bar_width = width;
         cx.notify();
     }
 
-    fn set_bar_gap(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.bar_gap = (BAR_GAP_MIN + fraction * (BAR_GAP_MAX - BAR_GAP_MIN)).round();
+    fn set_bar_gap(&mut self, gap: f32, cx: &mut Context<Self>) {
+        self.config.bar_gap = gap;
         cx.notify();
     }
 
-    fn set_block_height(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.block_height = (BLOCK_H_MIN + fraction * (BLOCK_H_MAX - BLOCK_H_MIN)).round();
+    fn set_block_height(&mut self, height: f32, cx: &mut Context<Self>) {
+        self.config.block_height = height;
         cx.notify();
     }
 
-    fn set_block_gap(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.block_gap =
-            (BLOCK_GAP_MIN + fraction * (BLOCK_GAP_MAX - BLOCK_GAP_MIN)).round();
+    fn set_block_gap(&mut self, gap: f32, cx: &mut Context<Self>) {
+        self.config.block_gap = gap;
         cx.notify();
     }
 
-    fn set_outline_width(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.outline_width =
-            (OUTLINE_W_MIN + fraction * (OUTLINE_W_MAX - OUTLINE_W_MIN)).round();
+    fn set_outline_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        self.config.outline_width = width;
         cx.notify();
     }
 
@@ -1160,7 +1173,9 @@ impl SpectrumPanel {
     }
 
     /// One log-frequency bounds slider: the shared scalar slider with the
-    /// Hz readout alongside.
+    /// Hz readout alongside, click-to-type like the rest. The readout
+    /// switches to kHz up top, but the input is always plain Hz, so the
+    /// seed drops the unit and `hz_to_frac` reads what's typed straight.
     fn freq_slider(
         &self,
         scrub: &ScrubState,
@@ -1168,7 +1183,16 @@ impl SpectrumPanel {
         apply: fn(&mut Self, f32, &mut Context<Self>),
         cx: &mut Context<Self>,
     ) -> Div {
-        panel::value_slider(scrub, hz_to_frac(hz), fmt_hz(hz), apply, cx)
+        panel::value_slider_edit(
+            scrub,
+            &self.value_edit,
+            hz_to_frac(hz),
+            fmt_hz(hz),
+            format!("{hz:.0}"),
+            hz_to_frac,
+            apply,
+            cx,
+        )
     }
 
     /// The panel's own dropdown entries: a Display flyout of the toggles the
@@ -1336,10 +1360,11 @@ impl PanelSettings for SpectrumPanel {
             .child(setting_row(
                 "Bar Width",
                 Some("How thick each bar draws, thinner bars fit more bands"),
-                panel::value_slider(
+                settings_ui::scalar(
                     &self.bar_w_scrub,
-                    (bar_w - BAR_W_MIN) / (BAR_W_MAX - BAR_W_MIN),
-                    format!("{bar_w:.0} px"),
+                    &self.value_edit,
+                    bar_w,
+                    settings_ui::span(BAR_W_MIN, BAR_W_MAX, " px"),
                     Self::set_bar_width,
                     cx,
                 ),
@@ -1347,10 +1372,11 @@ impl PanelSettings for SpectrumPanel {
             .child(setting_row(
                 "Bar Gap",
                 Some("Space between bars, wider gaps fit fewer bars"),
-                panel::value_slider(
+                settings_ui::scalar(
                     &self.bar_gap_scrub,
-                    (bar_gap - BAR_GAP_MIN) / (BAR_GAP_MAX - BAR_GAP_MIN),
-                    format!("{bar_gap:.0} px"),
+                    &self.value_edit,
+                    bar_gap,
+                    settings_ui::span(BAR_GAP_MIN, BAR_GAP_MAX, " px"),
                     Self::set_bar_gap,
                     cx,
                 ),
@@ -1359,10 +1385,11 @@ impl PanelSettings for SpectrumPanel {
                 d.child(setting_row(
                     "Block Height",
                     Some("How tall each cell in a stack draws"),
-                    panel::value_slider(
+                    settings_ui::scalar(
                         &self.block_h_scrub,
-                        (block_h - BLOCK_H_MIN) / (BLOCK_H_MAX - BLOCK_H_MIN),
-                        format!("{block_h:.0} px"),
+                        &self.value_edit,
+                        block_h,
+                        settings_ui::span(BLOCK_H_MIN, BLOCK_H_MAX, " px"),
                         Self::set_block_height,
                         cx,
                     ),
@@ -1370,10 +1397,11 @@ impl PanelSettings for SpectrumPanel {
                 .child(setting_row(
                     "Block Gap",
                     Some("The seam between cells in a stack"),
-                    panel::value_slider(
+                    settings_ui::scalar(
                         &self.block_gap_scrub,
-                        (block_gap - BLOCK_GAP_MIN) / (BLOCK_GAP_MAX - BLOCK_GAP_MIN),
-                        format!("{block_gap:.0} px"),
+                        &self.value_edit,
+                        block_gap,
+                        settings_ui::span(BLOCK_GAP_MIN, BLOCK_GAP_MAX, " px"),
                         Self::set_block_gap,
                         cx,
                     ),
@@ -1476,10 +1504,11 @@ impl PanelSettings for SpectrumPanel {
                     d.child(setting_row(
                         "Outline Width",
                         Some("Stroke thickness of the hollow bars"),
-                        panel::value_slider(
+                        settings_ui::scalar(
                             &self.outline_w_scrub,
-                            (outline_w - OUTLINE_W_MIN) / (OUTLINE_W_MAX - OUTLINE_W_MIN),
-                            format!("{outline_w:.0} px"),
+                            &self.value_edit,
+                            outline_w,
+                            settings_ui::span(OUTLINE_W_MIN, OUTLINE_W_MAX, " px"),
                             Self::set_outline_width,
                             cx,
                         ),
@@ -1513,10 +1542,13 @@ impl PanelSettings for SpectrumPanel {
             .child(setting_row(
                 "Cap Gravity",
                 Some("How hard the peak marks fall once the band drops away"),
-                panel::value_slider(
+                panel::value_slider_edit(
                     &self.gravity_scrub,
+                    &self.value_edit,
                     (gravity / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
                     format!("{gravity:.2}"),
+                    format!("{gravity:.2}"),
+                    |v| (v / GRAVITY_MIN).ln() / (GRAVITY_MAX / GRAVITY_MIN).ln(),
                     Self::set_gravity,
                     cx,
                 ),

@@ -120,6 +120,14 @@ fn value_label(field: FilterField, value: &str) -> String {
     }
 }
 
+/// The query text that pins one field to an exact value, the `field:"value"`
+/// form. What a faceted jump writes, and what the metadata panel's clickable
+/// values write straight to the shared query. Quoted so a value with spaces
+/// stays one term.
+pub fn field_term(field: &str, value: &str) -> String {
+    format!("{field}:\"{value}\"")
+}
+
 /// The active-filter chips: one removable chip per picked value in the
 /// shared filter, then a Clear that drops the lot. Returns None on an empty
 /// filter so a host only spends the space when there's a filter to show.
@@ -482,7 +490,7 @@ pub trait QueryFilter: Sized + 'static {
         if value.is_empty() {
             return;
         }
-        let query = format!("{field}:\"{value}\"");
+        let query = field_term(field, value);
         match self.query_source() {
             QuerySource::Global => {
                 if !self.shared_query().read(cx).has_box() {

@@ -22,6 +22,7 @@ use crate::panel::{
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
 use crate::player::{fmt_time, observe_view};
+use crate::settings::ui as settings_ui;
 
 use super::transport_panel;
 
@@ -253,6 +254,8 @@ pub struct TrackInfoPanel {
     delay_scrub: ScrubState,
     /// The settings page's swap dwell slider strip.
     swap_scrub: ScrubState,
+    /// The one readout being typed into across the settings sliders.
+    value_edit: panel::ValueEdit,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -283,6 +286,7 @@ impl TrackInfoPanel {
             speed_scrub: ScrubState::default(),
             delay_scrub: ScrubState::default(),
             swap_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
@@ -296,23 +300,21 @@ impl TrackInfoPanel {
         menu
     }
 
-    /// Store the speed slider's fraction as a pace inside the range.
-    fn set_marquee_speed(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.marquee_speed =
-            MARQUEE_SPEED_MIN + fraction * (MARQUEE_SPEED_MAX - MARQUEE_SPEED_MIN);
+    /// Store the crawl pace, pixels per second.
+    fn set_marquee_speed(&mut self, speed: f32, cx: &mut Context<Self>) {
+        self.config.marquee_speed = speed;
         cx.notify();
     }
 
-    /// Store the delay slider's fraction as seconds inside the range.
-    fn set_marquee_delay(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.marquee_delay =
-            MARQUEE_DELAY_MIN + fraction * (MARQUEE_DELAY_MAX - MARQUEE_DELAY_MIN);
+    /// Store the end rest, seconds.
+    fn set_marquee_delay(&mut self, delay: f32, cx: &mut Context<Self>) {
+        self.config.marquee_delay = delay;
         cx.notify();
     }
 
-    /// Store the dwell slider's fraction as seconds inside the range.
-    fn set_swap_secs(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        self.config.swap_secs = SWAP_SECS_MIN + fraction * (SWAP_SECS_MAX - SWAP_SECS_MIN);
+    /// Store the swap dwell, seconds.
+    fn set_swap_secs(&mut self, secs: f32, cx: &mut Context<Self>) {
+        self.config.swap_secs = secs;
         cx.notify();
     }
 
@@ -367,18 +369,18 @@ impl PanelSettings for TrackInfoPanel {
     }
 
     fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let speed = self
-            .config
-            .marquee_speed
-            .clamp(MARQUEE_SPEED_MIN, MARQUEE_SPEED_MAX);
-        let speed_fraction = (speed - MARQUEE_SPEED_MIN) / (MARQUEE_SPEED_MAX - MARQUEE_SPEED_MIN);
-        let delay = self
-            .config
-            .marquee_delay
-            .clamp(MARQUEE_DELAY_MIN, MARQUEE_DELAY_MAX);
-        let delay_fraction = (delay - MARQUEE_DELAY_MIN) / (MARQUEE_DELAY_MAX - MARQUEE_DELAY_MIN);
-        let dwell = self.config.swap_secs.clamp(SWAP_SECS_MIN, SWAP_SECS_MAX);
-        let dwell_fraction = (dwell - SWAP_SECS_MIN) / (SWAP_SECS_MAX - SWAP_SECS_MIN);
+        let speed = self.config.marquee_speed.clamp(
+            MARQUEE_SPEED_MIN,
+            settings_ui::ceiling(MARQUEE_SPEED_MIN, MARQUEE_SPEED_MAX),
+        );
+        let delay = self.config.marquee_delay.clamp(
+            MARQUEE_DELAY_MIN,
+            settings_ui::ceiling(MARQUEE_DELAY_MIN, MARQUEE_DELAY_MAX),
+        );
+        let dwell = self.config.swap_secs.clamp(
+            SWAP_SECS_MIN,
+            settings_ui::ceiling(SWAP_SECS_MIN, SWAP_SECS_MAX),
+        );
         Some(
             div()
                 .flex()
@@ -406,10 +408,11 @@ impl PanelSettings for TrackInfoPanel {
                     d.child(panel::setting_row(
                         "Speed",
                         Some("How fast the line crawls"),
-                        panel::value_slider(
+                        settings_ui::scalar(
                             &self.speed_scrub,
-                            speed_fraction,
-                            format!("{speed:.0} px/s"),
+                            &self.value_edit,
+                            speed,
+                            settings_ui::span(MARQUEE_SPEED_MIN, MARQUEE_SPEED_MAX, " px/s"),
                             Self::set_marquee_speed,
                             cx,
                         ),
@@ -419,10 +422,12 @@ impl PanelSettings for TrackInfoPanel {
                     d.child(panel::setting_row(
                         "Delay",
                         Some("How long the line rests at each end before moving again"),
-                        panel::value_slider(
+                        settings_ui::scalar(
                             &self.delay_scrub,
-                            delay_fraction,
-                            format!("{delay:.1} s"),
+                            &self.value_edit,
+                            delay,
+                            settings_ui::span(MARQUEE_DELAY_MIN, MARQUEE_DELAY_MAX, " s")
+                                .decimals(1),
                             Self::set_marquee_delay,
                             cx,
                         ),
@@ -445,10 +450,11 @@ impl PanelSettings for TrackInfoPanel {
                     d.child(panel::setting_row(
                         "Swap every",
                         Some("How long each piece sits before the fade"),
-                        panel::value_slider(
+                        settings_ui::scalar(
                             &self.swap_scrub,
-                            dwell_fraction,
-                            format!("{dwell:.0} s"),
+                            &self.value_edit,
+                            dwell,
+                            settings_ui::span(SWAP_SECS_MIN, SWAP_SECS_MAX, " s"),
                             Self::set_swap_secs,
                             cx,
                         ),
@@ -529,10 +535,10 @@ impl TrackInfoPanel {
 
         // Mirror the configured rest before anything refills a hold this
         // frame.
-        self.marquee.delay = self
-            .config
-            .marquee_delay
-            .clamp(MARQUEE_DELAY_MIN, MARQUEE_DELAY_MAX);
+        self.marquee.delay = self.config.marquee_delay.clamp(
+            MARQUEE_DELAY_MIN,
+            settings_ui::ceiling(MARQUEE_DELAY_MIN, MARQUEE_DELAY_MAX),
+        );
 
         // A fresh track starts every cycle over: crawl home, swap back
         // to the heading.
@@ -603,7 +609,10 @@ impl TrackInfoPanel {
     /// cycle never settles, so it keeps its own frames running.
     fn swap_cycle(&mut self, window: &mut Window) -> (bool, f32) {
         window.request_animation_frame();
-        let dwell = self.config.swap_secs.clamp(SWAP_SECS_MIN, SWAP_SECS_MAX);
+        let dwell = self.config.swap_secs.clamp(
+            SWAP_SECS_MIN,
+            settings_ui::ceiling(SWAP_SECS_MIN, SWAP_SECS_MAX),
+        );
         // Smoothstepped so the fades ease instead of snapping.
         let smooth = |u: f32| u * u * (3.0 - 2.0 * u);
         if self.config.marquee == MarqueeMode::Scroll {
@@ -670,10 +679,10 @@ impl TrackInfoPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let speed = self
-            .config
-            .marquee_speed
-            .clamp(MARQUEE_SPEED_MIN, MARQUEE_SPEED_MAX);
+        let speed = self.config.marquee_speed.clamp(
+            MARQUEE_SPEED_MIN,
+            settings_ui::ceiling(MARQUEE_SPEED_MIN, MARQUEE_SPEED_MAX),
+        );
         // Both come off the last layout and start at zero, so a fresh
         // panel sits still until it knows better.
         let container = f32::from(self.marquee.handle.bounds().size.width);

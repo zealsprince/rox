@@ -6,8 +6,8 @@
 //! with each window; only the shell lives here.
 
 use gpui::{
-    canvas, div, prelude::*, px, svg, AnyElement, App, Context, Div, MouseButton, MouseDownEvent,
-    Pixels, SharedString, Window,
+    div, prelude::*, px, svg, AnyElement, App, Context, Div, MouseButton, MouseDownEvent, Pixels,
+    SharedString, Window,
 };
 
 use crate::assets::icons;
@@ -49,9 +49,6 @@ pub fn checkbox(on: bool) -> Div {
 
 /// The sidebar's width, room for a page name and no more.
 pub const SIDEBAR_W: Pixels = px(160.);
-
-/// The scalar sliders' strip width; the percent readout rides beside it.
-pub const SLIDER_W: Pixels = px(140.);
 
 /// The narrowest a color cell renders whole: the swatch, its gap, and
 /// the longest role label.
@@ -267,9 +264,105 @@ pub fn icon_button(
         )
 }
 
-/// How far past a frame slider's top a typed value may reach: the strip
-/// covers the sensible everyday range, the input covers conviction.
-pub const FRAME_OVER: f32 = 4.0;
+/// How far past a strip's top a typed value may reach, as a multiple of
+/// the span: the strip covers the sensible everyday range, the input
+/// covers conviction.
+pub const OVER: f32 = 4.0;
+
+/// A scalar knob's span and how its number reads: the range the strip
+/// scrubs across, the suffix trailing the value (its leading space
+/// included, so `" px"` stands off the number and `"%"` glues to it), the
+/// decimals the readout and the landed value keep, and how far a typed
+/// value may run past the top.
+#[derive(Clone, Copy)]
+pub struct Span {
+    min: f32,
+    max: f32,
+    unit: &'static str,
+    decimals: usize,
+    over: f32,
+}
+
+/// The highest a typed value may reach over a strip running `min` to
+/// `max`. What a saved knob has to be read back inside: folded to the
+/// strip's own top on load, every typed value would drop the moment the
+/// app restarts.
+pub fn ceiling(min: f32, max: f32) -> f32 {
+    min + (max - min) * OVER
+}
+
+/// A span from `min` to `max` reading in whole `unit`s, with the typed
+/// headroom a soft ceiling gets. [`Span::decimals`] and [`Span::hard`]
+/// refine it.
+pub fn span(min: f32, max: f32, unit: &'static str) -> Span {
+    Span {
+        min,
+        max,
+        unit,
+        decimals: 0,
+        over: OVER,
+    }
+}
+
+impl Span {
+    /// Keep `n` decimals, in the readout and in the value that lands.
+    pub fn decimals(mut self, n: usize) -> Self {
+        self.decimals = n;
+        self
+    }
+
+    /// The strip's range is the law rather than a reach: a typed value
+    /// clamps to it. For the knobs whose top means something, a full
+    /// percent or a circle, instead of a comfortable ceiling.
+    pub fn hard(mut self) -> Self {
+        self.over = 1.0;
+        self
+    }
+
+    /// Where `value` rides the strip. Values past the top pin it full;
+    /// the readout still reads the real number.
+    fn fraction(&self, value: f32) -> f32 {
+        self.unclamped(value).clamp(0.0, 1.0)
+    }
+
+    /// The typed value's place on the strip, past the top included: the
+    /// input's own headroom is applied downstream, against `over`.
+    fn unclamped(&self, value: f32) -> f32 {
+        (value - self.min) / (self.max - self.min)
+    }
+
+    /// The value a strip fraction stands for, rounded to the decimals the
+    /// readout shows so what lands is what reads.
+    fn value(&self, fraction: f32) -> f32 {
+        let step = 10f32.powi(self.decimals as i32);
+        ((self.min + fraction * (self.max - self.min)) * step).round() / step
+    }
+}
+
+/// A scalar setting's control: the strip scrubbing its span with the
+/// readout beside it doubling as an input. Click the number, type, Enter.
+/// `value` and what `apply` receives are both in the setting's own unit,
+/// so no caller maps a fraction by hand.
+pub fn scalar<P: 'static>(
+    scrub: &ScrubState,
+    edit: &panel::ValueEdit,
+    value: f32,
+    span: Span,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    panel::value_slider_edit_over(
+        scrub,
+        edit,
+        span.fraction(value),
+        format!("{:.*}{}", span.decimals, value, span.unit),
+        format!("{:.*}", span.decimals, value),
+        span.over,
+        move |typed| span.unclamped(typed),
+        move |this, fraction, cx| apply(this, span.value(fraction), cx),
+        cx,
+    )
+}
 
 /// A percent slider whose readout doubles as an input: click, type,
 /// Enter. Percent knobs stay bounded at 100; the strip's range is the law
@@ -291,74 +384,6 @@ pub fn slider_edit<P: 'static>(
         apply,
         cx,
     )
-}
-
-/// A slider with the readout text exposed, for values whose natural
-/// unit is not a percent (a pixel size, a count). `value` stays the 0 to
-/// 1 strip fraction; the caller maps it to its range in `apply`.
-pub fn slider_labeled<P: 'static>(
-    scrub: &ScrubState,
-    value: f32,
-    readout: String,
-    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
-    cx: &mut Context<P>,
-) -> Div {
-    let entity = cx.entity();
-    let strip = div()
-        .w(SLIDER_W)
-        .h(tokens::CONTROL_H)
-        .flex_none()
-        .cursor_pointer()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener({
-                let scrub = scrub.clone();
-                let apply = apply.clone();
-                move |this: &mut P, event: &MouseDownEvent, _, cx| {
-                    scrub.begin();
-                    if let Some(fraction) = scrub.fraction(event.position.x) {
-                        apply(this, fraction, cx);
-                    }
-                    cx.notify();
-                }
-            }),
-        )
-        .child(
-            canvas(
-                {
-                    let scrub = scrub.clone();
-                    move |bounds, _, _| scrub.set_bounds(bounds)
-                },
-                {
-                    let scrub = scrub.clone();
-                    move |bounds, _, window, _| {
-                        panel::paint_slider(value, false, bounds, window);
-                        panel::scrub_on_paint(&scrub, window, {
-                            let entity = entity.clone();
-                            let apply = apply.clone();
-                            move |fraction, cx| {
-                                entity.update(cx, |this, cx| apply(this, fraction, cx));
-                            }
-                        });
-                    }
-                },
-            )
-            .size_full(),
-        );
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(tokens::SPACE_SM)
-        .child(strip)
-        .child(
-            div()
-                .w(px(40.))
-                .flex_none()
-                .text_center()
-                .text_color(palette::text_muted())
-                .child(readout),
-        )
 }
 
 /// One cell of a color grid: the swatch control with its role label
@@ -423,4 +448,57 @@ pub fn role_grid(columns: usize, mut cell: impl FnMut(usize) -> AnyElement) -> D
         i = end;
     }
     body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ceiling, span, OVER};
+
+    /// A number typed into a readout comes back as itself: the strip
+    /// fraction it maps to lands on the same value, inside the range and
+    /// out in the input's headroom.
+    #[test]
+    fn typed_values_round_trip_through_the_strip() {
+        let px = span(0., 24., " px");
+        for typed in [0., 1., 12., 24., 60., 96.] {
+            assert_eq!(px.value(px.unclamped(typed)), typed);
+        }
+
+        let offset = span(18., 72., " px");
+        for typed in [18., 30., 72., 200.] {
+            assert_eq!(offset.value(offset.unclamped(typed)), typed);
+        }
+
+        let tenths = span(0.5, 4., " s").decimals(1);
+        for typed in [0.5, 1.4, 4.0, 9.3] {
+            assert_eq!(tenths.value(tenths.unclamped(typed)), typed);
+        }
+    }
+
+    /// The strip pins full past its top while the readout keeps the real
+    /// number, and a value under the floor pins empty.
+    #[test]
+    fn the_strip_pins_at_its_ends() {
+        let px = span(0., 24., " px");
+        assert_eq!(px.fraction(96.), 1.0);
+        assert_eq!(px.fraction(24.), 1.0);
+        assert_eq!(px.fraction(-8.), 0.0);
+    }
+
+    /// The read-back ceiling matches the headroom the input actually
+    /// reaches, so nothing typed is folded away on the next load.
+    #[test]
+    fn the_ceiling_is_the_input_headroom() {
+        let px = span(18., 72., " px");
+        assert_eq!(ceiling(18., 72.), px.value(OVER));
+        assert_eq!(ceiling(0., 24.), 96.);
+    }
+
+    /// A hard span holds the input to the strip's own top.
+    #[test]
+    fn hard_spans_stop_at_the_top() {
+        let percent = span(0., 100., "%").hard();
+        assert_eq!(percent.over, 1.0);
+        assert_eq!(percent.value(percent.over), 100.);
+    }
 }

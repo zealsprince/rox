@@ -1375,6 +1375,8 @@ pub struct LibraryPanel {
     header_gap_above_scrub: ScrubState,
     header_gap_below: f32,
     header_gap_below_scrub: ScrubState,
+    /// The one readout being typed into across the settings sliders.
+    value_edit: panel::ValueEdit,
     /// The header rows' cover tile knob; the delegate mirrors it for the
     /// header renders, the config dump carries it.
     header_art: bool,
@@ -1579,6 +1581,7 @@ impl LibraryPanel {
             header_gap_above_scrub: ScrubState::default(),
             header_gap_below,
             header_gap_below_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             header_art: config.header_art,
             header_flush: config.header_flush,
             header_compact,
@@ -2777,19 +2780,11 @@ impl panel::PanelSettings for LibraryPanel {
     /// the View page keeps what shows (columns, search).
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let rounding = self.art_rounding;
-        let fraction = (rounding / ART_ROUNDING_MAX).clamp(0., 1.);
         let row_height = self.row_height;
-        let row_fraction =
-            ((row_height - ROW_HEIGHT_MIN) / (ROW_HEIGHT_MAX - ROW_HEIGHT_MIN)).clamp(0., 1.);
         let head_height = self.head_height;
-        let head_fraction =
-            ((head_height - ROW_HEIGHT_MIN) / (HEAD_HEIGHT_MAX - ROW_HEIGHT_MIN)).clamp(0., 1.);
         let gap_above = self.header_gap_above;
-        let gap_above_fraction = (gap_above / HEAD_GAP_MAX).clamp(0., 1.);
         let gap_below = self.header_gap_below;
-        let gap_below_fraction = (gap_below / HEAD_GAP_MAX).clamp(0., 1.);
         let art_margin = self.art_margin;
-        let art_margin_fraction = (art_margin / ART_MARGIN_MAX).clamp(0., 1.);
         let header_mode = self.headers;
         let headers = div()
             .flex()
@@ -2828,16 +2823,12 @@ impl panel::PanelSettings for LibraryPanel {
                 .child(panel::setting_row(
                     "Line Height",
                     Some("One header line; blocks take the rows they need, free of the track rows"),
-                    settings_ui::slider_labeled(
+                    settings_ui::scalar(
                         &self.head_scrub,
-                        head_fraction,
-                        format!("{head_height:.0} px"),
-                        |this: &mut Self, fraction, cx| {
-                            let value = (ROW_HEIGHT_MIN
-                                + fraction * (HEAD_HEIGHT_MAX - ROW_HEIGHT_MIN))
-                                .round();
-                            this.set_head_height(value, cx);
-                        },
+                        &self.value_edit,
+                        head_height,
+                        settings_ui::span(ROW_HEIGHT_MIN, HEAD_HEIGHT_MAX, " px"),
+                        Self::set_head_height,
                         cx,
                     ),
                 ))
@@ -2861,28 +2852,24 @@ impl panel::PanelSettings for LibraryPanel {
                 .child(panel::setting_row(
                     "Gap Above",
                     Some("Open space over each header block; the list shows through"),
-                    settings_ui::slider_labeled(
+                    settings_ui::scalar(
                         &self.header_gap_above_scrub,
-                        gap_above_fraction,
-                        format!("{gap_above:.0} px"),
-                        |this: &mut Self, fraction, cx| {
-                            let value = (fraction * HEAD_GAP_MAX).round();
-                            this.set_header_gap_above(value, cx);
-                        },
+                        &self.value_edit,
+                        gap_above,
+                        settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                        Self::set_header_gap_above,
                         cx,
                     ),
                 ))
                 .child(panel::setting_row(
                     "Gap Below",
                     Some("The same under the block, before its tracks"),
-                    settings_ui::slider_labeled(
+                    settings_ui::scalar(
                         &self.header_gap_below_scrub,
-                        gap_below_fraction,
-                        format!("{gap_below:.0} px"),
-                        |this: &mut Self, fraction, cx| {
-                            let value = (fraction * HEAD_GAP_MAX).round();
-                            this.set_header_gap_below(value, cx);
-                        },
+                        &self.value_edit,
+                        gap_below,
+                        settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                        Self::set_header_gap_below,
                         cx,
                     ),
                 ))
@@ -2965,16 +2952,12 @@ impl panel::PanelSettings for LibraryPanel {
                         .child(panel::setting_row(
                             "Row Height",
                             Some("The track rows, scaled with the app font like the text"),
-                            settings_ui::slider_labeled(
+                            settings_ui::scalar(
                                 &self.row_scrub,
-                                row_fraction,
-                                format!("{row_height:.0} px"),
-                                |this: &mut Self, fraction, cx| {
-                                    let value = (ROW_HEIGHT_MIN
-                                        + fraction * (ROW_HEIGHT_MAX - ROW_HEIGHT_MIN))
-                                        .round();
-                                    this.set_row_height(value, cx);
-                                },
+                                &self.value_edit,
+                                row_height,
+                                settings_ui::span(ROW_HEIGHT_MIN, ROW_HEIGHT_MAX, " px"),
+                                Self::set_row_height,
                                 cx,
                             ),
                         ))
@@ -3014,12 +2997,12 @@ impl panel::PanelSettings for LibraryPanel {
                         .child(panel::setting_row(
                             "Art Rounding",
                             Some("Round the album headers' cover corners"),
-                            settings_ui::slider_labeled(
+                            settings_ui::scalar(
                                 &self.art_scrub,
-                                fraction,
-                                format!("{rounding:.0} px"),
-                                |this: &mut Self, fraction, cx| {
-                                    let value = (fraction * ART_ROUNDING_MAX).round();
+                                &self.value_edit,
+                                rounding,
+                                settings_ui::span(0., ART_ROUNDING_MAX, " px"),
+                                |this: &mut Self, value, cx| {
                                     this.art_rounding = value;
                                     // The delegate mirrors it for the tile render,
                                     // the heights' route.
@@ -3044,14 +3027,12 @@ impl panel::PanelSettings for LibraryPanel {
                         .child(panel::setting_row(
                             "Art Margin",
                             Some("Inset the tile inside the block; it shrinks to keep the square"),
-                            settings_ui::slider_labeled(
+                            settings_ui::scalar(
                                 &self.art_margin_scrub,
-                                art_margin_fraction,
-                                format!("{art_margin:.0} px"),
-                                |this: &mut Self, fraction, cx| {
-                                    let value = (fraction * ART_MARGIN_MAX).round();
-                                    this.set_art_margin(value, cx);
-                                },
+                                &self.value_edit,
+                                art_margin,
+                                settings_ui::span(0., ART_MARGIN_MAX, " px"),
+                                Self::set_art_margin,
                                 cx,
                             ),
                         )),

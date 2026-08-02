@@ -370,7 +370,10 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
             .unwrap_or(&row.artist)
             .to_string();
         row.album = text(tag.album());
-        row.genre = text(tag.genre());
+        // Every genre item, joined to the "; " list form: Vorbis carries
+        // multiples as repeated GENRE comments, ID3v2.4 as one
+        // null-separated TCON, and lofty hands both over as separate items.
+        row.genre = crate::genre::join(tag.get_strings(lofty::tag::ItemKey::Genre));
         row.year = tag.date().map(|d| d.year).unwrap_or(0);
         row.disc_no = tag.disk().unwrap_or(0) as u16;
         row.track_no = tag.track().unwrap_or(0) as u16;
@@ -517,6 +520,35 @@ mod tests {
         assert_eq!(combined, 75);
         assert_eq!(standalone, 75);
         assert_eq!(combined, standalone);
+    }
+
+    /// A file carrying multiple genre values - the writer lays them down
+    /// as native multiples - scans as the one "; " list, not just the
+    /// first value.
+    #[test]
+    fn multi_genre_scans_joined() {
+        let dir = std::env::temp_dir().join("rox-scanner-multi-genre");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut audio = Vec::new();
+        for frame in 0..3u32 {
+            audio.extend([0xFF, 0xFB, 0x90, 0x00]);
+            audio.extend((0..413u32).map(|i| ((frame * 413 + i) * 7 % 251) as u8));
+        }
+        let path = dir.join("track.mp3");
+        std::fs::write(&path, &audio).unwrap();
+        writer::commit(
+            &path,
+            &[Change {
+                field: Field::Genre,
+                value: Some("Electronic; Ambient".into()),
+            }],
+        )
+        .unwrap();
+
+        let row = read_one(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(row.genre, "Electronic; Ambient");
     }
 
     /// A rescan drops the rows for files deleted from disk, keeps the ones

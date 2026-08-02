@@ -5,6 +5,8 @@
 //! reused these modules for its harness (git history, commit bd22dc1).
 
 pub mod art;
+pub mod genre;
+pub mod genre_meta;
 pub mod hash;
 pub mod listens;
 pub mod lyrics;
@@ -31,6 +33,13 @@ pub use rusqlite;
 /// so a commit through the writer rewrites such a tag without the frame.
 pub(crate) fn parse_opts() -> lofty::config::ParseOptions {
     lofty::config::ParseOptions::new().parsing_mode(lofty::config::ParsingMode::Relaxed)
+}
+
+/// Whether two field values match under the library's case rule: exact
+/// when `fold` is off, case-insensitive when on. The exact check runs
+/// first so folding costs nothing on identical strings.
+pub fn value_eq(a: &str, b: &str, fold: bool) -> bool {
+    a == b || (fold && a.to_lowercase() == b.to_lowercase())
 }
 
 /// One track row as it crosses scanner -> SQLite -> projection.

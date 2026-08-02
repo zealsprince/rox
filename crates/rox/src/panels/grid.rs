@@ -48,9 +48,9 @@ use crate::thumbs::Thumb;
 
 /// The tile size knob's range: how wide a tile wants to be, in px. The
 /// actual edge divides the panel width evenly so the grid runs edge to
-/// edge with no slack column. The top of the range stays at the stored
-/// thumbnail's long side, so no setting upscales past what the store
-/// keeps.
+/// edge with no slack column. The strip's top sits at the stored
+/// thumbnail's long side, so scrubbing never upscales past what the store
+/// keeps; a typed size can, and goes soft for it.
 const TILE_MIN: f32 = 96.;
 const TILE_MAX: f32 = 256.;
 
@@ -120,7 +120,8 @@ pub struct GridConfig {
     /// long-standing shape.
     #[serde(default = "default_true")]
     pub vertical: bool,
-    /// The preferred tile edge in px, within [`TILE_MIN`]..[`TILE_MAX`].
+    /// The preferred tile edge in px. The strip picks inside
+    /// [`TILE_MIN`]..[`TILE_MAX`]; a typed size reaches past the top.
     #[serde(default = "default_tile")]
     pub tile: f32,
     /// Scroll to the playing album when the track changes.
@@ -286,6 +287,8 @@ pub struct GridPanel {
     gap_scrub: ScrubState,
     /// The dim amount slider's scrub strip, the behavior page.
     dim_scrub: ScrubState,
+    /// The one readout being typed into across the settings sliders.
+    value_edit: panel::ValueEdit,
     /// A failed play, shown in a strip until the next one lands.
     error: Option<SharedString>,
     /// A pending box reset from a source toggle or a shared-query change;
@@ -392,6 +395,7 @@ impl GridPanel {
             rounding_scrub: ScrubState::default(),
             gap_scrub: ScrubState::default(),
             dim_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             error: None,
             resync_box: false,
             selection_ids,
@@ -1371,12 +1375,13 @@ impl PanelSettings for GridPanel {
                             d.child(setting_row(
                                 "Dim Amount",
                                 Some("How far the other covers fade; 100% hides them"),
-                                settings_ui::slider_labeled(
+                                settings_ui::scalar(
                                     &self.dim_scrub,
-                                    (self.config.dim / TILE_DIM_MAX).clamp(0., 1.),
-                                    format!("{:.0} %", self.config.dim),
-                                    |this: &mut Self, fraction, cx| {
-                                        this.config.dim = (fraction * TILE_DIM_MAX).round();
+                                    &self.value_edit,
+                                    self.config.dim,
+                                    settings_ui::span(0., TILE_DIM_MAX, "%").hard(),
+                                    |this: &mut Self, value, cx| {
+                                        this.config.dim = value;
                                         this.dim_fading = true;
                                         cx.notify();
                                     },
@@ -1421,9 +1426,7 @@ impl PanelSettings for GridPanel {
     /// rather than the theme because they shape the covers, not the
     /// panel frame.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let tile_fraction = ((self.config.tile - TILE_MIN) / (TILE_MAX - TILE_MIN)).clamp(0., 1.);
         let rounding = self.config.rounding;
-        let rounding_fraction = (rounding / TILE_ROUNDING_MAX).clamp(0., 1.);
         Some(
             settings_ui::section(
                 "Tiles",
@@ -1466,12 +1469,13 @@ impl PanelSettings for GridPanel {
                     .child(setting_row(
                         "Tile Size",
                         Some("The cover tiles' widest edge; columns split the panel width evenly"),
-                        settings_ui::slider_labeled(
+                        settings_ui::scalar(
                             &self.tile_scrub,
-                            tile_fraction,
-                            format!("{}px", self.config.tile.round() as u32),
-                            |this: &mut Self, fraction, cx| {
-                                this.config.tile = TILE_MIN + fraction * (TILE_MAX - TILE_MIN);
+                            &self.value_edit,
+                            self.config.tile,
+                            settings_ui::span(TILE_MIN, TILE_MAX, " px"),
+                            |this: &mut Self, value, cx| {
+                                this.config.tile = value;
                                 cx.notify();
                             },
                             cx,
@@ -1480,12 +1484,13 @@ impl PanelSettings for GridPanel {
                     .child(setting_row(
                         "Gap",
                         Some("Space between the covers; zero keeps the wall seamless"),
-                        settings_ui::slider_labeled(
+                        settings_ui::scalar(
                             &self.gap_scrub,
-                            (self.config.gap / TILE_GAP_MAX).clamp(0., 1.),
-                            format!("{:.0} px", self.config.gap),
-                            |this: &mut Self, fraction, cx| {
-                                this.config.gap = (fraction * TILE_GAP_MAX).round();
+                            &self.value_edit,
+                            self.config.gap,
+                            settings_ui::span(0., TILE_GAP_MAX, " px"),
+                            |this: &mut Self, value, cx| {
+                                this.config.gap = value;
                                 cx.notify();
                             },
                             cx,
@@ -1494,12 +1499,13 @@ impl PanelSettings for GridPanel {
                     .child(setting_row(
                         "Art Rounding",
                         Some("Round each cover's corners; 100% is a circle"),
-                        settings_ui::slider_labeled(
+                        settings_ui::scalar(
                             &self.rounding_scrub,
-                            rounding_fraction,
-                            format!("{:.0} %", rounding),
-                            |this: &mut Self, fraction, cx| {
-                                this.config.rounding = (fraction * TILE_ROUNDING_MAX).round();
+                            &self.value_edit,
+                            rounding,
+                            settings_ui::span(0., TILE_ROUNDING_MAX, "%").hard(),
+                            |this: &mut Self, value, cx| {
+                                this.config.rounding = value;
                                 cx.notify();
                             },
                             cx,

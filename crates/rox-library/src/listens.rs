@@ -270,6 +270,7 @@ pub fn rollup(
     by: Rollup,
     since: i64,
     limit: usize,
+    fold: bool,
 ) -> rusqlite::Result<Vec<NamePlays>> {
     let column = match by {
         Rollup::Artist => "artist",
@@ -284,6 +285,12 @@ pub fn rollup(
         Rollup::Album => "MAX(COALESCE(t.album_artist, l.artist))",
         _ => "''",
     };
+    // Genre lists re-bucket their plays onto each value, and a folded
+    // library merges case variants; either way the SQL groups are only
+    // an intermediate, so they fetch unclipped and the limit applies to
+    // the merged names below.
+    let merges = fold || matches!(by, Rollup::Genre);
+    let clip = if merges { i64::MAX } else { limit as i64 };
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT COALESCE(t.{column}, l.{column}) AS name, {sub}, COUNT(*) AS plays
          FROM listens l LEFT JOIN tracks t ON t.id = l.track_id
@@ -291,14 +298,80 @@ pub fn rollup(
          GROUP BY name
          ORDER BY plays DESC, name LIMIT ?2"
     ))?;
-    let rows = stmt.query_map([since, limit as i64], |row| {
+    let rows = stmt.query_map([since, clip], |row| {
         Ok(NamePlays {
             name: row.get(0)?,
             sub: row.get(1)?,
             plays: row.get::<_, i64>(2)? as u64,
         })
     })?;
-    rows.collect()
+    if !merges {
+        return rows.collect();
+    }
+    let groups: Vec<NamePlays> = rows.collect::<Result<_, _>>()?;
+    // Merged tally per (folded) name; the display casing and sub follow
+    // the variant with the most plays, ties to the smaller string so the
+    // list stays stable across refreshes.
+    struct Merged {
+        name: String,
+        sub: String,
+        plays: u64,
+        best: u64,
+    }
+    let mut merged: HashMap<String, Merged> = HashMap::new();
+    let mut tally = |name: &str, sub: &str, plays: u64| {
+        let key = if fold {
+            name.to_lowercase()
+        } else {
+            name.to_string()
+        };
+        let entry = merged.entry(key).or_insert_with(|| Merged {
+            name: name.to_string(),
+            sub: sub.to_string(),
+            plays: 0,
+            best: 0,
+        });
+        entry.plays += plays;
+        if plays > entry.best || (plays == entry.best && *name < *entry.name) {
+            entry.best = plays;
+            entry.name = name.to_string();
+            entry.sub = sub.to_string();
+        }
+    };
+    for group in &groups {
+        match by {
+            Rollup::Genre => {
+                // Aliases first, then dedup within one list, so "Rock;
+                // rock" under a folded library and "DnB; Drum & Bass"
+                // under an alias each count their plays once.
+                let mut parts: Vec<String> = crate::genre::split(&group.name)
+                    .map(crate::genre::resolve)
+                    .collect();
+                if fold {
+                    parts.sort_unstable_by_key(|p| p.to_lowercase());
+                    parts.dedup_by(|a, b| a.to_lowercase() == b.to_lowercase());
+                } else {
+                    parts.sort_unstable();
+                    parts.dedup();
+                }
+                for part in parts {
+                    tally(&part, "", group.plays);
+                }
+            }
+            _ => tally(&group.name, &group.sub, group.plays),
+        }
+    }
+    let mut out: Vec<NamePlays> = merged
+        .into_values()
+        .map(|m| NamePlays {
+            name: m.name,
+            sub: m.sub,
+            plays: m.plays,
+        })
+        .collect();
+    out.sort_unstable_by(|a, b| b.plays.cmp(&a.plays).then_with(|| a.name.cmp(&b.name)));
+    out.truncate(limit);
+    Ok(out)
 }
 
 /// Every track's play count in one aggregate, for the projection's
@@ -359,12 +432,41 @@ pub fn ids_for_name(
     by: Rollup,
     name: &str,
     limit: usize,
+    fold: bool,
 ) -> rusqlite::Result<Vec<i64>> {
     let column = match by {
         Rollup::Artist => "artist",
         Rollup::Album => "album",
         Rollup::Genre => "genre",
     };
+    // A genre name is one value out of the "; " lists and a folded name
+    // is a casing class, neither of which SQL equality finds; walk the
+    // rows in the same order and match in Rust. The exact artist and
+    // album lookups keep the indexed query.
+    if fold || matches!(by, Rollup::Genre) {
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT id, {column} FROM tracks
+             ORDER BY album_artist, album, disc_no, track_no"
+        ))?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, value) = row?;
+            let hit = match by {
+                Rollup::Genre => crate::genre::has(&value, name, fold),
+                _ => crate::value_eq(&value, name, fold),
+            };
+            if hit {
+                out.push(id);
+                if out.len() == limit {
+                    break;
+                }
+            }
+        }
+        return Ok(out);
+    }
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT id FROM tracks WHERE {column} = ?1
          ORDER BY album_artist, album, disc_no, track_no LIMIT ?2"
@@ -450,7 +552,7 @@ mod tests {
         assert_eq!(never.len(), 1);
         assert_eq!(never[0].title, "Two");
 
-        let genres = rollup(&conn, Rollup::Genre, 0, 10).unwrap();
+        let genres = rollup(&conn, Rollup::Genre, 0, 10, false).unwrap();
         assert_eq!(
             genres
                 .iter()
@@ -458,14 +560,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("rock", 2), ("jazz", 1)]
         );
-        let albums = rollup(&conn, Rollup::Album, 0, 10).unwrap();
+        let albums = rollup(&conn, Rollup::Album, 0, 10, false).unwrap();
         assert_eq!(
             (albums[0].name.as_str(), albums[0].sub.as_str()),
             ("First", "A"),
             "the album rollup carries the album artist"
         );
 
-        let recent_genres = rollup(&conn, Rollup::Genre, 200, 10).unwrap();
+        let recent_genres = rollup(&conn, Rollup::Genre, 200, 10, false).unwrap();
         assert_eq!(
             recent_genres
                 .iter()
@@ -479,12 +581,14 @@ mod tests {
         assert_eq!(count_since(&conn, 200).unwrap(), 2);
 
         assert_eq!(
-            ids_for_name(&conn, Rollup::Artist, "A", 10).unwrap().len(),
+            ids_for_name(&conn, Rollup::Artist, "A", 10, false)
+                .unwrap()
+                .len(),
             2,
             "a rollup name resolves to its library tracks"
         );
         assert_eq!(
-            ids_for_name(&conn, Rollup::Genre, "jazz", 10)
+            ids_for_name(&conn, Rollup::Genre, "jazz", 10, false)
                 .unwrap()
                 .len(),
             1
@@ -500,6 +604,107 @@ mod tests {
             histogram(&conn, 0, 1000, 400).unwrap(),
             [3],
             "one bucket swallows everything"
+        );
+    }
+
+    /// A "; " genre list re-buckets its plays onto each value: the rollup
+    /// splits before ranking, and the drilldown resolves a value back to
+    /// every track whose list carries it.
+    #[test]
+    fn genre_rollup_splits_lists() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "A", "First", "Rock; Shoegaze"),
+                track("/m/2.mp3", "Two", "A", "First", "Rock"),
+                track("/m/3.mp3", "Three", "B", "Second", "Shoegaze"),
+            ],
+        )
+        .unwrap();
+        listen(&conn, "/m/1.mp3", 100);
+        listen(&conn, "/m/2.mp3", 200);
+        listen(&conn, "/m/3.mp3", 300);
+        listen(&conn, "/m/3.mp3", 400);
+
+        let genres = rollup(&conn, Rollup::Genre, 0, 10, false).unwrap();
+        assert_eq!(
+            genres
+                .iter()
+                .map(|g| (g.name.as_str(), g.plays))
+                .collect::<Vec<_>>(),
+            [("Shoegaze", 3), ("Rock", 2)],
+            "the list track counts under both of its values"
+        );
+        // The limit clips the split values, not the raw list strings.
+        assert_eq!(rollup(&conn, Rollup::Genre, 0, 1, false).unwrap().len(), 1);
+
+        assert_eq!(
+            ids_for_name(&conn, Rollup::Genre, "Shoegaze", 10, false)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            ids_for_name(&conn, Rollup::Genre, "Rock; Shoegaze", 10, false)
+                .unwrap()
+                .len(),
+            0,
+            "the raw list string is not a rollup name"
+        );
+    }
+
+    /// A folded rollup merges case variants under one name displaying the
+    /// most-played casing, and the drilldown resolves across casings.
+    #[test]
+    fn folded_rollup_merges_case_variants() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "Neu!", "First", "Krautrock"),
+                track("/m/2.mp3", "Two", "neu!", "First", "krautrock"),
+            ],
+        )
+        .unwrap();
+        listen(&conn, "/m/1.mp3", 100);
+        listen(&conn, "/m/1.mp3", 200);
+        listen(&conn, "/m/2.mp3", 300);
+
+        let exact = rollup(&conn, Rollup::Artist, 0, 10, false).unwrap();
+        assert_eq!(exact.len(), 2, "exact keeps casings apart");
+
+        let artists = rollup(&conn, Rollup::Artist, 0, 10, true).unwrap();
+        assert_eq!(
+            artists
+                .iter()
+                .map(|a| (a.name.as_str(), a.plays))
+                .collect::<Vec<_>>(),
+            [("Neu!", 3)],
+            "one line, the most-played casing"
+        );
+        let genres = rollup(&conn, Rollup::Genre, 0, 10, true).unwrap();
+        assert_eq!(
+            genres
+                .iter()
+                .map(|g| (g.name.as_str(), g.plays))
+                .collect::<Vec<_>>(),
+            [("Krautrock", 3)]
+        );
+
+        assert_eq!(
+            ids_for_name(&conn, Rollup::Artist, "Neu!", 10, true)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            ids_for_name(&conn, Rollup::Artist, "Neu!", 10, false)
+                .unwrap()
+                .len(),
+            1
         );
     }
 
@@ -564,7 +769,7 @@ mod tests {
             recent[0].path, "/m/1.mp3",
             "and the snapshot path keeps the cover column resolvable"
         );
-        let artists = rollup(&conn, Rollup::Artist, 0, 10).unwrap();
+        let artists = rollup(&conn, Rollup::Artist, 0, 10, false).unwrap();
         assert_eq!(artists[0].name, "A");
     }
 }

@@ -51,6 +51,124 @@ pub fn alpha(color: Rgba, a: u8) -> Rgba {
     }
 }
 
+/// A genre's own color, the visual thread every genre surface shares:
+/// deterministic off the alias-resolved, folded name, so the same genre
+/// wears the same hue in every panel, session, and machine, and the hue
+/// survives a library growing new genres (an index-spaced scheme would
+/// reshuffle everyone on each addition). Saturation and lightness pin
+/// per theme - deep cards in dark, pastels in light - so a wall of
+/// genres reads as one system, not confetti. The untagged bucket goes
+/// neutral instead of earning a hue it didn't ask for.
+pub fn genre_color(name: &str) -> Rgba {
+    match genre_hash(name) {
+        Some(hash) => {
+            let dark = matches!(mode(), Mode::Dark);
+            let (saturation, lightness): (f32, f32) =
+                if dark { (0.42, 0.34) } else { (0.52, 0.74) };
+            // A tone step around the theme's anchor, so two genres that
+            // land in the same hue family still split light and dark.
+            let jitter = ((hash >> 9) % 16) as f32 / 16.0 * 0.12 - 0.06;
+            Rgba::from(gpui::hsla(
+                hue_of(hash),
+                saturation,
+                (lightness + jitter).clamp(0.15, 0.85),
+                1.0,
+            ))
+        }
+        None => untagged_color(),
+    }
+}
+
+/// The two stops of a genre's gradient card: the genre color and a
+/// partner drifted 25 to 60 degrees along the wheel (direction and
+/// distance off the same hash) with a small lightness step, so every
+/// genre's gradient leans its own way while the wall stays one system.
+pub fn genre_color_pair(name: &str) -> (Rgba, Rgba) {
+    let base = genre_color(name);
+    let Some(hash) = genre_hash(name) else {
+        return (base, mix(base, rgb(0x808088), 0.25));
+    };
+    let dark = matches!(mode(), Mode::Dark);
+    let (saturation, lightness): (f32, f32) = if dark { (0.42, 0.34) } else { (0.52, 0.74) };
+    // Independent bits of the hash steer the drift, so genres sharing a
+    // hue by chance still get different gradients.
+    let drift = 0.07 + ((hash >> 17) % 64) as f32 / 64.0 * 0.10;
+    let signed = if (hash >> 23) & 1 == 0 { drift } else { -drift };
+    let partner_hue = (hue_of(hash) + signed).rem_euclid(1.0);
+    // The partner steps off the base's jittered tone, not the theme
+    // anchor, so the gradient's lean stays the same size per genre.
+    let jitter = ((hash >> 9) % 16) as f32 / 16.0 * 0.12 - 0.06;
+    let step = if (hash >> 29) & 1 == 0 { 0.07 } else { -0.07 };
+    let partner = Rgba::from(gpui::hsla(
+        partner_hue,
+        saturation,
+        (lightness + jitter + step).clamp(0.15, 0.85),
+        1.0,
+    ));
+    (base, partner)
+}
+
+/// A genre's stable seed, for derived looks beyond color (the genre
+/// grid's card motifs): the same hash the hue comes from, 0 for the
+/// untagged bucket.
+pub fn genre_seed(name: &str) -> u64 {
+    genre_hash(name).unwrap_or(0)
+}
+
+/// FNV-1a over the alias-resolved, folded name, run through splitmix64's
+/// finalizer so every bit field downstream draws from well-avalanched
+/// bits (raw FNV mixes its low bits poorly on short keys). None for the
+/// untagged bucket, which never earns a hue it didn't ask for.
+///
+/// Consumers slice disjoint fields off this one hash; keep the map in
+/// one place so nothing doubles up: hue takes `% 360` over the whole
+/// word, lightness jitter bits 9-12, drift bits 17-29, placement and
+/// scale bits 33-41, symmetry 42-44, gradient angle 45-53, motif 13-16,
+/// arrangement rotation 55-59.
+/// Never take `% 8` or `% 16` of the raw value for anything: both
+/// divide 360, so such a field would be the hue's own low bits and
+/// same-hue genres would share it (the correlation that once stamped
+/// same-color cards with the same motif).
+fn genre_hash(name: &str) -> Option<u64> {
+    let key = rox_library::genre::resolve(name).to_lowercase();
+    if key.is_empty() {
+        return None;
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in key.bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash = (hash ^ (hash >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    hash = (hash ^ (hash >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    Some(hash ^ (hash >> 31))
+}
+
+/// The hash spread over the wheel, as gpui's fractional hue.
+fn hue_of(hash: u64) -> f32 {
+    (hash % 360) as f32 / 360.0
+}
+
+fn untagged_color() -> Rgba {
+    if matches!(mode(), Mode::Dark) {
+        rgb(0x3c3c40)
+    } else {
+        rgb(0xc8c8cc)
+    }
+}
+
+/// The text that reads on an arbitrary color: near-black over a light
+/// one, near-white over a dark one, by the color's own luminance rather
+/// than the theme, so a dim-authored light palette still gets legible
+/// cards.
+pub fn text_on(color: Rgba) -> Rgba {
+    let luminance = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
+    if luminance > 0.55 {
+        rgb(0x1c1c1e)
+    } else {
+        rgb(0xf3f3f5)
+    }
+}
+
 /// A componentwise blend between two palette colors, `t` = 0 all `a`,
 /// `t` = 1 all `b`. For animated transitions between roles.
 pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
@@ -1597,9 +1715,15 @@ fn apply(cx: &mut App) {
     colors.tab_active = scaled(palette.bg_root, opacity).into();
     colors.secondary = scaled(palette.bg_panel, opacity).into();
     colors.table_hover = scaled(palette.bg_menu, opacity).into();
-    // Tints: the table's striping and header ride on the panel's own
-    // wash, so like the palette's tint roles they thin by the square.
-    let stripe = scaled(alpha(palette.bg_panel, 0xcc), opacity * opacity);
+    // The table's striping and header sit on the panel surface, so they
+    // have to be a step above it, not the same role at a thinner alpha.
+    // Riding the tint rule (panel wash, thinned by the square) canceled
+    // out on a translucent skin: bg_panel over bg_panel at 0.3 alpha left
+    // the rows flat. Same recipe the metadata panel's rows use, the one
+    // that reads: the elevated surface at a fixed half alpha, held there
+    // as the panels thin. At full opacity it composites where the old
+    // wash did, so opaque skins look unchanged.
+    let stripe = alpha(palette.bg_elevated, 0x80);
     colors.table_even = stripe.into();
     colors.table_head = stripe.into();
     // Structural backstops always sit under a surface that already

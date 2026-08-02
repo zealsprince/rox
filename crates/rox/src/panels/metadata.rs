@@ -12,6 +12,13 @@
 //! save commits only the fields that moved against it, through the
 //! writer's atomic layer. A successful commit lands in the catalog too,
 //! so the library shows the edit without a rescan.
+//!
+//! The values that map to a query field (title, artist, album artist,
+//! album, genre, year) click through to the app-wide search, the same
+//! `field:"value"` jump the library's context menu writes, so the sheet
+//! doubles as a way into the rest of the library. A genre list splits, so
+//! a click takes the one value it landed on. The hit areas only show while
+//! a search panel is up somewhere to display the query.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,11 +37,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
-use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
+use crate::panel::{
+    self, align_row, justify, justify_v, valign_row, Align, AppState, PanelChrome, PanelSettings,
+    VAlign,
+};
 use crate::panel_settings;
 use crate::panels::library::LibraryEvent;
 use crate::player::fmt_time;
 use crate::providers;
+use crate::query::shared_query::{self, SharedQuery};
 use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
 use crate::source::{self, ResolvedTrack, TrackSource};
@@ -52,6 +63,10 @@ pub struct MetadataConfig {
     pub chrome: PanelChrome,
     pub source: TrackSource,
     pub align: Align,
+    /// Where the content sits down the panel when there's height to
+    /// spare. The sheet has always centered, so that stays the default;
+    /// the table face follows the knob too, and pins to the top with it.
+    pub valign: VAlign,
     /// The track's cover art behind the fields, dimmed under a scrim.
     pub cover: bool,
     /// How the fields lay out; see [`MetadataDisplay`].
@@ -73,6 +88,7 @@ impl Default for MetadataConfig {
             chrome: PanelChrome::default(),
             source: TrackSource::default(),
             align: Align::default(),
+            valign: VAlign::default(),
             cover: true,
             display: MetadataDisplay::default(),
             stripes: true,
@@ -158,6 +174,23 @@ const FIELDS: &[Column] = &[
         default_on: false,
     },
 ];
+
+/// The `field:` prefix a shown value searches under when it's clicked,
+/// keyed by [`FIELDS`] plus the sheet's two head rows. The rest of the
+/// sheet describes the file rather than tagging it, and the query has no
+/// prefix for those, so duration, codec, bitrate, plays, rating, and the
+/// file name stay inert text.
+fn query_field(key: &str) -> Option<&'static str> {
+    match key {
+        "title" => Some("title"),
+        "artist" => Some("artist"),
+        "album_artist" => Some("albumartist"),
+        "album" => Some("album"),
+        "genre" => Some("genre"),
+        "year" => Some("year"),
+        _ => None,
+    }
+}
 
 /// The shown track's full projection row, owned so it outlives the borrow
 /// of the library.
@@ -610,6 +643,14 @@ impl PanelSettings for MetadataPanel {
                 },
                 cx,
             ))
+            .child(valign_row(
+                self.config.valign,
+                |this: &mut Self, valign, cx| {
+                    this.config.valign = valign;
+                    cx.notify();
+                },
+                cx,
+            ))
             .child(panel::setting_row(
                 "Display",
                 Some("The title-led sheet, or a flat label and value table from the top"),
@@ -845,9 +886,65 @@ impl Panel for MetadataPanel {
     }
 }
 
+/// The value side of a row: plain truncating text, or the same text as
+/// hit areas that drive the app-wide search. `query` carries the shared
+/// query only while a search panel is up to show what a click writes;
+/// without one every follower would narrow with nothing on screen saying
+/// why, so the values render inert. `field` is the query prefix from
+/// [`query_field`], and `next_id` walks the sheet so each hit area gets
+/// an element id of its own.
+///
+/// The genre column is a "; " list, so it splits: a click picks the value
+/// it landed on rather than searching for the whole list at once.
+fn value_cell(
+    value: &str,
+    field: Option<&'static str>,
+    query: Option<&Entity<SharedQuery>>,
+    next_id: &mut usize,
+) -> Div {
+    let (Some(field), Some(query)) = (field, query) else {
+        return div().min_w_0().truncate().child(value.to_string());
+    };
+    let terms: Vec<String> = match field {
+        "genre" => rox_library::genre::split(value)
+            .map(str::to_string)
+            .collect(),
+        _ => vec![value.to_string()],
+    };
+    let mut row = div().flex().flex_row().min_w_0().overflow_hidden();
+    for (ix, term) in terms.into_iter().enumerate() {
+        if ix > 0 {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_color(palette::text_muted())
+                    .child("; "),
+            );
+        }
+        let id = *next_id;
+        *next_id += 1;
+        let query = query.clone();
+        let search = shared_query::field_term(field, &term);
+        row = row.child(
+            div()
+                .id(("metadata-value", id))
+                .min_w_0()
+                .truncate()
+                .cursor_pointer()
+                .hover(|d| d.text_color(palette::accent()))
+                .on_click(move |_, _, cx| {
+                    let search = search.clone();
+                    query.update(cx, |query, cx| query.set(search, cx));
+                })
+                .child(term),
+        );
+    }
+    row
+}
+
 /// One labeled field of the sheet: the tag's name dimmed in a fixed
 /// column, its value truncating beside it.
-fn field(label: &'static str, value: String) -> Div {
+fn field(label: &'static str, value: Div) -> Div {
     div()
         .flex()
         .flex_row()
@@ -859,14 +956,14 @@ fn field(label: &'static str, value: String) -> Div {
                 .text_color(palette::text_muted())
                 .child(label),
         )
-        .child(div().min_w_0().truncate().child(value))
+        .child(value)
 }
 
 /// One row of the table face: the label column, the value beside it,
 /// faint striping and a bottom hairline as the knobs ask, both in the
 /// library rows' colors. The stripe is translucent so the cover
 /// background keeps showing through.
-fn table_row(ix: usize, label: &'static str, value: String, stripes: bool, borders: bool) -> Div {
+fn table_row(ix: usize, label: &'static str, value: Div, stripes: bool, borders: bool) -> Div {
     div()
         .flex()
         .flex_row()
@@ -885,30 +982,34 @@ fn table_row(ix: usize, label: &'static str, value: String, stripes: bool, borde
                 .text_color(palette::text_muted())
                 .child(label),
         )
-        .child(div().min_w_0().truncate().child(value))
+        .child(value)
 }
 
-/// The scrolling frame every face sits in: pinned over the background,
-/// centering its content while it fits and scrolling once it doesn't.
-/// Plain absolute centering clips both ends when the content outgrows
-/// the panel (the title vanished first); growing the inner column to at
-/// least the frame keeps the centering honest and hands the overflow to
-/// the scroll instead.
+/// The scrolling frame every face sits in: as tall as its content, capped
+/// at the panel. Short content leaves slack the body's column hands to the
+/// vertical knob; tall content fills the panel and scrolls from the top.
+/// The placement can't live inside the scroll box, a percentage height
+/// resolves to nothing in there and the column collapses onto its content,
+/// which is why the sheet always sat at the top no matter the knob.
 fn scroll_frame(id: &'static str, align: Align, content: impl IntoElement) -> Stateful<Div> {
-    div().id(id).absolute().inset_0().overflow_y_scroll().child(
-        div()
-            .min_h_full()
-            .w_full()
-            .flex()
-            .flex_col()
-            .justify_center()
-            .map(|d| match align {
-                Align::Left => d.items_start(),
-                Align::Center => d.items_center(),
-                Align::Right => d.items_end(),
-            })
-            .child(content),
-    )
+    div()
+        .id(id)
+        .w_full()
+        .max_h_full()
+        .flex_none()
+        .overflow_y_scroll()
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .map(|d| match align {
+                    Align::Left => d.items_start(),
+                    Align::Center => d.items_center(),
+                    Align::Right => d.items_end(),
+                })
+                .child(content),
+        )
 }
 
 impl Render for MetadataPanel {
@@ -977,7 +1078,11 @@ impl MetadataPanel {
     /// while an edit is open.
     fn sheet_body(&mut self, cx: &mut Context<Self>) -> Div {
         let align = self.config.align;
-        let root = div().relative();
+        // The faces are normal-flow children of this column, so the
+        // vertical knob places them the way flexbox places any child that
+        // leaves slack. The background art layers sit absolute inside it,
+        // out of the flow.
+        let root = justify_v(div().relative().flex().flex_col(), self.config.valign);
 
         // An open edit pins its track; the source only drives the sheet
         // while nothing is being edited.
@@ -990,7 +1095,7 @@ impl MetadataPanel {
             // The source points at no track: a quiet line where the sheet
             // would sit.
             return root.child(
-                justify(div().absolute().inset_0().flex().items_center(), align)
+                justify(div().w_full().flex_none().flex(), align)
                     .p(tokens::SPACE_MD)
                     .child(div().text_color(palette::text_faint()).child("No track")),
             );
@@ -1035,9 +1140,24 @@ impl MetadataPanel {
                     .unwrap_or_else(|| path.display().to_string())
             });
 
+        // A click on a taggable value drives the app-wide search, but only
+        // while a search panel is up somewhere to show the query it writes.
+        // With no box in the tree the followers would narrow with nothing on
+        // screen saying why, so the values stay inert text instead.
+        let query = self
+            .state
+            .query
+            .read(cx)
+            .has_box()
+            .then(|| self.state.query.clone());
+        // Walks the rendered values so each hit area gets its own element id.
+        let mut hit_id = 0usize;
+
         // The shown fields in registry order, each skipped when its value
-        // is empty: absence reads cleaner than a labeled blank.
-        let mut fields: Vec<(&'static str, String)> = Vec::new();
+        // is empty: absence reads cleaner than a labeled blank. The key
+        // rides along for [`query_field`], which decides whether the value
+        // is clickable.
+        let mut fields: Vec<(&'static str, String, Option<&'static str>)> = Vec::new();
         for col in FIELDS {
             if !self.config.fields.iter().any(|k| k == col.key) {
                 continue;
@@ -1067,30 +1187,43 @@ impl MetadataPanel {
                 }),
             };
             if let Some(value) = value {
-                fields.push((col.label, value));
+                fields.push((col.label, value, query_field(col.key)));
             }
         }
         let artist = details
             .as_ref()
             .map(|d| d.artist.clone())
             .filter(|a| !a.is_empty());
+        // The title only searches when the library knows the track; for one
+        // it doesn't the line is the file name, which no tag holds.
+        let title_field = details.as_ref().and_then(|_| query_field("title"));
 
-        // The table face: title and artist fold in as rows and the list
-        // reads from the top, scrolling when the panel runs short.
+        // The table face: title and artist fold in as rows, the list sits
+        // where the vertical knob puts it, and it scrolls when the panel
+        // runs short.
         if self.config.display == MetadataDisplay::Table {
-            let mut rows: Vec<(&'static str, String)> = Vec::new();
-            rows.push(("Title", title));
+            let mut rows: Vec<(&'static str, String, Option<&'static str>)> = Vec::new();
+            rows.push(("Title", title, title_field));
             if let Some(artist) = artist {
-                rows.push(("Artist", artist));
+                rows.push(("Artist", artist, query_field("artist")));
             }
             rows.extend(fields);
             let stripes = self.config.stripes;
             let borders = self.config.row_borders;
+            let rows: Vec<Div> = rows
+                .into_iter()
+                .enumerate()
+                .map(|(ix, (label, value, field))| {
+                    let cell = value_cell(&value, field, query.as_ref(), &mut hit_id);
+                    table_row(ix, label, cell, stripes, borders)
+                })
+                .collect();
             return root.child(
                 div()
                     .id("metadata-table")
-                    .absolute()
-                    .inset_0()
+                    .w_full()
+                    .max_h_full()
+                    .flex_none()
                     .overflow_y_scroll()
                     .child(
                         div()
@@ -1098,17 +1231,32 @@ impl MetadataPanel {
                             .flex()
                             .flex_col()
                             .py(tokens::SPACE_XS)
-                            .children(rows.into_iter().enumerate().map(
-                                move |(ix, (label, value))| {
-                                    table_row(ix, label, value, stripes, borders)
-                                },
-                            )),
+                            .children(rows),
                     ),
             );
         }
 
         // The sheet: title over artist, the fields below, placed by the
-        // alignment knob and centered vertically like the cover.
+        // two alignment knobs. The cells build up front so each one gets
+        // its turn at the shared hit-id counter.
+        let title_cell = value_cell(&title, title_field, query.as_ref(), &mut hit_id)
+            .text_lg()
+            .text_color(palette::text_bright())
+            .max_w_full();
+        let artist_cell = artist.map(|artist| {
+            value_cell(&artist, query_field("artist"), query.as_ref(), &mut hit_id)
+                .text_color(palette::text_muted())
+                .max_w_full()
+        });
+        let rows: Vec<Div> = fields
+            .into_iter()
+            .map(|(label, value, search)| {
+                field(
+                    label,
+                    value_cell(&value, search, query.as_ref(), &mut hit_id),
+                )
+            })
+            .collect();
         let sheet = div()
             .max_w_full()
             .min_w_0()
@@ -1116,31 +1264,16 @@ impl MetadataPanel {
             .flex()
             .flex_col()
             .gap(px(2.))
-            .child(
-                div()
-                    .text_lg()
-                    .text_color(palette::text_bright())
-                    .max_w_full()
-                    .truncate()
-                    .child(title),
-            )
-            .when_some(artist, |d, artist| {
-                d.child(
-                    div()
-                        .text_color(palette::text_muted())
-                        .max_w_full()
-                        .truncate()
-                        .child(artist),
-                )
-            })
-            .when(!fields.is_empty(), |d| {
+            .child(title_cell)
+            .children(artist_cell)
+            .when(!rows.is_empty(), |d| {
                 d.child(
                     div()
                         .mt(tokens::SPACE_MD)
                         .flex()
                         .flex_col()
                         .gap(px(2.))
-                        .children(fields.into_iter().map(|(label, value)| field(label, value))),
+                        .children(rows),
                 )
             });
 

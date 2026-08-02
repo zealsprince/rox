@@ -11,6 +11,7 @@ pub mod drawer;
 pub mod favourite;
 pub mod filter;
 pub mod folder_tree;
+pub mod genre_grid;
 pub mod grid;
 pub mod group;
 pub mod history;

@@ -210,6 +210,11 @@ pub struct Settings {
     /// default; the settings toggle turns it off for network mounts or when
     /// the watch load is not wanted.
     pub watch_library: bool,
+    /// Whether library values differing only by case count as one: Rock
+    /// and rock become the same genre, artist, album artist, and album,
+    /// shown under the casing most tracks carry. Off keeps values exact,
+    /// today's behavior; flipping it reloads the projection.
+    pub fold_case: bool,
     /// When the library last reconciled with disk through a full scan, unix
     /// seconds. Launch catches up on edits made while the app was closed by
     /// scanning, but only when this is stale, so a quick restart does not walk
@@ -488,6 +493,21 @@ pub fn set_hide_menubar(on: bool, cx: &mut App) {
     for window in cx.windows() {
         window.update(cx, |_, window, _| window.refresh()).ok();
     }
+}
+
+/// The live case-fold flag, a static like the menubar's: row scans,
+/// rollups, and the projection load read it where a settings-file load
+/// has no place. Seeded at startup; the settings window flips it and
+/// reloads the projection, whose update repaints everything, so the
+/// setter needs no refresh of its own.
+static FOLD_CASE: AtomicBool = AtomicBool::new(false);
+
+pub fn fold_case() -> bool {
+    FOLD_CASE.load(Ordering::Relaxed)
+}
+
+pub fn set_fold_case(on: bool) {
+    FOLD_CASE.store(on, Ordering::Relaxed);
 }
 
 /// The live OS-decorations flag, a static like the menubar's. Seeded at
@@ -1139,6 +1159,7 @@ impl Default for Settings {
             library_roots: Vec::new(),
             library_root: None,
             watch_library: true,
+            fold_case: false,
             last_scan: 0,
             surface_opacity: 1.0,
             backdrop_strength: 1.0,

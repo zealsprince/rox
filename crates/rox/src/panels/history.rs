@@ -405,7 +405,10 @@ impl HistoryPanel {
             year: t.year,
             path: &t.path,
         };
-        track_matches(terms, &fields) && self.applied_filter.matches(&fields)
+        track_matches(terms, &fields)
+            && self
+                .applied_filter
+                .matches(&fields, crate::settings::fold_case())
     }
 
     /// Whether the album headings apply: on, and only in the Recent view,

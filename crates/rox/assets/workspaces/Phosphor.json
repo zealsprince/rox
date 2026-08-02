@@ -21,6 +21,7 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "anchor": true,
                           "max_width": 24.0,
                           "max_height": 24.0,
                           "align": "left"
@@ -43,6 +44,7 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "anchor": true,
                           "max_height": 24.0,
                           "chips": "inline"
                         }
@@ -64,6 +66,7 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "anchor": true,
                           "max_width": 96.0,
                           "max_height": 24.0,
                           "min_width": 96.0,

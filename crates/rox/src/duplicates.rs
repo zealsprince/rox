@@ -1141,7 +1141,7 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         store::init_schema(&conn).unwrap();
         store::insert_batch(&mut conn, rows).unwrap();
-        Projection::load_serial(&conn).unwrap()
+        Projection::load_serial(&conn, false).unwrap()
     }
 
     /// Real duplicates - same artist and title, durations within tolerance -

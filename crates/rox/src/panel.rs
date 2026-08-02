@@ -1001,6 +1001,59 @@ pub trait PanelSettings: Panel {
     }
 }
 
+/// How far a press drags before an anchored panel hands the window to the
+/// compositor. Under the slop the press stays a click for whatever control
+/// sits in the panel, so an anchor over a search box or a button row works
+/// like a hidden macOS titlebar: click to use, drag to move.
+const ANCHOR_SLOP: Pixels = px(6.);
+
+thread_local! {
+    /// The pending anchor drag: which window took the press and where it
+    /// landed. One pointer means at most one pending drag, and events
+    /// dispatch on the UI thread, so a thread local carries it.
+    static ANCHOR_ARM: std::cell::Cell<Option<(gpui::WindowId, Point<Pixels>)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Make a panel root a window-move surface. The press itself passes
+/// through untouched, in capture phase, so the click still lands on the
+/// control under it; the move starts only once the pointer clears
+/// [`ANCHOR_SLOP`], and the arm dies on release.
+fn arm_window_move(root: Div) -> Div {
+    root.cursor_grab()
+        .capture_any_mouse_down(|event, window, _| {
+            if event.button == MouseButton::Left {
+                ANCHOR_ARM.set(Some((window.window_handle().window_id(), event.position)));
+            }
+        })
+        .on_mouse_move(|event, window, cx| {
+            let Some((id, start)) = ANCHOR_ARM.get() else {
+                return;
+            };
+            // An arm from another window, or one whose release this panel
+            // never saw, dies here instead of hijacking an unrelated drag
+            // passing over.
+            if id != window.window_handle().window_id()
+                || event.pressed_button != Some(MouseButton::Left)
+            {
+                ANCHOR_ARM.set(None);
+                return;
+            }
+            if (event.position.x - start.x).abs() < ANCHOR_SLOP
+                && (event.position.y - start.y).abs() < ANCHOR_SLOP
+            {
+                return;
+            }
+            ANCHOR_ARM.set(None);
+            // The compositor owns the pointer from here; keep this move
+            // from doubling as a text-selection drag underneath.
+            cx.stop_propagation();
+            window.start_window_move();
+        })
+        .capture_any_mouse_up(|_, _, _| ANCHOR_ARM.set(None))
+        .on_mouse_up_out(MouseButton::Left, |_, _, _| ANCHOR_ARM.set(None))
+}
+
 /// Build a panel body under its palette override and keep the override
 /// active through every element phase. Building under the scope covers
 /// the style reads that resolve eagerly (`.bg(palette::x())` runs as the
@@ -1071,9 +1124,7 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
                 body
             };
             if anchor {
-                root = root
-                    .cursor_grab()
-                    .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move());
+                root = arm_window_move(root);
             }
             root.into_any_element()
         }
@@ -1428,33 +1479,6 @@ fn slider_strip<P: 'static>(
                 },
             )
             .size_full(),
-        )
-}
-
-/// One scalar's slider row: the shared slider chrome over a scrub strip,
-/// applying the strip fraction live on click and drag, the readout riding
-/// alongside. Callers map the fraction into their own range and format
-/// their own readout.
-pub fn value_slider<P: 'static>(
-    scrub: &ScrubState,
-    fraction: f32,
-    readout: String,
-    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
-    cx: &mut Context<P>,
-) -> Div {
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(tokens::SPACE_SM)
-        .child(slider_strip(scrub, fraction, apply, cx))
-        .child(
-            div()
-                .w(READOUT_W)
-                .flex_none()
-                .text_right()
-                .text_color(palette::text_muted())
-                .child(readout),
         )
 }
 
@@ -2004,6 +2028,48 @@ pub fn align_row<P: 'static>(
                 (icons::ALIGN_LEFT, Align::Left),
                 (icons::ALIGN_CENTER, Align::Center),
                 (icons::ALIGN_RIGHT, Align::Right),
+            ],
+            current,
+            on_pick,
+            cx,
+        ),
+    )
+}
+
+/// Where a panel's content sits vertically, the companion to [`Align`]
+/// for a panel that has height to spare.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VAlign {
+    Top,
+    #[default]
+    Middle,
+    Bottom,
+}
+
+/// Apply a vertical alignment along a column's main axis.
+pub fn justify_v(d: Div, align: VAlign) -> Div {
+    match align {
+        VAlign::Top => d.justify_start(),
+        VAlign::Middle => d.justify_center(),
+        VAlign::Bottom => d.justify_end(),
+    }
+}
+
+/// The vertical alignment setting row, the companion to [`align_row`].
+pub fn valign_row<P: 'static>(
+    current: VAlign,
+    on_pick: impl Fn(&mut P, VAlign, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    setting_row(
+        "Vertical Alignment",
+        Some("Where the content sits when the panel has height to spare"),
+        choices(
+            &[
+                ("Top", VAlign::Top),
+                ("Middle", VAlign::Middle),
+                ("Bottom", VAlign::Bottom),
             ],
             current,
             on_pick,

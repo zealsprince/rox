@@ -11,7 +11,7 @@ use std::sync::Arc;
 use gpui::{Context, Task, Window};
 use gpui_component::input::{CompletionProvider, InputState, Rope, RopeExt as _};
 use lsp_types::{
-    CompletionContext, CompletionItem, CompletionResponse, CompletionTextEdit, Position, TextEdit,
+    CompletionContext, CompletionItem, CompletionResponse, CompletionTextEdit, TextEdit,
 };
 
 use rox_library::projection::{Projection, QueryField, SymTable, QUERY_FIELDS};
@@ -126,7 +126,9 @@ impl FieldSuggestions {
             Field::Artist => &self.projection.artists,
             Field::AlbumArtist => &self.projection.album_artists,
             Field::Album => &self.projection.albums,
-            _ => &self.projection.genres,
+            // The split terms, not the raw symbols: a completion offers
+            // "Shoegaze", never a whole "Rock; Shoegaze" list.
+            _ => self.projection.genre_terms(),
         }
     }
 }
@@ -140,19 +142,35 @@ impl CompletionProvider for FieldSuggestions {
         _window: &mut Window,
         _cx: &mut Context<InputState>,
     ) -> Task<anyhow::Result<CompletionResponse>> {
-        let typed = text.to_string().to_lowercase();
-        // An emptied input closes the menu instead of listing everything.
-        if typed.is_empty() {
+        let full = text.to_string();
+        // A genre input holds a "; " list; complete the value being
+        // typed - the segment after the last separator - and leave the
+        // finished values ahead of it alone. Other fields complete whole.
+        let seg_start = if self.field == Field::Genre {
+            full.rfind(';').map_or(0, |i| {
+                let seg = &full[i + 1..];
+                i + 1 + (seg.len() - seg.trim_start().len())
+            })
+        } else {
+            0
+        };
+        let typed = full[seg_start..].to_lowercase();
+        // An emptied input closes the menu instead of listing everything;
+        // an empty segment after a separator lists the values from the top.
+        if typed.is_empty() && seg_start == 0 {
             return Task::ready(Ok(CompletionResponse::Array(Vec::new())));
         }
-        let whole = lsp_types::Range::new(Position::new(0, 0), text.offset_to_position(text.len()));
+        let span = lsp_types::Range::new(
+            text.offset_to_position(seg_start),
+            text.offset_to_position(text.len()),
+        );
         let items = ranked(self.table(), &typed)
             .into_iter()
             .map(|value| CompletionItem {
                 label: value.clone(),
                 filter_text: Some(value[..matched_prefix_len(value, &typed)].to_string()),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range: whole,
+                    range: span,
                     new_text: value.clone(),
                 })),
                 ..Default::default()
@@ -267,7 +285,9 @@ impl CompletionProvider for QuerySuggestions {
                 QueryField::Artist => &self.projection.artists,
                 QueryField::AlbumArtist => &self.projection.album_artists,
                 QueryField::Album => &self.projection.albums,
-                QueryField::Genre => &self.projection.genres,
+                // The split terms: `genre:` should offer "Shoegaze", and
+                // the substring match reaches it inside any "; " list.
+                QueryField::Genre => self.projection.genre_terms(),
                 QueryField::Folder => &self.projection.folders,
                 // The year column has no symbol table; suggest from the
                 // distinct year list instead. Years never carry spaces, so

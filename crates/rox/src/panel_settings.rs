@@ -36,6 +36,7 @@ use crate::panels::drawer::DrawerPanel;
 use crate::panels::favourite::FavouritePanel;
 use crate::panels::filter::FilterPanel;
 use crate::panels::folder_tree::FolderTreePanel;
+use crate::panels::genre_grid::GenreGridPanel;
 use crate::panels::grid::GridPanel;
 use crate::panels::group::GroupPanel;
 use crate::panels::history::HistoryPanel;
@@ -153,6 +154,7 @@ macro_rules! with_settings_panel {
             FilterPanel,
             GridPanel,
             ArtistGridPanel,
+            GenreGridPanel,
             ArtPanel,
             PlaylistsPanel,
             QueuePanel,
@@ -726,23 +728,19 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     // it squares the panel back off over a rounded app default; the reset
     // button is the way back to following the app.
 
-    fn set_margin(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        let value = (fraction * MARGIN_MAX).round();
+    fn set_margin(&mut self, value: f32, cx: &mut Context<Self>) {
         self.update_theme(|theme| theme.margin = Some(value), cx);
     }
 
-    fn set_padding(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        let value = (fraction * PADDING_MAX).round();
+    fn set_padding(&mut self, value: f32, cx: &mut Context<Self>) {
         self.update_theme(|theme| theme.padding = Some(value), cx);
     }
 
-    fn set_rounding(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        let value = (fraction * ROUNDING_MAX).round();
+    fn set_rounding(&mut self, value: f32, cx: &mut Context<Self>) {
         self.update_theme(|theme| theme.rounding = Some(value), cx);
     }
 
-    fn set_border(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        let value = (fraction * BORDER_MAX).round();
+    fn set_border(&mut self, value: f32, cx: &mut Context<Self>) {
         self.update_theme(|theme| theme.border = Some(value), cx);
     }
 
@@ -777,12 +775,12 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         );
     }
 
-    /// The panel font size: the strip fraction mapped onto the multiplier
-    /// range, forked as this panel's own override over the app size. The
-    /// reset below sends it back to following the app.
-    fn set_font_scale(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        let range = palette::PANEL_FONT_SCALE_MAX - palette::PANEL_FONT_SCALE_MIN;
-        let scale = palette::PANEL_FONT_SCALE_MIN + fraction * range;
+    /// The panel font size: the percent off the strip back into the
+    /// multiplier the theme carries, forked as this panel's own override
+    /// over the app size. The reset below sends it back to following the
+    /// app.
+    fn set_font_scale(&mut self, percent: f32, cx: &mut Context<Self>) {
+        let scale = percent / 100.0;
         self.update_theme(|theme| theme.font_scale = Some(scale), cx);
     }
 
@@ -795,15 +793,17 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     /// size); once the panel forks its own, a reset joins on the left,
     /// where the row grows without nudging the slider or readout.
     fn font_scale_row(&self, value: Option<f32>, cx: &mut Context<Self>) -> Div {
-        let min = palette::PANEL_FONT_SCALE_MIN;
-        let max = palette::PANEL_FONT_SCALE_MAX;
         let scale = value.unwrap_or(1.0);
-        let fraction = ((scale - min) / (max - min)).clamp(0.0, 1.0);
-        let readout = format!("{}%", (scale * 100.0).round() as i32);
-        let slider = panel::value_slider(
+        let slider = settings_ui::scalar(
             &self.font_scale_scrub,
-            fraction,
-            readout,
+            &self.value_edit,
+            scale * 100.0,
+            settings_ui::span(
+                palette::PANEL_FONT_SCALE_MIN * 100.0,
+                palette::PANEL_FONT_SCALE_MAX * 100.0,
+                "%",
+            )
+            .hard(),
             Self::set_font_scale,
             cx,
         );
@@ -839,16 +839,13 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         cx: &mut Context<Self>,
     ) -> Div {
         let shown = value.unwrap_or(inherited);
-        // Typed values may run past the strip's top, the setters take the
-        // fraction as given.
-        let slider = panel::value_slider_edit_over(
+        // The strip's top is the everyday reach, not the law: a typed
+        // value runs past it and the setters take what lands.
+        let slider = settings_ui::scalar(
             scrub,
             &self.value_edit,
-            shown / max,
-            format!("{shown:.0} px"),
-            format!("{shown:.0}"),
-            settings_ui::FRAME_OVER,
-            move |v| v / max,
+            shown,
+            settings_ui::span(0., max, " px"),
             apply,
             cx,
         );
@@ -1004,7 +1001,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             ))
             .child(panel::setting_row(
                 "Drag Anchor",
-                Some("A drag anywhere on the panel moves the window, for decorations-off layouts"),
+                Some(
+                    "A drag anywhere on the panel moves the window, while plain clicks still \
+                     land on its controls; for decorations-off layouts",
+                ),
                 panel::toggle(anchor, Self::set_panel_anchor, cx),
             ))
             // Only the composition hosts draw these, so the row would be a

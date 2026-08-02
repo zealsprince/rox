@@ -21,6 +21,7 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "anchor": true,
                           "max_width": 24.0,
                           "max_height": 24.0,
                           "align": "left"
@@ -158,6 +159,7 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "anchor": true,
                           "max_width": 128.0,
                           "max_height": 24.0,
                           "min_width": 128.0,
@@ -197,6 +199,7 @@
                   "children": [],
                   "info": {
                     "panel": {
+                      "anchor": true,
                       "max_height": 24.0,
                       "chips": "inline"
                     }
@@ -332,7 +335,11 @@
                             "panel": {
                               "source": "playing",
                               "align": "center",
-                              "cover": true
+                              "valign": "top",
+                              "cover": false,
+                              "display": "table",
+                              "stripes": true,
+                              "row_borders": false
                             }
                           }
                         }

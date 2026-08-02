@@ -318,6 +318,8 @@ pub struct LyricsPanel {
     dim_scrub: ScrubState,
     /// The gap-threshold slider's drag state on the Content page.
     gap_scrub: ScrubState,
+    /// The one readout being typed into across the settings sliders.
+    value_edit: panel::ValueEdit,
     /// The empty face's measured size, so it can flow its line and search
     /// button inline once the panel is too short to stack them.
     empty_size: Size<Pixels>,
@@ -383,6 +385,7 @@ impl LyricsPanel {
             spacing_scrub: ScrubState::default(),
             dim_scrub: ScrubState::default(),
             gap_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             empty_size: Size::default(),
             auto_tried: None,
             focus: cx.focus_handle(),
@@ -748,17 +751,16 @@ impl PanelSettings for LyricsPanel {
                 ),
             ))
             .when(self.config.intro_rest || self.config.gap_rest, |d| {
-                let fraction =
-                    ((self.config.gap_secs - GAP_MIN) / (GAP_MAX - GAP_MIN)).clamp(0., 1.);
                 d.child(panel::setting_row(
                     "Gap Threshold",
                     Some("How long an intro or gap must run to earn a rest"),
-                    settings_ui::slider_labeled(
+                    settings_ui::scalar(
                         &self.gap_scrub,
-                        fraction,
-                        format!("{}s", self.config.gap_secs.round() as u32),
-                        |this: &mut Self, fraction, cx| {
-                            this.config.gap_secs = GAP_MIN + fraction * (GAP_MAX - GAP_MIN);
+                        &self.value_edit,
+                        self.config.gap_secs,
+                        settings_ui::span(GAP_MIN, GAP_MAX, "s"),
+                        |this: &mut Self, value, cx| {
+                            this.config.gap_secs = value;
                             cx.notify();
                         },
                         cx,
@@ -768,12 +770,13 @@ impl PanelSettings for LyricsPanel {
             .child(panel::setting_row(
                 "Line Falloff",
                 Some("How far each line dims per step away from the active one"),
-                settings_ui::slider_labeled(
+                settings_ui::scalar(
                     &self.dim_scrub,
-                    self.config.dim,
-                    format!("{}%", (self.config.dim * 100.0).round() as u32),
-                    |this: &mut Self, fraction, cx| {
-                        this.config.dim = fraction;
+                    &self.value_edit,
+                    self.config.dim * 100.0,
+                    settings_ui::span(0., 100., "%").hard(),
+                    |this: &mut Self, value, cx| {
+                        this.config.dim = value / 100.0;
                         cx.notify();
                     },
                     cx,
@@ -876,9 +879,6 @@ impl PanelSettings for LyricsPanel {
     /// shared frame and color knobs, the grid's tile-size move: the font
     /// family, weight, and size.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let fraction = ((self.config.font_size - FONT_MIN) / (FONT_MAX - FONT_MIN)).clamp(0., 1.);
-        let spacing_fraction =
-            ((self.config.line_spacing - SPACING_MIN) / (SPACING_MAX - SPACING_MIN)).clamp(0., 1.);
         // Reset the lyric type back to its defaults: family off to the app
         // font, weight, size, and spacing to the built-in look.
         let reset = settings_ui::small_button(
@@ -930,12 +930,13 @@ impl PanelSettings for LyricsPanel {
                     .child(panel::setting_row(
                         "Text Size",
                         Some("The lyric text; the synced line height follows it"),
-                        settings_ui::slider_labeled(
+                        settings_ui::scalar(
                             &self.size_scrub,
-                            fraction,
-                            format!("{}px", self.config.font_size.round() as u32),
-                            |this: &mut Self, fraction, cx| {
-                                this.config.font_size = FONT_MIN + fraction * (FONT_MAX - FONT_MIN);
+                            &self.value_edit,
+                            self.config.font_size,
+                            settings_ui::span(FONT_MIN, FONT_MAX, "px"),
+                            |this: &mut Self, value, cx| {
+                                this.config.font_size = value;
                                 cx.notify();
                             },
                             cx,
@@ -944,13 +945,13 @@ impl PanelSettings for LyricsPanel {
                     .child(panel::setting_row(
                         "Line Spacing",
                         Some("How far the synced lines sit apart, as a multiple of the text size"),
-                        settings_ui::slider_labeled(
+                        settings_ui::scalar(
                             &self.spacing_scrub,
-                            spacing_fraction,
-                            format!("{:.1}x", self.config.line_spacing),
-                            |this: &mut Self, fraction, cx| {
-                                this.config.line_spacing =
-                                    SPACING_MIN + fraction * (SPACING_MAX - SPACING_MIN);
+                            &self.value_edit,
+                            self.config.line_spacing,
+                            settings_ui::span(SPACING_MIN, SPACING_MAX, "x").decimals(1),
+                            |this: &mut Self, value, cx| {
+                                this.config.line_spacing = value;
                                 cx.notify();
                             },
                             cx,

@@ -1001,6 +1001,74 @@ fn column_values(
                 })
                 .collect::<Vec<_>>()
         }
+        // Genre symbols are "; " lists, and the column lists their
+        // values: counts aggregate per symbol first (cheap over rows),
+        // then fan out onto each symbol's values. A symbol with no
+        // values at all is the untagged bucket, the "" row. A folded
+        // library merges case variants here too - the symbols only
+        // folded whole lists - showing the casing most rows carry.
+        ColumnKind::Genre => {
+            let fold = crate::settings::fold_case();
+            let (column, table) = sym_source(projection, kind);
+            let mut sym_counts = vec![0u32; table.strings.len()];
+            for &row in rows {
+                sym_counts[column[row as usize] as usize] += 1;
+            }
+            // (Folded) value -> per-casing counts, so the display can
+            // follow the rows once every symbol has fanned out.
+            let mut counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
+            for (sym, &count) in sym_counts.iter().enumerate() {
+                if count == 0 {
+                    continue;
+                }
+                // Aliases first, then dedup within one symbol, so a
+                // degenerate "Rock; Rock" (or "Rock; rock" folded, or an
+                // alias pair) still counts its tracks once.
+                let mut parts: Vec<String> = rox_library::genre::split(&table.strings[sym])
+                    .map(rox_library::genre::resolve)
+                    .collect();
+                if fold {
+                    parts.sort_unstable_by_key(|p| p.to_lowercase());
+                    parts.dedup_by(|a, b| a.to_lowercase() == b.to_lowercase());
+                } else {
+                    parts.sort_unstable();
+                    parts.dedup();
+                }
+                if parts.is_empty() {
+                    parts.push(String::new());
+                }
+                for part in parts {
+                    let key = if fold {
+                        part.to_lowercase()
+                    } else {
+                        part.clone()
+                    };
+                    *counts.entry(key).or_default().entry(part).or_default() += count;
+                }
+            }
+            let mut values: Vec<(String, u32)> = counts
+                .into_values()
+                .map(|casings| {
+                    let total = casings.values().sum();
+                    let display = casings
+                        .into_iter()
+                        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+                        .map(|(s, _)| s.to_string())
+                        .unwrap_or_default();
+                    (display, total)
+                })
+                .collect();
+            values.sort_unstable_by_key(|(value, _)| value.to_lowercase());
+            values
+                .into_iter()
+                .map(|(value, count)| Value {
+                    label: sym_label(&value),
+                    selected: picks.iter().any(|p| rox_library::value_eq(p, &value, fold)),
+                    value,
+                    count,
+                })
+                .collect()
+        }
         _ => {
             let (column, table) = sym_source(projection, kind);
             let mut counts = vec![0u32; table.strings.len()];

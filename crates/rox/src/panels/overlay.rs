@@ -23,6 +23,7 @@ use crate::composite::{self, Slot};
 use crate::design::{palette, tokens};
 use crate::panel::{self, setting_row, AppState, PanelChrome, PanelSettings, ScrubState};
 use crate::panel_settings;
+use crate::settings::ui as settings_ui;
 use crate::workspace::Workspace;
 
 /// The margin the revealed overlay leaves around itself, so the main panel
@@ -68,6 +69,8 @@ pub struct OverlayPanel {
     fade_at: Instant,
     /// The settings page's dim slider strip.
     dim_scrub: ScrubState,
+    /// The one readout being typed into across the settings sliders.
+    value_edit: panel::ValueEdit,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
 }
@@ -102,6 +105,7 @@ impl OverlayPanel {
             active: false,
             fade_at: Instant::now() - std::time::Duration::from_secs_f32(tokens::EASE_SECS),
             dim_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
         }
@@ -341,11 +345,12 @@ impl PanelSettings for OverlayPanel {
                 .child(setting_row(
                     "Dim",
                     Some("How hard the main panel dims under the revealed overlay"),
-                    panel::value_slider(
+                    settings_ui::scalar(
                         &self.dim_scrub,
-                        dim,
-                        format!("{:.0} %", dim * 100.0),
-                        Self::set_dim,
+                        &self.value_edit,
+                        dim * 100.0,
+                        settings_ui::span(0., 100., "%").hard(),
+                        |this: &mut Self, percent, cx| this.set_dim(percent / 100.0, cx),
                         cx,
                     ),
                 ))

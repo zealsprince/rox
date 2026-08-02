@@ -21,6 +21,7 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "anchor": true,
                           "max_width": 24.0,
                           "max_height": 24.0,
                           "min_width": 24.0,
@@ -67,6 +68,7 @@
                       "info": {
                         "panel": {
                           "locked": true,
+                          "anchor": true,
                           "max_width": 128.0,
                           "max_height": 24.0,
                           "min_width": 128.0,
@@ -109,6 +111,7 @@
                           "children": [],
                           "info": {
                             "panel": {
+                              "anchor": true,
                               "max_height": 40.0,
                               "min_height": 40.0,
                               "chips": "inline"
@@ -330,6 +333,114 @@
                           "info": {
                             "panel": {
                               "title": "Artists",
+                              "edge": "right",
+                              "reveal": 0.35,
+                              "dim": 0.2,
+                              "open_on": "hover",
+                              "hide_controls": true
+                            }
+                          }
+                        },
+                        {
+                          "panel_name": "drawer",
+                          "children": [
+                            {
+                              "panel_name": "drawer",
+                              "children": [
+                                {
+                                  "panel_name": "genre grid",
+                                  "children": [],
+                                  "info": {
+                                    "panel": {
+                                      "query": "",
+                                      "search": false,
+                                      "query_source": "global",
+                                      "vertical": true,
+                                      "tile": 160.0,
+                                      "pick_filters": true,
+                                      "follow_playing": true,
+                                      "resume_playing": false,
+                                      "smooth_follow": true,
+                                      "dim_playing": false,
+                                      "dim": 60.0,
+                                      "face": "tinted",
+                                      "rounding": 0.0,
+                                      "gap": 8.0,
+                                      "labels": true,
+                                      "label_align": "center",
+                                      "counts": false,
+                                      "scroll": 0
+                                    }
+                                  }
+                                },
+                                {
+                                  "panel_name": "library",
+                                  "children": [],
+                                  "info": {
+                                    "panel": {
+                                      "query": "",
+                                      "search": false,
+                                      "query_source": "selection",
+                                      "density": "compact",
+                                      "headers": "expanded",
+                                      "group_by": "album",
+                                      "column_layout": [
+                                        {
+                                          "key": "track",
+                                          "width": 40.0
+                                        },
+                                        {
+                                          "key": "title",
+                                          "width": 188.0
+                                        },
+                                        {
+                                          "key": "artist",
+                                          "width": 120.0
+                                        },
+                                        {
+                                          "key": "duration",
+                                          "width": 62.0
+                                        }
+                                      ],
+                                      "sort_key": null,
+                                      "sort_desc": false
+                                    }
+                                  }
+                                }
+                              ],
+                              "info": {
+                                "panel": {
+                                  "edge": "left",
+                                  "reveal": 0.5,
+                                  "dim": 0.3,
+                                  "open_on": "selection",
+                                  "scope": "main",
+                                  "hide_controls": true,
+                                  "hide_handle": true
+                                }
+                              }
+                            },
+                            {
+                              "panel_name": "queue",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "headers": "off",
+                                  "columns": [
+                                    "number",
+                                    "name",
+                                    "artist"
+                                  ],
+                                  "search": false,
+                                  "query_source": "global",
+                                  "query": ""
+                                }
+                              }
+                            }
+                          ],
+                          "info": {
+                            "panel": {
+                              "title": "Genres",
                               "edge": "right",
                               "reveal": 0.35,
                               "dim": 0.2,

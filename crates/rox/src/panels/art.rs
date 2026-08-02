@@ -250,6 +250,8 @@ pub struct ArtPanel {
     rounding_scrub: ScrubState,
     /// The dim amount slider's scrub strip, same window.
     dim_scrub: ScrubState,
+    /// The one readout being typed into across the settings sliders.
+    value_edit: panel::ValueEdit,
     /// A failed play, shown in a strip until the next one lands.
     error: Option<SharedString>,
     /// A pending box reset from a source toggle or a shared-query change;
@@ -357,6 +359,7 @@ impl ArtPanel {
             centered: Some(start as usize),
             rounding_scrub: ScrubState::default(),
             dim_scrub: ScrubState::default(),
+            value_edit: panel::ValueEdit::default(),
             error: None,
             resync_box: false,
             selection_ids,
@@ -1151,12 +1154,13 @@ impl PanelSettings for ArtPanel {
                             d.child(setting_row(
                                 "Dim Amount",
                                 Some("How far the other covers fade; 100% hides them"),
-                                settings_ui::slider_labeled(
+                                settings_ui::scalar(
                                     &self.dim_scrub,
-                                    (self.config.dim / TILE_DIM_MAX).clamp(0., 1.),
-                                    format!("{:.0} %", self.config.dim),
-                                    |this: &mut Self, fraction, cx| {
-                                        this.config.dim = (fraction * TILE_DIM_MAX).round();
+                                    &self.value_edit,
+                                    self.config.dim,
+                                    settings_ui::span(0., TILE_DIM_MAX, "%").hard(),
+                                    |this: &mut Self, value, cx| {
+                                        this.config.dim = value;
                                         cx.notify();
                                     },
                                     cx,
@@ -1199,7 +1203,6 @@ impl PanelSettings for ArtPanel {
     /// because it shapes the covers, not the panel frame.
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let rounding = self.config.rounding;
-        let rounding_fraction = (rounding / TILE_ROUNDING_MAX).clamp(0., 1.);
         Some(
             settings_ui::section(
                 "Covers",
@@ -1211,12 +1214,13 @@ impl PanelSettings for ArtPanel {
                     .child(setting_row(
                         "Art Rounding",
                         Some("Round each cover's corners; 100% is a circle"),
-                        settings_ui::slider_labeled(
+                        settings_ui::scalar(
                             &self.rounding_scrub,
-                            rounding_fraction,
-                            format!("{:.0} %", rounding),
-                            |this: &mut Self, fraction, cx| {
-                                this.config.rounding = (fraction * TILE_ROUNDING_MAX).round();
+                            &self.value_edit,
+                            rounding,
+                            settings_ui::span(0., TILE_ROUNDING_MAX, "%").hard(),
+                            |this: &mut Self, value, cx| {
+                                this.config.rounding = value;
                                 cx.notify();
                             },
                             cx,

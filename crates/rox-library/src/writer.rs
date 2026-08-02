@@ -37,9 +37,10 @@ use lofty::ogg::OggPictureStorage;
 use lofty::picture::{MimeType, Picture, PictureInformation, PictureType};
 use lofty::prelude::*;
 use lofty::probe::Probe;
-use lofty::tag::{ItemKey, ItemValue, Tag};
+use lofty::tag::{ItemKey, ItemValue, Tag, TagItem};
 
 use crate::art;
+use crate::genre;
 use crate::rating;
 
 /// A tag field the editor can address. The named set is what the library
@@ -249,14 +250,25 @@ fn read_inner(path: &Path) -> Result<Vec<(Field, String)>, String> {
     Ok(out)
 }
 
-/// The named fields out of a split-off generic tag, in item order.
+/// The named fields out of a split-off generic tag, in item order. Genre
+/// is the one multi-value field: its items fold into the single "; "
+/// list at the first item's position, so the editor sees the whole list
+/// where other readers see only the first value.
 fn named_fields(generic: Tag, out: &mut Vec<(Field, String)>) {
+    let genres = genre::join(generic.get_strings(ItemKey::Genre));
+    let mut genre_taken = false;
     for item in generic.items() {
         let ItemValue::Text(text) = item.value() else {
             continue;
         };
-        if let Some(field) = field_of(item.key()) {
-            out.push((field, text.clone()));
+        match field_of(item.key()) {
+            Some(Field::Genre) if genre_taken => {}
+            Some(Field::Genre) => {
+                genre_taken = true;
+                out.push((Field::Genre, genres.clone()));
+            }
+            Some(field) => out.push((field, text.clone())),
+            None => {}
         }
     }
 }
@@ -416,8 +428,12 @@ fn commit_inner(
     }
 
     // Flush the clone to disk before the rename, or a power cut can leave
-    // the original replaced by a truncated file.
-    fs::File::open(tmp)
+    // the original replaced by a truncated file. The handle needs write
+    // access: Windows' FlushFileBuffers rejects a read-only one with
+    // access denied, so a read-only open fails every save there.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(tmp)
         .and_then(|f| f.sync_all())
         .map_err(|e| format!("sync clone: {e}"))?;
     fs::rename(tmp, path).map_err(|e| format!("rename over original: {e}"))
@@ -511,12 +527,27 @@ fn write_tags(
 }
 
 /// The named changes onto the generic tag: a set replaces every item of
-/// the key, a clear drops them all.
+/// the key, a clear drops them all. A genre set splits its "; " list
+/// into one item per value, so the merge writes the format's native
+/// multiples (repeated GENRE comments, a null-separated TCON); a list
+/// with no values clears like an empty set anywhere else.
 fn apply_named(generic: &mut Tag, changes: &[Change]) {
     for change in changes {
         let Some(key) = item_key(&change.field) else {
             continue;
         };
+        if change.field == Field::Genre {
+            generic.remove_key(key);
+            if let Some(v) = &change.value {
+                for part in genre::split(v) {
+                    generic.push(TagItem::new(
+                        ItemKey::Genre,
+                        ItemValue::Text(part.to_string()),
+                    ));
+                }
+            }
+            continue;
+        }
         match &change.value {
             Some(v) => drop(generic.insert_text(key, v.clone())),
             None => generic.remove_key(key),
@@ -715,6 +746,26 @@ fn verify_fields(tmp: &Path, kind: FileType, changes: &[Change]) -> Result<(), S
             if got != expected {
                 return Err(format!(
                     "verify: rating read back {got:?} stars, expected {expected:?}"
+                ));
+            }
+            continue;
+        }
+        // Genre verifies at the "; " list level on both sides: the write
+        // splits the value into items, so the read-back rejoins them, and
+        // the asked-for value canonicalizes so "Rock;;Pop " proves out as
+        // "Rock; Pop". A list with no values wrote nothing, like a clear.
+        if change.field == Field::Genre {
+            let expected = change
+                .value
+                .as_deref()
+                .map(genre::canonical)
+                .filter(|v| !v.is_empty());
+            let read_back =
+                Some(genre::join(generic.get_strings(ItemKey::Genre))).filter(|v| !v.is_empty());
+            if read_back != expected {
+                return Err(format!(
+                    "verify: {:?} read back {:?}, expected {:?}",
+                    change.field, read_back, expected
                 ));
             }
             continue;
@@ -1115,6 +1166,58 @@ mod tests {
         );
         let audio: Vec<u8> = (0..600u32).map(|i| (i * 11 % 253) as u8).collect();
         assert!(fs::read(&path).unwrap().ends_with(&audio));
+    }
+
+    /// A "; " genre list writes as each format's native multiples - two
+    /// GENRE comments on FLAC, one null-separated TCON on ID3v2 - and
+    /// reads back rejoined. The typed value canonicalizes on the way
+    /// through, and an empty list clears the field.
+    #[test]
+    fn genre_list_round_trips_as_native_multiples() {
+        let dir = scratch("genre-multi");
+
+        let mp3 = mp3_file(&dir, "track.mp3");
+        commit(&mp3, &[set(Field::Genre, "Electronic; Ambient")]).unwrap();
+        let fields = read(&mp3).unwrap();
+        assert_eq!(
+            value_of(&fields, &Field::Genre).as_deref(),
+            Some("Electronic; Ambient")
+        );
+        let generic = parse_mpeg(&mp3)
+            .unwrap()
+            .id3v2()
+            .unwrap()
+            .clone()
+            .split_tag()
+            .1;
+        let parts: Vec<&str> = generic.get_strings(ItemKey::Genre).collect();
+        assert_eq!(parts, ["Electronic", "Ambient"]);
+
+        let flac = flac_file(&dir, "track.flac");
+        commit(&flac, &[set(Field::Genre, " Electronic ;; Ambient")]).unwrap();
+        let fields = read(&flac).unwrap();
+        assert_eq!(
+            value_of(&fields, &Field::Genre).as_deref(),
+            Some("Electronic; Ambient")
+        );
+        let vorbis = parse_flac(&flac)
+            .unwrap()
+            .vorbis_comments()
+            .unwrap()
+            .clone();
+        let parts: Vec<&str> = vorbis.get_all("GENRE").collect();
+        assert_eq!(parts, ["Electronic", "Ambient"]);
+
+        // A single value stays a single item, and clearing drops them all.
+        commit(&flac, &[set(Field::Genre, "Jazz")]).unwrap();
+        let vorbis = parse_flac(&flac)
+            .unwrap()
+            .vorbis_comments()
+            .unwrap()
+            .clone();
+        assert_eq!(vorbis.get_all("GENRE").count(), 1);
+        commit(&flac, &[set(Field::Genre, " ; ")]).unwrap();
+        assert_eq!(value_of(&read(&flac).unwrap(), &Field::Genre), None);
     }
 
     /// The retention half of the contract: a commit naming one field must

@@ -1710,11 +1710,11 @@ impl SettingsWindow {
     }
 
     /// Whether this platform's exclusive backend has ever been run by us on
-    /// real hardware. Linux is developed and tested here; the Windows and
-    /// macOS backends are written from the platform contracts and shipped
-    /// for testers, which is exactly what the badge and the issue link say.
+    /// real hardware. ALSA and CoreAudio have; the WASAPI backend is written
+    /// from the platform contract and shipped for testers, which is exactly
+    /// what the badge and the issue link say.
     fn exclusive_experimental() -> bool {
-        cfg!(not(target_os = "linux"))
+        cfg!(target_os = "windows")
     }
 
     /// The prefilled new-issue page for exclusive-mode reports: the platform

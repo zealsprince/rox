@@ -242,6 +242,7 @@ impl ArtProvider for LastfmArt {
         Ok(vec![ArtCandidate {
             provider: self.name(),
             album: title,
+            artist: string(album.get("artist")),
             thumb_url: best_url,
             full_url: full,
             width: 1000,

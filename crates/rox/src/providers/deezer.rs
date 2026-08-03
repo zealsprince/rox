@@ -58,6 +58,7 @@ impl ArtProvider for Deezer {
             out.push(ArtCandidate {
                 provider: self.name(),
                 album: string(album.get("title")),
+                artist: string(album.get("artist").and_then(|a| a.get("name"))),
                 thumb_url: thumb,
                 full_url: full,
                 width: XL_PX,

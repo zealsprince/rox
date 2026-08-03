@@ -302,6 +302,10 @@ fn main() {
         // opens on the restored state as before.
         let open = (!launch_files.is_empty()).then_some((launch_mode, launch_files));
         open_workspace_window(workspace::WorkspaceStart::Restore, None, open, cx);
+        // The macOS system menu bar, once a workspace exists for its picks to
+        // land on. A no-op on every other platform, where the in-window bar
+        // is the only menu.
+        workspace::native_menu::rebuild(cx);
         cx.activate(true);
     });
 }

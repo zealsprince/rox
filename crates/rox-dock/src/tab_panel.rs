@@ -1454,14 +1454,11 @@ impl TabPanel {
         let is_same_tab = drag.tab_panel == cx.entity();
 
         // If target is same tab, and it is only one panel, do nothing.
-        if is_same_tab && ix.is_none() {
-            if self.will_split_placement.is_none() {
-                return;
-            } else {
-                if self.panels.len() == 1 {
-                    return;
-                }
-            }
+        if is_same_tab
+            && ix.is_none()
+            && (self.will_split_placement.is_none() || self.panels.len() == 1)
+        {
+            return;
         }
 
         // Here is looks like remove_panel on a same item, but it difference.
@@ -1490,15 +1487,13 @@ impl TabPanel {
         // Insert into new tabs
         if let Some(placement) = self.will_split_placement {
             self.split_panel(panel, placement, None, window, cx);
-        } else {
-            if let Some(mut ix) = ix {
-                if same_tab_from_ix.is_some_and(|from_ix| from_ix < ix) {
-                    ix -= 1;
-                }
-                self.insert_panel_at(panel, ix, window, cx)
-            } else {
-                self.add_panel_with_active(panel, active, window, cx)
+        } else if let Some(mut ix) = ix {
+            if same_tab_from_ix.is_some_and(|from_ix| from_ix < ix) {
+                ix -= 1;
             }
+            self.insert_panel_at(panel, ix, window, cx)
+        } else {
+            self.add_panel_with_active(panel, active, window, cx)
         }
 
         self.remove_self_if_empty(window, cx);

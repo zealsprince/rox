@@ -98,10 +98,10 @@ one ran; it gets a ring to push into and a rate to resample toward.
   Anywhere else the seam returns a clear unsupported error and the settings page says
   "not on this platform" rather than offering a toggle that always falls back.
 
-ALSA is the one that's been run on real hardware. WASAPI and CoreAudio are written from
-the platform contracts and ship for testers, but no card has heard them here yet, so
-the Audio page badges exclusive mode experimental on those two platforms and offers a
-prefilled issue so a report arrives with the details a tester would forget.
+ALSA and CoreAudio have both been run on real hardware. WASAPI is written from the
+platform contract and ships for testers, but no card has heard it here yet, so the
+Audio page badges exclusive mode experimental on Windows and offers a prefilled issue
+so a report arrives with the details a tester would forget.
 
 A claim that fails (busy, no such device) opens shared instead and carries the reason
 in `Negotiated::fallback`, which the Audio page shows. Never an error, never silence.

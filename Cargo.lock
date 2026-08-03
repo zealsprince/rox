@@ -5474,7 +5474,7 @@ dependencies = [
 
 [[package]]
 name = "rox"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
@@ -5508,7 +5508,7 @@ dependencies = [
 
 [[package]]
 name = "rox-dock"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5521,7 +5521,7 @@ dependencies = [
 
 [[package]]
 name = "rox-library"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "image",
  "lofty",
@@ -5532,7 +5532,7 @@ dependencies = [
 
 [[package]]
 name = "rox-playback"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "alsa",
  "cpal",
@@ -5545,7 +5545,7 @@ dependencies = [
 
 [[package]]
 name = "rox-viz"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "serde",
 ]

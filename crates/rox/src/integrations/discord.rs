@@ -15,6 +15,11 @@ use crate::panels::library::Library;
 use crate::player::Player;
 use crate::settings::{DiscordSettings, Settings};
 
+/// The score below which no online cover is close enough to show. A right
+/// album with a reissue suffix or a lightly renamed artist clears it; a
+/// different album by the same artist does not.
+const ART_MATCH_BAR: f32 = 0.5;
+
 /// Commands sent from the GPUI main thread to the background IPC worker loop.
 pub enum DiscordCommand {
     UpdatePresence(Option<DiscordTrackState>),
@@ -292,29 +297,41 @@ impl DiscordPresence {
                             };
                             match crate::providers::search_art(&query) {
                                 Ok(candidates) => {
-                                    // Prioritize Deezer > Last.fm > iTunes for presence cover art,
-                                    // iTunes sometimes returns cover art for multiple albums
-                                    // by the creator which makes us use the wrong art?
+                                    // The art searches are fuzzy, and trusting provider order
+                                    // picked the first Deezer hit even when it was a different
+                                    // album entirely (issue #79). Score every candidate against
+                                    // the track and take the closest, provider preference only
+                                    // breaking ties. Below the bar nothing came close enough,
+                                    // and the app icon beats someone else's cover.
+                                    let rank = |provider: &str| match provider {
+                                        "deezer" => 0,
+                                        "lastfm" => 1,
+                                        "itunes" => 2,
+                                        _ => 3,
+                                    };
                                     let chosen = candidates
                                         .iter()
-                                        .find(|c| c.provider.eq_ignore_ascii_case("deezer"))
-                                        .or_else(|| {
-                                            candidates
-                                                .iter()
-                                                .find(|c| c.provider.eq_ignore_ascii_case("lastfm"))
+                                        .map(|c| (c, crate::providers::art_confidence(&query, c)))
+                                        .filter(|(_, score)| *score >= ART_MATCH_BAR)
+                                        .min_by(|(a, sa), (b, sb)| {
+                                            sb.partial_cmp(sa)
+                                                .unwrap_or(std::cmp::Ordering::Equal)
+                                                .then_with(|| {
+                                                    rank(a.provider).cmp(&rank(b.provider))
+                                                })
                                         })
-                                        .or_else(|| {
-                                            candidates
-                                                .iter()
-                                                .find(|c| c.provider.eq_ignore_ascii_case("itunes"))
-                                        })
-                                        .or_else(|| candidates.first());
+                                        .map(|(c, _)| c);
 
                                     if let Some(c) = chosen {
                                         cover_url = Some(c.full_url.clone());
                                         info!(
                                             "Resolved cover art for '{}' via {}: {}",
                                             state.title, c.provider, c.full_url
+                                        );
+                                    } else if !candidates.is_empty() {
+                                        info!(
+                                            "No cover art candidate matched '{}' closely enough; using app icon",
+                                            state.title
                                         );
                                     }
                                 }

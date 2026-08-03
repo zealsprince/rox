@@ -37,7 +37,7 @@ use crate::player::{fmt_time, FadeView, Player};
 use crate::query::shared_query::SharedQuery;
 use crate::selection::Selection;
 use crate::thumbs::Thumbs;
-use crate::workspace::{SeekBackward, SeekForward, TogglePlayback};
+use crate::workspace::{workspace_for_window, SeekBackward, SeekForward, TogglePlayback};
 
 mod arrange;
 pub use arrange::*;
@@ -349,8 +349,9 @@ pub fn config_from_info<C: Default + serde::de::DeserializeOwned>(info: &PanelIn
 /// tab chrome, and its content's own context menu replaces the dock's
 /// body menu) this is the only close there is, and the empty window it
 /// can leave behind offers the way back in. Popped out there is no Close:
-/// closing the OS window is the close. Pinned panels keep the dock menus'
-/// guard and the click no-ops.
+/// closing the OS window is the close. On a pinned panel the click puts up a
+/// confirm and closes from there, so the pin costs a second click rather than
+/// eating the first.
 /// The Dock Back entry: the popped-out counterpart of Pop Out. Moves the
 /// panel into the workspace's newest live tab group and closes the window it
 /// was hosted in (harmless if there is none). Cross-window drags can't carry
@@ -405,12 +406,25 @@ pub fn popout_item<P: Panel>(
         PopupMenuItem::new("Close")
             .icon(Icon::default().path(icons::CLOSE))
             .on_click(move |_, window, cx| {
+                if panel.read(cx).locked(cx) {
+                    // The pin exists to survive a stray click, so route the
+                    // click to a confirm rather than dropping it. Without a
+                    // workspace behind the window there is nowhere to float
+                    // the dialog, and the pin holds as it did before.
+                    let Some(ws) = workspace_for_window(window, cx).and_then(|ws| ws.upgrade())
+                    else {
+                        return;
+                    };
+                    let panel: Arc<dyn PanelView> = Arc::new(panel.clone());
+                    let tabs = tabs.clone();
+                    ws.update(cx, |ws, cx| {
+                        ws.confirm_close_locked(panel, tabs, window, cx);
+                    });
+                    return;
+                }
                 let Some(tabs) = tabs.upgrade() else {
                     return;
                 };
-                if panel.read(cx).locked(cx) {
-                    return;
-                }
                 tabs.update(cx, |tabs, cx| {
                     tabs.remove_panel(Arc::new(panel.clone()), window, cx);
                 });

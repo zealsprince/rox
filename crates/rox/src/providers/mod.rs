@@ -362,14 +362,18 @@ pub fn search_metadata(query: &TrackQuery) -> Result<Vec<MetadataCandidate>, Str
 
 /// One cover-art result a provider offered: where to fetch a small
 /// preview and the full image, its pixel size for the caption and the
-/// quality sort, and the release it belongs to. Art is picked by eye, so
-/// there is no confidence score here; the thumbnail is the judge.
+/// quality sort, and the release it belongs to. No stored confidence:
+/// the match grid judges by thumbnail, and the presence, which picks
+/// unattended, scores a candidate through [`art_confidence`].
 #[derive(Clone)]
 pub struct ArtCandidate {
     pub provider: &'static str,
     /// The release the cover belongs to, so the grid tells a compilation
     /// or a reissue apart from the album.
     pub album: String,
+    /// The artist credited on the release, empty when the service omits
+    /// it. The unattended pick scores on it; the by-eye grid does not.
+    pub artist: String,
     pub thumb_url: String,
     pub full_url: String,
     pub width: u32,
@@ -413,6 +417,26 @@ pub fn search_art(query: &TrackQuery) -> Result<Vec<ArtCandidate>, String> {
         found.sort_by_key(|b| std::cmp::Reverse(b.width * b.height));
         Ok(found)
     })
+}
+
+/// How well an art candidate matches a query, 0 to 1: the release title
+/// against the album, or against the track title when the query carries
+/// no album, the same subject the providers searched on. The artist
+/// weighs in when the candidate names one. The art searches are fuzzy,
+/// so a caller picking without a human eye filters on this rather than
+/// trusting result order; a wrong cover reads worse than none.
+pub fn art_confidence(query: &TrackQuery, candidate: &ArtCandidate) -> f32 {
+    let subject = if query.album.is_empty() {
+        &query.title
+    } else {
+        &query.album
+    };
+    let album = similarity(subject, &candidate.album);
+    if candidate.artist.is_empty() {
+        album
+    } else {
+        (0.6 * album + 0.4 * similarity(&query.artist, &candidate.artist)).clamp(0.0, 1.0)
+    }
 }
 
 /// The biggest an image download will read, so a bad URL or a hostile
@@ -757,6 +781,56 @@ mod tests {
             ..a.clone()
         };
         assert_ne!(query_key(&a), query_key(&c));
+    }
+
+    fn art(album: &str, artist: &str) -> ArtCandidate {
+        ArtCandidate {
+            provider: "test",
+            album: album.into(),
+            artist: artist.into(),
+            thumb_url: String::new(),
+            full_url: String::new(),
+            width: 0,
+            height: 0,
+        }
+    }
+
+    /// The right album outscores a reissue, which outscores another album
+    /// by the same artist. The last one is the wrong-artwork case the
+    /// presence used to pick blind (issue #79); it has to land under the
+    /// 0.5 bar the presence filters on.
+    #[test]
+    fn art_confidence_prefers_the_right_album() {
+        let query = TrackQuery {
+            artist: "Daft Punk".into(),
+            title: "One More Time".into(),
+            album: "Discovery".into(),
+            duration_secs: None,
+        };
+        let right = art_confidence(&query, &art("Discovery", "Daft Punk"));
+        let reissue = art_confidence(&query, &art("Discovery (Deluxe Edition)", "Daft Punk"));
+        let wrong = art_confidence(&query, &art("Human After All", "Daft Punk"));
+        assert!(right > reissue);
+        assert!(reissue > wrong);
+        assert!(right > 0.9);
+        assert!(reissue >= 0.5);
+        assert!(wrong < 0.5);
+    }
+
+    /// A candidate without an artist scores on the release title alone,
+    /// and an albumless query falls back to the track title, the subject
+    /// the providers searched on for it.
+    #[test]
+    fn art_confidence_handles_missing_fields() {
+        let query = TrackQuery {
+            artist: "Air".into(),
+            title: "Sexy Boy".into(),
+            album: String::new(),
+            duration_secs: None,
+        };
+        assert_eq!(art_confidence(&query, &art("Sexy Boy", "")), 1.0);
+        // A different release by the right artist still misses the bar.
+        assert!(art_confidence(&query, &art("Moon Safari", "Air")) < 0.5);
     }
 
     #[test]

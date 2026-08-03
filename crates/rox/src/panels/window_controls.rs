@@ -202,9 +202,7 @@ impl WindowControlsPanel {
                 // macOS order: close, minimize, zoom.
                 ControlStyle::Traffic => d
                     .gap(tokens::SPACE_SM)
-                    .child(traffic_light(TRAFFIC_CLOSE, cx.listener(close)))
-                    .child(traffic_light(TRAFFIC_MIN, |_, w, _| w.minimize_window()))
-                    .child(traffic_light(TRAFFIC_ZOOM, maximize)),
+                    .children(traffic_lights(cx.listener(close))),
             })
     }
 }
@@ -241,6 +239,22 @@ fn icon_button(
                 .size(px(14.))
                 .text_color(palette::text_muted()),
         )
+}
+
+/// The three traffic lights in macOS order - close, minimize, zoom - over
+/// the caller's close handler; minimize and zoom are the window's own, so
+/// they're the same wherever these are drawn. Handed back as children
+/// rather than a row, so each caller keeps its own spacing: this panel
+/// spaces them with the mini toggle beside them, the macOS menubar sits
+/// them at its left edge.
+pub(crate) fn traffic_lights(
+    close: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> [Div; 3] {
+    [
+        traffic_light(TRAFFIC_CLOSE, close),
+        traffic_light(TRAFFIC_MIN, |_, w, _| w.minimize_window()),
+        traffic_light(TRAFFIC_ZOOM, maximize),
+    ]
 }
 
 /// One traffic light: a colored circle that runs its click handler. No

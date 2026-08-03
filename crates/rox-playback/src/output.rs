@@ -13,6 +13,7 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
@@ -32,6 +33,16 @@ mod wasapi;
 
 /// Half a second of buffered stereo between decode and the callback.
 const RING_SECS: f64 = 0.5;
+/// How long a shared open keeps retrying before its error stands. Right
+/// after exclusive lets a device go, CoreAudio is still relocking the clock
+/// and refuses queries (OSStatus 56 on the default config), so the first
+/// attempt of an exclusive-to-shared switch lands inside that window and a
+/// single try would kill the session over a transient. Twenty tries of 50 ms
+/// is a second, blocking the caller like the exclusive rate settle already
+/// does; a machine with genuinely no device pays it once and then the error
+/// stands.
+const OPEN_TRIES: u32 = 20;
+const OPEN_STEP: Duration = Duration::from_millis(50);
 /// Tap capacity in samples. Small on purpose: the tap consumer may lag and
 /// lose, never backpressure.
 const TAP_SAMPLES: usize = 16384;
@@ -154,13 +165,32 @@ pub fn open(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, Strin
             Ok(out) => return Ok(out),
             Err(e) => {
                 log::warn!("exclusive output: {e}; falling back to shared");
-                let mut out = open_shared(request, shared)?;
+                let mut out = open_shared_settled(request, shared)?;
                 out.negotiated.fallback = Some(e);
                 return Ok(out);
             }
         }
     }
-    open_shared(request, shared)
+    open_shared_settled(request, shared)
+}
+
+/// [`open_shared`] with the settling retry, so a device that refuses the
+/// first try because it's mid-transition doesn't cost the session.
+fn open_shared_settled(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, String> {
+    let mut tries = 0;
+    loop {
+        match open_shared(request, shared) {
+            Ok(out) => return Ok(out),
+            Err(e) => {
+                tries += 1;
+                if tries >= OPEN_TRIES {
+                    return Err(e);
+                }
+                log::warn!("audio output: {e}; retrying");
+                std::thread::sleep(OPEN_STEP);
+            }
+        }
+    }
 }
 
 /// Allocate the sample ring and the PCM tap for a stream at `rate`. Both
@@ -232,6 +262,20 @@ pub fn exclusive_supported() -> bool {
     ))
 }
 
+/// The device's name, or None where the query fails. cpal 0.18 dropped
+/// `name()` for `description()`, and its Display wraps the same query with
+/// the Err swallowed into `fmt::Error`, which `to_string` answers with a
+/// panic. The query does fail in practice: on macOS a device mid-transition
+/// (hog mode just released, clock relocking) won't answer, and the exclusive
+/// toggle lands exactly there. So the name is asked through the fallible
+/// path everywhere, and never through Display.
+fn device_name(device: &cpal::Device) -> Option<String> {
+    device
+        .description()
+        .ok()
+        .map(|desc| desc.name().to_string())
+}
+
 /// The cpal devices, by name. cpal has no stable device id, so the name is
 /// the id; two identical cards read as one entry and the first one wins,
 /// which is the same ambiguity every cpal app has.
@@ -242,8 +286,11 @@ fn shared_devices() -> Vec<Device> {
     };
     let mut out = Vec::new();
     for device in devices {
-        // cpal 0.18 dropped `name()`; a device's Display is the name now.
-        let name = device.to_string();
+        // A device that won't say its name is one the picker can't offer
+        // anyway; skipping it beats aborting on the name read.
+        let Some(name) = device_name(&device) else {
+            continue;
+        };
         if out.iter().any(|d: &Device| d.id == name) {
             continue;
         }
@@ -264,14 +311,17 @@ fn open_shared(request: &Request, shared: &Arc<Shared>) -> Result<OpenOutput, St
     // A saved device that's gone falls back to the default rather than
     // failing: unplugging headphones shouldn't mean no audio until someone
     // visits the settings window.
-    let picked = request
-        .device
-        .as_deref()
-        .and_then(|want| host.output_devices().ok()?.find(|d| d.to_string() == want));
+    let picked = request.device.as_deref().and_then(|want| {
+        host.output_devices()
+            .ok()?
+            .find(|d| device_name(d).as_deref() == Some(want))
+    });
     let device = picked
         .or_else(|| host.default_output_device())
         .ok_or("no default output device")?;
-    let name = device.to_string();
+    // A default device mid-transition may not answer its name; the stream
+    // still opens, so play through it rather than failing over a label.
+    let name = device_name(&device).unwrap_or_else(|| "unnamed device".into());
     let supported = device
         .default_output_config()
         .map_err(|e| format!("no default output config: {e}"))?;

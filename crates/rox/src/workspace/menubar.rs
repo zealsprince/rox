@@ -5,6 +5,8 @@
 
 use super::*;
 
+use gpui::MouseDownEvent;
+
 impl Workspace {
     pub(crate) fn run(&mut self, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
@@ -48,17 +50,20 @@ impl Workspace {
                 let on = !settings::hide_menubar();
                 settings::set_hide_menubar(on, cx);
                 Settings::update(move |s| s.look.bundle.appearance.hide_menubar = on);
+                native_menu::rebuild(cx);
             }
             MenuAction::ToggleDecorations => {
                 let on = !settings::os_decorations();
                 settings::set_os_decorations(on);
                 Settings::update(move |s| s.look.bundle.appearance.os_decorations = on);
                 apply_decorations(cx);
+                native_menu::rebuild(cx);
             }
             MenuAction::ToggleArtTheming => {
                 let on = !palette::art_theming();
                 palette::set_art_theming(on, cx);
                 Settings::update(move |s| s.look.bundle.appearance.art_theming = on);
+                native_menu::rebuild(cx);
             }
             MenuAction::ImportWorkspace => self.import_workspace(window, cx),
             MenuAction::ToggleQuitToTray => {
@@ -66,6 +71,7 @@ impl Workspace {
                 settings::set_quit_to_tray(on);
                 Settings::update(move |s| s.quit_to_tray = on);
                 tray::sync(cx);
+                native_menu::rebuild(cx);
             }
             MenuAction::CloseWindow => {
                 // Deferred out of this update: the teardown persists the
@@ -136,6 +142,10 @@ impl Workspace {
     /// One builder so the docked row and the alt-revealed overlay stay
     /// the same bar.
     pub(crate) fn menubar(&self, cx: &mut Context<Self>) -> Div {
+        // On macOS the menus live in the system bar, so this row keeps only
+        // what the system bar has no place for: the mini toggle, the drag
+        // handle, and the library status.
+        let native_menus = cfg!(target_os = "macos");
         div()
             .flex()
             .flex_row()
@@ -145,13 +155,16 @@ impl Workspace {
             .bg(palette::bg_menubar())
             .border_b_1()
             .border_color(palette::border())
+            .children(self.traffic_lights(cx))
             .children(self.mini_button(cx))
-            .children(
-                MENUS
-                    .iter()
-                    .enumerate()
-                    .map(|(i, menu)| self.menu_button(i, menu, cx)),
-            )
+            .when(!native_menus, |d| {
+                d.children(
+                    MENUS
+                        .iter()
+                        .enumerate()
+                        .map(|(i, menu)| self.menu_button(i, menu, cx)),
+                )
+            })
             // The empty middle is a drag handle, so a decorations-off
             // window still moves by its menu bar. The move is the
             // compositor's, same as the drag anchor panel.
@@ -163,6 +176,32 @@ impl Workspace {
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()),
             )
             .child(self.library_status(cx))
+    }
+
+    /// The macOS window buttons at the menubar's left edge, when this window
+    /// draws its own chrome. With OS decorations on, the real ones are up in
+    /// the native titlebar and a second set here would just be a copy; off
+    /// every other platform there are no traffic lights to match.
+    fn traffic_lights(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        if !cfg!(target_os = "macos") || settings::os_decorations() {
+            return None;
+        }
+        // Close runs the menu's own Close, the teardown that persists the
+        // layout and only quits from the last workspace window.
+        let close = cx.listener(|this: &mut Workspace, _: &MouseDownEvent, window, cx| {
+            this.run(MenuAction::CloseWindow, window, cx);
+        });
+        Some(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .h_full()
+                .flex_none()
+                .gap(tokens::SPACE_SM)
+                .px(tokens::SPACE_MD)
+                .children(crate::panels::window_controls::traffic_lights(close)),
+        )
     }
 
     /// The menubar's right side: the catalog status line, a badge while a

@@ -53,6 +53,7 @@ impl ArtProvider for Itunes {
             out.push(ArtCandidate {
                 provider: self.name(),
                 album: string(result.get("collectionName")),
+                artist: string(result.get("artistName")),
                 thumb_url: resize(art100, THUMB_PX),
                 full_url: resize(art100, FULL_PX),
                 width: FULL_PX,

@@ -27,6 +27,10 @@ pub mod keys;
 
 /// Whether this build carries its own api identity; without one the
 /// settings page asks for the user's pair.
+// The pair are consts baked in at compile time, so clippy can const-eval
+// this and calls it a constant condition. That's exactly the question
+// being asked: which build am I?
+#[allow(clippy::const_is_empty)]
 pub fn has_builtin_keys() -> bool {
     !keys::API_KEY.is_empty() && !keys::API_SECRET.is_empty()
 }

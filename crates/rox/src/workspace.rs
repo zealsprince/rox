@@ -87,6 +87,7 @@ use crate::thumbs::Thumbs;
 use crate::track_ui::track_drag::PlayDrag;
 
 mod menubar;
+pub(crate) mod native_menu;
 
 const MENU_BAR_H: f32 = 30.0;
 
@@ -183,6 +184,36 @@ pub(crate) fn close_workspace_window(
     if last && !stay {
         cx.quit();
     }
+}
+
+/// Close the focused window for the Cmd/Ctrl+W chord. A child window
+/// (settings, stats, about, a popped-out panel) just closes, as does any
+/// workspace window with others still open. The chord is a soft close, never
+/// a quit: on the last workspace window it only acts when tray mode can catch
+/// the app, so Cmd+W sends it to the tray instead of quitting it out from
+/// under a reflex. With tray off it's a no-op there - use the menu or Cmd+Q.
+fn close_active_window(cx: &mut App) {
+    let Some(handle) = cx.active_window() else {
+        return;
+    };
+    // Defer out of key dispatch: the action fires while this window is mid
+    // update (taken out of the slot), so updating it again from here is
+    // refused. Running a tick later, once the slot is back, lets it through.
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |_, window, cx| {
+            if is_workspace_window(window, cx) {
+                let last = cx.default_global::<WorkspaceWindows>().0.len() <= 1;
+                let would_quit = last && !(settings::quit_to_tray() && tray::resident(cx));
+                if !would_quit {
+                    let workspace = workspace_for_window(window, cx).and_then(|ws| ws.upgrade());
+                    close_workspace_window(workspace, window, cx);
+                    window.remove_window();
+                }
+            } else {
+                window.remove_window();
+            }
+        });
+    });
 }
 
 /// The frontmost open workspace window and its shared state: what the tray
@@ -375,6 +406,7 @@ actions!(
         IncreaseFontSize,
         DecreaseFontSize,
         ResetFontSize,
+        CloseWindow,
         Quit
     ]
 );
@@ -435,6 +467,14 @@ pub fn init(cx: &mut App) {
     } else {
         ("ctrl-=", "ctrl-+", "ctrl--", "ctrl-0")
     };
+    // Close-window chord: Cmd+W on macOS, Ctrl+W elsewhere. Unscoped like
+    // Quit so it fires in every window; the handler decides what a close
+    // means per window.
+    let close_window_keys = if cfg!(target_os = "macos") {
+        "cmd-w"
+    } else {
+        "ctrl-w"
+    };
     cx.bind_keys([
         KeyBinding::new("space", TogglePlayback, PLAYBACK_KEY_SCOPE),
         KeyBinding::new("left", SeekBackward, PLAYBACK_KEY_SCOPE),
@@ -460,12 +500,46 @@ pub fn init(cx: &mut App) {
         // chord on every platform and the input leaves it unbound, unlike
         // plain and secondary Enter which type a newline.
         KeyBinding::new("shift-enter", StampLine, Some("LyricsEdit")),
+        KeyBinding::new(close_window_keys, CloseWindow, None),
         KeyBinding::new(quit_keys, Quit, None),
     ]);
     // Fallback for windows without a workspace in the focus path (popped-out
     // panels); workspace windows persist their layout first via their own
     // handler, which stops the action before it gets here.
     cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &CloseWindow, cx| close_active_window(cx));
+    // Every native-menu row that isn't one of the bound actions below comes
+    // through here. Nothing binds or handles MenuCommand in a window, so the
+    // global is the only stop.
+    cx.on_action(|command: &MenuCommand, cx| run_menu_command(&command.command, cx));
+    // The bound actions the native menu emits directly, so it can draw their
+    // shortcut. A workspace window handles them itself and stops the action
+    // during the bubble; these catch the case where a child window (settings,
+    // stats, a popped-out panel) is key, which would otherwise swallow the
+    // pick, and route it to the front workspace like every other row.
+    cx.on_action(|_: &TogglePlayback, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            ws.state
+                .player
+                .update(cx, |player, _| player.toggle_pause());
+        });
+    });
+    cx.on_action(|_: &OpenSettings, cx| {
+        with_front_workspace(cx, |ws, window, cx| {
+            crate::settings::window::open(
+                ws.state.clone(),
+                cx.entity().downgrade(),
+                window.window_handle(),
+                ws.dock.clone(),
+                cx,
+            );
+        });
+    });
+    cx.on_action(|_: &OpenStats, cx| {
+        with_front_workspace(cx, |ws, _, cx| {
+            crate::stats_window::open(ws.state.clone(), cx);
+        });
+    });
     // The zoom chords are app-wide, so they hang off global handlers rather
     // than any one window's view: whichever window has focus dispatches, and
     // the size setter repaints them all.
@@ -690,6 +764,160 @@ pub(crate) struct MenuItem {
     pub(crate) label: &'static str,
     pub(crate) icon: &'static str,
     pub(crate) action: MenuAction,
+}
+
+/// A native-menu pick, carried as a string so one action covers the whole
+/// menu tree. The macOS system bar dispatches actions rather than calling
+/// our handlers, and only a registered `Action` can ride through it, so
+/// every row that isn't already a bound action (Play, Settings, Stats,
+/// Quit) encodes itself here and [`run_menu_command`] decodes it back.
+/// See [`MenuAction::command_id`] for the encoding. `no_json` because this
+/// is only ever built in code, never named in a keymap file, which is what
+/// the JSON path is for - it also keeps schemars out of our dependencies.
+#[derive(Clone, PartialEq, Eq, gpui::Action)]
+#[action(namespace = rox, no_json)]
+pub(crate) struct MenuCommand {
+    pub(crate) command: String,
+}
+
+impl MenuAction {
+    /// This action as a [`MenuCommand`] payload, or None for the four that
+    /// go through their own bound action so the native menu can draw their
+    /// shortcut. Panels encode by label, which the catalog keys on.
+    pub(crate) fn command_id(self) -> Option<String> {
+        let id = match self {
+            // These ride their own actions, for the shortcut.
+            MenuAction::TogglePlayback
+            | MenuAction::OpenSettings
+            | MenuAction::OpenStats
+            | MenuAction::Quit => return None,
+            MenuAction::NewWindow => "new-window".into(),
+            MenuAction::EmptyWindow => "empty-window".into(),
+            MenuAction::Stop => "stop".into(),
+            MenuAction::Next => "next".into(),
+            MenuAction::Previous => "previous".into(),
+            MenuAction::OpenConsole => "console".into(),
+            MenuAction::OpenEqualizer => "equalizer".into(),
+            MenuAction::OpenWelcome => "welcome".into(),
+            MenuAction::OpenAbout => "about".into(),
+            MenuAction::ToggleMenubar => "toggle-menubar".into(),
+            MenuAction::ToggleDecorations => "toggle-decorations".into(),
+            MenuAction::ToggleArtTheming => "toggle-art-theming".into(),
+            MenuAction::ImportWorkspace => "import-workspace".into(),
+            MenuAction::ToggleQuitToTray => "toggle-quit-to-tray".into(),
+            MenuAction::CloseWindow => "close-window".into(),
+            MenuAction::OpenPanel(def) => format!("panel:{}", def.label),
+        };
+        Some(id)
+    }
+
+    /// The inverse of [`MenuAction::command_id`]. A panel resolves through
+    /// the catalog, so a row for a panel that has since been gated off
+    /// (experimental) decodes to None and the pick does nothing.
+    fn from_command_id(id: &str) -> Option<MenuAction> {
+        if let Some(label) = id.strip_prefix("panel:") {
+            return catalog::sections()
+                .flat_map(|section| section.panels.iter())
+                .find(|def| def.label == label)
+                .map(MenuAction::OpenPanel);
+        }
+        Some(match id {
+            "new-window" => MenuAction::NewWindow,
+            "empty-window" => MenuAction::EmptyWindow,
+            "stop" => MenuAction::Stop,
+            "next" => MenuAction::Next,
+            "previous" => MenuAction::Previous,
+            "console" => MenuAction::OpenConsole,
+            "equalizer" => MenuAction::OpenEqualizer,
+            "welcome" => MenuAction::OpenWelcome,
+            "about" => MenuAction::OpenAbout,
+            "toggle-menubar" => MenuAction::ToggleMenubar,
+            "toggle-decorations" => MenuAction::ToggleDecorations,
+            "toggle-art-theming" => MenuAction::ToggleArtTheming,
+            "import-workspace" => MenuAction::ImportWorkspace,
+            "toggle-quit-to-tray" => MenuAction::ToggleQuitToTray,
+            "close-window" => MenuAction::CloseWindow,
+            _ => return None,
+        })
+    }
+}
+
+/// The workspace a native-menu pick drives: the frontmost one, with its
+/// window. The system bar belongs to the app rather than any one window, and
+/// it stays reachable while a child window (settings, stats, a popped-out
+/// panel) has focus, so picks route here instead of at the key window.
+fn front_workspace_entity(cx: &mut App) -> Option<(AnyWindowHandle, Entity<Workspace>)> {
+    let open = cx.default_global::<WorkspaceWindows>().0.clone();
+    open.iter()
+        .find_map(|(handle, ws)| Some((*handle, ws.upgrade()?)))
+}
+
+/// Run `f` against the frontmost workspace inside its own window. Deferred:
+/// a menu pick can land while that window is mid-update (its own render
+/// dispatched the action), and updating a window already on the update stack
+/// is refused - the same reason [`close_active_window`] defers.
+fn with_front_workspace(
+    cx: &mut App,
+    f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+) {
+    cx.defer(move |cx| {
+        let Some((handle, workspace)) = front_workspace_entity(cx) else {
+            return;
+        };
+        let _ = handle.update(cx, |_, window, cx| {
+            workspace.update(cx, |ws, cx| f(ws, window, cx));
+        });
+    });
+}
+
+/// Run a native-menu pick. The plain rows decode back to a [`MenuAction`]
+/// and go through the same [`Workspace::run`] the in-window bar uses; the
+/// workspace and layout rows carry a name, so they route to the same
+/// flyout handlers those rows call directly.
+fn run_menu_command(command: &str, cx: &mut App) {
+    let Some((kind, name)) = command.split_once(':') else {
+        // The nameless rows: a plain action, or a save dialog.
+        match command {
+            "workspace-save-new" => {
+                with_front_workspace(cx, |ws, window, cx| {
+                    ws.open_save_workspace_dialog(window, cx)
+                });
+            }
+            "layout-save-new" => {
+                with_front_workspace(cx, |ws, window, cx| ws.open_save_dialog(window, cx));
+            }
+            _ => {
+                if let Some(action) = MenuAction::from_command_id(command) {
+                    with_front_workspace(cx, move |ws, window, cx| ws.run(action, window, cx));
+                }
+            }
+        }
+        return;
+    };
+    let name = name.to_string();
+    match kind {
+        "workspace-apply" => with_front_workspace(cx, move |ws, _, cx| {
+            ws.run_workspace(name, WorkspaceTarget::Apply, cx)
+        }),
+        "workspace-save" => with_front_workspace(cx, move |ws, _, cx| {
+            ws.run_workspace(name, WorkspaceTarget::Overwrite, cx)
+        }),
+        "layout-new" => with_front_workspace(cx, move |ws, _, cx| {
+            ws.run_layout(name, LayoutTarget::NewWindow, cx)
+        }),
+        "layout-save" => with_front_workspace(cx, move |ws, _, cx| {
+            ws.run_layout(name, LayoutTarget::Overwrite, cx)
+        }),
+        "layout-apply" => with_front_workspace(cx, move |ws, _, cx| {
+            ws.run_layout(name, LayoutTarget::Apply, cx)
+        }),
+        // "panel:<label>" and anything else that carries a colon.
+        _ => {
+            if let Some(action) = MenuAction::from_command_id(command) {
+                with_front_workspace(cx, move |ws, window, cx| ws.run(action, window, cx));
+            }
+        }
+    }
 }
 
 /// A catalog entry as a dropdown row, for the renderers that show panel
@@ -969,6 +1197,13 @@ enum LayoutDialog {
     ConfirmOverwriteWorkspace(String),
     /// Applying a saved or shipped workspace, which replaces the whole look.
     ConfirmApplyWorkspace(String),
+    /// Taking a pinned panel out of the layout. Carries what to close so the
+    /// confirm can do it without going looking again.
+    ConfirmCloseLocked {
+        panel: Arc<dyn PanelView>,
+        tabs: WeakEntity<TabPanel>,
+        name: SharedString,
+    },
 }
 
 /// How a workspace window opens, which the menubar's Window entries pick.
@@ -1373,6 +1608,11 @@ impl Workspace {
         let _player_changed = cx.observe_in(&state.player, window, |this, _, window, cx| {
             this.refresh_title(window, cx);
             this.publish_media(cx);
+            // The native Play/Pause row is baked in, so it has to be rebuilt
+            // when the player flips. Read here and handed over, since the
+            // rebuild can't reach back through this workspace mid-update.
+            let playing = this.state.player.read(cx).is_playing();
+            native_menu::sync_playback(playing, cx);
         });
         let _history_changed = cx.subscribe(&state.history, |this, _, event: &HistoryEvent, cx| {
             let HistoryEvent::Recorded { track_id } = *event;
@@ -1830,7 +2070,11 @@ impl Workspace {
                 return;
             };
             crate::workspaces::store(&bundle);
-            this.update(cx, |_, cx| cx.notify()).ok();
+            this.update(cx, |_, cx| {
+                cx.notify();
+                native_menu::rebuild(cx);
+            })
+            .ok();
         })
         .detach();
     }
@@ -1982,6 +2226,38 @@ impl Workspace {
         self.close_layout_dialog(window, cx);
     }
 
+    /// Ask before taking a pinned panel out of the layout, the Close entry's
+    /// route when the panel is locked. The pin is there to survive stray
+    /// clicks, so the entry asks rather than swallowing the click - a menu
+    /// item that does nothing reads as broken.
+    pub(crate) fn confirm_close_locked(
+        &mut self,
+        panel: Arc<dyn PanelView>,
+        tabs: WeakEntity<TabPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = panel
+            .tab_name(cx)
+            .unwrap_or_else(|| panel::display_name(panel.panel_name(cx)).into());
+        self.layout_dialog = Some(LayoutDialog::ConfirmCloseLocked { panel, tabs, name });
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    /// Close the pinned panel the confirm named. The lock stays what it is;
+    /// this one click is what gets through it.
+    fn close_locked_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(LayoutDialog::ConfirmCloseLocked { panel, tabs, .. }) = &self.layout_dialog else {
+            return;
+        };
+        let panel = panel.clone();
+        if let Some(tabs) = tabs.upgrade() {
+            tabs.update(cx, |tabs, cx| tabs.remove_panel(panel, window, cx));
+        }
+        self.close_layout_dialog(window, cx);
+    }
+
     /// Drop the layout dialog and hand focus back to the workspace so the
     /// playback keys keep working.
     fn close_layout_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1989,6 +2265,11 @@ impl Workspace {
         self._layout_input = None;
         window.focus(&self.focus);
         cx.notify();
+        // Every save, overwrite, and apply lands here on its way out, so this
+        // is the one place that catches a workspace or layout the native
+        // menu's baked-in submenus would otherwise miss. A cancel rebuilds
+        // an identical bar, which costs nothing worth branching for.
+        native_menu::rebuild(cx);
     }
 
     /// Open the quick-play modal, or close it when it is already up. The
@@ -2816,6 +3097,32 @@ impl Workspace {
                             true,
                             cx.listener(|this, _, window, cx| {
                                 this.apply_workspace_confirmed(window, cx)
+                            }),
+                        )),
+                ),
+            LayoutDialog::ConfirmCloseLocked { name, .. } => card
+                .child(div().child(SharedString::from(format!("Close \"{name}\"?"))))
+                .child(
+                    div().text_xs().text_color(palette::text_muted()).child(
+                        "This panel is pinned in place. Closing it takes it out of the layout.",
+                    ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(tokens::SPACE_SM)
+                        .child(dialog_button(
+                            "Cancel",
+                            false,
+                            cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
+                        ))
+                        .child(dialog_button(
+                            "Close",
+                            true,
+                            cx.listener(|this, _, window, cx| {
+                                this.close_locked_confirmed(window, cx)
                             }),
                         )),
                 ),

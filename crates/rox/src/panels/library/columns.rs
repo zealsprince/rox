@@ -111,6 +111,24 @@ pub(crate) const COLUMNS: &[ColumnDef] = &[
         sort: SortKey::Bitrate,
     },
     ColumnDef {
+        // The sample rate as kHz, the label carrying the unit so the cell
+        // stays a bare number beside the bitrate.
+        key: "sample_rate",
+        label: "kHz",
+        default_width: 64.,
+        right: true,
+        default_on: false,
+        sort: SortKey::SampleRate,
+    },
+    ColumnDef {
+        key: "bit_depth",
+        label: "Bits",
+        default_width: 48.,
+        right: true,
+        default_on: false,
+        sort: SortKey::BitDepth,
+    },
+    ColumnDef {
         key: "duration",
         label: "Time",
         default_width: 64.,

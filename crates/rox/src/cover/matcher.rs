@@ -353,7 +353,12 @@ impl CoverMatch {
             let preview = match &slot.thumb {
                 Some(image) => div()
                     .size_full()
-                    .child(img(image.clone()).size_full().object_fit(ObjectFit::Cover))
+                    .child(
+                        img(image.clone())
+                            .size_full()
+                            .overflow_hidden()
+                            .object_fit(ObjectFit::Cover),
+                    )
                     .into_any_element(),
                 None => div()
                     .size_full()

@@ -1399,6 +1399,7 @@ impl ArtistGridPanel {
         let layer = |image: Arc<Image>| {
             img(image)
                 .size_full()
+                .overflow_hidden()
                 .object_fit(ObjectFit::Cover)
                 .grayscale(desaturated)
                 .rounded(radius)

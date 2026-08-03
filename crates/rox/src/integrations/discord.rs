@@ -258,7 +258,14 @@ impl DiscordPresence {
                             .details(&details)
                             .state(&state_str);
 
-                        // Add timestamp if playing
+                        // Timestamps only while playing. A start stamp is an anchor, not a
+                        // clock Discord ever stops: it counts on from there client-side and
+                        // nothing goes out while paused, so a track left paused for twenty
+                        // minutes would read 21:00 into a four-minute song. Off means no
+                        // running counter at all, which is the honest thing for a pause.
+                        // The end stamp is what draws the progress bar, so it rides along.
+                        // Resume re-anchors on the position we're actually at, since
+                        // same_metadata counts is_playing and both transitions re-send.
                         if state.is_playing {
                             let now_millis = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
@@ -266,7 +273,6 @@ impl DiscordPresence {
                                 .unwrap_or(0);
                             let start_time =
                                 now_millis.saturating_sub((state.position_secs * 1000.0) as i64);
-
                             let mut timestamps = Timestamps::new().start(start_time);
                             if let Some(dur) = state.duration_secs {
                                 let end_time = start_time + ((dur * 1000.0) as i64);

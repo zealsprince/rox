@@ -254,6 +254,7 @@ fn workspace_tile(
             Some((path, _)) => d.child(
                 img(path)
                     .size_full()
+                    .overflow_hidden()
                     .object_fit(ObjectFit::Cover)
                     .grayscale(!hovered)
                     .rounded(tokens::RADIUS),

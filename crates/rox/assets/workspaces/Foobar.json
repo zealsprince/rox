@@ -245,7 +245,8 @@
                     "panel": {
                       "locked": true,
                       "max_height": 24.0,
-                      "align": "left"
+                      "align": "left",
+                      "output_tint": false
                     }
                   }
                 }

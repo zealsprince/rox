@@ -200,6 +200,8 @@ pub struct Builder {
     duration_ms: Vec<u32>,
     codec: Vec<u32>,
     bitrate_kbps: Vec<u16>,
+    sample_rate_hz: Vec<u32>,
+    bit_depth: Vec<u8>,
     rating: Vec<u8>,
     added: Vec<i64>,
     folder: Vec<u32>,
@@ -242,6 +244,8 @@ impl Builder {
         duration_ms: u32,
         codec: &str,
         bitrate_kbps: u16,
+        sample_rate_hz: u32,
+        bit_depth: u8,
         rating: u8,
         added: i64,
     ) {
@@ -259,6 +263,8 @@ impl Builder {
         self.duration_ms.push(duration_ms);
         self.codec.push(self.codecs.intern(codec));
         self.bitrate_kbps.push(bitrate_kbps);
+        self.sample_rate_hz.push(sample_rate_hz);
+        self.bit_depth.push(bit_depth);
         self.rating.push(rating);
         self.added.push(added);
         // Interned per album directory, so it stays cheap even at ten
@@ -290,6 +296,12 @@ pub struct Projection {
     pub duration_ms: Vec<u32>,
     pub codec: Vec<u32>,
     pub bitrate_kbps: Vec<u16>,
+    /// The stream's sample rate in Hz and bits per sample. Plain columns
+    /// rather than interned: a library holds a handful of distinct values
+    /// but they are a u32 and a u8, so a symbol table would cost more than
+    /// the numbers it replaced.
+    pub sample_rate_hz: Vec<u32>,
+    pub bit_depth: Vec<u8>,
     /// When each row was first scanned into the library, in unix seconds.
     /// Set on first insert and preserved across rescans, so a descending
     /// sort surfaces newly added tracks.
@@ -350,6 +362,8 @@ pub struct RowView<'a> {
     pub duration_ms: u32,
     pub codec: &'a str,
     pub bitrate_kbps: u16,
+    pub sample_rate_hz: u32,
+    pub bit_depth: u8,
     pub rating: u8,
     pub plays: u32,
     pub added: i64,
@@ -383,6 +397,7 @@ pub enum QueryField {
     Genre,
     Year,
     Folder,
+    Codec,
 }
 
 /// The `field:` prefixes the query syntax accepts, shared with the
@@ -395,6 +410,7 @@ pub const QUERY_FIELDS: &[(&str, QueryField)] = &[
     ("genre", QueryField::Genre),
     ("year", QueryField::Year),
     ("folder", QueryField::Folder),
+    ("codec", QueryField::Codec),
 ];
 
 /// One parsed query term: a lowercased needle, maybe pinned to one field.
@@ -603,6 +619,9 @@ pub struct TrackFields<'a> {
     pub album: &'a str,
     pub genre: &'a str,
     pub year: u16,
+    /// The file's format, for the `codec:` pin; the scanner's lowercase
+    /// name ("mp3", "flac"), empty when the row never got one.
+    pub codec: &'a str,
     /// The track's file path, for the `folder:` pin and the folder filter;
     /// empty when there is none. The folder itself is the parent directory,
     /// resolved the same way the projection interns it.
@@ -683,6 +702,7 @@ pub fn track_matches(terms: &[Term], fields: &TrackFields) -> bool {
         Some(QueryField::Album) => contains_fold(fields.album, &t.needle),
         Some(QueryField::Genre) => contains_fold(fields.genre, &t.needle),
         Some(QueryField::Folder) => contains_fold(&fields.folder(), &t.needle),
+        Some(QueryField::Codec) => contains_fold(fields.codec, &t.needle),
         Some(QueryField::Year) => fields.year.to_string().contains(t.needle.as_str()),
     })
 }
@@ -700,6 +720,8 @@ pub enum SortKey {
     Duration,
     Codec,
     Bitrate,
+    SampleRate,
+    BitDepth,
     Rating,
     Plays,
     Added,
@@ -737,6 +759,8 @@ impl Projection {
              dur,
              codec,
              kbps,
+             hz,
+             bits,
              rating,
              added| {
                 b.push(
@@ -753,6 +777,8 @@ impl Projection {
                     dur,
                     codec,
                     kbps,
+                    hz,
+                    bits,
                     rating,
                     added,
                 );
@@ -796,6 +822,8 @@ impl Projection {
                              dur,
                              codec,
                              kbps,
+                             hz,
+                             bits,
                              rating,
                              added| {
                                 b.push(
@@ -812,6 +840,8 @@ impl Projection {
                                     dur,
                                     codec,
                                     kbps,
+                                    hz,
+                                    bits,
                                     rating,
                                     added,
                                 );
@@ -870,6 +900,8 @@ impl Projection {
         out.duration_ms.reserve(total);
         out.codec.reserve(total);
         out.bitrate_kbps.reserve(total);
+        out.sample_rate_hz.reserve(total);
+        out.bit_depth.reserve(total);
         out.rating.reserve(total);
         out.added.reserve(total);
         out.folder.reserve(total);
@@ -899,6 +931,8 @@ impl Projection {
             out.codec
                 .extend(shard.codec.iter().map(|&s| map_c[s as usize]));
             out.bitrate_kbps.extend_from_slice(&shard.bitrate_kbps);
+            out.sample_rate_hz.extend_from_slice(&shard.sample_rate_hz);
+            out.bit_depth.extend_from_slice(&shard.bit_depth);
             out.rating.extend_from_slice(&shard.rating);
             out.added.extend_from_slice(&shard.added);
             out.folder
@@ -921,6 +955,8 @@ impl Projection {
             duration_ms: out.duration_ms,
             codec: out.codec,
             bitrate_kbps: out.bitrate_kbps,
+            sample_rate_hz: out.sample_rate_hz,
+            bit_depth: out.bit_depth,
             added: out.added,
             rating: out.rating.into_iter().map(AtomicU8::new).collect(),
             plays,
@@ -956,6 +992,8 @@ impl Projection {
             duration_ms: self.duration_ms[i],
             codec: &self.codecs.strings[self.codec[i] as usize],
             bitrate_kbps: self.bitrate_kbps[i],
+            sample_rate_hz: self.sample_rate_hz[i],
+            bit_depth: self.bit_depth[i],
             rating: self.rating[i].load(Ordering::Relaxed),
             plays: self.plays[i].load(Ordering::Relaxed),
             added: self.added[i],
@@ -1026,6 +1064,13 @@ impl Projection {
                     column: &self.folder,
                     mask: hit(&self.folders, &t.needle),
                 },
+                // Pins only as well: "flac" as a free word is a plausible
+                // title or album, and matching the format there would bury
+                // it under every lossless file in the library.
+                Some(QueryField::Codec) => Hits::Sym {
+                    column: &self.codec,
+                    mask: hit(&self.codecs, &t.needle),
+                },
                 Some(QueryField::Title) => Hits::Title(memmem::Finder::new(t.needle.as_bytes())),
                 // A year needle matches on the digits, so `year:199`
                 // takes the whole decade; the mask covers every u16 once
@@ -1068,7 +1113,8 @@ impl Projection {
     /// representative row for the cover and count. For the search's grouped
     /// hits, so typing an artist's name surfaces the artist itself above the
     /// tracks. A term pinned to a track-only field (title, album, genre,
-    /// year) excludes every artist, since it can't match an artist name.
+    /// year, codec) excludes every artist, since it can't match an artist
+    /// name.
     /// Ordered by name; first-seen row per artist.
     pub fn search_artists(&self, query: &str) -> Vec<ArtistHit> {
         let terms = parse_query(query);
@@ -1104,8 +1150,8 @@ impl Projection {
     /// query, each keyed by its (album artist, album) pair with a
     /// representative row for the cover and year. A free term matches
     /// either name; `album:` pins the album, `artist:`/`albumartist:` the
-    /// artist; a title, genre, or year term excludes every album. Ordered
-    /// by artist then album; first-seen row per pair.
+    /// artist; a title, genre, year, or codec term excludes every album.
+    /// Ordered by artist then album; first-seen row per pair.
     pub fn search_albums(&self, query: &str) -> Vec<AlbumHit> {
         let terms = parse_query(query);
         if terms.is_empty() {
@@ -1501,6 +1547,8 @@ impl Projection {
                 self.order_view(view, descending, move |i| rank[self.codec[i] as usize])
             }
             SortKey::Bitrate => self.order_view(view, descending, |i| self.bitrate_kbps[i]),
+            SortKey::SampleRate => self.order_view(view, descending, |i| self.sample_rate_hz[i]),
+            SortKey::BitDepth => self.order_view(view, descending, |i| self.bit_depth[i]),
             SortKey::Rating => {
                 self.order_view(view, descending, |i| self.rating[i].load(Ordering::Relaxed))
             }
@@ -1556,8 +1604,9 @@ impl Projection {
                 + self.track_no.capacity()
                 + self.bitrate_kbps.capacity())
                 * 2
-            + self.duration_ms.capacity() * 4
+            + (self.duration_ms.capacity() + self.sample_rate_hz.capacity()) * 4
             + self.rating.capacity()
+            + self.bit_depth.capacity()
             + self.plays.capacity() * 4
             + self.artists.heap_bytes()
             + self.album_artists.heap_bytes()
@@ -1587,7 +1636,10 @@ mod tests {
             duration_ms: 0,
             codec: String::new(),
             bitrate_kbps: 0,
+            sample_rate_hz: 0,
+            bit_depth: 0,
             rating: 0,
+            replay_gain: Default::default(),
             size: 0,
             mtime: 0,
         }
@@ -1607,7 +1659,10 @@ mod tests {
             duration_ms: 0,
             codec: String::new(),
             bitrate_kbps: 0,
+            sample_rate_hz: 0,
+            bit_depth: 0,
             rating: 0,
+            replay_gain: Default::default(),
             size: 0,
             mtime: 0,
         }
@@ -1682,6 +1737,7 @@ mod tests {
             album: "Discovery",
             genre: "Electronic",
             year: 2001,
+            codec: "flac",
             path: "/music/Discovery/1.mp3",
         };
         // Free text sweeps title, artist, album, genre; case-folded.
@@ -1702,6 +1758,10 @@ mod tests {
         assert!(track_matches(&parse_query("year:200"), &fields));
         assert!(track_matches(&parse_query("folder:discovery"), &fields));
         assert!(!track_matches(&parse_query("folder:other"), &fields));
+        // Codec pins to the file's format, and stays out of free terms.
+        assert!(track_matches(&parse_query("codec:FLAC"), &fields));
+        assert!(!track_matches(&parse_query("codec:mp3"), &fields));
+        assert!(!track_matches(&parse_query("flac"), &fields));
 
         // The structured filter matches whole values, never substrings.
         let mut filter = FilterSet::default();
@@ -1749,6 +1809,100 @@ mod tests {
         assert!(titles_for(&p, "other").is_empty());
     }
 
+    /// The stream numbers survive the store round trip and sort as
+    /// numbers, which is what the kHz and Bits columns browse on. The
+    /// parallel load merges shards, so it has to agree with the serial
+    /// one row for row.
+    #[test]
+    fn stream_format_columns_load_and_sort() {
+        let dir = std::env::temp_dir().join("rox-projection-stream-format");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("library.db");
+        let mut conn = store::open(&db).unwrap();
+        store::init_schema(&conn).unwrap();
+        let encoded = |path, title, hz, bits| {
+            let mut row = track(path, title, "A", 2000);
+            row.sample_rate_hz = hz;
+            row.bit_depth = bits;
+            row
+        };
+        store::insert_batch(
+            &mut conn,
+            &[
+                encoded("/m/1.flac", "Hi Res", 96000, 24),
+                encoded("/m/2.mp3", "Lossy", 44100, 0),
+                encoded("/m/3.flac", "CD", 44100, 16),
+            ],
+        )
+        .unwrap();
+
+        let p = Projection::load_serial(&conn, false).unwrap();
+        let by_title = |title: &str| {
+            let row = (0..p.len()).find(|&i| p.title.get(i) == title).unwrap();
+            let v = p.resolve(row as u32);
+            (v.sample_rate_hz, v.bit_depth)
+        };
+        assert_eq!(by_title("Hi Res"), (96000, 24));
+        assert_eq!(by_title("Lossy"), (44100, 0));
+        assert_eq!(by_title("CD"), (44100, 16));
+
+        // Sorting runs over the plain columns, ascending by depth then
+        // by rate.
+        let view: Vec<u32> = (0..p.len() as u32).collect();
+        let titles = |order: Vec<u32>| -> Vec<String> {
+            order
+                .iter()
+                .map(|&i| p.title.get(i as usize).to_string())
+                .collect()
+        };
+        assert_eq!(
+            titles(p.sort_view(&view, SortKey::BitDepth, false)),
+            ["Lossy", "CD", "Hi Res"]
+        );
+        assert_eq!(
+            titles(p.sort_view(&view, SortKey::SampleRate, true))[0],
+            "Hi Res"
+        );
+
+        // The sharded load merges to the same rows.
+        let parallel = Projection::load_parallel(&db, 3, false).unwrap();
+        assert_eq!(parallel.sample_rate_hz, p.sample_rate_hz);
+        assert_eq!(parallel.bit_depth, p.bit_depth);
+    }
+
+    /// `codec:` pins a term to the file's format, so one term narrows a
+    /// query to the lossless copies. Case-folded like the other pins, and
+    /// pin-only for the same reason `folder:` is: "flac" typed bare is a
+    /// plausible title, and matching the format there would bury it.
+    #[test]
+    fn search_pins_codec() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        let encoded = |path, title, codec: &str| {
+            let mut row = track(path, title, "A", 2000);
+            row.codec = codec.into();
+            row
+        };
+        store::insert_batch(
+            &mut conn,
+            &[
+                encoded("/m/1.flac", "One", "flac"),
+                encoded("/m/2.mp3", "Two", "mp3"),
+                encoded("/m/3.mp3", "Flac Tribute", "mp3"),
+            ],
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
+
+        assert_eq!(titles_for(&p, "codec:flac"), ["One"]);
+        assert_eq!(titles_for(&p, "codec:MP3").len(), 2);
+        // A codec pin ANDs with a free term like any other field.
+        assert_eq!(titles_for(&p, "tribute codec:mp3"), ["Flac Tribute"]);
+        // A bare word only reaches the text fields.
+        assert_eq!(titles_for(&p, "flac"), ["Flac Tribute"]);
+    }
+
     /// A folder pick covers its subtree: the folder itself and every
     /// descendant, bounded at a separator so a sibling sharing the prefix
     /// stays out. One value scopes a whole branch, which is what keeps the
@@ -1788,6 +1942,7 @@ mod tests {
             album: "",
             genre: "",
             year: 0,
+            codec: "",
             path,
         };
         assert!(filter.matches(&fields("/music/Air/Moon Safari/2.mp3"), false));
@@ -1845,6 +2000,7 @@ mod tests {
             album: "",
             genre: "Rock; Shoegaze",
             year: 2000,
+            codec: "mp3",
             path: "/m/1.mp3",
         };
         assert!(filter.matches(&fields, false));
@@ -1907,6 +2063,7 @@ mod tests {
             album: "",
             genre: "ROCK",
             year: 2000,
+            codec: "mp3",
             path: "/m/1.mp3",
         };
         assert!(filter.matches(&fields, true));
@@ -1937,7 +2094,10 @@ mod tests {
                 duration_ms: 0,
                 codec: String::new(),
                 bitrate_kbps: 0,
+                sample_rate_hz: 0,
+                bit_depth: 0,
                 rating: 0,
+                replay_gain: Default::default(),
                 size: 0,
                 mtime: 0,
             }
@@ -2218,7 +2378,10 @@ mod tests {
                 duration_ms: 0,
                 codec: String::new(),
                 bitrate_kbps: 0,
+                sample_rate_hz: 0,
+                bit_depth: 0,
                 rating: 0,
+                replay_gain: Default::default(),
                 size: 0,
                 mtime: 0,
             }
@@ -2304,7 +2467,10 @@ mod tests {
                 duration_ms: 0,
                 codec: String::new(),
                 bitrate_kbps: 0,
+                sample_rate_hz: 0,
+                bit_depth: 0,
                 rating: 0,
+                replay_gain: Default::default(),
                 size: 0,
                 mtime: 0,
             }

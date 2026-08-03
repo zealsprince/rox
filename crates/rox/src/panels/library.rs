@@ -84,6 +84,11 @@ struct Group {
     /// none does.
     min_kbps: u16,
     max_kbps: u16,
+    /// The run's bit depth and sample rate while every track agrees, 0
+    /// once two differ, the same all-or-nothing rule the codec follows:
+    /// a mixed album has no one shape to name.
+    bit_depth: u8,
+    sample_rate_hz: u32,
     /// The first track's path, what the header tile's thumbnail loads by.
     /// Resolved through the store once, on the group's first paint; the
     /// inner None is a track the store no longer knows.
@@ -139,6 +144,8 @@ fn group_rows(
             codec: Some(projection.codec[run[0] as usize]),
             min_kbps: 0,
             max_kbps: 0,
+            bit_depth: projection.bit_depth[run[0] as usize],
+            sample_rate_hz: projection.sample_rate_hz[run[0] as usize],
             art: None,
         });
         for line in 0..head_rows {
@@ -158,6 +165,12 @@ fn group_rows(
             group.total_ms += projection.duration_ms[row as usize] as u64;
             if group.codec != Some(projection.codec[row as usize]) {
                 group.codec = None;
+            }
+            if group.bit_depth != projection.bit_depth[row as usize] {
+                group.bit_depth = 0;
+            }
+            if group.sample_rate_hz != projection.sample_rate_hz[row as usize] {
+                group.sample_rate_hz = 0;
             }
             let kbps = projection.bitrate_kbps[row as usize];
             if kbps > 0 {
@@ -193,13 +206,19 @@ fn effective_head_lines(
     }
 }
 
-/// A group's codec and bitrate stat, resolving the interned codec symbol
-/// before handing off to the shared [`group_head::quality`].
+/// A group's codec, stream shape, and bitrate stat, resolving the interned
+/// codec symbol before handing off to the shared [`group_head::quality`].
 fn group_quality(group: &Group, projection: &Projection) -> String {
     let codec = group
         .codec
         .map(|sym| projection.codecs.strings[sym as usize].as_str());
-    group_head::quality(codec, group.min_kbps, group.max_kbps)
+    group_head::quality(
+        codec,
+        group.min_kbps,
+        group.max_kbps,
+        group.bit_depth,
+        group.sample_rate_hz,
+    )
 }
 
 /// The table delegate: the column set and the rows one panel displays.
@@ -1202,6 +1221,14 @@ impl TableDelegate for TrackTable {
             "bitrate" => cell
                 .text_color(palette::text_muted())
                 .child(fmt_num(v.bitrate_kbps)),
+            "sample_rate" => cell
+                .text_color(palette::text_muted())
+                .child(SharedString::from(group_head::khz(v.sample_rate_hz))),
+            // Blank rather than a zero for the lossy formats, which have
+            // no depth to report.
+            "bit_depth" => cell
+                .text_color(palette::text_muted())
+                .child(fmt_num(v.bit_depth as u16)),
             "duration" => cell
                 .text_color(palette::text_muted())
                 .child(SharedString::from(fmt_ms(v.duration_ms))),

@@ -2,6 +2,8 @@
 //! next, and the loop and shuffle modes, plus the optional stop and random
 //! buttons.
 
+use std::time::Instant;
+
 use gpui::{
     div, prelude::*, svg, AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable,
     MouseButton, Pixels, Subscription, WeakEntity, Window,
@@ -242,8 +244,22 @@ pub struct TransportPanel {
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
+    /// The last crossfade the render saw, so the frame where it disappears
+    /// can tell a finished fade (glow out) from a cancelled one (vanish,
+    /// today's behavior).
+    last_fade: Option<crate::player::FadeView>,
+    /// A finished fade's afterglow: when it landed and which button wore
+    /// the sweep. The gated observer goes quiet the moment the fade ends,
+    /// so the render drives these frames itself.
+    outro: Option<(Instant, bool)>,
     _player_changed: Subscription,
 }
+
+/// A fade that got at least this far before disappearing finished; anything
+/// earlier was cancelled by a stop or a seek and shouldn't celebrate. Short
+/// of 1.0 because the observer wakes per quantized step and the last step
+/// may never be seen.
+const OUTRO_FROM: f32 = 0.85;
 
 impl TransportPanel {
     pub fn new(state: AppState, config: TransportConfig, cx: &mut Context<Self>) -> Self {
@@ -255,6 +271,8 @@ impl TransportPanel {
             config,
             focus: cx.focus_handle(),
             tab_panel: None,
+            last_fade: None,
+            outro: None,
             _player_changed,
         }
     }
@@ -399,9 +417,16 @@ impl PanelSettings for TransportPanel {
 }
 
 impl Render for TransportPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(cx))
+        let body = panel::themed(&chrome, || self.body(cx));
+        // The afterglow runs after the fade the observer was watching is
+        // gone, so nothing else wakes this panel; it asks for its own
+        // frames until the glow lands at zero.
+        if self.outro.is_some() {
+            window.request_animation_frame();
+        }
+        body
     }
 }
 
@@ -429,6 +454,31 @@ impl TransportPanel {
         } else {
             palette::text_faint()
         };
+        // A crossfade in flight sweeps across the button that started it,
+        // so the overlap the ear is hearing is visible and reads in the
+        // direction the queue moved. A boundary fade shows on Next, the way
+        // the queue went.
+        let fade = player.crossfade();
+        // The frame where the fade disappears decides its exit. Finished
+        // means the afterglow below; cancelled means gone, since glowing
+        // over a stop would congratulate an interruption.
+        if fade.is_some() {
+            self.outro = None;
+            self.last_fade = fade;
+        } else if let Some(last) = self.last_fade.take() {
+            if last.progress() >= OUTRO_FROM {
+                self.outro = Some((Instant::now(), last.back));
+            }
+        }
+        // The afterglow's strength this frame: the flash lands at full and
+        // the square falls it away, most of the dissolve in the front half.
+        let outro = self.outro.and_then(|(at, back)| {
+            let t = at.elapsed().as_secs_f32() / tokens::EASE_SECS;
+            (t < 1.0).then_some((back, (1.0 - t) * (1.0 - t)))
+        });
+        if outro.is_none() {
+            self.outro = None;
+        }
 
         // The strip renders the config's list as-is: each shown button in
         // its place, whatever order the arrange editor left them in.
@@ -436,9 +486,13 @@ impl TransportPanel {
         let mut controls: Vec<AnyElement> = Vec::new();
         for item in self.config.items.clone() {
             controls.push(match item {
-                PlaybackItem::Prev => panel::icon_control(
+                PlaybackItem::Prev => panel::icon_control_fading(
                     icons::SKIP_BACK,
                     palette::text(),
+                    fade.filter(|fade| fade.back),
+                    outro
+                        .filter(|(back, _)| *back)
+                        .map(|(_, strength)| strength),
                     |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.prev()),
                     cx,
                 )
@@ -498,9 +552,13 @@ impl TransportPanel {
                     cx,
                 )
                 .into_any_element(),
-                PlaybackItem::Next => panel::icon_control(
+                PlaybackItem::Next => panel::icon_control_fading(
                     icons::SKIP_FORWARD,
                     palette::text(),
+                    fade.filter(|fade| !fade.back),
+                    outro
+                        .filter(|(back, _)| !*back)
+                        .map(|(_, strength)| strength),
                     |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.next()),
                     cx,
                 )

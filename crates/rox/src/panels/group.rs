@@ -180,13 +180,17 @@ impl GroupPanel {
                     cx,
                 ))
             });
-        div()
+        let cell = div()
             .relative()
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
             .child(content)
-            .children(controls)
+            .children(controls);
+        // The child's own size settings, applied where the split can still
+        // act on them: a capped cell keeps its size and the ratio spends
+        // what's left on the other slot.
+        composite::clamp_to_panel(cell, &self.slots[ix], cx)
     }
 
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
@@ -203,11 +207,21 @@ impl GroupPanel {
         let divider = self.divider.clone();
         let weak = cx.entity().downgrade();
 
-        let first = self.cell(0, cx).map(|d| match axis {
-            Axis::Horizontal => d.h_full().w(relative(ratio)),
-            Axis::Vertical => d.w_full().h(relative(ratio)),
-        });
-        let second = self.cell(1, cx).flex_1();
+        // Both slots size off the ratio as a flex basis rather than the
+        // first taking a hard share and the second the remainder: a slot
+        // held to a size by its own settings then gives the space it
+        // refuses back to its neighbor instead of leaving a gap.
+        let share = |cell: Div, basis: f32| {
+            cell.map(|d| match axis {
+                Axis::Horizontal => d.h_full(),
+                Axis::Vertical => d.w_full(),
+            })
+            .flex_basis(relative(basis))
+            .flex_grow()
+            .flex_shrink()
+        };
+        let first = share(self.cell(0, cx), ratio);
+        let second = share(self.cell(1, cx), 1.0 - ratio);
 
         // The split draws at the panel's own frame border width, so a
         // bordered group divides in the same stroke (and the same border

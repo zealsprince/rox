@@ -23,3 +23,37 @@ rtrb = "0.3"
 # app's backend (crate::logging in rox) captures. A library only declares the
 # facade, never installs a logger.
 log = "0.4"
+# EBU R128 loudness and true peak for the ReplayGain measurement pass
+# (ADR 19), so a file nobody ever analyzed still gets levelled. Pure Rust
+# port of libebur128, no C to link, and it merges block histories across
+# instances, which is what album gain needs.
+ebur128 = "0.1.10"
+
+# ADR 19's exclusive backend on Linux. Not a new C dependency: cpal already
+# links libasound here, so this is the same library reached directly instead
+# of through cpal's shared-mode wrapper, which cannot open `hw:` or turn
+# ALSA's own resampling off.
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.11"
+
+# ADR 19's exclusive backend on Windows. cpal can't do WASAPI exclusive at
+# all, so this reaches the API directly. Same version cpal 0.18 already
+# depends on, so the two share one copy of the bindings instead of compiling
+# a second set. Features are only the modules the backend names: the audio
+# API itself, the KS/multimedia halves that hold WAVE_FORMAT_EXTENSIBLE and
+# the two sample subtypes, COM plus the property store for endpoint names,
+# and the threading/security pair the high-resolution waitable timer needs.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61.3", features = [
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_Multimedia",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+] }

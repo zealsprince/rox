@@ -22,6 +22,7 @@ mod cover;
 mod design;
 mod discord;
 mod duplicates;
+mod eq_window;
 mod group_head;
 mod history;
 mod integrations;
@@ -40,6 +41,7 @@ mod providers;
 mod query;
 mod quick_play;
 mod rating_ui;
+mod replaygain_job;
 mod selection;
 mod settings;
 mod source;
@@ -226,11 +228,13 @@ fn main() {
     // Files handed to us on the command line (`rox song.flac`, or the file
     // manager's Open With). Collected before the app boots so a plausible-file
     // filter runs off the real argv, not gpui's.
-    //
-    // Single-instance hook goes here: if a rox is already running, forward
-    // these paths to it over a socket and exit instead of opening a second
-    // window. Not wired yet - a second launch just spawns another instance.
     let (launch_mode, launch_files) = rox_library::open_files::from_args();
+    // One rox per data directory. A rox already running takes this launch -
+    // its window comes back out of the tray with our files in hand - and this
+    // process is done before it ever opens a compositor connection.
+    let Some(instance) = startup::single_instance::claim(launch_mode, &launch_files) else {
+        return;
+    };
     let app = Application::new().with_assets(Assets);
     // macOS: clicking the dock icon while the app runs with no windows
     // brings a workspace back - the platform's own quit-to-tray. Only the
@@ -244,6 +248,10 @@ fn main() {
         // The logging backend goes up first, so anything the rest of startup
         // reports lands in the file and the console ring from the first line.
         logging::init();
+        // The socket goes live next, so a launch that lands mid-startup is
+        // already queued for the drain rather than bouncing off a closed
+        // door and starting its own rox.
+        startup::single_instance::serve(instance, cx);
         // Whether this launch found a settings file decides the welcome
         // window later; recorded before anything can write one.
         settings::note_first_run();

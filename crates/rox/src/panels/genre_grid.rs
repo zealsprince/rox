@@ -1147,6 +1147,7 @@ impl GenreGridPanel {
                 Some(image) => round(
                     img(image)
                         .size_full()
+                        .overflow_hidden()
                         .object_fit(ObjectFit::Cover)
                         .grayscale(grayed),
                 )
@@ -1259,6 +1260,7 @@ impl GenreGridPanel {
             Some(
                 img(image)
                     .size_full()
+                    .overflow_hidden()
                     .object_fit(ObjectFit::Cover)
                     .grayscale(grayed)
                     .rounded(radius)

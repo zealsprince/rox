@@ -1023,6 +1023,7 @@ impl GridPanel {
         let content: AnyElement = match thumb {
             Thumb::Ready(image) => img(image)
                 .size_full()
+                .overflow_hidden()
                 .object_fit(ObjectFit::Cover)
                 .grayscale(desaturated)
                 .rounded(radius)

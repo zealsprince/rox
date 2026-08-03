@@ -258,7 +258,8 @@
                           "locked": true,
                           "anchor": true,
                           "max_height": 24.0,
-                          "align": "left"
+                          "align": "left",
+                          "output_tint": false
                         }
                       }
                     }
@@ -374,7 +375,8 @@
                         "panel": {
                           "locked": true,
                           "anchor": true,
-                          "align": "left"
+                          "align": "left",
+                          "output_tint": false
                         }
                       }
                     }

@@ -219,6 +219,8 @@ fn group_track(t: &PlaylistTrack) -> GroupTrack<'_> {
         genre: &t.genre,
         codec: &t.codec,
         bitrate_kbps: t.bitrate_kbps,
+        sample_rate_hz: t.sample_rate_hz,
+        bit_depth: t.bit_depth,
         duration_ms: t.duration_ms,
         track_id: t.track_id,
     }
@@ -565,6 +567,7 @@ impl PlaylistsPanel {
             album: &t.album,
             genre: &t.genre,
             year: t.year,
+            codec: &t.codec,
             path: &t.path,
         };
         track_matches(terms, &fields)

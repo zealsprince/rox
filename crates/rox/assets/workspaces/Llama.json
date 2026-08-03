@@ -48,7 +48,8 @@
                           "anchor": true,
                           "max_height": 24.0,
                           "align": "left",
-                          "marquee": "loop"
+                          "marquee": "loop",
+                          "output_tint": false
                         }
                       }
                     }
@@ -407,7 +408,8 @@
                           "anchor": true,
                           "max_height": 24.0,
                           "align": "left",
-                          "marquee": "loop"
+                          "marquee": "loop",
+                          "output_tint": false
                         }
                       }
                     }

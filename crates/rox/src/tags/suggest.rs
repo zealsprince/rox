@@ -289,6 +289,7 @@ impl CompletionProvider for QuerySuggestions {
                 // the substring match reaches it inside any "; " list.
                 QueryField::Genre => self.projection.genre_terms(),
                 QueryField::Folder => &self.projection.folders,
+                QueryField::Codec => &self.projection.codecs,
                 // The year column has no symbol table; suggest from the
                 // distinct year list instead. Years never carry spaces, so
                 // they need no quoting.

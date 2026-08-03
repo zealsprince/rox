@@ -439,6 +439,45 @@ impl Library {
             .unwrap_or_default()
     }
 
+    /// What the library has to level by, split into what the files carried
+    /// and what rox measured. The Audio page states this beside the leveling
+    /// setting, and the missing count is the measurement pass's work list.
+    pub fn replaygain_breakdown(&self) -> store::GainCoverage {
+        self.conn
+            .as_ref()
+            .and_then(|conn| store::replaygain_breakdown(conn).ok())
+            .unwrap_or_default()
+    }
+
+    /// The library database, for a background pass that opens its own
+    /// connection to it (the ReplayGain measurement job).
+    pub fn db_path(&self) -> PathBuf {
+        self.db_path.clone()
+    }
+
+    /// A background pass wrote ReplayGain columns straight to the database.
+    /// Nothing the projection holds moved, so there's no reload to run and
+    /// no reason to pay for one on a big library: this only tells the
+    /// coverage readouts and the panels to re-read.
+    pub fn note_gain_written(&mut self, cx: &mut Context<Self>) {
+        cx.emit(LibraryEvent::Updated);
+        cx.notify();
+    }
+
+    /// Re-read files the app wrote outside the tag editor, the measurement
+    /// pass's tag write-back. Same two steps [`Library::apply_edits`] ends
+    /// on - note the writes so the watcher doesn't bounce them back, then
+    /// reindex - minus the optimistic column patch, since the values only
+    /// exist on disk and the reindex is what brings them in.
+    pub fn reindex_written(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            self.note_gain_written(cx);
+            return;
+        }
+        self.note_self_write(paths.iter().cloned());
+        self.reload(Refresh::Reindex(paths), cx);
+    }
+
     /// Add a folder and scan it. The list never nests, so counts never
     /// overlap and removals never reach into another folder's tracks: one
     /// already covered by a listed folder is not added, just rescanned,

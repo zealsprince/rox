@@ -5,8 +5,12 @@
 //! this same engine from stdin in rox-prototype-playback (git history, commit
 //! bd22dc1).
 
+pub mod analysis;
 pub mod chain;
 pub mod engine;
+pub mod eq;
+pub mod gain;
+pub mod latency;
 pub mod output;
 pub mod resample;
 pub mod shared;

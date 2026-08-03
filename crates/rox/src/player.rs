@@ -7,21 +7,22 @@
 //! panels are the UI over this state.
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
-use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::time::Duration;
 
-use gpui::{Context, Entity, SharedString, Subscription, Task};
+use gpui::{App, Context, Entity, Global, SharedString, Subscription, Task};
 
 use rox_library::store;
-use rox_playback::cpal::Stream;
 use rox_playback::engine::{self, Cmd, LoopMode, StartQueue};
-use rox_playback::output;
+use rox_playback::eq::{Eq, EqParams};
+use rox_playback::gain;
+use rox_playback::output::{self, Mode, Negotiated, Request};
 use rox_playback::rtrb::Consumer;
 use rox_playback::shared::{QueueEntry, QueueSnapshot, Shared};
 use rox_viz::AudioFeed;
 
-use crate::settings::Settings;
+use crate::settings::{GainModeSetting, ReplayGainSave, ReplayGainSettings, Settings};
 
 /// Pump cadence, roughly one video frame. The tap ring holds 16,384 samples
 /// (about 170 ms at 48 kHz stereo), so a tick has an order of magnitude of
@@ -34,14 +35,23 @@ struct Session {
     shared: Arc<Shared>,
     tx: mpsc::Sender<Cmd>,
     tap: Consumer<f32>,
-    _stream: Stream,
+    _stream: Box<dyn output::OutputStream>,
     device_rate: u32,
+    /// What the output layer actually got, as opposed to what was asked
+    /// for. The Audio page reads this, and the rate follow compares against
+    /// it, so neither is going on the setting's word.
+    negotiated: output::Negotiated,
     /// The queued paths, kept so the views can resolve the playing track
     /// back to its file.
     queue: Vec<PathBuf>,
+    /// The ReplayGain tags handed to the engine, in the same pool order as
+    /// `queue`. Kept so the status readout can say what the playing file is
+    /// actually being levelled by rather than what the setting is set to.
+    gains: Vec<gain::ReplayGain>,
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)]
     fn start(
         queue: StartQueue,
         volume: f32,
@@ -49,6 +59,9 @@ impl Session {
         shuffle: Option<bool>,
         stop_after: bool,
         paused_at: Option<f64>,
+        crossfade: (f32, bool),
+        rule: gain::GainRule,
+        output: output::Request,
     ) -> Result<Session, String> {
         let shared = Arc::new(Shared::new(queue.paths.len()));
         // Seed the session with the persisted playback state: volume lands
@@ -58,7 +71,7 @@ impl Session {
         shared
             .volume_bits
             .store(volume.to_bits(), Ordering::Relaxed);
-        let out = output::open(shared.clone())?;
+        let out = output::open(&output, &shared)?;
         let device_rate = out.sample_rate;
         let (tx, rx) = mpsc::channel::<Cmd>();
         let _ = tx.send(Cmd::SetLoop(loop_mode));
@@ -82,7 +95,25 @@ impl Session {
             let _ = tx.send(Cmd::Seek(secs));
             let _ = tx.send(Cmd::TogglePause);
         }
+        // The fade settings ride ahead of the first decode too, so a
+        // session that starts on a skip already knows what to do at its
+        // first boundary.
+        let _ = tx.send(Cmd::SetCrossfade {
+            secs: crossfade.0,
+            albums: crossfade.1,
+        });
+        // And the leveling rule, so the first track opens at the volume the
+        // rest of the session will play at rather than jumping once the
+        // setting catches up.
+        let _ = tx.send(Cmd::SetGainRule(rule));
+        // The EQ joins this session's processing chain (ADR 19). Queued
+        // here with the rest, so it's in place before the first buffer
+        // rather than a few chunks late. It's the only thing this channel
+        // ever carries for the chain: the bands are atomics on the shared
+        // handle, so every later turn of a knob is a store.
+        let _ = tx.send(Cmd::ChainPush(Box::new(Eq::new(eq_params().clone()))));
         let paths = queue.paths.clone();
+        let gains = queue.gains.clone();
         let engine = engine::Engine::new(queue, shared.clone(), out.producer, device_rate, rx);
         std::thread::Builder::new()
             .name("decode".into())
@@ -94,7 +125,9 @@ impl Session {
             tap: out.tap,
             _stream: out.stream,
             device_rate,
+            negotiated: out.negotiated,
             queue: paths,
+            gains,
         })
     }
 }
@@ -119,6 +152,30 @@ impl Drop for Session {
     }
 }
 
+/// How finely a crossfade's progress is reported. The transport draws the
+/// fade as a sweep a couple of dozen pixels wide, so this is the resolution
+/// past which nothing on screen would move; it's also what keeps the fade in
+/// [`PlayerView`], since a panel then wakes once per step instead of on
+/// every pump tick for the whole window.
+const FADE_STEPS: u8 = 64;
+
+/// A crossfade in progress, as the transport sees it: how far along, in
+/// [`FADE_STEPS`]ths, and which way the skip that started it went.
+#[derive(Clone, Copy, PartialEq)]
+pub struct FadeView {
+    pub step: u8,
+    /// The fade came from a Previous. A boundary fade and a Next both read
+    /// as forward.
+    pub back: bool,
+}
+
+impl FadeView {
+    /// Progress through the window, 0 to 1.
+    pub fn progress(&self) -> f32 {
+        self.step as f32 / FADE_STEPS as f32
+    }
+}
+
 /// The player's discrete state: everything the controls and info panels
 /// draw that changes on a user action or a track change, never on the bare
 /// position tick. The position clock is deliberately left out, so a panel
@@ -136,6 +193,29 @@ pub struct PlayerView {
     pub muted: bool,
     pub volume: f32,
     pub error: Option<SharedString>,
+    /// The crossfade the ear is in, quantized so a gated observer wakes
+    /// once per visible step. None the rest of the time, which is a
+    /// comparison that costs nothing on a settled session.
+    pub fade: Option<FadeView>,
+}
+
+/// What output actually ended up doing, for the Audio page to state instead
+/// of echoing the settings back. ADR 19's bit-perfect claim rests on three
+/// conditions, and the two this can speak to are here: which mode is
+/// running, and whether the device rate matches the file's.
+#[derive(Clone, PartialEq)]
+pub struct OutputStatus {
+    pub negotiated: Negotiated,
+    /// The playing file's own rate. None before a track has opened, which
+    /// is also the only honest answer then.
+    pub source_rate: Option<u32>,
+    /// What ReplayGain is actually doing to the playing file, in dB. None
+    /// when the samples reach the ring untouched: leveling off, or on with
+    /// nothing to apply, which is what an untagged file with no fallback
+    /// set comes to. Not a fault when it is set, but it's processing, and
+    /// the readout would be claiming the file's own samples without saying
+    /// so.
+    pub leveling_db: Option<f32>,
 }
 
 /// A queue snapshot for the close-time persist: every entry's path and
@@ -158,16 +238,30 @@ pub struct Player {
     /// Debounce generation for the volume persist; only the last edit in a
     /// burst writes the settings file. See [`Self::persist_volume_soon`].
     persist_gen: u64,
-    /// Read connection to the library for the insert-time album group lookup
-    /// (ADR 17): the engine sees bare paths, so the player resolves each
-    /// path's group here before handing it over. Opened lazily on the first
-    /// play; WAL keeps it current alongside the catalog's connections. None
-    /// until then, or when the library has no database.
-    group_conn: Option<rox_library::rusqlite::Connection>,
+    /// Read connection to the library for the insert-time lookup: the
+    /// engine sees bare paths, so the player resolves each path's album
+    /// group and ReplayGain here before handing it over. Opened lazily on
+    /// the first play; WAL keeps it current alongside the catalog's
+    /// connections. None until then, or when the library has no database.
+    meta_conn: Option<rox_library::rusqlite::Connection>,
     /// Stop at the end of the playing track, next one cued and paused.
     /// Deliberately not persisted: an armed stop that survived a restart
     /// would read as a broken player days later.
     stop_after: bool,
+    /// The rate the next stream asks for, exclusive mode's rate follow
+    /// (ADR 19). Holds whatever the last stream negotiated, so a rebuild
+    /// comes back up on the rate it went down on instead of dropping to the
+    /// device default and following its way back; the pump moves it to the
+    /// playing file's rate when the two disagree. None until a stream has
+    /// opened, which is when the device's own default answers.
+    follow_rate: Option<u32>,
+    /// Rates the device already turned down. The follow asks once per rate
+    /// and then leaves it alone, so a card that can't do 192 kHz doesn't
+    /// rebuild the session on every tick of every 192 kHz track. A list
+    /// rather than the last one, or a queue alternating two rates the card
+    /// lacks would rebuild at every boundary. Cleared when the mode or the
+    /// device changes, since the next one may well take them.
+    refused_rates: Vec<u32>,
 }
 
 impl Player {
@@ -179,29 +273,48 @@ impl Player {
             settings: Settings::load(),
             pump: None,
             persist_gen: 0,
-            group_conn: None,
+            meta_conn: None,
             stop_after: false,
+            follow_rate: None,
+            refused_rates: Vec::new(),
         }
     }
 
-    /// The album group per path, for the engine's queue entries. Unknown
-    /// paths and untagged tracks resolve to None; a missing database means
-    /// everything does, and playback carries on ungrouped.
-    fn groups_for(&mut self, paths: &[PathBuf]) -> Vec<Option<u64>> {
-        if self.group_conn.is_none() {
+    /// What the engine needs per queued path beyond the path itself: the
+    /// album group (ADR 17) and the ReplayGain tags (ADR 19), split into
+    /// the two parallel vecs the queue commands carry. Unknown paths
+    /// resolve to ungrouped and untagged; a missing database means every
+    /// path does, and playback carries on unlevelled.
+    fn queue_meta_for(&mut self, paths: &[PathBuf]) -> (Vec<Option<u64>>, Vec<gain::ReplayGain>) {
+        if self.meta_conn.is_none() {
             let db = crate::settings::data_dir().join("library.db");
-            self.group_conn = db.exists().then(|| store::open(&db).ok()).flatten();
+            self.meta_conn = db.exists().then(|| store::open(&db).ok()).flatten();
         }
-        let Some(conn) = self.group_conn.as_ref() else {
-            return vec![None; paths.len()];
+        let Some(conn) = self.meta_conn.as_ref() else {
+            return (
+                vec![None; paths.len()],
+                vec![Default::default(); paths.len()],
+            );
         };
         paths
             .iter()
             .map(|p| {
-                p.to_str()
-                    .and_then(|s| store::group_for_path(conn, s).ok().flatten())
+                let meta = p
+                    .to_str()
+                    .and_then(|s| store::queue_meta_for_path(conn, s).ok())
+                    .unwrap_or_default();
+                let rg = meta.replay_gain;
+                (
+                    meta.group,
+                    gain::ReplayGain {
+                        track_db: rg.track_db,
+                        track_peak: rg.track_peak,
+                        album_db: rg.album_db,
+                        album_peak: rg.album_peak,
+                    },
+                )
             })
-            .collect()
+            .unzip()
     }
 
     /// The audio feed the audio views read from.
@@ -435,16 +548,18 @@ impl Player {
             self.play(paths, cx);
             return;
         }
-        // Group lookup before the session borrow; both want &mut self.
-        let groups = self.groups_for(&paths);
+        // Library lookup before the session borrow; both want &mut self.
+        let (groups, gains) = self.queue_meta_for(&paths);
         let Some(session) = self.session.as_mut() else {
             return;
         };
         session.queue.extend(paths.iter().cloned());
+        session.gains.extend(gains.iter().copied());
         let _ = session.tx.send(Cmd::Insert {
             after,
             paths,
             groups,
+            gains,
             explicit: true,
             and_play,
         });
@@ -520,9 +635,10 @@ impl Player {
         // Remember what to prime the feed with so a frozen panel gets a real
         // frame at the load position instead of blank bars.
         let prime = paused_at.map(|secs| (queue[start].clone(), secs.max(0.0)));
-        // Album groups for the whole context (ADR 17). A restore re-derives
-        // them here too, so they never need persisting with the queue.
-        let groups = self.groups_for(&queue);
+        // Album groups and ReplayGain for the whole context. A restore
+        // re-derives both here too, so neither needs persisting with the
+        // queue.
+        let (groups, gains) = self.queue_meta_for(&queue);
         self.session = None;
         // A fresh context takes the current shuffle mode; a restore preserves
         // the saved order and passes None so the engine leaves it untouched.
@@ -537,16 +653,30 @@ impl Player {
                 start,
                 explicit,
                 groups,
+                gains,
             },
             self.effective_volume(),
             self.settings.session.loop_mode(),
             shuffle,
             self.stop_after,
             paused_at,
+            (self.settings.crossfade_secs, self.settings.crossfade_albums),
+            self.settings.replay_gain.rule(),
+            self.output_request(),
         ) {
             Ok(session) => {
                 self.feed.set_sample_rate(session.device_rate);
                 let rate = session.device_rate;
+                // Ask the next open for the rate this one landed on. A card
+                // that took 44.1 keeps being asked for 44.1, so a rebuild
+                // for any other reason doesn't drop to the device default
+                // and then follow its way back up with a second gap. Only
+                // exclusive gets to pick a rate at all: carrying a shared
+                // session's mixer rate forward would make the switch into
+                // exclusive open at the mixer rate first, then follow the
+                // file's, which is the second gap this exists to avoid.
+                self.follow_rate = (session.negotiated.mode == Mode::Exclusive)
+                    .then_some(session.negotiated.sample_rate);
                 self.session = Some(session);
                 self.error = None;
                 self.start_pump(cx);
@@ -605,6 +735,11 @@ impl Player {
                     this.reopen_device(cx);
                     return false;
                 }
+                // Exclusive follows the file's rate, which means the same
+                // stop: the rebuild brings its own pump up.
+                if this.follow_source_rate(cx) {
+                    return false;
+                }
                 this.drain_tap();
                 let playing = this.is_playing();
                 let rev = this.queue_rev();
@@ -630,40 +765,410 @@ impl Player {
         }));
     }
 
-    /// Rebuild the output after the device dropped out. Captures the live
-    /// queue, cursor, and position from the dying session, tears it down, and
-    /// starts a fresh one at the same spot. The old stream is already dead, so
-    /// this is the only way back to audio short of the user restarting. Resumes
-    /// playing if it was playing, since a disconnect isn't a pause. A failed
-    /// reopen (no device at all) surfaces as an error and leaves the session
-    /// gone, so the UI stops showing a frozen "playing".
-    fn reopen_device(&mut self, cx: &mut Context<Self>) {
+    /// Rebuild the running session against the current output settings, at
+    /// the spot it's playing. Captures the live queue, cursor, and position,
+    /// tears the session down, and starts a fresh one, because everything
+    /// denominated in the device rate goes with the stream: the sample ring,
+    /// the resampler, the consumed clock, the segment list. Resumes playing
+    /// if it was playing, since none of the reasons to come through here are
+    /// a pause.
+    ///
+    /// False means there was nothing to rebuild from, no session or a queue
+    /// that wouldn't resolve. A rebuild that tried and couldn't open reports
+    /// through the session error like any other failed start.
+    fn rebuild_session(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(session) = self.session.as_ref() else {
-            return;
+            return false;
         };
         let was_playing = session.shared.playing.load(Ordering::Relaxed);
-        // Pull the order, cursor, and position off the dying session the same
+        // Pull the order, cursor, and position off the old session the same
         // way the close-time persist does, so the rebuilt queue matches what
         // was playing rather than the seed order.
         let Some((entries, cursor, position_secs)) = self.queue_state() else {
-            // Nothing resolvable to restore; drop the dead session so the UI
-            // falls back to idle instead of a frozen transport.
-            self.stop(cx);
-            self.error = Some("audio output: device lost".into());
-            cx.notify();
-            return;
+            return false;
         };
         let (paths, explicit): (Vec<PathBuf>, Vec<bool>) = entries.into_iter().unzip();
         // Restore-shaped start: preserve the saved order, seed the position.
-        // start_session opens a fresh stream against the current default
-        // device, which is the reconnected (or newly default) one.
         self.start_session(paths, cursor, Some(position_secs), explicit, true, cx);
-        // A restore comes up paused; a disconnect mid-playback should resume,
-        // so the reopened stream picks up where it left off. Only when the
+        // A restore comes up paused, so put it back to playing. Only when the
         // start actually produced a session.
         if was_playing && self.session.is_some() {
             self.send(Cmd::TogglePause);
         }
+        true
+    }
+
+    /// Rebuild the output after the device dropped out. The old stream is
+    /// already dead, so this is the only way back to audio short of the user
+    /// restarting; start_session opens against the current default device,
+    /// which is the reconnected (or newly default) one. Nothing left to
+    /// restore surfaces as an error with the session gone, so the UI stops
+    /// showing a frozen "playing".
+    fn reopen_device(&mut self, cx: &mut Context<Self>) {
+        if self.session.is_none() || self.rebuild_session(cx) {
+            return;
+        }
+        self.stop(cx);
+        self.error = Some("audio output: device lost".into());
+        cx.notify();
+    }
+
+    /// Exclusive mode follows the file's rate (ADR 19): when the playing
+    /// track's rate isn't the rate the device is running, reopen at the
+    /// file's. Costs the gap between tracks the ADR budgeted for, and it's
+    /// the whole reason a fresh queue can open at the device default and
+    /// still end up bit-perfect. Nothing knows a file's rate until the
+    /// decode thread has opened it, so the first one is followed a beat
+    /// late rather than guessed at.
+    ///
+    /// Only fires on a rate the device hasn't already turned down, so a card
+    /// that can't match doesn't rebuild the session on every tick. Returns
+    /// whether it rebuilt.
+    fn follow_source_rate(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        if session.negotiated.mode != Mode::Exclusive {
+            return false;
+        }
+        // A pinned rate means the device stays where it was put, gaps and
+        // all, so there's nothing here to follow.
+        if self.settings.output.rate.is_some() {
+            return false;
+        }
+        let Some(rate) = self.source_rate() else {
+            return false;
+        };
+        if rate == session.device_rate || self.refused_rates.contains(&rate) {
+            return false;
+        }
+        self.follow_rate = Some(rate);
+        if !self.rebuild_session(cx) {
+            return false;
+        }
+        // The card landed somewhere else, so this rate is one it doesn't
+        // have. Remember that instead of asking again next tick.
+        if self.negotiated().is_some_and(|n| n.sample_rate != rate) {
+            self.refused_rates.push(rate);
+        }
+        true
+    }
+
+    /// The playing file's own sample rate, as the decode thread read it off
+    /// the container. None until a track has opened.
+    fn source_rate(&self) -> Option<u32> {
+        let session = self.session.as_ref()?;
+        let (track, _) = session.shared.position(session.device_rate)?;
+        let tracks = session.shared.tracks.lock().unwrap();
+        tracks
+            .get(track)
+            .and_then(|t| t.as_ref())
+            .map(|t| t.sample_rate)
+    }
+
+    /// What the running stream negotiated, None while nothing is open.
+    fn negotiated(&self) -> Option<&Negotiated> {
+        self.session.as_ref().map(|s| &s.negotiated)
+    }
+
+    /// What to ask the output layer for: the persisted mode with that mode's
+    /// device pick, and the rate to follow. The two device picks are kept
+    /// apart in the settings because their ids don't cross.
+    fn output_request(&self) -> Request {
+        let output = &self.settings.output;
+        let exclusive = output.exclusive;
+        Request {
+            mode: if exclusive {
+                Mode::Exclusive
+            } else {
+                Mode::Shared
+            },
+            device: if exclusive {
+                output.exclusive_device.clone()
+            } else {
+                output.device.clone()
+            },
+            // A pinned rate is the whole ask; the follow only speaks when
+            // nothing was pinned, so the two can't fight over the stream.
+            rate: output.rate.or(self.follow_rate),
+            format: output.format.clone(),
+            period_ms: output.period_ms,
+        }
+    }
+
+    /// What output ended up doing, for the settings page. None while no
+    /// stream is open, which is the honest answer: nothing has negotiated
+    /// with any device yet.
+    pub fn output_status(&self) -> Option<OutputStatus> {
+        Some(OutputStatus {
+            negotiated: self.negotiated()?.clone(),
+            source_rate: self.source_rate(),
+            leveling_db: self.leveling_db(),
+        })
+    }
+
+    /// How far the playing file is being moved by ReplayGain, in dB. Run
+    /// through the same rule the engine levels with, off the same tags, so
+    /// this says what's happening rather than what's switched on: an
+    /// untagged file with the fallback at zero comes out unity, and unity
+    /// is nothing to report. None while no track is open.
+    fn leveling_db(&self) -> Option<f32> {
+        let session = self.session.as_ref()?;
+        let (track, _) = session.shared.position(session.device_rate)?;
+        let rg = session.gains.get(track).copied().unwrap_or_default();
+        let factor = self.settings.replay_gain.rule().factor(rg);
+        (factor != 1.0).then(|| 20.0 * factor.log10())
+    }
+
+    /// The whole EQ cascade's gain at one frequency, for whatever plots the
+    /// curve. Evaluated at the device rate where a stream is open, since
+    /// that's what the running filters were built against; 48 kHz stands in
+    /// while nothing plays so the plot still draws the shape.
+    pub fn eq_response_db(&self, hz: f32) -> f32 {
+        let rate = self
+            .session
+            .as_ref()
+            .map(|session| session.device_rate)
+            .unwrap_or(48_000);
+        eq_params().response_db(hz, rate)
+    }
+
+    /// How long a crossfade runs, in seconds. Zero is off.
+    pub fn crossfade_secs(&self) -> f32 {
+        self.settings.crossfade_secs
+    }
+
+    /// Whether the fade takes album-contiguous boundaries too.
+    pub fn crossfade_albums(&self) -> bool {
+        self.settings.crossfade_albums
+    }
+
+    /// Set the crossfade length and persist it. The running session takes
+    /// it live over the command channel, so the next boundary uses the new
+    /// length; nothing rebuilds and nothing playing is interrupted.
+    pub fn set_crossfade_secs(&mut self, secs: f32, cx: &mut Context<Self>) {
+        // The engine's own clamp, so the persisted number and the audible
+        // one can't drift apart.
+        let secs = secs.clamp(0.0, engine::CROSSFADE_MAX_SECS);
+        if self.settings.crossfade_secs == secs {
+            return;
+        }
+        self.settings.crossfade_secs = secs;
+        self.send_crossfade();
+        // Dragging the slider lands here per tick, same as the volume, so
+        // the file write waits for the drag to settle.
+        self.persist_playback_soon(cx);
+        cx.notify();
+    }
+
+    /// Fade inside an album as well, or leave a record's own splices alone.
+    /// Live on the running session like the length.
+    pub fn set_crossfade_albums(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.settings.crossfade_albums == on {
+            return;
+        }
+        self.settings.crossfade_albums = on;
+        self.send_crossfade();
+        Settings::update(move |s| s.crossfade_albums = on);
+        cx.notify();
+    }
+
+    /// How tagged loudness is levelled right now (ADR 19).
+    pub fn replay_gain(&self) -> ReplayGainSettings {
+        self.settings.replay_gain
+    }
+
+    /// Switch which gain the leveling reads, or turn it off. Live on the
+    /// running session: the engine relevels every source it holds, so the
+    /// change lands on the track playing rather than the one after it.
+    pub fn set_replay_gain_mode(&mut self, mode: GainModeSetting, cx: &mut Context<Self>) {
+        if self.settings.replay_gain.mode == mode {
+            return;
+        }
+        self.settings.replay_gain.mode = mode;
+        self.send_gain_rule();
+        Settings::update(move |s| s.replay_gain.mode = mode);
+        cx.notify();
+    }
+
+    /// The offset on every tagged gain, in dB.
+    pub fn set_replay_gain_preamp(&mut self, db: f32, cx: &mut Context<Self>) {
+        if self.settings.replay_gain.preamp_db == db {
+            return;
+        }
+        self.settings.replay_gain.preamp_db = db;
+        self.send_gain_rule();
+        // A dragged slider lands here per tick, so the file write waits for
+        // the drag to settle, the same as volume and the fade length.
+        self.persist_playback_soon(cx);
+        cx.notify();
+    }
+
+    /// What an untagged file plays at, in dB.
+    pub fn set_replay_gain_fallback(&mut self, db: f32, cx: &mut Context<Self>) {
+        if self.settings.replay_gain.fallback_db == db {
+            return;
+        }
+        self.settings.replay_gain.fallback_db = db;
+        self.send_gain_rule();
+        self.persist_playback_soon(cx);
+        cx.notify();
+    }
+
+    /// Where the measurement pass saves what it measured. The engine never
+    /// sees it, but it goes through the player like the other three: the
+    /// player holds the live copy of `replay_gain` and flushes the struct
+    /// whole, so a value written around it would get clobbered by the next
+    /// volume tick.
+    pub fn set_replay_gain_save(&mut self, save: ReplayGainSave, cx: &mut Context<Self>) {
+        if self.settings.replay_gain.save == save {
+            return;
+        }
+        self.settings.replay_gain.save = save;
+        Settings::update(move |s| s.replay_gain.save = save);
+        cx.notify();
+    }
+
+    /// Hand the engine the whole rule. One command for all three knobs,
+    /// since a factor is only decided by reading them together.
+    fn send_gain_rule(&self) {
+        self.send(Cmd::SetGainRule(self.settings.replay_gain.rule()));
+    }
+
+    /// Hand the engine both fade settings; they arrive together because the
+    /// boundary decision reads both.
+    fn send_crossfade(&self) {
+        self.send(Cmd::SetCrossfade {
+            secs: self.settings.crossfade_secs,
+            albums: self.settings.crossfade_albums,
+        });
+    }
+
+    /// The crossfade the ear is in the middle of, if any. Off the output
+    /// clock, so it shows while the overlap is audible rather than while
+    /// the decode thread is mixing it.
+    pub fn crossfade(&self) -> Option<FadeView> {
+        let (progress, back) = self.session.as_ref()?.shared.crossfade()?;
+        Some(FadeView {
+            step: (progress.clamp(0.0, 1.0) * FADE_STEPS as f32) as u8,
+            back,
+        })
+    }
+
+    /// Whether exclusive output is asked for. What's actually running is
+    /// [`Self::output_status`]; these two disagree whenever a claim failed.
+    pub fn exclusive_output(&self) -> bool {
+        self.settings.output.exclusive
+    }
+
+    /// The device pick for the mode that's asked for, None for the system
+    /// default.
+    pub fn output_device(&self) -> Option<&str> {
+        let output = &self.settings.output;
+        if output.exclusive {
+            output.exclusive_device.as_deref()
+        } else {
+            output.device.as_deref()
+        }
+    }
+
+    /// Ask for exclusive output, or give the device back. The running
+    /// session rebuilds against the other backend right here, so the switch
+    /// lands without a restart; with nothing playing it takes effect on the
+    /// next track.
+    pub fn set_exclusive_output(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.settings.output.exclusive == on {
+            return;
+        }
+        self.settings.output.exclusive = on;
+        Settings::update(move |s| s.output.exclusive = on);
+        // The other backend and the other device are a different set of
+        // supported rates, so nothing the old one refused still counts.
+        self.refused_rates.clear();
+        self.rebuild_session(cx);
+        cx.notify();
+    }
+
+    /// Pick the device for the mode that's asked for, None for the system
+    /// default. Rebuilds the running session onto it.
+    pub fn set_output_device(&mut self, device: Option<String>, cx: &mut Context<Self>) {
+        if self.output_device() == device.as_deref() {
+            return;
+        }
+        let exclusive = self.settings.output.exclusive;
+        if exclusive {
+            self.settings.output.exclusive_device = device.clone();
+        } else {
+            self.settings.output.device = device.clone();
+        }
+        Settings::update(move |s| {
+            if exclusive {
+                s.output.exclusive_device = device;
+            } else {
+                s.output.device = device;
+            }
+        });
+        self.refused_rates.clear();
+        self.rebuild_session(cx);
+        cx.notify();
+    }
+
+    /// Pin the exclusive device to one rate, or None to go back to following
+    /// each file's own. Either way the running session reopens, so the
+    /// change is audible now rather than at the next track.
+    pub fn set_output_rate(&mut self, rate: Option<u32>, cx: &mut Context<Self>) {
+        if self.settings.output.rate == rate {
+            return;
+        }
+        self.settings.output.rate = rate;
+        Settings::update(move |s| s.output.rate = rate);
+        // Going back to following means asking again for rates the old
+        // pinned session never tried, so the refusals no longer apply.
+        self.refused_rates.clear();
+        self.follow_rate = None;
+        self.rebuild_session(cx);
+        cx.notify();
+    }
+
+    /// Ask the exclusive device for one sample format, or None for the
+    /// widest it offers. A card that won't take the pick runs the widest and
+    /// reports that, so this can't quietly lie.
+    pub fn set_output_format(&mut self, format: Option<String>, cx: &mut Context<Self>) {
+        if self.settings.output.format == format {
+            return;
+        }
+        self.settings.output.format = format.clone();
+        Settings::update(move |s| s.output.format = format);
+        self.rebuild_session(cx);
+        cx.notify();
+    }
+
+    /// Set the exclusive device's period in milliseconds, or None for the
+    /// backend default. The latency knob: shorter periods mean the writer
+    /// thread wakes more often and xruns sooner under load.
+    pub fn set_output_period(&mut self, ms: Option<f64>, cx: &mut Context<Self>) {
+        if self.settings.output.period_ms == ms {
+            return;
+        }
+        self.settings.output.period_ms = ms;
+        Settings::update(move |s| s.output.period_ms = ms);
+        self.rebuild_session(cx);
+        cx.notify();
+    }
+
+    /// The pinned exclusive rate, None while output follows the file.
+    pub fn output_rate(&self) -> Option<u32> {
+        self.settings.output.rate
+    }
+
+    /// The pinned exclusive format, None while output takes the widest.
+    pub fn output_format(&self) -> Option<&str> {
+        self.settings.output.format.as_deref()
+    }
+
+    /// The pinned exclusive period in milliseconds, None on the default.
+    pub fn output_period(&self) -> Option<f64> {
+        self.settings.output.period_ms
     }
 
     /// The position clock as a comparable key for the pump's change check:
@@ -809,17 +1314,22 @@ impl Player {
         self.settings.session.volume = volume;
         self.settings.session.muted = false;
         self.send(Cmd::Volume(volume));
-        self.persist_volume_soon(cx);
+        self.persist_playback_soon(cx);
         cx.notify();
     }
 
-    /// Persist the volume after the current scrub settles. Every slider tick
-    /// and wheel notch lands in [`Self::set_volume`], and `Settings::update`
-    /// reads, parses, and rewrites the whole settings file - too much for a
-    /// pointer-move rate. The engine and the in-memory copy already hold the
-    /// value, so only the file write waits for the last tick. Same pattern as
-    /// the settings window's persist_appearance_soon.
-    fn persist_volume_soon(&mut self, cx: &mut Context<Self>) {
+    /// Persist the scrubbed playback values after the current drag settles.
+    /// Every slider tick and wheel notch lands in a setter, and
+    /// `Settings::update` reads, parses, and rewrites the files - too much
+    /// for a pointer-move rate. The engine and the in-memory copy already
+    /// hold the value, so only the file write waits for the last tick. Same
+    /// pattern as the settings window's persist_appearance_soon.
+    ///
+    /// The volume, the fade, and the leveling knobs share the debounce:
+    /// only the file whose contents actually moved gets written, so
+    /// covering all of them costs nothing and none can outrun another's
+    /// pending write.
+    fn persist_playback_soon(&mut self, cx: &mut Context<Self>) {
         self.persist_gen += 1;
         let gen = self.persist_gen;
         cx.spawn(async move |this, cx| {
@@ -829,11 +1339,13 @@ impl Player {
             // A later tick bumped the gen past this capture, so only the last
             // edit in a burst writes. Read the values at write time, not
             // capture time, so a mute toggled during the wait persists as is.
-            let Ok((latest, volume, muted)) = this.update(cx, |this, _| {
+            let Ok((latest, volume, muted, crossfade, replay_gain)) = this.update(cx, |this, _| {
                 (
                     this.persist_gen,
                     this.settings.session.volume,
                     this.settings.session.muted,
+                    this.settings.crossfade_secs,
+                    this.settings.replay_gain,
                 )
             }) else {
                 return;
@@ -842,6 +1354,8 @@ impl Player {
                 Settings::update(move |s| {
                     s.session.volume = volume;
                     s.session.muted = muted;
+                    s.crossfade_secs = crossfade;
+                    s.replay_gain = replay_gain;
                 });
             }
         })
@@ -928,8 +1442,166 @@ impl Player {
             muted: self.muted(),
             volume: self.volume(),
             error: self.error(),
+            fade: self.crossfade(),
         }
     }
+}
+
+/// The equalizer's live parameters (ADR 19), one set for the whole process.
+/// The curve is an app preference rather than something a session owns, so
+/// every chain that opens rides this same handle and a band moves under
+/// whatever is playing without anyone holding a player. Seeded off the
+/// settings file the first time something asks.
+fn eq_params() -> &'static Arc<EqParams> {
+    static EQ: OnceLock<Arc<EqParams>> = OnceLock::new();
+    EQ.get_or_init(|| {
+        let saved = Settings::load().eq;
+        Arc::new(EqParams::new(
+            saved.enabled,
+            &saved.gains,
+            &saved.freqs,
+            &saved.qs,
+        ))
+    })
+}
+
+/// Touched by every EQ setter, so the surfaces drawing the curve wake on a
+/// move instead of watching for one. It holds nothing, because there's nothing
+/// worth holding: whoever gets woken reads the parameters back. Process-global
+/// like they are, which is what lets a band dragged in the EQ window repaint a
+/// widget sitting in some other workspace's transport row.
+#[derive(Default)]
+pub struct EqChanged;
+
+impl Global for EqChanged {}
+
+/// Tell the curve's watchers something moved. Taking the global mutably is the
+/// whole notification: gpui wakes its observers off the borrow.
+fn eq_changed(cx: &mut App) {
+    let _ = cx.default_global::<EqChanged>();
+}
+
+/// Wake `view` whenever the curve moves, wherever it moved from. The EQ's
+/// [`observe_view`], minus the diff: the parameters are atomics with no gpui
+/// entity behind them, so the setters are the only place a change is known.
+pub fn observe_eq<V: 'static>(cx: &mut Context<V>) -> Subscription {
+    cx.observe_global::<EqChanged>(|_, cx| cx.notify())
+}
+
+/// Whether the equalizer shapes the output.
+pub fn eq_enabled() -> bool {
+    eq_params().enabled()
+}
+
+/// One band's gain in dB, in [`rox_playback::eq::BAND_HZ`] order.
+pub fn eq_gain(band: usize) -> f32 {
+    eq_params().gain(band)
+}
+
+/// Turn the equalizer on or off and persist the pick. The node stays in
+/// the chain either way and hands its buffer back untouched while it's
+/// off, so this is a store rather than a chain edit; it lands as soon as
+/// the ring drains past it, up to half a second behind the click.
+pub fn set_eq_enabled(on: bool, cx: &mut App) {
+    eq_params().set_enabled(on);
+    Settings::update(move |s| s.eq.enabled = on);
+    eq_changed(cx);
+}
+
+/// Move one band, in dB. The store is what the decode thread reads on its
+/// next buffer; the file write waits for the drag to settle.
+pub fn set_eq_gain(band: usize, db: f32, cx: &mut App) {
+    eq_params().set_gain(band, db);
+    persist_eq_soon(cx);
+    eq_changed(cx);
+}
+
+/// Every band back to 0 dB, which is also the point where the EQ stops
+/// touching the samples at all.
+pub fn flatten_eq(cx: &mut App) {
+    eq_params().flatten();
+    let gains = eq_params().gains();
+    Settings::update(move |s| s.eq.gains = gains);
+    eq_changed(cx);
+}
+
+/// A band's center in Hz, and its width.
+pub fn eq_freq(band: usize) -> f32 {
+    eq_params().freq(band)
+}
+
+pub fn eq_q(band: usize) -> f32 {
+    eq_params().q(band)
+}
+
+/// Move a band's center. Same store-then-settle shape the gain has: the
+/// atomic carries it to the decode thread now, the file write waits for the
+/// drag to stop.
+pub fn set_eq_freq(band: usize, hz: f32, cx: &mut App) {
+    eq_params().set_freq(band, hz);
+    persist_eq_soon(cx);
+    eq_changed(cx);
+}
+
+/// Widen or narrow a band.
+pub fn set_eq_q(band: usize, q: f32, cx: &mut App) {
+    eq_params().set_q(band, q);
+    persist_eq_soon(cx);
+    eq_changed(cx);
+}
+
+/// One band back to where it started: its ISO octave, flat, one octave
+/// wide. The double-click on a handle, so a band dragged somewhere useless
+/// can be put back without hunting for the numbers it had.
+pub fn reset_eq_band(band: usize, cx: &mut App) {
+    let params = eq_params();
+    params.set_freq(band, rox_playback::eq::BAND_HZ[band]);
+    params.set_gain(band, 0.0);
+    params.set_q(band, rox_playback::eq::Q_DEFAULT);
+    let (gains, freqs, qs) = (params.gains(), params.freqs(), params.qs());
+    Settings::update(move |s| {
+        s.eq.gains = gains;
+        s.eq.freqs = freqs;
+        s.eq.qs = qs;
+    });
+    eq_changed(cx);
+}
+
+/// Every band back to its ISO octave at one octave wide, gains untouched.
+pub fn reset_eq_shape(cx: &mut App) {
+    eq_params().reset_shape();
+    let (freqs, qs) = (eq_params().freqs(), eq_params().qs());
+    Settings::update(move |s| {
+        s.eq.freqs = freqs;
+        s.eq.qs = qs;
+    });
+    eq_changed(cx);
+}
+
+/// Persist the curve once the drag settles, the same shape
+/// [`Player::persist_volume_soon`] uses: the atomics already carry the
+/// value to the audio thread, so only the file write has to wait for the
+/// last tick of a slider burst. The generation is global because the
+/// parameters are: whoever is dragging, the write they race is the same one.
+fn persist_eq_soon(cx: &mut App) {
+    static GEN: AtomicU64 = AtomicU64::new(0);
+    let mine = GEN.fetch_add(1, Ordering::Relaxed) + 1;
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(200))
+            .await;
+        if GEN.load(Ordering::Relaxed) != mine {
+            return;
+        }
+        let params = eq_params();
+        let (gains, freqs, qs) = (params.gains(), params.freqs(), params.qs());
+        Settings::update(move |s| {
+            s.eq.gains = gains;
+            s.eq.freqs = freqs;
+            s.eq.qs = qs;
+        });
+    })
+    .detach();
 }
 
 /// Observe the player, but wake the host view only when its discrete state
@@ -941,6 +1613,22 @@ pub fn observe_view<V: 'static>(player: &Entity<Player>, cx: &mut Context<V>) ->
     let mut last = player.read(cx).view();
     cx.observe(player, move |_, player, cx| {
         let now = player.read(cx).view();
+        if now != last {
+            last = now;
+            cx.notify();
+        }
+    })
+}
+
+/// [`observe_view`] for the output state instead: wakes on a stream rebuild
+/// and on a track whose rate differs, nothing else. Its own subscription
+/// rather than a field on [`PlayerView`], because only the settings window
+/// draws this and the comparison costs a lock the transport panels have no
+/// reason to pay 60 times a second.
+pub fn observe_output<V: 'static>(player: &Entity<Player>, cx: &mut Context<V>) -> Subscription {
+    let mut last = player.read(cx).output_status();
+    cx.observe(player, move |_, player, cx| {
+        let now = player.read(cx).output_status();
         if now != last {
             last = now;
             cx.notify();

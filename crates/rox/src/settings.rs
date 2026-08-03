@@ -397,6 +397,27 @@ pub struct Settings {
     /// it left off. The track below is written either way; this only
     /// gates the restore.
     pub restore_last_track: bool,
+    /// The equalizer's curve and whether it's on, the Audio page's
+    /// Equalizer section. A preference rather than session state: it's a
+    /// tone choice, and it travels with a copied settings file the way the
+    /// rest of this file does.
+    pub eq: EqSettings,
+    /// How long a crossfade runs at a track boundary, in seconds. Zero is
+    /// off and every boundary stays the gapless splice (ADR 19). Tracks
+    /// that belong to the same album never fade whatever this says: the
+    /// fade is for the cut between unrelated music that shuffle and
+    /// skipping make, not for a boundary an engineer meant to be seamless.
+    pub crossfade_secs: f32,
+    /// Whether the fade also takes boundaries inside one album, which the
+    /// rule above leaves alone. Off by default: a record that runs track
+    /// into track was made that way, and fading it is a change to the
+    /// record rather than a smoothing of it.
+    pub crossfade_albums: bool,
+    /// How tagged loudness is levelled, the Audio page's ReplayGain
+    /// section.
+    pub replay_gain: ReplayGainSettings,
+    /// How the samples reach the device, the Audio page's Output section.
+    pub output: OutputSettings,
     /// Whether closing the last workspace window leaves the app resident,
     /// music playing, with the tray (Linux) or the dock (macOS) as the way
     /// back in. Off quits, the default. Ignored on Windows until a tray
@@ -439,6 +460,11 @@ pub struct WindowsState {
     /// the window closes.
     #[serde(alias = "console_window", deserialize_with = "lenient::option")]
     pub console: Option<LayoutSize>,
+    /// The equalizer window's last size, restored on the next open. None
+    /// until the window closes. The curve itself lives in `eq`, since it
+    /// shapes audio whether or not the window is ever opened.
+    #[serde(alias = "eq_window", deserialize_with = "lenient::option")]
+    pub eq: Option<LayoutSize>,
     /// The panel settings window's last size, shared across panels and
     /// restored on the next open. None until a window closes.
     #[serde(alias = "panel_settings_window", deserialize_with = "lenient::option")]
@@ -1022,6 +1048,170 @@ impl Default for Providers {
     }
 }
 
+/// The graphic equalizer's saved curve (ADR 19): whether it shapes the
+/// output at all, and the per-band gains in dB in
+/// [`rox_playback::eq::BAND_HZ`] order. The live values are atomics the
+/// settings page writes straight into (see [`crate::player::set_eq_gain`]);
+/// this is only what they're seeded from and flushed back to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EqSettings {
+    pub enabled: bool,
+    /// A list rather than a fixed array so a file written against a
+    /// different band count still loads: extra values are dropped and
+    /// missing ones read flat.
+    pub gains: Vec<f32>,
+    /// Where each band sits, in Hz. Empty in a file written before the
+    /// centers could move, which loads onto the ISO octaves the graphic EQ
+    /// had them welded to.
+    #[serde(default)]
+    pub freqs: Vec<f32>,
+    /// How wide each band is. Empty loads at one octave, the old fixed
+    /// width.
+    #[serde(default)]
+    pub qs: Vec<f32>,
+    /// How the live analyzer behind the curve is drawn, if at all.
+    #[serde(default)]
+    pub analyzer: AnalyzerStyle,
+    /// The analyzer's window, in samples. Snapped to a power of two the
+    /// analyzer takes when it's read, so a hand-edited number can't panic
+    /// the window it opens.
+    pub fft_size: usize,
+}
+
+/// How the equalizer draws the music behind its curve. The analyzer is
+/// context for the shaping, never the subject, so the default is the shape
+/// that stays out of the way: bars carry more detail but read as the loudest
+/// thing on screen, and the curve is what's being edited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnalyzerStyle {
+    /// One smoothed outline, filled underneath.
+    #[default]
+    Wave,
+    /// A bar per band, the spectrum panel's shape.
+    Bars,
+    /// Nothing behind the curve at all.
+    Off,
+}
+
+impl Default for EqSettings {
+    fn default() -> Self {
+        EqSettings {
+            enabled: false,
+            gains: vec![0.0; rox_playback::eq::BANDS],
+            freqs: rox_playback::eq::BAND_HZ.to_vec(),
+            qs: vec![rox_playback::eq::Q_DEFAULT; rox_playback::eq::BANDS],
+            analyzer: AnalyzerStyle::default(),
+            // Long, because what the analyzer is here for is showing where a
+            // band sits: at a short window the bottom two octaves land in a
+            // handful of bins and the bass reads as one smear.
+            fft_size: 8192,
+        }
+    }
+}
+
+/// How tagged loudness is levelled (ADR 19). Off by default: leveling is
+/// processing, and a player that quietly turns every track down without
+/// being asked is one you can't trust the bit-perfect claim from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReplayGainSettings {
+    /// Which of a file's two gains to read, or none at all.
+    pub mode: GainModeSetting,
+    /// Added to every tagged gain, in dB. ReplayGain's reference sits well
+    /// below where modern masters are cut, so a levelled library plays
+    /// quieter than the same library raw; this is where that's taken back.
+    pub preamp_db: f32,
+    /// What a file with no ReplayGain tags plays at, in dB. Its own knob
+    /// rather than the preamp: an untagged track has nothing to be offset
+    /// from, so the number is the whole decision.
+    pub fallback_db: f32,
+    /// Where the measurement pass puts what it measured. Nothing the engine
+    /// reads: it sits here because it's about levelling, and the job reads
+    /// it once when it starts.
+    pub save: ReplayGainSave,
+}
+
+/// Where a measured ReplayGain lands, the Audio page's pick (ADR 19).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReplayGainSave {
+    /// The default: rox's own library database, so a measurement pass never
+    /// rewrites a file and never bumps an mtime.
+    #[default]
+    Database,
+    /// The file's own tags, through the writer's atomic layer, so every
+    /// other player reads the same numbers. Rewrites the audio files.
+    Tags,
+}
+
+/// The persisted spelling of [`rox_playback::gain::GainMode`], kept apart
+/// from it so the settings file stays readable words rather than whatever
+/// the engine's enum happens to derive.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GainModeSetting {
+    #[default]
+    Off,
+    Track,
+    Album,
+}
+
+impl ReplayGainSettings {
+    /// The rule the engine levels by.
+    pub fn rule(&self) -> rox_playback::gain::GainRule {
+        use rox_playback::gain::GainMode;
+        rox_playback::gain::GainRule {
+            mode: match self.mode {
+                GainModeSetting::Off => GainMode::Off,
+                GainModeSetting::Track => GainMode::Track,
+                GainModeSetting::Album => GainMode::Album,
+            },
+            preamp_db: self.preamp_db,
+            fallback_db: self.fallback_db,
+        }
+    }
+}
+
+/// How samples reach the device (ADR 19): which backend opens the stream
+/// and which device it claims. These are a request. What the hardware
+/// agreed to is on the running session, and the Audio page shows that
+/// rather than these values.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutputSettings {
+    /// Whether output claims the device for rox alone, at the file's own
+    /// rate where the hardware takes one. Off shares the system mixer with
+    /// every other app, which is where rox has always been. A claim that
+    /// fails falls back to shared with the reason shown, never to silence.
+    pub exclusive: bool,
+    /// The shared-mode device, by the name cpal calls it. None follows the
+    /// system default, and so does a name that isn't on this machine.
+    pub device: Option<String>,
+    /// The exclusive-mode device, by its ALSA name. Kept apart from the
+    /// pick above because the two id spaces don't cross: a cpal device name
+    /// means nothing to ALSA, and vice versa.
+    pub exclusive_device: Option<String>,
+    /// The rate exclusive mode runs at, or None to follow each file's own
+    /// (ADR 19), which is the setting that makes a mixed-rate library play
+    /// bit-perfect throughout. Pinning trades that for never paying the
+    /// reopen gap at a boundary, worth it on a card whose clock hates
+    /// switching.
+    #[serde(default)]
+    pub rate: Option<u32>,
+    /// The sample format exclusive mode asks for by short name (`f32`,
+    /// `s32`, `s16`), or None for the widest the device offers. A card that
+    /// won't take the pick runs the widest anyway and says so.
+    #[serde(default)]
+    pub format: Option<String>,
+    /// The exclusive device's period in milliseconds, or None for the
+    /// backend's 10 ms. Lower wakes the writer thread more often, which is
+    /// what starts crackling on a loaded machine.
+    #[serde(default)]
+    pub period_ms: Option<f64>,
+}
+
 /// Discord Rich Presence settings: enable toggle and metadata options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1440,6 +1630,11 @@ impl Default for Settings {
             app_font_size: palette::FONT_SIZE_DEFAULT,
             icon_pack: None,
             restore_last_track: true,
+            eq: EqSettings::default(),
+            crossfade_secs: 0.0,
+            crossfade_albums: false,
+            replay_gain: ReplayGainSettings::default(),
+            output: OutputSettings::default(),
             quit_to_tray: false,
             check_updates: true,
             experimental: false,
@@ -1829,6 +2024,22 @@ mod tests {
         assert!(back.fold_case);
         assert!(back.quit_to_tray);
         assert_eq!(back.library_roots, vec![PathBuf::from("/music")]);
+    }
+
+    /// The measurement pass's destination survives the file, and an older
+    /// file that predates the field reads as the database default rather
+    /// than as permission to rewrite everyone's tags.
+    #[test]
+    fn replay_gain_save_round_trips_and_defaults_to_the_database() {
+        let mut src = Settings::default();
+        src.replay_gain.save = ReplayGainSave::Tags;
+        let json = serde_json::to_string_pretty(&src).unwrap();
+        assert!(json.contains("\"save\": \"tags\""), "{json}");
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.replay_gain.save, ReplayGainSave::Tags);
+
+        let older: ReplayGainSettings = serde_json::from_str(r#"{"mode":"track"}"#).unwrap();
+        assert_eq!(older.save, ReplayGainSave::Database);
     }
 
     /// Each of the three plain shards round-trips through its own file.

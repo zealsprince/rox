@@ -42,7 +42,7 @@ pub enum HeadPiece {
     Album,
     Year,
     Genre,
-    /// The codec and bitrate readout, from [`quality`].
+    /// The codec, stream shape, and bitrate readout, from [`quality`].
     Quality,
     /// The track count.
     Tracks,
@@ -162,7 +162,7 @@ pub struct GroupHead {
     /// The year on the name line; 0 hides it.
     pub year: u16,
     pub genre: SharedString,
-    /// The codec and bitrate line, from [`quality`].
+    /// The codec, stream shape, and bitrate line, from [`quality`].
     pub quality: SharedString,
     pub tracks: u32,
     pub total_ms: u64,
@@ -191,21 +191,63 @@ pub struct HeadLook {
     pub art_rounding: f32,
 }
 
-/// A group's codec and bitrate stat: "mp3 320 kbps" when everything agrees,
-/// the kbps a range when tracks spread, either half alone when the other is
-/// mixed or missing, empty when both are.
-pub fn quality(codec: Option<&str>, min_kbps: u16, max_kbps: u16) -> String {
-    let codec = codec.unwrap_or("");
+/// A sample rate as the kHz a spec sheet writes: 44100 reads "44.1",
+/// 48000 reads "48", 22050 reads "22.05". Empty at zero, which is what an
+/// unread stream and a mixed group both carry.
+pub fn khz(hz: u32) -> String {
+    if hz == 0 {
+        return String::new();
+    }
+    // Hundredths of a kHz, kept integer the whole way: 22050 through an f32
+    // divide lands at 22.04999. Two places is as far as any rate in the wild
+    // needs, and the zeros come off after, so nothing grows a decimal it
+    // didn't earn.
+    let hundredths = (hz + 5) / 10;
+    let whole = hundredths / 100;
+    match hundredths % 100 {
+        0 => whole.to_string(),
+        rest if rest % 10 == 0 => format!("{whole}.{}", rest / 10),
+        rest => format!("{whole}.{rest:02}"),
+    }
+}
+
+/// The stream's shape the way a spec sheet writes it: "16/44.1 kHz" for a
+/// lossless file, the rate alone for a lossy one (which has no depth to
+/// name once the stream is coefficients), the depth alone if that is all
+/// there is. Zero on either side means unread or mixed across the group,
+/// and drops out.
+pub fn stream_format(bit_depth: u8, sample_rate_hz: u32) -> String {
+    match (bit_depth, khz(sample_rate_hz)) {
+        (0, rate) if rate.is_empty() => String::new(),
+        (0, rate) => format!("{rate} kHz"),
+        (bits, rate) if rate.is_empty() => format!("{bits} bit"),
+        (bits, rate) => format!("{bits}/{rate} kHz"),
+    }
+}
+
+/// A group's codec, stream shape, and bitrate stat: "flac 16/44.1 kHz 1006
+/// kbps" when everything agrees, the kbps a range when tracks spread, and
+/// any part dropping out when it is mixed across the run or was never
+/// read. Empty when nothing agrees.
+pub fn quality(
+    codec: Option<&str>,
+    min_kbps: u16,
+    max_kbps: u16,
+    bit_depth: u8,
+    sample_rate_hz: u32,
+) -> String {
     let kbps = match (min_kbps, max_kbps) {
         (0, _) => String::new(),
         (min, max) if min == max => format!("{min} kbps"),
         (min, max) => format!("{min}-{max} kbps"),
     };
-    match (codec.is_empty(), kbps.is_empty()) {
-        (false, false) => format!("{codec} {kbps}"),
-        (false, true) => codec.to_string(),
-        _ => kbps,
-    }
+    let format = stream_format(bit_depth, sample_rate_hz);
+    [codec.unwrap_or(""), format.as_str(), kbps.as_str()]
+        .iter()
+        .filter(|p| !p.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// One row's share of a heading block's cover tile. The block draws as
@@ -251,10 +293,17 @@ pub fn tile(
 /// A cover's face: the image rounded per the knob, or the quiet music-note
 /// placeholder both pending and missing wear, so a landing cover fills in
 /// without a layout shift. Shared by the block tile and the inline piece.
+///
+/// `Cover` scales the art until it fills the square, which leaves the odd
+/// side hanging outside the element. gpui hands `paint_image` those larger
+/// bounds and masks nothing on its own, so a sleeve that isn't square
+/// spills over the track rows above and below the block. The crop is ours
+/// to make: `overflow_hidden` puts the mask back at the square's edge.
 fn art_content(thumb: Thumb, rounding: f32, icon_px: f32) -> AnyElement {
     match thumb {
         Thumb::Ready(image) => img(image)
             .size_full()
+            .overflow_hidden()
             .object_fit(ObjectFit::Cover)
             .rounded(px(rounding))
             .into_any_element(),
@@ -456,5 +505,55 @@ pub(crate) fn fmt_total(ms: u64) -> String {
         format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
     } else {
         format!("{}:{:02}", secs / 60, secs % 60)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{khz, quality, stream_format};
+
+    /// A rate reads as the kHz a spec sheet writes, the decimals only when
+    /// there are some to show, and the second one only when the first
+    /// wouldn't be the rate.
+    #[test]
+    fn a_rate_reads_as_khz() {
+        assert_eq!(khz(44100), "44.1");
+        assert_eq!(khz(48000), "48");
+        assert_eq!(khz(96000), "96");
+        assert_eq!(khz(88200), "88.2");
+        assert_eq!(khz(22050), "22.05");
+        assert_eq!(khz(0), "");
+    }
+
+    /// The stream shape pairs the depth with the rate, and drops whichever
+    /// half is missing: a lossy file has no depth to name.
+    #[test]
+    fn the_stream_shape_drops_what_it_lacks() {
+        assert_eq!(stream_format(16, 44100), "16/44.1 kHz");
+        assert_eq!(stream_format(24, 96000), "24/96 kHz");
+        assert_eq!(stream_format(0, 44100), "44.1 kHz");
+        assert_eq!(stream_format(16, 0), "16 bit");
+        assert_eq!(stream_format(0, 0), "");
+    }
+
+    /// The group line joins whatever agrees across the run: everything for
+    /// a lossless album, the spread when the bitrate varies, and nothing
+    /// once the run has nothing in common.
+    #[test]
+    fn the_group_line_joins_what_agrees() {
+        assert_eq!(
+            quality(Some("flac"), 1006, 1006, 16, 44100),
+            "flac 16/44.1 kHz 1006 kbps"
+        );
+        assert_eq!(
+            quality(Some("mp3"), 192, 320, 0, 44100),
+            "mp3 44.1 kHz 192-320 kbps"
+        );
+        // A mixed run: the codec, depth, and rate all zero out, leaving
+        // the bitrate spread on its own.
+        assert_eq!(quality(None, 192, 320, 0, 0), "192-320 kbps");
+        assert_eq!(quality(None, 0, 0, 0, 0), "");
+        // The bitrate alone stays what it always was.
+        assert_eq!(quality(Some("wav"), 0, 0, 16, 48000), "wav 16/48 kHz");
     }
 }

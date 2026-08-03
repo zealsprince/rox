@@ -1,6 +1,6 @@
 # ADR 19: Processing chain on the decode thread, output modes behind the backend seam
 
-**Status:** Accepted
+**Status:** Decided
 
 Decision: audio processing runs on the decode thread, after the stereo fold and
 resample, immediately before the push into the sample ring, in two parts. Per-source
@@ -41,6 +41,17 @@ anything that needs lookahead or introduces group delay (convolution, a limiter)
 until a latency-reporting extension is worth designing, and the position clock stays
 honest for free.
 
+What the pre-ring placement costs is the delay on those parameter writes: a store lands
+in the samples being decoded now, behind however much already-processed audio the ring
+is holding. The ring keeps its 500 ms of capacity, allocated once at stream open, since
+that is the underrun cushion; the gate is how full the decode thread lets it get. While
+a chain editor is open it holds a process-global refcount and the push loop stops at
+120 ms of buffered audio, so the wait between slider and ear is that instead of half a
+second. Shortening the ring itself would mean reallocating under a live stream for the
+same result. The cushion is thinner for as long as an editor is up, accepted because
+that is exactly when a knob needs to answer; the fill goes back to the brim on close,
+and no stream is torn down either way.
+
 The bypass rule, which makes bit-perfect a checkable claim instead of a label: with the
 chain empty or disabled, the samples pushed into the ring are the decoder's output
 unchanged. The fold and resampler already honor this, a stereo source folds to itself
@@ -48,8 +59,7 @@ and the resampler is a passthrough at equal rates. That leaves the callback's vo
 multiply, the one-node chain that predates this ADR. It stays in the callback: volume
 must respond instantly, and a chain-side volume would lag by ring depth, up to 500 ms.
 Instead, unity short-circuits, at `volume == 1.0` the callback skips the multiply
-entirely; that skip is new work this ADR adds, today the multiply always runs. So the
-honest claim is: chain off, volume at 100%, device rate equal to
+entirely. So the honest claim is: chain off, volume at 100%, device rate equal to
 source rate, and the device receives bit-identical samples. The UI states those three
 conditions truthfully rather than showing a decoration; ReplayGain on is processing on
 and reads as such.
@@ -61,9 +71,7 @@ processes the mix, so an EQ shapes the fade like anything else. Which boundaries
 is adjacency the engine can already see: entries carry the group metadata
 [ADR 17](17-adr-queue-continuation.md) introduced, same group means the gapless splice
 untouched, different or absent group means fade, and a manual skip always fades since
-it arrives as a command. ADR 17 decided that field but the engine's queue entries do
-not carry it yet; plumbing it through is a prerequisite for crossfade, not part of this
-ADR. The position clock flips inside the fade window: the new
+it arrives as a command. The position clock flips inside the fade window: the new
 track's segment registers at the fade midpoint, the frame the mix crosses half, so
 MPRIS and the panels never announce a track before it is audible. The midpoint is a
 constant to tune at implementation; the principle, one flip inside the window, is
@@ -101,19 +109,15 @@ rejected on the 500 ms knob lag; the unity short-circuit gets the same bit-perfe
 result without it. A second ring and mixing in the callback, rejected as a rewrite of
 the output layer's one-producer simplicity for no audible difference.
 
-Trade: parameter changes are audible only after the ring drains, up to 500 ms behind
-the knob. That is the price of the pre-ring placement and it is accepted; an EQ slider
-feels slightly laggy where a callback-side chain would feel live, and in exchange the
-callback stays provably allocation- and lock-free. Fade-window decoding runs two
-decoders at once, a CPU bump bounded by the fade length. Exclusive output is
+Trade: parameter changes are audible only after the ring drains, 120 ms with an editor
+open and up to 500 ms without. That is the price of the pre-ring placement and it is
+accepted; an EQ slider feels a touch behind where a callback-side chain would feel
+live, and in exchange the callback stays provably allocation- and lock-free.
+Fade-window decoding runs two decoders at once, a CPU bump bounded by the fade length. Exclusive output is
 per-platform FFI beyond cpal, the cost ADR 9 deferred, now spent knowingly, and it
 drags platform quirk surface (device claim failures, format negotiation) into the
 support burden.
 
-Open: whether the ring shortens while a chain editor is in the foreground to tighten
-parameter latency, decided if the 500 ms lag annoys in practice; expect it to, half a
-second between slider and ear is well past where adjusting by ear feels connected, so
-this likely becomes real work when the EQ editor lands. The exact fade curve
-and the midpoint constant. Whether exclusive mode on Linux targets the ALSA device
-directly or through PipeWire's pro-audio profile, decided at implementation against
-what devices actually expose.
+Open: whether exclusive mode on Linux
+targets the ALSA device directly or through PipeWire's pro-audio profile, decided at
+implementation against what devices actually expose.

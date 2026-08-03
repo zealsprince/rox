@@ -176,6 +176,10 @@ pub struct PlaylistTrack {
     pub duration_ms: u32,
     pub codec: String,
     pub bitrate_kbps: u16,
+    /// The stream's sample rate in Hz and bits per sample, for the album
+    /// headings' quality line; live-catalog only like the fields above.
+    pub sample_rate_hz: u32,
+    pub bit_depth: u8,
     /// The 0-5 star rating, 0 when unrated. Read live from the catalog for
     /// the panel's rating cell, like the album grouping fields.
     pub rating: u8,
@@ -561,6 +565,8 @@ pub fn tracks(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<Playl
                 COALESCE(t.duration_ms, 0),
                 COALESCE(t.codec, ''),
                 COALESCE(t.bitrate, 0),
+                COALESCE(t.sample_rate, 0),
+                COALESCE(t.bit_depth, 0),
                 COALESCE(t.rating, 0),
                 COALESCE(t.path, m.path)
          FROM playlist_tracks m LEFT JOIN tracks t ON t.id = m.track_id
@@ -580,8 +586,10 @@ pub fn tracks(conn: &Connection, playlist_id: i64) -> rusqlite::Result<Vec<Playl
             duration_ms: row.get(8)?,
             codec: row.get(9)?,
             bitrate_kbps: row.get(10)?,
-            rating: row.get(11)?,
-            path: row.get(12)?,
+            sample_rate_hz: row.get(11)?,
+            bit_depth: row.get(12)?,
+            rating: row.get(13)?,
+            path: row.get(14)?,
         })
     })?;
     rows.collect()
@@ -652,7 +660,10 @@ mod tests {
             duration_ms: 0,
             codec: String::new(),
             bitrate_kbps: 0,
+            sample_rate_hz: 0,
+            bit_depth: 0,
             rating: 0,
+            replay_gain: Default::default(),
             size: 0,
             mtime: 0,
         }

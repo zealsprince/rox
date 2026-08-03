@@ -16,6 +16,7 @@ pub mod open_files;
 pub mod playlists;
 pub mod projection;
 pub mod rating;
+pub mod replaygain;
 pub mod scanner;
 pub mod store;
 pub mod tag_source;
@@ -62,9 +63,20 @@ pub struct TrackRow {
     pub codec: String,
     /// The audio stream's bitrate in kbps; 0 when the parse fails.
     pub bitrate_kbps: u16,
+    /// The stream's sample rate in Hz (44100, 48000); 0 when the parse
+    /// fails. Held in Hz, not kHz, so 44.1 survives the round trip.
+    pub sample_rate_hz: u32,
+    /// Bits per sample; 0 when the parse fails and for the lossy formats
+    /// that have no fixed depth to report.
+    pub bit_depth: u8,
     /// The file's rating on the app's 0-100 scale, read off its tags
     /// (FMPS exact, POPM stars); 0 when it carries none.
     pub rating: u8,
+    /// What the file's ReplayGain tags measured, all None when it carries
+    /// none. The engine levels by these at play time (ADR 19). A file with
+    /// none can get them from rox's own measurement pass, which writes past
+    /// the scanner straight onto the row.
+    pub replay_gain: replaygain::ReplayGain,
     pub size: u64,
     pub mtime: i64,
 }

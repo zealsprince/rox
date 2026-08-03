@@ -71,7 +71,58 @@
                           "locked": true,
                           "anchor": true,
                           "max_height": 24.0,
-                          "align": "left"
+                          "align": "left",
+                          "marquee": "scroll",
+                          "output_tint": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "stats widget",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_width": 94.0,
+                          "max_height": 24.0,
+                          "range": "week",
+                          "show_count": true,
+                          "show_change": true,
+                          "open_on_click": true
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "eq widget",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_width": 40.0,
+                          "max_height": 24.0,
+                          "click": "open",
+                          "readout": "icon",
+                          "badge": true
                         }
                       }
                     }
@@ -182,7 +233,9 @@
                   "sizes": [
                     48.0,
                     40.0,
-                    584.0,
+                    450.0,
+                    94.0,
+                    40.0,
                     43.0,
                     300.0,
                     128.0
@@ -329,17 +382,43 @@
                           }
                         },
                         {
-                          "panel_name": "metadata",
-                          "children": [],
+                          "panel_name": "group",
+                          "children": [
+                            {
+                              "panel_name": "metadata",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "source": "playing",
+                                  "align": "center",
+                                  "valign": "top",
+                                  "cover": false,
+                                  "display": "table",
+                                  "stripes": true,
+                                  "row_borders": false
+                                }
+                              }
+                            },
+                            {
+                              "panel_name": "output",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "max_height": 96.0,
+                                  "min_height": 96.0,
+                                  "detail": "expanded",
+                                  "device": true,
+                                  "source_rate": true
+                                }
+                              }
+                            }
+                          ],
                           "info": {
                             "panel": {
-                              "source": "playing",
-                              "align": "center",
-                              "valign": "top",
-                              "cover": false,
-                              "display": "table",
-                              "stripes": true,
-                              "row_borders": false
+                              "title": "Metadata",
+                              "hide_controls": true,
+                              "stacked": true,
+                              "ratio": 0.81
                             }
                           }
                         }
@@ -806,7 +885,8 @@
                             "panel": {
                               "locked": true,
                               "anchor": true,
-                              "align": "left"
+                              "align": "left",
+                              "output_tint": false
                             }
                           }
                         }

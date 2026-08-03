@@ -17,8 +17,8 @@
 use std::time::Duration;
 
 use gpui::{
-    div, point, prelude::*, px, rgb, size, App, Bounds, ClipboardItem, Context, Div, EntityId,
-    Global, Rgba, ScrollHandle, SharedString, Window, WindowHandle,
+    div, point, prelude::*, px, size, App, Bounds, ClipboardItem, Context, Div, EntityId, Global,
+    Rgba, ScrollHandle, SharedString, Window, WindowHandle,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{Icon, Root, Sizable as _};
@@ -424,12 +424,12 @@ fn line_row(line: &logging::Line) -> Div {
 }
 
 /// The message color per level: error reads red, warning amber, everything
-/// else the plain and muted text roles. No danger role lives in the palette,
-/// so these two ride fixed hues that read on the dark surface.
+/// else the plain and muted text roles. The first two are the shared status
+/// tones, so a red line here and a red banner elsewhere are the same red.
 fn level_color(level: Level) -> Rgba {
     match level {
-        Level::Error => rgb(0xf87171),
-        Level::Warn => rgb(0xfbbf24),
+        Level::Error => palette::tone_bad(),
+        Level::Warn => palette::tone_warn(),
         Level::Info => palette::text(),
         Level::Debug | Level::Trace => palette::text_muted(),
     }

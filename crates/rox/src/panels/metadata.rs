@@ -164,6 +164,16 @@ const FIELDS: &[Column] = &[
         default_on: true,
     },
     Column {
+        key: "sample_rate",
+        label: "Sample Rate",
+        default_on: false,
+    },
+    Column {
+        key: "bit_depth",
+        label: "Bit Depth",
+        default_on: false,
+    },
+    Column {
         key: "file",
         label: "File",
         default_on: false,
@@ -224,6 +234,8 @@ struct Details {
     duration_ms: u32,
     codec: String,
     bitrate_kbps: u16,
+    sample_rate_hz: u32,
+    bit_depth: u8,
     plays: u32,
     rating: u8,
 }
@@ -361,6 +373,8 @@ impl MetadataPanel {
                     duration_ms: v.duration_ms,
                     codec: v.codec.to_owned(),
                     bitrate_kbps: v.bitrate_kbps,
+                    sample_rate_hz: v.sample_rate_hz,
+                    bit_depth: v.bit_depth,
                     plays: v.plays,
                     rating: v.rating,
                 })
@@ -1128,10 +1142,12 @@ impl MetadataPanel {
         let backdrop = self.config.cover.then(|| self.art.get(&path)).flatten();
         let root = root.when_some(backdrop, |root, image| {
             root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(img(image).object_fit(ObjectFit::Cover).size_full()),
+                div().absolute().inset_0().child(
+                    img(image)
+                        .overflow_hidden()
+                        .object_fit(ObjectFit::Cover)
+                        .size_full(),
+                ),
             )
             .child(
                 div()
@@ -1199,6 +1215,9 @@ impl MetadataPanel {
                     }
                     "codec" => (!d.codec.is_empty()).then(|| d.codec.clone()),
                     "bitrate" => (d.bitrate_kbps > 0).then(|| format!("{} kbps", d.bitrate_kbps)),
+                    "sample_rate" => (d.sample_rate_hz > 0)
+                        .then(|| format!("{} kHz", crate::group_head::khz(d.sample_rate_hz))),
+                    "bit_depth" => (d.bit_depth > 0).then(|| format!("{} bit", d.bit_depth)),
                     "plays" => (d.plays > 0).then(|| track_columns::fmt_plays(d.plays)),
                     "rating" => (d.rating > 0).then(|| crate::rating_ui::fmt(d.rating).to_string()),
                     _ => None,

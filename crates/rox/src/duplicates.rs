@@ -968,6 +968,7 @@ fn cover_tile(thumb: Thumb) -> Div {
     div().flex_none().flex().items_center().child(match thumb {
         Thumb::Ready(image) => img(image)
             .size(side)
+            .overflow_hidden()
             .object_fit(ObjectFit::Cover)
             .rounded(px(3.))
             .into_any_element(),
@@ -1129,7 +1130,10 @@ mod tests {
             duration_ms,
             codec: "mp3".into(),
             bitrate_kbps: 320,
+            sample_rate_hz: 44100,
+            bit_depth: 0,
             rating: 0,
+            replay_gain: Default::default(),
             size: 0,
             mtime: 0,
         }

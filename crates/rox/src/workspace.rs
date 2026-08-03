@@ -44,6 +44,7 @@ use crate::panels::biography::BiographyPanel;
 use crate::panels::cover::CoverArtPanel;
 use crate::panels::drag_anchor::DragAnchorPanel;
 use crate::panels::drawer::DrawerPanel;
+use crate::panels::eq_widget::EqWidgetPanel;
 use crate::panels::favourite::FavouritePanel;
 use crate::panels::filter::{FilterConfig, FilterPanel};
 use crate::panels::folder_tree::FolderTreePanel;
@@ -56,6 +57,7 @@ use crate::panels::lyrics::{LyricsPanel, StampLine};
 use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::metadata::MetadataPanel;
 use crate::panels::mini::{MiniToggleConfig, MiniTogglePanel};
+use crate::panels::output::OutputPanel;
 use crate::panels::overlay::OverlayPanel;
 use crate::panels::particles::ParticlesPanel;
 use crate::panels::playlists::PlaylistsPanel;
@@ -66,6 +68,7 @@ use crate::panels::search::{SearchConfig, SearchPanel};
 use crate::panels::slide::SlidePanel;
 use crate::panels::spacer::SpacerPanel;
 use crate::panels::spectrum::SpectrumPanel;
+use crate::panels::stats_widget::StatsWidgetPanel;
 use crate::panels::status::StatusPanel;
 use crate::panels::theme_toggle::ThemeTogglePanel;
 use crate::panels::transport::{SeekStripPanel, TrackInfoPanel, TransportPanel, VolumePanel};
@@ -191,6 +194,24 @@ pub(crate) fn front_workspace(cx: &mut App) -> Option<(AnyWindowHandle, AppState
         let state = ws.upgrade()?.read(cx).state.clone();
         Some((*handle, state))
     })
+}
+
+/// Route OS-handed files into a workspace's player: the command line at
+/// launch, and the files a second launch forwards through the single-instance
+/// guard. Play replaces what's loaded, enqueue appends to the up-next queue.
+pub(crate) fn play_launch_paths(
+    state: &AppState,
+    mode: rox_library::open_files::LaunchMode,
+    paths: Vec<PathBuf>,
+    cx: &mut App,
+) {
+    if paths.is_empty() {
+        return;
+    }
+    state.player.update(cx, |player, cx| match mode {
+        rox_library::open_files::LaunchMode::Play => player.play(paths, cx),
+        rox_library::open_files::LaunchMode::Enqueue => player.enqueue(paths, cx),
+    });
 }
 
 /// Apply a named workspace to the frontmost workspace window from app
@@ -532,9 +553,12 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured!("metadata", MetadataPanel);
     configured!("lyrics", LyricsPanel);
     configured!("biography", BiographyPanel);
+    configured!("output", OutputPanel);
     configured_windowed!("history", HistoryPanel);
     configured_windowed!("queue", QueuePanel);
     configured!("queue widget", QueueWidgetPanel);
+    configured!("eq widget", EqWidgetPanel);
+    configured!("stats widget", StatsWidgetPanel);
     configured!("rating", RatingPanel);
     configured!("favourite", FavouritePanel);
     configured_windowed!("playlists", PlaylistsPanel);
@@ -644,6 +668,7 @@ pub(crate) enum MenuAction {
     OpenSettings,
     OpenStats,
     OpenConsole,
+    OpenEqualizer,
     OpenWelcome,
     OpenAbout,
     ToggleMenubar,
@@ -751,6 +776,11 @@ pub(crate) const MENUS: &[Menu] = &[
                 label: "Console",
                 icon: icons::FILE_TEXT,
                 action: MenuAction::OpenConsole,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Equalizer",
+                icon: icons::AUDIO_LINES,
+                action: MenuAction::OpenEqualizer,
             }),
             MenuEntry::Item(MenuItem {
                 label: "Welcome",
@@ -2051,13 +2081,7 @@ impl Workspace {
         paths: Vec<PathBuf>,
         cx: &mut Context<Self>,
     ) {
-        if paths.is_empty() {
-            return;
-        }
-        self.state.player.update(cx, |player, cx| match mode {
-            rox_library::open_files::LaunchMode::Play => player.play(paths, cx),
-            rox_library::open_files::LaunchMode::Enqueue => player.enqueue(paths, cx),
-        });
+        play_launch_paths(&self.state, mode, paths, cx);
     }
 
     /// Play files or tracks dropped onto the window body now, filtered to

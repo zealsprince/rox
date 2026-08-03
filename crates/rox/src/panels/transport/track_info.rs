@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use gpui::{
-    canvas, div, point, prelude::*, px, AnyElement, App, Context, Div, EventEmitter, FocusHandle,
-    Focusable, Pixels, ScrollHandle, Subscription, WeakEntity, Window,
+    canvas, div, point, prelude::*, px, svg, AnyElement, App, Context, Div, EventEmitter,
+    FocusHandle, Focusable, Pixels, Rgba, ScrollHandle, SharedString, Stateful, Subscription,
+    WeakEntity, Window,
 };
-use gpui_component::menu::PopupMenu;
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +17,7 @@ use rox_library::store::TrackMeta;
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
+use crate::group_head;
 use crate::panel::{
     self, align_row, justify, Align, AppState, PanelChrome, PanelSettings, ScrubState,
 };
@@ -54,6 +56,18 @@ pub struct TrackInfoConfig {
     /// How long each piece sits fully shown before the swap, seconds.
     #[serde(default = "default_swap_secs")]
     pub swap_secs: f32,
+    /// Show what the output negotiated as a chip pinned to the trailing
+    /// edge: the rate and the format, plus the mode when it's exclusive. On
+    /// by default, and the serde default is spelled out so a layout saved
+    /// before the chip existed gets it too rather than reading as off.
+    #[serde(default = "default_show_output")]
+    pub show_output: bool,
+    /// Let the chip take the banner's tone colors when the output isn't
+    /// clean, or hold the muted text color whatever the state. Off suits a
+    /// transport line that wants one flat tone; the hover note still says
+    /// what's going on.
+    #[serde(default = "default_output_tint")]
+    pub output_tint: bool,
 }
 
 impl Default for TrackInfoConfig {
@@ -66,7 +80,30 @@ impl Default for TrackInfoConfig {
             marquee_delay: default_marquee_delay(),
             swap: false,
             swap_secs: default_swap_secs(),
+            show_output: default_show_output(),
+            output_tint: default_output_tint(),
         }
+    }
+}
+
+/// The chip's hover note: why it's colored, in words rather than a legend
+/// nobody would find. Only ever built for the two states that earn a color,
+/// so a plain chip has no tooltip at all.
+struct OutputTooltip(SharedString);
+
+impl Render for OutputTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .p(tokens::SPACE_SM)
+            .max_w(px(320.))
+            .rounded(tokens::RADIUS)
+            .border_1()
+            .border_color(palette::border())
+            .bg(palette::bg_menu_opaque())
+            .shadow_md()
+            .text_xs()
+            .text_color(palette::text())
+            .child(self.0.clone())
     }
 }
 
@@ -104,6 +141,16 @@ fn default_swap_secs() -> f32 {
 /// The end-rest range the settings slider spans, seconds.
 const MARQUEE_DELAY_MIN: f32 = 0.0;
 const MARQUEE_DELAY_MAX: f32 = 10.0;
+
+/// The chip is on unless a layout turns it off.
+fn default_show_output() -> bool {
+    true
+}
+
+/// The chip colors itself unless a layout asks it not to.
+fn default_output_tint() -> bool {
+    true
+}
 
 /// The default rest at each end of a scroll, a beat to read the edge.
 fn default_marquee_delay() -> f32 {
@@ -296,7 +343,65 @@ impl TrackInfoPanel {
 
     /// No quick dropdown entries; the alignment lives in the customize
     /// window.
-    fn config_menu(&self, menu: PopupMenu, _cx: &mut Context<Self>) -> PopupMenu {
+    /// The handful worth flipping without opening settings: what the line
+    /// shows, and what it does when it doesn't fit. Everything else stays on
+    /// the settings page, since a context menu that carries every knob is
+    /// just a worse settings page.
+    ///
+    /// Flat checked items rather than a submenu on purpose: a plain
+    /// `.checked()` only refreshes at the top level, and a nested flyout
+    /// would show a stale tick until it was reopened.
+    fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
+        let mut menu = menu.separator().label("Show");
+        for (name, on, set) in [
+            (
+                "Output Chip",
+                self.config.show_output,
+                (|this: &mut Self| this.config.show_output = !this.config.show_output)
+                    as fn(&mut Self),
+            ),
+            (
+                "Swap Title and Artist",
+                self.config.swap,
+                (|this: &mut Self| this.config.swap = !this.config.swap) as fn(&mut Self),
+            ),
+        ] {
+            let weak = cx.entity().downgrade();
+            menu = menu.item(
+                PopupMenuItem::new(name)
+                    .checked(on)
+                    .on_click(move |_, _, cx| {
+                        let Some(this) = weak.upgrade() else { return };
+                        this.update(cx, |this, cx| {
+                            set(this);
+                            cx.notify();
+                        });
+                    }),
+            );
+        }
+        menu = menu.separator().label("Overflow");
+        for (name, mode) in [
+            ("Truncate", MarqueeMode::Off),
+            ("Scroll", MarqueeMode::Scroll),
+            ("Loop", MarqueeMode::Loop),
+        ] {
+            let weak = cx.entity().downgrade();
+            menu = menu.item(
+                PopupMenuItem::new(name)
+                    .checked(self.config.marquee == mode)
+                    .on_click(move |_, _, cx| {
+                        let Some(this) = weak.upgrade() else { return };
+                        this.update(cx, |this, cx| {
+                            this.config.marquee = mode;
+                            // A mode change leaves the crawl mid-trip, and
+                            // the offset it's holding means nothing to the
+                            // mode arriving.
+                            this.marquee.reset();
+                            cx.notify();
+                        });
+                    }),
+            );
+        }
         menu
     }
 
@@ -387,6 +492,39 @@ impl PanelSettings for TrackInfoPanel {
                 .flex_col()
                 .gap(tokens::SPACE_MD)
                 .child(panel::setting_row(
+                    "Output Chip",
+                    Some(
+                        "Show what the device negotiated at the trailing edge: the mode, the \
+                         rate, and the format. It sits outside the marquee, so it never crawls",
+                    ),
+                    panel::toggle(
+                        self.config.show_output,
+                        |this: &mut Self, on, cx| {
+                            this.config.show_output = on;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+                .when(self.config.show_output, |d| {
+                    d.child(panel::setting_row(
+                        "Color Output Chip",
+                        Some(
+                            "Let the chip turn warning colors when the output falls back or \
+                             resamples. Off keeps it the same muted tone always, and the hover \
+                             note still explains the state",
+                        ),
+                        panel::toggle(
+                            self.config.output_tint,
+                            |this: &mut Self, on, cx| {
+                                this.config.output_tint = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                })
+                .child(panel::setting_row(
                     "Marquee",
                     Some("What a line too long for the panel does: crawl and return, or loop without end"),
                     panel::choices(
@@ -473,21 +611,139 @@ impl Render for TrackInfoPanel {
 }
 
 impl TrackInfoPanel {
+    /// The output chip: what the device settled on, short enough to live at
+    /// the end of a transport line. Muted while nothing is being converted,
+    /// carrying the banner's tone colors when something is, or a muted alert
+    /// face in their place when the tint is off, so a glance says whether
+    /// what's playing is what the file holds. None when the chip is off or no
+    /// stream has negotiated yet.
+    fn output_chip(&self, cx: &App) -> Option<Stateful<Div>> {
+        if !self.config.show_output {
+            return None;
+        }
+        let status = self.state.player.read(cx).output_status()?;
+        let negotiated = &status.negotiated;
+        let exclusive = negotiated.mode == rox_playback::output::Mode::Exclusive;
+        let resampling = status
+            .source_rate
+            .is_some_and(|source| source != negotiated.sample_rate);
+        // Shared output is the normal state, so it says nothing and colors
+        // nothing: a chip that's always lit stops being a signal. The two
+        // things worth interrupting for are a mode that was asked for and
+        // refused, and a conversion happening that didn't have to.
+        let (color, why): (Rgba, Option<SharedString>) = if let Some(reason) = &negotiated.fallback
+        {
+            (
+                palette::tone_bad(),
+                Some(
+                    format!(
+                        "Exclusive output was asked for and the device wouldn't give it up, so \
+                         the shared mixer is standing in. The device said: {reason}"
+                    )
+                    .into(),
+                ),
+            )
+        } else if resampling {
+            let source = group_head::khz(status.source_rate.unwrap_or_default());
+            let device = group_head::khz(negotiated.sample_rate);
+            // Exclusive resamples too when the card won't take the file's
+            // rate, and that's the case worth saying out loud: the toggle is
+            // on, the claim went through, and it still isn't the file's own
+            // samples.
+            (
+                palette::tone_warn(),
+                Some(
+                    if exclusive {
+                        format!(
+                            "This file is {source} kHz and the card took {device} kHz, so every \
+                             sample is being converted on the way out. The device wouldn't run at \
+                             the file's own rate."
+                        )
+                    } else {
+                        format!(
+                            "This file is {source} kHz and the mixer is running at {device} kHz, \
+                             so every sample is being converted on the way out. Exclusive mode \
+                             would hand the card the file's own rate instead."
+                        )
+                    }
+                    .into(),
+                ),
+            )
+        } else {
+            (palette::text_muted(), None)
+        };
+        // The face stands in for the tint rather than doubling it: with the
+        // color on it would say the same thing twice, so it only turns up in
+        // the two flagged states once the chip has gone flat.
+        let face = why.is_some() && !self.config.output_tint;
+        let color = if self.config.output_tint {
+            color
+        } else {
+            palette::text_muted()
+        };
+        // "Shared" is every desktop's default and carries no information;
+        // "Exclusive" is worth the two words because it's the state someone
+        // went looking for.
+        // The rate goes through the same speller the library column and the
+        // metadata field use, so one card reads the same everywhere.
+        let label = format!(
+            "{}{} kHz {}",
+            if exclusive { "Exclusive " } else { "" },
+            group_head::khz(negotiated.sample_rate),
+            negotiated.format
+        );
+        Some(
+            div()
+                .id("output-chip")
+                // flex_none is the whole point: the chip claims its width
+                // first and the line crawls in whatever is left, so it never
+                // rides along with the marquee.
+                .flex_none()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_XS)
+                .px(tokens::SPACE_SM)
+                .rounded(tokens::RADIUS)
+                .bg(palette::bg_control())
+                .text_xs()
+                .text_color(color)
+                .child(label)
+                .when(face, |d| {
+                    d.child(svg().path(icons::ALERT).size_3().text_color(color))
+                })
+                .when_some(why, |d, why| {
+                    d.tooltip(move |_, cx| cx.new(|_| OutputTooltip(why.clone())).into())
+                }),
+        )
+    }
+
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let chip = self.output_chip(cx);
         let player = self.state.player.read(cx);
         let now = player.now_playing();
         let active = player.is_active();
         let ended = player.queue_ended();
         let error = player.error();
 
-        let root = div()
+        // The line and the chip are siblings in a row: the line takes what's
+        // left after the chip and keeps its own alignment inside that, so a
+        // centered line stays centered against the space it actually has
+        // rather than against the chip.
+        let shell = div()
             .size_full()
             .bg(palette::bg_root())
             .flex()
             .items_center()
-            .map(|d| justify(d, self.config.align))
             .gap(tokens::SPACE_SM)
             .px(tokens::SPACE_MD);
+        let root = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .map(|d| justify(d, self.config.align))
+            .gap(tokens::SPACE_SM);
 
         let Some(now) = now else {
             // Nothing to describe: a session still opening, or the reason
@@ -497,15 +753,17 @@ impl TrackInfoPanel {
             } else {
                 error
             };
-            return root.when_some(line, |root, line| {
-                root.child(
-                    div()
-                        .max_w_full()
-                        .truncate()
-                        .text_color(palette::text_muted())
-                        .child(line),
-                )
-            });
+            return shell
+                .child(root.when_some(line, |root, line| {
+                    root.child(
+                        div()
+                            .max_w_full()
+                            .truncate()
+                            .text_color(palette::text_muted())
+                            .child(line),
+                    )
+                }))
+                .when_some(chip, |d, chip| d.child(chip));
         };
 
         // An untagged file still shows something: its file name for the
@@ -567,37 +825,41 @@ impl TrackInfoPanel {
         match self.config.marquee {
             MarqueeMode::Off => {}
             MarqueeMode::Scroll | MarqueeMode::Loop => {
-                return root.child(self.marquee_line(heading, byline, ended, fade, window, cx));
+                return shell
+                    .child(root.child(self.marquee_line(heading, byline, ended, fade, window, cx)))
+                    .when_some(chip, |d, chip| d.child(chip));
             }
         }
-        root.when(!heading.is_empty(), |d| {
-            d.child(
-                div()
-                    .flex_shrink_0()
-                    .max_w_full()
-                    .truncate()
-                    .when(fade < 1.0, |d| d.opacity(fade))
-                    .child(heading),
-            )
-        })
-        .when(!byline.is_empty(), |d| {
-            d.child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(palette::text_muted())
-                    .when(fade < 1.0, |d| d.opacity(fade))
-                    .child(byline),
-            )
-        })
-        .when(ended, |d| {
-            d.child(
-                div()
-                    .flex_none()
-                    .text_color(palette::text_muted())
-                    .child("(queue finished)"),
-            )
-        })
+        let line = root
+            .when(!heading.is_empty(), |d| {
+                d.child(
+                    div()
+                        .flex_shrink_0()
+                        .max_w_full()
+                        .truncate()
+                        .when(fade < 1.0, |d| d.opacity(fade))
+                        .child(heading),
+                )
+            })
+            .when(!byline.is_empty(), |d| {
+                d.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(palette::text_muted())
+                        .when(fade < 1.0, |d| d.opacity(fade))
+                        .child(byline),
+                )
+            })
+            .when(ended, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_color(palette::text_muted())
+                        .child("(queue finished)"),
+                )
+            });
+        shell.child(line).when_some(chip, |d, chip| d.child(chip))
     }
 
     /// Advance the swap cycle and hand back which piece shows (false for

@@ -42,6 +42,7 @@ use lofty::tag::{ItemKey, ItemValue, Tag, TagItem};
 use crate::art;
 use crate::genre;
 use crate::rating;
+use crate::replaygain::{self, ReplayGain};
 
 /// A tag field the editor can address. The named set is what the library
 /// projects plus the fields a tag editor is expected to carry; `Custom`
@@ -67,7 +68,39 @@ pub enum Field {
     /// player can sync against; the tag frame never times them itself.
     Lyrics,
     Rating,
+    /// One of the four ReplayGain numbers, written by
+    /// [`commit_replay_gain`] rather than typed into the editor. It rides
+    /// the generic tag like the rest of the named set, which is what makes
+    /// it safe: lofty maps the four keys itself (TXXX descriptions on
+    /// ID3v2, plain keys on Vorbis, freeform atoms on MP4) and matches
+    /// them case-insensitively on the way in, so a set replaces whatever
+    /// casing the file already carried instead of landing a second frame
+    /// beside it.
+    ReplayGain(GainKind),
     Custom(String),
+}
+
+/// One slot of a file's ReplayGain. Named for
+/// [`crate::replaygain::ReplayGain`]'s own fields so the measured struct
+/// and the written tag can't drift apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GainKind {
+    TrackDb,
+    TrackPeak,
+    AlbumDb,
+    AlbumPeak,
+}
+
+impl GainKind {
+    /// The generic key lofty writes this slot through.
+    fn item_key(self) -> ItemKey {
+        match self {
+            GainKind::TrackDb => ItemKey::ReplayGainTrackGain,
+            GainKind::TrackPeak => ItemKey::ReplayGainTrackPeak,
+            GainKind::AlbumDb => ItemKey::ReplayGainAlbumGain,
+            GainKind::AlbumPeak => ItemKey::ReplayGainAlbumPeak,
+        }
+    }
 }
 
 /// One field write; `None` clears the field.
@@ -165,6 +198,7 @@ fn item_key(field: &Field) -> Option<ItemKey> {
         // ItemKey::Lyrics on ID3v2, and UnsyncLyrics carries LRC text
         // through USLT and UNSYNCEDLYRICS the same way.
         Field::Lyrics => ItemKey::UnsyncLyrics,
+        Field::ReplayGain(kind) => kind.item_key(),
         // The rating never writes as plain text; `apply_rating` puts its
         // popularimeter form on the generic tag itself.
         Field::Rating | Field::Custom(_) => return None,
@@ -188,6 +222,9 @@ fn field_of(key: ItemKey) -> Option<Field> {
         // A file may carry either key (or both, if two apps wrote it);
         // both read back as the one lyrics field, the first wins.
         ItemKey::UnsyncLyrics | ItemKey::Lyrics => Field::Lyrics,
+        // ReplayGain is write-only here on purpose: it's a measurement, not
+        // something a person types, so it stays out of the editor's field
+        // list and out of [`read`]'s named set.
         _ => return None,
     })
 }
@@ -386,6 +423,59 @@ pub fn commit_batch(edits: &[Edit]) -> Vec<(PathBuf, Result<(), String>)> {
             )
         })
         .collect()
+}
+
+/// Write a measurement's four ReplayGain numbers into a file's tags, the
+/// opt-in half of ADR 19's levelling: the values go to the database by
+/// default, and this is what puts them where every other player can read
+/// them too. Rides [`commit`], so the whole atomic layer applies - clone,
+/// verify, rename - and nothing but the four items moves.
+///
+/// A `None` field removes that item rather than leaving it alone, so a
+/// re-measure that only has a track figure cannot leave last time's album
+/// numbers sitting beside it, and an all-`None` call strips a file's
+/// ReplayGain outright. Removal goes through the generic key, so it takes
+/// the file's item whatever casing the tagger that wrote it used.
+///
+/// Gains write as `-6.50 dB` and peaks as `0.998762`, the forms
+/// [`crate::replaygain`] reads back and every other tagger writes. A
+/// non-finite value is dropped rather than written, since `NaN dB` in
+/// someone's file is worse than no gain at all.
+pub fn commit_replay_gain(path: &Path, gain: ReplayGain) -> Result<(), String> {
+    commit(path, &replay_gain_changes(gain))
+}
+
+/// The four changes a [`commit_replay_gain`] is: the measured value
+/// formatted, or a clear where the measurement has nothing.
+fn replay_gain_changes(gain: ReplayGain) -> Vec<Change> {
+    let db = |v: Option<f32>| v.filter(|d| d.is_finite()).map(replaygain::format_gain);
+    let peak = |v: Option<f32>| v.filter(|p| p.is_finite()).map(format_peak);
+    vec![
+        Change {
+            field: Field::ReplayGain(GainKind::TrackDb),
+            value: db(gain.track_db),
+        },
+        Change {
+            field: Field::ReplayGain(GainKind::TrackPeak),
+            value: peak(gain.track_peak),
+        },
+        Change {
+            field: Field::ReplayGain(GainKind::AlbumDb),
+            value: db(gain.album_db),
+        },
+        Change {
+            field: Field::ReplayGain(GainKind::AlbumPeak),
+            value: peak(gain.album_peak),
+        },
+    ]
+}
+
+/// A peak in the form a tag holds it: six decimals of a linear sample
+/// value, which is what the RG spec asks for and what every tagger in the
+/// wild writes. Plenty of resolution for an f32, and it parses as a plain
+/// float everywhere.
+fn format_peak(peak: f32) -> String {
+    format!("{peak:.6}")
 }
 
 fn commit_inner(
@@ -1166,6 +1256,216 @@ mod tests {
         );
         let audio: Vec<u8> = (0..600u32).map(|i| (i * 11 % 253) as u8).collect();
         assert!(fs::read(&path).unwrap().ends_with(&audio));
+    }
+
+    /// Editing any field leaves a file's ReplayGain where it was. lofty
+    /// maps these to item keys rather than carrying them as unknown
+    /// frames, so they ride the split/merge with the named fields; a save
+    /// that dropped them would silently unlevel a track and there'd be
+    /// nothing in the library to notice it with.
+    #[test]
+    fn replaygain_survives_a_field_edit() {
+        let dir = scratch("replaygain-kept");
+
+        for path in [mp3_file(&dir, "track.mp3"), flac_file(&dir, "track.flac")] {
+            commit(
+                &path,
+                &[
+                    set(Field::Custom("REPLAYGAIN_TRACK_GAIN".into()), "-7.35 dB"),
+                    set(Field::Custom("REPLAYGAIN_TRACK_PEAK".into()), "0.987654"),
+                ],
+            )
+            .unwrap();
+            // A later edit to something else entirely, the ordinary case.
+            commit(&path, &[set(Field::Title, "Levelled")]).unwrap();
+
+            let rg = crate::scanner::read_one(&path).unwrap().replay_gain;
+            assert_eq!(rg.track_db, Some(-7.35), "{}", path.display());
+            assert_eq!(rg.track_peak, Some(0.987654), "{}", path.display());
+        }
+    }
+
+    /// The generic tag a read splits out of either format: the same view
+    /// the scanner hands the ReplayGain parser.
+    fn generic_tag(path: &Path) -> Tag {
+        match file_type(path).unwrap() {
+            FileType::Mpeg => {
+                parse_mpeg(path)
+                    .unwrap()
+                    .id3v2()
+                    .cloned()
+                    .unwrap_or_default()
+                    .split_tag()
+                    .1
+            }
+            FileType::Flac => {
+                parse_flac(path)
+                    .unwrap()
+                    .vorbis_comments()
+                    .cloned()
+                    .unwrap_or_default()
+                    .split_tag()
+                    .1
+            }
+            _ => unreachable!("the fixtures are mp3 and flac"),
+        }
+    }
+
+    /// A measurement written back to the file: the four numbers land in
+    /// the standard string forms, read back through the ReplayGain parser
+    /// as the numbers that went in, and the fields the commit never named
+    /// come through untouched. Then a second write with only a track gain
+    /// clears the other three, the re-measure case.
+    #[test]
+    fn replay_gain_writes_the_four_tags_and_clears_on_none() {
+        let dir = scratch("replay-gain-write");
+        for path in [mp3_file(&dir, "track.mp3"), flac_file(&dir, "track.flac")] {
+            let file = path.display().to_string();
+            commit(
+                &path,
+                &[
+                    set(Field::Title, "Measured"),
+                    set(Field::Custom("MOOD_ROX".into()), "calm"),
+                ],
+            )
+            .unwrap();
+
+            commit_replay_gain(
+                &path,
+                ReplayGain {
+                    track_db: Some(-6.5),
+                    track_peak: Some(0.998762),
+                    album_db: Some(-8.1),
+                    album_peak: Some(1.023),
+                },
+            )
+            .unwrap();
+
+            // The strings another player reads, not just what lofty hands
+            // back through its own round trip.
+            let tag = generic_tag(&path);
+            assert_eq!(
+                tag.get_string(ItemKey::ReplayGainTrackGain),
+                Some("-6.50 dB"),
+                "{file}"
+            );
+            assert_eq!(
+                tag.get_string(ItemKey::ReplayGainTrackPeak),
+                Some("0.998762"),
+                "{file}"
+            );
+            assert_eq!(
+                tag.get_string(ItemKey::ReplayGainAlbumGain),
+                Some("-8.10 dB"),
+                "{file}"
+            );
+            assert_eq!(
+                tag.get_string(ItemKey::ReplayGainAlbumPeak),
+                Some("1.023000"),
+                "{file}"
+            );
+
+            // And back through the parser the scanner reads with.
+            let rg = replaygain::read(&tag);
+            assert_eq!(rg.track_db, Some(-6.5), "{file}");
+            assert_eq!(rg.track_peak, Some(0.998762), "{file}");
+            assert_eq!(rg.album_db, Some(-8.1), "{file}");
+            assert_eq!(rg.album_peak, Some(1.023), "{file}");
+
+            // Nothing else moved.
+            let fields = read(&path).unwrap();
+            assert_eq!(
+                value_of(&fields, &Field::Title).as_deref(),
+                Some("Measured"),
+                "{file}"
+            );
+            assert_eq!(
+                value_of(&fields, &Field::Custom("MOOD_ROX".into())).as_deref(),
+                Some("calm"),
+                "{file}"
+            );
+
+            // A re-measure with only a track figure takes the rest away.
+            commit_replay_gain(
+                &path,
+                ReplayGain {
+                    track_db: Some(-6.0),
+                    ..ReplayGain::default()
+                },
+            )
+            .unwrap();
+            let rg = replaygain::read(&generic_tag(&path));
+            assert_eq!(rg.track_db, Some(-6.0), "{file}");
+            assert_eq!(rg.track_peak, None, "{file}");
+            assert_eq!(rg.album_db, None, "{file}");
+            assert_eq!(rg.album_peak, None, "{file}");
+
+            // Clearing all four leaves a file with no ReplayGain at all.
+            commit_replay_gain(&path, ReplayGain::default()).unwrap();
+            assert_eq!(
+                replaygain::read(&generic_tag(&path)),
+                ReplayGain::default(),
+                "{file}"
+            );
+            assert_eq!(
+                value_of(&read(&path).unwrap(), &Field::Title).as_deref(),
+                Some("Measured"),
+                "{file}"
+            );
+        }
+    }
+
+    /// The casing carve-out: plenty of taggers write the ID3v2 TXXX
+    /// descriptions lowercase, and a write that matched them literally
+    /// would clear nothing and land a second frame beside the stale one.
+    /// Going through the generic key means lofty's case-insensitive
+    /// mapping does the matching, so a set replaces and a clear removes.
+    #[test]
+    fn replay_gain_replaces_a_differently_cased_tag() {
+        let mut body = vec![0x00]; // latin-1
+        body.extend(b"replaygain_track_gain\0");
+        body.extend(b"-3.00 dB");
+        let mut frames = b"TXXX".to_vec();
+        frames.extend(synch(body.len() as u32));
+        frames.extend([0x00, 0x00]);
+        frames.extend(&body);
+        let mut bytes = b"ID3\x04\x00\x00".to_vec();
+        bytes.extend(synch(frames.len() as u32));
+        bytes.extend(&frames);
+        bytes.extend(mpeg_audio());
+
+        let dir = scratch("replay-gain-case");
+        let path = dir.join("track.mp3");
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            replaygain::read(&generic_tag(&path)).track_db,
+            Some(-3.0),
+            "the fixture starts out levelled"
+        );
+
+        commit_replay_gain(
+            &path,
+            ReplayGain {
+                track_db: Some(-9.25),
+                ..ReplayGain::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(replaygain::read(&generic_tag(&path)).track_db, Some(-9.25));
+        // One frame, not the new one shadowing an untouched old one.
+        let raw = parse_mpeg(&path).unwrap().id3v2().cloned().unwrap();
+        let descriptions: Vec<String> = (&raw)
+            .into_iter()
+            .filter_map(|frame| match frame {
+                Frame::UserText(f) => Some(f.description.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(descriptions, ["REPLAYGAIN_TRACK_GAIN"]);
+
+        commit_replay_gain(&path, ReplayGain::default()).unwrap();
+        assert_eq!(replaygain::read(&generic_tag(&path)), ReplayGain::default());
+        assert!(fs::read(&path).unwrap().ends_with(&mpeg_audio()));
     }
 
     /// A "; " genre list writes as each format's native multiples - two

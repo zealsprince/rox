@@ -165,6 +165,10 @@ pub struct TrackPlays {
     pub duration_ms: u32,
     pub codec: String,
     pub bitrate_kbps: u16,
+    /// The stream's sample rate in Hz and bits per sample, for the album
+    /// headings' quality line; live-catalog only like the fields above.
+    pub sample_rate_hz: u32,
+    pub bit_depth: u8,
     pub rating: u8,
     /// The file path, for the cover column's thumbnail: the live catalog's
     /// while the track exists, the snapshot's once it is gone, so a pruned
@@ -186,8 +190,10 @@ fn track_plays_row(row: &rusqlite::Row) -> rusqlite::Result<TrackPlays> {
         duration_ms: row.get(9)?,
         codec: row.get(10)?,
         bitrate_kbps: row.get(11)?,
-        rating: row.get(12)?,
-        path: row.get(13)?,
+        sample_rate_hz: row.get(12)?,
+        bit_depth: row.get(13)?,
+        rating: row.get(14)?,
+        path: row.get(15)?,
     })
 }
 
@@ -199,6 +205,7 @@ const SNAPSHOT_COLUMNS: &str = "COALESCE(t.title, l.title),
      COALESCE(t.artist, l.artist), COALESCE(t.album, l.album),
      COALESCE(t.album_artist, ''), COALESCE(t.year, 0), COALESCE(t.genre, ''),
      COALESCE(t.duration_ms, 0), COALESCE(t.codec, ''), COALESCE(t.bitrate, 0),
+     COALESCE(t.sample_rate, 0), COALESCE(t.bit_depth, 0),
      COALESCE(t.rating, 0), COALESCE(t.path, l.path)";
 
 /// The newest events at or after `since` first, one row per event; 0
@@ -233,7 +240,8 @@ pub fn most_played(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<Trac
 pub fn never_played(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<TrackPlays>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, 0, 0, title, artist, album,
-                album_artist, year, genre, duration_ms, codec, bitrate, rating, path
+                album_artist, year, genre, duration_ms, codec, bitrate,
+                sample_rate, bit_depth, rating, path
          FROM tracks
          WHERE id NOT IN (SELECT track_id FROM listens)
          ORDER BY album_artist, album, disc_no, track_no LIMIT ?1",
@@ -505,7 +513,10 @@ mod tests {
             duration_ms: 0,
             codec: String::new(),
             bitrate_kbps: 0,
+            sample_rate_hz: 0,
+            bit_depth: 0,
             rating: 0,
+            replay_gain: Default::default(),
             size: 0,
             mtime: 0,
         }

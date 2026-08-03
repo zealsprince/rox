@@ -1043,6 +1043,30 @@ pub fn backdrop_wash() -> Rgba {
     }
 }
 
+// Status tones. Deliberately outside the user palette and outside the art
+// tint, unlike everything above: these three mean one thing each, and a
+// warning that turns the album's color stops reading as a warning. They're
+// here rather than in tokens because ADR 12 keeps every color on this side
+// of the line, themed or not. The console's level colors are the same three,
+// which is what they were before this gave them a name.
+
+/// Something worked, and the honest kind of worked: bit-perfect, matched,
+/// claimed.
+pub fn tone_good() -> Rgba {
+    rgb(0x4ade80)
+}
+
+/// Something is standing in for what was asked: a fallback, a resample, a
+/// setting the hardware declined.
+pub fn tone_warn() -> Rgba {
+    rgb(0xfbbf24)
+}
+
+/// Something failed outright.
+pub fn tone_bad() -> Rgba {
+    rgb(0xf87171)
+}
+
 /// Every tint re-aimed at the base and its own seed. The choke point for
 /// an app-wide change: a base swap or a song-theming toggle moves the
 /// target every window's playback eases toward, without the callers

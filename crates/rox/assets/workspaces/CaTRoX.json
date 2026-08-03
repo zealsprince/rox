@@ -33,7 +33,8 @@
                           "marquee_speed": 30.0,
                           "marquee_delay": 2.0,
                           "swap": false,
-                          "swap_secs": 4.0
+                          "swap_secs": 4.0,
+                          "output_tint": false
                         }
                       }
                     }

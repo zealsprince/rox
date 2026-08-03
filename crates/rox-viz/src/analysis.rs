@@ -97,6 +97,31 @@ pub fn log_bands(
         .collect()
 }
 
+/// The 1-2-5 ladder a frequency axis is ruled on, over `lo_hz..hi_hz`. Each
+/// mark carries its frequency, where it falls across a log axis spanning the
+/// range, and whether it's one of the labelled steps - the 1, 2 and 5 of a
+/// decade, the ones every analyzer prints. The rest of each decade comes
+/// back as minor marks, for a grid that can be counted between its numbers.
+pub fn hz_ladder(lo_hz: f32, hi_hz: f32) -> Vec<(f32, f32, bool)> {
+    if lo_hz <= 0.0 || hi_hz <= lo_hz {
+        return Vec::new();
+    }
+    let span = (hi_hz / lo_hz).ln();
+    let mut marks = Vec::new();
+    let mut decade = 10f32.powf(lo_hz.log10().floor());
+    while decade <= hi_hz {
+        for step in 1..=9u32 {
+            let hz = decade * step as f32;
+            if hz < lo_hz || hz > hi_hz {
+                continue;
+            }
+            marks.push((hz, (hz / lo_hz).ln() / span, matches!(step, 1 | 2 | 5)));
+        }
+        decade *= 10.0;
+    }
+    marks
+}
+
 /// In-place iterative radix-2 Cooley-Tukey. Length must be a power of two.
 fn fft(re: &mut [f32], im: &mut [f32]) {
     let n = re.len();
@@ -352,5 +377,40 @@ mod tests {
             assert!(lo < hi);
             assert!(hi <= 8);
         }
+    }
+
+    #[test]
+    fn hz_ladder_labels_the_one_two_five_steps() {
+        let labelled: Vec<f32> = hz_ladder(20.0, 20_000.0)
+            .into_iter()
+            .filter(|(_, _, major)| *major)
+            .map(|(hz, _, _)| hz)
+            .collect();
+        assert_eq!(
+            labelled,
+            vec![20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0, 20_000.0]
+        );
+    }
+
+    #[test]
+    fn hz_ladder_stays_inside_the_range_it_was_given() {
+        // A range whose ends aren't ladder steps: the marks are the round
+        // numbers within it, so the top one sits short of the edge.
+        let marks = hz_ladder(40.0, 16_000.0);
+        let (first, last) = (marks[0], marks[marks.len() - 1]);
+        assert_eq!(first.0, 40.0);
+        assert!(first.1.abs() < 1e-6, "first mark should sit at 0");
+        assert_eq!(last.0, 10_000.0);
+        assert!(last.1 < 1.0);
+        for pair in marks.windows(2) {
+            assert!(pair[0].1 < pair[1].1, "fractions went backwards");
+        }
+    }
+
+    #[test]
+    fn hz_ladder_rejects_an_empty_or_inverted_range() {
+        assert!(hz_ladder(1000.0, 100.0).is_empty());
+        assert!(hz_ladder(0.0, 20_000.0).is_empty());
+        assert!(hz_ladder(1000.0, 1000.0).is_empty());
     }
 }

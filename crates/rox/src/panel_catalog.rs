@@ -18,6 +18,7 @@ use crate::panels::biography::{BiographyConfig, BiographyPanel};
 use crate::panels::cover::{CoverArtPanel, CoverConfig};
 use crate::panels::drag_anchor::{DragAnchorConfig, DragAnchorPanel};
 use crate::panels::drawer::{DrawerConfig, DrawerPanel};
+use crate::panels::eq_widget::{EqWidgetConfig, EqWidgetPanel};
 use crate::panels::favourite::{FavouriteConfig, FavouritePanel};
 use crate::panels::filter::{FilterConfig, FilterPanel};
 use crate::panels::folder_tree::{FolderTreeConfig, FolderTreePanel};
@@ -30,6 +31,7 @@ use crate::panels::lyrics::{LyricsConfig, LyricsPanel};
 use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::metadata::{MetadataConfig, MetadataPanel};
 use crate::panels::mini::{MiniToggleConfig, MiniTogglePanel};
+use crate::panels::output::{OutputConfig, OutputPanel};
 use crate::panels::overlay::{OverlayConfig, OverlayPanel};
 use crate::panels::particles::{ParticlesConfig, ParticlesPanel};
 use crate::panels::playlists::{PlaylistsConfig, PlaylistsPanel};
@@ -40,6 +42,7 @@ use crate::panels::search::{SearchConfig, SearchPanel};
 use crate::panels::slide::{SlideConfig, SlidePanel};
 use crate::panels::spacer::{SpacerConfig, SpacerPanel};
 use crate::panels::spectrum::{SpectrumConfig, SpectrumPanel};
+use crate::panels::stats_widget::{StatsWidgetConfig, StatsWidgetPanel};
 use crate::panels::status::{StatusConfig, StatusPanel};
 use crate::panels::theme_toggle::{ThemeToggleConfig, ThemeTogglePanel};
 use crate::panels::transport::{
@@ -244,6 +247,14 @@ pub(crate) static DETAILS: PanelSection = PanelSection {
                 )
             },
         },
+        PanelDef {
+            label: "Output",
+            icon: icons::VOLUME_2,
+            placement: PanelPlacement::Center,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| OutputPanel::new(state.clone(), OutputConfig::default(), cx)))
+            },
+        },
     ],
 };
 
@@ -421,6 +432,26 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
             build: |state, _, _, cx| {
                 Arc::new(cx.new(|cx| {
                     QueueWidgetPanel::new(state.clone(), QueueWidgetConfig::default(), cx)
+                }))
+            },
+        },
+        PanelDef {
+            label: "EQ Widget",
+            icon: icons::AUDIO_LINES,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(
+                    cx.new(|cx| EqWidgetPanel::new(state.clone(), EqWidgetConfig::default(), cx)),
+                )
+            },
+        },
+        PanelDef {
+            label: "Stats Widget",
+            icon: icons::CHART_PIE,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| {
+                    StatsWidgetPanel::new(state.clone(), StatsWidgetConfig::default(), cx)
                 }))
             },
         },

@@ -33,6 +33,7 @@ use crate::panels::biography::BiographyPanel;
 use crate::panels::cover::CoverArtPanel;
 use crate::panels::drag_anchor::DragAnchorPanel;
 use crate::panels::drawer::DrawerPanel;
+use crate::panels::eq_widget::EqWidgetPanel;
 use crate::panels::favourite::FavouritePanel;
 use crate::panels::filter::FilterPanel;
 use crate::panels::folder_tree::FolderTreePanel;
@@ -45,7 +46,9 @@ use crate::panels::lyrics::LyricsPanel;
 use crate::panels::menu::MenuPanel;
 use crate::panels::metadata::MetadataPanel;
 use crate::panels::mini::MiniTogglePanel;
+use crate::panels::output::OutputPanel;
 use crate::panels::overlay::OverlayPanel;
+use crate::panels::particles::ParticlesPanel;
 use crate::panels::playlists::PlaylistsPanel;
 use crate::panels::queue::QueuePanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
@@ -54,6 +57,8 @@ use crate::panels::search::SearchPanel;
 use crate::panels::slide::SlidePanel;
 use crate::panels::spacer::SpacerPanel;
 use crate::panels::spectrum::SpectrumPanel;
+use crate::panels::stats_widget::StatsWidgetPanel;
+use crate::panels::status::StatusPanel;
 use crate::panels::theme_toggle::ThemeTogglePanel;
 use crate::panels::transport::{SeekStripPanel, TrackInfoPanel, TransportPanel, VolumePanel};
 use crate::panels::vu::VuPanel;
@@ -169,10 +174,15 @@ macro_rules! with_settings_panel {
             SeekStripPanel,
             VolumePanel,
             QueueWidgetPanel,
+            EqWidgetPanel,
+            StatsWidgetPanel,
+            OutputPanel,
             RatingPanel,
             FavouritePanel,
             SpectrumPanel,
             WaveformPanel,
+            ParticlesPanel,
+            StatusPanel,
             MenuPanel,
             DragAnchorPanel,
             WindowControlsPanel,

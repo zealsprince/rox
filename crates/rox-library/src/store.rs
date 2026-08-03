@@ -43,6 +43,48 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
         name: "genre-meta",
         up: crate::genre_meta::init_schema,
     },
+    // The stream's sample rate and bit depth beside the bitrate, so the
+    // library can show what a file actually is rather than just its
+    // container. Every mtime resets, the same move the codec column made:
+    // without it the next scan skips unchanged files and the columns stay
+    // empty forever.
+    crate::migrate::Migration {
+        name: "stream-format",
+        up: |conn| {
+            conn.execute_batch(
+                "ALTER TABLE tracks ADD COLUMN sample_rate INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE tracks ADD COLUMN bit_depth INTEGER NOT NULL DEFAULT 0;
+                 UPDATE tracks SET mtime = 0;",
+            )
+        },
+    },
+    // What a file's ReplayGain tags measured (ADR 19), so the player can
+    // level a track without reopening it. Nullable rather than defaulted:
+    // 0 dB is a real measurement, and a column that cannot tell it from an
+    // untagged file would level every untagged track to the reference. The
+    // mtime reset again, since these only arrive by re-reading tags.
+    crate::migrate::Migration {
+        name: "replaygain",
+        up: |conn| {
+            conn.execute_batch(
+                "ALTER TABLE tracks ADD COLUMN rg_track_gain REAL;
+                 ALTER TABLE tracks ADD COLUMN rg_track_peak REAL;
+                 ALTER TABLE tracks ADD COLUMN rg_album_gain REAL;
+                 ALTER TABLE tracks ADD COLUMN rg_album_peak REAL;
+                 UPDATE tracks SET mtime = 0;",
+            )
+        },
+    },
+    // Which of the two sources filled the four columns above: the file's
+    // tags, or rox's own measurement pass (ADR 19). Nullable and unbackfilled,
+    // since NULL reads as tag-sourced and that is what every existing row is.
+    // No mtime reset here, unlike the rung above: measuring happens app-side
+    // off audio rox already has to decode, so no file is owed a tag re-read
+    // for this column.
+    crate::migrate::Migration {
+        name: "replaygain-source",
+        up: |conn| conn.execute_batch("ALTER TABLE tracks ADD COLUMN rg_source INTEGER;"),
+    },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -141,11 +183,25 @@ pub fn count(conn: &Connection) -> rusqlite::Result<u64> {
         .map(|n| n as u64)
 }
 
+/// The upsert's ReplayGain rule as one SQL condition, spelled into the
+/// statement once per column it guards: the stored numbers are rox's own
+/// measurement and the file being rescanned brought no gain to replace them
+/// with, so the measurement stands. Tags always win where the file has any,
+/// and a rescan that finds a tag-sourced gain gone still clears it: a stale
+/// number would keep levelling a track by a measurement its file no longer
+/// makes. The literal 1 is [`crate::replaygain::Source::Measured`]'s code,
+/// which SQL cannot ask for; `measured_code_matches_the_sql` pins the two.
+const KEEPS_MEASURED_GAIN: &str = "rg_source = 1
+                    AND excluded.rg_track_gain IS NULL AND excluded.rg_album_gain IS NULL";
+
 /// Insert or refresh one batch of local rows inside a single transaction. An
 /// existing (source, path) row keeps its id, so projection db_ids stay valid
 /// across a rescan. A re-read file's rating imports like any tag, except a
 /// zero keeps the stored one: a rating the writer could not land in the
 /// file (wav, read-only media) must not vanish because the file changed.
+/// ReplayGain follows [`KEEPS_MEASURED_GAIN`]: tags overwrite anything,
+/// including a measurement, and only a measured row survives a rescan that
+/// found no tags.
 pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Result<()> {
     // The scan time stamps first-seen rows only: the conflict update below
     // leaves `added` alone, so a rescan of an unchanged or edited file keeps
@@ -156,11 +212,13 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
         .unwrap_or(0);
     let tx = conn.transaction()?;
     {
-        let mut stmt = tx.prepare_cached(
+        let mut stmt = tx.prepare_cached(&format!(
             "INSERT INTO tracks
              (path, title, artist, album_artist, album, genre, year, disc_no, track_no,
-              duration_ms, codec, bitrate, rating, added, size, mtime)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+              duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added, size, mtime,
+              rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, rg_source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                     ?17, ?18, ?19, ?20, ?21, ?22, 0)
              ON CONFLICT (source, path) DO UPDATE SET
                 title = excluded.title, artist = excluded.artist,
                 album_artist = excluded.album_artist,
@@ -169,10 +227,21 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 track_no = excluded.track_no,
                 duration_ms = excluded.duration_ms, codec = excluded.codec,
                 bitrate = excluded.bitrate,
+                sample_rate = excluded.sample_rate, bit_depth = excluded.bit_depth,
                 rating = CASE excluded.rating WHEN 0 THEN rating ELSE excluded.rating END,
+                rg_track_gain = CASE WHEN {keep} THEN rg_track_gain
+                    ELSE excluded.rg_track_gain END,
+                rg_track_peak = CASE WHEN {keep} THEN rg_track_peak
+                    ELSE excluded.rg_track_peak END,
+                rg_album_gain = CASE WHEN {keep} THEN rg_album_gain
+                    ELSE excluded.rg_album_gain END,
+                rg_album_peak = CASE WHEN {keep} THEN rg_album_peak
+                    ELSE excluded.rg_album_peak END,
+                rg_source = CASE WHEN {keep} THEN rg_source ELSE 0 END,
                 size = excluded.size,
                 mtime = excluded.mtime",
-        )?;
+            keep = KEEPS_MEASURED_GAIN,
+        ))?;
         for r in rows {
             stmt.execute(rusqlite::params![
                 r.path,
@@ -187,10 +256,16 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 r.duration_ms,
                 r.codec,
                 r.bitrate_kbps,
+                r.sample_rate_hz,
+                r.bit_depth,
                 r.rating,
                 now,
                 r.size as i64,
                 r.mtime,
+                r.replay_gain.track_db,
+                r.replay_gain.track_peak,
+                r.replay_gain.album_db,
+                r.replay_gain.album_peak,
             ])?;
         }
     }
@@ -270,6 +345,165 @@ pub fn stats_under(conn: &Connection, root: &Path) -> rusqlite::Result<Stats> {
         rusqlite::params![lo, hi],
         stats_row,
     )
+}
+
+/// The library's ReplayGain coverage split three ways. Every track lands in
+/// exactly one bucket, so the three sum to the track count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GainCoverage {
+    /// Tracks levelled by numbers their own file carried.
+    pub tagged: u64,
+    /// Tracks levelled by numbers rox measured.
+    pub measured: u64,
+    /// Tracks with no gain from either source. These play unlevelled, and
+    /// they are what a measurement pass has left to do.
+    pub missing: u64,
+}
+
+impl GainCoverage {
+    /// Every track counted, whatever its source.
+    pub fn total(self) -> u64 {
+        self.tagged + self.measured + self.missing
+    }
+
+    /// Tracks with something to level by, whichever source wrote it. The
+    /// honest answer to what turning leveling on will actually do.
+    pub fn covered(self) -> u64 {
+        self.tagged + self.measured
+    }
+}
+
+/// The three-way coverage split, for a UI that distinguishes what a tagger
+/// wrote from what rox measured. A row counts as covered on either gain -
+/// the peaks bound a gain rather than being one - and a row marked measured
+/// that somehow holds no gain counts as missing: the marker never invents a
+/// number to level by.
+pub fn replaygain_breakdown(conn: &Connection) -> rusqlite::Result<GainCoverage> {
+    conn.query_row(
+        "SELECT COUNT(CASE WHEN (rg_track_gain IS NOT NULL OR rg_album_gain IS NOT NULL)
+                    AND COALESCE(rg_source, 0) <> 1 THEN 1 END),
+                COUNT(CASE WHEN (rg_track_gain IS NOT NULL OR rg_album_gain IS NOT NULL)
+                    AND COALESCE(rg_source, 0) = 1 THEN 1 END),
+                COUNT(CASE WHEN rg_track_gain IS NULL AND rg_album_gain IS NULL THEN 1 END)
+         FROM tracks",
+        [],
+        |row| {
+            Ok(GainCoverage {
+                tagged: row.get::<_, i64>(0)? as u64,
+                measured: row.get::<_, i64>(1)? as u64,
+                missing: row.get::<_, i64>(2)? as u64,
+            })
+        },
+    )
+}
+
+/// One album's worth of work for the measurement pass: the files under it
+/// that carry no track gain, grouped so an album gain can be measured over
+/// the album as a unit.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AlbumToMeasure {
+    /// The album's queue group id, the same (album artist, album) hash the
+    /// player splices albums by. None for tracks with no album tag, which
+    /// come back one entry per file: an untagged file is its own unit and
+    /// has no album to average over.
+    pub group: Option<u64>,
+    pub album_artist: String,
+    pub album: String,
+    /// The untagged files, in disc and track order so a pass that reports
+    /// progress walks the album the way it plays.
+    pub paths: Vec<String>,
+    /// How many local tracks the album holds in all, the tagged ones
+    /// included. An album gain only means something measured over the whole
+    /// album, so a caller with fewer paths than this measures track gains
+    /// and leaves the album figures to the files that already have them.
+    pub total: usize,
+}
+
+/// Every local track with no track gain from either source, grouped into the
+/// albums a measurement pass would take one at a time. Ordered by album, then
+/// by disc and track within it, so the work comes back in a stable order run
+/// to run. A track carrying only an album gain still counts as missing: album
+/// mode has something to level it by, track mode is only borrowing.
+pub fn albums_missing_replaygain(conn: &Connection) -> rusqlite::Result<Vec<AlbumToMeasure>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.album_artist, t.album, t.path, g.total
+         FROM tracks t
+         JOIN (SELECT album_artist, album, COUNT(*) AS total FROM tracks
+               WHERE source = 'local' GROUP BY album_artist, album) g
+           ON g.album_artist = t.album_artist AND g.album = t.album
+         WHERE t.source = 'local' AND t.rg_track_gain IS NULL
+         ORDER BY t.album_artist, t.album, t.disc_no, t.track_no, t.path",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut out: Vec<AlbumToMeasure> = Vec::new();
+    while let Some(row) = rows.next()? {
+        let album_artist: String = row.get(0)?;
+        let album: String = row.get(1)?;
+        let path: String = row.get(2)?;
+        let total = row.get::<_, i64>(3)? as usize;
+        let group = crate::hash::album_group(&album_artist, &album);
+        // An untagged file groups with nobody, so it lands as its own entry
+        // of one rather than pooling with every other album-less track.
+        let append = group.is_some()
+            && out
+                .last()
+                .is_some_and(|last| last.album_artist == album_artist && last.album == album);
+        if append {
+            let last = out.last_mut().expect("append implies a last entry");
+            last.paths.push(path);
+        } else {
+            out.push(AlbumToMeasure {
+                group,
+                album_artist,
+                album,
+                paths: vec![path],
+                total: if group.is_some() { total } else { 1 },
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Write one measurement pass's numbers onto the rows it measured, marked as
+/// rox's own so a later rescan knows not to clear them. One transaction for
+/// the batch, which is how the pass lands an album: every file in it gets the
+/// album figures alongside its own track ones.
+///
+/// A None field leaves its column alone, so a pass that measured only track
+/// gains does not wipe an album gain the files already carried. Rows that
+/// picked up a track gain from tags since [`albums_missing_replaygain`] listed
+/// them are skipped: tags win over a measurement that lost the race. Returns
+/// how many rows actually took the write.
+pub fn set_measured_replaygain(
+    conn: &mut Connection,
+    measured: &[(&str, crate::replaygain::ReplayGain)],
+) -> rusqlite::Result<usize> {
+    let tx = conn.transaction()?;
+    let mut written = 0;
+    {
+        let mut stmt = tx.prepare_cached(
+            "UPDATE tracks SET
+                rg_track_gain = COALESCE(?2, rg_track_gain),
+                rg_track_peak = COALESCE(?3, rg_track_peak),
+                rg_album_gain = COALESCE(?4, rg_album_gain),
+                rg_album_peak = COALESCE(?5, rg_album_peak),
+                rg_source = ?6
+             WHERE source = 'local' AND path = ?1
+               AND (rg_source = ?6 OR rg_track_gain IS NULL)",
+        )?;
+        for (path, gain) in measured {
+            written += stmt.execute(rusqlite::params![
+                path,
+                gain.track_db,
+                gain.track_peak,
+                gain.album_db,
+                gain.album_peak,
+                crate::replaygain::Source::Measured.code(),
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(written)
 }
 
 /// Drop every local track under one folder, for when it leaves the
@@ -504,22 +738,41 @@ pub fn paths_for(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<String>
     Ok(out)
 }
 
-/// Resolve a playable path to its album group id
-/// ([`crate::hash::album_group`]), the player's insert-time lookup. Ok(None)
-/// when the path is not in the library or the track has no album tag;
-/// ungrouped entries never claim album adjacency.
-pub fn group_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<u64>> {
+/// What the player reads off a row before handing the path to the engine,
+/// which knows nothing but paths: the album group boundaries are decided by
+/// (ADR 17) and the ReplayGain the source is levelled with (ADR 19).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct QueueMeta {
+    pub group: Option<u64>,
+    pub replay_gain: crate::replaygain::ReplayGain,
+}
+
+/// Resolve a playable path to its [`QueueMeta`]. Everything defaults when
+/// the path is not in the library, which plays as ungrouped and untagged:
+/// a file dropped on the player from outside still plays, it just has
+/// nothing to level or splice by. The group is None for a track with no
+/// album tag too, since ungrouped entries never claim album adjacency.
+pub fn queue_meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<QueueMeta> {
     let mut stmt = conn.prepare_cached(
-        "SELECT album_artist, album FROM tracks WHERE source = 'local' AND path = ?1",
+        "SELECT album_artist, album, rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
+         FROM tracks WHERE source = 'local' AND path = ?1",
     )?;
     let mut rows = stmt.query([path])?;
     match rows.next()? {
         Some(row) => {
             let album_artist: String = row.get(0)?;
             let album: String = row.get(1)?;
-            Ok(crate::hash::album_group(&album_artist, &album))
+            Ok(QueueMeta {
+                group: crate::hash::album_group(&album_artist, &album),
+                replay_gain: crate::replaygain::ReplayGain {
+                    track_db: row.get(2)?,
+                    track_peak: row.get(3)?,
+                    album_db: row.get(4)?,
+                    album_peak: row.get(5)?,
+                },
+            })
         }
-        None => Ok(None),
+        None => Ok(QueueMeta::default()),
     }
 }
 
@@ -549,6 +802,8 @@ pub struct TrackMeta {
     pub duration_ms: u32,
     pub codec: String,
     pub bitrate_kbps: u16,
+    pub sample_rate_hz: u32,
+    pub bit_depth: u8,
     pub rating: u8,
 }
 
@@ -557,7 +812,8 @@ pub struct TrackMeta {
 pub fn meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<TrackMeta>> {
     let mut stmt = conn.prepare_cached(
         "SELECT title, artist, album, track_no,
-                album_artist, year, genre, duration_ms, codec, bitrate, rating
+                album_artist, year, genre, duration_ms, codec, bitrate,
+                sample_rate, bit_depth, rating
          FROM tracks
          WHERE source = 'local' AND path = ?1",
     )?;
@@ -574,7 +830,9 @@ pub fn meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<T
             duration_ms: row.get(7)?,
             codec: row.get(8)?,
             bitrate_kbps: row.get(9)?,
-            rating: row.get(10)?,
+            sample_rate_hz: row.get(10)?,
+            bit_depth: row.get(11)?,
+            rating: row.get(12)?,
         })),
         None => Ok(None),
     }
@@ -589,7 +847,8 @@ pub fn meta_row_for_path(
 ) -> rusqlite::Result<Option<(i64, TrackMeta)>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, title, artist, album, track_no,
-                album_artist, year, genre, duration_ms, codec, bitrate, rating
+                album_artist, year, genre, duration_ms, codec, bitrate,
+                sample_rate, bit_depth, rating
          FROM tracks
          WHERE source = 'local' AND path = ?1",
     )?;
@@ -608,7 +867,9 @@ pub fn meta_row_for_path(
                 duration_ms: row.get(8)?,
                 codec: row.get(9)?,
                 bitrate_kbps: row.get(10)?,
-                rating: row.get(11)?,
+                sample_rate_hz: row.get(11)?,
+                bit_depth: row.get(12)?,
+                rating: row.get(13)?,
             },
         ))),
         None => Ok(None),
@@ -620,9 +881,10 @@ pub fn max_rowid(conn: &Connection) -> rusqlite::Result<i64> {
 }
 
 /// Stream the projection columns for one rowid range, in id order. The
-/// sink's string order mirrors the SELECT: path, title, artist, album
-/// artist, album, genre, then codec after the numbers, the rating last.
-/// The path rides so the projection can derive each track's folder.
+/// sink's argument order mirrors the SELECT: path, title, artist, album
+/// artist, album, genre, then codec and the stream numbers after the tag
+/// numbers, the rating and scan time last. The path rides so the
+/// projection can derive each track's folder.
 #[allow(clippy::type_complexity)]
 pub fn scan_range(
     conn: &Connection,
@@ -642,13 +904,15 @@ pub fn scan_range(
         u32,
         &str,
         u16,
+        u32,
+        u8,
         u8,
         i64,
     ),
 ) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, path, title, artist, album_artist, album, genre, year, disc_no, track_no,
-                duration_ms, codec, bitrate, rating, added
+                duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added
          FROM tracks WHERE id > ?1 AND id <= ?2 ORDER BY id",
     )?;
     let mut rows = stmt.query(rusqlite::params![lo, hi])?;
@@ -667,8 +931,10 @@ pub fn scan_range(
             row.get::<_, i64>(10)? as u32,
             row.get_ref(11)?.as_str().unwrap_or(""),
             row.get::<_, i64>(12)? as u16,
-            row.get::<_, i64>(13)? as u8,
-            row.get::<_, i64>(14)?,
+            row.get::<_, i64>(13)? as u32,
+            row.get::<_, i64>(14)? as u8,
+            row.get::<_, i64>(15)? as u8,
+            row.get::<_, i64>(16)?,
         );
     }
     Ok(())
@@ -692,7 +958,10 @@ mod tests {
             duration_ms: 0,
             codec: String::new(),
             bitrate_kbps: 0,
+            sample_rate_hz: 0,
+            bit_depth: 0,
             rating: 0,
+            replay_gain: Default::default(),
             size,
             mtime: 0,
         }
@@ -742,7 +1011,9 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        // The head of the ladder, whatever its length: a new rung raises
+        // this on its own rather than failing an unrelated test.
+        assert_eq!(version, MIGRATIONS.len() as i64);
 
         // A second open is a no-op: the baseline never re-probes a stamped file.
         init_schema(&conn).unwrap();
@@ -754,11 +1025,21 @@ mod tests {
     /// reattach key without a re-add.
     #[test]
     fn snapshot_paths_backfill_from_the_live_catalog() {
-        let mut conn = Connection::open_in_memory().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
         // Stop the ladder at the baseline: the pre-step-2 shape, member and
         // listen tables without a path column.
         crate::migrate::run(&conn, &MIGRATIONS[..1]).unwrap();
-        insert_batch(&mut conn, &[row("/m/a/1.mp3", "X", "Album", 100)]).unwrap();
+        // Written as plain SQL against the baseline's own columns, not
+        // through insert_batch: that write path targets the head of the
+        // ladder, so it would need columns this fixture deliberately
+        // stops short of.
+        conn.execute(
+            "INSERT INTO tracks (path, title, artist, album_artist, album, genre, year,
+                track_no, duration_ms, size, mtime)
+             VALUES ('/m/a/1.mp3', '', 'X', 'X', 'Album', '', 0, 1, 0, 100, 0)",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO playlists (name, created, updated) VALUES ('Mix', 1, 1)",
             [],
@@ -787,6 +1068,90 @@ mod tests {
             .unwrap();
         assert_eq!(member, "/m/a/1.mp3");
         assert_eq!(listen, "/m/a/1.mp3");
+    }
+
+    /// The stream-format step adds the two columns and resets every mtime,
+    /// which is the half that matters: without it the next scan skips the
+    /// unchanged files and the columns never fill.
+    #[test]
+    fn stream_format_step_adds_columns_and_asks_for_a_rescan() {
+        let conn = Connection::open_in_memory().unwrap();
+        // The rung under test, found by name: a later rung that also resets
+        // mtime would otherwise quietly take credit for these assertions.
+        let rung = MIGRATIONS
+            .iter()
+            .position(|m| m.name == "stream-format")
+            .expect("the stream-format rung is part of the ladder");
+        // The ladder up to but not including it, then a row stamped as
+        // already scanned.
+        crate::migrate::run(&conn, &MIGRATIONS[..rung]).unwrap();
+        conn.execute(
+            "INSERT INTO tracks (path, title, artist, album_artist, album, genre, year,
+                track_no, duration_ms, codec, bitrate, size, mtime)
+             VALUES ('/m/1.flac', 'One', 'A', 'A', 'Album', '', 0, 1, 0, 'flac', 1006, 10, 500)",
+            [],
+        )
+        .unwrap();
+
+        // That one rung and nothing after it.
+        crate::migrate::run(&conn, &MIGRATIONS[..=rung]).unwrap();
+
+        let (rate, depth, mtime): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT sample_rate, bit_depth, mtime FROM tracks WHERE path = '/m/1.flac'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((rate, depth), (0, 0), "the columns default unread");
+        assert_eq!(mtime, 0, "the row is owed a re-read");
+    }
+
+    /// The replaygain-source step adds its column reading as tag-sourced and,
+    /// unlike the rungs that add tag columns, leaves every mtime where it is:
+    /// nothing about the marker needs a file reopened.
+    #[test]
+    fn replaygain_source_step_adds_a_column_without_asking_for_a_rescan() {
+        let conn = Connection::open_in_memory().unwrap();
+        let rung = MIGRATIONS
+            .iter()
+            .position(|m| m.name == "replaygain-source")
+            .expect("the replaygain-source rung is part of the ladder");
+        crate::migrate::run(&conn, &MIGRATIONS[..rung]).unwrap();
+        conn.execute(
+            "INSERT INTO tracks (path, title, artist, album_artist, album, genre, year,
+                track_no, duration_ms, codec, bitrate, sample_rate, bit_depth, size, mtime,
+                rg_track_gain)
+             VALUES ('/m/1.flac', 'One', 'A', 'A', 'Album', '', 0, 1, 0, 'flac', 1006,
+                     44100, 16, 10, 500, -7.35)",
+            [],
+        )
+        .unwrap();
+
+        crate::migrate::run(&conn, &MIGRATIONS[..=rung]).unwrap();
+
+        let (source, mtime): (Option<i64>, i64) = conn
+            .query_row(
+                "SELECT rg_source, mtime FROM tracks WHERE path = '/m/1.flac'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source, None, "an existing row's gain came off its tags");
+        assert_eq!(
+            crate::replaygain::Source::from_code(source),
+            crate::replaygain::Source::Tags
+        );
+        assert_eq!(mtime, 500, "no file is owed a re-read for this column");
+    }
+
+    /// The SQL in [`KEEPS_MEASURED_GAIN`] and the upsert spells the measured
+    /// code as a literal, since a CASE cannot call a method. This is the pin.
+    #[test]
+    fn measured_code_matches_the_sql() {
+        use crate::replaygain::Source;
+        assert_eq!(Source::Measured.code(), 1);
+        assert_eq!(Source::Tags.code(), 0);
     }
 
     #[test]
@@ -836,6 +1201,339 @@ mod tests {
 
         let p = crate::projection::Projection::load_serial(&conn, false).unwrap();
         assert_eq!(p.resolve(0).rating, 75);
+    }
+
+    /// ReplayGain rides the row and comes back through the one lookup the
+    /// player makes per queued path, with an untagged file's fields still
+    /// None rather than zero: the two mean different things at play time.
+    #[test]
+    fn replaygain_round_trips_to_the_queue_lookup() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let rg = crate::replaygain::ReplayGain {
+            track_db: Some(-7.35),
+            track_peak: Some(0.98),
+            album_db: Some(-8.1),
+            album_peak: None,
+        };
+        let tagged = || {
+            let mut row = row("/m/a/1.mp3", "X", "Album", 100);
+            row.replay_gain = rg;
+            row
+        };
+        insert_batch(&mut conn, &[tagged(), row("/m/a/2.mp3", "X", "Album", 100)]).unwrap();
+
+        let meta = queue_meta_for_path(&conn, "/m/a/1.mp3").unwrap();
+        assert_eq!(meta.replay_gain, rg);
+        assert_eq!(meta.group, crate::hash::album_group("X", "Album"));
+        // Same album, no tags of its own: nothing invented for it.
+        let untagged = queue_meta_for_path(&conn, "/m/a/2.mp3").unwrap();
+        assert_eq!(untagged.replay_gain, Default::default());
+        assert_eq!(untagged.group, meta.group);
+        // A path the library has never seen plays ungrouped and unlevelled.
+        assert_eq!(
+            queue_meta_for_path(&conn, "/elsewhere/3.mp3").unwrap(),
+            QueueMeta::default()
+        );
+
+        // Coverage counts the one tagged file of the two.
+        let split = replaygain_breakdown(&conn).unwrap();
+        assert_eq!((split.covered(), split.total()), (1, 2));
+
+        // A rescan that finds the tags gone clears them: a stale gain would
+        // keep levelling a track by a measurement the file no longer makes.
+        insert_batch(&mut conn, &[row("/m/a/1.mp3", "X", "Album", 100)]).unwrap();
+        let cleared = queue_meta_for_path(&conn, "/m/a/1.mp3").unwrap();
+        assert_eq!(cleared.replay_gain, Default::default());
+        let split = replaygain_breakdown(&conn).unwrap();
+        assert_eq!((split.covered(), split.total()), (0, 2));
+    }
+
+    /// A file carrying only an album gain still counts as covered: album
+    /// mode has something to level it by, and track mode falls back to it.
+    #[test]
+    fn coverage_counts_an_album_only_tagging() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let mut album_only = row("/m/a/1.mp3", "X", "Album", 100);
+        album_only.replay_gain = crate::replaygain::ReplayGain {
+            album_db: Some(-8.1),
+            ..Default::default()
+        };
+        insert_batch(&mut conn, &[album_only]).unwrap();
+        let split = replaygain_breakdown(&conn).unwrap();
+        assert_eq!((split.covered(), split.total()), (1, 1));
+    }
+
+    /// What the store says a row's gain came from.
+    fn gain_source(conn: &Connection, path: &str) -> crate::replaygain::Source {
+        let code: Option<i64> = conn
+            .query_row(
+                "SELECT rg_source FROM tracks WHERE path = ?1",
+                [path],
+                |r| r.get(0),
+            )
+            .unwrap();
+        crate::replaygain::Source::from_code(code)
+    }
+
+    /// The measurement pass writes its numbers onto the rows it measured and
+    /// a rescan that finds the files still untagged leaves them alone. The
+    /// tag-sourced half of the rule is unchanged: those still clear.
+    #[test]
+    fn a_rescan_without_tags_keeps_a_measured_gain() {
+        use crate::replaygain::{ReplayGain, Source};
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let untagged = || row("/m/a/1.mp3", "X", "Album", 100);
+        let tagged = || {
+            let mut r = row("/m/a/2.mp3", "X", "Album", 100);
+            r.replay_gain = ReplayGain {
+                track_db: Some(-4.0),
+                ..Default::default()
+            };
+            r
+        };
+        insert_batch(&mut conn, &[untagged(), tagged()]).unwrap();
+
+        let measured = ReplayGain {
+            track_db: Some(-6.5),
+            track_peak: Some(0.91),
+            album_db: Some(-6.0),
+            album_peak: Some(0.99),
+        };
+        assert_eq!(
+            set_measured_replaygain(&mut conn, &[("/m/a/1.mp3", measured)]).unwrap(),
+            1
+        );
+        assert_eq!(
+            queue_meta_for_path(&conn, "/m/a/1.mp3")
+                .unwrap()
+                .replay_gain,
+            measured
+        );
+        assert_eq!(gain_source(&conn, "/m/a/1.mp3"), Source::Measured);
+
+        // The rescan: neither file gained tags, and the second one lost the
+        // tags it had.
+        insert_batch(
+            &mut conn,
+            &[untagged(), row("/m/a/2.mp3", "X", "Album", 100)],
+        )
+        .unwrap();
+        assert_eq!(
+            queue_meta_for_path(&conn, "/m/a/1.mp3")
+                .unwrap()
+                .replay_gain,
+            measured,
+            "a measurement is rox's own, not the file's to clear"
+        );
+        assert_eq!(gain_source(&conn, "/m/a/1.mp3"), Source::Measured);
+        assert_eq!(
+            queue_meta_for_path(&conn, "/m/a/2.mp3")
+                .unwrap()
+                .replay_gain,
+            ReplayGain::default(),
+            "a tag-sourced gain still clears when the tags go"
+        );
+    }
+
+    /// The other direction: a rescan that finds real tags overwrites a
+    /// measurement and hands the row back to the tags, marker and all.
+    #[test]
+    fn tags_overwrite_a_measured_gain() {
+        use crate::replaygain::{ReplayGain, Source};
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        insert_batch(&mut conn, &[row("/m/a/1.mp3", "X", "Album", 100)]).unwrap();
+        set_measured_replaygain(
+            &mut conn,
+            &[(
+                "/m/a/1.mp3",
+                ReplayGain {
+                    track_db: Some(-6.5),
+                    track_peak: Some(0.91),
+                    album_db: Some(-6.0),
+                    album_peak: Some(0.99),
+                },
+            )],
+        )
+        .unwrap();
+
+        // Somebody tagged the file and the rescan read it: only a track gain
+        // and peak, so the measured album figures go with the rest.
+        let from_tags = ReplayGain {
+            track_db: Some(-8.25),
+            track_peak: Some(1.01),
+            ..Default::default()
+        };
+        let mut rescanned = row("/m/a/1.mp3", "X", "Album", 100);
+        rescanned.replay_gain = from_tags;
+        insert_batch(&mut conn, &[rescanned]).unwrap();
+
+        assert_eq!(
+            queue_meta_for_path(&conn, "/m/a/1.mp3")
+                .unwrap()
+                .replay_gain,
+            from_tags,
+            "tags win outright, measured leftovers included"
+        );
+        assert_eq!(gain_source(&conn, "/m/a/1.mp3"), Source::Tags);
+
+        // And the measurement pass no longer writes over them.
+        assert_eq!(
+            set_measured_replaygain(
+                &mut conn,
+                &[(
+                    "/m/a/1.mp3",
+                    ReplayGain {
+                        track_db: Some(-3.0),
+                        ..Default::default()
+                    }
+                )]
+            )
+            .unwrap(),
+            0,
+            "a row the tags reached first is left to them"
+        );
+        assert_eq!(
+            queue_meta_for_path(&conn, "/m/a/1.mp3")
+                .unwrap()
+                .replay_gain,
+            from_tags
+        );
+    }
+
+    /// The work list: untagged files grouped into their albums, in disc and
+    /// track order, with the album's full size beside them so a caller knows
+    /// whether it can measure an album gain at all. Album-less files come
+    /// back one entry each.
+    #[test]
+    fn albums_missing_replaygain_groups_the_work_by_album() {
+        use crate::replaygain::ReplayGain;
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let track = |path: &str, album: &str, no: u16| {
+            let mut r = row(path, "X", album, 100);
+            r.track_no = no;
+            r
+        };
+        let tagged = |path: &str, album: &str, no: u16| {
+            let mut r = track(path, album, no);
+            r.replay_gain = ReplayGain {
+                track_db: Some(-7.0),
+                ..Default::default()
+            };
+            r
+        };
+        insert_batch(
+            &mut conn,
+            &[
+                // A part-tagged album: two files to measure out of three.
+                track("/m/a/2.mp3", "Album", 2),
+                tagged("/m/a/1.mp3", "Album", 1),
+                track("/m/a/3.mp3", "Album", 3),
+                // A fully tagged album, which is no work at all.
+                tagged("/m/b/1.mp3", "Done", 1),
+                // Two files with no album tag, each its own unit.
+                track("/m/c/1.mp3", "", 0),
+                track("/m/c/2.mp3", "", 0),
+            ],
+        )
+        .unwrap();
+
+        let work = albums_missing_replaygain(&conn).unwrap();
+        assert_eq!(work.len(), 3, "one album plus the two loose files");
+        let album = work
+            .iter()
+            .find(|a| a.album == "Album")
+            .expect("the part-tagged album is work");
+        assert_eq!(album.group, crate::hash::album_group("X", "Album"));
+        assert_eq!(
+            album.paths,
+            ["/m/a/2.mp3", "/m/a/3.mp3"],
+            "the tagged track is not work, and the rest come in track order"
+        );
+        assert_eq!(
+            album.total, 3,
+            "the album is bigger than the work, so no album gain to measure"
+        );
+        assert!(!work.iter().any(|a| a.album == "Done"));
+        for entry in work.iter().filter(|a| a.album.is_empty()) {
+            assert_eq!(entry.group, None);
+            assert_eq!(entry.paths.len(), 1);
+            assert_eq!(entry.total, 1, "an untagged file is an album of one");
+        }
+
+        // Measuring the album's remaining files takes them off the list.
+        let measured = ReplayGain {
+            track_db: Some(-5.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            set_measured_replaygain(
+                &mut conn,
+                &[("/m/a/2.mp3", measured), ("/m/a/3.mp3", measured)]
+            )
+            .unwrap(),
+            2
+        );
+        let work = albums_missing_replaygain(&conn).unwrap();
+        assert!(!work.iter().any(|a| a.album == "Album"));
+    }
+
+    /// The three-way split the settings page reads: what a tagger wrote,
+    /// what rox measured, and what nothing levels yet.
+    #[test]
+    fn coverage_splits_tagged_from_measured() {
+        use crate::replaygain::ReplayGain;
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let mut from_tags = row("/m/a/1.mp3", "X", "Album", 100);
+        from_tags.replay_gain = ReplayGain {
+            track_db: Some(-7.0),
+            ..Default::default()
+        };
+        insert_batch(
+            &mut conn,
+            &[
+                from_tags,
+                row("/m/a/2.mp3", "X", "Album", 100),
+                row("/m/a/3.mp3", "X", "Album", 100),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            replaygain_breakdown(&conn).unwrap(),
+            GainCoverage {
+                tagged: 1,
+                measured: 0,
+                missing: 2
+            }
+        );
+
+        set_measured_replaygain(
+            &mut conn,
+            &[(
+                "/m/a/2.mp3",
+                ReplayGain {
+                    track_db: Some(-5.0),
+                    ..Default::default()
+                },
+            )],
+        )
+        .unwrap();
+        let split = replaygain_breakdown(&conn).unwrap();
+        assert_eq!(
+            split,
+            GainCoverage {
+                tagged: 1,
+                measured: 1,
+                missing: 1
+            }
+        );
+        // Both sources count as covered; only the missing row doesn't.
+        assert_eq!((split.covered(), split.total()), (2, 3));
     }
 
     /// The scan timestamp stamps a row when it first lands and a rescan's

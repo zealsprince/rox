@@ -310,6 +310,34 @@ pub fn empty_slot(
         )
 }
 
+/// Hold a slot's cell to the size the child asks for. A host lays its
+/// children out itself, so nothing else reads a hosted panel's min and max:
+/// without this, the size settings on a child inside a group say one thing
+/// and the host draws another. These are the same numbers the dock's splits
+/// honor for a docked panel, so a panel keeps its size wherever it lands.
+/// An unset cap comes back as [`Pixels::MAX`] and is left off the cell
+/// rather than written out as a bound.
+pub fn clamp_to_panel(cell: Div, child: &Slot, cx: &App) -> Div {
+    let Some(child) = child else { return cell };
+    let (min, max) = (child.min_size(cx), child.max_size(cx));
+    cell.min_w(min.width)
+        .min_h(min.height)
+        .map(|d| {
+            if max.width < Pixels::MAX {
+                d.max_w(max.width)
+            } else {
+                d
+            }
+        })
+        .map(|d| {
+            if max.height < Pixels::MAX {
+                d.max_h(max.height)
+            } else {
+                d
+            }
+        })
+}
+
 /// The wrapper a host's per-slot floating controls sit in: pinned to the
 /// slot's top-right corner, faint until hovered so they never fight the
 /// child's own chrome for attention. Children's controls on the right,
@@ -365,6 +393,10 @@ pub fn parent_button<P: Panel>(tooltip: &'static str, cx: &mut Context<P>) -> im
 /// back on the host through the callbacks; the settings route goes
 /// through the type-erased opener, so a child type without a settings
 /// window just no-ops.
+///
+/// A locked child keeps its settings row and loses the two that would move
+/// it: locked means pinned where it sits, and a slot is the hosted panel's
+/// version of the tab a docked panel gets pinned into.
 #[allow(clippy::too_many_arguments)]
 pub fn slot_button<P: 'static>(
     id: (&'static str, usize),
@@ -385,6 +417,7 @@ pub fn slot_button<P: 'static>(
             let menu = extend(menu, weak.clone());
             let pick_weak = weak.clone();
             let replace = replace.clone();
+            let locked = child.locked(cx);
             let submenu = PopupMenu::build(window, cx, {
                 let state = state.clone();
                 let workspace = workspace.clone();
@@ -399,18 +432,25 @@ pub fn slot_button<P: 'static>(
             let settings_child = child.clone();
             let remove_weak = weak.clone();
             let remove = remove.clone();
-            menu.item(
-                PopupMenuItem::submenu("Replace", submenu)
-                    .icon(Icon::default().path(icons::REFRESH_CW)),
-            )
-            .item(
+            let menu = if locked {
+                menu
+            } else {
+                menu.item(
+                    PopupMenuItem::submenu("Replace", submenu)
+                        .icon(Icon::default().path(icons::REFRESH_CW)),
+                )
+            };
+            let menu = menu.item(
                 PopupMenuItem::new("Panel Settings")
                     .icon(Icon::default().path(icons::SETTINGS))
                     .on_click(move |_, _, cx| {
                         panel_settings::open_for_view(&settings_child, cx);
                     }),
-            )
-            .item(
+            );
+            if locked {
+                return menu;
+            }
+            menu.item(
                 PopupMenuItem::new("Remove")
                     .icon(Icon::default().path(icons::CLOSE))
                     .on_click(move |_, _, cx| {

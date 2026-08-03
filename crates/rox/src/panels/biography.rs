@@ -658,8 +658,14 @@ impl BiographyPanel {
         if self.config.portrait {
             if let Some((image, ratio)) = header {
                 let band = self.header_band(*ratio);
-                column = column
-                    .child(band.child(img(image.clone()).object_fit(ObjectFit::Cover).size_full()));
+                column = column.child(
+                    band.child(
+                        img(image.clone())
+                            .overflow_hidden()
+                            .object_fit(ObjectFit::Cover)
+                            .size_full(),
+                    ),
+                );
             }
         }
         let mut content = div()
@@ -776,10 +782,12 @@ impl BiographyPanel {
                 let base = palette::bg_root_opaque();
                 root = root
                     .child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .child(img(image.clone()).object_fit(ObjectFit::Cover).size_full()),
+                        div().absolute().inset_0().child(
+                            img(image.clone())
+                                .overflow_hidden()
+                                .object_fit(ObjectFit::Cover)
+                                .size_full(),
+                        ),
                     )
                     .child(div().absolute().inset_0().bg(linear_gradient(
                         0.0,

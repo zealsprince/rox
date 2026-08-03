@@ -11,17 +11,17 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    anchored, canvas, deferred, div, fill, point, prelude::*, px, relative, size, svg,
-    AbsoluteLength, Along, AnyElement, App, Axis, Bounds, Context, DismissEvent, Div, Element,
-    Entity, FocusHandle, Focusable as _, GlobalElementId, InspectorElementId, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollHandle,
-    SharedString, Size, Stateful, Subscription, TitlebarOptions, UniformListScrollHandle,
-    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions,
+    anchored, canvas, deferred, div, fill, linear_color_stop, linear_gradient, point, prelude::*,
+    px, relative, size, svg, AbsoluteLength, Along, AnyElement, App, Axis, Bounds, Context,
+    DismissEvent, Div, Element, Entity, FocusHandle, Focusable as _, GlobalElementId,
+    InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, Rgba, ScrollHandle, SharedString, Size, Stateful, Subscription, TitlebarOptions,
+    UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
-use gpui_component::{h_flex, Icon, IconName, Root, Sizable};
+use gpui_component::{h_flex, Disableable, Icon, IconName, Root, Sizable};
 use rox_dock::{Panel, PanelInfo, PanelView, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +33,7 @@ use crate::history::History;
 use crate::integrations::discord::DiscordPresence;
 use crate::lastfm::Scrobbler;
 use crate::panels::library::Library;
-use crate::player::{fmt_time, Player};
+use crate::player::{fmt_time, FadeView, Player};
 use crate::query::shared_query::SharedQuery;
 use crate::selection::Selection;
 use crate::thumbs::Thumbs;
@@ -143,9 +143,56 @@ pub fn icon_control<V: 'static>(
     color: Rgba,
     on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
     cx: &mut Context<V>,
-) -> impl IntoElement {
+) -> Div {
     icon_control_sized(icon, px(16.), color, on_click, cx)
 }
+
+/// [`icon_control`] that shows a crossfade running through it: while two
+/// tracks overlap, an accent wash sweeps across the button in the direction
+/// the skip went, its soft edge sitting where the fade has got to. The
+/// control that started the overlap is the one that shows it, so the
+/// animation says which way the queue moved as well as how much is left.
+/// None is the plain button.
+pub fn icon_control_fading<V: 'static>(
+    icon: &'static str,
+    color: Rgba,
+    fade: Option<FadeView>,
+    outro: Option<f32>,
+    on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
+    cx: &mut Context<V>,
+) -> Div {
+    icon_control_sized(icon, px(16.), color, on_click, cx)
+        .when_some(fade, |d, fade| {
+            // Soft-edged rather than a hard wipe: the thing being drawn is a
+            // fade, and an edge that blurs across the button reads as one where
+            // a moving hard line reads as a progress bar.
+            let wash = palette::alpha(palette::accent(), 0x66);
+            let clear = palette::alpha(palette::accent(), 0x00);
+            let at = fade.progress();
+            d.bg(linear_gradient(
+                // 90 runs left to right, 270 the other way, so a Previous
+                // sweeps back the way it sent the queue.
+                if fade.back { 270. } else { 90. },
+                linear_color_stop(wash, (at - EDGE).max(0.0)),
+                linear_color_stop(clear, (at + EDGE).min(1.0)),
+            ))
+        })
+        // The sweep's exit: a completed fade leaves the whole button washed,
+        // and cutting that to nothing reads as a glitch. Instead it lands
+        // one notch brighter than the sweep it ends (the flash) and
+        // dissolves. Flat rather than the gradient, since the sweep already
+        // arrived; this is the settle, not more motion.
+        .when_some(outro, |d, strength| {
+            d.bg(palette::alpha(
+                palette::accent(),
+                (0x99 as f32 * strength) as u8,
+            ))
+        })
+}
+
+/// How far either side of the fade's position the sweep's edge blurs, as a
+/// fraction of the button.
+const EDGE: f32 = 0.2;
 
 /// [`icon_control`] with the icon size exposed, for spots like the menubar
 /// where the transport-scale glyph reads too heavy.
@@ -155,7 +202,7 @@ pub fn icon_control_sized<V: 'static>(
     color: Rgba,
     on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
     cx: &mut Context<V>,
-) -> impl IntoElement {
+) -> Div {
     div()
         .p(tokens::ICON_PAD)
         .rounded(tokens::RADIUS)
@@ -1347,6 +1394,180 @@ impl IntoElement for WindowTint {
 
 /// One labeled row of a customize window: the setting's name and its
 /// control on one line, an optional dimmed description wrapping below.
+/// What a [`banner`] is telling you, which picks its color and its face.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Tone {
+    /// Just so you know. The state is fine and unremarkable.
+    Info,
+    /// The good outcome, called out because it's the one worth confirming.
+    Good,
+    /// Something is standing in for what was asked.
+    Warn,
+    /// Something failed.
+    Bad,
+}
+
+impl Tone {
+    fn color(self) -> Rgba {
+        match self {
+            Tone::Info => palette::text_muted(),
+            Tone::Good => palette::tone_good(),
+            Tone::Warn => palette::tone_warn(),
+            Tone::Bad => palette::tone_bad(),
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Tone::Info => icons::INFO,
+            Tone::Good => icons::CHECK,
+            Tone::Warn | Tone::Bad => icons::ALERT,
+        }
+    }
+}
+
+/// A callout: a tinted box with a rule down its edge, a face, a headline,
+/// and however many lines of detail under it. For state a row can't carry,
+/// where what happened needs more than a value and the difference between
+/// fine and not fine should be visible before anything is read.
+///
+/// The tint is the tone at low alpha over whatever the surface already is,
+/// so it reads on both themes and under the art wash without a second set
+/// of colors.
+pub fn banner(tone: Tone, headline: impl Into<SharedString>, lines: Vec<SharedString>) -> Div {
+    banner_shaped(tone, headline, lines, false)
+}
+
+/// The same callout, flowing: the reasons ride beside the headline while
+/// there's width for them and drop under it when there isn't. For a panel
+/// that has to earn its height, where a block stacked three lines deep to
+/// say two short things wastes the strip it's parked in.
+pub fn banner_flow(tone: Tone, headline: impl Into<SharedString>, lines: Vec<SharedString>) -> Div {
+    banner_shaped(tone, headline, lines, true)
+}
+
+fn banner_shaped(
+    tone: Tone,
+    headline: impl Into<SharedString>,
+    lines: Vec<SharedString>,
+    flow: bool,
+) -> Div {
+    let color = tone.color();
+    // The face rides the headline's own row rather than the whole block, so
+    // it centers against that one line however many lines follow and however
+    // far they wrap. Hanging it off the block instead left it floating high
+    // the moment a reason wrapped to two lines.
+    let head = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_SM)
+        // Only where the row it sits in has a width to shrink against. In a
+        // block sized by its own content, a zero minimum is read as
+        // min-content and the headline comes out one glyph per line.
+        .when(flow, |head| head.min_w_0())
+        .child(
+            Icon::default()
+                .path(tone.icon())
+                .size_4()
+                .text_color(color)
+                .flex_none(),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .text_color(palette::text_bright())
+                .child(headline.into()),
+        );
+    let reason = move |line: SharedString| {
+        div()
+            .when(flow, |line| line.min_w_0())
+            .text_xs()
+            .text_color(palette::text_muted())
+            .child(line)
+    };
+    let shell = div()
+        .flex()
+        .gap(tokens::SPACE_SM)
+        .p(tokens::SPACE_SM)
+        // Roomier on the left than the other three sides: the rule and the
+        // face are stacked up against that edge, and at even padding they
+        // crowd it.
+        .pl(tokens::SPACE_MD)
+        .rounded(tokens::RADIUS)
+        .bg(palette::alpha(color, 0x1c))
+        .border_l(px(2.))
+        .border_color(color);
+    if flow {
+        // One wrapping row. Where a line breaks is decided on the items'
+        // natural widths, so the reasons ride along beside the headline
+        // until they stop fitting and take their own line; min_w_0 is only
+        // for the reason too long for even that, which wraps inside itself
+        // the way it does stacked.
+        return shell
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .child(head)
+            .children(lines.into_iter().map(reason));
+    }
+    // Detail hangs under the headline's text, clear of the face: the icon
+    // plus the gap it sits behind.
+    let body = div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_SM)
+        .min_w_0()
+        .pl(px(16.) + tokens::SPACE_SM)
+        .children(lines.into_iter().map(reason));
+    shell.flex_col().child(head).child(body)
+}
+
+/// Previous, play/pause, next, and what's playing. For the windows that
+/// aren't the workspace but still want playback within reach: judging an EQ
+/// curve or an output setting means starting and stopping music, and going
+/// back to the main window for every pause gets old fast. Three verbs only;
+/// the full transport is a panel.
+///
+/// The caller has to keep the view awake, since this reads the player every
+/// frame and the play/pause face goes stale the moment a track ends on its
+/// own. An `cx.observe(&player, ...)` held somewhere does it.
+pub fn transport_strip<P: 'static>(player: &Entity<Player>, cx: &mut Context<P>) -> Div {
+    let playing = player.read(cx).is_playing();
+    let title = player
+        .read(cx)
+        .now_playing()
+        .and_then(|now| {
+            now.path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "Nothing playing".into());
+    let button = |icon: &'static str, player: Entity<Player>, verb: fn(&Player)| {
+        crate::settings::ui::icon_button(icon, false, move |_, _, cx| verb(player.read(cx)))
+    };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_SM)
+        .child(button(icons::SKIP_BACK, player.clone(), |p| p.prev()))
+        .child(button(
+            if playing { icons::PAUSE } else { icons::PLAY },
+            player.clone(),
+            |p| p.toggle_pause(),
+        ))
+        .child(button(icons::SKIP_FORWARD, player.clone(), |p| p.next()))
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(title),
+        )
+}
+
 pub fn setting_row(
     label: &'static str,
     description: Option<&'static str>,
@@ -1808,22 +2029,69 @@ pub fn tracking_section<P: 'static>(
     crate::settings::ui::section("Tracking", None, body).into_any_element()
 }
 
-/// A font-family picker: a small dropdown labeled with the current
-/// choice, its menu the installed families over a Default that clears the
-/// override back to the app font. `current` is the panel's stored family,
-/// None meaning inherit; `apply` stores the pick. Shared so any panel that
-/// carries a font override draws the same control - the lyrics panel's
-/// typeface knob is the first.
+/// A dropdown over a list of choices: a small button labeled with whichever
+/// option is current, its menu the whole list with a tick on that one. Use
+/// it where [`choices`] would run out of room, a picker whose list is
+/// however many the machine happens to have rather than a fixed two or
+/// three. `disabled` draws it inert, for a knob whose mode doesn't apply.
+pub fn picker<P, K>(
+    id: &'static str,
+    current: K,
+    options: Vec<(K, SharedString)>,
+    disabled: bool,
+    apply: impl Fn(&mut P, K, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> impl IntoElement
+where
+    P: 'static,
+    K: PartialEq + Clone + 'static,
+{
+    // An id that isn't in the list still has to label the button, so fall
+    // back to the head rather than drawing an empty one: a device that was
+    // unplugged since the pick reads as the default it will actually open.
+    // The tick follows the same fallback, so the open menu points at the row
+    // the button is already naming instead of checking nothing.
+    let picked = options
+        .iter()
+        .find(|(key, _)| *key == current)
+        .or_else(|| options.first());
+    let label = picked.map(|(_, label)| label.clone()).unwrap_or_default();
+    let current = picked.map(|(key, _)| key.clone());
+    let weak = cx.entity().downgrade();
+    Button::new(id)
+        .label(label)
+        .small()
+        .outline()
+        .disabled(disabled)
+        .dropdown_menu(move |mut menu, _, _| {
+            for (key, label) in options.iter() {
+                let checked = current.as_ref() == Some(key);
+                let key = key.clone();
+                let pick = weak.clone();
+                let apply = apply.clone();
+                menu = menu.item(PopupMenuItem::new(label.clone()).checked(checked).on_click(
+                    move |_, _, cx| {
+                        let key = key.clone();
+                        let apply = apply.clone();
+                        if let Some(this) = pick.upgrade() {
+                            this.update(cx, |this, cx| apply(this, key, cx));
+                        }
+                    },
+                ));
+            }
+            menu
+        })
+}
+
+/// A font-family picker: the shared dropdown over the installed families,
+/// with a Default at the head that clears the override back to the app
+/// font. `current` is the panel's stored family, None meaning inherit.
 pub fn font_picker<P: 'static>(
     id: &'static str,
     current: Option<String>,
     apply: impl Fn(&mut P, Option<String>, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> impl IntoElement {
-    let label: SharedString = current
-        .clone()
-        .map(SharedString::from)
-        .unwrap_or_else(|| "Default".into());
     // The installed families don't change over a session, so enumerate and sort
     // them once and share the list. This runs on every settings render, slider
     // scrubs included, where re-listing and re-sorting every font each frame was
@@ -1837,41 +2105,13 @@ pub fn font_picker<P: 'static>(
             Arc::new(fonts.into_iter().map(SharedString::from).collect())
         })
         .clone();
-    let weak = cx.entity().downgrade();
-    Button::new(id)
-        .label(label)
-        .small()
-        .outline()
-        .dropdown_menu(move |menu, _, _| {
-            let clear = weak.clone();
-            let clear_apply = apply.clone();
-            let mut menu = menu.item(
-                PopupMenuItem::new("Default")
-                    .checked(current.is_none())
-                    .on_click(move |_, _, cx| {
-                        if let Some(this) = clear.upgrade() {
-                            let apply = clear_apply.clone();
-                            this.update(cx, |this, cx| apply(this, None, cx));
-                        }
-                    }),
-            );
-            for name in fonts.iter() {
-                let name = name.clone();
-                let checked = current.as_deref() == Some(name.as_ref());
-                let pick = weak.clone();
-                let apply = apply.clone();
-                menu = menu.item(PopupMenuItem::new(name.clone()).checked(checked).on_click(
-                    move |_, _, cx| {
-                        let name = name.to_string();
-                        let apply = apply.clone();
-                        if let Some(this) = pick.upgrade() {
-                            this.update(cx, |this, cx| apply(this, Some(name), cx));
-                        }
-                    },
-                ));
-            }
-            menu
-        })
+    let mut options: Vec<(Option<String>, SharedString)> = vec![(None, "Default".into())];
+    options.extend(
+        fonts
+            .iter()
+            .map(|name| (Some(name.to_string()), name.clone())),
+    );
+    picker(id, current, options, false, apply, cx)
 }
 
 /// The chrome shared by the segmented pickers and the toggle groups: a

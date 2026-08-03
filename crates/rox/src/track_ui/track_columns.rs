@@ -136,11 +136,16 @@ pub fn cell(key: &str, c: &Cell, state: &AppState) -> Option<Div> {
 /// resolves the thumbnail; pending and missing wear the quiet placeholder so
 /// a landing cover fills without shifting the row. Shared with the library
 /// table's cover column, which draws outside [`cell`].
+///
+/// The mask is the square: `Cover` overruns the element on the art's long
+/// side, and gpui paints that overrun rather than cropping it, so a wide
+/// sleeve would run out over the title beside it.
 pub fn cover_cell(cover: &Option<Thumb>) -> Div {
     let side = palette::scaled_px(ROW_H - 6.);
     let content: AnyElement = match cover {
         Some(Thumb::Ready(image)) => img(image.clone())
             .size(side)
+            .overflow_hidden()
             .object_fit(ObjectFit::Cover)
             .rounded(px(3.))
             .into_any_element(),
@@ -211,19 +216,31 @@ pub struct GroupTrack<'a> {
     pub genre: &'a str,
     pub codec: &'a str,
     pub bitrate_kbps: u16,
+    pub sample_rate_hz: u32,
+    pub bit_depth: u8,
     pub duration_ms: u32,
     pub track_id: i64,
 }
 
 /// Aggregate a run of same-album tracks into a heading group: the first
-/// track names it, the run sums the time and spans the codec and bitrate.
+/// track names it, the run sums the time and spans the codec, the stream
+/// shape, and the bitrate.
 pub fn album_group(run: &[GroupTrack]) -> AlbumGroup {
     let first = &run[0];
     let mut codec: Option<&str> = Some(first.codec);
+    let (mut bit_depth, mut sample_rate_hz) = (first.bit_depth, first.sample_rate_hz);
     let (mut min_kbps, mut max_kbps, mut total_ms) = (0u16, 0u16, 0u64);
     for t in run {
         if codec != Some(t.codec) {
             codec = None;
+        }
+        // Depth and rate are all-or-nothing across the run, like the
+        // codec: a mixed album has no one shape to name.
+        if bit_depth != t.bit_depth {
+            bit_depth = 0;
+        }
+        if sample_rate_hz != t.sample_rate_hz {
+            sample_rate_hz = 0;
         }
         if t.bitrate_kbps > 0 {
             min_kbps = if min_kbps == 0 {
@@ -245,7 +262,13 @@ pub fn album_group(run: &[GroupTrack]) -> AlbumGroup {
         artist: artist.to_string(),
         year: first.year,
         genre: first.genre.to_string(),
-        quality: group_head::quality(codec.filter(|c| !c.is_empty()), min_kbps, max_kbps),
+        quality: group_head::quality(
+            codec.filter(|c| !c.is_empty()),
+            min_kbps,
+            max_kbps,
+            bit_depth,
+            sample_rate_hz,
+        ),
         tracks: run.len() as u32,
         total_ms,
         first_track_id: first.track_id,

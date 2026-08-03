@@ -115,6 +115,8 @@ pub mod icons {
     pub const PLUS: &str = "icons/plus.svg";
     pub const CHART_PIE: &str = "icons/chart-pie.svg";
     pub const INFO: &str = "icons/info.svg";
+    /// The banner's warning face, bundled set as well.
+    pub const ALERT: &str = "icons/triangle-alert.svg";
     pub const LAYOUT_GRID: &str = "icons/layout-grid.svg";
     pub const GALLERY: &str = "icons/gallery-horizontal-end.svg";
     pub const MOVE_VERTICAL: &str = "icons/move-vertical.svg";
@@ -239,6 +241,7 @@ pub mod icons {
         PLUS,
         CHART_PIE,
         INFO,
+        ALERT,
         LAYOUT_GRID,
         GALLERY,
         MOVE_VERTICAL,

@@ -7,8 +7,9 @@
 //! zoning trades reactivity for resolution per end of the range), the
 //! render style (bars, LED blocks, or a solid line), the edge the bands
 //! grow from and the mirrored symmetry, the bar width and fill, the
-//! peak-hold caps and their gravity, and the octave pitch markers are
-//! per-view config the customize window edits and the layout dump carries.
+//! peak-hold caps and their gravity, and the axis scale (octave pitches or
+//! frequencies) are per-view config the customize window edits and the
+//! layout dump carries.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -24,7 +25,7 @@ use gpui_component::Sizable as _;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use rox_viz::analysis::{log_bands, Analyzer, MAX_FFT_SIZE, MIN_FFT_SIZE};
+use rox_viz::analysis::{hz_ladder, log_bands, Analyzer, MAX_FFT_SIZE, MIN_FFT_SIZE};
 use rox_viz::AudioFeed;
 
 use crate::assets::icons;
@@ -212,6 +213,58 @@ impl<'de> Deserialize<'de> for Gradient {
     }
 }
 
+/// What the axis is marked with, if anything: the octave pitches a player
+/// reads a range by, or the frequencies an engineer does. Both rule the
+/// same dividers, so it's one choice rather than two overlays fighting for
+/// the same edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Labels {
+    #[default]
+    Off,
+    Pitch,
+    Freq,
+}
+
+impl<'de> Deserialize<'de> for Labels {
+    /// By hand for the layouts dumped while `labels` was the Pitch Labels
+    /// bool: true was the octave marks, false none. [`Gradient`]'s shape,
+    /// and an unknown name reads as off rather than failing the panel.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Legacy(bool),
+            Named(String),
+        }
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Legacy(false) => Labels::Off,
+            Raw::Legacy(true) => Labels::Pitch,
+            Raw::Named(name) => match name.as_str() {
+                "pitch" => Labels::Pitch,
+                "freq" => Labels::Freq,
+                _ => Labels::Off,
+            },
+        })
+    }
+}
+
+impl Labels {
+    /// The mode a menu row lands on when it's picked: the one it names, or
+    /// off when that's already what's up, so a check row still reads as a
+    /// switch rather than a one-way pick.
+    fn toggled(self, pick: Labels) -> Labels {
+        if self == pick {
+            Labels::Off
+        } else {
+            pick
+        }
+    }
+}
+
 /// The symmetry modes: off, or the spectrum folded around the axis center
 /// and painted mirrored into both halves. Forward runs the range
 /// outside-in, lows at the outer edges; reverse runs it inside-out, lows
@@ -251,6 +304,12 @@ pub const ORIENTATION_CHOICES: &[(&str, Orientation)] = &[
     ("Top", Orientation::Top),
     ("Left", Orientation::Left),
     ("Right", Orientation::Right),
+];
+
+const LABEL_CHOICES: &[(&str, Labels)] = &[
+    ("Off", Labels::Off),
+    ("Pitch", Labels::Pitch),
+    ("Frequency", Labels::Freq),
 ];
 
 const SYMMETRY_CHOICES: &[(&str, Symmetry)] = &[
@@ -331,8 +390,8 @@ pub struct SpectrumConfig {
     pub freeze: bool,
     /// How hard the caps fall, bar heights per second squared.
     pub cap_gravity: f32,
-    /// Draw octave pitch markers (C1, C2, ...) across the analyzed range.
-    pub labels: bool,
+    /// Mark the analyzed range across the panel, by pitch or by frequency.
+    pub labels: Labels,
 }
 
 impl Default for SpectrumConfig {
@@ -360,7 +419,7 @@ impl Default for SpectrumConfig {
             caps: true,
             freeze: false,
             cap_gravity: HOLD_GRAVITY,
-            labels: false,
+            labels: Labels::default(),
         }
     }
 }
@@ -456,6 +515,17 @@ fn fmt_hz(hz: f32) -> String {
         format!("{:.1} kHz", hz / 1000.0)
     } else {
         format!("{:.0} Hz", hz.round())
+    }
+}
+
+/// A ladder step's label for an axis, where a dozen of them share the width
+/// and the unit is the one thing the reader already knows. Shared with the
+/// equalizer window's scale, which rules the same ladder.
+pub fn fmt_axis_hz(hz: f32) -> String {
+    if hz >= 1000.0 {
+        format!("{:.0}k", hz / 1000.0)
+    } else {
+        format!("{hz:.0}")
     }
 }
 
@@ -989,51 +1059,67 @@ fn axis_fracs(symmetry: Symmetry, frac: f32) -> Vec<f32> {
     vec![frac / 2.0, 1.0 - frac / 2.0]
 }
 
-/// The octave pitch markers over the analyzed range: a faint divider at each
-/// C with its label tucked against it, hugging the panel edge the config's
-/// orientation leaves quiet. Positions are log-frequency fractions along the
-/// axis, so they line up with the bars at any panel size. Symmetric panels
-/// rule both halves but label only the first: the reflected half reads
-/// backwards, and twin labels would just clutter it.
-fn labels_overlay(config: &SpectrumConfig) -> Div {
+/// Where the marks fall over the analyzed range and what each one says:
+/// every C for the pitch scale, the 1-2-5 ladder's labelled steps for the
+/// frequency one. Positions are log-frequency fractions along the axis, so
+/// they line up with the bars at any panel size.
+fn scale_marks(config: &SpectrumConfig) -> Vec<(f32, String)> {
     let (freq_lo, freq_hi) = config.range();
-    let span = (freq_hi / freq_lo).ln();
-    let mut overlay = div().absolute().inset_0();
-    for octave in 0..=10 {
-        let freq = C0_HZ * 2f32.powi(octave);
-        if freq < freq_lo || freq > freq_hi {
-            continue;
+    match config.labels {
+        Labels::Off => Vec::new(),
+        Labels::Pitch => {
+            let span = (freq_hi / freq_lo).ln();
+            (0..=10)
+                .map(|octave| (C0_HZ * 2f32.powi(octave), format!("C{octave}")))
+                .filter(|(freq, _)| (freq_lo..=freq_hi).contains(freq))
+                .map(|(freq, label)| ((freq / freq_lo).ln() / span, label))
+                .collect()
         }
-        let frac = (freq / freq_lo).ln() / span;
+        Labels::Freq => hz_ladder(freq_lo, freq_hi)
+            .into_iter()
+            .filter(|(_, _, major)| *major)
+            .map(|(hz, frac, _)| (frac, fmt_axis_hz(hz)))
+            .collect(),
+    }
+}
+
+/// The scale over the analyzed range: a faint divider at each mark with its
+/// label tucked against it, hugging the panel edge the config's orientation
+/// leaves quiet. Symmetric panels rule both halves but label only the first:
+/// the reflected half reads backwards, and twin labels would just clutter it.
+fn labels_overlay(config: &SpectrumConfig) -> Div {
+    let mut overlay = div().absolute().inset_0();
+    for (frac, label) in scale_marks(config) {
         let fracs = axis_fracs(config.symmetry, frac);
         // A label pinned to the axis' far end would clip; drop it and keep
         // the divider. Folded halves never reach the end.
         let labeled = fracs.len() > 1 || frac <= 0.97;
-        overlay = overlay.child(octave_mark(
+        overlay = overlay.child(axis_mark(
             config.orientation,
             fracs[0],
-            labeled.then_some(octave),
+            labeled.then_some(label),
         ));
         if let Some(&mirrored) = fracs.get(1) {
-            overlay = overlay.child(octave_mark(config.orientation, mirrored, None));
+            overlay = overlay.child(axis_mark(config.orientation, mirrored, None));
         }
     }
     overlay
 }
 
-/// One octave marker: the divider across the panel with the pitch label
-/// against it. Horizontal orientations run the divider full height with the
-/// text along the base edge; sideways ones sit the text on the divider,
-/// against the base edge.
-fn octave_mark(orientation: Orientation, frac: f32, octave: Option<i32>) -> Div {
+/// One marker: the divider across the panel with its label against it.
+/// Horizontal orientations run the divider full height with the text along
+/// the base edge; sideways ones sit the text on the divider, against the
+/// base edge.
+fn axis_mark(orientation: Orientation, frac: f32, label: Option<String>) -> Div {
     let mark = axis_rule(orientation, frac, palette::alpha(palette::gridline(), 0x1f));
-    let Some(octave) = octave else {
+    let Some(text) = label else {
         return mark;
     };
     let label = div()
         .text_xs()
         .text_color(palette::text_faint())
-        .child(format!("C{octave}"));
+        .whitespace_nowrap()
+        .child(text);
     match orientation {
         Orientation::Bottom => mark
             .flex()
@@ -1209,10 +1295,17 @@ impl SpectrumPanel {
                 |this| this.config.caps,
                 |this| this.config.caps = !this.config.caps,
             ),
+            // Two rows for the one setting: a check row per scale, and
+            // ticking the one that's already up takes the marks away.
             (
                 "Pitch Labels",
-                |this| this.config.labels,
-                |this| this.config.labels = !this.config.labels,
+                |this| this.config.labels == Labels::Pitch,
+                |this| this.config.labels = this.config.labels.toggled(Labels::Pitch),
+            ),
+            (
+                "Frequency Labels",
+                |this| this.config.labels == Labels::Freq,
+                |this| this.config.labels = this.config.labels.toggled(Labels::Freq),
             ),
         ];
         // Outlines only apply to the bar style; the flyout drops the toggle
@@ -1554,12 +1647,13 @@ impl PanelSettings for SpectrumPanel {
                 ),
             ))
             .child(setting_row(
-                "Pitch Labels",
-                Some("Mark the octaves (C1, C2, ...) across the range"),
-                toggle(
+                "Axis Labels",
+                Some("Mark the range across the panel: octaves (C1, C2, ...) or frequencies (100, 1k, 10k)"),
+                choices(
+                    LABEL_CHOICES,
                     self.config.labels,
-                    |this: &mut Self, on, cx| {
-                        this.config.labels = on;
+                    |this: &mut Self, labels, cx| {
+                        this.config.labels = labels;
                         cx.notify();
                     },
                     cx,
@@ -1720,7 +1814,7 @@ impl SpectrumPanel {
             )
             .size_full(),
         );
-        if self.config.labels {
+        if self.config.labels != Labels::Off {
             root = root.child(labels_overlay(&self.config));
         }
         // While the split slider drags, mark where the zones meet so the
@@ -1740,5 +1834,68 @@ impl SpectrumPanel {
             }
         }
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every shipped bundle still spells `labels` as the old bool, so the
+    /// legacy read is what most configs in the wild go through.
+    #[test]
+    fn labels_read_the_old_bool_as_the_pitch_scale() {
+        let on: Labels = serde_json::from_str("true").unwrap();
+        let off: Labels = serde_json::from_str("false").unwrap();
+        assert_eq!(on, Labels::Pitch);
+        assert_eq!(off, Labels::Off);
+    }
+
+    #[test]
+    fn labels_round_trip_by_name_and_shrug_off_junk() {
+        for mode in [Labels::Off, Labels::Pitch, Labels::Freq] {
+            let json = serde_json::to_string(&mode).unwrap();
+            assert_eq!(serde_json::from_str::<Labels>(&json).unwrap(), mode);
+        }
+        let unknown: Labels = serde_json::from_str("\"notes\"").unwrap();
+        assert_eq!(unknown, Labels::Off);
+    }
+
+    #[test]
+    fn the_frequency_scale_marks_the_ladder_across_the_range() {
+        let config = SpectrumConfig {
+            freq_lo: 30.0,
+            freq_hi: 16_000.0,
+            labels: Labels::Freq,
+            ..SpectrumConfig::default()
+        };
+        let marks = scale_marks(&config);
+        let labels: Vec<&str> = marks.iter().map(|(_, text)| text.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["50", "100", "200", "500", "1k", "2k", "5k", "10k"]
+        );
+        // Positions rise across the panel and stay inside it.
+        for (frac, _) in &marks {
+            assert!((0.0..=1.0).contains(frac));
+        }
+        assert!(marks.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    }
+
+    #[test]
+    fn the_pitch_scale_still_marks_the_octaves() {
+        let config = SpectrumConfig {
+            labels: Labels::Pitch,
+            ..SpectrumConfig::default()
+        };
+        let labels: Vec<String> = scale_marks(&config)
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect();
+        // C0 sits under the default range's floor and C10 over its ceiling.
+        assert_eq!(
+            labels,
+            vec!["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]
+        );
     }
 }

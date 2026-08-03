@@ -354,6 +354,10 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         .audio_bitrate()
         .or_else(|| file.properties().overall_bitrate())
         .unwrap_or(0) as u16;
+    row.sample_rate_hz = file.properties().sample_rate().unwrap_or(0);
+    // Lossy formats report no depth, which is right: there are no bits per
+    // sample to name once the stream is coefficients. Zero reads as blank.
+    row.bit_depth = file.properties().bit_depth().unwrap_or(0);
     if let Some(tag) = file.primary_tag().or_else(|| file.first_tag()) {
         let text =
             |v: Option<std::borrow::Cow<'_, str>>| v.map(|s| s.into_owned()).unwrap_or_default();
@@ -378,10 +382,45 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         row.disc_no = tag.disk().unwrap_or(0) as u16;
         row.track_no = tag.track().unwrap_or(0) as u16;
     }
+    // What an analysis pass measured, whoever ran it. Read across every tag
+    // on the file rather than off the primary one: mp3gain writes its four
+    // values into an APEv2 tag that sits beside an ID3v2 tag carrying none,
+    // and lofty calls ID3v2 the primary on MPEG, so a primary-only read
+    // misses them.
+    row.replay_gain = replay_gain_across_tags(&file);
     // The rating read off the same native parse above - FMPS lives in TXXX
     // frames and unmapped Vorbis keys, which this generic tag never carries.
     row.rating = rating.unwrap_or(0);
     Some(row)
+}
+
+/// ReplayGain gathered from every tag the file carries, primary first, the
+/// rest in the order lofty parsed them. First tag holding a given key wins,
+/// per key: a file can carry the track pair in one tag and the album pair in
+/// another, and taking whichever tag answers first per field beats picking
+/// one tag and ignoring the other three values.
+///
+/// Only ReplayGain reads this wide. Everything else on the row comes off the
+/// primary tag, where a second tag disagreeing about the title is a conflict
+/// to resolve, not a gap to fill.
+fn replay_gain_across_tags(file: &TaggedFile) -> crate::replaygain::ReplayGain {
+    let mut rg = crate::replaygain::ReplayGain::default();
+    let primary = file.primary_tag();
+    for tag in primary.into_iter().chain(file.tags()) {
+        if rg.track_db.is_some()
+            && rg.track_peak.is_some()
+            && rg.album_db.is_some()
+            && rg.album_peak.is_some()
+        {
+            break;
+        }
+        let found = crate::replaygain::read(tag);
+        rg.track_db = rg.track_db.or(found.track_db);
+        rg.track_peak = rg.track_peak.or(found.track_peak);
+        rg.album_db = rg.album_db.or(found.album_db);
+        rg.album_peak = rg.album_peak.or(found.album_peak);
+    }
+    rg
 }
 
 /// The row a file gets when its tags cannot be read: filename as title,
@@ -405,7 +444,10 @@ fn fallback_row(path: &Path) -> TrackRow {
             .map(str::to_lowercase)
             .unwrap_or_default(),
         bitrate_kbps: 0,
+        sample_rate_hz: 0,
+        bit_depth: 0,
         rating: 0,
+        replay_gain: crate::replaygain::ReplayGain::default(),
         size: 0,
         mtime: 0,
     }
@@ -551,6 +593,79 @@ mod tests {
         assert_eq!(row.genre, "Electronic; Ambient");
     }
 
+    /// The ReplayGain a tagger left in the file comes off the same parse
+    /// the rest of the row does, TXXX frames and all.
+    #[test]
+    fn replaygain_scans_off_the_tags() {
+        use lofty::config::WriteOptions;
+        use lofty::prelude::TagExt;
+        use lofty::tag::{ItemKey, Tag, TagType};
+
+        let dir = std::env::temp_dir().join("rox-scanner-replaygain");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut audio = Vec::new();
+        for frame in 0..3u32 {
+            audio.extend([0xFF, 0xFB, 0x90, 0x00]);
+            audio.extend((0..413u32).map(|i| ((frame * 413 + i) * 7 % 251) as u8));
+        }
+        let path = dir.join("track.mp3");
+        std::fs::write(&path, &audio).unwrap();
+
+        // Written the way an analysis tool writes them, as TXXX frames.
+        let mut tag = Tag::new(TagType::Id3v2);
+        tag.insert_text(ItemKey::ReplayGainTrackGain, "-7.35 dB".into());
+        tag.insert_text(ItemKey::ReplayGainTrackPeak, "0.987654".into());
+        tag.insert_text(ItemKey::ReplayGainAlbumGain, "-8.10 dB".into());
+        tag.save_to_path(&path, WriteOptions::default()).unwrap();
+
+        let row = read_one(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(row.replay_gain.track_db, Some(-7.35));
+        assert_eq!(row.replay_gain.track_peak, Some(0.987654));
+        assert_eq!(row.replay_gain.album_db, Some(-8.10));
+        // Nothing invented for the value the file doesn't carry.
+        assert_eq!(row.replay_gain.album_peak, None);
+    }
+
+    /// mp3gain's habit: the numbers land in an APEv2 tag while the ID3v2 tag
+    /// beside it carries only the usual fields. The scan has to read both or
+    /// every mp3gain'd file scans as unlevelled.
+    #[test]
+    fn replaygain_reads_out_of_an_ape_tag_beside_id3v2() {
+        use lofty::config::WriteOptions;
+        use lofty::prelude::TagExt;
+        use lofty::tag::{ItemKey, Tag, TagType};
+
+        let dir = std::env::temp_dir().join("rox-scanner-replaygain-ape");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut audio = Vec::new();
+        for frame in 0..3u32 {
+            audio.extend([0xFF, 0xFB, 0x90, 0x00]);
+            audio.extend((0..413u32).map(|i| ((frame * 413 + i) * 7 % 251) as u8));
+        }
+        let path = dir.join("track.mp3");
+        std::fs::write(&path, &audio).unwrap();
+
+        // The primary tag on an MPEG, and it knows nothing about levels.
+        let mut id3 = Tag::new(TagType::Id3v2);
+        id3.insert_text(ItemKey::TrackTitle, "Levelled".into());
+        id3.save_to_path(&path, WriteOptions::default()).unwrap();
+
+        let mut ape = Tag::new(TagType::Ape);
+        ape.insert_text(ItemKey::ReplayGainTrackGain, "-4.20 dB".into());
+        ape.insert_text(ItemKey::ReplayGainTrackPeak, "0.912".into());
+        ape.save_to_path(&path, WriteOptions::default()).unwrap();
+
+        let row = read_one(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(row.title, "Levelled", "the primary tag still fills the row");
+        assert_eq!(row.replay_gain.track_db, Some(-4.20));
+        assert_eq!(row.replay_gain.track_peak, Some(0.912));
+        assert_eq!(row.replay_gain.album_db, None);
+    }
+
     /// A rescan drops the rows for files deleted from disk, keeps the ones
     /// still there, and never prunes when the root itself cannot be listed.
     #[test]
@@ -621,5 +736,47 @@ mod tests {
 
         // A path that does not exist cannot be stat'd, so None.
         assert!(read_one(&dir.join("missing.mp3")).is_none());
+    }
+
+    /// The stream's sample rate and bit depth come off the parsed
+    /// properties, not the tags, so a file with no tag at all still
+    /// reports what it is. A hand-built PCM wav is the cheapest real
+    /// stream to assert against.
+    #[test]
+    fn read_one_reads_sample_rate_and_depth() {
+        let dir = std::env::temp_dir().join("rox-scanner-properties");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tone.wav");
+        std::fs::write(&path, pcm_wav(44100, 16, 2)).unwrap();
+
+        let row = read_one(&path).unwrap();
+        assert_eq!(row.codec, "wav");
+        assert_eq!(row.sample_rate_hz, 44100);
+        assert_eq!(row.bit_depth, 16);
+    }
+
+    /// A minimal PCM wav: the RIFF header, a fmt chunk naming the format,
+    /// and a second of silence, which is all lofty needs to report the
+    /// properties.
+    fn pcm_wav(rate: u32, bits: u16, channels: u16) -> Vec<u8> {
+        let block_align = channels * bits / 8;
+        let byte_rate = rate * block_align as u32;
+        let data = vec![0u8; byte_rate as usize];
+        let mut out = Vec::with_capacity(data.len() + 44);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&channels.to_le_bytes());
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&byte_rate.to_le_bytes());
+        out.extend_from_slice(&block_align.to_le_bytes());
+        out.extend_from_slice(&bits.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&data);
+        out
     }
 }

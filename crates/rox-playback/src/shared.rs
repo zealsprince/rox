@@ -68,9 +68,29 @@ pub struct Shared {
     /// False = paused. The callback outputs silence and stops consuming, so
     /// the position freezes sample-accurately.
     pub playing: AtomicBool,
-    /// Seek/skip in progress: the callback discards everything in the ring
-    /// and outputs silence until the decode thread clears it.
-    pub flush: AtomicBool,
+    /// The flush epoch, bumped by the decode thread on a seek or a skip.
+    /// A backend that sees a number it hasn't handled discards the whole
+    /// ring exactly once and echoes it back in `flush_ack`. An epoch rather
+    /// than a flag because a flag has to be cleared, and the clearing races
+    /// the callback that's already inside it: whoever loses eats the first
+    /// milliseconds of the new track. Handled-once is the same discard with
+    /// no window to lose.
+    pub flush_seq: AtomicU64,
+    /// The newest epoch a backend has finished discarding. The decode
+    /// thread waits for this to catch up before it resyncs its clock, which
+    /// is what used to be a fixed grace sleep.
+    pub flush_ack: AtomicU64,
+    /// The output-clock frame where the crossfade in flight becomes
+    /// audible, with its length in frames beside it; zero length means no
+    /// fade. Published by the decode thread when a window opens, read by
+    /// the transport so a skip can show the overlap while the ear is in it.
+    /// Derived off the output clock like every other position here, so what
+    /// shows is what's playing rather than what's been decoded.
+    pub fade_at: AtomicU64,
+    pub fade_len: AtomicU64,
+    /// The fade came from a Previous rather than a Next or a track
+    /// boundary, so the transport can sweep the way the skip went.
+    pub fade_back: AtomicBool,
     /// Linear volume as f32 bits.
     pub volume_bits: AtomicU32,
     /// Frames the callback actually sent to the device (excludes flushed
@@ -104,7 +124,11 @@ impl Shared {
     pub fn new(queue_len: usize) -> Self {
         Shared {
             playing: AtomicBool::new(true),
-            flush: AtomicBool::new(false),
+            flush_seq: AtomicU64::new(0),
+            flush_ack: AtomicU64::new(0),
+            fade_at: AtomicU64::new(0),
+            fade_len: AtomicU64::new(0),
+            fade_back: AtomicBool::new(false),
             volume_bits: AtomicU32::new(1.0f32.to_bits()),
             frames_consumed: AtomicU64::new(0),
             ended: AtomicBool::new(false),
@@ -136,12 +160,47 @@ impl Shared {
         self.device_lost.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// How far into the crossfade the ear is, 0 to 1, and whether the skip
+    /// that started it went backwards. None when no fade is running, and
+    /// also while one is decoded but not yet reached: a window that opens a
+    /// ring ahead of the speakers isn't something to show yet.
+    pub fn crossfade(&self) -> Option<(f32, bool)> {
+        use std::sync::atomic::Ordering::{Acquire, Relaxed};
+        // Length first and with acquire ordering: it's the field that
+        // publishes the pair, so a nonzero read here means the frame it
+        // starts at is already in place.
+        //
+        // The pair isn't atomic together, so a re-publish landing between
+        // these two loads can hand back the old length beside the new
+        // frame. One UI tick of a wrong progress number, on a bar that
+        // redraws at frame rate, and packing both into one word would make
+        // every reader here do shift arithmetic to save it. Tolerated.
+        let len = self.fade_len.load(Acquire);
+        if len == 0 {
+            return None;
+        }
+        let at = self.fade_at.load(Relaxed);
+        let consumed = self.frames_consumed.load(Relaxed);
+        let done = consumed.checked_sub(at)?;
+        if done >= len {
+            return None;
+        }
+        Some((done as f32 / len as f32, self.fade_back.load(Relaxed)))
+    }
+
     /// Resolve the current position from the output clock: which track, and
     /// how many seconds in. `device_rate` converts frames to seconds.
     pub fn position(&self, device_rate: u32) -> Option<(usize, f64)> {
         let consumed = self
             .frames_consumed
             .load(std::sync::atomic::Ordering::Relaxed);
+        self.position_at(consumed, device_rate)
+    }
+
+    /// [`position`](Self::position) against a clock reading already taken,
+    /// for a caller that has to line something else up with the same frame
+    /// and can't have the two loads drift a callback apart.
+    pub fn position_at(&self, consumed: u64, device_rate: u32) -> Option<(usize, f64)> {
         let segments = self.segments.lock().unwrap();
         let seg = segments.iter().rev().find(|s| s.at_frame <= consumed)?;
         let frame = seg.track_frame + (consumed - seg.at_frame);
@@ -191,6 +250,33 @@ mod tests {
             .store(96000 + 48000, Ordering::Relaxed);
         // On track 1: track_frame 24000 + 48000 played = 72000 frames = 1.5s.
         assert_eq!(shared.position(48000), Some((1, 1.5)));
+    }
+
+    #[test]
+    fn crossfade_reads_off_the_output_clock() {
+        let shared = Shared::new(1);
+        assert!(
+            shared.crossfade().is_none(),
+            "nothing published, nothing to show"
+        );
+        // A two-second window at 48 kHz opening one second out.
+        shared.fade_at.store(48_000, Ordering::Relaxed);
+        shared.fade_back.store(true, Ordering::Relaxed);
+        shared.fade_len.store(96_000, Ordering::Release);
+        // Decoded but not reached: the speakers are still short of it.
+        assert!(shared.crossfade().is_none());
+        shared
+            .frames_consumed
+            .store(48_000 + 24_000, Ordering::Relaxed);
+        let (progress, back) = shared.crossfade().expect("in the window");
+        assert!((progress - 0.25).abs() < 1e-6);
+        assert!(back, "the skip that started it went backwards");
+        // Past the end it stops showing on its own, without the decode
+        // thread having to come back and clear anything.
+        shared
+            .frames_consumed
+            .store(48_000 + 96_000, Ordering::Relaxed);
+        assert!(shared.crossfade().is_none());
     }
 
     #[test]

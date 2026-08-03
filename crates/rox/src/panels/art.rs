@@ -876,6 +876,10 @@ impl ArtPanel {
         let content: AnyElement = match thumb {
             Thumb::Ready(image) => img(image)
                 .size_full()
+                // Cover only crops if something masks it; gpui paints the
+                // overrun otherwise, and the hero would spill onto the
+                // covers turned beside it.
+                .overflow_hidden()
                 .object_fit(fit)
                 .grayscale(desaturated)
                 .rounded(radius)

@@ -59,6 +59,28 @@ trash = "5"
 url = "2"
 # Rich Prescence for Discord
 discord-rich-presence = "1.x"
+# The acoustic pass's model-based extractor: candle runs the downloaded CNN.
+# Pure Rust tensors and ops, so there is no libtorch and no ONNX Runtime to
+# install, ship, or match versions with. It does compile one C library on the
+# way through (candle-core depends unconditionally on tokenizers with the onig
+# feature, which builds vendored oniguruma with cc), so a build needs a C
+# compiler - which rusqlite's bundled SQLite already required, so this asks
+# for no toolchain the tree didn't already have. Metal is switched on for
+# macOS below.
+candle-core = "0.11"
+candle-nn = "0.11"
+# Checks a downloaded model against the checksum in the catalog. Pure Rust,
+# no build script.
+sha2 = "0.10"
+
+# Metal for the embedding model's forward pass. macOS-only because it links
+# Metal.framework; candle's metal kernels compile from their own source at
+# runtime, so nothing is needed at build time beyond the SDK, and the
+# extractor probes the device with a real forward pass and falls back to the
+# CPU if either the claim or the pass fails.
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.11", features = ["metal"] }
+candle-nn = { version = "0.11", features = ["metal"] }
 
 # The quit-to-tray icon: StatusNotifierItem over D-Bus, pure Rust on the
 # same zbus 5 line souvlaki brought in. Runtime-agnostic via async-io

@@ -126,6 +126,9 @@ front, sized to the viewport plus a margin, not the whole library.
 Contract:
 - In: `thumbnail(key, size)` where key is content-addressed (path + mtime + size).
 - Out: a texture handle, or a placeholder plus a pending load. Off-screen requests cancel.
+- A catalog change marks the texture cache stale rather than clearing it. Entries keep
+  answering while they re-read behind the answer, and only a cover whose bytes actually
+  changed swaps, so a track landing in a watched folder never blanks the wall.
 
 ## Visualizer subsystem
 

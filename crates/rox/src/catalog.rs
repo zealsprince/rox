@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{Context, EventEmitter, PathPromptOptions, SharedString, Task};
 
+use rox_library::embeddings;
 use rox_library::listens;
 use rox_library::playlists;
 use rox_library::projection::Projection;
@@ -446,6 +447,16 @@ impl Library {
         self.conn
             .as_ref()
             .and_then(|conn| store::replaygain_breakdown(conn).ok())
+            .unwrap_or_default()
+    }
+
+    /// How many tracks the acoustic pass has described, against how many
+    /// there are to describe. The Development page states this, and the
+    /// missing count is the pass's work list.
+    pub fn acoustic_coverage(&self, model: &str) -> embeddings::Coverage {
+        self.conn
+            .as_ref()
+            .and_then(|conn| embeddings::coverage(conn, model).ok())
             .unwrap_or_default()
     }
 

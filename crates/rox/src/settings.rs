@@ -432,6 +432,28 @@ pub struct Settings {
     /// Development page. A layout that already holds an experimental panel
     /// still restores it either way.
     pub experimental: bool,
+    /// Whether the library may describe how its tracks sound, the vectors
+    /// behind "more like this". Off by default and separate from the panel
+    /// switch above: this one costs real decoding time across the whole
+    /// library rather than just showing something that was already built.
+    /// Flipped on the Development page, which is also where the pass runs
+    /// from while the feature vector is still being tuned.
+    pub acoustic_analysis: bool,
+    /// Which model the analysis pass runs and which model's vectors the
+    /// similarity queries read, by its catalog id
+    /// ([`crate::embeddings::models::CATALOG`]). Sits next to the switch
+    /// above because neither means anything without the other. Vectors from
+    /// every model coexist in the database, so switching back and forth
+    /// costs nothing already analyzed. A name from a newer build, or one
+    /// whose downloaded weights have since been deleted, falls back to the
+    /// built-in extractor.
+    pub acoustic_model: String,
+    /// Which downloadable model the ML Models page is offering, by catalog
+    /// id. Distinct from the field above, which is what the library is
+    /// actually running: the two differ whenever the extractor switch is
+    /// sitting on the built-in sketch, and keeping them apart is what lets
+    /// the switch go back to a model without asking which one again.
+    pub acoustic_ml_model: String,
 }
 
 /// Where this machine's windows sit: `windows.json`'s whole contents. Pure
@@ -492,9 +514,19 @@ pub struct SessionState {
     /// Loop mode as its wire name: "off", "all", or "one". The engine's
     /// `LoopMode` stays serde-free; convert through the accessors.
     pub loop_mode: String,
-    /// Whether playback shuffles: the queue plays in a random order
-    /// instead of front to back.
+    /// Whether playback shuffles: the queue plays in some order other than
+    /// front to back. Which order is [`Self::shuffle_mode`]'s business; this
+    /// is only whether shuffling happens at all, so turning it off and back
+    /// on returns to the mode that was picked rather than a default.
     pub shuffle: bool,
+    /// Which order shuffle puts the queue in. Random is what shuffle has
+    /// always meant; Similar orders what's coming by how much it sounds like
+    /// the playing track, off the acoustic vectors.
+    pub shuffle_mode: ShuffleMode,
+    /// Which strategy refills the queue when it runs dry (ADR 17). Continue
+    /// out of the box: a local player that goes silent mid-flow feels broken,
+    /// and Off is here for anyone who disagrees.
+    pub continuation: crate::continuation::Mode,
     /// What was playing when the app closed, as a library track id so it
     /// survives path changes, plus where the clock sat. None when nothing
     /// was playing; a stale id degrades to the cold start on restore.
@@ -549,6 +581,8 @@ impl Default for SessionState {
             muted: false,
             loop_mode: "off".into(),
             shuffle: false,
+            shuffle_mode: ShuffleMode::Random,
+            continuation: crate::continuation::Mode::default(),
             last_track: None,
             last_queue: None,
             last_scan: 0,
@@ -574,6 +608,37 @@ impl SessionState {
         }
         .into();
     }
+}
+
+/// The order shuffle puts the upcoming queue in.
+///
+/// Unlike the loop mode above this is a real enum rather than a wire string,
+/// because an unknown value has a sensible answer: fall back to Random, which
+/// is what shuffle meant before modes existed and what a settings file
+/// written by a newer build should degrade to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShuffleMode {
+    /// A random order, the shuffle everyone means by the word.
+    #[default]
+    Random,
+    /// Nearest first by sound: what's coming is ordered by how much it
+    /// resembles the track playing when the mode was engaged, off the
+    /// acoustic vectors. Needs the library analyzed to do anything.
+    Similar,
+}
+
+impl ShuffleMode {
+    /// The label the mode menu shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            ShuffleMode::Random => "Random",
+            ShuffleMode::Similar => "Similar",
+        }
+    }
+
+    /// Every mode in menu order.
+    pub const ALL: [ShuffleMode; 2] = [ShuffleMode::Random, ShuffleMode::Similar];
 }
 
 /// The theme pick: dark, light, or the OS's own preference. Dark and
@@ -817,6 +882,69 @@ pub fn experimental() -> bool {
 /// straight from the catalog. Persisting is the caller's.
 pub fn set_experimental(on: bool, cx: &mut App) {
     EXPERIMENTAL.store(on, Ordering::Relaxed);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
+/// The live acoustic-analysis flag, [`EXPERIMENTAL`]'s twin and a static for
+/// the same reason: the library's column registry is read while building the
+/// header menu, which is no place to load a settings file.
+static ACOUSTIC_ANALYSIS: AtomicBool = AtomicBool::new(false);
+
+pub fn acoustic_analysis() -> bool {
+    ACOUSTIC_ANALYSIS.load(Ordering::Relaxed)
+}
+
+/// Flip the live flag and repaint, so the Similar column appears in and
+/// disappears from the column menus without a relaunch. Persisting is the
+/// caller's.
+pub fn set_acoustic_analysis(on: bool, cx: &mut App) {
+    ACOUSTIC_ANALYSIS.store(on, Ordering::Relaxed);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
+/// The live model pick, the flag above's other half: the Similar column
+/// reads it in the same render paths, and a query that used a different
+/// model from the one the pass filled would rank against an empty corpus.
+static ACOUSTIC_MODEL: RwLock<Option<&'static str>> = RwLock::new(None);
+
+/// The model the pass runs and the similarity queries read.
+///
+/// Resolved to a catalog entry rather than kept as the raw string, so a name
+/// from a newer build, or one whose weights have been deleted since, lands on
+/// the built-in extractor here, once, instead of at every call site. That's
+/// also why the static holds a `&'static str`: the catalog is code, so the
+/// resolved name outlives everything that reads it.
+pub fn acoustic_model() -> &'static crate::embeddings::models::Model {
+    let id = *ACOUSTIC_MODEL.read().unwrap();
+    id.and_then(crate::embeddings::models::find)
+        .filter(|model| model.installed())
+        .unwrap_or_else(crate::embeddings::models::fallback)
+}
+
+/// The model the ML Models page is offering, which the Library page's
+/// extractor switch turns on. Falls back the same way [`acoustic_model`]
+/// does, so a name from a newer build degrades rather than breaking.
+pub fn acoustic_ml_model() -> &'static crate::embeddings::models::Model {
+    let id = Settings::load().acoustic_ml_model;
+    crate::embeddings::models::find(&id)
+        .filter(|model| model.weights.is_some())
+        .unwrap_or_else(|| {
+            crate::embeddings::models::find(crate::embeddings::models::PANNS_CNN10)
+                .unwrap_or_else(crate::embeddings::models::fallback)
+        })
+}
+
+/// Point the live pick at a model by id and repaint, so a switch moves the
+/// Similar column onto the other model's vectors without a relaunch. An
+/// unknown id resolves to nothing and the reader above falls back; it isn't
+/// rewritten in the settings file, since that would silently discard a pick
+/// made by a newer build. Persisting is the caller's.
+pub fn set_acoustic_model(id: &str, cx: &mut App) {
+    *ACOUSTIC_MODEL.write().unwrap() = crate::embeddings::models::find(id).map(|model| model.id);
     for window in cx.windows() {
         window.update(cx, |_, window, _| window.refresh()).ok();
     }
@@ -1638,6 +1766,9 @@ impl Default for Settings {
             quit_to_tray: false,
             check_updates: true,
             experimental: false,
+            acoustic_analysis: false,
+            acoustic_model: crate::embeddings::MODEL.to_string(),
+            acoustic_ml_model: crate::embeddings::models::PANNS_CNN10.to_string(),
         }
     }
 }

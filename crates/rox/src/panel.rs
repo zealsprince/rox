@@ -1557,21 +1557,27 @@ pub fn transport_strip<P: 'static>(player: &Entity<Player>, cx: &mut Context<P>)
                 .map(|stem| stem.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "Nothing playing".into());
-    let button = |icon: &'static str, player: Entity<Player>, verb: fn(&Player)| {
-        crate::settings::ui::icon_button(icon, false, move |_, _, cx| verb(player.read(cx)))
+    // Through `update` rather than `read`: skipping is a mutation now that
+    // the radio counts consecutive skips to widen what it draws from.
+    let button = |icon: &'static str,
+                  player: Entity<Player>,
+                  verb: fn(&mut Player, &mut Context<Player>)| {
+        crate::settings::ui::icon_button(icon, false, move |_, _, cx| player.update(cx, verb))
     };
     div()
         .flex()
         .flex_row()
         .items_center()
         .gap(tokens::SPACE_SM)
-        .child(button(icons::SKIP_BACK, player.clone(), |p| p.prev()))
+        .child(button(icons::SKIP_BACK, player.clone(), |p, _| p.prev()))
         .child(button(
             if playing { icons::PAUSE } else { icons::PLAY },
             player.clone(),
-            |p| p.toggle_pause(),
+            |p, _| p.toggle_pause(),
         ))
-        .child(button(icons::SKIP_FORWARD, player.clone(), |p| p.next()))
+        .child(button(icons::SKIP_FORWARD, player.clone(), |p, cx| {
+            p.next(cx)
+        }))
         .child(
             div()
                 .min_w_0()

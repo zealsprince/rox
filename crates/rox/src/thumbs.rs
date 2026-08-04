@@ -9,14 +9,18 @@
 //! which is the contract's off-screen cancellation. The texture cache is
 //! an LRU sized to viewports, not the library, and evicted covers leave
 //! gpui's asset cache explicitly, since it never evicts on its own (the
-//! cover panel's lesson).
+//! cover panel's lesson). A catalog change marks the cache stale instead
+//! of clearing it: entries keep painting while they re-read behind the
+//! answer, so a track landing in a watched folder never flashes the wall
+//! blank on its way back to the same covers.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use gpui::{App, Context, Entity, Image, ImageFormat, Subscription};
+use gpui::{App, Context, Entity, Image, ImageFormat, Subscription, Task};
 
 use crate::panels::library::{Library, LibraryEvent};
 
@@ -34,6 +38,12 @@ const POOL: usize = 16;
 /// looking at yet, so it should never crowd the interactive pool or
 /// the machine.
 const SWEEP_WORKERS: usize = 4;
+/// How still the catalog has to sit before the sweep starts. A download
+/// landing tracks one at a time refreshes the catalog every few seconds,
+/// and a sweep restarted that often never gets past the first albums:
+/// it walks the whole order to plan, then gets cancelled mid-warm. One
+/// settle wait folds a burst into a single pass at the end of it.
+const SWEEP_SETTLE: Duration = Duration::from_secs(5);
 
 /// What a render gets for a track's thumbnail.
 #[derive(Clone)]
@@ -52,6 +62,10 @@ struct Entry {
     /// When the entry was last asked for, on the request clock; the LRU
     /// evicts the smallest.
     touch: u64,
+    /// Cleared when the catalog moves under the cache. A stale entry still
+    /// paints; the next ask re-reads it through the store and swaps only
+    /// if the cover actually changed.
+    fresh: bool,
 }
 
 /// The shared thumbnail service, one per workspace through
@@ -70,23 +84,27 @@ pub struct Thumbs {
     /// The running store sweep's stop flag; a new sweep raises it and
     /// leaves a fresh one behind.
     sweep_cancel: Arc<AtomicBool>,
+    /// The settle wait ahead of the next sweep; replaced (and so cancelled)
+    /// by each catalog change, which is what folds a burst into one pass.
+    sweep_settle: Option<Task<()>>,
     _library_changed: Subscription,
 }
 
 impl Thumbs {
     pub fn new(library: &Entity<Library>, cx: &mut Context<Self>) -> Self {
-        // A rescan can rewrite tags, art files, and id -> path mappings;
-        // drop the textures so the next paints re-read through the
-        // store's (path, mtime, size) identity check. A settled catalog
-        // also kicks the sweep that warms the store for the whole wall.
+        // A rescan can rewrite tags, art files, and id -> path mappings, so
+        // every texture has to prove itself again through the store's
+        // (path, mtime, size) identity check - but it keeps painting while
+        // it does. A catalog that then stays put kicks the sweep that warms
+        // the store for the whole wall.
         let _library_changed = cx.subscribe(
             library,
             |this: &mut Self, library, event: &LibraryEvent, cx| {
                 if !matches!(event, LibraryEvent::Updated) {
                     return;
                 }
-                this.invalidate(cx);
-                this.sweep(&library, cx);
+                this.stale();
+                this.queue_sweep(library, cx);
             },
         );
         let conn = rox_library::thumbs::open(&crate::settings::data_dir().join("thumbs.db"))
@@ -99,6 +117,7 @@ impl Thumbs {
             clock: 0,
             generation: 0,
             sweep_cancel: Arc::new(AtomicBool::new(false)),
+            sweep_settle: None,
             _library_changed,
         }
     }
@@ -106,21 +125,39 @@ impl Thumbs {
     /// The thumbnail for `path`, from cache or on its way. A miss starts
     /// a load when a pool slot is free and reports Pending either way;
     /// the landing notifies, so visible rows re-ask and drain the misses
-    /// without a queue.
+    /// without a queue. A stale entry answers with what it holds and
+    /// re-reads behind the answer, so a catalog change repaints the same
+    /// cover rather than a blank tile.
     pub fn get(&mut self, path: &Path, cx: &mut Context<Self>) -> Thumb {
         self.clock += 1;
         if let Some(entry) = self.entries.get_mut(path) {
             entry.touch = self.clock;
-            return match &entry.image {
+            let answer = match &entry.image {
                 Some(image) => Thumb::Ready(image.clone()),
                 None => Thumb::Missing,
             };
+            if !entry.fresh {
+                self.load(path, cx);
+            }
+            return answer;
         }
-        let Some(conn) = &self.conn else {
+        if self.conn.is_none() {
             return Thumb::Missing;
+        }
+        self.load(path, cx);
+        Thumb::Pending
+    }
+
+    /// Read `path` through the store on the background executor, if a pool
+    /// slot is free and no read is already running for it. A first load and
+    /// a revalidation take the same route; only what the landing does with
+    /// the result differs.
+    fn load(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let Some(conn) = &self.conn else {
+            return;
         };
         if self.pending.contains(path) || self.pending.len() >= POOL {
-            return Thumb::Pending;
+            return;
         }
         self.pending.insert(path.to_path_buf());
         let generation = self.generation;
@@ -139,24 +176,59 @@ impl Thumbs {
                     return;
                 }
                 this.pending.remove(&path);
-                let image = bytes.map(|b| Arc::new(Image::from_bytes(ImageFormat::Jpeg, b)));
-                let touch = this.clock;
-                this.entries.insert(path, Entry { image, touch });
+                this.land(path, bytes, cx);
                 this.evict(cx);
                 cx.notify();
             })
             .ok();
         })
         .detach();
-        Thumb::Pending
+    }
+
+    /// File a landed store read. gpui keys an image by a hash of its bytes,
+    /// so a revalidation that came back with the same cover keys the same
+    /// decode as the handle it replaces, and retiring that would drop a
+    /// bitmap still on screen; only a cover that really changed releases
+    /// the old one.
+    fn land(&mut self, path: PathBuf, bytes: Option<Vec<u8>>, cx: &mut App) {
+        let image = bytes.map(|b| Arc::new(Image::from_bytes(ImageFormat::Jpeg, b)));
+        let retired = self
+            .entries
+            .get(&path)
+            .and_then(|entry| entry.image.clone())
+            .filter(|old| image.as_ref().is_none_or(|new| new.id() != old.id()));
+        let touch = self.clock;
+        self.entries.insert(
+            path,
+            Entry {
+                image,
+                touch,
+                fresh: true,
+            },
+        );
+        if let Some(old) = retired {
+            old.remove_asset(cx);
+        }
+    }
+
+    /// Hold the sweep until the catalog has sat still for
+    /// [`SWEEP_SETTLE`]. Each catalog change replaces the pending wait, so
+    /// a burst - an album arriving a track at a time, each landing its own
+    /// refresh - pays one sweep after the last of them instead of a
+    /// full-order plan and a cancelled warm per file.
+    fn queue_sweep(&mut self, library: Entity<Library>, cx: &mut Context<Self>) {
+        self.sweep_settle = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SWEEP_SETTLE).await;
+            this.update(cx, |this, cx| this.sweep(&library, cx)).ok();
+        }));
     }
 
     /// Warm the durable store for the whole wall: every album's first
     /// track, the tile identity the grid loads by, gets its thumbnail
     /// generated in the background. Unchanged covers are point lookups,
     /// so a warm sweep is light; a cold one pays each decode once here
-    /// instead of on first scroll-by. Runs after every library refresh
-    /// and replaces any sweep still going.
+    /// instead of on first scroll-by. Runs off a settled catalog and
+    /// replaces any sweep still going.
     fn sweep(&mut self, library: &Entity<Library>, cx: &mut Context<Self>) {
         self.sweep_cancel.store(true, Ordering::Relaxed);
         let Some(conn) = self.conn.clone() else {
@@ -164,8 +236,9 @@ impl Thumbs {
         };
         let ids = {
             let library = library.read(cx);
-            // Mid-refresh the projection is still the old catalog; the
-            // completion event kicks the sweep that matters.
+            // A refresh started inside the settle wait: the projection is
+            // still the old catalog, and that refresh's own completion
+            // queues the sweep that matters.
             if library.busy().is_some() {
                 return;
             }
@@ -248,16 +321,17 @@ impl Thumbs {
         }
     }
 
-    /// Drop everything cached and orphan in-flight loads; the durable
-    /// store stays, so re-reads for unchanged files are DB hits.
-    fn invalidate(&mut self, cx: &mut Context<Self>) {
-        for (_, entry) in self.entries.drain() {
-            if let Some(image) = entry.image {
-                image.remove_asset(cx);
-            }
+    /// The catalog moved: every entry has to prove itself again, and none
+    /// of them are dropped to do it. The loads in flight read the store
+    /// before the change, so they're orphaned here and the next ask for
+    /// each path starts a fresh one. Nothing repaints off this - the
+    /// panels have their own subscription to the same event - and a
+    /// re-read for an unchanged file is a stat plus a point lookup.
+    fn stale(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry.fresh = false;
         }
         self.generation += 1;
         self.pending.clear();
-        cx.notify();
     }
 }

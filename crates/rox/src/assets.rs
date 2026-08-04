@@ -50,6 +50,10 @@ pub mod icons {
     pub const REPEAT_1: &str = "icons/repeat-1.svg";
     pub const STOP: &str = "icons/square.svg";
     pub const SHUFFLE: &str = "icons/shuffle.svg";
+    /// Continuation (ADR 17): a queue that doesn't end. The lemniscate says
+    /// "this keeps going" without borrowing the radio, which already means
+    /// ordering by sound rather than never stopping.
+    pub const INFINITY: &str = "icons/infinity.svg";
     pub const DICE: &str = "icons/dice-5.svg";
     pub const VOLUME_1: &str = "icons/volume-1.svg";
     pub const VOLUME_2: &str = "icons/volume-2.svg";

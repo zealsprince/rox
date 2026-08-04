@@ -31,8 +31,10 @@ use gpui_component::{Root, Sizable as _};
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
+use crate::continuation;
 use crate::design::palette::{self, Palette, Role, ROLES};
 use crate::design::tokens;
+use crate::embeddings;
 use crate::integrations::discord::DiscordPresence;
 use crate::integrations::tray;
 use crate::lastfm::{self, AuthPhase, Scrobbler};
@@ -143,6 +145,7 @@ enum Page {
     Audio,
     Workspace,
     Library,
+    MlModels,
     Providers,
     Integrations,
     Storage,
@@ -155,6 +158,7 @@ const PAGES: &[(Page, &str, &str)] = &[
     (Page::Audio, "Audio", icons::AUDIO_LINES),
     (Page::Workspace, "Workspace", icons::APP_WINDOW),
     (Page::Library, "Library", icons::LIST_MUSIC),
+    (Page::MlModels, "ML Models", icons::LAYERS),
     (Page::Providers, "Providers", icons::DOWNLOAD),
     (Page::Integrations, "Integrations", icons::RADIO),
     (Page::Storage, "Storage", icons::DATABASE),
@@ -345,6 +349,32 @@ struct SettingsWindow {
     /// Whether the experimental panels show in the panel menus, the
     /// Development page toggle.
     experimental: bool,
+    /// Whether the library may build acoustic vectors, the Development page's
+    /// other toggle.
+    acoustic_analysis: bool,
+    /// How much of the library the acoustic pass has described, counted
+    /// alongside the rollups above rather than in a paint.
+    acoustic_coverage: rox_library::embeddings::Coverage,
+    /// The running acoustic pass, while one runs. Polled like `rg_job`, and
+    /// app-global for the same reason: closing this window leaves it going.
+    acoustic_job: Option<Arc<embeddings::Progress>>,
+    /// Which model the pass runs and the similarity queries read, the
+    /// Development page's model list. Mirrors the setting; the coverage
+    /// above is counted against whichever this names.
+    acoustic_model: &'static str,
+    /// The model the ML Models page has marked as the one to use, which the
+    /// Library page's extractor switch turns on. Separate from the field
+    /// above because that one is what the library is running right now: the
+    /// two differ whenever the switch is sitting on the built-in extractor.
+    acoustic_ml_model: &'static str,
+    /// The running model download, while one runs. Polled on the same timer
+    /// as the pass, and app-global for the same reason.
+    model_job: Option<Arc<embeddings::models::Progress>>,
+    /// What each catalog model weighs on disk, and whether it's installed at
+    /// all. Measured entering the page and after a download or a delete
+    /// rather than per frame: a stat per model per paint is a syscall per
+    /// model per paint.
+    model_sizes: Vec<(&'static str, u64)>,
     /// The active icon pack, mirrored from settings so the Appearance page's
     /// pack list marks the current one without re-reading the settings file
     /// (which carries the dock dumps) on every render.
@@ -415,6 +445,14 @@ impl SettingsWindow {
         let rg_job = replaygain_job::progress(cx);
         if rg_job.is_some() {
             Self::poll_measuring(cx);
+        }
+        let acoustic_model = settings::acoustic_model().id;
+        let acoustic_ml_model = settings::acoustic_ml_model().id;
+        let acoustic_coverage = library.read(cx).acoustic_coverage(acoustic_model);
+        let acoustic_job = embeddings::progress(cx);
+        let model_job = embeddings::models::progress(cx);
+        if acoustic_job.is_some() || model_job.is_some() {
+            Self::poll_analyzing(cx);
         }
         let _library_changed = cx.subscribe(
             &library,
@@ -600,6 +638,13 @@ impl SettingsWindow {
             pending: None,
             check_updates: settings.check_updates,
             experimental: settings.experimental,
+            acoustic_analysis: settings.acoustic_analysis,
+            acoustic_coverage,
+            acoustic_job,
+            acoustic_model,
+            acoustic_ml_model,
+            model_job,
+            model_sizes: Self::measure_models(),
             active_icon_pack: settings.icon_pack.clone(),
             icon_packs: crate::startup::icon_packs::all(),
             persist_gen: 0,
@@ -1442,6 +1487,17 @@ impl SettingsWindow {
                     .custom(&["crossfade", "fade", "gapless", "album", "splice"], || {
                         self.crossfade_albums_row(cx).into_any_element()
                     })
+                    .custom(
+                        &[
+                            "continue",
+                            "continuation",
+                            "endless",
+                            "queue",
+                            "radio",
+                            "weighted",
+                        ],
+                        || self.continuation_row(cx).into_any_element(),
+                    )
                 },
             ))
             .section(self.replay_gain_section(q, cx))
@@ -1495,6 +1551,53 @@ impl SettingsWindow {
                 |this: &mut Self, secs, cx| {
                     this.playback
                         .update(cx, |player, cx| player.set_crossfade_secs(secs, cx));
+                    cx.notify();
+                },
+                cx,
+            ),
+        )
+    }
+
+    /// What refills the queue when it runs out (ADR 17). The same pick the
+    /// transport's Continue button holds, here because a mode that decides
+    /// what plays next belongs somewhere you can read the strategies rather
+    /// than only somewhere you can cycle them.
+    fn continuation_row(&self, cx: &mut Context<Self>) -> Div {
+        /// Radio needs the acoustic vectors, so it's only offered once the
+        /// analysis switch is on. Two lists rather than a disabled segment,
+        /// because the picker has no disabled state and a dead-looking
+        /// option nobody can explain is worse than one that isn't there.
+        const WITH_RADIO: &[(&str, continuation::Mode)] = &[
+            ("Off", continuation::Mode::Off),
+            ("Continue", continuation::Mode::Continue),
+            ("Weighted", continuation::Mode::Weighted),
+            ("Radio", continuation::Mode::Radio),
+        ];
+        const WITHOUT_RADIO: &[(&str, continuation::Mode)] = &[
+            ("Off", continuation::Mode::Off),
+            ("Continue", continuation::Mode::Continue),
+            ("Weighted", continuation::Mode::Weighted),
+        ];
+        let mode = self.playback.read(cx).continuation_mode();
+        let options = if crate::settings::acoustic_analysis() {
+            WITH_RADIO
+        } else {
+            WITHOUT_RADIO
+        };
+        panel::setting_row(
+            "Keep Playing",
+            Some(
+                "What plays when the queue runs out. Continue carries on down the list you \
+                 started from, Weighted draws from the library with what you haven't heard \
+                 first, and Radio keeps finding tracks that sound like the one playing. Off \
+                 ends the queue where it ends",
+            ),
+            panel::choices(
+                options,
+                mode,
+                |this: &mut Self, mode, cx| {
+                    this.playback
+                        .update(cx, |player, cx| player.set_continuation_mode(mode, cx));
                     cx.notify();
                 },
                 cx,
@@ -2880,72 +2983,74 @@ impl SettingsWindow {
         // The lead-in describes the table, so both carry the same terms
         // and a search never turns up one without the other.
         let folders = ["scan", "rescan", "music", "add", "remove"];
-        PageBody::new().section(Section::new(
-            q,
-            icons::FOLDER,
-            "Folders",
-            Some(controls.into_any_element()),
-            |rows| {
-                let rows = rows.custom(&folders, || lead_in.into_any_element());
-                let rows = match over_limit {
-                    Some(limit) => rows.row_dyn(
-                        &["monitor", "auto", "rescan", "folder"],
-                        "Watch folders",
-                        Some(
-                            format!(
-                                "Off: this library spans {dirs} folders and each needs \
+        PageBody::new()
+            .section(Section::new(
+                q,
+                icons::FOLDER,
+                "Folders",
+                Some(controls.into_any_element()),
+                |rows| {
+                    let rows = rows.custom(&folders, || lead_in.into_any_element());
+                    let rows = match over_limit {
+                        Some(limit) => rows.row_dyn(
+                            &["monitor", "auto", "rescan", "folder"],
+                            "Watch folders",
+                            Some(
+                                format!(
+                                    "Off: this library spans {dirs} folders and each needs \
                                  one Linux file watch, more than the {limit} the app \
                                  will take from the system's shared budget. Rescan by \
                                  hand to fold in changes"
-                            )
-                            .into(),
+                                )
+                                .into(),
+                            ),
+                            panel::toggle_locked(false),
                         ),
-                        panel::toggle_locked(false),
-                    ),
-                    None => rows.keyed(
-                        &["monitor", "auto", "live"],
-                        "Watch folders",
-                        Some(
-                            "Fold added, edited, and deleted files into the library as \
+                        None => rows.keyed(
+                            &["monitor", "auto", "live"],
+                            "Watch folders",
+                            Some(
+                                "Fold added, edited, and deleted files into the library as \
                              they happen, without a manual rescan",
+                            ),
+                            panel::toggle(self.watch_library, Self::set_watch_library, cx),
                         ),
-                        panel::toggle(self.watch_library, Self::set_watch_library, cx),
-                    ),
-                };
-                rows.keyed(
-                    &["fold", "duplicates", "capitalization"],
-                    "Merge case variants",
-                    Some(
-                        "Treat values differing only by case as one - Rock and \
+                    };
+                    rows.keyed(
+                        &["fold", "duplicates", "capitalization"],
+                        "Merge case variants",
+                        Some(
+                            "Treat values differing only by case as one - Rock and \
                          rock become the same genre, artist, and album, shown \
                          under the casing most tracks carry. Files keep their \
                          tags as written",
-                    ),
-                    panel::toggle(self.fold_case, Self::set_fold_case, cx),
-                )
-                .keyed(
-                    &["separator", "multi-genre"],
-                    "Split genres on commas and slashes",
-                    Some(
-                        "\"Dubstep, Trap\" and \"Drum & Bass / Neurofunk\" count \
+                        ),
+                        panel::toggle(self.fold_case, Self::set_fold_case, cx),
+                    )
+                    .keyed(
+                        &["separator", "multi-genre"],
+                        "Split genres on commas and slashes",
+                        Some(
+                            "\"Dubstep, Trap\" and \"Drum & Bass / Neurofunk\" count \
                          each value as its own genre; semicolons always split. \
                          Off keeps slashed names whole for tags where they mean \
                          one genre. Files keep their tags as written",
-                    ),
-                    panel::toggle(
-                        self.split_genre_compounds,
-                        Self::set_split_genre_compounds,
-                        cx,
-                    ),
-                )
-                .when(separators_moved, |rows| {
-                    rows.custom(&["genre", "separator", "split", "rescan"], || {
-                        nudge.into_any_element()
+                        ),
+                        panel::toggle(
+                            self.split_genre_compounds,
+                            Self::set_split_genre_compounds,
+                            cx,
+                        ),
+                    )
+                    .when(separators_moved, |rows| {
+                        rows.custom(&["genre", "separator", "split", "rescan"], || {
+                            nudge.into_any_element()
+                        })
                     })
-                })
-                .custom(&folders, || table.into_any_element())
-            },
-        ))
+                    .custom(&folders, || table.into_any_element())
+                },
+            ))
+            .section(self.acoustic_section(q, cx))
     }
 
     /// Measure everything the storage page shows: the library rollup on
@@ -3094,8 +3199,20 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The Development page: the switches for work that isn't finished.
-    /// One row today; the section is the place the next one lands.
+    fn set_acoustic_analysis(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.acoustic_analysis = on;
+        Settings::update(move |s| s.acoustic_analysis = on);
+        settings::set_acoustic_analysis(on, cx);
+        // Switching it off mid-pass stops the pass: it's the only thing that
+        // sanctioned the decoding in the first place.
+        if !on {
+            embeddings::stop(cx);
+        }
+        cx.notify();
+    }
+
+    /// The Development page: the switches for work that isn't finished, and
+    /// the controls for whatever they turn on.
     fn development_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         PageBody::new().section(Section::new(q, icons::FLASK, "Features", None, |rows| {
             rows.keyed(
@@ -3103,12 +3220,448 @@ impl SettingsWindow {
                 "Experimental Panels",
                 Some(
                     "Show the panels still being built in the Panels menu and the \
-                         launcher; they change shape between releases, and a layout that \
-                         already holds one keeps it when this goes back off",
+                     launcher; they change shape between releases, and a layout that \
+                     already holds one keeps it when this goes back off",
                 ),
                 panel::toggle(self.experimental, Self::set_experimental, cx),
             )
         }))
+    }
+
+    /// The models page: what can run the acoustic analysis, what it costs to
+    /// fetch, and which one the library uses.
+    ///
+    /// Its own page rather than a section under Library because a model is an
+    /// asset with a lifecycle of its own. It's downloaded, it sits on disk, it
+    /// can be replaced by a file the user supplies, and it will one day answer
+    /// more than one question. The Library page picks a job's extractor; this
+    /// page is the shelf that pick reads from.
+    fn ml_models_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
+        PageBody::new().section(self.models_section(q, cx))
+    }
+
+    /// What each catalog model weighs on disk right now. Walked entering the
+    /// page and after anything that changes it, never in a paint.
+    fn measure_models() -> Vec<(&'static str, u64)> {
+        embeddings::models::CATALOG
+            .iter()
+            .map(|model| (model.id, model.size_on_disk()))
+            .collect()
+    }
+
+    fn model_size(&self, id: &str) -> u64 {
+        self.model_sizes
+            .iter()
+            .find(|(name, _)| *name == id)
+            .map(|(_, size)| *size)
+            .unwrap_or(0)
+    }
+
+    /// The model list: one row per catalog entry, each saying what it is,
+    /// what it costs, and what licence it arrives under, with the controls
+    /// to fetch it, drop it, and make it the active one.
+    ///
+    /// The licence is on the row rather than in a footnote because the user
+    /// is the one accepting it. Nothing here is bundled, so a download is
+    /// them fetching a model for their own use, and that only works as an
+    /// arrangement if the terms are in front of them when they press the
+    /// button.
+    fn models_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        let note = self.model_note(cx);
+        Section::new(q, icons::DOWNLOAD, "Acoustic Models", None, |mut rows| {
+            // Only the ones with weights to fetch. The built-in extractor is
+            // code rather than a model, and it belongs on the Library page as
+            // the other side of the extractor switch, not on a shelf of
+            // downloads.
+            for model in embeddings::models::CATALOG
+                .iter()
+                .filter(|model| model.weights.is_some())
+            {
+                let size = self.model_size(model.id);
+                let mut description = format!(
+                    "{}. {} values per track. {}",
+                    model.summary, model.dim, model.licence
+                );
+                if size > 0 {
+                    description.push_str(&format!(", {} on disk", human_size(size)));
+                } else if let Some(weights) = &model.weights {
+                    description.push_str(&format!(", {} to download", human_size(weights.bytes)));
+                }
+                rows = rows.row_dyn(
+                    &["model", "acoustic", "download", "embeddings", "similar"],
+                    model.label,
+                    Some(description.into()),
+                    self.model_controls(model, cx),
+                );
+            }
+            match note {
+                Some(note) => rows.custom(&["download", "progress", "model"], || {
+                    coverage_note(note).into_any_element()
+                }),
+                None => rows,
+            }
+        })
+    }
+
+    /// One model row's buttons: make it active, and fetch or drop its
+    /// weights. A model whose download is running shows the stop instead,
+    /// and one that isn't installed can't be made active, since selecting a
+    /// model rox can't load would leave the pass failing with no explanation
+    /// on the row that caused it.
+    fn model_controls(
+        &self,
+        model: &'static embeddings::models::Model,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // Against the page's own pick, not what the library is running: with
+        // the extractor switch on Built-in nothing here is running, and a
+        // shelf with no model marked would forget which one Model meant.
+        let active = self.acoustic_ml_model == model.id;
+        let installed = model.installed();
+        let downloading = self
+            .model_job
+            .as_ref()
+            .is_some_and(|job| job.model() == model.id);
+        let busy = self.model_job.is_some() || self.acoustic_job.is_some();
+
+        // Where the model came from, so someone deciding whether to fetch
+        // 24 MB and accept its licence can go and read about it first.
+        let source = model.source;
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .child(
+                div()
+                    .id(SharedString::from(format!("model-source-{}", model.id)))
+                    .child(settings_ui::icon_button(
+                        icons::EXTERNAL_LINK,
+                        false,
+                        move |_, _, cx| cx.open_url(source),
+                    )),
+            );
+        if model.weights.is_some() {
+            row = row.child(if downloading {
+                let job = self.model_job.clone().expect("downloading implies a job");
+                small_button(
+                    format!("{}%", (job.fraction() * 100.0).round()),
+                    icons::STOP,
+                    false,
+                    cx.listener(|_, _, _, cx| embeddings::models::stop(cx)),
+                )
+            } else if installed {
+                // Deleting while this model is the active one would leave the
+                // pass with nothing to load, so the active model keeps its
+                // weights until something else is picked.
+                small_button(
+                    "Delete",
+                    icons::TRASH,
+                    busy || active,
+                    cx.listener(move |this, _, _, cx| this.delete_model(model, cx)),
+                )
+            } else {
+                small_button(
+                    "Download",
+                    icons::DOWNLOAD,
+                    busy,
+                    cx.listener(move |this, _, _, cx| this.download_model(model, cx)),
+                )
+            });
+        }
+        row = row.child(if active {
+            readout("Active".into()).into_any_element()
+        } else {
+            small_button(
+                "Use",
+                icons::CHECK,
+                !installed || busy,
+                cx.listener(move |this, _, _, cx| this.set_acoustic_model(model, cx)),
+            )
+            .into_any_element()
+        });
+        row.into_any_element()
+    }
+
+    /// The line under the model list: what a running download is doing, or
+    /// why the last one or the last pass gave up.
+    fn model_note(&self, cx: &Context<Self>) -> Option<String> {
+        if let Some(job) = &self.model_job {
+            let label = embeddings::models::find(&job.model())
+                .map(|model| model.label)
+                .unwrap_or("model");
+            if job.stopping() {
+                return Some(format!("Stopping the {label} download..."));
+            }
+            return Some(format!(
+                "Downloading {label}: {} of {}",
+                human_size(job.done()),
+                human_size(job.total())
+            ));
+        }
+        if let Some((id, reason)) = embeddings::models::last_failure(cx) {
+            let label = embeddings::models::find(&id)
+                .map(|model| model.label)
+                .unwrap_or("The model");
+            return Some(format!("{label} could not be downloaded: {reason}"));
+        }
+        // A pass that failed to start is nearly always the model rather than
+        // the library, so its reason belongs on this section.
+        embeddings::last_failure(cx).map(|reason| format!("The last pass stopped: {reason}"))
+    }
+
+    /// Make a model the active one: what the pass fills and what the
+    /// similarity queries read. The coverage line re-counts against it, so
+    /// switching immediately says how much of the library this model has
+    /// actually described rather than carrying the last one's number.
+    /// Mark a model as the one the ML Models page offers to the rest of the
+    /// app. When the library is already running a model rather than the
+    /// built-in extractor, the switch follows the new pick straight away;
+    /// when it's on Built-in this only changes what Model would mean.
+    fn set_acoustic_model(
+        &mut self,
+        model: &'static embeddings::models::Model,
+        cx: &mut Context<Self>,
+    ) {
+        self.acoustic_ml_model = model.id;
+        let id = model.id.to_string();
+        Settings::update(move |s| s.acoustic_ml_model = id.clone());
+        if self.acoustic_model != embeddings::MODEL {
+            self.use_extractor(model.id, cx);
+        }
+        cx.notify();
+    }
+
+    /// The Library page's switch: run the built-in sketch, or the model the
+    /// ML Models page is offering.
+    fn set_acoustic_uses_model(&mut self, on: bool, cx: &mut Context<Self>) {
+        let id = if on {
+            self.acoustic_ml_model
+        } else {
+            embeddings::MODEL
+        };
+        self.use_extractor(id, cx);
+        cx.notify();
+    }
+
+    /// Point the library at an extractor and re-read its coverage. Every
+    /// model describes the library separately, so the count has to follow the
+    /// pick rather than the pick alone.
+    fn use_extractor(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        self.acoustic_model = id;
+        let owned = id.to_string();
+        Settings::update(move |s| s.acoustic_model = owned.clone());
+        settings::set_acoustic_model(id, cx);
+        self.acoustic_coverage = self.library.read(cx).acoustic_coverage(id);
+    }
+
+    fn download_model(
+        &mut self,
+        model: &'static embeddings::models::Model,
+        cx: &mut Context<Self>,
+    ) {
+        embeddings::models::start(model, cx);
+        self.model_job = embeddings::models::progress(cx);
+        Self::poll_analyzing(cx);
+        cx.notify();
+    }
+
+    /// Drop a model's weights. The vectors it already wrote stay: they're
+    /// still valid, and making a delete cost a full re-analysis would turn a
+    /// reclaim-some-disk into an afternoon.
+    fn delete_model(&mut self, model: &'static embeddings::models::Model, cx: &mut Context<Self>) {
+        if let Err(e) = model.delete() {
+            log::error!("deleting {}: {e}", model.id);
+        }
+        self.model_sizes = Self::measure_models();
+        cx.notify();
+    }
+
+    /// Acoustic analysis, on the Library page because that is what it
+    /// describes: the switch, which extractor runs, and how far it has got.
+    ///
+    /// The extractor choice is two options rather than a list of every model,
+    /// because the shelf lives on the ML Models page. This is a job picking a
+    /// tool off it, so the question here is only built-in or the model, and
+    /// which model is the other page's business.
+    fn acoustic_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        let on = self.acoustic_analysis;
+        let note = on.then(|| self.acoustic_note());
+        let ml_label = embeddings::models::find(self.acoustic_ml_model)
+            .map(|model| model.label)
+            .unwrap_or("the selected model");
+        let installed =
+            embeddings::models::find(self.acoustic_ml_model).is_some_and(|model| model.installed());
+        Section::new(
+            q,
+            icons::AUDIO_WAVEFORM,
+            "Acoustic Analysis",
+            on.then(|| self.acoustic_control(cx)),
+            move |mut rows| {
+                rows = rows.keyed(
+                    &["acoustic", "embeddings", "similar", "analysis"],
+                    "Describe How Tracks Sound",
+                    Some(
+                        "Work out what each track sounds like, so the library can find music \
+                         that resembles what's playing. Everything is worked out on this \
+                         machine, and describing a large library takes a while",
+                    ),
+                    panel::toggle(on, Self::set_acoustic_analysis, cx),
+                );
+                if !on {
+                    return rows;
+                }
+                rows = rows.row_dyn(
+                    &["extractor", "model", "built-in", "quality"],
+                    "Extractor",
+                    Some(
+                        if installed {
+                            format!(
+                                "Built-in needs no download and describes timbre and rhythm. \
+                                 {ml_label} hears more, and is the model the ML Models page is \
+                                 offering. Switching re-describes the library under the new one"
+                            )
+                        } else {
+                            format!(
+                                "Built-in needs no download and describes timbre and rhythm. \
+                                 {ml_label} is not downloaded yet; fetch it on the ML Models \
+                                 page before switching"
+                            )
+                        }
+                        .into(),
+                    ),
+                    panel::choices(
+                        &[("Built-in", false), ("Model", true)],
+                        self.acoustic_model != embeddings::MODEL,
+                        Self::set_acoustic_uses_model,
+                        cx,
+                    ),
+                );
+                match note {
+                    Some(note) => rows
+                        .custom(&["coverage", "analyze", "missing", "progress"], || {
+                            coverage_note(note).into_any_element()
+                        }),
+                    None => rows,
+                }
+            },
+        )
+    }
+
+    fn acoustic_note(&self) -> String {
+        if let Some(job) = &self.acoustic_job {
+            // The running pass's own model, not the current pick: switching
+            // models mid-pass is possible, and the line should say what's
+            // actually being written.
+            let running = embeddings::models::find(&job.model())
+                .map(|model| model.label)
+                .unwrap_or("Analyzing");
+            let total = job.total();
+            if total == 0 {
+                return format!("{running}: working out what's missing...");
+            }
+            let mut line = format!("{running} is on {} of {total}", job.done().min(total));
+            let current = job.current();
+            if let Some(name) = Path::new(&current).file_name() {
+                line.push_str(&format!(" - {}", name.to_string_lossy()));
+            }
+            let failed = job.failed();
+            if failed > 0 {
+                line.push_str(&format!(" ({failed} skipped)"));
+            }
+            return line;
+        }
+        let coverage = self.acoustic_coverage;
+        if coverage.total == 0 {
+            return "Nothing scanned to analyze yet".into();
+        }
+        // Named, because the count is per model: every model describes the
+        // library separately, and a line that said "142 of 208" without
+        // saying whose would read as the library's own progress.
+        let label = embeddings::models::find(self.acoustic_model)
+            .map(|model| model.label)
+            .unwrap_or("the selected model");
+        if coverage.missing() == 0 {
+            return format!(
+                "All {} scanned tracks are described by {label}",
+                coverage.total
+            );
+        }
+        format!(
+            "{label} describes {} of {} scanned tracks. Analyze Missing works through the rest",
+            coverage.embedded, coverage.total,
+        )
+    }
+
+    /// Start the pass, or stop the one running. Inert with nothing missing,
+    /// and while the library is scanning, since a scan rewrites the very
+    /// rows the pass reads.
+    fn acoustic_control(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(job) = &self.acoustic_job {
+            let stopping = job.stopping();
+            return small_button(
+                if stopping { "Stopping..." } else { "Stop" },
+                icons::STOP,
+                stopping,
+                cx.listener(|_, _, _, cx| embeddings::stop(cx)),
+            )
+            .into_any_element();
+        }
+        // Also inert while a model is coming down: the pass would load the
+        // half-written file, and the download is the thing that has to
+        // finish first anyway.
+        let idle = self.acoustic_coverage.missing() == 0
+            || self.library.read(cx).busy().is_some()
+            || self.model_job.is_some();
+        small_button(
+            "Analyze Missing",
+            icons::FLASK,
+            idle,
+            cx.listener(|this, _, _, cx| this.start_analyzing(cx)),
+        )
+        .into_any_element()
+    }
+
+    /// Kick the pass off and start sampling it.
+    fn start_analyzing(&mut self, cx: &mut Context<Self>) {
+        embeddings::start(self.library.clone(), cx);
+        self.acoustic_job = embeddings::progress(cx);
+        Self::poll_analyzing(cx);
+        cx.notify();
+    }
+
+    /// Mirror the running pass into the section, `poll_measuring`'s twin.
+    /// Stops itself once the pass clears the global, and refreshes the
+    /// coverage once on the way out so the line lands on the final count.
+    ///
+    /// Covers the model download on the same timer rather than on one of its
+    /// own: the two never run together (the analyze button sits out while a
+    /// download runs), and one loop means one place that decides when the
+    /// section has stopped moving.
+    fn poll_analyzing(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(RG_POLL).await;
+            let live = this.update(cx, |this, cx| {
+                this.acoustic_job = embeddings::progress(cx);
+                let was_downloading = this.model_job.is_some();
+                this.model_job = embeddings::models::progress(cx);
+                if this.acoustic_job.is_none() {
+                    this.acoustic_coverage =
+                        this.library.read(cx).acoustic_coverage(this.acoustic_model);
+                }
+                // A finished download changed what's on disk, so the sizes
+                // and the install marks have to be re-walked once.
+                if was_downloading && this.model_job.is_none() {
+                    this.model_sizes = Self::measure_models();
+                }
+                cx.notify();
+                this.acoustic_job.is_some() || this.model_job.is_some()
+            });
+            if !matches!(live, Ok(true)) {
+                break;
+            }
+        })
+        .detach();
     }
 
     /// Land on a page and leave search: what a sidebar click and a
@@ -3141,6 +3694,7 @@ impl SettingsWindow {
             Page::Audio => self.audio_page(q, cx),
             Page::Workspace => self.workspace_page(q, cx),
             Page::Library => self.library_page(q, cx),
+            Page::MlModels => self.ml_models_page(q, cx),
             Page::Providers => self.providers_page(q, cx),
             Page::Integrations => self.integrations_page(q, cx),
             Page::Storage => self.storage_page(q, cx),

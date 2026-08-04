@@ -314,7 +314,8 @@ impl MetadataPanel {
             },
         );
         // A rescan can rewrite tags, art files, and id -> path mappings;
-        // drop the caches so the resolve, the row, and the art re-read.
+        // drop the resolve and the row so they re-read, and send the cover
+        // background back through the file behind the one it's showing.
         let _library_changed = cx.subscribe(
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
@@ -330,7 +331,7 @@ impl MetadataPanel {
                 }
                 this.resolved.invalidate();
                 this.details = None;
-                this.art.invalidate(cx);
+                this.art.refresh();
                 cx.notify();
             },
         );

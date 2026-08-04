@@ -2490,7 +2490,7 @@ impl Workspace {
                     player.toggle_pause();
                 }
             }
-            MediaCommand::Next => player.next(),
+            MediaCommand::Next => player.next(cx),
             MediaCommand::Prev => player.prev(),
             MediaCommand::Stop => player.stop(cx),
             MediaCommand::SeekBy(delta) => player.seek_by(delta),

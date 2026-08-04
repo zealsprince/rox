@@ -30,6 +30,9 @@ pub struct TrackedImage {
     pending: Option<PathBuf>,
     /// Discards stale load results when the track changes mid-read.
     generation: u64,
+    /// Raised by [`TrackedImage::refresh`]: what's held still paints, and
+    /// the next `ensure` re-reads it behind that.
+    stale: bool,
 }
 
 impl TrackedImage {
@@ -54,8 +57,8 @@ impl TrackedImage {
         S: Fn(&mut T) -> &mut TrackedImage + 'static,
         F: FnOnce() -> Option<Arc<Image>> + Send + 'static,
     {
-        if self.art.as_ref().map(|(p, _)| p.as_path()) == Some(path)
-            || self.pending.as_deref() == Some(path)
+        if self.pending.as_deref() == Some(path)
+            || (!self.stale && self.art.as_ref().map(|(p, _)| p.as_path()) == Some(path))
         {
             return;
         }
@@ -74,6 +77,7 @@ impl TrackedImage {
                     return;
                 }
                 tracked.pending = None;
+                tracked.stale = false;
                 let old = tracked.art.take().and_then(|(_, art)| art);
                 tracked.art = Some((path, loaded));
                 tracked.retire(old, cx);
@@ -84,11 +88,22 @@ impl TrackedImage {
         .detach();
     }
 
-    /// Forget the held load and retire its decode. Serves both a library
-    /// update, which can rewrite art on disc under the same path so the next
-    /// render must re-read, and the panel's drop path, so a closed panel
-    /// leaves nothing pinned in the asset cache. Takes the slot first so the
-    /// retire sees no current decode and always drops.
+    /// The catalog moved under the panel, and a rescan can rewrite art on
+    /// disc under the same path: keep painting what's held, but have the
+    /// next `ensure` re-read it. A load in flight read the file before the
+    /// change, so it's orphaned and the re-read takes its place. `retire`
+    /// keys on the decode's content id, so a re-read that comes back with
+    /// the same cover holds onto the bitmap it already has - an update that
+    /// left this track's art alone never blanks the panel.
+    pub fn refresh(&mut self) {
+        self.stale = true;
+        self.pending = None;
+        self.generation += 1;
+    }
+
+    /// Forget the held load and retire its decode, the panel's drop path,
+    /// so a closed panel leaves nothing pinned in the asset cache. Takes the
+    /// slot first so the retire sees no current decode and always drops.
     pub fn invalidate(&mut self, cx: &mut App) {
         let old = self.art.take().and_then(|(_, art)| art);
         self.retire(old, cx);

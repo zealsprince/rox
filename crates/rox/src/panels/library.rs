@@ -24,6 +24,7 @@ use rox_dock::{Panel, PanelEvent, PanelInfo, PanelState, TabPanel};
 use rox_library::projection::Projection;
 
 use crate::assets::icons;
+use crate::continuation;
 use crate::design::{palette, tokens};
 use crate::group_head::{self, ArtSide, HeadPiece, Headers};
 use crate::panel::{self, AppState, PanelChrome, ResumeIdle, ScrubState};
@@ -32,6 +33,7 @@ use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
+use crate::settings::ShuffleMode;
 use crate::thumbs::Thumb;
 use crate::track_ui::track_cells;
 use crate::track_ui::track_drag::{PlayDrag, PlayDragPreview};
@@ -297,6 +299,15 @@ struct TrackTable {
     /// against. Refreshed off the library on a playlist change, so a toggle
     /// anywhere lights the same track here without a full view rebuild.
     favourites: HashSet<i64>,
+    /// How much each track resembles the one playing, for the Similar
+    /// column. Scored off the acoustic vectors on a background thread when
+    /// the playing track changes, never in a paint: the pass over every
+    /// vector is tens of milliseconds on a large library. Empty until the
+    /// column is shown, and while nothing is playing.
+    similar: Arc<HashMap<i64, f32>>,
+    /// Which track `similar` was scored against, so a rescore only runs when
+    /// the playing track actually moved.
+    similar_anchor: Option<i64>,
     /// Resolved file paths for the cover column, cached per track id on the
     /// cell's first paint so the thumbnail lookup does not re-query the
     /// catalog every frame. Paths are stable per id; cleared on reload.
@@ -800,6 +811,42 @@ impl TrackTable {
             ),
             None => base,
         };
+        // Similarity sorts on the delegate's score map rather than a
+        // projection field, so it takes its own branch. Anything unscored
+        // sinks to the bottom either way: a track with no vector isn't the
+        // least similar thing in the library, it's an unknown, and floating
+        // those to the top of an ascending sort would bury the real answer.
+        if let Some(desc) = self
+            .sort
+            .as_ref()
+            .and_then(|(key, desc)| (key.as_ref() == "similar").then_some(*desc))
+        {
+            // Stable, so tracks scoring the same keep the canonical order
+            // under each other rather than shuffling between paints.
+            let mut rows: Vec<u32> = base.iter().copied().collect();
+            rows.sort_by(|a, b| {
+                let (a, b) = (
+                    self.similar.get(&projection.db_id[*a as usize]),
+                    self.similar.get(&projection.db_id[*b as usize]),
+                );
+                match (a, b) {
+                    (Some(a), Some(b)) => {
+                        if desc {
+                            b.total_cmp(a)
+                        } else {
+                            a.total_cmp(b)
+                        }
+                    }
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            });
+            return (
+                Arc::new(rows.into_iter().map(Row::Track).collect()),
+                Vec::new(),
+            );
+        }
         let active = self
             .sort
             .as_ref()
@@ -896,7 +943,7 @@ impl TableDelegate for TrackTable {
             .size_full()
             .child(self.column(col_ix, cx).name.clone())
             .context_menu(move |mut menu, _, _| {
-                for def in COLUMNS {
+                for def in columns::offered() {
                     let key = def.key;
                     let panel = panel.clone();
                     menu = menu.item(
@@ -1146,6 +1193,36 @@ impl TableDelegate for TrackTable {
                         }),
                 );
             }
+            // Queue what sounds like the clicked track. Only offered while
+            // acoustic analysis is on, since without vectors it would have
+            // nothing to answer with.
+            if crate::settings::acoustic_analysis() {
+                let similar_panel = panel.clone();
+                menu = menu.item(
+                    PopupMenuItem::new("Play Similar")
+                        .icon(Icon::default().path(icons::RADIO))
+                        .on_click(move |_, _, cx| {
+                            let Some(panel) = similar_panel.upgrade() else {
+                                return;
+                            };
+                            panel.update(cx, |panel, cx| panel.play_similar(row_ix, cx));
+                        }),
+                );
+                // Its endless cousin. Play Similar reorders the view you're
+                // standing in; this one leaves it, and keeps leaving it, for
+                // as long as you let it run.
+                let radio_panel = panel.clone();
+                menu = menu.item(
+                    PopupMenuItem::new("Start Radio")
+                        .icon(Icon::default().path(icons::INFINITY))
+                        .on_click(move |_, _, cx| {
+                            let Some(panel) = radio_panel.upgrade() else {
+                                return;
+                            };
+                            panel.update(cx, |panel, cx| panel.start_radio(row_ix, cx));
+                        }),
+                );
+            }
             menu
         } else {
             menu
@@ -1239,6 +1316,16 @@ impl TableDelegate for TrackTable {
                 let id = projection.db_id[row as usize];
                 track_cells::favourite(self.state.clone(), id, self.favourites.contains(&id))
             }
+            // The raw cosine against the playing track, two decimals, because
+            // this column is for judging the vectors rather than for reading
+            // as a percentage. Blank for the playing track itself, for a
+            // track with no vector yet, and while nothing is playing.
+            "similar" => match self.similar.get(&projection.db_id[row as usize]) {
+                Some(score) => cell
+                    .text_color(palette::text_muted())
+                    .child(SharedString::from(format!("{score:.2}"))),
+                None => cell,
+            },
             // Blank at zero like the track and year cells: never played
             // reads cleaner as absence than as a column of zeros. The
             // compact face shrinks the count and hangs a faint bar right
@@ -1518,6 +1605,8 @@ impl LibraryPanel {
             playing_id: None,
             playing_row: None,
             favourites: state.library.read(cx).favourite_ids(),
+            similar: Arc::new(HashMap::new()),
+            similar_anchor: None,
             cover_paths: HashMap::new(),
             drag_paths: HashMap::new(),
             sel_gen: 0,
@@ -1657,6 +1746,72 @@ impl LibraryPanel {
         if self.follow_playing {
             self.follow_playing(cx);
         }
+        self.refresh_similarity(cx);
+    }
+
+    /// Rescore the library against the playing track for the Similar column.
+    ///
+    /// Off the UI thread on its own connection, the ReplayGain pass's move:
+    /// the scan touches every vector in the library, which is tens of
+    /// milliseconds on a large one. That's nothing per track change and far
+    /// too much for a paint. Skipped entirely while the column isn't shown,
+    /// so a panel without it pays nothing.
+    fn refresh_similarity(&mut self, cx: &mut Context<Self>) {
+        if !self.shown_columns(cx).contains("similar") {
+            return;
+        }
+        let delegate = self.table.read(cx).delegate();
+        let anchor = delegate.playing_id;
+        if anchor == delegate.similar_anchor {
+            return;
+        }
+        let Some(anchor) = anchor else {
+            // Nothing playing: drop the scores rather than leaving the
+            // column showing distances to a track that stopped.
+            self.table.update(cx, |table, cx| {
+                let delegate = table.delegate_mut();
+                delegate.similar = Arc::new(HashMap::new());
+                delegate.similar_anchor = None;
+                cx.notify();
+            });
+            return;
+        };
+        let db_path = self.state.library.read(cx).db_path();
+        // Whichever model the Development page has selected, so the column
+        // shows distances under the same model the analysis pass filled.
+        let model = crate::settings::acoustic_model().id;
+        cx.spawn(async move |this, cx| {
+            let scored = cx
+                .background_executor()
+                .spawn(async move {
+                    let conn = rox_library::store::open(&db_path).ok()?;
+                    rox_library::embeddings::scores(&conn, anchor, model).ok()
+                })
+                .await;
+            let Some(scored) = scored else { return };
+            this.update(cx, |this, cx| {
+                this.table.update(cx, |table, cx| {
+                    let delegate = table.delegate_mut();
+                    delegate.similar = Arc::new(scored.into_iter().collect());
+                    delegate.similar_anchor = Some(anchor);
+                    cx.notify();
+                });
+                // A view ordered by similarity is now ordered by the old
+                // track's scores, so it has to be rebuilt against the new.
+                let sorted_by_similarity = this
+                    .table
+                    .read(cx)
+                    .delegate()
+                    .sort
+                    .as_ref()
+                    .is_some_and(|(key, _)| key.as_ref() == "similar");
+                if sorted_by_similarity {
+                    this.refresh_view(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Scroll the playing row into view: a glide when smooth is on, the
@@ -2234,6 +2389,9 @@ impl LibraryPanel {
             self.refresh_view(cx);
         }
         self.columns_shown = self.shown_columns(cx);
+        // Turning the Similar column on is the first thing that asks for a
+        // score, and nothing else would ask until the track changed.
+        self.refresh_similarity(cx);
         self.refresh_title_bar(cx);
         self.request_layout_save(cx);
     }
@@ -2258,7 +2416,7 @@ impl LibraryPanel {
     fn column_checklist(&self, cx: &mut Context<Self>) -> Div {
         let shown = self.shown_columns(cx);
         let mut list = div().flex().flex_col().gap(tokens::SPACE_XS);
-        for def in COLUMNS {
+        for def in columns::offered() {
             let key = def.key;
             let on = shown.contains(key);
             list = list.child(
@@ -2372,7 +2530,7 @@ impl LibraryPanel {
         explicit: bool,
         cx: &mut Context<Self>,
     ) {
-        let result = {
+        let (result, scope) = {
             let view = self.table.read(cx).delegate().view.clone();
             let library = self.state.library.read(cx);
             let Some(projection) = library.projection() else {
@@ -2385,7 +2543,22 @@ impl LibraryPanel {
                     _ => None,
                 })
                 .collect();
-            library.paths_for(&ids)
+            // The whole view, not the window that got queued. A big view
+            // plays in a bounded slice (see `play_from`), so the rows below
+            // the slice are exactly what continuation carries on into
+            // (ADR 17); handing over only what was queued would leave it
+            // nothing to resume.
+            let order: Vec<i64> = view
+                .iter()
+                .filter_map(|row| match row {
+                    &Row::Track(row) => Some(projection.db_id[row as usize]),
+                    _ => None,
+                })
+                .collect();
+            (
+                library.paths_for(&ids),
+                continuation::Scope::View(order.into()),
+            )
         };
         match result {
             Ok(paths) => self.state.player.update(cx, |player, cx| {
@@ -2394,6 +2567,9 @@ impl LibraryPanel {
                 } else {
                     player.play_at(paths, start, cx);
                 }
+                // After the play, never before: starting a session clears
+                // the scope back to the library at large.
+                player.set_scope(scope);
             }),
             Err(e) => {
                 self.error = Some(format!("library: {e}").into());
@@ -2401,6 +2577,64 @@ impl LibraryPanel {
                 self.refresh_title_bar(cx);
             }
         }
+    }
+
+    /// Play the clicked track and let the radio carry on from it: shuffle
+    /// switches to the similarity mode, and the rest of the view follows in
+    /// the order it sounds closest.
+    ///
+    /// The mode goes on before the play, not after. `play_from` draws from
+    /// the whole view once shuffle is on rather than only the rows below the
+    /// click, so setting it first is what makes the pool the library instead
+    /// of the remainder of it.
+    ///
+    /// Nothing is pushed into the queue here. An earlier cut queued the
+    /// thousand nearest tracks up front, which buried whatever was already
+    /// there and made one context-menu click a very large edit; now this is
+    /// the ordinary play the row would have done, with the ordering behind
+    /// it changed.
+    fn play_similar(&mut self, row_ix: usize, cx: &mut Context<Self>) {
+        self.state.player.update(cx, |player, cx| {
+            player.shuffle_in_mode(ShuffleMode::Similar, cx)
+        });
+        self.play_from(row_ix, cx);
+    }
+
+    /// Play the clicked track alone and let continuation carry it (#39): the
+    /// radio provider takes over the moment the one-track queue runs dry, and
+    /// draws library-wide off the acoustic vectors.
+    ///
+    /// One track rather than the view. Radio's whole point is leaving the
+    /// filter you're standing in, so seeding it with the rows around the
+    /// click would spend the first hour inside exactly the view the listener
+    /// asked to leave. The scope stays at the library for the same reason,
+    /// which is what `play` (rather than `play_rows_at`) leaves it as.
+    fn start_radio(&mut self, row_ix: usize, cx: &mut Context<Self>) {
+        let Some(row) = self.table.read(cx).delegate().track_at(row_ix) else {
+            return;
+        };
+        let paths = {
+            let library = self.state.library.read(cx);
+            let Some(projection) = library.projection() else {
+                return;
+            };
+            let Some(&id) = projection.db_id.get(row as usize) else {
+                return;
+            };
+            match library.paths_for(&[id]) {
+                Ok(paths) => paths,
+                Err(e) => {
+                    self.error = Some(format!("library: {e}").into());
+                    cx.notify();
+                    self.refresh_title_bar(cx);
+                    return;
+                }
+            }
+        };
+        self.state.player.update(cx, |player, cx| {
+            player.set_continuation_mode(continuation::Mode::Radio, cx);
+            player.play(paths, cx);
+        });
     }
 
     /// Turn shuffle on, then queue `rows` from the front. The engine pins the
@@ -3276,7 +3510,7 @@ impl Panel for LibraryPanel {
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
-            for def in COLUMNS {
+            for def in columns::offered() {
                 let key = def.key;
                 submenu = submenu.item(panel::check_row(
                     def.label,

@@ -197,8 +197,12 @@ impl WaveformPanel {
                     if let Some(peaks) = peaks::load(&path) {
                         return Ok::<_, String>(peaks);
                     }
+                    // Stamp the file before the decode reads it, so a track
+                    // still landing on disk keys the entry it had, not the
+                    // one it finishes as.
+                    let stamp = peaks::identity(&path);
                     let decoded = engine::decode_peaks(&path, PEAK_BINS)?;
-                    peaks::store(&path, &decoded);
+                    peaks::store(&path, stamp, &decoded);
                     Ok(decoded)
                 })
                 .await;

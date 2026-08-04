@@ -150,6 +150,27 @@ impl Shared {
         self.queue_rev.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// How many entries sit after the one holding pool index `audible`, and
+    /// that entry's own position. Falls back to the published cursor when
+    /// nothing is audible yet or the index isn't in the order, which is where
+    /// a freshly started context sits.
+    ///
+    /// Its own read rather than a [`queue_snapshot`](Self::queue_snapshot)
+    /// the caller measures, because the continuation trigger (ADR 17) asks
+    /// this on the pump's 16 ms clock and the snapshot clones a `PathBuf` per
+    /// entry. Counting under the lock costs a scan of the order and no
+    /// allocation at all. None while nothing is queued.
+    pub fn upcoming_from(&self, audible: Option<usize>) -> Option<(usize, usize)> {
+        let queue = self.queue.lock().unwrap();
+        if queue.entries.is_empty() {
+            return None;
+        }
+        let at = audible
+            .and_then(|idx| queue.entries.iter().position(|e| e.idx == idx))
+            .unwrap_or(queue.cursor);
+        Some((at, queue.entries.len().saturating_sub(at + 1)))
+    }
+
     pub fn volume(&self) -> f32 {
         f32::from_bits(self.volume_bits.load(std::sync::atomic::Ordering::Relaxed))
     }
@@ -219,6 +240,44 @@ mod tests {
             track,
             track_frame,
         });
+    }
+
+    /// The continuation trigger's read: how much music is left ahead of the
+    /// track coming out of the speakers. Matched on the pool index, so the
+    /// same file sitting in the order twice still resolves to the occurrence
+    /// playing now rather than the first one by path.
+    #[test]
+    fn upcoming_counts_from_the_audible_entry() {
+        let shared = Shared::new(5);
+        *shared.queue.lock().unwrap() = QueueSnapshot {
+            entries: (0..5)
+                .map(|i| QueueEntry {
+                    id: i as u64,
+                    // One file queued twice, at the front and in the middle.
+                    path: PathBuf::from(if i == 3 {
+                        "t0".to_string()
+                    } else {
+                        format!("t{i}")
+                    }),
+                    explicit: false,
+                    idx: i,
+                    group: None,
+                })
+                .collect(),
+            cursor: 1,
+        };
+        assert_eq!(shared.upcoming_from(Some(0)), Some((0, 4)));
+        assert_eq!(shared.upcoming_from(Some(3)), Some((3, 1)));
+        // The last entry has nothing ahead of it, which is where a queue
+        // that played out to its end sits.
+        assert_eq!(shared.upcoming_from(Some(4)), Some((4, 0)));
+        // Nothing audible yet falls back to the published cursor, and so
+        // does an index the order doesn't hold.
+        assert_eq!(shared.upcoming_from(None), Some((1, 3)));
+        assert_eq!(shared.upcoming_from(Some(99)), Some((1, 3)));
+        // An empty queue has nothing to say rather than an answer of zero,
+        // which would read as dry and fire the trigger on a dead session.
+        assert!(Shared::new(0).upcoming_from(None).is_none());
     }
 
     #[test]

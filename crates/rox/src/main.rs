@@ -18,10 +18,12 @@ mod catalog;
 mod charts;
 mod composite;
 mod console_window;
+mod continuation;
 mod cover;
 mod design;
 mod discord;
 mod duplicates;
+mod embeddings;
 mod eq_window;
 mod group_head;
 mod history;
@@ -285,6 +287,8 @@ fn main() {
         rox_library::genre::set_split_compounds(settings.split_genre_compounds);
         settings::set_quit_to_tray(settings.quit_to_tray);
         settings::set_experimental(settings.experimental, cx);
+        settings::set_acoustic_analysis(settings.acoustic_analysis, cx);
+        settings::set_acoustic_model(&settings.acoustic_model, cx);
         integrations::tray::sync(cx);
         // Point the icon resolver at the chosen pack before any window
         // opens, so the first frame already draws it.

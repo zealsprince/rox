@@ -96,8 +96,16 @@ pub fn cover_art_of(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
 pub enum ArtSource {
     /// The picture lived in the track's own tags.
     Embedded,
-    /// The picture came from this image file beside the track.
-    Folder(std::path::PathBuf),
+    /// The picture came from this image file beside the track, stamped
+    /// with the identity it carried just before its bytes were read.
+    /// Statting after the read instead would pin a cover that finished
+    /// downloading mid-read to the identity it settled on, so a thumbnail
+    /// built from half an image would match forever.
+    Folder {
+        file: std::path::PathBuf,
+        mtime: i64,
+        size: i64,
+    },
 }
 
 /// [`cover_art`] plus where the picture came from. The thumbnail cache uses
@@ -108,8 +116,49 @@ pub fn cover_art_source(path: &Path) -> Option<(Vec<u8>, String, ArtSource)> {
     if let Some((bytes, mime)) = embedded(path, ArtKind::Front) {
         return Some((bytes, mime, ArtSource::Embedded));
     }
-    let (bytes, mime, file) = folder_art(path, ArtKind::Front)?;
-    Some((bytes, mime, ArtSource::Folder(file)))
+    folder_art(path, ArtKind::Front)
+}
+
+/// The (mtime, size) of a path, both zero when it will not stat. Caches
+/// key on this, so a changed file reads as a fresh identity.
+pub fn identity(path: &Path) -> (i64, i64) {
+    match std::fs::metadata(path) {
+        Ok(meta) => (
+            meta.modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+            meta.len() as i64,
+        ),
+        Err(_) => (0, 0),
+    }
+}
+
+/// Whether an image's bytes carry their end marker, so a file caught
+/// halfway through a download reads as what it is. Only the formats with
+/// an unambiguous end answer; anything else passes, since guessing wrong
+/// costs a cover. The marker scan tolerates the trailing padding some
+/// encoders leave after it.
+pub fn complete(bytes: &[u8]) -> bool {
+    // Far enough back to clear padding, short enough that a marker found
+    // here really is the end.
+    const TAIL: usize = 32;
+    let tail = &bytes[bytes.len().saturating_sub(TAIL)..];
+    let ends_with = |marker: &[u8]| tail.windows(marker.len()).any(|w| w == marker);
+    match sniff(bytes) {
+        // FF D9 cannot occur inside entropy-coded scan data, where every
+        // FF is stuffed with a zero, so finding it means the real end.
+        Some("image/jpeg") => ends_with(&[0xFF, 0xD9]),
+        Some("image/png") => ends_with(b"IEND\xAEB\x60\x82"),
+        Some("image/gif") => tail.last() == Some(&0x3B),
+        // RIFF containers count their own length in the header.
+        Some("image/webp") => bytes
+            .get(4..8)
+            .and_then(|n| n.try_into().ok())
+            .is_some_and(|n| u32::from_le_bytes(n) as usize + 8 <= bytes.len()),
+        _ => true,
+    }
 }
 
 /// The embedded picture for a slot, isolated like the scanner's tag
@@ -146,9 +195,9 @@ fn embedded(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
 }
 
 /// A cover image sitting next to the track, the slot's best-ranked stem
-/// winning. Hands back the file it read so a cache can key on that
-/// file's identity.
-fn folder_art(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String, std::path::PathBuf)> {
+/// winning. Hands back the file it read, and the identity that file had
+/// going in, so a cache can key on it.
+fn folder_art(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String, ArtSource)> {
     let stems = kind.stems();
     let dir = path.parent()?;
     let mut best: Option<(usize, std::path::PathBuf)> = None;
@@ -173,9 +222,13 @@ fn folder_art(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String, std::path:
         }
     }
     let file = best?.1;
+    // Stat first, read second: a cover that finishes downloading between
+    // the two then reads as a file the cache has never seen, instead of
+    // stamping its finished identity on the bytes we caught mid-write.
+    let (mtime, size) = identity(&file);
     let bytes = std::fs::read(&file).ok()?;
     let mime = sniff(&bytes)?.into();
-    Some((bytes, mime, file))
+    Some((bytes, mime, ArtSource::Folder { file, mtime, size }))
 }
 
 /// The picture pulled raw out of an ID3v2.4 tag whose header sets the
@@ -348,6 +401,21 @@ mod tests {
         assert_eq!(resync(&[0xFF, 0x00, 0x00, 0x59]), [0xFF, 0x00, 0x59]);
         assert_eq!(resync(&[0xFF, 0x00, 0xE0]), [0xFF, 0xE0]);
         assert_eq!(resync(&[0x01, 0x00, 0xFF]), [0x01, 0x00, 0xFF]);
+    }
+
+    /// The end-marker check the thumbnail cache leans on: a whole file
+    /// passes, the front of one still downloading does not, and a format
+    /// with no marker to read passes rather than lose its cover.
+    #[test]
+    fn complete_reads_the_end_marker() {
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x41, 0xFF, 0xD9];
+        assert!(complete(&jpeg));
+        assert!(!complete(&jpeg[..jpeg.len() - 2]));
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend(b"IEND\xAEB\x60\x82");
+        assert!(complete(&png));
+        assert!(!complete(&png[..png.len() - 1]));
+        assert!(complete(b"not an image at all"));
     }
 
     /// The unsynchronisation an encoder applies: a zero stuffed after

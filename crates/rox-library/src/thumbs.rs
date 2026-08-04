@@ -148,30 +148,16 @@ fn content_hash(bytes: &[u8]) -> i64 {
     }
 }
 
-/// The (mtime, size) of a path, both zero when it will not stat. The cache
-/// keys art sources on this, so a changed cover reads as a fresh identity.
-fn identity_of(path: &Path) -> (i64, i64) {
-    match std::fs::metadata(path) {
-        Ok(meta) => (
-            meta.modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
-            meta.len() as i64,
-        ),
-        Err(_) => (0, 0),
-    }
-}
-
 /// The thumbnail for one track: JPEG bytes, or None when the track has no
 /// art anywhere (or no longer stats). A hit is one point lookup; a miss
 /// resolves the cover's bytes and checks the pool by their hash, so only
 /// the first sight of a cover pays the decode and re-encode - the rest of
 /// the album, and any other copy of the image, reuse the pooled row. The
 /// no-art answer is stored too, so the next request never opens the audio
-/// file. The connection is shared across workers; the lock is held for
-/// the lookups, never the file reads or the encode.
+/// file. A cover caught mid-write stores nothing at all, so the finished
+/// file gets a fresh look instead of half an image sticking. The
+/// connection is shared across workers; the lock is held for the lookups,
+/// never the file reads or the encode.
 pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
     let meta = std::fs::metadata(path).ok()?;
     let size = meta.len() as i64;
@@ -202,15 +188,20 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
             // art_path) rode the audio identity above and needs no re-stat.
             // A no-art row references no image and an undecodable cover an
             // empty one; both answer None.
-            if art_path.is_empty() || identity_of(Path::new(&art_path)) == (art_mtime, art_size) {
+            if art_path.is_empty() || art::identity(Path::new(&art_path)) == (art_mtime, art_size) {
                 return image.filter(|bytes| !bytes.is_empty());
             }
         }
     }
     // A miss: resolve the cover source off the lock, then key its bytes.
-    let (art_hash, thumb, art_path, art_mtime, art_size) = match art::cover_art_source(path) {
+    let (art_hash, thumb, art_path, art_mtime, art_size, whole) = match art::cover_art_source(path)
+    {
         Some((bytes, _mime, source)) => {
             let hash = content_hash(&bytes);
+            // Bytes that stop short of their end marker are a file still
+            // landing on disk. Serve what decodes, store nothing: the
+            // finished cover deserves the row, not this.
+            let whole = art::complete(&bytes);
             // A cover seen before - the rest of this album, the same file
             // in another folder - skips the decode and re-encode whole.
             let pooled: Option<Vec<u8>> = {
@@ -230,38 +221,42 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
                     // Bytes that will not decode pool an empty image, so the
                     // failure caches and dedups the same as a success.
                     let encoded = encode(&bytes).unwrap_or_default();
-                    let conn = conn.lock().unwrap();
-                    conn.prepare_cached(
-                        "INSERT OR IGNORE INTO images (hash, image) VALUES (?1, ?2)",
-                    )
-                    .ok()?
-                    .execute(rusqlite::params![hash, encoded])
-                    .ok()?;
+                    if whole {
+                        let conn = conn.lock().unwrap();
+                        conn.prepare_cached(
+                            "INSERT OR IGNORE INTO images (hash, image) VALUES (?1, ?2)",
+                        )
+                        .ok()?
+                        .execute(rusqlite::params![hash, encoded])
+                        .ok()?;
+                    }
                     encoded
                 }
             };
             let (art_path, art_mtime, art_size) = source_identity(&source);
-            (hash, thumb, art_path, art_mtime, art_size)
+            (hash, thumb, art_path, art_mtime, art_size, whole)
         }
         // No art: hash 0 references no pooled image, and the negative entry
         // keys on the directory's identity, so a cover dropped in later
         // bumps its mtime and forces a fresh look.
         None => {
             let (art_path, art_mtime, art_size) = no_art_identity(path);
-            (0, Vec::new(), art_path, art_mtime, art_size)
+            (0, Vec::new(), art_path, art_mtime, art_size, true)
         }
     };
-    let conn = conn.lock().unwrap();
-    conn.prepare_cached(
-        "INSERT OR REPLACE INTO thumbs \
-         (path, mtime, size, art_path, art_mtime, art_size, art_hash) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-    )
-    .ok()?
-    .execute(rusqlite::params![
-        key, mtime, size, art_path, art_mtime, art_size, art_hash
-    ])
-    .ok()?;
+    if whole {
+        let conn = conn.lock().unwrap();
+        conn.prepare_cached(
+            "INSERT OR REPLACE INTO thumbs \
+             (path, mtime, size, art_path, art_mtime, art_size, art_hash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .ok()?
+        .execute(rusqlite::params![
+            key, mtime, size, art_path, art_mtime, art_size, art_hash
+        ])
+        .ok()?;
+    }
     (!thumb.is_empty()).then_some(thumb)
 }
 
@@ -277,14 +272,13 @@ pub fn clear(conn: &Mutex<Connection>) {
 }
 
 /// A resolved cover's cache identity: empty path for embedded art (the
-/// audio file's own identity covers it), the cover file's identity for
-/// folder art.
+/// audio file's own identity covers it), the identity the cover file
+/// carried going into the read for folder art.
 fn source_identity(source: &art::ArtSource) -> (String, i64, i64) {
     match source {
         art::ArtSource::Embedded => (String::new(), 0, 0),
-        art::ArtSource::Folder(file) => {
-            let (mtime, size) = identity_of(file);
-            (file.to_string_lossy().into_owned(), mtime, size)
+        art::ArtSource::Folder { file, mtime, size } => {
+            (file.to_string_lossy().into_owned(), *mtime, *size)
         }
     }
 }
@@ -295,7 +289,7 @@ fn source_identity(source: &art::ArtSource) -> (String, i64, i64) {
 fn no_art_identity(path: &Path) -> (String, i64, i64) {
     match path.parent() {
         Some(dir) => {
-            let (mtime, size) = identity_of(dir);
+            let (mtime, size) = art::identity(dir);
             (dir.to_string_lossy().into_owned(), mtime, size)
         }
         None => (String::new(), 0, 0),
@@ -479,6 +473,35 @@ mod tests {
             1,
             "one pooled image serves all three"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cover still downloading leaves no row behind, so the finished
+    /// file is read fresh. Without this the row would pair a thumbnail
+    /// built from half an image with the identity the cover settles on,
+    /// and the truncated cover would show forever.
+    #[test]
+    fn a_half_written_cover_caches_nothing() {
+        let dir = std::env::temp_dir().join("rox-thumbs-partial");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let track = dir.join("1.mp3");
+        std::fs::write(&track, b"not audio").unwrap();
+        let cover = jpeg(64, 1);
+        std::fs::write(dir.join("cover.jpg"), &cover[..cover.len() / 2]).unwrap();
+
+        let conn = Mutex::new(open(&dir.join("thumbs.db")).unwrap());
+        thumbnail(&conn, &track);
+        assert_eq!(count(&conn, "thumbs"), 0, "the partial cover keys nothing");
+        assert_eq!(count(&conn, "images"), 0, "and pools nothing");
+
+        // The download lands: the next look reads the whole cover and this
+        // one does cache.
+        std::fs::write(dir.join("cover.jpg"), &cover).unwrap();
+        let whole = thumbnail(&conn, &track).expect("a thumbnail");
+        assert_eq!(count(&conn, "thumbs"), 1);
+        assert_eq!(thumbnail(&conn, &track).as_ref(), Some(&whole));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

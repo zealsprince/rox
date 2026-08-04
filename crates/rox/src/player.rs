@@ -6,15 +6,17 @@
 //! minimized main window. The player renders nothing itself; the transport
 //! panels are the UI over this state.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{App, Context, Entity, Global, SharedString, Subscription, Task};
 
+use rox_library::embeddings;
 use rox_library::store;
-use rox_playback::engine::{self, Cmd, LoopMode, StartQueue};
+use rox_playback::engine::{self, shuffle_slice, Cmd, LoopMode, StartQueue};
 use rox_playback::eq::{Eq, EqParams};
 use rox_playback::gain;
 use rox_playback::output::{self, Mode, Negotiated, Request};
@@ -22,12 +24,79 @@ use rox_playback::rtrb::Consumer;
 use rox_playback::shared::{QueueEntry, QueueSnapshot, Shared};
 use rox_viz::AudioFeed;
 
-use crate::settings::{GainModeSetting, ReplayGainSave, ReplayGainSettings, Settings};
+use crate::continuation::{self, Pick};
+use crate::settings::{GainModeSetting, ReplayGainSave, ReplayGainSettings, Settings, ShuffleMode};
 
 /// Pump cadence, roughly one video frame. The tap ring holds 16,384 samples
 /// (about 170 ms at 48 kHz stereo), so a tick has an order of magnitude of
 /// headroom before the callback's pushes start getting dropped.
 const PUMP_INTERVAL: Duration = Duration::from_millis(16);
+
+/// How long the similarity ordering will wait for a freshly started context
+/// to publish its queue, as a number of tries and the gap between them. The
+/// decode thread publishes first thing in `run`, so in practice this lands on
+/// the first or second look; the ceiling is only there so a session that
+/// never comes up can't leave a task waiting forever.
+const QUEUE_WAIT_TRIES: usize = 40;
+const QUEUE_WAIT_STEP: Duration = Duration::from_millis(25);
+
+/// How long a track has to play before a skip counts as a fresh start rather
+/// than part of a run. Long enough that skipping an outro you enjoyed doesn't
+/// read as rejection, short enough that settling on something narrows the
+/// radio back down while you're still listening to it.
+const SKIP_SETTLE: Duration = Duration::from_secs(30);
+
+/// The band a skip draws the next track from, as a count of the nearest
+/// entries shuffled among themselves. One skip loosens to a handful, and each
+/// one after multiplies, so a few in a row walks out of a genre rather than
+/// inching down it one track at a time. No skips at all means the strict
+/// nearest.
+const SKIP_BAND_BASE: usize = 4;
+const SKIP_BAND_GROWTH: usize = 4;
+
+/// Shuffle the first `width` of a slice among themselves, leaving the rest
+/// in place. The radio's band: what comes next is drawn from the nearest
+/// `width` entries, and everything behind them keeps its ranking.
+///
+/// Off the std hasher's per-process keys, the same trick the Random button
+/// uses. Picking a track does not need a rand dependency.
+///
+/// Shared with the radio continuation provider (ADR 17), which draws its
+/// batch the same way: rank the whole pool, then shuffle the band at the
+/// front of it so two sessions off one seed don't play the same list.
+pub(crate) fn shuffle_head<T>(slice: &mut [T], width: usize) {
+    use std::hash::{BuildHasher, Hasher};
+    let width = width.min(slice.len());
+    if width < 2 {
+        return;
+    }
+    for i in (1..width).rev() {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_usize(i);
+        let j = (hasher.finish() % (i as u64 + 1)) as usize;
+        slice.swap(i, j);
+    }
+}
+
+/// Whether the queue has run close enough to its end to ask for more
+/// (ADR 17): `upcoming` tracks sit ahead of the audible one, against the
+/// floor the trigger insists on keeping.
+///
+/// Loop is the whole of the suppression rule, and it's here rather than at
+/// the call site because it's part of the same decision: loop is the user
+/// saying remain here, which narrows the selection range to the list that
+/// already exists.
+fn queue_running_dry(upcoming: usize, loop_mode: LoopMode) -> bool {
+    loop_mode == LoopMode::Off && upcoming <= continuation::FLOOR
+}
+
+/// The band `skips` consecutive skips earns.
+fn skip_band(skips: u32) -> usize {
+    if skips == 0 {
+        return 1;
+    }
+    SKIP_BAND_BASE.saturating_mul(SKIP_BAND_GROWTH.saturating_pow(skips - 1))
+}
 
 /// One running engine: decode thread, output stream, and the UI's side of
 /// the PCM tap. Dropping it sends Quit and tears the stream down.
@@ -132,6 +201,14 @@ impl Session {
     }
 }
 
+/// The library lookup for a batch of paths on their way into the queue, one
+/// entry per path in the order they were asked about.
+struct QueueMeta {
+    groups: Vec<Option<u64>>,
+    gains: Vec<gain::ReplayGain>,
+    ids: Vec<Option<i64>>,
+}
+
 /// A snapshot of the playing track for the audio views: which file and
 /// where the position clock sits. Whether audio is actually moving is what
 /// the tap says, so the views read that from the feed instead.
@@ -189,6 +266,10 @@ pub struct PlayerView {
     pub ended: bool,
     pub loop_mode: LoopMode,
     pub shuffle: bool,
+    /// Which strategy refills a dry queue. Here rather than read straight
+    /// off the settings by whoever draws it, so the transport's gated
+    /// observer wakes when the mode menu changes it.
+    pub continuation: continuation::Mode,
     pub stop_after: bool,
     pub muted: bool,
     pub volume: f32,
@@ -248,6 +329,15 @@ pub struct Player {
     /// Deliberately not persisted: an armed stop that survived a restart
     /// would read as a broken player days later.
     stop_after: bool,
+    /// Skips in a row under the similarity mode, and when the last one
+    /// landed. Together they widen the band the radio draws from: skip
+    /// repeatedly and it reaches further from the seed each time, so a few
+    /// presses walk out of a genre. Listening for [`SKIP_SETTLE`] without
+    /// skipping counts as settling and the next skip starts from narrow
+    /// again. Session-local, like the stop above: yesterday's impatience
+    /// should not steer today's radio.
+    similar_skips: u32,
+    last_skip: Option<Instant>,
     /// The rate the next stream asks for, exclusive mode's rate follow
     /// (ADR 19). Holds whatever the last stream negotiated, so a rebuild
     /// comes back up on the rate it went down on instead of dropping to the
@@ -262,59 +352,103 @@ pub struct Player {
     /// lacks would rebuild at every boundary. Cleared when the mode or the
     /// device changes, since the next one may well take them.
     refused_rates: Vec<u32>,
+    /// The view playback started in (ADR 17), so a continuation provider can
+    /// carry on down the list rather than guess. Whoever starts playback sets
+    /// it; a start that names nothing leaves the library at large.
+    scope: continuation::Scope,
+    /// The library id of every track in the session's pool, in pool order, so
+    /// it lines up with `Session::queue`. None for a file the library doesn't
+    /// hold. Two jobs at once: the entry the pump is standing on is the
+    /// provider's seed, and the whole vec is the recent plays it must not
+    /// hand back.
+    pool_ids: Vec<Option<i64>>,
+    /// A continuation query is out. The pump fires on a 16 ms clock and a
+    /// provider takes tens of milliseconds, so without this one dry-out would
+    /// queue a few dozen of them.
+    continuing: bool,
+    /// The queue revision the last continuation fired at. The guard above
+    /// covers the query; this covers what comes after it. A batch that landed
+    /// moves the revision, so the next tick sees a full queue and stays quiet;
+    /// an empty batch doesn't, and this is what stops the pump asking the same
+    /// exhausted provider sixty times a second.
+    continued_rev: Option<u64>,
+    /// The strategy the continuation toggle turns back on. Continuation is a
+    /// mode with an off state rather than a switch beside a mode, so the
+    /// transport's press has to remember what it turned off. Session-local:
+    /// the persisted pick is the mode itself.
+    last_continuation: continuation::Mode,
 }
 
 impl Player {
     pub fn new(_cx: &mut Context<Self>) -> Self {
+        let settings = Settings::load();
+        // Off is not a strategy to go back to, so a player that starts with
+        // continuation off arms the default behind the toggle.
+        let last_continuation = match settings.session.continuation {
+            continuation::Mode::Off => continuation::Mode::default(),
+            mode => mode,
+        };
         Player {
             session: None,
             error: None,
             feed: Arc::new(AudioFeed::new()),
-            settings: Settings::load(),
+            settings,
             pump: None,
             persist_gen: 0,
             meta_conn: None,
             stop_after: false,
+            similar_skips: 0,
+            last_skip: None,
             follow_rate: None,
             refused_rates: Vec::new(),
+            scope: continuation::Scope::default(),
+            pool_ids: Vec::new(),
+            continuing: false,
+            continued_rev: None,
+            last_continuation,
         }
     }
 
     /// What the engine needs per queued path beyond the path itself: the
-    /// album group (ADR 17) and the ReplayGain tags (ADR 19), split into
-    /// the two parallel vecs the queue commands carry. Unknown paths
-    /// resolve to ungrouped and untagged; a missing database means every
-    /// path does, and playback carries on unlevelled.
-    fn queue_meta_for(&mut self, paths: &[PathBuf]) -> (Vec<Option<u64>>, Vec<gain::ReplayGain>) {
+    /// album group (ADR 17) and the ReplayGain tags (ADR 19), plus the
+    /// library id continuation keeps to know what the session has already
+    /// held. Three parallel vecs, two of which the queue commands carry.
+    /// Unknown paths resolve to ungrouped, untagged, and unidentified; a
+    /// missing database means every path does, and playback carries on
+    /// unlevelled.
+    fn queue_meta_for(&mut self, paths: &[PathBuf]) -> QueueMeta {
         if self.meta_conn.is_none() {
             let db = crate::settings::data_dir().join("library.db");
             self.meta_conn = db.exists().then(|| store::open(&db).ok()).flatten();
         }
         let Some(conn) = self.meta_conn.as_ref() else {
-            return (
-                vec![None; paths.len()],
-                vec![Default::default(); paths.len()],
-            );
+            return QueueMeta {
+                groups: vec![None; paths.len()],
+                gains: vec![Default::default(); paths.len()],
+                ids: vec![None; paths.len()],
+            };
         };
-        paths
-            .iter()
-            .map(|p| {
-                let meta = p
-                    .to_str()
-                    .and_then(|s| store::queue_meta_for_path(conn, s).ok())
-                    .unwrap_or_default();
-                let rg = meta.replay_gain;
-                (
-                    meta.group,
-                    gain::ReplayGain {
-                        track_db: rg.track_db,
-                        track_peak: rg.track_peak,
-                        album_db: rg.album_db,
-                        album_peak: rg.album_peak,
-                    },
-                )
-            })
-            .unzip()
+        let mut meta = QueueMeta {
+            groups: Vec::with_capacity(paths.len()),
+            gains: Vec::with_capacity(paths.len()),
+            ids: Vec::with_capacity(paths.len()),
+        };
+        for path in paths {
+            let row = path
+                .to_str()
+                .and_then(|s| store::queue_meta_for_path(conn, s).ok())
+                .unwrap_or_default();
+            let rg = row.replay_gain;
+            meta.groups.push(row.group);
+            meta.gains.push(gain::ReplayGain {
+                track_db: rg.track_db,
+                track_peak: rg.track_peak,
+                album_db: rg.album_db,
+                album_peak: rg.album_peak,
+            });
+            meta.ids.push(row.id);
+        }
+        meta
     }
 
     /// The audio feed the audio views read from.
@@ -548,19 +682,52 @@ impl Player {
             self.play(paths, cx);
             return;
         }
+        self.splice(after, paths, None, true, and_play, cx);
+    }
+
+    /// The insert both the hand-queued paths and a landed continuation batch
+    /// go through: resolve the library metadata, mirror the pool growth, and
+    /// hand the batch to the engine. `groups` overrides what the library says
+    /// about album membership where a caller has an opinion; None per entry,
+    /// or None for the whole batch, takes the library's own grouping.
+    #[allow(clippy::too_many_arguments)]
+    fn splice(
+        &mut self,
+        after: Option<u64>,
+        paths: Vec<PathBuf>,
+        groups: Option<Vec<Option<u64>>>,
+        explicit: bool,
+        and_play: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // Nothing to mirror the growth onto, so bail before anything grows:
+        // `pool_ids` runs parallel to the session's pool and a half-applied
+        // splice would slide the two apart for the rest of the session.
+        if self.session.is_none() {
+            return;
+        }
         // Library lookup before the session borrow; both want &mut self.
-        let (groups, gains) = self.queue_meta_for(&paths);
+        let meta = self.queue_meta_for(&paths);
+        let groups = match groups {
+            Some(picked) => picked
+                .into_iter()
+                .zip(meta.groups)
+                .map(|(picked, library)| picked.or(library))
+                .collect(),
+            None => meta.groups,
+        };
+        self.pool_ids.extend(meta.ids);
         let Some(session) = self.session.as_mut() else {
             return;
         };
         session.queue.extend(paths.iter().cloned());
-        session.gains.extend(gains.iter().copied());
+        session.gains.extend(meta.gains.iter().copied());
         let _ = session.tx.send(Cmd::Insert {
             after,
             paths,
             groups,
-            gains,
-            explicit: true,
+            gains: meta.gains,
+            explicit,
             and_play,
         });
         cx.notify();
@@ -638,7 +805,16 @@ impl Player {
         // Album groups and ReplayGain for the whole context. A restore
         // re-derives both here too, so neither needs persisting with the
         // queue.
-        let (groups, gains) = self.queue_meta_for(&queue);
+        let meta = self.queue_meta_for(&queue);
+        let (groups, gains) = (meta.groups, meta.gains);
+        // A fresh context is a fresh session for continuation too: nothing
+        // has been played, nothing has been asked for, and whoever started
+        // playback names the scope after this returns. A rebuild (a device
+        // or rate change) puts all three back, since the music never stopped.
+        self.pool_ids = meta.ids;
+        self.scope = continuation::Scope::default();
+        self.continuing = false;
+        self.continued_rev = None;
         self.session = None;
         // A fresh context takes the current shuffle mode; a restore preserves
         // the saved order and passes None so the engine leaves it untouched.
@@ -682,6 +858,16 @@ impl Player {
                 self.start_pump(cx);
                 if let Some((path, secs)) = prime {
                     self.prime_feed(path, secs, rate, cx);
+                }
+                // A fresh context under the similarity mode owes its tail an
+                // ordering: the engine seeded it with the plain shuffle flag,
+                // which for this mode means pool order. A restore keeps the
+                // order it saved and asks for nothing.
+                if !preserve_order
+                    && self.settings.session.shuffle
+                    && self.settings.session.shuffle_mode == ShuffleMode::Similar
+                {
+                    self.order_tail_by_similarity(1, None, cx);
                 }
             }
             Err(e) => self.error = Some(format!("audio output: {e}").into()),
@@ -741,6 +927,11 @@ impl Player {
                     return false;
                 }
                 this.drain_tap();
+                // The continuation trigger rides this same clock (ADR 17).
+                // It reads the queue snapshot the check below already wants
+                // and does nothing at all on the overwhelming majority of
+                // ticks, which is why it can live on a 60 Hz timer.
+                this.continue_if_dry(cx);
                 let playing = this.is_playing();
                 let rev = this.queue_rev();
                 // A seek while paused moves the clock without touching any
@@ -763,6 +954,216 @@ impl Player {
                 break;
             }
         }));
+    }
+
+    /// The continuation trigger (ADR 17): when the audible cursor comes
+    /// within [`continuation::FLOOR`] tracks of the end of the upcoming
+    /// portion, ask the active provider for a batch and append it into the
+    /// running session.
+    ///
+    /// Here rather than in the engine, even though the engine reaches the end
+    /// first. Its `pos` is the decode cursor and runs up to a ring ahead of
+    /// the speakers, and firing there would put the audio thread inside the
+    /// library stores, which inverts the one dependency this whole design
+    /// keeps clean. The engine stays a decoder walking a list and never
+    /// learns continuation exists.
+    fn continue_if_dry(&mut self, cx: &mut Context<Self>) {
+        let mode = self.settings.session.continuation;
+        if mode == continuation::Mode::Off || self.continuing {
+            return;
+        }
+        // Only for music that's actually running out. A paused session isn't
+        // running out of anything, and this is what keeps the launch restore
+        // from growing a queue nobody has pressed play on yet. A queue that
+        // played through to its end still reads as playing, which is how an
+        // ended session gets woken by the batch that lands behind it; an
+        // armed stop-after is the one thing that pauses on its own, and it
+        // means stop, so it's right that this goes quiet for it too.
+        if !self.is_playing() {
+            return;
+        }
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let rev = session.shared.queue_rev();
+        if self.continued_rev == Some(rev) {
+            return;
+        }
+        // The audible cursor, not the decode cursor: that one has run a track
+        // ahead for the gapless boundary and would fire a track early. The
+        // published cursor stands in before any frame has played, so a
+        // session that comes up already short (a one-track queue, the random
+        // button, Start Radio) fires on its first tick, which is the point.
+        let audible = session.shared.position(session.device_rate).map(|(t, _)| t);
+        let Some((_, upcoming)) = session.shared.upcoming_from(audible) else {
+            return;
+        };
+        if !queue_running_dry(upcoming, self.settings.session.loop_mode()) {
+            return;
+        }
+        let seed = continuation::Seed {
+            track: audible.and_then(|idx| self.pool_ids.get(idx).copied().flatten()),
+            scope: self.scope.clone(),
+            recent: self.pool_ids.iter().flatten().copied().collect(),
+            count: continuation::BATCH,
+        };
+        self.continuing = true;
+        self.continued_rev = Some(rev);
+        let db_path = crate::settings::data_dir().join("library.db");
+        cx.spawn(async move |this, cx| {
+            // Blocking store queries on the background executor, the shape
+            // ADR 14 already set for anything that reads a database while
+            // music is playing. Its own connection: the player's is for the
+            // per-path lookups on this thread.
+            let picks = cx
+                .background_executor()
+                .spawn(async move {
+                    let provider = mode.provider()?;
+                    let conn = store::open(&db_path).ok()?;
+                    Some(provider.next(&conn, &seed))
+                })
+                .await
+                .unwrap_or_default();
+            this.update(cx, |this, cx| {
+                this.continuing = false;
+                this.land_continuation(mode, picks, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Append a provider's batch into the running session as context entries.
+    ///
+    /// An append, never a successor session: the gapless boundary (ADR 3)
+    /// holds because this is only more entries behind the append-only pool,
+    /// and the engine opens the next track for the boundary exactly as it
+    /// does mid-album. Starting a second session instead would be a stream
+    /// teardown, the same glitch ADR 16 refused for ordinary queue edits.
+    fn land_continuation(
+        &mut self,
+        mode: continuation::Mode,
+        picks: Vec<Pick>,
+        cx: &mut Context<Self>,
+    ) {
+        // The mode changed while the query ran, so this answer is for a
+        // question nobody is asking any more. A cleared revision says the
+        // same thing about the session: a fresh context or a stream rebuild
+        // resets it, and a batch picked for the queue that was playing then
+        // has no business landing in this one.
+        if mode != self.settings.session.continuation
+            || self.continued_rev.is_none()
+            || self.session.is_none()
+        {
+            return;
+        }
+        if picks.is_empty() {
+            // Nothing left to continue with, so playback ends here. This is
+            // deliberately not a cue to try another provider: continuation is
+            // one taste at a time, not a lookup racing services for the best
+            // answer.
+            log::info!("continuation: {} had nothing left", mode.label());
+            return;
+        }
+        let mut resolved = self.resolve_picks(&picks);
+        if resolved.is_empty() {
+            return;
+        }
+        // Shuffle on means shuffle everywhere, so a landed batch joins the
+        // upcoming permutation rather than sitting in provider order at the
+        // tail. The two modes fold it in differently because they mean
+        // different things.
+        //
+        // Random shuffles the batch itself and lands it as it is. The obvious
+        // alternative, appending and then reshuffling the whole tail, would
+        // scramble any explicit queue the listener hand-built every twenty
+        // tracks, and a hand-built queue is explicit intent. It's also the
+        // same answer: the trigger fires with at most a floor of tracks left,
+        // so there is barely a tail to permute against.
+        if self.settings.session.shuffle
+            && self.settings.session.shuffle_mode == ShuffleMode::Random
+        {
+            shuffle_slice(&mut resolved);
+        }
+        let (paths, groups): (Vec<PathBuf>, Vec<Option<u64>>) = resolved.into_iter().unzip();
+        // Context, not queue: what continuation adds is the album or library
+        // run playing on around you, so the queue widgets stay quiet about it
+        // the way they do for the context that seeded the session. Visible in
+        // the timeline and removable all the same, which is the whole answer
+        // to "rox is playing things I didn't pick".
+        self.splice(None, paths, Some(groups), false, false, cx);
+        // Similar ranks the whole upcoming portion against the playing track,
+        // which is what the mode already does on every skip, so the fold is
+        // just asking it again now the batch has arrived. Nothing to pin
+        // here: an explicit queue under this mode was always going to be
+        // reordered by it.
+        if self.settings.session.shuffle
+            && self.settings.session.shuffle_mode == ShuffleMode::Similar
+        {
+            self.order_tail_by_similarity(1, None, cx);
+        }
+    }
+
+    /// Resolve a batch to playable paths, each with the group its pick asked
+    /// for. One lookup per id rather than one for the batch, because
+    /// `paths_for` drops ids it can't resolve and the groups would slide out
+    /// from under the paths they belong to.
+    fn resolve_picks(&mut self, picks: &[Pick]) -> Vec<(PathBuf, Option<u64>)> {
+        if self.meta_conn.is_none() {
+            let db = crate::settings::data_dir().join("library.db");
+            self.meta_conn = db.exists().then(|| store::open(&db).ok()).flatten();
+        }
+        let Some(conn) = self.meta_conn.as_ref() else {
+            return Vec::new();
+        };
+        picks
+            .iter()
+            .filter_map(|pick| {
+                let path = store::paths_for(conn, &[pick.id]).ok()?.pop()?;
+                Some((PathBuf::from(path), pick.group))
+            })
+            .collect()
+    }
+
+    /// Which strategy refills the queue when it runs dry, Off for the
+    /// behavior rox had before continuation existed.
+    pub fn continuation_mode(&self) -> continuation::Mode {
+        self.settings.session.continuation
+    }
+
+    /// Change the strategy and persist it. Takes effect at the next dry-out;
+    /// nothing playing is disturbed, and the guard is cleared so a mode
+    /// switched while the queue is already short fires on the next tick
+    /// instead of waiting for another queue edit.
+    pub fn set_continuation_mode(&mut self, mode: continuation::Mode, cx: &mut Context<Self>) {
+        if self.settings.session.continuation == mode {
+            return;
+        }
+        self.settings.session.continuation = mode;
+        if mode != continuation::Mode::Off {
+            self.last_continuation = mode;
+        }
+        self.continued_rev = None;
+        Settings::update(move |s| s.session.continuation = mode);
+        cx.notify();
+    }
+
+    /// Turn continuation off, or back on in whatever strategy it was last
+    /// using. The transport button's plain press.
+    pub fn toggle_continuation(&mut self, cx: &mut Context<Self>) {
+        let mode = match self.settings.session.continuation {
+            continuation::Mode::Off => self.last_continuation,
+            _ => continuation::Mode::Off,
+        };
+        self.set_continuation_mode(mode, cx);
+    }
+
+    /// Name the view playback started in, so continuation can carry on down
+    /// it rather than guess (ADR 17). Called after the play that seeded the
+    /// session, since starting one clears this back to the library. Nothing
+    /// on screen reads it, so this wakes nobody.
+    pub fn set_scope(&mut self, scope: continuation::Scope) {
+        self.scope = scope;
     }
 
     /// Rebuild the running session against the current output settings, at
@@ -788,8 +1189,15 @@ impl Player {
             return false;
         };
         let (paths, explicit): (Vec<PathBuf>, Vec<bool>) = entries.into_iter().unzip();
+        // A rebuild is the same music on a different stream, so the scope
+        // carries over: the view play started in is still the view play
+        // started in. The start clears it, which is right for a fresh context
+        // and wrong for this. The played set needs no such care, since the
+        // whole order comes back and it's re-derived from that.
+        let scope = self.scope.clone();
         // Restore-shaped start: preserve the saved order, seed the position.
         self.start_session(paths, cursor, Some(position_secs), explicit, true, cx);
+        self.scope = scope;
         // A restore comes up paused, so put it back to playing. Only when the
         // start actually produced a session.
         if was_playing && self.session.is_some() {
@@ -1238,8 +1646,37 @@ impl Player {
     }
 
     /// Skip to the next queued track.
-    pub fn next(&self) {
+    pub fn next(&mut self, cx: &mut Context<Self>) {
         self.send(Cmd::Next);
+        if !self.settings.session.shuffle
+            || self.settings.session.shuffle_mode != ShuffleMode::Similar
+        {
+            return;
+        }
+        // A skip that follows a long stretch of listening isn't impatience,
+        // it's the start of a fresh run: the listener settled on something
+        // and has only now moved on. Anything quicker than that is a run,
+        // and each one widens the band.
+        let now = Instant::now();
+        let settled = self
+            .last_skip
+            .is_none_or(|at| now.duration_since(at) >= SKIP_SETTLE);
+        self.similar_skips = if settled { 1 } else { self.similar_skips + 1 };
+        self.last_skip = Some(now);
+        // Re-seeded on wherever the skip lands, not on where the mode was
+        // engaged: that's what turns skipping into steering rather than
+        // drifting outward from a track the listener already left.
+        let leaving = self.seed_entry();
+        self.order_tail_by_similarity(skip_band(self.similar_skips), leaving, cx);
+    }
+
+    /// The queue entry the ordering currently treats as the seed, for a
+    /// caller that needs to wait until it is no longer the one playing.
+    fn seed_entry(&self) -> Option<u64> {
+        let session = self.session.as_ref()?;
+        let snap = session.shared.queue_snapshot();
+        let at = self.audible_index(&snap).unwrap_or(snap.cursor);
+        snap.entries.get(at).map(|e| e.id)
     }
 
     /// Skip to the previous queued track.
@@ -1376,16 +1813,40 @@ impl Player {
         self.settings.session.shuffle
     }
 
-    /// Flip shuffle and persist the pick. The running session reshuffles in
+    /// Which order shuffle puts the queue in, the persisted pick.
+    pub fn shuffle_mode(&self) -> ShuffleMode {
+        self.settings.session.shuffle_mode
+    }
+
+    /// Change the order shuffle uses and persist it. Takes effect at once
+    /// while shuffle is on, and is just a stored preference while it's off.
+    pub fn set_shuffle_mode(&mut self, mode: ShuffleMode, cx: &mut Context<Self>) {
+        if self.settings.session.shuffle_mode == mode {
+            return;
+        }
+        self.settings.session.shuffle_mode = mode;
+        Settings::update(move |s| s.session.shuffle_mode = mode);
+        if self.settings.session.shuffle {
+            self.apply_shuffle_order(cx);
+        }
+        cx.notify();
+    }
+
+    /// Flip shuffle and persist the pick. The running session reorders in
     /// place; the playing track keeps playing.
-    pub fn toggle_shuffle(&mut self) {
-        self.set_shuffle(!self.settings.session.shuffle);
+    pub fn toggle_shuffle(&mut self, cx: &mut Context<Self>) {
+        self.set_shuffle_with(!self.settings.session.shuffle, cx);
     }
 
     /// Force shuffle to `on` and persist it, without toggling relative to the
     /// current mode. The library's shuffle actions set this before they queue,
     /// so the transport toggle reflects the mode they chose. A no-op when the
     /// mode already matches.
+    ///
+    /// This is the plain form, which always means the random order. The
+    /// library's "Play Shuffled" wants exactly that whatever the transport's
+    /// mode says: the user asked to shuffle a set, not to hear things that
+    /// sound like each other.
     pub fn set_shuffle(&mut self, on: bool) {
         if self.settings.session.shuffle == on {
             return;
@@ -1393,6 +1854,178 @@ impl Player {
         self.settings.session.shuffle = on;
         self.send(Cmd::SetShuffle(on));
         Settings::update(move |s| s.session.shuffle = on);
+    }
+
+    /// Turn shuffle on in a particular mode, whatever it was set to before.
+    /// What the library's "Play Similar" asks for: the mode is the point of
+    /// the action rather than a preference it should inherit.
+    pub fn shuffle_in_mode(&mut self, mode: ShuffleMode, cx: &mut Context<Self>) {
+        self.settings.session.shuffle_mode = mode;
+        self.settings.session.shuffle = true;
+        Settings::update(move |s| {
+            s.session.shuffle_mode = mode;
+            s.session.shuffle = true;
+        });
+        self.apply_shuffle_order(cx);
+        cx.notify();
+    }
+
+    /// Turn shuffle on or off in whatever order the current mode names.
+    fn set_shuffle_with(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.settings.session.shuffle == on {
+            return;
+        }
+        self.settings.session.shuffle = on;
+        Settings::update(move |s| s.session.shuffle = on);
+        if on {
+            self.apply_shuffle_order(cx);
+        } else {
+            // Off is off for every mode: the engine restores pool order.
+            self.send(Cmd::SetShuffle(false));
+        }
+        cx.notify();
+    }
+
+    /// Put the upcoming queue into the current mode's order.
+    fn apply_shuffle_order(&mut self, cx: &mut Context<Self>) {
+        match self.settings.session.shuffle_mode {
+            ShuffleMode::Random => self.send(Cmd::SetShuffle(true)),
+            ShuffleMode::Similar => self.order_tail_by_similarity(1, None, cx),
+        }
+    }
+
+    /// Order what's coming by how much it sounds like the playing track.
+    ///
+    /// The scan over the library's vectors is tens of milliseconds, so it
+    /// runs on the background executor against its own connection rather than
+    /// in this update. The engine keeps playing the whole time; the reorder
+    /// lands as a queue publish whenever the answer arrives, which is the
+    /// same way any other queue edit shows up.
+    ///
+    /// Anything the library can't score keeps its place behind what it can
+    /// (see [`Cmd::OrderTail`]), so an unanalyzed library leaves the queue
+    /// exactly as it was rather than scrambling it.
+    ///
+    /// Nothing resets the tail to pool order first, deliberately. An earlier
+    /// cut sent `SetShuffle(false)` up front to normalize it, which meant a
+    /// scan that came back with nothing left the queue sorted into library
+    /// order: press Next and you got track one, which looked far more broken
+    /// than doing nothing would have. Touching the queue only once, when
+    /// there's an answer, makes the failure case invisible.
+    fn order_tail_by_similarity(
+        &mut self,
+        band: usize,
+        leaving: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
+        let db_path = crate::settings::data_dir().join("library.db");
+        cx.spawn(async move |this, cx| {
+            // The engine publishes its queue from the decode thread, first
+            // thing in `run`, so a context that was only just started has
+            // nothing to read yet. Waiting rather than giving up is the whole
+            // point: engaging the mode and replacing the queue happen
+            // together, which is precisely the case that would otherwise find
+            // an empty snapshot and quietly do nothing.
+            let mut inputs = None;
+            for attempt in 0..QUEUE_WAIT_TRIES {
+                if attempt > 0 {
+                    cx.background_executor().timer(QUEUE_WAIT_STEP).await;
+                }
+                inputs = this
+                    .update(cx, |this, _| this.similarity_inputs(leaving))
+                    .ok()
+                    .flatten();
+                if inputs.is_some() {
+                    break;
+                }
+            }
+            let Some((seed_path, tail)) = inputs else {
+                return;
+            };
+            // Read on this thread, before the spawn: the pick is a process
+            // static and this only needs the name, which is a `&'static str`
+            // out of the catalog and so crosses the thread for free.
+            let model = crate::settings::acoustic_model().id;
+            let ranked = cx
+                .background_executor()
+                .spawn(async move {
+                    let conn = store::open(&db_path).ok()?;
+                    let seed = store::id_for_path(&conn, seed_path.to_str()?).ok()??;
+                    let scores: HashMap<i64, f32> = embeddings::scores(&conn, seed, model)
+                        .ok()?
+                        .into_iter()
+                        .collect();
+                    // Entries the library has no score for drop out of the
+                    // ranking rather than sorting as zero, which would rate
+                    // them above everything that genuinely sounds unalike.
+                    let mut ranked: Vec<(u64, f32)> = tail
+                        .into_iter()
+                        .filter_map(|(entry, path)| {
+                            let id = store::id_for_path(&conn, path.to_str()?).ok()??;
+                            Some((entry, *scores.get(&id)?))
+                        })
+                        .collect();
+                    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+                    let mut ids: Vec<u64> = ranked.into_iter().map(|(entry, _)| entry).collect();
+                    // The band is the skip pressure: strictly nearest with a
+                    // width of one, and a widening handful of the nearest
+                    // shuffled among themselves after that. Shuffling the
+                    // head rather than picking one keeps the whole ranking
+                    // intact behind it, so the queue past the next track
+                    // still reads as "closest first".
+                    shuffle_head(&mut ids, band);
+                    Some(ids)
+                })
+                .await;
+            let Some(ids) = ranked.filter(|ids: &Vec<u64>| !ids.is_empty()) else {
+                // Nothing scoreable: an unanalyzed library, or a queue of
+                // tracks the pass hasn't reached. The queue keeps the order
+                // it had, which is the right answer, but say so rather than
+                // leaving the mode looking broken.
+                log::info!("shuffle: nothing analyzed to order the queue by");
+                return;
+            };
+            this.update(cx, |this, cx| {
+                // Still shuffling in the same mode? A toggle or a mode change
+                // while the scan ran means this answer is for a queue nobody
+                // asked about any more.
+                if this.settings.session.shuffle
+                    && this.settings.session.shuffle_mode == ShuffleMode::Similar
+                {
+                    this.send(Cmd::OrderTail(ids));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The seed track and the upcoming entries a similarity ordering works
+    /// over, or None while the engine has yet to publish a queue or there is
+    /// nothing ahead to order.
+    fn similarity_inputs(&self, leaving: Option<u64>) -> Option<(PathBuf, Vec<(u64, PathBuf)>)> {
+        let session = self.session.as_ref()?;
+        let snap = session.shared.queue_snapshot();
+        // The published cursor when nothing is audible yet, which is where a
+        // freshly started context sits: waiting for the first samples would
+        // mean the ordering never ran for the case that needs it most.
+        let at = self.audible_index(&snap).unwrap_or(snap.cursor);
+        let entry = snap.entries.get(at)?;
+        // A skip asks for the ordering around where it lands, and the engine
+        // advances on its own thread. While the seed is still the track
+        // being left, the answer isn't ready to be computed.
+        if leaving == Some(entry.id) {
+            return None;
+        }
+        let seed = entry.path.clone();
+        let tail: Vec<(u64, PathBuf)> = snap
+            .entries
+            .get(at + 1..)?
+            .iter()
+            .map(|e| (e.id, e.path.clone()))
+            .collect();
+        (!tail.is_empty()).then_some((seed, tail))
     }
 
     /// Whether stop-after-current is armed.
@@ -1438,6 +2071,7 @@ impl Player {
             ended: self.queue_ended(),
             loop_mode: self.loop_mode(),
             shuffle: self.shuffle(),
+            continuation: self.continuation_mode(),
             stop_after: self.stop_after(),
             muted: self.muted(),
             volume: self.volume(),
@@ -1649,4 +2283,91 @@ pub fn fmt_time_padded(secs: f64, digits: usize) -> String {
         "{m:0digits$}:{:02}",
         (secs - (m * 60) as f64).floor() as u64
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No skips is the strict nearest; a run widens fast enough that a few
+    /// presses reach past a genre rather than inching through it.
+    #[test]
+    fn the_band_opens_up_with_each_skip_in_a_run() {
+        assert_eq!(skip_band(0), 1, "settled radio plays the nearest track");
+        assert_eq!(skip_band(1), 4);
+        assert_eq!(skip_band(2), 16);
+        assert_eq!(skip_band(3), 64);
+        // Monotonic, and it saturates rather than overflowing on a listener
+        // who holds the skip button down.
+        let mut last = 0;
+        for skips in 0..64 {
+            let band = skip_band(skips);
+            assert!(band >= last, "band never narrows mid-run");
+            last = band;
+        }
+    }
+
+    /// The band shuffles the head and leaves the ranking behind it alone, so
+    /// what plays next is drawn from the nearest few while the rest of the
+    /// queue still reads closest-first.
+    #[test]
+    fn shuffling_the_head_leaves_the_ranking_behind_it() {
+        let ranked: Vec<u64> = (0..20).collect();
+        let mut ids = ranked.clone();
+        shuffle_head(&mut ids, 5);
+        assert_eq!(
+            &ids[5..],
+            &ranked[5..],
+            "the tail past the band is untouched"
+        );
+        let mut head = ids[..5].to_vec();
+        head.sort();
+        assert_eq!(head, ranked[..5], "the band holds the same entries");
+    }
+
+    /// The continuation trigger's arithmetic: it fires within the floor of
+    /// the end of the upcoming portion and stays quiet above it, whichever
+    /// end of the order the cursor sits at.
+    #[test]
+    fn the_trigger_fires_inside_the_floor_and_not_above_it() {
+        // Nineteen still to come, nothing to do.
+        assert!(!queue_running_dry(19, LoopMode::Off));
+        // Three to go is one over the floor, two is the floor itself.
+        assert!(!queue_running_dry(3, LoopMode::Off));
+        assert!(queue_running_dry(2, LoopMode::Off));
+        assert!(queue_running_dry(1, LoopMode::Off));
+        // Standing on the last entry, which is also where a queue that
+        // played out to its end sits.
+        assert!(queue_running_dry(0, LoopMode::Off));
+    }
+
+    /// Loop is the user saying remain here, so the trigger never fires while
+    /// one is on however short the queue has run.
+    #[test]
+    fn loop_suppresses_the_trigger_at_any_distance() {
+        for mode in [LoopMode::All, LoopMode::One] {
+            assert!(!queue_running_dry(0, mode));
+            assert!(!queue_running_dry(1, mode));
+            assert!(!queue_running_dry(19, mode));
+        }
+    }
+
+    /// A band of one, which is what a settled radio uses, must not disturb
+    /// the ranking at all; nor may a band wider than the queue panic.
+    #[test]
+    fn a_band_of_one_or_wider_than_the_queue_is_safe() {
+        let ranked: Vec<u64> = (0..5).collect();
+        let mut ids = ranked.clone();
+        shuffle_head(&mut ids, 1);
+        assert_eq!(ids, ranked);
+        shuffle_head(&mut ids, 0);
+        assert_eq!(ids, ranked);
+        let mut wide = ranked.clone();
+        shuffle_head(&mut wide, 999);
+        wide.sort();
+        assert_eq!(wide, ranked);
+        let mut empty: Vec<u64> = Vec::new();
+        shuffle_head(&mut empty, 4);
+        assert!(empty.is_empty());
+    }
 }

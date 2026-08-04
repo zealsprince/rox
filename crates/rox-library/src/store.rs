@@ -85,6 +85,14 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
         name: "replaygain-source",
         up: |conn| conn.execute_batch("ALTER TABLE tracks ADD COLUMN rg_source INTEGER;"),
     },
+    // The acoustic feature vectors behind "sounds like this". Its own table
+    // rather than columns on tracks: a vector is orders of magnitude wider
+    // than any tag, a library may hold more than one model's worth at once,
+    // and nothing in the projection reads them.
+    crate::migrate::Migration {
+        name: "acoustic-embeddings",
+        up: crate::embeddings::init_schema,
+    },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -743,6 +751,12 @@ pub fn paths_for(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<String>
 /// (ADR 17) and the ReplayGain the source is levelled with (ADR 19).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct QueueMeta {
+    /// The library row this path resolved to, None for a file from outside
+    /// the library. Continuation (ADR 17) keeps these so it can tell a
+    /// provider what the session has already played, and it comes back from
+    /// this lookup rather than its own so queueing a track costs one query
+    /// instead of two.
+    pub id: Option<i64>,
     pub group: Option<u64>,
     pub replay_gain: crate::replaygain::ReplayGain,
 }
@@ -754,7 +768,7 @@ pub struct QueueMeta {
 /// album tag too, since ungrouped entries never claim album adjacency.
 pub fn queue_meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<QueueMeta> {
     let mut stmt = conn.prepare_cached(
-        "SELECT album_artist, album, rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
+        "SELECT album_artist, album, rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, id
          FROM tracks WHERE source = 'local' AND path = ?1",
     )?;
     let mut rows = stmt.query([path])?;
@@ -763,6 +777,7 @@ pub fn queue_meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Qu
             let album_artist: String = row.get(0)?;
             let album: String = row.get(1)?;
             Ok(QueueMeta {
+                id: row.get(6)?,
                 group: crate::hash::album_group(&album_artist, &album),
                 replay_gain: crate::replaygain::ReplayGain {
                     track_db: row.get(2)?,
@@ -774,6 +789,25 @@ pub fn queue_meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Qu
         }
         None => Ok(QueueMeta::default()),
     }
+}
+
+/// Every local track id in the canonical browse order, the same one
+/// [`crate::listens::never_played`] reads in: album artist, album, disc,
+/// track. What a continuation provider (ADR 17) draws its pool from.
+///
+/// The whole column rather than a page, because the providers that want it
+/// want all of it: resuming a browse order has to find where the session got
+/// to, and tiering by history has to weigh every candidate before it picks.
+/// It's eight bytes a track off an index-ordered scan, so a hundred-thousand
+/// track library is under a megabyte and a fraction of what one batch of
+/// scoring already costs.
+pub fn all_ids(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id FROM tracks WHERE source = 'local'
+         ORDER BY album_artist, album, disc_no, track_no, title",
+    )?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    rows.collect()
 }
 
 /// Resolve a playable path to its track id, for marking the playing row.

@@ -2,23 +2,27 @@
 //! next, and the loop and shuffle modes, plus the optional stop and random
 //! buttons.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, svg, AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable,
-    MouseButton, Pixels, Subscription, WeakEntity, Window,
+    anchored, deferred, div, prelude::*, px, svg, AnyElement, App, Context, DismissEvent, Div,
+    Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Point, Subscription,
+    WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use rox_playback::engine::LoopMode;
 
 use crate::assets::icons;
+use crate::continuation;
 use crate::design::{palette, tokens};
 use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
 use crate::panel_settings;
 use crate::player::observe_view;
+use crate::settings::ShuffleMode;
 
 use super::{default_true, transport_panel};
 
@@ -43,6 +47,9 @@ pub enum PlaybackItem {
     Repeat,
     /// The shuffle button.
     Shuffle,
+    /// The continuation button: whether a queue that runs out keeps playing,
+    /// and which strategy refills it (ADR 17).
+    Continue,
     /// The random button that plays one track from anywhere in the library.
     Random,
     /// The stop-after-current toggle: armed, the playing track ends the
@@ -97,6 +104,11 @@ const ITEMS: &[panel::ArrangeSpec<PlaybackItem>] = &[
         value: PlaybackItem::Shuffle,
     },
     panel::ArrangeSpec {
+        label: "Continue",
+        icon: Some(icons::INFINITY),
+        value: PlaybackItem::Continue,
+    },
+    panel::ArrangeSpec {
         label: "Random",
         icon: Some(icons::DICE),
         value: PlaybackItem::Random,
@@ -136,6 +148,11 @@ impl Default for TransportConfig {
     fn default() -> Self {
         // Everything but stop and random ships on, in the order the strip
         // always rendered: nudges around play, the modes trailing.
+        //
+        // Continue is in that set rather than opt-in beside stop and random,
+        // because continuation is on out of the box (ADR 17): a mode that
+        // quietly changes what plays owes the transport a control that says
+        // it's doing that.
         TransportConfig {
             chrome: PanelChrome::default(),
             align: Align::default(),
@@ -148,6 +165,7 @@ impl Default for TransportConfig {
                 PlaybackItem::Next,
                 PlaybackItem::Repeat,
                 PlaybackItem::Shuffle,
+                PlaybackItem::Continue,
             ],
         }
     }
@@ -204,6 +222,10 @@ impl From<TransportConfigDump> for TransportConfig {
                 on(dump.stop, PlaybackItem::Stop);
                 on(dump.repeat, PlaybackItem::Repeat);
                 on(dump.shuffle, PlaybackItem::Shuffle);
+                // No old layout had a toggle for this, and continuation ships
+                // on, so a layout from before the button existed gets it the
+                // same way a fresh install does.
+                on(true, PlaybackItem::Continue);
                 on(dump.random, PlaybackItem::Random);
                 items
             }
@@ -252,8 +274,57 @@ pub struct TransportPanel {
     /// the sweep. The gated observer goes quiet the moment the fade ends,
     /// so the render drives these frames itself.
     outro: Option<(Instant, bool)>,
+    /// Bumped on every press of a mode button, so a stale hold check can tell
+    /// it belongs to a press that is already over.
+    press_seq: u64,
+    /// The mode button press in flight, if any: which button it was on and
+    /// whether the hold has already opened the menu. Taken on release, so a
+    /// press that turned into a hold doesn't also toggle.
+    press: Option<ModePress>,
+    /// The mode menu while it's open, hung from the point the press started.
+    /// The `PopoutHost` dock menu's shape (`panel.rs`), because a
+    /// gpui-component context menu opens on right-click and can't be asked
+    /// to open by anything else.
+    mode_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
     _player_changed: Subscription,
 }
+
+/// A button whose click toggles a mode and whose hold opens the list of
+/// modes behind it. Two of them share the strip and the machinery below:
+/// shuffle picks how the queue is ordered, continue picks what refills it.
+#[derive(Clone, Copy, PartialEq)]
+enum ModeButton {
+    Shuffle,
+    Continue,
+}
+
+/// A press on a mode button that hasn't been released yet.
+struct ModePress {
+    /// Which press this is. The delayed hold check compares against the
+    /// panel's counter, so a press that was released and replaced before the
+    /// delay elapsed can't open a menu for the press after it.
+    seq: u64,
+    /// Which button is down, so the hold opens the right list.
+    button: ModeButton,
+    /// Whether the hold already fired. Set by the delayed check, read by the
+    /// release so it knows not to toggle.
+    opened: bool,
+}
+
+/// The glyph a shuffle mode wears. Random keeps the crossed arrows shuffle
+/// has always meant. Similar takes the radio, which is both the metaphor
+/// people already have for "more of this" and where the mode is going.
+fn mode_icon(mode: ShuffleMode) -> &'static str {
+    match mode {
+        ShuffleMode::Random => icons::SHUFFLE,
+        ShuffleMode::Similar => icons::RADIO,
+    }
+}
+
+/// How long a mode button has to be held before its menu opens. Long enough
+/// that a normal click never reaches it, short enough that the hold doesn't
+/// feel broken.
+const SHUFFLE_HOLD: Duration = Duration::from_millis(350);
 
 /// A fade that got at least this far before disappearing finished; anything
 /// earlier was cancelled by a stop or a seek and shouldn't celebrate. Short
@@ -273,6 +344,9 @@ impl TransportPanel {
             tab_panel: None,
             last_fade: None,
             outro: None,
+            press: None,
+            mode_menu: None,
+            press_seq: 0,
             _player_changed,
         }
     }
@@ -284,6 +358,7 @@ impl TransportPanel {
         let mut menu = menu;
         for (name, value) in [
             ("Stop Button", PlaybackItem::Stop),
+            ("Continue Button", PlaybackItem::Continue),
             ("Random Button", PlaybackItem::Random),
             ("Stop After Button", PlaybackItem::StopAfter),
         ] {
@@ -301,6 +376,177 @@ impl TransportPanel {
             );
         }
         menu
+    }
+
+    /// A mode button: a plain click toggles the mode, and holding it opens
+    /// the list of modes behind it.
+    ///
+    /// Its own control rather than [`panel::icon_control`] for two reasons.
+    /// That one fires on mouse down, and a hold has to be able to swallow
+    /// the click it started; and the corner arrow needs a positioned child,
+    /// which the shared button has no room for.
+    fn mode_control(
+        &self,
+        button: ModeButton,
+        icon: &'static str,
+        color: gpui::Rgba,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        div()
+            .relative()
+            .p(tokens::ICON_PAD)
+            .rounded(tokens::RADIUS)
+            .hover(|d| d.bg(palette::bg_control()))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    this.press_mode(button, event.position, window, cx)
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.release_mode(cx)),
+            )
+            .child(svg().path(icon).size(px(16.)).text_color(color))
+            // The corner mark: without it nothing says the button has modes
+            // behind it, and a hold nobody knows about is a hold nobody does.
+            .child(
+                div().absolute().top(px(0.)).right(px(0.)).child(
+                    svg()
+                        .path(icons::CHEVRON_DOWN)
+                        .size(px(7.))
+                        .text_color(palette::text_faint()),
+                ),
+            )
+    }
+
+    /// Start a press: arm the hold, and remember where it went down so the
+    /// menu can hang from there.
+    fn press_mode(
+        &mut self,
+        button: ModeButton,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.press_seq = self.press_seq.wrapping_add(1);
+        let seq = self.press_seq;
+        self.press = Some(ModePress {
+            seq,
+            button,
+            opened: false,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(SHUFFLE_HOLD).await;
+            this.update_in(cx, |this, window, cx| {
+                // Only if this exact press is still down: a release, or a
+                // second press, both make this answer stale.
+                let held = this
+                    .press
+                    .as_ref()
+                    .is_some_and(|press| press.seq == seq && !press.opened);
+                if !held {
+                    return;
+                }
+                if let Some(press) = this.press.as_mut() {
+                    press.opened = true;
+                }
+                this.open_mode_menu(button, at, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Finish a press. A hold already did its work and swallows the click;
+    /// anything shorter is the plain toggle.
+    fn release_mode(&mut self, cx: &mut Context<Self>) {
+        let Some(press) = self.press.take() else {
+            return;
+        };
+        if press.opened {
+            return;
+        }
+        self.state
+            .player
+            .update(cx, |player, cx| match press.button {
+                ModeButton::Shuffle => player.toggle_shuffle(cx),
+                ModeButton::Continue => player.toggle_continuation(cx),
+            });
+    }
+
+    /// The mode menu, hung from where the press started.
+    fn open_mode_menu(
+        &mut self,
+        button: ModeButton,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let menu = match button {
+            ModeButton::Shuffle => self.shuffle_menu(window, cx),
+            ModeButton::Continue => self.continuation_menu(window, cx),
+        };
+        menu.focus_handle(cx).focus(window);
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.mode_menu = None;
+            cx.notify();
+        });
+        self.mode_menu = Some((at, menu, subscription));
+        cx.notify();
+    }
+
+    /// The orders shuffle can put the upcoming queue in.
+    fn shuffle_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Entity<PopupMenu> {
+        let current = self.state.player.read(cx).shuffle_mode();
+        let player = self.state.player.clone();
+        // Similar needs vectors to order by, and the switch that builds them
+        // is off by default. Offer it either way so the mode is discoverable,
+        // but say why it can't be picked rather than doing nothing quietly.
+        let analyzed = crate::settings::acoustic_analysis();
+        PopupMenu::build(window, cx, move |mut menu, _, _| {
+            for mode in ShuffleMode::ALL {
+                let player = player.clone();
+                let disabled = mode == ShuffleMode::Similar && !analyzed;
+                menu = menu.item(
+                    PopupMenuItem::new(mode.label())
+                        .icon(Icon::default().path(mode_icon(mode)))
+                        .checked(mode == current)
+                        .disabled(disabled)
+                        .on_click(move |_, _, cx| {
+                            player.update(cx, |player, cx| player.set_shuffle_mode(mode, cx));
+                        }),
+                );
+            }
+            menu
+        })
+    }
+
+    /// The strategies that refill a queue which has run dry (ADR 17). Radio
+    /// gets the same treatment Similar does above: offered while the library
+    /// has no vectors so it's discoverable, disabled so it can't quietly do
+    /// nothing.
+    fn continuation_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Entity<PopupMenu> {
+        let current = self.state.player.read(cx).continuation_mode();
+        let player = self.state.player.clone();
+        let analyzed = crate::settings::acoustic_analysis();
+        PopupMenu::build(window, cx, move |mut menu, _, _| {
+            for mode in continuation::Mode::ALL {
+                let player = player.clone();
+                let disabled = mode == continuation::Mode::Radio && !analyzed;
+                menu = menu.item(
+                    PopupMenuItem::new(mode.label())
+                        .icon(Icon::default().path(icons::INFINITY))
+                        .checked(mode == current)
+                        .disabled(disabled)
+                        .on_click(move |_, _, cx| {
+                            player.update(cx, |player, cx| player.set_continuation_mode(mode, cx));
+                        }),
+                );
+            }
+            menu
+        })
     }
 
     /// Pick one track from anywhere in the library and play it as a fresh
@@ -443,10 +689,21 @@ impl TransportPanel {
             LoopMode::One => (icons::REPEAT_1, palette::accent()),
         };
         // Shuffle reads the same way: dim while off, the accent while on.
+        // Its glyph follows the mode rather than the on/off state, so the
+        // button says what it would do before you press it; the colour is
+        // what says whether it's doing it.
+        let shuffle_mode = player.shuffle_mode();
         let shuffle_color = if player.shuffle() {
             palette::accent()
         } else {
             palette::text_faint()
+        };
+        // Continuation the same: dim while off, the accent while something
+        // is standing by to refill the queue.
+        let continue_color = if player.continuation_mode() == continuation::Mode::Off {
+            palette::text_faint()
+        } else {
+            palette::accent()
         };
         // Stop-after too: dim until armed, the accent while it waits.
         let stop_after_color = if player.stop_after() {
@@ -559,7 +816,7 @@ impl TransportPanel {
                     outro
                         .filter(|(back, _)| !*back)
                         .map(|(_, strength)| strength),
-                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.next()),
+                    |this: &mut Self, cx| this.state.player.update(cx, |p, cx| p.next(cx)),
                     cx,
                 )
                 .into_any_element(),
@@ -583,13 +840,22 @@ impl TransportPanel {
                     cx,
                 )
                 .into_any_element(),
-                PlaybackItem::Shuffle => panel::icon_control(
-                    icons::SHUFFLE,
-                    shuffle_color,
-                    |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.toggle_shuffle()),
-                    cx,
-                )
-                .into_any_element(),
+                PlaybackItem::Shuffle => self
+                    .mode_control(
+                        ModeButton::Shuffle,
+                        mode_icon(shuffle_mode),
+                        shuffle_color,
+                        cx,
+                    )
+                    .into_any_element(),
+                // Continue keeps one glyph whatever the strategy, unlike
+                // shuffle above: Continue, Weighted, and Radio all mean the
+                // same thing to the ear (the music doesn't stop) and differ
+                // only in taste, which is the menu's business rather than
+                // something worth three icons nobody could tell apart.
+                PlaybackItem::Continue => self
+                    .mode_control(ModeButton::Continue, icons::INFINITY, continue_color, cx)
+                    .into_any_element(),
                 PlaybackItem::Random => panel::icon_control(
                     icons::DICE,
                     palette::text(),
@@ -621,6 +887,24 @@ impl TransportPanel {
             .gap(tokens::SPACE_XS)
             .px(tokens::SPACE_SM)
             .children(controls)
+            // The mode menu, over everything and pinned where the hold
+            // started. The occluding layer under it is what closes the menu
+            // on an outside click, `PopoutHost`'s arrangement in panel.rs.
+            .when_some(self.mode_menu.as_ref(), |strip, (at, menu, _)| {
+                strip.child(
+                    deferred(
+                        anchored().child(
+                            div().size_full().occlude().child(
+                                anchored()
+                                    .position(*at)
+                                    .snap_to_window_with_margin(px(8.))
+                                    .child(menu.clone()),
+                            ),
+                        ),
+                    )
+                    .with_priority(1),
+                )
+            })
     }
 }
 
@@ -647,7 +931,8 @@ mod tests {
 
     /// The per-button toggles older layouts wrote fold into the list in
     /// the order the strip used to render; the one seek toggle was both
-    /// nudges.
+    /// nudges. Continue had no toggle to write, and continuation ships on,
+    /// so an old layout picks it up where a fresh install has it.
     #[test]
     fn legacy_toggles_fold_in_render_order() {
         let config: TransportConfig =
@@ -660,6 +945,7 @@ mod tests {
                     PlaybackItem::Next,
                     PlaybackItem::Stop,
                     PlaybackItem::Repeat,
+                    PlaybackItem::Continue,
                 ]
         );
     }

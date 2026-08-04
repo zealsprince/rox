@@ -393,6 +393,21 @@ pub fn counts(conn: &Connection) -> rusqlite::Result<HashMap<i64, u32>> {
     rows.collect()
 }
 
+/// When each track was last heard, unix seconds. Tracks with no listens
+/// stay out of the map, the same way [`counts`] leaves them out, so a
+/// missing key reads as never played rather than as played at the epoch.
+///
+/// The other half of what a history-weighted continuation provider (ADR 17)
+/// tiers on: [`counts`] says how often, this says how long ago, and the two
+/// together are what sinks the album you played all week behind the record
+/// you forgot you own.
+pub fn last_played(conn: &Connection) -> rusqlite::Result<HashMap<i64, i64>> {
+    let mut stmt =
+        conn.prepare_cached("SELECT track_id, MAX(played_at) FROM listens GROUP BY track_id")?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
+}
+
 /// When the first listen landed (unix seconds); None before any has.
 /// The all-time chart picks its span off this.
 pub fn earliest(conn: &Connection) -> rusqlite::Result<Option<i64>> {

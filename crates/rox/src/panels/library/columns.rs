@@ -171,7 +171,32 @@ pub(crate) const COLUMNS: &[ColumnDef] = &[
         default_on: false,
         sort: SortKey::Added,
     },
+    ColumnDef {
+        // How much each track resembles the one playing, off the acoustic
+        // vectors. Not a projection field, so `sort_key` returns None and
+        // `compute_view` orders it on the delegate's own score map; the
+        // `sort` here is never read. Only offered while acoustic analysis
+        // is switched on, per [`offered`].
+        key: "similar",
+        label: "Similar",
+        default_width: 64.,
+        right: true,
+        default_on: false,
+        sort: SortKey::Title,
+    },
 ];
+
+/// The columns a picker should offer: the registry, minus the ones whose
+/// feature is switched off. Only discovery is gated, the same way the panel
+/// catalog gates its experimental run: a saved layout already holding the
+/// column keeps drawing it, and the cells simply read empty without vectors
+/// to score against.
+pub(crate) fn offered() -> impl Iterator<Item = &'static ColumnDef> {
+    let acoustic = crate::settings::acoustic_analysis();
+    COLUMNS
+        .iter()
+        .filter(move |def| acoustic || def.key != "similar")
+}
 
 /// The registry entry for a key.
 pub(crate) fn column_def(key: &str) -> Option<&'static ColumnDef> {
@@ -536,7 +561,7 @@ pub(crate) fn track_columns(
 /// Map a column key to the projection's sort key. The favourite column has
 /// none - it toggles rather than sorts - so its header never triggers a sort.
 pub(crate) fn sort_key(key: &str) -> Option<SortKey> {
-    if key == "favourite" || key == "cover" {
+    if key == "favourite" || key == "cover" || key == "similar" {
         return None;
     }
     column_def(key).map(|def| def.sort)

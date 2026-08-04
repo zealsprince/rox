@@ -41,10 +41,10 @@ use ebur128::{EbuR128, Mode};
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error;
 use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, TrackType};
+use symphonia::core::formats::{FormatOptions, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::units::Timestamp;
+use symphonia::core::units::{Time, Timestamp};
 
 use crate::gain::ReplayGain;
 
@@ -360,6 +360,156 @@ pub fn measure(
         channels,
         meter,
     }))
+}
+
+/// Decode one span of a file to mono at the file's own sample rate.
+///
+/// For the acoustic pass's model-based extractor (`rox/src/embeddings/panns.rs`),
+/// which needs raw audio at a rate it controls the conversion to. It decodes
+/// for itself here for the same reason [`measure`] does, plus one more: the
+/// engine's `Source` resamples with linear interpolation, which is fine for
+/// playback at a device rate near the file's and badly wrong on the way down
+/// to a model's 32 kHz, where everything above the new Nyquist folds back
+/// into the band the model is looking at. So this hands back the file's own
+/// samples at the file's own rate and lets the caller band-limit them
+/// properly.
+///
+/// Mono is the sum of the channels over their count, which is the fold these
+/// models were trained through. Not BS.1770's weighted fold: that one is for
+/// measuring loudness, and using it here would quietly attenuate the
+/// surround channels of a 5.1 mix relative to what the model expects.
+///
+/// `from_secs` seeks first, coarsely: an embedding is taken over seconds of
+/// audio, so landing a frame or two off is beneath the resolution of the
+/// thing being computed, and a coarse seek is cheap on containers where an
+/// accurate one has to decode up to the point. `max_secs` caps how much
+/// comes back, so one call is bounded whatever the track length.
+///
+/// Blocking: run it on a worker. `should_continue` is polled every quarter
+/// second of decoded audio, and a stop comes back as the audio decoded so
+/// far rather than as an error, since a partial span is still a span.
+pub fn decode_mono(
+    path: &Path,
+    from_secs: f64,
+    max_secs: f64,
+    should_continue: impl Fn() -> bool,
+) -> Result<(u32, Vec<f32>), String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let mut format = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|e| format!("probe: {e}"))?;
+
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or("no audio track")?;
+    let track_id = track.id;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .ok_or("no audio codec parameters")?;
+    let rate = params.sample_rate.ok_or("unknown sample rate")?;
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
+        .map_err(|e| format!("decoder: {e}"))?;
+
+    if from_secs > 0.0 {
+        let time = Time::try_from_secs_f64(from_secs).unwrap_or(Time::ZERO);
+        // A seek that fails leaves the reader at the start, which decodes
+        // the head of the track instead of the span asked for. That's a
+        // worse excerpt, not a broken one, so it's a warning rather than an
+        // error: a format with no seek table still gets analyzed.
+        if let Err(e) = format.seek(
+            SeekMode::Coarse,
+            SeekTo::Time {
+                time,
+                track_id: Some(track_id),
+            },
+        ) {
+            log::warn!("seek to {from_secs:.1}s in {} failed: {e}", path.display());
+        }
+        decoder.reset();
+    }
+
+    let want = ((max_secs * rate as f64) as usize).max(1);
+    let tick = tick_frames(rate) as usize;
+    let mut mono: Vec<f32> = Vec::with_capacity(want.min(rate as usize * 60));
+    let mut scratch: Vec<f32> = Vec::new();
+    let mut since_tick = 0usize;
+
+    while mono.len() < want {
+        let packet = match format.next_packet() {
+            Ok(Some(p)) => p,
+            Ok(None) => break,
+            Err(e) => {
+                log::warn!("packet error, ending the decode of {}: {e}", path.display());
+                break;
+            }
+        };
+        if packet.track_id != track_id {
+            continue;
+        }
+        let decoded = match decoder.decode(&packet) {
+            Ok(decoded) => decoded,
+            Err(Error::DecodeError(e)) => {
+                log::warn!("decode error, skipping packet: {e}");
+                continue;
+            }
+            Err(Error::IoError(e)) => {
+                log::warn!("io error, skipping packet: {e}");
+                continue;
+            }
+            Err(e) => {
+                log::error!("fatal decode error, ending the decode: {e}");
+                break;
+            }
+        };
+        let channels = decoded.spec().channels().count().max(1);
+        // A chained stream that changes rate mid-file would put two rates in
+        // one buffer, and the caller resamples the whole thing as if it were
+        // one. Stopping at the seam keeps the samples honest; the excerpt is
+        // short by whatever came after it, which the caller already handles
+        // for a track that ran out early.
+        if decoded.spec().rate() != rate {
+            log::warn!(
+                "{} changes sample rate mid-file, ending the excerpt at the seam",
+                path.display()
+            );
+            break;
+        }
+        scratch.resize(decoded.samples_interleaved(), 0.0);
+        decoded.copy_to_slice_interleaved(&mut scratch);
+        for frame in scratch.chunks_exact(channels) {
+            mono.push(frame.iter().sum::<f32>() / channels as f32);
+        }
+
+        since_tick += decoded.frames();
+        if since_tick >= tick {
+            since_tick = 0;
+            if !should_continue() {
+                break;
+            }
+        }
+    }
+
+    if mono.is_empty() {
+        return Err("no decodable audio".into());
+    }
+    mono.truncate(want);
+    Ok((rate, mono))
 }
 
 /// Integrated loudness plus true peak, the two modes this needs and nothing
@@ -829,5 +979,82 @@ mod tests {
         assert_eq!(gain_db(-23.0), Some(5.0));
         assert_eq!(gain_db(f64::NEG_INFINITY), None);
         assert_eq!(gain_db(f64::NAN), None);
+    }
+
+    /// A mono excerpt comes back at the file's own rate, capped at the span
+    /// asked for, and carrying the waveform rather than something resampled
+    /// on the way out.
+    #[test]
+    fn a_mono_excerpt_keeps_the_files_own_rate_and_stops_at_the_cap() {
+        let fx = Fixtures::new("decode-mono");
+        let path = fx.wav(
+            "tone.wav",
+            44_100,
+            2,
+            &sine(44_100, 2, 4.0, 1000.0, 0.5, 0.0),
+        );
+        let (rate, samples) = decode_mono(&path, 0.0, 1.5, || true).expect("the fixture decodes");
+        assert_eq!(rate, 44_100, "no resampling on the way out");
+        assert_eq!(samples.len(), 66_150, "1.5 s at the file's own rate");
+        // The channels folded to their mean, and both held the same sine, so
+        // the amplitude survived the fold.
+        let peak = samples.iter().cloned().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!((peak - 0.5).abs() < 0.01, "peak came back {peak}");
+    }
+
+    /// Asking for more than the file holds gives what it holds, and a
+    /// cancel gives what it decoded rather than an error.
+    #[test]
+    fn a_short_file_and_a_cancel_both_return_what_they_got() {
+        let fx = Fixtures::new("decode-mono-short");
+        let path = fx.wav(
+            "short.wav",
+            48_000,
+            1,
+            &sine(48_000, 1, 0.5, 440.0, 0.4, 0.0),
+        );
+        let (_, all) = decode_mono(&path, 0.0, 60.0, || true).expect("the fixture decodes");
+        assert_eq!(all.len(), 24_000);
+
+        let calls = Cell::new(0);
+        let (_, stopped) = decode_mono(&path, 0.0, 60.0, || {
+            calls.set(calls.get() + 1);
+            false
+        })
+        .expect("a cancel is not a failure");
+        assert!(calls.get() > 0, "the cancel hook should have been polled");
+        assert!(!stopped.is_empty());
+        assert!(stopped.len() <= all.len());
+    }
+
+    /// A stereo file whose channels cancel folds to silence, which is the
+    /// plain mean rather than BS.1770's weighted fold. Worth pinning: the
+    /// weighted one is right next door in this module and is the wrong
+    /// answer for a model's input.
+    #[test]
+    fn the_mono_fold_is_the_plain_channel_mean() {
+        let fx = Fixtures::new("decode-mono-fold");
+        let left = sine(44_100, 1, 0.5, 440.0, 0.5, 0.0);
+        let right = sine(44_100, 1, 0.5, 440.0, 0.5, PI);
+        let interleaved: Vec<f32> = left
+            .iter()
+            .zip(&right)
+            .flat_map(|(&l, &r)| [l, r])
+            .collect();
+        let path = fx.wav("opposed.wav", 44_100, 2, &interleaved);
+        let (_, samples) = decode_mono(&path, 0.0, 1.0, || true).expect("the fixture decodes");
+        let peak = samples.iter().cloned().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(
+            peak < 0.01,
+            "opposed channels should cancel, peak was {peak}"
+        );
+    }
+
+    #[test]
+    fn an_undecodable_file_is_an_error_rather_than_an_empty_excerpt() {
+        let fx = Fixtures::new("decode-mono-bad");
+        assert!(decode_mono(&fx.missing("gone.wav"), 0.0, 1.0, || true).is_err());
+        assert!(decode_mono(&fx.junk("junk.wav"), 0.0, 1.0, || true).is_err());
+        assert!(decode_mono(&fx.wav("empty.wav", 48_000, 2, &[]), 0.0, 1.0, || true).is_err());
     }
 }

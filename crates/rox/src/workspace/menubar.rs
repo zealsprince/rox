@@ -21,7 +21,7 @@ impl Workspace {
                 self.state.player.update(cx, |player, cx| player.stop(cx));
             }
             MenuAction::Next => {
-                self.state.player.update(cx, |player, _| player.next());
+                self.state.player.update(cx, |player, cx| player.next(cx));
             }
             MenuAction::Previous => {
                 self.state.player.update(cx, |player, _| player.prev());

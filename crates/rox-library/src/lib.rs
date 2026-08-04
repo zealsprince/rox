@@ -5,6 +5,7 @@
 //! reused these modules for its harness (git history, commit bd22dc1).
 
 pub mod art;
+pub mod embeddings;
 pub mod genre;
 pub mod genre_meta;
 pub mod hash;

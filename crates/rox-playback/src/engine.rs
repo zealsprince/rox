@@ -40,6 +40,16 @@ pub enum Cmd {
     Volume(f32),
     SetLoop(LoopMode),
     SetShuffle(bool),
+    /// Reorder the upcoming portion into the given entry order, for an
+    /// ordering the engine has no way to work out for itself. The player
+    /// sends this for shuffle's similarity mode, where what comes next is a
+    /// question about the music that only the library can answer.
+    ///
+    /// Ids that aren't in the tail are ignored, and tail entries the list
+    /// doesn't name keep their relative order behind the ones it does. So a
+    /// partial list moves what it knows about to the front and disturbs
+    /// nothing else.
+    OrderTail(Vec<u64>),
     /// Arm or clear stop-after-current: armed, the track playing now ends
     /// the session's motion - the engine lets the ring drain so the last
     /// samples play out, then pauses with the next track cued at 0:00.
@@ -433,6 +443,7 @@ impl Engine {
                         }
                     }
                     Cmd::SetShuffle(on) => self.set_shuffle(on),
+                    Cmd::OrderTail(ids) => self.order_tail(&ids),
                     Cmd::SetStopAfter(on) => self.stop_after = on,
                     Cmd::Insert {
                         after,
@@ -1248,6 +1259,29 @@ impl Engine {
         self.publish_queue();
     }
 
+    /// [`Self::set_shuffle`]'s twin for an order computed elsewhere: put the
+    /// upcoming portion into the sequence `ids` names. Same guarantees, so
+    /// history and the playing entry stay put and nothing flushes.
+    ///
+    /// The sort is stable and unnamed entries rank last, which is what lets a
+    /// partial list work: tracks the caller had no opinion about keep the
+    /// order they were already in, behind the ones it ranked.
+    fn order_tail(&mut self, ids: &[u64]) {
+        let start = self.pos + 1;
+        if start >= self.order.len() {
+            self.publish_queue();
+            return;
+        }
+        let rank = |id: u64| {
+            ids.iter()
+                .position(|&want| want == id)
+                .unwrap_or(usize::MAX)
+        };
+        let tail = &mut self.order[start..];
+        tail.sort_by_key(|e| rank(e.id));
+        self.publish_queue();
+    }
+
     /// Have the backend discard everything queued and tell us it has, then
     /// resync our clock to what actually played. Returns the output frame
     /// the cut landed on, which is where the next sample pushed will play.
@@ -1407,7 +1441,12 @@ impl Fade {
 
 /// Fisher-Yates over a slice in place, xorshift64 off the std hasher's
 /// per-process random keys; a play order does not need a rand dependency.
-fn shuffle_slice<T>(slice: &mut [T]) {
+///
+/// Public because the play order isn't the only thing that wants an unbiased
+/// shuffle without a dependency: a continuation provider (ADR 17) shuffles
+/// its candidate pool before it picks, and a second copy of this would be a
+/// second thing to get wrong.
+pub fn shuffle_slice<T>(slice: &mut [T]) {
     use std::hash::{BuildHasher, Hasher};
     let mut state = std::collections::hash_map::RandomState::new()
         .build_hasher()
@@ -1839,6 +1878,60 @@ mod tests {
         )
     }
 
+    /// The similarity mode's reorder: the named entries lead in the order
+    /// given, the playing track and everything behind it never move, and
+    /// entries nobody ranked keep their own order behind the ranked ones.
+    /// That last part is what lets a partly analyzed library work at all.
+    #[test]
+    fn order_tail_ranks_what_it_knows_and_leaves_the_rest() {
+        let mut engine = test_engine(6);
+        engine.pos = 1;
+        let ids: Vec<u64> = engine.order.iter().map(|e| e.id).collect();
+        // Rank two of the four upcoming entries, last one first.
+        engine.order_tail(&[ids[5], ids[3]]);
+        let after: Vec<u64> = engine.order.iter().map(|e| e.id).collect();
+        assert_eq!(
+            after,
+            vec![ids[0], ids[1], ids[5], ids[3], ids[2], ids[4]],
+            "ranked entries lead in the given order, the rest keep theirs"
+        );
+        // History and the playing entry are untouched, which is the whole
+        // contract this shares with set_shuffle.
+        assert_eq!(&after[..2], &ids[..2]);
+        assert_eq!(engine.pos, 1);
+    }
+
+    /// An empty ranking, which is what an unanalyzed library produces,
+    /// leaves the queue exactly as it found it rather than scrambling it.
+    #[test]
+    fn order_tail_with_nothing_ranked_changes_nothing() {
+        let mut engine = test_engine(4);
+        engine.pos = 0;
+        let before: Vec<u64> = engine.order.iter().map(|e| e.id).collect();
+        engine.order_tail(&[]);
+        let after: Vec<u64> = engine.order.iter().map(|e| e.id).collect();
+        assert_eq!(before, after);
+        // An id that isn't in the queue is ignored rather than panicking.
+        engine.order_tail(&[9999]);
+        assert_eq!(
+            before,
+            engine.order.iter().map(|e| e.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// Nothing upcoming is not an error: the call publishes and returns.
+    #[test]
+    fn order_tail_at_the_end_of_the_queue_is_a_no_op() {
+        let mut engine = test_engine(2);
+        engine.pos = 1;
+        let before: Vec<u64> = engine.order.iter().map(|e| e.id).collect();
+        engine.order_tail(&[before[0]]);
+        assert_eq!(
+            before,
+            engine.order.iter().map(|e| e.id).collect::<Vec<_>>()
+        );
+    }
+
     /// A directory of fixture files that clears itself when the test ends.
     /// The path is unique per call, so the suite's threads never share one.
     struct Fixtures(PathBuf);
@@ -2079,6 +2172,88 @@ mod tests {
         // Seed entries came without groups; the spliced ones keep theirs in
         // splice order.
         assert_eq!(groups, vec![None, Some(7), Some(7), None, None]);
+    }
+
+    /// A continuation batch (ADR 17) is an append into the running session:
+    /// no `after`, not explicit, landing behind everything already queued
+    /// while the cursor and the history in front of it stay exactly put.
+    #[test]
+    fn a_continuation_batch_appends_behind_the_cursor() {
+        let mut e = test_engine(4);
+        // Three tracks in, one to go, which is where the pump fires.
+        e.pos = 2;
+        let before: Vec<u64> = e.order.iter().map(|en| en.id).collect();
+        let at = e.insert(
+            None,
+            vec!["c0".into(), "c1".into()],
+            vec![Some(9), Some(9)],
+            Vec::new(),
+            false,
+        );
+        assert_eq!(at, Some(4), "the batch lands at the end of the order");
+        assert_eq!(e.pos, 2, "the playing entry never moves for an append");
+        let after: Vec<u64> = e.order.iter().map(|en| en.id).collect();
+        assert_eq!(&after[..4], &before[..], "nothing already queued shifted");
+        let snap = e.shared.queue_snapshot();
+        // Context, not queue: what continuation adds plays on around the
+        // listener rather than showing up as tracks they picked.
+        assert!(
+            snap.entries[4..].iter().all(|en| !en.explicit),
+            "an appended batch is context"
+        );
+        // The pool grew alongside the order, which is what keeps the
+        // position mapping and the shared track list resolving.
+        assert_eq!(e.queue.len(), 6);
+        assert_eq!(e.groups[4..], [Some(9), Some(9)]);
+        assert_eq!(e.shared.tracks.lock().unwrap().len(), 6);
+    }
+
+    /// Shuffle folds a landed batch into the upcoming permutation instead of
+    /// leaving it in provider order at the tail. Under the similarity mode
+    /// the player sends the reorder straight after the insert on this same
+    /// channel, so the pair is what the engine sees, and the appended
+    /// entries have to be reachable by it.
+    #[test]
+    fn a_batch_landing_under_shuffle_joins_the_upcoming_order() {
+        let mut e = test_engine(4);
+        e.pos = 2;
+        e.insert(
+            None,
+            vec!["c0".into(), "c1".into(), "c2".into(), "c3".into()],
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
+        let head: Vec<u64> = e.order[..=e.pos].iter().map(|en| en.id).collect();
+        // Rank two of the appended entries to the front of what's coming.
+        e.order_tail(&[6, 4]);
+        // History and the playing entry are untouched, which is the contract
+        // every tail reorder holds to.
+        assert_eq!(
+            e.order[..=e.pos].iter().map(|en| en.id).collect::<Vec<_>>(),
+            head
+        );
+        let upcoming: Vec<u64> = e.order[e.pos + 1..].iter().map(|en| en.id).collect();
+        assert_eq!(
+            upcoming,
+            vec![6, 4, 3, 5, 7],
+            "appended entries rank alongside the ones that were already queued"
+        );
+    }
+
+    /// The last acceptance of #36, at the queue-math level: a session that
+    /// played out to the end and got a batch appended has somewhere to go.
+    /// `insert` hands back that position, which is what the run loop routes
+    /// through the nav path to wake the session (see the Insert arm).
+    #[test]
+    fn appending_to_a_played_out_queue_names_the_track_to_wake_into() {
+        let mut e = test_engine(2);
+        // Played through: the cursor sits on the last entry and the source
+        // is gone, which is the ended state.
+        e.pos = 1;
+        let at = e.insert(None, vec!["c0".into()], Vec::new(), Vec::new(), false);
+        assert_eq!(at, Some(2), "the first appended entry is what plays next");
+        assert_eq!(e.order[at.unwrap()].idx, 2);
     }
 
     #[test]

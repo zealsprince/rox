@@ -11,44 +11,58 @@ impl SettingsWindow {
     /// single layouts under it. The composition tree below shows the opening
     /// window's dock, splits and tab groups as muted structure lines, panels
     /// as named rows with their settings a click away.
-    pub(crate) fn workspace_page(&self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn workspace_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         let live = self.workspace.upgrade().is_some();
-        let mut body = div().flex().flex_col().gap(tokens::SPACE_XS).child(
-            div().text_xs().text_color(palette::text_muted()).child(
-                "The window's panels as they sit in splits and tab groups; \
-                 the arrows reorder a row among its siblings, the lock pins \
-                 a panel in place, and the gear opens its settings",
-            ),
-        );
-        match self.workspace.upgrade() {
-            Some(workspace) => {
-                let root = workspace.read(cx).dock().read(cx).items().view();
-                let mut rows = Vec::new();
-                self.tree_rows(root, 0, TreeSlot::Root, &mut rows, cx);
-                body = body.child(div().flex().flex_col().children(rows));
-            }
-            None => {
-                body = body.child(
-                    div()
-                        .text_color(palette::text_muted())
-                        .child("The workspace window is closed"),
-                );
-            }
-        }
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(self.workspaces_section(live, cx))
-            .child(self.presets_section(live, cx))
-            .child(section("Composition", None, body))
+        PageBody::new()
+            .section(self.workspaces_section(q, live, cx))
+            .section(self.presets_section(q, live, cx))
+            // The tree walks the live dock, so it only builds once the
+            // query keeps it.
+            .section(Section::new(
+                q,
+                icons::LAYOUT_DASHBOARD,
+                "Composition",
+                None,
+                |rows| {
+                    rows.custom(
+                        &["dock", "panels", "tree", "splits", "tabs", "layout"],
+                        || {
+                            let mut body =
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(tokens::SPACE_XS)
+                                    .child(div().text_xs().text_color(palette::text_muted()).child(
+                                    "The window's panels as they sit in splits and tab groups; \
+                                 the arrows reorder a row among its siblings, the lock pins \
+                                 a panel in place, and the gear opens its settings",
+                                ));
+                            match self.workspace.upgrade() {
+                                Some(workspace) => {
+                                    let root = workspace.read(cx).dock().read(cx).items().view();
+                                    let mut rows = Vec::new();
+                                    self.tree_rows(root, 0, TreeSlot::Root, &mut rows, cx);
+                                    body = body.child(div().flex().flex_col().children(rows));
+                                }
+                                None => {
+                                    body = body.child(
+                                        div()
+                                            .text_color(palette::text_muted())
+                                            .child("The workspace window is closed"),
+                                    );
+                                }
+                            }
+                            body.into_any_element()
+                        },
+                    )
+                },
+            ))
     }
 
     /// The workspaces section: the saved and shipped bundles as a list, each
     /// a whole look to apply, export, or delete. Saving the current state as
     /// a named workspace, and importing one, ride the header.
-    fn workspaces_section(&self, live: bool, cx: &mut Context<Self>) -> Div {
+    fn workspaces_section(&self, q: &Query, live: bool, cx: &mut Context<Self>) -> Section {
         let entries = crate::workspaces::all();
 
         // Save-current-as and import ride the header, so a workspace is one
@@ -72,28 +86,41 @@ impl SettingsWindow {
                 cx.listener(|this, _, window, cx| this.import_workspace(window, cx)),
             ));
 
-        let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
-            div().text_xs().text_color(palette::text_muted()).child(
-                "A workspace is a whole look - layouts, palette, appearance; \
-                 applying one replaces all three",
-            ),
-        );
-        if entries.is_empty() {
-            list = list.child(
-                div()
-                    .text_color(palette::text_muted())
-                    .child("No workspaces yet"),
-            );
-        } else {
-            list = list.child(
-                div().flex().flex_col().children(
-                    entries
-                        .into_iter()
-                        .map(|entry| self.workspace_row(entry, live, cx)),
-                ),
-            );
-        }
-        section("Workspaces", Some(controls.into_any_element()), list)
+        Section::new(
+            q,
+            icons::APP_WINDOW,
+            "Workspaces",
+            Some(controls.into_any_element()),
+            |rows| {
+                rows.custom(
+                    &["look", "bundle", "theme", "import", "export", "apply"],
+                    || {
+                        let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
+                            div().text_xs().text_color(palette::text_muted()).child(
+                                "A workspace is a whole look - layouts, palette, appearance; \
+                             applying one replaces all three",
+                            ),
+                        );
+                        if entries.is_empty() {
+                            list = list.child(
+                                div()
+                                    .text_color(palette::text_muted())
+                                    .child("No workspaces yet"),
+                            );
+                        } else {
+                            list = list.child(
+                                div().flex().flex_col().children(
+                                    entries
+                                        .into_iter()
+                                        .map(|entry| self.workspace_row(entry, live, cx)),
+                                ),
+                            );
+                        }
+                        list.into_any_element()
+                    },
+                )
+            },
+        )
     }
 
     /// One workspace's row: its name, a shipped tag when it comes from the
@@ -158,7 +185,7 @@ impl SettingsWindow {
     /// with the roles the mini-player button toggles between and the ways
     /// to apply, delete, or overwrite it. Saving the live layout as a named
     /// preset rides the header.
-    fn presets_section(&self, live: bool, cx: &mut Context<Self>) -> Div {
+    fn presets_section(&self, q: &Query, live: bool, cx: &mut Context<Self>) -> Section {
         let settings = Settings::load();
         let presets = crate::settings::layouts::all(&settings);
 
@@ -183,28 +210,44 @@ impl SettingsWindow {
                 cx.listener(|this, _, window, cx| this.import_preset(window, cx)),
             ));
 
-        let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
-            div().text_xs().text_color(palette::text_muted()).child(
-                "Primary and mini are the two the menubar's mini-player button \
-                 swaps between",
-            ),
-        );
-        if presets.is_empty() {
-            list = list.child(
-                div()
-                    .text_color(palette::text_muted())
-                    .child("No layouts yet"),
-            );
-        } else {
-            list = list.child(
-                div().flex().flex_col().children(
-                    presets
-                        .into_iter()
-                        .map(|preset| self.preset_row(preset, live, cx)),
-                ),
-            );
-        }
-        section("Layouts", Some(save.into_any_element()), list)
+        Section::new(
+            q,
+            icons::LAYOUT_GRID,
+            "Layouts",
+            Some(save.into_any_element()),
+            |rows| {
+                rows.custom(
+                    &["preset", "dock", "panels", "mini", "primary", "save"],
+                    || {
+                        let mut list =
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(tokens::SPACE_XS)
+                                .child(div().text_xs().text_color(palette::text_muted()).child(
+                                "Primary and mini are the two the menubar's mini-player button \
+                             swaps between",
+                            ));
+                        if presets.is_empty() {
+                            list = list.child(
+                                div()
+                                    .text_color(palette::text_muted())
+                                    .child("No layouts yet"),
+                            );
+                        } else {
+                            list = list.child(
+                                div().flex().flex_col().children(
+                                    presets
+                                        .into_iter()
+                                        .map(|preset| self.preset_row(preset, live, cx)),
+                                ),
+                            );
+                        }
+                        list.into_any_element()
+                    },
+                )
+            },
+        )
     }
 
     /// One preset's row: its name, a shipped tag when it comes from the

@@ -11,10 +11,11 @@ speculated ahead of the code. The set, one per domain:
 
 - [01-playback.md](01-playback.md) - decode thread and RT callback wiring, ring buffer
   sizing, the gapless boundary swap and LAME delay/padding trimming, the flush protocol,
-  the position clock, device switching, where ReplayGain is applied in the sample path
-- [02-library.md](02-library.md) - the SQLite schema, the in-memory projection layout
-  and interning, the scanner pipeline, the sharded cold-open load, and the
-  rebuild-and-swap sequence that keeps store and projection consistent
+  the position clock, the shared and exclusive output backends, crossfade, and where
+  ReplayGain and the processing chain sit in the sample path
+- [02-library.md](02-library.md) - the SQLite schema and its migration ladder, the
+  in-memory projection layout and interning, the scanner pipeline, the sharded cold-open
+  load, and the rebuild-and-swap sequence that keeps store and projection consistent
 - `03-metadata.md` - the copy-verify-rename sequence step by step, per-format tag field
   mapping (ID3v2 / Vorbis), batch semantics and failure shapes
 - `04-artwork.md` - thumbnail DB schema and content-addressed keying, worker pool and

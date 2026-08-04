@@ -173,17 +173,26 @@ pub struct WorkspaceBundle {
     pub layouts: Vec<NamedLayout>,
     pub primary_layout: Option<String>,
     pub mini_layout: Option<String>,
-    pub palette: BTreeMap<String, String>,   // role name -> #rrggbb
-    pub appearance: AppearanceBundle,         // opacity, frame, fonts, rating style, ...
+    pub palette_dark: BTreeMap<String, String>,  // role name -> #rrggbb
+    pub palette_light: BTreeMap<String, String>,
+    pub signals: Vec<Signal>,                     // the pool the looks ride
+    pub appearance: AppearanceBundle,             // opacity, frame, fonts, rating style, ...
 }
 ```
 
 `WORKSPACE_VERSION` = 1, independent of the dock `LAYOUT_VERSION` the dumps inside carry,
 so a reader can refuse a bundle from a newer format while the layouts still validate on
 their own version. The bundle is pure look: applying it (`workspaces::apply_look`)
-replaces the palette, appearance, and layout presets wholesale and leaves machine- and
-account-bound state (library folders, last.fm, window frames) untouched, so a bundle
-travels between installs without dragging along another machine's setup.
+replaces the palettes, signals, appearance, and layout presets wholesale and leaves
+machine- and account-bound state (library folders, last.fm, window frames) untouched, so
+a bundle travels between installs without dragging along another machine's setup.
+
+The live look nests the same struct a saved file holds, so saving a workspace is a clone
+and applying one is an assignment. Saved workspaces are one JSON file each under
+`workspaces/` in the data directory, which makes the folder the collection: drop a shared
+bundle in and it's in the list, delete the file and it's gone. `workspaces::saved` names
+each entry off the filename and reads only the directory, so a bundle is parsed when one
+is applied rather than every time a menu draws.
 
 ## Reference
 

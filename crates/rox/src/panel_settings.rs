@@ -1428,7 +1428,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                             "Appearance",
                             icons::PALETTE,
                             picked == 0,
-                            move |this: &mut Self, cx| {
+                            move |this: &mut Self, _window, cx| {
                                 this.page = 0;
                                 cx.notify();
                             },
@@ -1438,7 +1438,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                             "Behavior",
                             icons::SLIDERS,
                             picked == 1,
-                            move |this: &mut Self, cx| {
+                            move |this: &mut Self, _window, cx| {
                                 this.page = 1;
                                 cx.notify();
                             },
@@ -1450,7 +1450,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                             label,
                             icon,
                             picked == page,
-                            move |this: &mut Self, cx| {
+                            move |this: &mut Self, _window, cx| {
                                 this.page = page;
                                 cx.notify();
                             },

@@ -16,22 +16,35 @@ are lofty 0.24, the parallel scans are rayon, the title finder is memchr's memme
 
 One database at `data_dir/rox/library.db` (so `~/.local/share/rox/library.db` on
 Linux), opened in WAL mode with `synchronous = NORMAL`. WAL is load-bearing: it gives
-concurrent readers, which is what the sharded projection load rides on. One table:
+concurrent readers, which is what the sharded projection load rides on. The catalog is
+one table, with the listens (ADR 11), playlists (ADR 16), and genre opinions riding the
+same database:
 
 ```sql
 CREATE TABLE IF NOT EXISTS tracks (
-    id          INTEGER PRIMARY KEY,
-    source      TEXT NOT NULL DEFAULT 'local',
-    path        TEXT NOT NULL,
-    title       TEXT NOT NULL,
-    artist      TEXT NOT NULL,
-    album       TEXT NOT NULL,
-    genre       TEXT NOT NULL,
-    year        INTEGER NOT NULL,
-    track_no    INTEGER NOT NULL,
-    duration_ms INTEGER NOT NULL,
-    size        INTEGER NOT NULL,
-    mtime       INTEGER NOT NULL,
+    id            INTEGER PRIMARY KEY,
+    source        TEXT NOT NULL DEFAULT 'local',
+    path          TEXT NOT NULL,
+    title         TEXT NOT NULL,
+    artist        TEXT NOT NULL,
+    album_artist  TEXT NOT NULL DEFAULT '',
+    album         TEXT NOT NULL,
+    genre         TEXT NOT NULL,
+    year          INTEGER NOT NULL,
+    disc_no       INTEGER NOT NULL DEFAULT 0,
+    track_no      INTEGER NOT NULL,
+    duration_ms   INTEGER NOT NULL,
+    codec         TEXT NOT NULL DEFAULT '',
+    bitrate       INTEGER NOT NULL DEFAULT 0,
+    sample_rate   INTEGER NOT NULL DEFAULT 0,
+    bit_depth     INTEGER NOT NULL DEFAULT 0,
+    rating        INTEGER NOT NULL DEFAULT 0,
+    added         INTEGER NOT NULL DEFAULT 0,
+    size          INTEGER NOT NULL,
+    mtime         INTEGER NOT NULL,
+    rg_track_gain REAL, rg_track_peak REAL,
+    rg_album_gain REAL, rg_album_peak REAL,
+    rg_source     INTEGER,
     UNIQUE (source, path)
 );
 ```
@@ -50,6 +63,22 @@ CREATE TABLE IF NOT EXISTS tracks (
 - The read path is `scan_range`, which streams the projection columns for one rowid
   range in id order. Everything the projection needs comes through it; paths do not,
   they stay in SQLite until playback asks.
+- The four ReplayGain columns are nullable rather than defaulted (ADR 19): 0 dB is a
+  real measurement, and a column that couldn't tell it from an untagged file would level
+  every untagged track to the reference. `rg_source` says which filled them, the file's
+  tags or rox's own measurement pass, and the upsert's `KEEPS_MEASURED_GAIN` condition
+  is the precedence rule: tags win wherever a file carries them, a measurement survives
+  a rescan that still finds none.
+- `rating` and `added` are the app's own, never read from a tag, which is why they're
+  the two columns whose migrations don't reset `mtime`.
+
+Schema changes go through `migrate::run`, an ordered slice of steps over SQLite's
+`PRAGMA user_version`, each in its own transaction. Step 1 is the baseline, the old
+idempotent init with its column probes, so a pre-ladder file converges to it and stamps
+1; every step after that is a clean forward one. Steps are additive by policy: an older
+binary pointed at a newer file runs nothing and works against the columns it knows.
+A step adding something the scanner reads out of tags resets every `mtime` with it, or
+the next scan skips unchanged files and the column stays empty forever.
 
 ## The projection
 
@@ -58,18 +87,34 @@ is one flat array indexed by row:
 
 ```rust
 pub struct Projection {
+    pub fold: bool,             // whether the symbols interned case-folded
     pub db_id: Vec<i64>,        // SQLite rowid per row
     pub title: Arena,           // contiguous bytes + offset table
     pub title_lower: Arena,     // lowercased copy for case-folded search
     pub artist: Vec<u32>,       // symbol into artists
+    pub album_artist: Vec<u32>,
     pub album: Vec<u32>,        // symbol into albums
     pub genre: Vec<u32>,        // symbol into genres
+    pub codec: Vec<u32>,
+    pub folder: Vec<u32>,       // parent directory, interned like the rest
     pub year: Vec<u16>,
+    pub disc_no: Vec<u16>,
     pub track_no: Vec<u16>,
     pub duration_ms: Vec<u32>,
+    pub bitrate_kbps: Vec<u16>,
+    pub sample_rate_hz: Vec<u32>,
+    pub bit_depth: Vec<u8>,
+    pub added: Vec<i64>,
+    pub rating: Vec<AtomicU8>,  // written in place, no reload to rate a track
+    pub plays: Vec<AtomicU32>,  // the listens table's per-track count, same reason
     pub artists: SymTable,      // symbol -> string, plus lowercase copy
+    pub album_artists: SymTable,
     pub albums: SymTable,
     pub genres: SymTable,
+    pub codecs: SymTable,
+    pub folders: SymTable,
+    // plus per-table rank arrays and the distinct artist/album lists, all
+    // OnceLock: the projection is immutable once loaded, so memoizing is safe.
 }
 ```
 
@@ -77,8 +122,8 @@ pub struct Projection {
   `get(i)` is a slice, never an allocation. Titles are the one field too distinct to
   intern, so they get the arena instead of millions of heap `String`s. The lowercase
   copy is folded per character at build time so search never lowercases at query time.
-- **Interning**: artist, album, and genre repeat heavily, so each interns to a `u32`
-  symbol through a hash map during load. The finished `SymTable` is the symbol table
+- **Interning**: artist, album artist, album, genre, codec, and folder all repeat
+  heavily, so each interns to a `u32` symbol through a hash map during load. The finished `SymTable` is the symbol table
   plus a lowercase copy of every entry, built in parallel. Symbol tables run a
   hundredth the row count or less, which is what makes search and sort cheap.
 - **Resolve**: the UI renders through `resolve(row) -> RowView`, which borrows title,
@@ -122,9 +167,10 @@ sorts producing a fresh index vector.
 pipeline, per ADR 4's single metadata layer:
 
 1. Load the change key map: every local path with its stored `(mtime, size)`.
-2. Walk `root` recursively, keeping files whose extension matches what the playback
-   engine decodes (`flac`, `mp3`, `wav`, case-insensitive), and sort the list so scan
-   order is deterministic.
+2. Walk `root` recursively, keeping files whose extension is in `scanner::EXTENSIONS`
+   (flac, mp3, wav, ogg, oga, m4a, m4b, aac, aif, aiff, aifc, mka, caf, case-insensitive,
+   the one list an external open uses too), and sort the list so scan order is
+   deterministic.
 3. Per file: stat it, and if `(mtime, size)` matches the stored row, skip it without
    opening the file. This is what makes a rescan of an unchanged library cheap.
 4. Otherwise read tags through lofty, wrapped in `catch_unwind`: a malformed file
@@ -135,8 +181,12 @@ pipeline, per ADR 4's single metadata layer:
 5. Upsert in batches of 512 rows, one transaction each.
 
 The scan returns a `ScanSummary` (`indexed`, `unchanged`, `untagged`) that feeds the
-status line. Tag fields carried: title, artist, album, genre, year, track number from
-the primary (or first) tag, duration from the stream properties.
+status line. Tag fields carried: title, artist, album artist, album, genre, year, disc
+and track number, rating (FMPS exact, POPM stars), and the four ReplayGain values, all
+from the primary (or first) tag. Multi-value genres join on the `"; "` convention
+`rox_library::genre` owns, so a list survives the round trip through one column. Duration,
+codec, bitrate, sample rate, and bit depth come off the parsed stream properties rather
+than any tag, so an untagged file still reports what it is.
 
 ## Cold open
 
@@ -200,9 +250,11 @@ those ids back through the same hop.
 ## Reference
 
 The service lives in `crates/rox-library`: `store.rs` (schema, upsert, range reads),
-`projection.rs` (arena, interning, search, sort, sharded load), `scanner.rs` (walk,
-change key, lofty), `art.rs` (cover art off a track's tags, with a folder image as the
-fallback). The app wires it in `crates/rox/src/panels/library.rs`. The scale
+`migrate.rs` (the user_version ladder both databases run), `projection.rs` (arena,
+interning, search, sort, sharded load), `scanner.rs` (walk, change key, lofty),
+`genre.rs` and `genre_meta.rs` (the multi-value convention and the alias table behind
+it), `replaygain.rs` (the tag values and where they came from), `art.rs` (cover art off
+a track's tags, with a folder image as the fallback). The app wires it in `crates/rox/src/panels/library.rs`. The scale
 harness was `crates/rox-prototype-library` (git history, commit bd22dc1), which
 reuses these modules against a generated catalog: `cargo run -p
 rox-prototype-library --release -- --tracks 10_000_000` reproduces the

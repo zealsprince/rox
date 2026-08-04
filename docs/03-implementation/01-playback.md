@@ -5,8 +5,10 @@ position clock. This makes the playback contract from
 [components](../02-architecture/02-components.md#playback-engine) concrete, within the
 calls made in [ADR 2](../02-architecture/decisions/02-adr-audio-stack.md) (cpal +
 Symphonia directly), [ADR 3](../02-architecture/decisions/03-adr-gapless.md)
-(single-stream swap-decoder gapless), and
-[ADR 9](../02-architecture/decisions/09-adr-audio-output.md) (swappable output layer).
+(single-stream swap-decoder gapless),
+[ADR 9](../02-architecture/decisions/09-adr-audio-output.md) (swappable output layer),
+and [ADR 19](../02-architecture/decisions/19-adr-processing-chain.md) (the chain pre-ring
+and the exclusive backends behind that seam).
 Version-sensitive: the trim semantics below are symphonia 0.6, the stream API is cpal
 0.18, the rings are rtrb.
 

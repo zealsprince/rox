@@ -21,15 +21,16 @@ start in under a second, it isn't rox.
 
 | Area      | What's there                                                                                                                                                                                                        |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Library   | Parallel scanner reading full tags and true durations, live folder watching that survives renames, files with unreadable tags indexed by filename so nothing silently drops, folder tree, filters, and search        |
-| Playback  | Gapless single-stream engine, queue with shuffle, repeat, and play-next, recovery when an audio device disappears, media keys and now-playing integration on all three platforms                                      |
-| Panels    | Two dozen panel types (library, queue, history, playlists, lyrics, tag editor, cover, biography, spectrum, waveform, VU), composed freely, duplicated with independent configs, popped out into OS windows            |
-| Theming   | Workspaces as single shareable files (layout, palette, appearance), palette tinting from the playing album's cover per window, light and dark following cover brightness                                             |
-| Tagging   | Full tag editor with atomic writes and batch edits, ratings stored in the files themselves (FMPS and POPM), online tag and cover lookup through MusicBrainz, iTunes, and Deezer, artist biographies                   |
+| Library   | Parallel scanner reading full tags, true durations, and each file's own codec, sample rate, and bit depth, live folder watching that survives renames, files with unreadable tags indexed by filename so nothing silently drops, folder tree, filters, and search |
+| Playback  | Gapless single-stream engine, queue with shuffle, repeat, and play-next, crossfade that leaves album-contiguous boundaries alone, recovery when an audio device disappears, media keys and now-playing integration on all three platforms |
+| Audio     | A ten-band equalizer in a window of its own, ReplayGain off the tags with an EBU R128 pass for the files no tagger ever measured, and an exclusive output mode (ALSA, WASAPI, CoreAudio) that states what the hardware agreed to |
+| Panels    | Forty panel types (library, queue, history, playlists, lyrics, cover, biography, artist and genre grids, spectrum, waveform, VU), composed freely, duplicated with independent configs, popped out into OS windows |
+| Theming   | Workspaces as single shareable files (layout, palette, appearance) in a folder you can drop a bundle into, palette tinting from the playing album's cover per window, light and dark following cover brightness |
+| Tagging   | Full tag editor with atomic writes and batch edits, multi-value genres with merges kept as a library opinion rather than a tag write, ratings stored in the files themselves (FMPS and POPM), online tag and cover lookup through MusicBrainz, iTunes, and Deezer, artist biographies |
 | Lyrics    | Synced and plain lyrics from sidecar files, tags, or lrclib, with an in-panel editor that writes back where it read from                                                                                              |
 | History   | A full listen log driving the history panel and stats window, Last.fm scrobbling                                                                                                                                     |
 | Playlists | Favourites, drag reorder across playlists, m3u import and export, entries that survive their files leaving and returning                                                                                             |
-| System    | Tray with quit-to-tray, portable mode, one binary                                                                                                                                                                    |
+| System    | Tray with quit-to-tray, one instance per data directory, portable mode, one binary                                                                                                                                   |
 
 </details>
 
@@ -39,7 +40,6 @@ start in under a second, it isn't rox.
 
 | Area              | What's coming                                                                                                                                            | Tracked                                                                                                                                                                                                                          |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Audio chain       | A processing chain: an equalizer to prove it, crossfade, and an exclusive bit-perfect output mode                                                          | [#70](https://github.com/zealsprince/rox/issues/70), [#72](https://github.com/zealsprince/rox/issues/72), [#73](https://github.com/zealsprince/rox/issues/73), [#74](https://github.com/zealsprince/rox/issues/74)                 |
 | Queue continuation | Endless play drawing from the library, history-aware weighted shuffle, and radio seeded by what's playing                                                 | [#34](https://github.com/zealsprince/rox/issues/34), [#37](https://github.com/zealsprince/rox/issues/37), [#38](https://github.com/zealsprince/rox/issues/38), [#39](https://github.com/zealsprince/rox/issues/39)                 |
 | Auto-update       | Downloads and applies a release instead of pointing at it                                                                                                  | [#75](https://github.com/zealsprince/rox/issues/75)                                                                                                                                                                               |
 | Sources           | Streaming services (Spotify, YouTube Music, Tidal) as community-maintained extensions, each its own library view, updating on their own release cycle when a service changes something | [#8](https://github.com/zealsprince/rox/issues/8)                                                                                                                                                                                 |
@@ -122,6 +122,12 @@ click away on the welcome window or in settings:
 
 <table>
   <tr>
+    <th colspan="2">CaTRoX</th>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="crates/rox/assets/workspaces/CaTRoX_Dark.png" alt="CaTRoX" width="100%"></td>
+  </tr>
+  <tr>
     <th width="50%">Foobar</th>
     <th width="50%">Llama (WinAmp)</th>
   </tr>
@@ -156,6 +162,9 @@ Grab your platform's build from the [releases page](https://github.com/zealsprin
 - `rox <files or folders>` - play them now, replacing what's loaded. Folders expand to
   the audio files directly inside them.
 - `--enqueue` / `-e` - append the given files to the up-next queue instead of playing.
+- `--new-instance` - start a second rox against the same data directory. Without it a
+  launch hands its files to the rox already running, which raises its window and takes
+  them. Linux and macOS only, Windows has no guard yet.
 - `--portable` - keep all data (library, settings, caches) in a `rox-data` folder beside
   the executable for this run. To stay portable across launches, drop an empty file named
   `portable` next to the executable, or flip the toggle in the Behavior settings.

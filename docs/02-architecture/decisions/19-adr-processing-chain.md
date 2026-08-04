@@ -121,3 +121,8 @@ support burden.
 Open: whether exclusive mode on Linux
 targets the ALSA device directly or through PipeWire's pro-audio profile, decided at
 implementation against what devices actually expose.
+
+**Amendment:** Linux went to ALSA directly, claiming `hw:CARD=x,DEV=n` with
+`set_rate_resample(false)`, since that is the one path that holds whether or not
+PipeWire is in the picture. The fade midpoint the ADR left as a constant is half the
+window: the new track's segment registers the frame the mix crosses it.

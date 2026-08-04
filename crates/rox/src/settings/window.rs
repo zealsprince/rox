@@ -41,10 +41,12 @@ use crate::panel_settings;
 use crate::panels::library::{Library, LibraryEvent};
 use crate::player::Player;
 use crate::providers;
+use crate::query::search::{SearchBox, SearchEvent};
 use crate::replaygain_job;
 use crate::settings::layouts::Preset;
 use crate::settings::ui::{
-    self as settings_ui, grid_columns, icon_button, section, sidebar, small_button, SECTION_GAP,
+    self as settings_ui, grid_columns, icon_button, sidebar, small_button, PageBody, Query,
+    Section, SECTION_GAP,
 };
 use crate::settings::{
     self, data_dir, settings_path, Frame, GainModeSetting, LayoutSize, LyricsSave, NamedLayout,
@@ -191,6 +193,10 @@ enum Pending {
 
 struct SettingsWindow {
     page: Page,
+    /// The sidebar's search box: a non-empty query swaps the page area
+    /// for the all-pages results stack, every page filtered through
+    /// [`Query`] under its own breadcrumb.
+    search: Entity<SearchBox>,
     /// The working copy of the user palette: what the swatches show and
     /// what edits write through [`palette::set`]. Mirrors the active
     /// theme's side; `editor_mode` tracks which.
@@ -371,6 +377,7 @@ struct SettingsWindow {
     /// drags and resizes, the observe catches an import's set_center,
     /// which notifies without an event.
     _dock_changes: Vec<Subscription>,
+    _search_changes: Subscription,
     /// The Output readout has to follow a rebuild it didn't ask for, a
     /// device dropping out or the rate follow reopening the stream. Gated
     /// on the output state alone, since a playing session notifies sixty
@@ -490,6 +497,30 @@ impl SettingsWindow {
                 }
             }));
         }
+        // The search box up top: typing filters every page at once. The
+        // first search measures storage so the Storage rows have numbers
+        // without a page visit; after that the numbers ride until the
+        // page's own refresh paths run.
+        let search = cx.new(|cx| SearchBox::new("Search", "", window, cx).small().icon());
+        let _search_changes = cx.subscribe_in(
+            &search,
+            window,
+            |this: &mut Self, search, event, window, cx| match event {
+                SearchEvent::Changed => {
+                    if !search.read(cx).query().trim().is_empty() && this.storage.is_none() {
+                        this.refresh_storage(cx);
+                    }
+                    cx.notify();
+                }
+                // Escape on an empty box: nothing else here takes focus,
+                // so the way out is plain blur.
+                SearchEvent::Dismissed => {
+                    window.blur();
+                    cx.notify();
+                }
+                SearchEvent::Submitted | SearchEvent::FocusChanged => {}
+            },
+        );
         let mut pickers = Vec::with_capacity(ROLES.len());
         let mut _picker_changes = Vec::with_capacity(ROLES.len());
         for (index, role) in ROLES.iter().enumerate() {
@@ -507,6 +538,7 @@ impl SettingsWindow {
         }
         SettingsWindow {
             page: Page::Appearance,
+            search,
             base,
             editor_mode,
             keep_theme: settings.look.bundle.appearance.keep_theme,
@@ -579,6 +611,7 @@ impl SettingsWindow {
             _library_repaint,
             _backdrop_changed,
             _dock_changes,
+            _search_changes,
             _player_changed,
         }
     }
@@ -1088,168 +1121,149 @@ impl SettingsWindow {
         .detach();
     }
 
-    fn appearance_page(&self, columns: usize, cx: &mut Context<Self>) -> Div {
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section(
-                "Interface",
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        "Hide Menubar",
-                        Some("Keep the menubar hidden, floating it over the dock while alt is held"),
-                        panel::toggle(settings::hide_menubar(), Self::set_hide_menubar, cx),
-                    ))
-                    .child(panel::setting_row(
-                        "OS Decorations",
-                        Some("The OS titlebar and borders on the main windows; off leans on the window controls and drag anchor panels"),
-                        panel::toggle(settings::os_decorations(), Self::set_os_decorations, cx),
-                    )),
-            ))
-            .child(section(
-                "Theming",
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        "Theme",
-                        Some("The palette the app renders and the one the color editor below targets; System follows the OS's light or dark preference"),
-                        panel::choices(
-                            &[
-                                ("Dark", Theme::Dark),
-                                ("Light", Theme::Light),
-                                ("System", Theme::System),
-                            ],
-                            settings::theme(),
-                            Self::set_theme,
-                            cx,
-                        ),
-                    ))
-                    .child(panel::setting_row(
-                        "Song Theming",
-                        Some("Tint the palette and back windows with the playing track's cover art"),
-                        panel::toggle(palette::art_theming(), Self::set_art_theming, cx),
-                    ))
-                    .child(panel::setting_row(
-                        "Keep Theme",
-                        Some("Hold the active theme even when a cover's brightness would flip it; song theming still tints the color"),
-                        panel::toggle(self.keep_theme, Self::set_keep_theme, cx),
-                    )),
-            ))
-            .child(section(
-                "Typography",
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        "Font",
-                        Some("The app-wide typeface; panels can override it in their own settings"),
-                        panel::font_picker(
-                            "app-font",
-                            settings::app_font().map(|font| font.to_string()),
-                            Self::set_app_font,
-                            cx,
-                        ),
-                    ))
-                    .child(panel::setting_row(
-                        "Font Size",
-                        Some("The base text size every panel's text scales from; controls and icons hold their size"),
-                        settings_ui::scalar(
-                            &self.font_size_scrub,
-                            &self.value_edit,
-                            self.font_size,
-                            settings_ui::span(
-                                palette::FONT_SIZE_MIN,
-                                palette::FONT_SIZE_MAX,
-                                " px",
-                            )
-                            .hard(),
-                            Self::set_font_size,
-                            cx,
-                        ),
-                    )),
-            ))
-            .child(self.icons_section(cx))
-            .child(section(
-                "Transparency",
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        "Surface Opacity",
-                        Some("How opaque the app's surfaces read over the backdrop"),
-                        settings_ui::slider_edit(
-                            &self.surface_scrub,
-                            &self.value_edit,
-                            self.surface_opacity,
-                            Self::set_surface,
-                            cx,
-                        ),
-                    ))
-                    .child(panel::setting_row(
-                        "Backdrop Strength",
-                        Some("How strongly the cover backdrop shows behind them"),
-                        settings_ui::slider_edit(
-                            &self.backdrop_scrub,
-                            &self.value_edit,
-                            self.backdrop_strength,
-                            Self::set_backdrop,
-                            cx,
-                        ),
-                    )),
-            ))
-            .child(section(
-                "Frame",
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        "Margin",
-                        Some("Pull every panel in from its cell; a panel can override this in its own settings"),
-                        self.frame_row(&self.margin_scrub, self.frame.margin, MARGIN_MAX, Self::set_margin, cx),
-                    ))
-                    .child(panel::setting_row(
-                        "Padding",
-                        Some("Space inside every panel's edge, kept in its own background"),
-                        self.frame_row(&self.padding_scrub, self.frame.padding, PADDING_MAX, Self::set_padding, cx),
-                    ))
-                    .child(panel::setting_row(
-                        "Rounding",
-                        Some("Round every panel's corners off into the backdrop"),
-                        self.frame_row(&self.rounding_scrub, self.frame.rounding, ROUNDING_MAX, Self::set_rounding, cx),
-                    ))
-                    .child(panel::setting_row(
-                        "Border",
-                        Some("A line around every panel's edge, in the Border role's color"),
-                        self.frame_row(&self.border_scrub, self.frame.border, BORDER_MAX, Self::set_border, cx),
-                    ))
-                    .child(panel::setting_row(
-                        "Panel Seams",
-                        Some("The hairline between panel tiles; off leaves the resize grips invisible but still draggable"),
-                        panel::toggle(settings::seams(), Self::set_seams, cx),
-                    )),
-            ))
-            .child(self.colors_section(columns, cx))
+    fn appearance_page(&self, q: &Query, columns: usize, cx: &mut Context<Self>) -> PageBody {
+        PageBody::new()
+            .section(Section::new(q, icons::MENU, "Interface", None, |rows| {
+                rows.keyed(
+                    &["menu bar", "toolbar", "alt"],
+                    "Hide Menubar",
+                    Some("Keep the menubar hidden, floating it over the dock while alt is held"),
+                    panel::toggle(settings::hide_menubar(), Self::set_hide_menubar, cx),
+                )
+                .keyed(
+                    &["title bar", "chrome", "frameless"],
+                    "OS Decorations",
+                    Some("The OS titlebar and borders on the main windows; off leans on the window controls and drag anchor panels"),
+                    panel::toggle(settings::os_decorations(), Self::set_os_decorations, cx),
+                )
+            }))
+            .section(Section::new(q, icons::CONTRAST, "Theming", None, |rows| {
+                rows.keyed(
+                    &["dark", "light", "mode", "appearance"],
+                    "Theme",
+                    Some("The palette the app renders and the one the color editor below targets; System follows the OS's light or dark preference"),
+                    panel::choices(
+                        &[
+                            ("Dark", Theme::Dark),
+                            ("Light", Theme::Light),
+                            ("System", Theme::System),
+                        ],
+                        settings::theme(),
+                        Self::set_theme,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    &["album art", "tint", "accent"],
+                    "Song Theming",
+                    Some("Tint the palette and back windows with the playing track's cover art"),
+                    panel::toggle(palette::art_theming(), Self::set_art_theming, cx),
+                )
+                .keyed(
+                    &["dark", "light", "lock", "pin"],
+                    "Keep Theme",
+                    Some("Hold the active theme even when a cover's brightness would flip it; song theming still tints the color"),
+                    panel::toggle(self.keep_theme, Self::set_keep_theme, cx),
+                )
+            }))
+            .section(Section::new(q, icons::ALIGN_LEFT, "Typography", None, |rows| {
+                rows.keyed(
+                    &["typeface", "family", "text"],
+                    "Font",
+                    Some("The app-wide typeface; panels can override it in their own settings"),
+                    panel::font_picker(
+                        "app-font",
+                        settings::app_font().map(|font| font.to_string()),
+                        Self::set_app_font,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    &["text size", "scale", "zoom"],
+                    "Font Size",
+                    Some("The base text size every panel's text scales from; controls and icons hold their size"),
+                    settings_ui::scalar(
+                        &self.font_size_scrub,
+                        &self.value_edit,
+                        self.font_size,
+                        settings_ui::span(
+                            palette::FONT_SIZE_MIN,
+                            palette::FONT_SIZE_MAX,
+                            " px",
+                        )
+                        .hard(),
+                        Self::set_font_size,
+                        cx,
+                    ),
+                )
+            }))
+            .section(self.icons_section(q, cx))
+            .section(Section::new(q, icons::EYE, "Transparency", None, |rows| {
+                rows.keyed(
+                    &["transparency", "translucent", "blur"],
+                    "Surface Opacity",
+                    Some("How opaque the app's surfaces read over the backdrop"),
+                    settings_ui::slider_edit(
+                        &self.surface_scrub,
+                        &self.value_edit,
+                        self.surface_opacity,
+                        Self::set_surface,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    &["transparency", "opacity", "blur", "wallpaper"],
+                    "Backdrop Strength",
+                    Some("How strongly the cover backdrop shows behind them"),
+                    settings_ui::slider_edit(
+                        &self.backdrop_scrub,
+                        &self.value_edit,
+                        self.backdrop_strength,
+                        Self::set_backdrop,
+                        cx,
+                    ),
+                )
+            }))
+            .section(Section::new(q, icons::SQUARE_DASHED, "Frame", None, |rows| {
+                rows.keyed(
+                    &["spacing", "gap", "outside"],
+                    "Margin",
+                    Some("Pull every panel in from its cell; a panel can override this in its own settings"),
+                    self.frame_row(&self.margin_scrub, self.frame.margin, MARGIN_MAX, Self::set_margin, cx),
+                )
+                .keyed(
+                    &["spacing", "inset", "inside"],
+                    "Padding",
+                    Some("Space inside every panel's edge, kept in its own background"),
+                    self.frame_row(&self.padding_scrub, self.frame.padding, PADDING_MAX, Self::set_padding, cx),
+                )
+                .keyed(
+                    &["corner radius", "rounded"],
+                    "Rounding",
+                    Some("Round every panel's corners off into the backdrop"),
+                    self.frame_row(&self.rounding_scrub, self.frame.rounding, ROUNDING_MAX, Self::set_rounding, cx),
+                )
+                .keyed(
+                    &["outline", "stroke", "edge"],
+                    "Border",
+                    Some("A line around every panel's edge, in the Border role's color"),
+                    self.frame_row(&self.border_scrub, self.frame.border, BORDER_MAX, Self::set_border, cx),
+                )
+                .keyed(
+                    &["divider", "gutter", "grid lines"],
+                    "Panel Seams",
+                    Some("The hairline between panel tiles; off leaves the resize grips invisible but still draggable"),
+                    panel::toggle(settings::seams(), Self::set_seams, cx),
+                )
+            }))
+            .section(self.colors_section(q, columns, cx))
     }
 
     /// The Icons section: the built-in set and every pack the user has as a
     /// list, each a set to switch to; the current one carries an Active
     /// badge. Creating a new pack, seeded with the built-in icons for an
     /// author to edit, rides the header.
-    fn icons_section(&self, cx: &mut Context<Self>) -> Div {
+    fn icons_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let active = self.active_icon_pack.clone();
         let packs = self.icon_packs.clone();
 
@@ -1268,27 +1282,37 @@ impl SettingsWindow {
                 cx.listener(|this, _, window, cx| this.create_pack(window, cx)),
             ));
 
-        let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
-            div().text_xs().text_color(palette::text_muted()).child(
-                "A pack is a folder of SVGs that replaces the built-in icons; \
-                 switching takes effect on the next launch",
-            ),
-        );
-        // The built-in set heads the list, its own row so switching back is
-        // one click like any pack.
-        list = list.child(self.icon_pack_row(None, active.is_none(), cx));
-        list = list.child(
-            div().flex().flex_col().children(
-                packs
-                    .into_iter()
-                    .map(|name| {
-                        let is_active = active.as_deref() == Some(name.as_str());
-                        self.icon_pack_row(Some(name), is_active, cx)
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        );
-        section("Icons", Some(controls.into_any_element()), list)
+        Section::new(
+            q,
+            icons::IMAGE,
+            "Icons",
+            Some(controls.into_any_element()),
+            |rows| {
+                rows.custom(&["icon pack", "svg", "glyphs", "built-in"], || {
+                    let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
+                        div().text_xs().text_color(palette::text_muted()).child(
+                            "A pack is a folder of SVGs that replaces the built-in icons; \
+                         switching takes effect on the next launch",
+                        ),
+                    );
+                    // The built-in set heads the list, its own row so switching back is
+                    // one click like any pack.
+                    list = list.child(self.icon_pack_row(None, active.is_none(), cx));
+                    list = list.child(
+                        div().flex().flex_col().children(
+                            packs
+                                .into_iter()
+                                .map(|name| {
+                                    let is_active = active.as_deref() == Some(name.as_str());
+                                    self.icon_pack_row(Some(name), is_active, cx)
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                    );
+                    list.into_any_element()
+                })
+            },
+        )
     }
 
     /// One icons row: the built-in set (None) or a pack by name, an Active
@@ -1394,35 +1418,36 @@ impl SettingsWindow {
     /// Everything that shapes the samples on their way to the device, in the
     /// order the audio meets it: the chain first (ADR 19), then the backend
     /// that hands it over.
-    fn audio_page(&self, cx: &mut Context<Self>) -> Div {
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section(
+    fn audio_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
+        PageBody::new()
+            .section(Section::new(
+                q,
+                icons::AUDIO_LINES,
                 "Playback",
                 None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
+                |rows| {
+                    rows.keyed(
+                        &["play", "pause", "skip", "preview"],
                         "Transport",
                         Some(
                             "Start and stop without leaving this page, since every setting \
-                             below is judged by ear",
+                         below is judged by ear",
                         ),
                         panel::transport_strip(&self.playback, cx),
-                    ))
-                    .child(self.crossfade_row(cx))
-                    .child(self.crossfade_albums_row(cx)),
+                    )
+                    .custom(
+                        &["crossfade", "fade", "gapless", "overlap", "transition"],
+                        || self.crossfade_row(cx).into_any_element(),
+                    )
+                    .custom(&["crossfade", "fade", "gapless", "album", "splice"], || {
+                        self.crossfade_albums_row(cx).into_any_element()
+                    })
+                },
             ))
-            .child(section(
-                "ReplayGain",
-                Some(self.measure_control(cx)),
-                self.replay_gain_section(cx),
-            ))
-            .child(section(
+            .section(self.replay_gain_section(q, cx))
+            .section(Section::new(
+                q,
+                icons::SLIDERS,
                 "Equalizer",
                 Some(
                     small_button(
@@ -1433,16 +1458,20 @@ impl SettingsWindow {
                     )
                     .into_any_element(),
                 ),
-                div().text_xs().text_color(palette::text_muted()).child(
-                    "Ten octave bands over the output. It opens in its own window, \
-                     since it's worked while the music plays rather than set once",
-                ),
+                |rows| {
+                    rows.custom(&["eq", "bands", "bass", "treble", "tone"], || {
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_muted())
+                            .child(
+                                "Ten octave bands over the output. It opens in its own window, \
+                                 since it's worked while the music plays rather than set once",
+                            )
+                            .into_any_element()
+                    })
+                },
             ))
-            .child(section(
-                "Output",
-                self.exclusive_notice(cx),
-                self.output_section(cx),
-            ))
+            .section(self.output_section(q, cx))
     }
 
     /// How long one track overlaps the next. Zero is off, which is the
@@ -1507,129 +1536,144 @@ impl SettingsWindow {
     /// two offsets around it, and where the measurement pass puts what it
     /// measures. The offsets only show once a mode is picked, since with
     /// leveling off there is nothing for them to offset.
-    fn replay_gain_section(&self, cx: &mut Context<Self>) -> Div {
+    fn replay_gain_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         const MODES: &[(&str, GainModeSetting)] = &[
             ("Off", GainModeSetting::Off),
             ("Track", GainModeSetting::Track),
             ("Album", GainModeSetting::Album),
         ];
         let rg = self.playback.read(cx).replay_gain();
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                "Level By",
-                Some(
-                    "Play every track at the loudness its ReplayGain tags measured, so a \
-                     shuffle stops jumping between masters. Track levels each file on its \
-                     own; Album uses the record's gain across all its tracks, which keeps \
-                     an album's own quiet and loud passages where they were put",
-                ),
-                panel::choices(
-                    MODES,
-                    rg.mode,
-                    |this: &mut Self, mode, cx| {
-                        this.playback
-                            .update(cx, |player, cx| player.set_replay_gain_mode(mode, cx));
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ));
-        if rg.mode != GainModeSetting::Off {
-            body = body
-                .child(panel::setting_row(
-                    "Preamp",
-                    Some(
-                        "Added to every tagged gain. ReplayGain's reference sits below where \
-                         modern records are cut, so a levelled library plays quieter than the \
-                         same library raw; this is where that comes back. A boost never \
-                         clips: the tagged peak caps it",
-                    ),
-                    settings_ui::scalar(
-                        &self.preamp_scrub,
-                        &self.value_edit,
-                        rg.preamp_db,
-                        settings_ui::span(-15., 15., " dB").decimals(1).hard(),
-                        |this: &mut Self, db, cx| {
-                            this.playback
-                                .update(cx, |player, cx| player.set_replay_gain_preamp(db, cx));
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    "Untagged Files",
-                    Some(
-                        "What a file with no ReplayGain tags plays at. Nothing measured it, \
-                         so this is a guess standing in for one - leave it at zero and \
-                         untagged tracks play as they always did",
-                    ),
-                    settings_ui::scalar(
-                        &self.fallback_scrub,
-                        &self.value_edit,
-                        rg.fallback_db,
-                        settings_ui::span(-15., 15., " dB").decimals(1).hard(),
-                        |this: &mut Self, db, cx| {
-                            this.playback
-                                .update(cx, |player, cx| player.set_replay_gain_fallback(db, cx));
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ));
-        }
-        body = body.child(panel::setting_row(
-            "Save Measured Gains",
-            Some(
-                "Where the measurement pass puts its numbers. The library database keeps \
-                 your files untouched; tags put the same values where every other player \
-                 reads them, at the cost of rewriting the audio files",
-            ),
-            panel::choices(
-                &[
-                    ("Database", ReplayGainSave::Database),
-                    ("Tags", ReplayGainSave::Tags),
-                ],
-                rg.save,
-                Self::set_replay_gain_save,
-                cx,
-            ),
-        ));
         // A running pass owns the line under the section: its count, the
-        // file it's on, and whatever it had to skip.
-        if let Some(job) = &self.rg_job {
-            return body.child(coverage_note(Self::measure_progress_line(job)));
-        }
+        // file it's on, and whatever it had to skip. With nothing scanned
+        // there's no coverage to state either.
         let split = self.rg_coverage;
         let total = split.total();
-        if total == 0 {
-            return body;
-        }
-        body.child(coverage_note(if split.covered() == 0 {
-            format!(
+        let note: Option<String> = if let Some(job) = &self.rg_job {
+            Some(Self::measure_progress_line(job))
+        } else if total == 0 {
+            None
+        } else if split.covered() == 0 {
+            Some(format!(
                 "None of the {total} tracks scanned have a ReplayGain to level by. Measure \
                  Missing analyzes them and saves what it measures"
-            )
+            ))
         } else if split.missing > 0 {
-            format!(
+            Some(format!(
                 "{} of {total} scanned tracks have a gain to level by, {} of them measured \
                  by rox. The other {} play at the untagged setting",
                 split.covered(),
                 split.measured,
                 split.missing,
-            )
+            ))
         } else if split.measured > 0 {
-            format!(
+            Some(format!(
                 "All {total} scanned tracks have a gain to level by, {} of them measured by \
                  rox",
                 split.measured,
-            )
+            ))
         } else {
-            format!("All {total} scanned tracks carry ReplayGain tags")
-        }))
+            Some(format!("All {total} scanned tracks carry ReplayGain tags"))
+        };
+        Section::new(
+            q,
+            icons::GAUGE,
+            "ReplayGain",
+            Some(self.measure_control(cx)),
+            |rows| {
+                let rows = rows
+                .keyed(
+                    &["volume", "normalization", "loudness", "leveling"],
+                    "Level By",
+                    Some(
+                        "Play every track at the loudness its ReplayGain tags measured, so a \
+                         shuffle stops jumping between masters. Track levels each file on its \
+                         own; Album uses the record's gain across all its tracks, which keeps \
+                         an album's own quiet and loud passages where they were put",
+                    ),
+                    panel::choices(
+                        MODES,
+                        rg.mode,
+                        |this: &mut Self, mode, cx| {
+                            this.playback
+                                .update(cx, |player, cx| player.set_replay_gain_mode(mode, cx));
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .when(rg.mode != GainModeSetting::Off, |rows| {
+                    rows.keyed(
+                        &["volume", "gain", "boost", "loudness"],
+                        "Preamp",
+                        Some(
+                            "Added to every tagged gain. ReplayGain's reference sits below where \
+                             modern records are cut, so a levelled library plays quieter than the \
+                             same library raw; this is where that comes back. A boost never \
+                             clips: the tagged peak caps it",
+                        ),
+                        settings_ui::scalar(
+                            &self.preamp_scrub,
+                            &self.value_edit,
+                            rg.preamp_db,
+                            settings_ui::span(-15., 15., " dB").decimals(1).hard(),
+                            |this: &mut Self, db, cx| {
+                                this.playback
+                                    .update(cx, |player, cx| player.set_replay_gain_preamp(db, cx));
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .keyed(
+                        &["fallback", "default gain", "missing"],
+                        "Untagged Files",
+                        Some(
+                            "What a file with no ReplayGain tags plays at. Nothing measured it, \
+                             so this is a guess standing in for one - leave it at zero and \
+                             untagged tracks play as they always did",
+                        ),
+                        settings_ui::scalar(
+                            &self.fallback_scrub,
+                            &self.value_edit,
+                            rg.fallback_db,
+                            settings_ui::span(-15., 15., " dB").decimals(1).hard(),
+                            |this: &mut Self, db, cx| {
+                                this.playback.update(cx, |player, cx| {
+                                    player.set_replay_gain_fallback(db, cx)
+                                });
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                })
+                .keyed(
+                    &["write", "tags", "database", "analysis"],
+                    "Save Measured Gains",
+                    Some(
+                        "Where the measurement pass puts its numbers. The library database keeps \
+                         your files untouched; tags put the same values where every other player \
+                         reads them, at the cost of rewriting the audio files",
+                    ),
+                    panel::choices(
+                        &[
+                            ("Database", ReplayGainSave::Database),
+                            ("Tags", ReplayGainSave::Tags),
+                        ],
+                        rg.save,
+                        Self::set_replay_gain_save,
+                        cx,
+                    ),
+                );
+                match note {
+                    Some(note) => rows
+                        .custom(&["coverage", "measure", "missing", "progress"], || {
+                            coverage_note(note).into_any_element()
+                        }),
+                    None => rows,
+                }
+            },
+        )
     }
 
     /// Where a measured gain saves. Through the player like the other three
@@ -1835,7 +1879,7 @@ impl SettingsWindow {
     /// negotiated. The readout is the point of the section: the two rows
     /// above it are requests, and ADR 19 asks the UI to state the reality
     /// rather than repeat the ask.
-    fn output_section(&self, cx: &mut Context<Self>) -> Div {
+    fn output_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         // Where no exclusive backend is built there's nothing to toggle:
         // every claim would fall back, and a switch that never does
         // anything reads as a bug in the hardware rather than a gap in rox.
@@ -1844,24 +1888,40 @@ impl SettingsWindow {
         } else {
             readout("Not built for this platform yet".into()).into_any_element()
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_row(
-                "Exclusive Mode",
-                Some(
-                    "Claim the device for rox alone and run it at the file's own rate where \
+        Section::new(
+            q,
+            icons::VOLUME_2,
+            "Output",
+            self.exclusive_notice(cx),
+            |rows| {
+                rows.keyed(
+                    &["bit perfect", "wasapi", "asio", "hog"],
+                    "Exclusive Mode",
+                    Some(
+                        "Claim the device for rox alone and run it at the file's own rate where \
                      the hardware takes one; off shares the system mixer with everything \
                      else on the desktop",
-                ),
-                exclusive,
-            ))
-            .child(self.output_devices_block(cx))
-            .child(self.output_rate_row(cx))
-            .child(self.output_format_row(cx))
-            .child(self.output_period_row(cx))
-            .child(self.output_status_block(cx))
+                    ),
+                    exclusive,
+                )
+                .custom(
+                    &["device", "soundcard", "headphones", "interface", "rescan"],
+                    || self.output_devices_block(cx).into_any_element(),
+                )
+                .custom(&["sample rate", "hz", "khz", "resample"], || {
+                    self.output_rate_row(cx).into_any_element()
+                })
+                .custom(&["format", "bit depth", "float", "integer"], || {
+                    self.output_format_row(cx).into_any_element()
+                })
+                .custom(&["buffer", "latency", "period", "underrun"], || {
+                    self.output_period_row(cx).into_any_element()
+                })
+                .custom(&["status", "negotiated", "stream", "fallback"], || {
+                    self.output_status_block(cx).into_any_element()
+                })
+            },
+        )
     }
 
     /// The three hardware knobs below only mean anything on a device rox
@@ -2121,7 +2181,7 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn behavior_page(&self, cx: &mut Context<Self>) -> Div {
+    fn behavior_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         // The portable row's control by where the toggle stands: inert
         // text where the exe folder refuses writes or while the seed
         // copy runs, the live switch otherwise.
@@ -2157,76 +2217,68 @@ impl SettingsWindow {
                     .child("Applies on the next launch; this run stays on its current folder"),
             );
         }
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section(
-                "Startup",
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        "Restore Last Track",
-                        Some("Launch with the last playing track loaded, paused where it left off"),
-                        panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
-                    ))
-                    .child(panel::setting_row(
-                        "Check for Updates",
-                        Some("Look for a newer release once a day when rox starts; the About window checks now either way"),
-                        panel::toggle(self.check_updates, Self::set_check_updates, cx),
-                    )),
-            ))
+        PageBody::new()
+            .section(Section::new(q, icons::PLAY, "Startup", None, |rows| {
+                rows.keyed(
+                    &["resume", "reopen"],
+                    "Restore Last Track",
+                    Some("Launch with the last playing track loaded, paused where it left off"),
+                    panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
+                )
+                .keyed(
+                    &["release", "version", "upgrade"],
+                    "Check for Updates",
+                    Some("Look for a newer release once a day when rox starts; the About window checks now either way"),
+                    panel::toggle(self.check_updates, Self::set_check_updates, cx),
+                )
+            }))
             // No tray backend on Windows yet, and a resident process with no
             // way back in is worse than quitting, so the row sits out there.
             .when(tray::supported(), |page| {
-                page.child(section(
-                    "Window",
-                    None,
-                    panel::setting_row(
+                page.section(Section::new(q, icons::APP_WINDOW, "Window", None, |rows| {
+                    rows.keyed(
+                        &["quit", "minimize", "background"],
                         "Remain in Tray",
                         Some(
                             "Keep the music playing when the last window closes, with the \
                              tray icon (the dock on macOS) as the way back in",
                         ),
                         panel::toggle(settings::quit_to_tray(), Self::set_quit_to_tray, cx),
-                    ),
-                ))
+                    )
+                }))
             })
-            .child(section("Data", None, portable_row))
-            .child(section(
-                "Ratings",
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        "Rating Scale",
-                        Some("Stars for quick clicks, 0-10 in half steps for finer review scores"),
-                        panel::choices(
-                            &[
-                                ("Stars", RatingStyle::Stars),
-                                ("0-10", RatingStyle::Numeric),
-                            ],
-                            self.rating_style,
-                            Self::set_rating_style,
-                            cx,
-                        ),
-                    ))
-                    .child(panel::setting_row(
-                        "Unrated Dots",
-                        Some("Mark unfilled star slots with a faint dot instead of leaving them empty"),
-                        panel::toggle(self.rating_dots, Self::set_rating_dots, cx),
-                    )),
-            ))
+            .section(Section::new(q, icons::DATABASE, "Data", None, |rows| {
+                rows.custom(&["portable mode", "usb", "folder", "executable"], || {
+                    portable_row.into_any_element()
+                })
+            }))
+            .section(Section::new(q, icons::STAR, "Ratings", None, |rows| {
+                rows.keyed(
+                    &["stars", "numeric"],
+                    "Rating Scale",
+                    Some("Stars for quick clicks, 0-10 in half steps for finer review scores"),
+                    panel::choices(
+                        &[
+                            ("Stars", RatingStyle::Stars),
+                            ("0-10", RatingStyle::Numeric),
+                        ],
+                        self.rating_style,
+                        Self::set_rating_style,
+                        cx,
+                    ),
+                )
+                .keyed(
+                    &["stars", "empty"],
+                    "Unrated Dots",
+                    Some("Mark unfilled star slots with a faint dot instead of leaving them empty"),
+                    panel::toggle(self.rating_dots, Self::set_rating_dots, cx),
+                )
+            }))
     }
 
     /// The Integrations page: Last.fm account & scrobbling settings,
     /// and Discord Rich Presence knobs.
-    fn integrations_page(&self, cx: &mut Context<Self>) -> Div {
+    fn integrations_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         let scrobbler = self.scrobbler.read(cx);
         let config = scrobbler.config().clone();
         let phase = scrobbler.phase().clone();
@@ -2330,62 +2382,61 @@ impl SettingsWindow {
                     .child(action),
             );
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section("Last.fm", None, account))
-            .child(section(
-                "Scrobbling",
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        "Scrobble Tracks",
-                        Some("Send played tracks to last.fm once they cross the threshold"),
-                        panel::toggle(
-                            config.scrobbling,
-                            |this: &mut Self, on, cx| {
-                                this.scrobbler.update(cx, |s, cx| s.set_scrobbling(on, cx));
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    ))
-                    .child(panel::setting_row(
-                        "Scrobble Threshold",
-                        Some(
-                            "How much of a track has to play before it scrobbles; \
-                             the seek strip and waveform can mark it",
-                        ),
-                        settings_ui::slider_edit(
-                            &self.threshold_scrub,
-                            &self.value_edit,
-                            config.threshold,
-                            |this: &mut Self, fraction, cx| {
-                                this.scrobbler
-                                    .update(cx, |s, cx| s.set_threshold(fraction, cx));
-                                cx.notify();
-                            },
-                            cx,
-                        ),
-                    )),
-            ))
-            .child(section(
+        PageBody::new()
+            .section(Section::new(q, icons::RADIO, "Last.fm", None, |rows| {
+                rows.custom(
+                    &["account", "connect", "login", "api key", "scrobble"],
+                    || account.into_any_element(),
+                )
+            }))
+            .section(Section::new(q, icons::UPLOAD, "Scrobbling", None, |rows| {
+                rows.keyed(
+                    &["listens", "history"],
+                    "Scrobble Tracks",
+                    Some("Send played tracks to last.fm once they cross the threshold"),
+                    panel::toggle(
+                        config.scrobbling,
+                        |this: &mut Self, on, cx| {
+                            this.scrobbler.update(cx, |s, cx| s.set_scrobbling(on, cx));
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .keyed(
+                    &["last.fm", "percent"],
+                    "Scrobble Threshold",
+                    Some(
+                        "How much of a track has to play before it scrobbles; \
+                         the seek strip and waveform can mark it",
+                    ),
+                    settings_ui::slider_edit(
+                        &self.threshold_scrub,
+                        &self.value_edit,
+                        config.threshold,
+                        |this: &mut Self, fraction, cx| {
+                            this.scrobbler
+                                .update(cx, |s, cx| s.set_threshold(fraction, cx));
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+            }))
+            .section(Section::new(
+                q,
+                icons::GLOBE,
                 "Discord Rich Presence",
                 None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
+                |rows| {
+                    rows.keyed(
+                        &["status", "now playing"],
                         "Enable Rich Presence",
                         Some("Show rox activity on Discord when playing music"),
                         panel::toggle(self.discord_enabled, Self::set_discord_enabled, cx),
-                    ))
-                    .child(panel::setting_row(
+                    )
+                    .keyed(
+                        &["link", "profile"],
                         "Show Last.fm Button",
                         Some("Include a clickable 'View on Last.fm' button in Discord status"),
                         panel::toggle(
@@ -2393,8 +2444,9 @@ impl SettingsWindow {
                             Self::set_discord_show_lastfm_button,
                             cx,
                         ),
-                    ))
-                    .child(panel::setting_row(
+                    )
+                    .keyed(
+                        &["link", "video"],
                         "Show YouTube Button",
                         Some("Include a clickable 'Search on YouTube' button in Discord status"),
                         panel::toggle(
@@ -2402,7 +2454,8 @@ impl SettingsWindow {
                             Self::set_discord_show_youtube_button,
                             cx,
                         ),
-                    )),
+                    )
+                },
             ))
     }
 
@@ -2476,29 +2529,27 @@ impl SettingsWindow {
     /// The Providers page: the online enrichment services (ADR 14), a
     /// section per domain. Nothing here fetches on its own; the toggles
     /// gate the actions the panels offer.
-    fn providers_page(&self, cx: &mut Context<Self>) -> Div {
-        div().flex().flex_col().gap(SECTION_GAP).child(section(
-            "Lyrics",
-            None,
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(
+    fn providers_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
+        PageBody::new()
+            .section(Section::new(q, icons::MIC, "Lyrics", None, |rows| {
+                rows.custom(&["online", "network", "offline", "privacy"], || {
                     div()
                         .text_xs()
                         .text_color(palette::text_muted())
                         .child(
                             "Online lookups run only when a panel action asks for one; \
                              playback and browsing never touch the network",
-                        ),
-                )
-                .child(panel::setting_row(
+                        )
+                        .into_any_element()
+                })
+                .keyed(
+                    &["online", "fetch"],
                     "LRCLIB",
                     Some("Fetch missing lyrics from lrclib.net, synced sheets when it has them"),
                     panel::toggle(self.providers.lrclib, Self::set_lrclib, cx),
-                ))
-                .child(panel::setting_row(
+                )
+                .keyed(
+                    &["sidecar", "store"],
                     "Save Fetched Lyrics",
                     Some(
                         "Where a fetched sheet lands: rox's own data folder keeping the \
@@ -2514,56 +2565,50 @@ impl SettingsWindow {
                         Self::set_lyrics_save,
                         cx,
                     ),
-                )),
-        ))
-        .child(section(
-            "Metadata",
-            None,
-            panel::setting_row(
-                "MusicBrainz",
-                Some(
-                    "Look up tags on musicbrainz.org; the metadata panel's search \
-                     shows matches to confirm field by field before writing",
-                ),
-                panel::toggle(self.providers.musicbrainz, Self::set_musicbrainz, cx),
-            ),
-        ))
-        .child(section(
-            "Cover Art",
-            None,
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_MD)
-                .child(panel::setting_row(
+                )
+            }))
+            .section(Section::new(q, icons::TAG, "Metadata", None, |rows| {
+                rows.keyed(
+                    &["lookup", "online"],
+                    "MusicBrainz",
+                    Some(
+                        "Look up tags on musicbrainz.org; the metadata panel's search \
+                         shows matches to confirm field by field before writing",
+                    ),
+                    panel::toggle(self.providers.musicbrainz, Self::set_musicbrainz, cx),
+                )
+            }))
+            .section(Section::new(q, icons::DISC, "Cover Art", None, |rows| {
+                rows.keyed(
+                    &["artwork", "covers", "album art"],
                     "iTunes",
                     Some("Search iTunes for cover art; the cover editor's search shows matches to pick before setting"),
                     panel::toggle(self.providers.itunes, Self::set_itunes, cx),
-                ))
-                .child(panel::setting_row(
+                )
+                .keyed(
+                    &["artwork", "covers", "album art"],
                     "Deezer",
                     Some("Search Deezer for cover art, up to 1000 pixels"),
                     panel::toggle(self.providers.deezer, Self::set_deezer, cx),
-                ))
-                .child(panel::setting_row(
+                )
+                .keyed(
+                    &["artwork", "covers", "album art"],
                     "Last.fm",
                     Some("Search Last.fm for cover art"),
                     panel::toggle(self.providers.lastfm_art, Self::set_lastfm_art, cx),
-                )),
-        ))
-        .child(section(
-            "Artist",
-            None,
-            panel::setting_row(
-                "Last.fm",
-                Some(
-                    "Fetch artist biographies, stats, and similar artists for the \
-                     biography panel, with a portrait from Deezer; everything is \
-                     kept in the data folder and reads offline afterwards",
-                ),
-                panel::toggle(self.providers.artist, Self::set_artist, cx),
-            ),
-        ))
+                )
+            }))
+            .section(Section::new(q, icons::USER, "Artist", None, |rows| {
+                rows.row(
+                    "Last.fm",
+                    Some(
+                        "Fetch artist biographies, stats, and similar artists for the \
+                         biography panel, with a portrait from Deezer; everything is \
+                         kept in the data folder and reads offline afterwards",
+                    ),
+                    panel::toggle(self.providers.artist, Self::set_artist, cx),
+                )
+            }))
     }
 
     /// One cell of the color grid: the picker with its label beside it,
@@ -2592,19 +2637,8 @@ impl SettingsWindow {
         settings_ui::color_cell(control, role.label, false, None)
     }
 
-    fn colors_section(&self, columns: usize, cx: &mut Context<Self>) -> Div {
+    fn colors_section(&self, q: &Query, columns: usize, cx: &mut Context<Self>) -> Section {
         let locked = palette::art_theming();
-        let mut body = div().flex().flex_col().gap(tokens::SPACE_XS);
-        if locked {
-            body = body.child(div().text_xs().text_color(palette::text_muted()).child(
-                "Song theming is on, so the playing track drives these colors \
-                 and export saves them; turn it off above to edit them",
-            ));
-        }
-        body = body.child(settings_ui::role_grid(columns, |j| {
-            self.color_cell(&ROLES[j], &self.pickers[j], locked)
-                .into_any_element()
-        }));
 
         // Import, inverse, and reset lock with the rest of the editor:
         // they change the palette too. Apply Song Theme is the opposite,
@@ -2650,7 +2684,33 @@ impl SettingsWindow {
                 locked,
                 cx.listener(|this, _, window, cx| this.reset_palette(window, cx)),
             ));
-        section("Colors", Some(controls.into_any_element()), body)
+        Section::new(
+            q,
+            icons::PALETTE,
+            "Colors",
+            Some(controls.into_any_element()),
+            |rows| {
+                rows.custom(
+                    &["palette", "accent", "swatch", "role", "import", "export"],
+                    || {
+                        let mut body = div().flex().flex_col().gap(tokens::SPACE_XS);
+                        if locked {
+                            body =
+                                body
+                                    .child(div().text_xs().text_color(palette::text_muted()).child(
+                                    "Song theming is on, so the playing track drives these colors \
+                             and export saves them; turn it off above to edit them",
+                                ));
+                        }
+                        body.child(settings_ui::role_grid(columns, |j| {
+                            self.color_cell(&ROLES[j], &self.pickers[j], locked)
+                                .into_any_element()
+                        }))
+                        .into_any_element()
+                    },
+                )
+            },
+        )
     }
 
     /// One row of the folder table: the path, its rollup numbers, and a
@@ -2679,7 +2739,7 @@ impl SettingsWindow {
             .child(remove)
     }
 
-    fn library_page(&self, cx: &mut Context<Self>) -> Div {
+    fn library_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         let busy = self.library.read(cx).busy();
         let scanning = busy.is_some();
         // Past the ceiling the watch turns itself off, so the toggle grays
@@ -2688,77 +2748,22 @@ impl SettingsWindow {
         // nest, so nothing counts twice. Matched to the catalog's own limit,
         // which is None where the platform prices watching flat.
         let dirs = self.root_stats.iter().map(|(_, s)| s.dirs).sum::<u64>();
-        let watch_row = match crate::catalog::watch_limit_dirs() {
-            Some(limit) if dirs > limit => panel::setting_row_dyn(
-                "Watch folders",
-                Some(
-                    format!(
-                        "Off: this library spans {dirs} folders and each needs \
-                         one Linux file watch, more than the {limit} the app \
-                         will take from the system's shared budget. Rescan by \
-                         hand to fold in changes"
-                    )
-                    .into(),
-                ),
-                panel::toggle_locked(false),
-            ),
-            _ => panel::setting_row(
-                "Watch folders",
-                Some(
-                    "Fold added, edited, and deleted files into the library as \
-                     they happen, without a manual rescan",
-                ),
-                panel::toggle(self.watch_library, Self::set_watch_library, cx),
-            ),
-        };
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_SM)
-            .child(div().text_xs().text_color(palette::text_muted()).child(
-                "Folders scanned into the library; removing one drops its \
-                     tracks from the catalog and leaves the files alone",
-            ))
-            .child(watch_row)
-            .child(panel::setting_row(
-                "Merge case variants",
-                Some(
-                    "Treat values differing only by case as one - Rock and \
-                     rock become the same genre, artist, and album, shown \
-                     under the casing most tracks carry. Files keep their \
-                     tags as written",
-                ),
-                panel::toggle(self.fold_case, Self::set_fold_case, cx),
-            ))
-            .child(panel::setting_row(
-                "Split genres on commas and slashes",
-                Some(
-                    "\"Dubstep, Trap\" and \"Drum & Bass / Neurofunk\" count \
-                     each value as its own genre; semicolons always split. \
-                     Off keeps slashed names whole for tags where they mean \
-                     one genre. Files keep their tags as written",
-                ),
-                panel::toggle(
-                    self.split_genre_compounds,
-                    Self::set_split_genre_compounds,
-                    cx,
-                ),
-            ))
-            // The rescan nudge, only while the separator rule has moved
-            // this session: filtering and the genre wall follow the flip
-            // right away, but genre lists earlier scans wrote into the
-            // database keep their old shape until a rescan re-reads the
-            // tags.
-            .when(
-                self.split_genre_compounds != self.split_genre_compounds_at_open,
-                |d| {
-                    d.child(div().text_xs().text_color(palette::text_muted()).child(
-                        "Separators changed: browsing follows right away. Genre \
-                         lists stored by earlier scans keep their old shape \
-                         until you hit Rescan up in the Folders header",
-                    ))
-                },
-            );
+        let over_limit = crate::catalog::watch_limit_dirs().filter(|limit| dirs > *limit);
+        let lead_in = div().text_xs().text_color(palette::text_muted()).child(
+            "Folders scanned into the library; removing one drops its \
+             tracks from the catalog and leaves the files alone",
+        );
+        // The rescan nudge, only while the separator rule has moved
+        // this session: filtering and the genre wall follow the flip
+        // right away, but genre lists earlier scans wrote into the
+        // database keep their old shape until a rescan re-reads the
+        // tags.
+        let separators_moved = self.split_genre_compounds != self.split_genre_compounds_at_open;
+        let nudge = div().text_xs().text_color(palette::text_muted()).child(
+            "Separators changed: browsing follows right away. Genre \
+             lists stored by earlier scans keep their old shape \
+             until you hit Rescan up in the Folders header",
+        );
         // The folder table: a column header line, then a hairlined row
         // per folder.
         let mut table = div().flex().flex_col().child(
@@ -2801,24 +2806,27 @@ impl SettingsWindow {
         for (root, stats) in &self.root_stats {
             table = table.child(self.folder_row(root, *stats, scanning, cx));
         }
-        body = body.child(table);
-
         // The library's badge and the file under the scan cursor, or the
         // resting status, under the table.
         let note: Option<SharedString> = busy.or_else(|| {
             let status = self.library.read(cx).status();
             (!status.is_empty()).then_some(status)
         });
-        body = body.when_some(note, |d, note| {
-            d.child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(note),
-            )
-        });
+        let table = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_SM)
+            .child(table)
+            .when_some(note, |d, note| {
+                d.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(note),
+                )
+            });
 
         // Add folder and rescan ride the section header like the colors
         // controls do.
@@ -2869,7 +2877,75 @@ impl SettingsWindow {
                     crate::duplicates::open(library, thumbs, now_art, cx);
                 }),
             ));
-        section("Folders", Some(controls.into_any_element()), body)
+        // The lead-in describes the table, so both carry the same terms
+        // and a search never turns up one without the other.
+        let folders = ["scan", "rescan", "music", "add", "remove"];
+        PageBody::new().section(Section::new(
+            q,
+            icons::FOLDER,
+            "Folders",
+            Some(controls.into_any_element()),
+            |rows| {
+                let rows = rows.custom(&folders, || lead_in.into_any_element());
+                let rows = match over_limit {
+                    Some(limit) => rows.row_dyn(
+                        &["monitor", "auto", "rescan", "folder"],
+                        "Watch folders",
+                        Some(
+                            format!(
+                                "Off: this library spans {dirs} folders and each needs \
+                                 one Linux file watch, more than the {limit} the app \
+                                 will take from the system's shared budget. Rescan by \
+                                 hand to fold in changes"
+                            )
+                            .into(),
+                        ),
+                        panel::toggle_locked(false),
+                    ),
+                    None => rows.keyed(
+                        &["monitor", "auto", "live"],
+                        "Watch folders",
+                        Some(
+                            "Fold added, edited, and deleted files into the library as \
+                             they happen, without a manual rescan",
+                        ),
+                        panel::toggle(self.watch_library, Self::set_watch_library, cx),
+                    ),
+                };
+                rows.keyed(
+                    &["fold", "duplicates", "capitalization"],
+                    "Merge case variants",
+                    Some(
+                        "Treat values differing only by case as one - Rock and \
+                         rock become the same genre, artist, and album, shown \
+                         under the casing most tracks carry. Files keep their \
+                         tags as written",
+                    ),
+                    panel::toggle(self.fold_case, Self::set_fold_case, cx),
+                )
+                .keyed(
+                    &["separator", "multi-genre"],
+                    "Split genres on commas and slashes",
+                    Some(
+                        "\"Dubstep, Trap\" and \"Drum & Bass / Neurofunk\" count \
+                         each value as its own genre; semicolons always split. \
+                         Off keeps slashed names whole for tags where they mean \
+                         one genre. Files keep their tags as written",
+                    ),
+                    panel::toggle(
+                        self.split_genre_compounds,
+                        Self::set_split_genre_compounds,
+                        cx,
+                    ),
+                )
+                .when(separators_moved, |rows| {
+                    rows.custom(&["genre", "separator", "split", "rescan"], || {
+                        nudge.into_any_element()
+                    })
+                })
+                .custom(&folders, || table.into_any_element())
+            },
+        ))
     }
 
     /// Measure everything the storage page shows: the library rollup on
@@ -2915,7 +2991,7 @@ impl SettingsWindow {
         .detach();
     }
 
-    fn storage_page(&self, cx: &mut Context<Self>) -> Div {
+    fn storage_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         let info = self.storage.unwrap_or_default();
         let music = format!(
             "{} tracks, {} albums, {}",
@@ -2923,97 +2999,84 @@ impl SettingsWindow {
             info.music.albums,
             human_size(info.music.bytes)
         );
-        div()
-            .flex()
-            .flex_col()
-            .gap(SECTION_GAP)
-            .child(section(
-                "Library",
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        "Music Files",
-                        Some("What the scanned folders hold; the files stay where they are"),
-                        readout(music),
-                    ))
-                    .child(panel::setting_row(
-                        "Catalog",
-                        Some("The track index scans build (library.db)"),
-                        readout(human_size(info.catalog)),
-                    ))
-                    .child(panel::setting_row(
-                        "Lyrics",
-                        Some("Fetched and edited sheets kept in the app's own store (lyrics/), so library folders stay clean"),
-                        readout(human_size(info.lyrics)),
-                    )),
-            ))
-            .child(section(
-                "Caches",
-                None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_MD)
-                    .child(panel::setting_row(
-                        "Cover Thumbnails",
-                        Some("Small covers kept after their first render (thumbs.db); cleared ones rebuild as they scroll into view"),
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(tokens::SPACE_SM)
-                            .child(readout(human_size(info.thumbs)))
-                            .child(small_button(
-                                "Clear",
-                                icons::TRASH,
-                                false,
-                                cx.listener(|this, _, _, cx| this.clear_thumbs(cx)),
-                            )),
-                    ))
-                    .child(panel::setting_row(
-                        "Waveforms",
-                        Some("Each track's peak strip, kept after its first play; cleared ones re-decode next play"),
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(tokens::SPACE_SM)
-                            .child(readout(human_size(info.waveforms)))
-                            .child(small_button(
-                                "Clear",
-                                icons::TRASH,
-                                false,
-                                cx.listener(|this, _, _, cx| this.clear_waveforms(cx)),
-                            )),
-                    )),
-            ))
-            .child(section(
-                "Diagnostics",
-                None,
-                div().flex().flex_col().gap(tokens::SPACE_MD).child(
-                    panel::setting_row(
-                        "Logs",
-                        Some("What each run writes for bug reports (logs/rox.log), rolled at a size cap so it never grows large"),
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(tokens::SPACE_SM)
-                            .child(readout(human_size(info.logs)))
-                            .child(small_button(
-                                "Reveal",
-                                icons::FILE_TEXT,
-                                false,
-                                cx.listener(|_, _, _, cx| {
-                                    cx.reveal_path(&crate::logging::log_path());
-                                }),
-                            )),
-                    ),
-                ),
-            ))
+        PageBody::new()
+            .section(Section::new(q, icons::DATABASE, "Library", None, |rows| {
+                rows.keyed(
+                    &["size", "disk", "space"],
+                    "Music Files",
+                    Some("What the scanned folders hold; the files stay where they are"),
+                    readout(music),
+                )
+                .keyed(
+                    &["database", "size", "disk"],
+                    "Catalog",
+                    Some("The track index scans build (library.db)"),
+                    readout(human_size(info.catalog)),
+                )
+                .keyed(
+                    &["size", "disk"],
+                    "Lyrics",
+                    Some("Fetched and edited sheets kept in the app's own store (lyrics/), so library folders stay clean"),
+                    readout(human_size(info.lyrics)),
+                )
+            }))
+            .section(Section::new(q, icons::LAYERS, "Caches", None, |rows| {
+                rows.keyed(
+                    &["cache", "clear", "artwork", "size"],
+                    "Cover Thumbnails",
+                    Some("Small covers kept after their first render (thumbs.db); cleared ones rebuild as they scroll into view"),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_SM)
+                        .child(readout(human_size(info.thumbs)))
+                        .child(small_button(
+                            "Clear",
+                            icons::TRASH,
+                            false,
+                            cx.listener(|this, _, _, cx| this.clear_thumbs(cx)),
+                        )),
+                )
+                .keyed(
+                    &["cache", "clear", "peaks", "size"],
+                    "Waveforms",
+                    Some("Each track's peak strip, kept after its first play; cleared ones re-decode next play"),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_SM)
+                        .child(readout(human_size(info.waveforms)))
+                        .child(small_button(
+                            "Clear",
+                            icons::TRASH,
+                            false,
+                            cx.listener(|this, _, _, cx| this.clear_waveforms(cx)),
+                        )),
+                )
+            }))
+            .section(Section::new(q, icons::FILE_TEXT, "Diagnostics", None, |rows| {
+                rows.keyed(
+                    &["debug", "reveal", "diagnostics"],
+                    "Logs",
+                    Some("What each run writes for bug reports (logs/rox.log), rolled at a size cap so it never grows large"),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_SM)
+                        .child(readout(human_size(info.logs)))
+                        .child(small_button(
+                            "Reveal",
+                            icons::FILE_TEXT,
+                            false,
+                            cx.listener(|_, _, _, cx| {
+                                cx.reveal_path(&crate::logging::log_path());
+                            }),
+                        )),
+                )
+            }))
     }
 
     /// The launch-check toggle: into the file, so the next start reads the
@@ -3033,11 +3096,10 @@ impl SettingsWindow {
 
     /// The Development page: the switches for work that isn't finished.
     /// One row today; the section is the place the next one lands.
-    fn development_page(&self, cx: &mut Context<Self>) -> Div {
-        div().flex().flex_col().gap(SECTION_GAP).child(section(
-            "Features",
-            None,
-            panel::setting_row(
+    fn development_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
+        PageBody::new().section(Section::new(q, icons::FLASK, "Features", None, |rows| {
+            rows.keyed(
+                &["debug", "beta", "unfinished"],
                 "Experimental Panels",
                 Some(
                     "Show the panels still being built in the Panels menu and the \
@@ -3045,8 +3107,108 @@ impl SettingsWindow {
                          already holds one keeps it when this goes back off",
                 ),
                 panel::toggle(self.experimental, Self::set_experimental, cx),
-            ),
-        ))
+            )
+        }))
+    }
+
+    /// Land on a page and leave search: what a sidebar click and a
+    /// result breadcrumb both do, so arriving anywhere reads the same.
+    /// Entering Storage measures the files fresh, so the numbers are
+    /// current without a per-frame stat.
+    fn open_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        self.page = page;
+        self.search
+            .update(cx, |search, cx| search.set_value("", window, cx));
+        if page == Page::Storage {
+            self.refresh_storage(cx);
+        }
+        cx.notify();
+    }
+
+    /// One page filtered through the query: the single-page view passes
+    /// the inactive query and gets the whole page, search passes the
+    /// live one and takes the survivors.
+    fn build_page(
+        &self,
+        page: Page,
+        q: &Query,
+        columns: usize,
+        cx: &mut Context<Self>,
+    ) -> PageBody {
+        match page {
+            Page::Appearance => self.appearance_page(q, columns, cx),
+            Page::Behavior => self.behavior_page(q, cx),
+            Page::Audio => self.audio_page(q, cx),
+            Page::Workspace => self.workspace_page(q, cx),
+            Page::Library => self.library_page(q, cx),
+            Page::Providers => self.providers_page(q, cx),
+            Page::Integrations => self.integrations_page(q, cx),
+            Page::Storage => self.storage_page(q, cx),
+            Page::Development => self.development_page(q, cx),
+        }
+    }
+
+    /// The results stack: every surviving page under a heading that
+    /// jumps to it, in sidebar order, so a search reads as the settings
+    /// laid flat. The heading centers over rules running to both edges,
+    /// a level above the section headers underneath it. `pages` is what
+    /// [`Self::build_page`] kept per sidebar entry; a search that kept
+    /// nothing says so instead.
+    fn search_results(
+        &self,
+        text: &str,
+        pages: Vec<(Page, &'static str, &'static str, PageBody)>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if pages.iter().all(|(_, _, _, body)| body.hits() == 0) {
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(palette::text_muted())
+                .child(format!("Nothing matches \"{text}\""))
+                .into_any_element();
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(SECTION_GAP)
+            .children(
+                pages
+                    .into_iter()
+                    .filter(|(_, _, _, body)| body.hits() > 0)
+                    .map(|(page, label, icon, body)| {
+                        // The hairline halves the heading centers over.
+                        let rule = || div().flex_1().h(px(1.)).bg(palette::border());
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_SM)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(tokens::SPACE_SM)
+                                    .cursor_pointer()
+                                    .text_color(palette::text_muted())
+                                    .hover(|d| d.text_color(palette::text()))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, window, cx| {
+                                            this.open_page(page, window, cx);
+                                        }),
+                                    )
+                                    .child(rule())
+                                    .child(svg().path(icon).size(px(14.)).flex_none())
+                                    .child(label)
+                                    .child(rule()),
+                            )
+                            .child(body.element())
+                    }),
+            )
+            .into_any_element()
     }
 
     /// A sidebar footer row: hands something to the system - the raw
@@ -3367,45 +3529,76 @@ impl Render for SettingsWindow {
         // windows.
         self.sync_editor_side(window, cx);
 
+        // A live query builds every page and stacks the survivors; the
+        // sidebar dims the pages that kept nothing. No query builds just
+        // the picked page through the same path, with the inactive query
+        // keeping everything.
+        let text = self.search.read(cx).query().trim().to_string();
+        let q = Query::parse(&text);
+        let results: Option<Vec<_>> = q.active().then(|| {
+            PAGES
+                .iter()
+                .map(|&(page, label, icon)| {
+                    (page, label, icon, self.build_page(page, &q, columns, cx))
+                })
+                .collect()
+        });
+
         panel::window_body(player, || {
             let sidebar = sidebar()
-                .children(PAGES.iter().map(|&(page, label, icon)| {
-                    settings_ui::nav_item(
-                        label,
-                        icon,
-                        self.page == page,
-                        // Entering Storage measures the files fresh, so the
-                        // numbers are current without a per-frame stat.
-                        move |this: &mut Self, cx| {
-                            this.page = page;
-                            if page == Page::Storage {
-                                this.refresh_storage(cx);
+                .child(
+                    div()
+                        // A click anywhere off the box hands focus back,
+                        // the same way out the escape ladder gives; only
+                        // while it holds focus, so a stray outside click
+                        // never blurs some other input mid-edit.
+                        .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                            if this.search.read(cx).is_focused(window, cx) {
+                                window.blur();
                             }
-                            cx.notify();
-                        },
-                        cx,
-                    )
-                }))
+                        }))
+                        .child(self.search.update(cx, |search, cx| search.element(cx))),
+                )
+                .children(
+                    PAGES
+                        .iter()
+                        .enumerate()
+                        .map(|(index, &(page, label, icon))| {
+                            let empty = results
+                                .as_ref()
+                                .is_some_and(|results| results[index].3.hits() == 0);
+                            settings_ui::nav_item(
+                                label,
+                                icon,
+                                self.page == page,
+                                move |this: &mut Self, window, cx| {
+                                    this.open_page(page, window, cx);
+                                },
+                                cx,
+                            )
+                            .when(empty, |d| d.opacity(0.4))
+                        }),
+                )
                 // The escape hatches sink to the bottom: the raw file this
                 // window edits and the folder it lives in.
                 .child(div().flex_1())
                 .child(self.sidebar_action("Settings File", icons::FILE_TEXT, settings_path, cx))
                 .child(self.sidebar_action("Data Folder", icons::FOLDER, data_dir, cx));
 
-            let page = match self.page {
-                Page::Appearance => self.appearance_page(columns, cx),
-                Page::Behavior => self.behavior_page(cx),
-                Page::Audio => self.audio_page(cx),
-                Page::Workspace => self.workspace_page(cx),
-                Page::Library => self.library_page(cx),
-                Page::Providers => self.providers_page(cx),
-                Page::Integrations => self.integrations_page(cx),
-                Page::Storage => self.storage_page(cx),
-                Page::Development => self.development_page(cx),
+            let page = match results {
+                Some(results) => self.search_results(&text, results, cx),
+                None => self.build_page(self.page, &q, columns, cx).element(),
             };
 
             div()
                 .size_full()
+                // The settings shortcut everywhere: focus lands in the
+                // search box, the Apple way in.
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "f" && event.keystroke.modifiers.secondary() {
+                        window.focus(&this.search.read(cx).focus_handle(cx));
+                    }
+                }))
                 .flex()
                 .flex_row()
                 .bg(palette::bg_elevated())

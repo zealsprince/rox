@@ -6,22 +6,38 @@ in the [overview](01-overview.md).
 ## Playback engine
 
 Responsibility: turn a queue of tracks into sample-accurate audio, and expose a live PCM
-tap. Owns decode (Symphonia), output (cpal), the gapless queue, volume/ReplayGain, and
-the tap ring.
+tap. Owns decode (Symphonia), output, the gapless queue, the processing chain,
+volume/ReplayGain, and the tap ring.
 
 Boundary: the real-time output callback is the hard line. It only reads from a
 pre-allocated ring buffer and writes to the device. No allocation, no lock, no logging,
 no database. Everything else in the engine lives on a normal decode thread behind that
 line.
 
-Formats: MP3 and FLAC decode through Symphonia with no C dependency (FLAC on by default,
-MP3 pure-Rust behind a feature flag). The contract is format-agnostic, so adding a format
-is additive; Opus is the first place a C dependency would enter.
+Formats: the whole Symphonia codec and container matrix, taken wholesale because every
+one of them is pure Rust and none costs a C dependency (FLAC, MP3, AAC, ALAC, Vorbis,
+PCM and friends, in wav, ogg, mkv, mp4, caf, aiff). The contract is format-agnostic, so
+adding a format is additive; Opus is the gap, and it stays one until Symphonia ships a
+decoder rather than entering through C.
+
+Processing ([ADR 19](decisions/19-adr-processing-chain.md)): per-source gain (ReplayGain,
+the crossfade curve) multiplies each decoded source on its own, then the chain of DSP
+nodes processes the mixed stream, both on the decode thread immediately before the ring.
+Crossfade is not a node, it's a second open source summed in the engine, so the ring
+keeps one producer. With the chain empty and volume at unity the device gets the
+decoder's samples unchanged, which is what makes bit-perfect a claim you can check.
+
+Output: one backend contract, a request in and what it negotiated back (mode, rate,
+format). cpal answers it for shared mode; exclusive is per-platform, ALSA `hw` direct,
+WASAPI exclusive, CoreAudio hog mode, and follows the source rate where the device
+allows. A claim that fails opens shared and carries the reason, never silence.
 
 Contract to the UI:
 - In: `play`, `pause`, `seek(pos)`, `next`, `prev`, `enqueue(track)`, `set_volume`,
-  `set_loop`, `set_shuffle`, `set_output_device`. Commands cross a channel, they don't
-  call into the RT thread.
+  `set_loop`, `set_shuffle`, `set_output_device`, `set_crossfade`, `set_gain_rule`, and
+  structural chain edits. Commands cross a channel, they don't call into the RT thread.
+  Node parameters don't: a knob is an atomic the UI still holds, so turning one is a
+  store the node picks up on its next buffer.
 - Out: playback state (current track, position, playing/paused, device), emitted as the
   UI's shared entity updates so views re-render on the next frame.
 - Out: the PCM tap, a second SPSC ring the visualizer drains. Lossy by design, a slow UI

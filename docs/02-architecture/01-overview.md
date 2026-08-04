@@ -63,8 +63,9 @@ The four domains:
   It runs on the gpui main thread and must stay responsive, so anything slow is a message
   to another domain, never a blocking call.
 - **Playback** owns the audio pipeline end to end: a decode thread feeding a real-time
-  output callback, the gapless queue, ReplayGain application, and the PCM tap that drives
-  visualizers. It takes commands (play, pause, seek, enqueue) and emits state.
+  output callback, the gapless queue, ReplayGain and the processing chain, and the PCM
+  tap that drives visualizers. It takes commands (play, pause, seek, enqueue) and emits
+  state.
 - **Library** owns the catalog: the SQLite store on disk, an in-memory projection for
   instant browse, the filesystem scanner, and search. It answers queries and emits change
   events. The play history record lives in the same store, appended from playback state
@@ -112,7 +113,7 @@ Each ADR records the call, the alternatives weighed, and what it costs. They liv
 | [6 - Search](decisions/06-adr-search.md) | In-memory substring first, FTS5 next, tantivy only if needed | Decided |
 | [7 - Panels](decisions/07-adr-panels.md) | gpui primitives with gpui-component as the widget baseline | Decided |
 | [8 - Visualizer rendering](decisions/08-adr-visualizer-rendering.md) | Spectrum and waveform on gpui primitives, no generative visual | Decided |
-| [9 - Audio output](decisions/09-adr-audio-output.md) | Output layer swappable, bit-perfect deferred | Decided |
+| [9 - Audio output](decisions/09-adr-audio-output.md) | Output layer swappable, bit-perfect deferred | Decided; deferral ended by 19 |
 | [10 - Theming](decisions/10-adr-theming.md) | Palette as data behind one setter, CPU-baked backdrop | Decided |
 | [11 - Play history](decisions/11-adr-play-history.md) | Append-only listen events in the library store | Decided |
 | [12 - Design tokens](decisions/12-adr-design-tokens.md) | Non-color tokens as consts beside the palette | Decided |
@@ -122,5 +123,5 @@ Each ADR records the call, the alternatives weighed, and what it costs. They liv
 | [16 - Play queue](decisions/16-adr-play-queue.md) | Mutable timeline the engine owns, playlists in the library store | Decided |
 | [17 - Queue continuation](decisions/17-adr-queue-continuation.md) | Single provider feeding the live timeline | Decided |
 | [18 - Tag editor](decisions/18-adr-tag-editor.md) | Shared batch form plus a per-file table, not foobar's per-field step-in | Decided |
-| [19 - Processing chain](decisions/19-adr-processing-chain.md) | DSP chain pre-ring on the decode thread, exclusive output behind the seam | Proposed |
+| [19 - Processing chain](decisions/19-adr-processing-chain.md) | DSP chain pre-ring on the decode thread, exclusive output behind the seam | Decided |
 | [20 - Settings split](decisions/20-adr-settings-split.md) | Preferences, look, windows, session, and accounts each in a file of their own | Decided |

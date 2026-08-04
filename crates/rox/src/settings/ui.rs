@@ -94,7 +94,7 @@ pub fn nav_item<P: 'static>(
     label: &'static str,
     icon: &'static str,
     picked: bool,
-    on_pick: impl Fn(&mut P, &mut Context<P>) + 'static,
+    on_pick: impl Fn(&mut P, &mut Window, &mut Context<P>) + 'static,
     cx: &mut Context<P>,
 ) -> Div {
     div()
@@ -110,7 +110,7 @@ pub fn nav_item<P: 'static>(
         .when(!picked, |d| d.hover(|d| d.bg(palette::bg_menu_hover())))
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |this, _, _, cx| on_pick(this, cx)),
+            cx.listener(move |this, _, window, cx| on_pick(this, window, cx)),
         )
         .child(
             svg()
@@ -134,6 +134,18 @@ pub fn header(label: &'static str) -> Div {
 /// A titled section of a page: the name over a hairline, an optional
 /// control riding the header's right edge, the rows under it.
 pub fn section(label: &'static str, trailing: Option<AnyElement>, body: impl IntoElement) -> Div {
+    section_with_icon(None, label, trailing, body)
+}
+
+/// [`section`] led by a header icon, the sidebar rows' grammar. The
+/// settings window's sealed path always passes one; the icon-less
+/// callers across the app stay on [`section`].
+pub fn section_with_icon(
+    icon: Option<&'static str>,
+    label: &'static str,
+    trailing: Option<AnyElement>,
+    body: impl IntoElement,
+) -> Div {
     div()
         .flex()
         .flex_col()
@@ -149,13 +161,241 @@ pub fn section(label: &'static str, trailing: Option<AnyElement>, body: impl Int
                 .border_color(palette::border())
                 .child(
                     div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_XS)
                         .text_xs()
                         .text_color(palette::text_muted())
+                        .when_some(icon, |d, icon| {
+                            d.child(
+                                svg()
+                                    .path(icon)
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .text_color(palette::text_muted()),
+                            )
+                        })
                         .child(label),
                 )
                 .when_some(trailing, |d, trailing| d.child(trailing)),
         )
         .child(body)
+}
+
+/// The settings search query: the box's text lowercased and split on
+/// whitespace. A row matches when every term lands somewhere in its
+/// label, description, or keywords; the empty query matches everything,
+/// which is the closed-search path.
+pub struct Query {
+    terms: Vec<String>,
+}
+
+impl Query {
+    pub fn parse(text: &str) -> Self {
+        Self {
+            terms: text
+                .split_whitespace()
+                .map(|term| term.to_lowercase())
+                .collect(),
+        }
+    }
+
+    /// Whether there's anything to filter by.
+    pub fn active(&self) -> bool {
+        !self.terms.is_empty()
+    }
+
+    /// Whether every term appears in some of `texts`, case folded.
+    fn hits(&self, texts: &[&str]) -> bool {
+        self.terms.iter().all(|term| {
+            texts
+                .iter()
+                .any(|text| text.to_lowercase().contains(term.as_str()))
+        })
+    }
+}
+
+/// A page under search: the only shape the settings window's render
+/// takes back from a page builder, and it only takes [`Section`]s, whose
+/// rows all declare the words that find them. The chain is the point: a
+/// setting can't land on a page without stating its search terms, so
+/// search never silently misses a new row.
+///
+/// Search builds every page each keystroke, so page builders must stay
+/// pure reads: no spawns, no entity updates outside listeners.
+pub struct PageBody {
+    body: Div,
+    hits: usize,
+}
+
+impl PageBody {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            body: div().flex().flex_col().gap(SECTION_GAP),
+            hits: 0,
+        }
+    }
+
+    /// Add a section; one the query emptied adds nothing.
+    pub fn section(mut self, section: Section) -> Self {
+        if let Some(body) = section.body {
+            self.body = self.body.child(body);
+            self.hits += section.hits;
+        }
+        self
+    }
+
+    /// Chain conditionally, gpui's own `when` shape.
+    pub fn when(self, condition: bool, then: impl FnOnce(Self) -> Self) -> Self {
+        if condition {
+            then(self)
+        } else {
+            self
+        }
+    }
+
+    /// How many rows the page kept; zero drops it from the results stack
+    /// and dims its sidebar entry.
+    pub fn hits(&self) -> usize {
+        self.hits
+    }
+
+    pub fn element(self) -> AnyElement {
+        self.body.into_any_element()
+    }
+}
+
+/// One titled section of a page, already filtered: the body is `None`
+/// when the query dropped every row.
+pub struct Section {
+    body: Option<Div>,
+    hits: usize,
+}
+
+impl Section {
+    /// Build a section against the query. A query hitting the section's
+    /// own label keeps the whole section; otherwise rows survive one by
+    /// one and an emptied section drops. The icon leads the header the
+    /// way the sidebar's do, and it's required here so no section on the
+    /// sealed path ships bare.
+    pub fn new(
+        q: &Query,
+        icon: &'static str,
+        label: &'static str,
+        trailing: Option<AnyElement>,
+        build: impl FnOnce(Rows) -> Rows,
+    ) -> Self {
+        let all = !q.active() || q.hits(&[label]);
+        let rows = build(Rows {
+            q,
+            all,
+            body: div().flex().flex_col().gap(tokens::SPACE_MD),
+            hits: 0,
+        });
+        if rows.hits == 0 {
+            return Self {
+                body: None,
+                hits: 0,
+            };
+        }
+        Self {
+            body: Some(section_with_icon(Some(icon), label, trailing, rows.body)),
+            hits: rows.hits,
+        }
+    }
+}
+
+/// A section's rows, each declaring what finds it. `all` short-circuits
+/// the checks while no search is on or the section's own name matched.
+pub struct Rows<'a> {
+    q: &'a Query,
+    all: bool,
+    body: Div,
+    hits: usize,
+}
+
+impl Rows<'_> {
+    /// A standard labeled row; the label and description are the terms.
+    pub fn row(
+        self,
+        label: &'static str,
+        description: Option<&'static str>,
+        control: impl IntoElement,
+    ) -> Self {
+        self.keyed(&[], label, description, control)
+    }
+
+    /// [`Rows::row`] with extra terms the copy doesn't carry: "gapless"
+    /// on the crossfade row, "normalization" on the gain mode.
+    pub fn keyed(
+        mut self,
+        keywords: &[&str],
+        label: &'static str,
+        description: Option<&'static str>,
+        control: impl IntoElement,
+    ) -> Self {
+        if self.keep(keywords, label, description) {
+            self.body = self
+                .body
+                .child(crate::panel::setting_row(label, description, control));
+            self.hits += 1;
+        }
+        self
+    }
+
+    /// A row whose description carries live numbers: the query matches
+    /// the label and keywords only, never text that moves under it.
+    pub fn row_dyn(
+        mut self,
+        keywords: &[&str],
+        label: &'static str,
+        description: Option<SharedString>,
+        control: impl IntoElement,
+    ) -> Self {
+        if self.keep(keywords, label, None) {
+            self.body = self
+                .body
+                .child(crate::panel::setting_row_dyn(label, description, control));
+            self.hits += 1;
+        }
+        self
+    }
+
+    /// Anything that isn't a plain row - a table, a grid, a block with
+    /// its own chrome - declaring its terms outright. The closure only
+    /// runs when the content survives, so a heavy section costs nothing
+    /// while filtered out.
+    pub fn custom(mut self, keywords: &[&str], build: impl FnOnce() -> AnyElement) -> Self {
+        if self.all || self.q.hits(keywords) {
+            self.body = self.body.child(build());
+            self.hits += 1;
+        }
+        self
+    }
+
+    /// Chain conditionally, gpui's own `when` shape.
+    pub fn when(self, condition: bool, then: impl FnOnce(Self) -> Self) -> Self {
+        if condition {
+            then(self)
+        } else {
+            self
+        }
+    }
+
+    fn keep(&self, keywords: &[&str], label: &str, description: Option<&str>) -> bool {
+        if self.all {
+            return true;
+        }
+        let mut texts = Vec::with_capacity(keywords.len() + 2);
+        texts.push(label);
+        if let Some(description) = description {
+            texts.push(description);
+        }
+        texts.extend_from_slice(keywords);
+        self.q.hits(&texts)
+    }
 }
 
 /// One block's header inside a section's list: the label with whatever
@@ -452,7 +692,27 @@ pub fn role_grid(columns: usize, mut cell: impl FnMut(usize) -> AnyElement) -> D
 
 #[cfg(test)]
 mod tests {
-    use super::{ceiling, span, OVER};
+    use super::{ceiling, span, Query, OVER};
+
+    /// Every term must land somewhere, any field counts, case folded.
+    #[test]
+    fn a_query_needs_every_term_in_some_text() {
+        let q = Query::parse("  Cross Fade ");
+        assert!(q.active());
+        assert!(q.hits(&["Crossfade", "fade between tracks"]));
+        assert!(q.hits(&["fade", "cross"]));
+        assert!(!q.hits(&["Cross only"]));
+        assert!(!q.hits(&[]));
+    }
+
+    /// The empty query is search-off: inactive, and it matches anything.
+    #[test]
+    fn the_empty_query_matches_everything() {
+        let q = Query::parse("   ");
+        assert!(!q.active());
+        assert!(q.hits(&["whatever"]));
+        assert!(q.hits(&[]));
+    }
 
     /// A number typed into a readout comes back as itself: the strip
     /// fraction it maps to lands on the same value, inside the range and

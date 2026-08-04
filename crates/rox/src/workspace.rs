@@ -783,7 +783,9 @@ pub(crate) struct MenuCommand {
 impl MenuAction {
     /// This action as a [`MenuCommand`] payload, or None for the four that
     /// go through their own bound action so the native menu can draw their
-    /// shortcut. Panels encode by label, which the catalog keys on.
+    /// shortcut. Panels encode by label, which the catalog keys on. Only the
+    /// native bar encodes, and that's macOS-only, so off macOS this is dead.
+    #[cfg(target_os = "macos")]
     pub(crate) fn command_id(self) -> Option<String> {
         let id = match self {
             // These ride their own actions, for the shortcut.

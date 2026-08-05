@@ -1241,6 +1241,9 @@ impl Library {
         if matches!(refresh, Refresh::Scan(_)) {
             self.scan = Some(progress.clone());
             self.poll_scan(progress.clone(), cx);
+            // The scan is the one job that never touches the tasks window's
+            // ticker, so the taskbar sampler is started from here.
+            crate::integrations::taskbar::watch(cx);
             self.refresh_during_scan(cx);
         }
         // A watch sync that errors loses its drained batch unless it is put

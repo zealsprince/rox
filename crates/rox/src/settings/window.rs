@@ -2446,8 +2446,8 @@ impl SettingsWindow {
                     panel::toggle(self.check_updates, Self::set_check_updates, cx),
                 )
             }))
-            // No tray backend on Windows yet, and a resident process with no
-            // way back in is worse than quitting, so the row sits out there.
+            // A resident process with no way back in is worse than quitting,
+            // so the row only exists where something can bring a window back.
             .when(tray::supported(), |page| {
                 page.section(Section::new(q, icons::APP_WINDOW, "Window", None, |rows| {
                     rows.keyed(

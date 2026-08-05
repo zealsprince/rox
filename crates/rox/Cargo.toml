@@ -87,11 +87,35 @@ candle-nn = { version = "0.11", features = ["metal"] }
 # instead of the default tokio; blocking gives the thread-and-handle API.
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
+# Taskbar progress: Unity's LauncherEntry update is a plain session-bus
+# broadcast, so all this needs is a connection to emit on. Same zbus 5 line
+# ksni and souvlaki already ride, on async-io rather than tokio so no second
+# runtime comes along with it.
+zbus = { version = "5", default-features = false, features = ["async-io"] }
 
 # The Win32 HWND souvlaki's SMTC backend binds to, pulled off the gpui window.
 # Already in the tree through gpui, same 0.6 line.
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
+# The quit-to-tray icon on this side: a thin wrapper over Shell_NotifyIcon,
+# no GTK anywhere. Its defaults are the gtk and libxdo pair Linux would need,
+# which this target has no use for.
+tray-icon = { version = "0.24", default-features = false }
+# The win32 message pump the icon has to live on, and the thread messages the
+# app pokes its menu with. Already in the tree many times over, same 0.61 line.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# The taskbar button's progress bar rides ITaskbarList3, and windows-sys has
+# the constants but no COM interfaces worth calling, so the write side needs
+# the typed crate. Same 0.61 line, already in the tree through gpui.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+] }
 
 # Reads the workspace .env so a local build picks up the service identities the
 # release workflow passes as secrets. Zero dependencies of its own, and it gets

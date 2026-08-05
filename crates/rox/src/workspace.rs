@@ -1101,9 +1101,6 @@ pub(crate) const MENUS: &[Menu] = &[
             }),
             MenuEntry::Section("Session"),
             MenuEntry::Item(MenuItem {
-                // Shown on Windows too, where the close path ignores the
-                // flag until a tray backend exists there; the settings row
-                // explains the platform story.
                 label: "Remain in Tray",
                 icon: icons::MINIMIZE,
                 action: MenuAction::ToggleQuitToTray,

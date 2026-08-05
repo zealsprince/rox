@@ -60,6 +60,9 @@ const TICK: Duration = Duration::from_millis(500);
 /// The scan needs none of this: it belongs to a catalog entity that notifies
 /// as it counts, and the tasks window observes that directly.
 pub fn repaint_while_running(cx: &mut App) {
+    // Every pass that repaints also belongs on the taskbar button, and that
+    // sampler gates itself the same way this one does.
+    crate::integrations::taskbar::watch(cx);
     // One ticker however many passes are running: both call this when they
     // start, and two tickers would just refresh the same windows twice as
     // often for the same picture.
@@ -384,6 +387,40 @@ impl Snapshot {
             stopping: scan.stopping,
         }
     }
+}
+
+/// How far along everything running is, as (done, total) summed over the
+/// jobs, or None when nothing is running at all.
+///
+/// One number for the batch is all a taskbar button can draw, and summing
+/// beats averaging: every job here counts files, so two half-done passes
+/// read as half done rather than as a fraction of a fraction. A job still
+/// working out its list adds nothing to either side, which is honest: it
+/// hasn't got a total yet.
+///
+/// Read live off the same four sources the rows use, so this answers with
+/// no window open.
+pub(crate) fn aggregate(cx: &mut App) -> Option<(usize, usize)> {
+    // The scan belongs to a catalog rather than the app, so it comes off
+    // whichever workspace is in front, the same place this window takes it
+    // from when it opens.
+    let library = crate::workspace::front_workspace(cx).map(|(_, state)| state.library);
+    let scan = library.and_then(|library| library.read(cx).scan_status());
+    let mut running: Vec<Snapshot> = Vec::new();
+    running.extend(scan.map(Snapshot::scan));
+    running.extend(embeddings::progress(cx).as_deref().map(Snapshot::acoustic));
+    running.extend(
+        replaygain_job::progress(cx)
+            .as_deref()
+            .map(Snapshot::replaygain),
+    );
+    running.extend(import::progress(cx).as_deref().map(Snapshot::import));
+    if running.is_empty() {
+        return None;
+    }
+    Some(running.iter().fold((0, 0), |(done, total), job| {
+        (done + job.done.min(job.total), total + job.total)
+    }))
 }
 
 /// What a pass left behind when it stopped running, so its row can still say

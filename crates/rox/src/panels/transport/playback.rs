@@ -663,35 +663,15 @@ impl TransportPanel {
         })
     }
 
-    /// Pick one track from anywhere in the library and play it as a fresh
-    /// one-track queue.
+    /// Pick one track at random and play it as a fresh one-track queue. The
+    /// player draws it from whatever context is playing, so this only hands
+    /// over the library to draw from.
     fn play_random(&mut self, cx: &mut Context<Self>) {
-        let paths = {
-            let library = self.state.library.read(cx);
-            let Some(projection) = library.projection() else {
-                return;
-            };
-            if projection.is_empty() {
-                return;
-            }
-            let id = projection.db_id[random_index(projection.len())];
-            library.paths_for(&[id]).ok()
-        };
-        let Some(paths) = paths else { return };
+        let library = self.state.library.clone();
         self.state
             .player
-            .update(cx, |player, cx| player.play(paths, cx));
+            .update(cx, |player, cx| player.play_random(&library, cx));
     }
-}
-
-/// A random index below `len`, off the std hasher's per-process random
-/// keys; picking a track does not need a rand dependency.
-fn random_index(len: usize) -> usize {
-    use std::hash::{BuildHasher, Hasher};
-    let hash = std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish();
-    (hash % len as u64) as usize
 }
 
 impl PanelSettings for TransportPanel {

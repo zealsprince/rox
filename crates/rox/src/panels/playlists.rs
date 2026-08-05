@@ -21,6 +21,7 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
+use crate::continuation;
 use crate::design::{palette, tokens};
 use crate::group_head::Headers;
 use crate::panel::{self, AppState, PanelChrome, PanelSettings};
@@ -651,20 +652,25 @@ impl PlaylistsPanel {
     /// Start the playlist playing, from `start_track` when given (a double
     /// click on a row), from the top otherwise (the header's Play).
     fn play(&self, playlist_id: i64, start_track: Option<i64>, cx: &mut Context<Self>) {
-        let (paths, start) = {
+        let (paths, start, ids) = {
             let library = self.state.library.read(cx);
             let ids = library.playlist_ids(playlist_id);
             let start = start_track
                 .and_then(|t| ids.iter().position(|&x| x == t))
                 .unwrap_or(0);
-            (library.paths_for(&ids).unwrap_or_default(), start)
+            (library.paths_for(&ids).unwrap_or_default(), start, ids)
         };
         if paths.is_empty() {
             return;
         }
-        self.state
-            .player
-            .update(cx, |player, cx| player.play_at(paths, start, cx));
+        self.state.player.update(cx, |player, cx| {
+            player.play_at(paths, start, cx);
+            // After the play, never before: starting a session clears the
+            // scope back to the library at large. The playlist in its own
+            // order is what continuation carries on down (ADR 17), and what
+            // the Random button draws from.
+            player.set_scope(continuation::Scope::View(ids.into()));
+        });
     }
 
     /// Write a playlist to an M3U8 file the user picks, named after it by

@@ -24,6 +24,7 @@ use rox_playback::rtrb::Consumer;
 use rox_playback::shared::{QueueEntry, QueueSnapshot, Shared};
 use rox_viz::AudioFeed;
 
+use crate::catalog::Library;
 use crate::continuation::{self, Pick};
 use crate::settings::{GainModeSetting, ReplayGainSave, ReplayGainSettings, Settings, ShuffleMode};
 
@@ -81,6 +82,37 @@ pub(crate) fn shuffle_head<T>(slice: &mut [T], width: usize) {
         let j = (hasher.finish() % (i as u64 + 1)) as usize;
         slice.swap(i, j);
     }
+}
+
+/// A random index below `len`, off the std hasher's per-process random
+/// keys; picking a track does not need a rand dependency.
+fn random_index(len: usize) -> usize {
+    use std::hash::{BuildHasher, Hasher};
+    let hash = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    (hash % len as u64) as usize
+}
+
+/// The ids the Random button draws from: the view playback started in while
+/// it still holds anything, the whole library otherwise. Random is the same
+/// question continuation asks (ADR 17), so it reads the same scope: press it
+/// inside a playlist and it stays in the playlist.
+fn random_pool<'a>(scope: &'a continuation::Scope, library: &'a [i64]) -> &'a [i64] {
+    match scope {
+        continuation::Scope::View(ids) if !ids.is_empty() => ids,
+        _ => library,
+    }
+}
+
+/// One random entry of `pool` resolved to a playable path. None when the
+/// pool is empty or the id it landed on has no file behind it any more.
+fn draw_one(library: &Library, pool: &[i64]) -> Option<Vec<PathBuf>> {
+    if pool.is_empty() {
+        return None;
+    }
+    let id = pool[random_index(pool.len())];
+    library.paths_for(&[id]).ok().filter(|p| !p.is_empty())
 }
 
 /// Whether the queue has run close enough to its end to ask for more
@@ -1247,6 +1279,32 @@ impl Player {
     /// session, since starting one clears this back to the library. Nothing
     /// on screen reads it, so this wakes nobody.
     pub fn set_scope(&mut self, scope: continuation::Scope) {
+        self.scope = scope;
+    }
+
+    /// Play one track at random as a fresh one-track queue, drawn from the
+    /// context playback is already in: the view or playlist that started the
+    /// session, the library at large when nothing named one. The scope is put
+    /// back after the start, so a second press stays in the same list instead
+    /// of escaping to the library the way a fresh session would.
+    pub fn play_random(&mut self, library: &Entity<Library>, cx: &mut Context<Self>) {
+        let scope = self.scope.clone();
+        let paths = {
+            let library = library.read(cx);
+            let all: &[i64] = library
+                .projection()
+                .map(|p| p.db_id.as_slice())
+                .unwrap_or_default();
+            // A scope id the library no longer holds resolves to no file, so
+            // the draw takes the library at large rather than dropping the
+            // press on the floor. A scope that already is the library just
+            // gets a second try.
+            draw_one(library, random_pool(&scope, all)).or_else(|| draw_one(library, all))
+        };
+        let Some(paths) = paths else { return };
+        self.play(paths, cx);
+        // After the play, never before: starting a session clears the scope
+        // back to the library at large.
         self.scope = scope;
     }
 
@@ -2462,6 +2520,47 @@ mod tests {
         let mut head = ids[..5].to_vec();
         head.sort();
         assert_eq!(head, ranked[..5], "the band holds the same entries");
+    }
+
+    /// The Random button reads the same scope continuation does, so a press
+    /// inside a playlist or a browse view draws from that list rather than
+    /// the whole library.
+    #[test]
+    fn a_random_draw_stays_inside_the_playing_view() {
+        let all = vec![1, 2, 3, 4, 5];
+        let view = continuation::Scope::View(vec![7, 8].into());
+        assert_eq!(random_pool(&view, &all), &[7, 8]);
+        // Nothing named a list, so the pool is the library.
+        assert_eq!(
+            random_pool(&continuation::Scope::Library, &all),
+            all.as_slice()
+        );
+        // A one-track view is still the pool: pressing Random in it plays
+        // that track back rather than jumping out to the library.
+        let single = continuation::Scope::View(vec![7].into());
+        assert_eq!(random_pool(&single, &all), &[7]);
+    }
+
+    /// A view that came back empty is no context at all, and drawing from an
+    /// empty pool would leave the press doing nothing.
+    #[test]
+    fn an_empty_view_falls_back_to_the_library() {
+        let all = vec![1, 2, 3];
+        let empty = continuation::Scope::View(Vec::new().into());
+        assert_eq!(random_pool(&empty, &all), all.as_slice());
+        // An empty library on top of it has nothing to offer either way.
+        assert!(random_pool(&empty, &[]).is_empty());
+    }
+
+    /// Every index the draw can produce is inside the pool, which is the one
+    /// thing the hasher trick could get wrong.
+    #[test]
+    fn a_random_index_lands_inside_the_pool() {
+        for len in 1..16 {
+            for _ in 0..64 {
+                assert!(random_index(len) < len);
+            }
+        }
     }
 
     /// The continuation trigger's arithmetic: it fires within the floor of

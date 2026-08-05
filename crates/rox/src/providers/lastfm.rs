@@ -14,16 +14,16 @@ use super::{agent, net_reason, string, ArtCandidate, ArtProvider, TrackQuery};
 
 const API: &str = "https://ws.audioscrobbler.com/2.0/";
 
-/// One artist as last.fm knows them, the biography panel's sheet: the
+/// One artist as Last.fm knows them, the biography panel's sheet: the
 /// wiki text as plain paragraphs, the listening stats, the genre tags,
 /// and the similar names. Serialized as the artist store's cache file;
 /// missing fields default, so an old entry survives shape drift.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ArtistInfo {
-    /// The name as last.fm capitalizes it, not as the tag spelled it.
+    /// The name as Last.fm capitalizes it, not as the tag spelled it.
     pub name: String,
-    /// The artist's last.fm page, the attribution link the panel shows.
+    /// The artist's Last.fm page, the attribution link the panel shows.
     pub url: String,
     /// The full wiki text, HTML stripped, paragraphs separated by blank
     /// lines. Empty when the wiki carries no article.
@@ -32,7 +32,7 @@ pub struct ArtistInfo {
     pub playcount: u64,
     /// The top genre tags, most applied first.
     pub tags: Vec<String>,
-    /// The artists last.fm files nearby, for the sheet's foot.
+    /// The artists Last.fm files nearby, for the sheet's foot.
     pub similar: Vec<String>,
 }
 
@@ -49,7 +49,7 @@ fn api_key() -> String {
     }
 }
 
-/// Fetch an artist's info, blocking: Ok(None) is last.fm not knowing
+/// Fetch an artist's info, blocking: Ok(None) is Last.fm not knowing
 /// the name (or no api key to ask with), Err the network or the API
 /// failing. Background executor only.
 pub fn artist_info(name: &str) -> Result<Option<ArtistInfo>, String> {
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn wiki_tail_drops_but_inline_links_survive() {
-        let html = "Formed alongside <a href=\"https://www.last.fm/music/Other\">Other</a> in 1993.\n\nMore text. <a href=\"https://www.last.fm/music/Band\">Read more on Last.fm</a>. User-contributed text is available under the Creative Commons By-SA License.";
+        let html = "Formed alongside <a href=\"https://www.Last.fm/music/Other\">Other</a> in 1993.\n\nMore text. <a href=\"https://www.Last.fm/music/Band\">Read more on Last.fm</a>. User-contributed text is available under the Creative Commons By-SA License.";
         let text = strip_wiki(html);
         assert_eq!(text, "Formed alongside Other in 1993.\n\nMore text.");
     }
@@ -283,7 +283,7 @@ mod tests {
     fn empty_wiki_stays_empty() {
         assert_eq!(strip_wiki(""), "");
         assert_eq!(
-            strip_wiki("<a href=\"https://www.last.fm/music/X\">Read more on Last.fm</a>."),
+            strip_wiki("<a href=\"https://www.Last.fm/music/X\">Read more on Last.fm</a>."),
             ""
         );
     }

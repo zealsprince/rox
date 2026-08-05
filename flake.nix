@@ -83,7 +83,7 @@
         lib.makeOverridable (
           # Service identities build.rs bakes in (see .env.template). Already
           # public: the binary carries them, and the AUR PKGBUILD prints its
-          # own. The last.fm pair is minted for the nix channel so it revokes
+          # own. The Last.fm pair is minted for the nix channel so it revokes
           # independently of the release workflow's; the Discord app id is
           # shared across channels and public by design. Forks swap in their
           # own with rox.override { lastfmApiKey = "..."; }.

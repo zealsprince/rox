@@ -245,6 +245,10 @@ impl Library {
         // and it shows in the playlists panel from a cold start.
         if let Some(conn) = &conn {
             let _ = playlists::ensure_favourites(conn, now_secs());
+            // Clear any double rows a menu add or a drag left in there before
+            // those writes learned to keep the list single. One sweep at
+            // startup, then the writes hold it themselves.
+            let _ = playlists::dedupe_favourites(conn, now_secs());
             // Seed the genre alias map before the first projection load,
             // so merged values tile and match merged from the first paint.
             if let Ok(aliases) = rox_library::genre_meta::aliases(conn) {
@@ -761,6 +765,16 @@ impl Library {
         store::paths_for(conn, ids)
             .map(|paths| paths.into_iter().map(Into::into).collect())
             .map_err(|e| e.to_string())
+    }
+
+    /// The artist and title for each of `ids`, on the UI-side connection:
+    /// what the Last.fm mirror names a track by. Ids the library has since
+    /// dropped, and tracks missing either tag, fall out silently.
+    pub fn names_for(&self, ids: &[i64]) -> Vec<(String, String)> {
+        self.conn
+            .as_ref()
+            .and_then(|conn| store::names_for(conn, ids).ok())
+            .unwrap_or_default()
     }
 
     /// Resolve a playing file back to its tags on the UI-side connection,

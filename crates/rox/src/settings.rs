@@ -175,7 +175,7 @@ pub fn workspaces_dir() -> PathBuf {
 
 /// Write pretty JSON through a sibling temp file, then rename over the real
 /// one. A crash mid-write can't truncate a file and take every layout,
-/// palette, and the last.fm session down with it; rename is atomic within the
+/// palette, and the Last.fm session down with it; rename is atomic within the
 /// same directory. Failures log under `what` and move on: losing a write is
 /// not worth interrupting playback for.
 pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T, what: &str) -> bool {
@@ -314,7 +314,7 @@ where
 ///
 /// A map this can't read costs the whole shard, so it says so rather than
 /// quietly handing back defaults: that's an upgrade losing someone's playback
-/// state or last.fm session, and a log line is the only thread back to why.
+/// state or Last.fm session, and a log line is the only thread back to why.
 fn from_legacy<T: Default + serde::de::DeserializeOwned>(value: &serde_json::Value) -> T {
     if value.is_null() {
         return T::default();
@@ -672,7 +672,7 @@ fn is_zero(value: &f32) -> bool {
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AccountsState {
-    /// The last.fm connection and scrobbling knobs, the settings window's
+    /// The Last.fm connection and scrobbling knobs, the settings window's
     /// Scrobbling page.
     pub lastfm: Lastfm,
     /// The online enrichment providers and their knobs (ADR 14), the
@@ -1336,10 +1336,10 @@ impl Default for QuickPlayConfig {
     }
 }
 
-/// The last.fm account and how scrobbling behaves. The key and secret
+/// The Last.fm account and how scrobbling behaves. The key and secret
 /// override the build's own api identity (`lastfm::keys`), for builds
 /// that ship none; the session key is what the connect flow lands and
-/// never expires until revoked on last.fm.
+/// never expires until revoked on Last.fm.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Lastfm {
@@ -1350,6 +1350,12 @@ pub struct Lastfm {
     pub username: String,
     /// Whether playback scrobbles at all; the connection stays either way.
     pub scrobbling: bool,
+    /// Whether the heart mirrors out as a Last.fm love. Off by default,
+    /// unlike scrobbling: connecting an account is consent to publish what
+    /// played, not to rewrite the loved list a user may have curated over
+    /// there for years. Turning it on mirrors from that point forward, it
+    /// never pushes the favourites already on the shelf.
+    pub love_favourites: bool,
     /// How much of a track has to actually play before it scrobbles, as a
     /// fraction of its duration. The seek strip and waveform can mark it.
     pub threshold: f32,
@@ -1363,6 +1369,7 @@ impl Default for Lastfm {
             session_key: String::new(),
             username: String::new(),
             scrobbling: true,
+            love_favourites: false,
             threshold: 0.5,
         }
     }
@@ -1415,7 +1422,7 @@ pub struct Providers {
     pub deezer: bool,
     /// Search Last.fm for cover art when the cover lookup asks.
     pub lastfm_art: bool,
-    /// Fetch artist biographies from last.fm, a Deezer portrait along,
+    /// Fetch artist biographies from Last.fm, a Deezer portrait along,
     /// when the biography panel asks.
     pub artist: bool,
 }
@@ -1668,7 +1675,7 @@ pub const WORKSPACE_VERSION: u32 = 1;
 /// in the app's assets, and imported into the collection. Versioned so a file
 /// survives shape moves; the layouts inside carry their own dock-layout
 /// version the workspace validates on apply. Machine- and account-bound state
-/// (library folders, last.fm, window frames) is deliberately left out, so a
+/// (library folders, Last.fm, window frames) is deliberately left out, so a
 /// bundle travels between installs as pure look.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -2184,7 +2191,7 @@ impl Settings {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut settings = Settings::load();
         // Most writes touch one file: a volume nudge shouldn't rewrite every
-        // dock dump, and a layout drag shouldn't rewrite the last.fm session.
+        // dock dump, and a layout drag shouldn't rewrite the Last.fm session.
         // Compare each across the edit and write only what moved.
         let before = settings.prints();
         f(&mut settings);
@@ -2349,7 +2356,7 @@ mod tests {
 
     /// The bundle carries only the look, never machine- or account-bound
     /// state, so a shared file can't drag another install's folders or
-    /// last.fm session along.
+    /// Last.fm session along.
     #[test]
     fn workspace_bundle_omits_machine_state() {
         let bundle = WorkspaceBundle::from_settings("mine".into(), &Settings::default());
@@ -2855,7 +2862,7 @@ mod tests {
     /// Every other closed set of words in the shards reads the same way, and
     /// the blast radius is worse in each of them than in the session: the theme
     /// sits beside the library folders, the rating style beside the palette,
-    /// and the lyrics destination beside the last.fm session key.
+    /// and the lyrics destination beside the Last.fm session key.
     #[test]
     fn an_unknown_enum_word_costs_only_its_field() {
         let settings: Settings = serde_json::from_value(serde_json::json!({

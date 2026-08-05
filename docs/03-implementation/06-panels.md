@@ -184,7 +184,7 @@ pub struct WorkspaceBundle {
 so a reader can refuse a bundle from a newer format while the layouts still validate on
 their own version. The bundle is pure look: applying it (`workspaces::apply_look`)
 replaces the palettes, signals, appearance, and layout presets wholesale and leaves
-machine- and account-bound state (library folders, last.fm, window frames) untouched, so
+machine- and account-bound state (library folders, Last.fm, window frames) untouched, so
 a bundle travels between installs without dragging along another machine's setup.
 
 The live look nests the same struct a saved file holds, so saving a workspace is a clone

@@ -2560,6 +2560,7 @@ impl SettingsWindow {
         let scrobbler = self.scrobbler.read(cx);
         let config = scrobbler.config().clone();
         let phase = scrobbler.phase().clone();
+        let (loves_pending, love_error) = (scrobbler.loves_pending(), scrobbler.love_error());
         let connected = !config.session_key.is_empty();
         // A build with its own api identity connects in one click; only
         // one without asks for the user's pair.
@@ -2614,6 +2615,20 @@ impl SettingsWindow {
             }
         };
 
+        // What the mirror has left to do, and why it stopped if it did. A
+        // love that failed into a log file is two sides disagreeing with
+        // nothing on screen to say so, so this line is the whole point of
+        // the queue keeping its reason.
+        let hearts = |n: usize| format!("{n} heart{}", if n == 1 { "" } else { "s" });
+        let love_status: Option<SharedString> = match (loves_pending, love_error) {
+            (0, None) => None,
+            (0, Some(error)) => Some(format!("Last one failed: {error}").into()),
+            (pending, None) => Some(format!("{} waiting to send", hearts(pending)).into()),
+            (pending, Some(error)) => {
+                Some(format!("{} waiting to send, last attempt: {error}", hearts(pending)).into())
+            }
+        };
+
         let account = div()
             .flex()
             .flex_col()
@@ -2623,11 +2638,11 @@ impl SettingsWindow {
                     .text_xs()
                     .text_color(palette::text_muted())
                     .child(if builtin {
-                        "Connect your last.fm account: authorize rox in the browser \
+                        "Connect your Last.fm account: authorize rox in the browser \
                      and played tracks scrobble to it"
                     } else {
                         "This build ships no api identity, so scrobbling needs your own \
-                     api account (last.fm/api/account/create); paste its key and \
+                     api account (Last.fm/api/account/create); paste its key and \
                      shared secret, then connect"
                     }),
             )
@@ -2671,7 +2686,7 @@ impl SettingsWindow {
                 rows.keyed(
                     &["listens", "history"],
                     "Scrobble Tracks",
-                    Some("Send played tracks to last.fm once they cross the threshold"),
+                    Some("Send played tracks to Last.fm once they cross the threshold"),
                     panel::toggle(
                         config.scrobbling,
                         |this: &mut Self, on, cx| {
@@ -2682,7 +2697,7 @@ impl SettingsWindow {
                     ),
                 )
                 .keyed(
-                    &["last.fm", "percent"],
+                    &["Last.fm", "percent"],
                     "Scrobble Threshold",
                     Some(
                         "How much of a track has to play before it scrobbles; \
@@ -2700,6 +2715,34 @@ impl SettingsWindow {
                         cx,
                     ),
                 )
+            }))
+            .section(Section::new(q, icons::HEART, "Favourites", None, |rows| {
+                rows.keyed(
+                    &["Last.fm", "love", "loved", "heart", "mirror"],
+                    "Love Favourites",
+                    Some(
+                        "Mirror hearts to Last.fm as loved tracks; \
+                         taking a heart back unloves it there",
+                    ),
+                    panel::toggle(
+                        config.love_favourites,
+                        |this: &mut Self, on, cx| {
+                            this.scrobbler
+                                .update(cx, |s, cx| s.set_love_favourites(on, cx));
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .when_some(love_status, |rows, status| {
+                    rows.custom(&["love", "queue", "failed"], || {
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_muted())
+                            .child(status)
+                            .into_any_element()
+                    })
+                })
             }))
             .section(Section::new(
                 q,

@@ -61,7 +61,7 @@ pub struct WaveformConfig {
     /// at zero the strip reads as one outlined shape.
     pub outline: bool,
     /// A thin line at the scrobble threshold, where the playing track
-    /// counts as listened for last.fm. Only draws while scrobbling is
+    /// counts as listened for Last.fm. Only draws while scrobbling is
     /// connected and on.
     pub scrobble_marker: bool,
 }
@@ -553,7 +553,7 @@ impl PanelSettings for WaveformPanel {
             ))
             .child(setting_row(
                 "Scrobble Marker",
-                Some("A thin line where the track counts as scrobbled to last.fm"),
+                Some("A thin line where the track counts as scrobbled to Last.fm"),
                 toggle(
                     self.config.scrobble_marker,
                     |this: &mut Self, on, cx| {

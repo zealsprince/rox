@@ -1,5 +1,5 @@
-//! rox's last.fm api identity: the key pair the scrobbler signs its
-//! calls with, registered once at last.fm/api/account/create. The pair
+//! rox's Last.fm api identity: the key pair the scrobbler signs its
+//! calls with, registered once at Last.fm/api/account/create. The pair
 //! is baked in from the build environment, `LASTFM_API_KEY` and
 //! `LASTFM_API_SECRET`, which is how the release workflow hands the
 //! repository secrets to cargo. A build without them ships no identity,

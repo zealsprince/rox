@@ -1,5 +1,5 @@
 //! TheAudioDB (theaudiodb.com): the wide artist art the biography panel
-//! wants that last.fm and deezer don't carry - a banner for the header
+//! wants that Last.fm and deezer don't carry - a banner for the header
 //! and a fanart background behind the text. One keyless search by name
 //! returns both as URLs; the store downloads them beside the deezer
 //! portrait. Blocking, background executor only, like the other
@@ -8,7 +8,7 @@
 //! The key below is TheAudioDB's public test key. It answers the search
 //! and image endpoints at a low rate, which is all a per-artist lookup
 //! needs; a fork leaning on it harder registers for a supporter key and
-//! drops it in here, the last.fm identity's trade-off ([`crate::lastfm::keys`]).
+//! drops it in here, the Last.fm identity's trade-off ([`crate::lastfm::keys`]).
 
 use super::{agent, net_reason, normalize, string};
 

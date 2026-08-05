@@ -66,7 +66,7 @@ pub struct AppState {
     /// The artwork service's texture cache, shared by every view that
     /// draws cover thumbnails.
     pub thumbs: Entity<Thumbs>,
-    /// The last.fm scrobbler over this workspace's player; also where the
+    /// The Last.fm scrobbler over this workspace's player; also where the
     /// live scrobble config lives, for the panels' threshold markers.
     pub scrobbler: Entity<Scrobbler>,
     /// The listen recorder riding the scrobbler's listen signal; history

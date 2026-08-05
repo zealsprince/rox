@@ -2,7 +2,7 @@
 //! banner up top, then the name, the listening stats, the genre tags,
 //! the wiki text, and the similar names at the foot, over the artist
 //! fanart dimmed into the background - everything off the artist store's
-//! cached fetches (last.fm text and stats, deezer portrait, theaudiodb
+//! cached fetches (Last.fm text and stats, deezer portrait, theaudiodb
 //! banner and fanart), so a shown artist reads offline from then on.
 //! Which track is per-view config through [`crate::source::TrackSource`],
 //! the cover panel's knob, so a duplicate can watch each. The sheet
@@ -96,7 +96,7 @@ pub struct BiographyPanel {
     /// untagged file. Cleared when the catalog changes.
     artist: Option<(PathBuf, String)>,
     /// The store's answer keyed by the folded name it was asked under;
-    /// None inside is a clean miss, last.fm knowing nothing by the name.
+    /// None inside is a clean miss, Last.fm knowing nothing by the name.
     loaded: Option<(String, Option<Artist>)>,
     /// The folded name a fetch is running for, so a render can tell
     /// "already fetching" from "needs a fetch".
@@ -448,7 +448,7 @@ impl PanelSettings for BiographyPanel {
             ))
             .child(panel::setting_row(
                 "Stats",
-                Some("Listeners and plays on last.fm, under the name"),
+                Some("Listeners and plays on Last.fm, under the name"),
                 panel::toggle(
                     self.config.stats,
                     |this: &mut Self, on, cx| {

@@ -85,7 +85,7 @@ pub struct SeekConfig {
     /// clicking the clock flips it.
     pub show_total: bool,
     /// A thin line at the scrobble threshold, where the playing track
-    /// counts as listened for last.fm. Only draws while scrobbling is
+    /// counts as listened for Last.fm. Only draws while scrobbling is
     /// connected and on.
     pub scrobble_marker: bool,
     /// The shown pieces in display order; one not listed is hidden.
@@ -283,7 +283,7 @@ impl PanelSettings for SeekStripPanel {
             })
             .child(panel::setting_row(
                 "Scrobble Marker",
-                Some("A thin line where the track counts as scrobbled to last.fm"),
+                Some("A thin line where the track counts as scrobbled to Last.fm"),
                 panel::toggle(
                     self.config.scrobble_marker,
                     |this: &mut Self, on, cx| {

@@ -22,7 +22,7 @@ it answered to a different owner. Two saved workspaces, the live dock dump, and 
 preset pool made up most of the bytes, so the file someone might open to check a library
 path was 126k of dock dumps pretty-printed around it. But size was only the visible
 half. The same file also held window geometry that means nothing on another machine, a
-volume and a play position rewritten on every track, and a last.fm session key sitting in
+volume and a play position rewritten on every track, and a Last.fm session key sitting in
 the file the app itself offers to open in a text editor.
 
 Three properties fall out of splitting on what a file is *for* rather than on size.

@@ -22,7 +22,8 @@ start in under a second, it isn't rox.
 | Area      | What's there                                                                                                                                                                                                        |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Library   | Parallel scanner reading full tags, true durations, and each file's own codec, sample rate, and bit depth, live folder watching that survives renames, files with unreadable tags indexed by filename so nothing silently drops, folder tree, filters, and search |
-| Playback  | Gapless single-stream engine, queue with shuffle, repeat, and play-next, crossfade that leaves album-contiguous boundaries alone, recovery when an audio device disappears, media keys and now-playing integration on all three platforms |
+| Playback  | Gapless single-stream engine, queue with shuffle, repeat, and play-next, endless play that refills the queue from your browse order, from what you've neglected, or from what the current track sounds like, crossfade that leaves album-contiguous boundaries alone, recovery when an audio device disappears, media keys and now-playing integration on all three platforms |
+| Sound     | Optional local analysis describing how each track actually sounds, driving a sortable Similar column, Play Similar, and a nearest-by-sound shuffle. The built-in extractor needs no download; PANNs CNN10 or a weights file of your own if you want a heavier ear. Nothing leaves the machine |
 | Audio     | A ten-band equalizer in a window of its own, ReplayGain off the tags with an EBU R128 pass for the files no tagger ever measured, and an exclusive output mode (ALSA, WASAPI, CoreAudio) that states what the hardware agreed to |
 | Panels    | Forty panel types (library, queue, history, playlists, lyrics, cover, biography, artist and genre grids, spectrum, waveform, VU), composed freely, duplicated with independent configs, popped out into OS windows |
 | Theming   | Workspaces as single shareable files (layout, palette, appearance) in a folder you can drop a bundle into, palette tinting from the playing album's cover per window, light and dark following cover brightness |
@@ -30,7 +31,7 @@ start in under a second, it isn't rox.
 | Lyrics    | Synced and plain lyrics from sidecar files, tags, or lrclib, with an in-panel editor that writes back where it read from                                                                                              |
 | History   | A full listen log driving the history panel and stats window, Last.fm scrobbling                                                                                                                                     |
 | Playlists | Favourites, drag reorder across playlists, m3u import and export, entries that survive their files leaving and returning                                                                                             |
-| System    | Tray with quit-to-tray, one instance per data directory, portable mode, one binary                                                                                                                                   |
+| System    | Tray with quit-to-tray, one instance per data directory, portable mode, one binary, and a tasks window for the long library jobs with time estimates measured on your own machine                                     |
 
 </details>
 
@@ -40,7 +41,6 @@ start in under a second, it isn't rox.
 
 | Area              | What's coming                                                                                                                                            | Tracked                                                                                                                                                                                                                          |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Queue continuation | Endless play drawing from the library, history-aware weighted shuffle, and radio seeded by what's playing                                                 | [#34](https://github.com/zealsprince/rox/issues/34), [#37](https://github.com/zealsprince/rox/issues/37), [#38](https://github.com/zealsprince/rox/issues/38), [#39](https://github.com/zealsprince/rox/issues/39)                 |
 | Auto-update       | Downloads and applies a release instead of pointing at it                                                                                                  | [#75](https://github.com/zealsprince/rox/issues/75)                                                                                                                                                                               |
 | Sources           | Streaming services (Spotify, YouTube Music, Tidal) as community-maintained extensions, each its own library view, updating on their own release cycle when a service changes something | [#8](https://github.com/zealsprince/rox/issues/8)                                                                                                                                                                                 |
 | Unified library   | One view merging local and streaming catalogs with matching across them, which is why track identity was never welded to file paths | [#9](https://github.com/zealsprince/rox/issues/9)                                                                                                                                                                                 |
@@ -203,7 +203,7 @@ Copy `.env.template` to `.env` to bake service identities into the binary at
 compile time: `LASTFM_API_KEY` and `LASTFM_API_SECRET` for one-click scrobbler
 connect, `DISCORD_APPLICATION_ID` for rich presence. Exported environment variables
 win over the file, which is how the release workflow passes its secrets. A build
-without any of them works the same minus those integrations, and the last.fm
+without any of them works the same minus those integrations, and the Last.fm
 settings page takes your own key pair at runtime either way.
 
 Debug builds accept a `--fresh` flag that runs rox against a wiped scratch data

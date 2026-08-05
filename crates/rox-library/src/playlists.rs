@@ -274,6 +274,39 @@ pub fn favourite_track_ids(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
     rows.collect()
 }
 
+/// Drop duplicate members from the favourites playlist, keeping the first row
+/// per track. The heart is on or off, so its playlist holds a track once
+/// however the track got in. [`set_favourite`] never duplicates, but a menu
+/// add or a drag onto the list is a plain playlist write and would, and a
+/// second row makes the heart's off switch look broken: one delete, still
+/// favourited. Returns how many rows it dropped.
+fn dedupe_favourite_members(conn: &Connection, fav: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM playlist_tracks
+          WHERE playlist_id = ?1
+            AND id NOT IN (SELECT MIN(id) FROM playlist_tracks
+                            WHERE playlist_id = ?1 GROUP BY track_id)",
+        [fav],
+    )
+}
+
+/// Clear duplicates a library picked up before the writes started keeping
+/// them out. Startup's one sweep, cheap on a list that's already clean;
+/// every write since holds the line on its own.
+pub fn dedupe_favourites(conn: &Connection, now: i64) -> rusqlite::Result<usize> {
+    let Some(fav) = favourites_id(conn)? else {
+        return Ok(0);
+    };
+    let dropped = dedupe_favourite_members(conn, fav)?;
+    if dropped > 0 {
+        conn.execute(
+            "UPDATE playlists SET updated = ?2 WHERE id = ?1",
+            rusqlite::params![fav, now],
+        )?;
+    }
+    Ok(dropped)
+}
+
 /// Whether a track is in the favourites playlist.
 pub fn is_favourite(conn: &Connection, track_id: i64) -> rusqlite::Result<bool> {
     let Some(fav) = favourites_id(conn)? else {
@@ -328,7 +361,8 @@ pub fn set_favourite(
 
 /// Append tracks to a playlist in the given order, snapshotting each track's
 /// tags from the live catalog. Duplicates are kept: a track already in the
-/// playlist gets a second member row. Stamps the playlist updated.
+/// playlist gets a second member row. The favourites playlist is the one
+/// exception, per [`dedupe_favourite_members`]. Stamps the playlist updated.
 pub fn add(
     conn: &mut Connection,
     playlist_id: i64,
@@ -361,6 +395,11 @@ pub fn add(
                 next += 1;
             }
         }
+    }
+    // A track added to favourites it was already in keeps the row it had, so
+    // the heart reads the same before and after and one click still clears it.
+    if favourites_id(&tx)? == Some(playlist_id) {
+        dedupe_favourite_members(&tx, playlist_id)?;
     }
     tx.execute(
         "UPDATE playlists SET updated = ?2 WHERE id = ?1",
@@ -511,6 +550,11 @@ pub fn place_members(
         for (pos, &id) in order.iter().enumerate() {
             up.execute(rusqlite::params![id, pos as i64])?;
         }
+    }
+    // Dragging a track onto favourites it was already in leaves it favourited
+    // once, not twice. The row that stays keeps its place in the order.
+    if favourites_id(&tx)? == Some(playlist_id) {
+        dedupe_favourite_members(&tx, playlist_id)?;
     }
     {
         let mut stamp = tx.prepare("UPDATE playlists SET updated = ?2 WHERE id = ?1")?;
@@ -757,6 +801,61 @@ mod tests {
         set_favourite(&mut conn, 1, false, 120).unwrap();
         assert!(!is_favourite(&conn, 1).unwrap());
         assert!(favourite_track_ids(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn favourites_hold_a_track_once_however_it_arrives() {
+        let mut conn = seed();
+        let fav = ensure_favourites(&conn, 100).unwrap();
+
+        // The menu's Add to Playlist path, over a track the heart already has.
+        set_favourite(&mut conn, 1, true, 110).unwrap();
+        add(&mut conn, fav, &[1, 2], 111).unwrap();
+        assert_eq!(
+            ids(&conn, fav).unwrap(),
+            [1, 2],
+            "the add lands the new track and leaves the old one alone"
+        );
+
+        // And the drag path, pulling a member in from another playlist.
+        let other = create(&conn, "Other", 100).unwrap();
+        add(&mut conn, other, &[1], 112).unwrap();
+        let dragged = tracks(&conn, other).unwrap()[0].member_id;
+        place_members(&mut conn, fav, &[dragged], None, 113).unwrap();
+        assert_eq!(
+            ids(&conn, fav).unwrap(),
+            [1, 2],
+            "still favourited once, and the drag emptied its source"
+        );
+        assert!(tracks(&conn, other).unwrap().is_empty());
+
+        // One click clears it, which is the whole point of holding the line.
+        set_favourite(&mut conn, 1, false, 120).unwrap();
+        assert!(!is_favourite(&conn, 1).unwrap());
+    }
+
+    #[test]
+    fn startup_clears_duplicates_an_older_build_left_behind() {
+        let mut conn = seed();
+        let fav = ensure_favourites(&conn, 100).unwrap();
+        add(&mut conn, fav, &[1, 2], 100).unwrap();
+        // A second row for track 1, the way a menu add made one before the
+        // writes kept them out.
+        conn.execute(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position, title, artist, album, path)
+             VALUES (?1, 1, 9, 'One', 'A', 'First', '/m/1.mp3')",
+            [fav],
+        )
+        .unwrap();
+        assert_eq!(ids(&conn, fav).unwrap(), [1, 2, 1]);
+
+        assert_eq!(dedupe_favourites(&conn, 130).unwrap(), 1, "one row dropped");
+        assert_eq!(ids(&conn, fav).unwrap(), [1, 2]);
+        assert_eq!(
+            dedupe_favourites(&conn, 131).unwrap(),
+            0,
+            "and the sweep is a no-op on a list that's already clean"
+        );
     }
 
     #[test]

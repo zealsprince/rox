@@ -367,7 +367,7 @@ impl DiscordPresence {
                         // Add clickable buttons if enabled and artist/title available
                         let mut buttons = Vec::new();
                         let lastfm_url = format!(
-                            "https://www.last.fm/music/{}/_/{}",
+                            "https://www.Last.fm/music/{}/_/{}",
                             url_encode(&state.artist),
                             url_encode(&state.title)
                         );

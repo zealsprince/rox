@@ -384,6 +384,15 @@ impl Rows<'_> {
         }
     }
 
+    /// [`Rows::when`] over an option, for the row that only exists while
+    /// there's something to put in it.
+    pub fn when_some<T>(self, value: Option<T>, then: impl FnOnce(Self, T) -> Self) -> Self {
+        match value {
+            Some(value) => then(self, value),
+            None => self,
+        }
+    }
+
     fn keep(&self, keywords: &[&str], label: &str, description: Option<&str>) -> bool {
         if self.all {
             return true;

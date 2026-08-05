@@ -45,7 +45,7 @@ pub fn agent() -> &'static ureq::Agent {
 }
 
 /// A ureq error folded to a short reason that's safe to show and safe to
-/// log. ureq's own Display prints the full request URL, and last.fm's URL
+/// log. ureq's own Display prints the full request URL, and Last.fm's URL
 /// carries the api key as a query param, so its string must never reach a
 /// panel or a log line - that leak is exactly what this exists to stop.
 /// A status failure reports the bare code; a transport failure maps to its
@@ -128,7 +128,7 @@ pub fn art_online() -> bool {
 }
 
 /// Whether the artist lookup is enabled - the biography panel's domain:
-/// last.fm's text and stats, with the deezer portrait riding along.
+/// Last.fm's text and stats, with the deezer portrait riding along.
 /// Seeded at startup, flipped by the Providers page.
 static ARTIST_ONLINE: AtomicBool = AtomicBool::new(true);
 

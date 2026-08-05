@@ -1,4 +1,4 @@
-//! The artist store: the biography panel's data layer. What last.fm
+//! The artist store: the biography panel's data layer. What Last.fm
 //! knows about an artist - wiki text, stats, tags, similar names - a
 //! deezer portrait, and the wide banner and fanart theaudiodb carries,
 //! fetched once and kept as plain files under the data directory's
@@ -58,7 +58,7 @@ pub struct Artist {
 }
 
 /// The cache file's shape: when the fetch landed and what it found.
-/// None inside records last.fm not knowing the name, so a miss doesn't
+/// None inside records Last.fm not knowing the name, so a miss doesn't
 /// re-query on every panel open.
 #[derive(Serialize, Deserialize)]
 struct Entry {
@@ -111,7 +111,7 @@ fn now() -> u64 {
 /// disk, a stale or missing one fetches and rewrites it, and with the
 /// artist provider off the cache answers at any age, so the panel still
 /// works offline. `force` refetches past the TTL, the panel's refresh.
-/// Ok(None) is a clean miss: last.fm doesn't know the name, or nothing
+/// Ok(None) is a clean miss: Last.fm doesn't know the name, or nothing
 /// is cached to serve offline. Blocking, background executor only.
 pub fn get(name: &str, force: bool) -> Result<Option<Artist>, String> {
     let name = name.trim();
@@ -149,7 +149,7 @@ pub fn get(name: &str, force: bool) -> Result<Option<Artist>, String> {
                 let _ = fs::write(&files.info, text);
             }
             if let Some(info) = &entry.info {
-                // The images search under last.fm's spelling of the name,
+                // The images search under Last.fm's spelling of the name,
                 // not the tag's, so the services agree on who is meant.
                 fetch_images(&info.name, &files, force);
             }

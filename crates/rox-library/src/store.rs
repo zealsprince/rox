@@ -746,6 +746,25 @@ pub fn paths_for(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<String>
     Ok(out)
 }
 
+/// Resolve track ids to the artist and title an online service names them
+/// by, skipping ids the library no longer holds. A track missing either tag
+/// is skipped too: nothing downstream can name it, so an empty pair would
+/// only travel to be thrown away.
+pub fn names_for(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare_cached("SELECT artist, title FROM tracks WHERE id = ?1")?;
+    let mut out = Vec::with_capacity(ids.len());
+    for &id in ids {
+        if let Ok((artist, title)) = stmt.query_row([id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        }) {
+            if !artist.is_empty() && !title.is_empty() {
+                out.push((artist, title));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// What the player reads off a row before handing the path to the engine,
 /// which knows nothing but paths: the album group boundaries are decided by
 /// (ADR 17) and the ReplayGain the source is levelled with (ADR 19).

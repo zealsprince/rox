@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     anchored, canvas, deferred, div, fill, linear_color_stop, linear_gradient, point, prelude::*,
-    px, relative, size, svg, AbsoluteLength, Along, AnyElement, App, Axis, Bounds, Context,
+    px, relative, size, svg, AbsoluteLength, Action, Along, AnyElement, App, Axis, Bounds, Context,
     DismissEvent, Div, Element, Entity, FocusHandle, Focusable as _, GlobalElementId,
     InspectorElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point, Rgba, ScrollHandle, SharedString, Size, Stateful, Subscription, TitlebarOptions,
@@ -21,6 +21,7 @@ use gpui::{
 use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, Disableable, Icon, IconName, Root, Sizable};
 use rox_dock::{Panel, PanelInfo, PanelView, TabPanel};
 use serde::{Deserialize, Serialize};
@@ -135,16 +136,72 @@ pub fn focus_panel_named(
     false
 }
 
+/// What a control's hover tooltip says, and the identity gpui parks its
+/// timing under. Every [`icon_control`] takes one: a glyph on its own says
+/// nothing to anyone who doesn't already know the app, so a new button
+/// can't ship without naming what it does.
+///
+/// gpui keeps the hover timer in element state, which only elements with
+/// an id get, so a tipped control needs an id too. A static label is its
+/// own id. Anything whose words read live (the loop button's mode, a
+/// per-row play button) takes [`Tip::keyed`] instead, so the id stays put
+/// while the text moves and two rows never share one timer.
+pub struct Tip {
+    id: gpui::ElementId,
+    text: SharedString,
+    action: Option<(Box<dyn Action>, Option<&'static str>)>,
+}
+
+impl Tip {
+    /// A tip whose words change, under an id that doesn't.
+    pub fn keyed(id: impl Into<gpui::ElementId>, text: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            text: text.into(),
+            action: None,
+        }
+    }
+
+    /// Trail the shortcut that does the same thing. `context` is the key
+    /// context the binding resolves in (`Workspace`), not the predicate it
+    /// was registered with, which parses as a context and finds nothing.
+    pub fn action(mut self, action: &dyn Action, context: Option<&'static str>) -> Self {
+        self.action = Some((action.boxed_clone(), context));
+        self
+    }
+
+    /// Hang the tip off a control that builds itself, for the buttons the
+    /// shared [`icon_control`] has no room for.
+    pub fn apply(self, control: Div) -> Stateful<Div> {
+        let Self { id, text, action } = self;
+        control.id(id).tooltip(move |window, cx| {
+            let mut tip = Tooltip::new(text.clone());
+            if let Some((action, context)) = action.as_ref() {
+                tip = tip.action(action.as_ref(), *context);
+            }
+            tip.build(window, cx)
+        })
+    }
+}
+
+impl From<&'static str> for Tip {
+    fn from(text: &'static str) -> Self {
+        Self::keyed(text, text)
+    }
+}
+
 /// The flat icon button the transport panels share so the button style
-/// never forks: the icon alone at rest, a soft pill behind it on hover.
-/// Icon paths come from [`crate::assets::icons`].
+/// never forks: the icon alone at rest, a soft pill behind it on hover,
+/// and a [`Tip`] naming it once the pointer settles. Icon paths come from
+/// [`crate::assets::icons`].
 pub fn icon_control<V: 'static>(
     icon: &'static str,
     color: Rgba,
+    tip: impl Into<Tip>,
     on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
     cx: &mut Context<V>,
-) -> Div {
-    icon_control_sized(icon, px(16.), color, on_click, cx)
+) -> Stateful<Div> {
+    icon_control_sized(icon, px(16.), color, tip, on_click, cx)
 }
 
 /// [`icon_control`] that shows a crossfade running through it: while two
@@ -156,12 +213,13 @@ pub fn icon_control<V: 'static>(
 pub fn icon_control_fading<V: 'static>(
     icon: &'static str,
     color: Rgba,
+    tip: impl Into<Tip>,
     fade: Option<FadeView>,
     outro: Option<f32>,
     on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
     cx: &mut Context<V>,
-) -> Div {
-    icon_control_sized(icon, px(16.), color, on_click, cx)
+) -> Stateful<Div> {
+    icon_control_sized(icon, px(16.), color, tip, on_click, cx)
         .when_some(fade, |d, fade| {
             // Soft-edged rather than a hard wipe: the thing being drawn is a
             // fade, and an edge that blurs across the button reads as one where
@@ -200,19 +258,22 @@ pub fn icon_control_sized<V: 'static>(
     icon: &'static str,
     size: Pixels,
     color: Rgba,
+    tip: impl Into<Tip>,
     on_click: impl Fn(&mut V, &mut Context<V>) + 'static,
     cx: &mut Context<V>,
-) -> Div {
-    div()
-        .p(tokens::ICON_PAD)
-        .rounded(tokens::RADIUS)
-        .hover(|d| d.bg(palette::bg_control()))
-        .cursor_pointer()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _, _, cx| on_click(this, cx)),
-        )
-        .child(svg().path(icon).size(size).text_color(color))
+) -> Stateful<Div> {
+    tip.into().apply(
+        div()
+            .p(tokens::ICON_PAD)
+            .rounded(tokens::RADIUS)
+            .hover(|d| d.bg(palette::bg_control()))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| on_click(this, cx)),
+            )
+            .child(svg().path(icon).size(size).text_color(color)),
+    )
 }
 
 /// Map a strip fraction to an absolute seek on the playing track, the
@@ -1782,20 +1843,35 @@ pub fn mode_list<P: 'static, V: PartialEq + Copy + 'static>(
 pub const SLIDER_W: Pixels = px(150.);
 pub const READOUT_W: Pixels = px(60.);
 
+/// How wide a scrub strip draws.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SliderWidth {
+    /// [`SLIDER_W`], so every slider down a settings page lines up in one
+    /// control column whatever its label.
+    Fixed,
+    /// Whatever room the parent gives it. For a dialog, where there's no
+    /// column to line up with and a short strip adrift in a wide box reads
+    /// as a layout mistake rather than a choice.
+    Fill,
+}
+
 /// The scrub strip alone: the shared slider chrome over a drag surface,
 /// applying the strip fraction live on click and drag. The row builders
 /// below pair it with their readout.
 fn slider_strip<P: 'static>(
     scrub: &ScrubState,
     fraction: f32,
+    width: SliderWidth,
     apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
     let entity = cx.entity();
     div()
-        .w(SLIDER_W)
+        .map(|d| match width {
+            SliderWidth::Fixed => d.w(SLIDER_W).flex_none(),
+            SliderWidth::Fill => d.flex_1(),
+        })
         .h(tokens::CONTROL_H)
-        .flex_none()
         .cursor_pointer()
         .on_mouse_down(
             MouseButton::Left,
@@ -1947,12 +2023,47 @@ pub fn value_slider_edit_over<P: 'static>(
     apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
+    value_slider_edit_sized(
+        scrub,
+        edit,
+        fraction,
+        readout,
+        edit_text,
+        over,
+        SliderWidth::Fixed,
+        to_fraction,
+        apply,
+        cx,
+    )
+}
+
+/// The same, with the strip's width said out loud. The settings pages want
+/// [`SliderWidth::Fixed`] and get it from the wrapper above; a dialog builds
+/// its own row and asks for [`SliderWidth::Fill`].
+#[allow(clippy::too_many_arguments)]
+pub fn value_slider_edit_sized<P: 'static>(
+    scrub: &ScrubState,
+    edit: &ValueEdit,
+    fraction: f32,
+    readout: String,
+    edit_text: String,
+    over: f32,
+    width: SliderWidth,
+    to_fraction: impl Fn(f32) -> f32 + Clone + 'static,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
     let row = div()
         .flex()
         .flex_row()
         .items_center()
         .gap(tokens::SPACE_SM)
-        .child(slider_strip(scrub, fraction, apply.clone(), cx));
+        // A filling strip only fills if the row it sits in does too.
+        .map(|d| match width {
+            SliderWidth::Fixed => d,
+            SliderWidth::Fill => d.w_full(),
+        })
+        .child(slider_strip(scrub, fraction, width, apply.clone(), cx));
     if let Some(input) = edit.editing(scrub.id()) {
         // While the edit is live, a one-frame window handler (the
         // scrub_on_paint idiom) watches for a press outside the input and

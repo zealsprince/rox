@@ -41,14 +41,15 @@ use crate::lastfm::{self, AuthPhase, Scrobbler};
 use crate::panel::{self, AppState, ScrubState};
 use crate::panel_settings;
 use crate::panels::library::{Library, LibraryEvent};
+use crate::pass_prompt;
 use crate::player::Player;
 use crate::providers;
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::replaygain_job;
 use crate::settings::layouts::Preset;
 use crate::settings::ui::{
-    self as settings_ui, grid_columns, icon_button, sidebar, small_button, PageBody, Query, Rows,
-    Section, SECTION_GAP,
+    self as settings_ui, dialog_button, grid_columns, icon_button, sidebar, small_button, PageBody,
+    Query, Rows, Section, SECTION_GAP,
 };
 use crate::settings::{
     self, data_dir, settings_path, Frame, GainModeSetting, LayoutSize, LyricsSave, NamedLayout,
@@ -415,6 +416,23 @@ struct SettingsWindow {
     /// Whether the library may build acoustic vectors, the Library page's
     /// acoustic switch.
     acoustic_analysis: bool,
+    /// The start prompt for a long pass, while it's up. It owns the worker
+    /// slider, the estimate, and the start itself; the section buttons only
+    /// raise it, and the tasks window raises the same one.
+    prompt: Option<pass_prompt::Prompt>,
+    /// How many tracks each pass works on at once, mirrored from settings so
+    /// the coverage notes can price a pass per render without re-reading the
+    /// file. The prompt's slider is what moves them.
+    acoustic_workers: usize,
+    rg_workers: usize,
+    /// What the last acoustic pass measured on this machine, worker-seconds
+    /// per track by model id, mirrored from the session file so the coverage
+    /// note can price a pass per render without re-reading it. Refreshed
+    /// when a pass ends, which is the only time it changes.
+    acoustic_pace: std::collections::HashMap<String, f32>,
+    /// The same for ReplayGain measurement, seconds per track. Zero until a
+    /// pass has measured one.
+    rg_pace: f32,
     /// How much of the library the acoustic pass has described, counted
     /// alongside the rollups above rather than in a paint.
     acoustic_coverage: rox_library::embeddings::Coverage,
@@ -724,6 +742,11 @@ impl SettingsWindow {
             check_updates: settings.check_updates,
             experimental: settings.experimental,
             acoustic_analysis: settings.acoustic_analysis,
+            prompt: None,
+            acoustic_workers: settings.acoustic_workers.max(1),
+            rg_workers: settings.replaygain_workers.max(1),
+            acoustic_pace: settings.session.acoustic_pace.clone(),
+            rg_pace: settings.session.replaygain_pace,
             acoustic_coverage,
             acoustic_job,
             // Open on whichever half holds the model the page is offering,
@@ -1696,15 +1719,17 @@ impl SettingsWindow {
         } else if split.covered() == 0 {
             Some(format!(
                 "None of the {total} tracks scanned have a ReplayGain to level by. Measure \
-                 Missing analyzes them and saves what it measures"
+                 Missing analyzes them and saves the numbers{}",
+                self.rg_estimate_suffix(split.missing)
             ))
         } else if split.missing > 0 {
             Some(format!(
                 "{} of {total} scanned tracks have a gain to level by, {} of them measured \
-                 by rox. The other {} play at the untagged setting",
+                 by rox. The other {} play at the untagged setting{}",
                 split.covered(),
                 split.measured,
                 split.missing,
+                self.rg_estimate_suffix(split.missing),
             ))
         } else if split.measured > 0 {
             Some(format!(
@@ -1844,17 +1869,12 @@ impl SettingsWindow {
             "Measure Missing",
             icons::GAUGE,
             idle,
-            cx.listener(|this, _, _, cx| this.start_measuring(cx)),
+            cx.listener(|this, _, _, cx| {
+                let library = this.library.clone();
+                pass_prompt::raise(this, pass_prompt::Pass::ReplayGain, library, cx);
+            }),
         )
         .into_any_element()
-    }
-
-    /// Kick off the measurement pass and start sampling it.
-    fn start_measuring(&mut self, cx: &mut Context<Self>) {
-        replaygain_job::start(self.library.clone(), cx);
-        self.rg_job = replaygain_job::progress(cx);
-        Self::poll_measuring(cx);
-        cx.notify();
     }
 
     /// Mirror the running pass into the section, the scan badge's cadence.
@@ -1863,7 +1883,13 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(RG_POLL).await;
             let live = this.update(cx, |this, cx| {
+                let was = this.rg_job.is_some();
                 this.rg_job = replaygain_job::progress(cx);
+                // The pass that just ended wrote what it measured per file;
+                // pick it up so the next estimate prices off it.
+                if was && this.rg_job.is_none() {
+                    this.rg_pace = Settings::load().session.replaygain_pace;
+                }
                 cx.notify();
                 this.rg_job.is_some()
             });
@@ -1877,12 +1903,30 @@ impl SettingsWindow {
     /// The running pass as one line: how far along, what it's on, and what
     /// it gave up on. The work list is built first, so a zero total means
     /// the pass is still deciding what to measure.
+    /// A rough cost for measuring `missing` files at the current worker
+    /// setting, ready to append to the coverage line, or nothing until a
+    /// pass has measured this machine's pace. Off the last pass's own
+    /// average, so it prices these files on this disk rather than an
+    /// imagined library.
+    fn rg_estimate_suffix(&self, missing: u64) -> String {
+        match crate::pace::estimate(self.rg_pace, missing, self.rg_workers) {
+            Some(estimate) => format!(
+                " ({estimate} at {})",
+                crate::pace::workers_phrase(self.rg_workers)
+            ),
+            None => String::new(),
+        }
+    }
+
     fn measure_progress_line(job: &replaygain_job::Progress) -> String {
         let total = job.total();
         if total == 0 {
             return "Measuring: working out what's missing...".into();
         }
         let mut line = format!("Measuring {} of {total}", job.done().min(total));
+        if let Some(eta) = job.eta_secs() {
+            line.push_str(&format!(", {} left", crate::pace::human(eta)));
+        }
         let current = job.current();
         if let Some(name) = Path::new(&current).file_name() {
             line.push_str(&format!(" - {}", name.to_string_lossy()));
@@ -3040,6 +3084,15 @@ impl SettingsWindow {
         for (root, stats) in &self.root_stats {
             table = table.child(self.folder_row(root, *stats, scanning, cx));
         }
+        // An add slot at the foot of the list, where the eye lands after
+        // reading it. Same browse the header's Add Folder opens.
+        table = table.child(div().flex().flex_row().items_center().child(icon_button(
+            icons::PLUS,
+            scanning,
+            cx.listener(|this, _, _, cx| {
+                this.library.update(cx, |library, cx| library.browse(cx));
+            }),
+        )));
         // The library's badge and the file under the scan cursor, or the
         // resting status, under the table.
         let note: Option<SharedString> = busy.or_else(|| {
@@ -3053,7 +3106,11 @@ impl SettingsWindow {
             .child(table)
             .when_some(note, |d, note| {
                 d.child(
+                    // w_full on purpose: truncate with no definite width
+                    // measures at min-content and the line collapses to a
+                    // bare ellipsis.
                     div()
+                        .w_full()
                         .min_w_0()
                         .truncate()
                         .text_xs()
@@ -3968,6 +4025,11 @@ impl SettingsWindow {
                 return format!("{running}: working out what's missing...");
             }
             let mut line = format!("{running} is on {} of {total}", job.done().min(total));
+            // The pass's own measured rate, which prices whatever worker
+            // count it's actually running with.
+            if let Some(eta) = job.eta_secs() {
+                line.push_str(&format!(", {} left", crate::pace::human(eta)));
+            }
             let current = job.current();
             if let Some(name) = Path::new(&current).file_name() {
                 line.push_str(&format!(" - {}", name.to_string_lossy()));
@@ -3992,10 +4054,29 @@ impl SettingsWindow {
                 coverage.total
             );
         }
-        format!(
+        let mut line = format!(
             "{label} describes {} of {} scanned tracks. Analyze Missing works through the rest",
             coverage.embedded, coverage.total,
-        )
+        );
+        // Priced off what the last pass measured on this machine for this
+        // model, scaled to the worker setting, so dragging the slider shows
+        // what it buys. Quiet until a pass has measured anything: a number
+        // invented from constants would be wrong on every machine but one.
+        if let Some(estimate) = self.acoustic_estimate(coverage.missing()) {
+            line.push_str(&format!(
+                " ({estimate} at {})",
+                crate::pace::workers_phrase(self.acoustic_workers)
+            ));
+        }
+        line
+    }
+
+    /// A rough cost for analyzing `missing` tracks at the current worker
+    /// setting, off the pace the last pass over this model measured here.
+    /// None until one has.
+    fn acoustic_estimate(&self, missing: usize) -> Option<String> {
+        let pace = *self.acoustic_pace.get(self.acoustic_source.id())?;
+        crate::pace::estimate(pace, missing as u64, self.acoustic_workers)
     }
 
     /// Start the pass, or stop the one running. Inert with nothing missing,
@@ -4022,17 +4103,12 @@ impl SettingsWindow {
             "Analyze Missing",
             icons::FLASK,
             idle,
-            cx.listener(|this, _, _, cx| this.start_analyzing(cx)),
+            cx.listener(|this, _, _, cx| {
+                let library = this.library.clone();
+                pass_prompt::raise(this, pass_prompt::Pass::Acoustic, library, cx);
+            }),
         )
         .into_any_element()
-    }
-
-    /// Kick the pass off and start sampling it.
-    fn start_analyzing(&mut self, cx: &mut Context<Self>) {
-        embeddings::start(self.library.clone(), cx);
-        self.acoustic_job = embeddings::progress(cx);
-        Self::poll_analyzing(cx);
-        cx.notify();
     }
 
     /// Mirror the running pass into the section, `poll_measuring`'s twin.
@@ -4060,6 +4136,9 @@ impl SettingsWindow {
                         .library
                         .read(cx)
                         .acoustic_coverage(this.acoustic_source.id());
+                    // The pass that just ended wrote what it measured per
+                    // track; pick it up so the next estimate prices off it.
+                    this.acoustic_pace = Settings::load().session.acoustic_pace.clone();
                 }
                 // A finished download changed what's on disk, so the sizes
                 // and the install marks have to be re-walked once.
@@ -4317,33 +4396,6 @@ fn role_chip(
         .child(label)
 }
 
-/// A confirm-dialog button: the primary one reads as a filled accent
-/// control, the rest as plain controls.
-fn dialog_button(
-    label: &'static str,
-    primary: bool,
-    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    div()
-        .flex_none()
-        .px(tokens::SPACE_MD)
-        .py(tokens::SPACE_XS)
-        .rounded(tokens::RADIUS)
-        .cursor_pointer()
-        .map(|d| {
-            if primary {
-                d.bg(palette::accent())
-                    .text_color(palette::text_on_accent())
-                    .hover(|d| d.opacity(0.9))
-            } else {
-                d.bg(palette::bg_control())
-                    .hover(|d| d.bg(palette::bg_control_hover()))
-            }
-        })
-        .on_mouse_down(MouseButton::Left, on_click)
-        .child(label)
-}
-
 /// One right-aligned numeric cell of the folder table.
 fn number_cell(width: Pixels, value: String) -> Div {
     div()
@@ -4478,6 +4530,50 @@ fn dir_size(dir: &Path) -> u64 {
         .sum()
 }
 
+/// The pass prompt's host side: where the dialog's state lives on this
+/// window, and what the window re-reads once the dialog has done something.
+impl pass_prompt::Host for SettingsWindow {
+    fn prompt(&self) -> Option<&pass_prompt::Prompt> {
+        self.prompt.as_ref()
+    }
+
+    fn prompt_mut(&mut self) -> &mut Option<pass_prompt::Prompt> {
+        &mut self.prompt
+    }
+
+    fn value_edit(&self) -> &panel::ValueEdit {
+        &self.value_edit
+    }
+
+    /// Everything the pages state about the passes, re-read at once: the
+    /// counts a start just changed, the pace a probe just measured, and the
+    /// worker counts the dialog's slider wrote.
+    fn pass_changed(&mut self, cx: &mut Context<Self>) {
+        let settings = Settings::load();
+        self.acoustic_workers = settings.acoustic_workers.max(1);
+        self.rg_workers = settings.replaygain_workers.max(1);
+        self.acoustic_pace = settings.session.acoustic_pace.clone();
+        self.rg_pace = settings.session.replaygain_pace;
+        self.acoustic_coverage = self
+            .library
+            .read(cx)
+            .acoustic_coverage(self.acoustic_source.id());
+        self.rg_coverage = self.library.read(cx).replaygain_breakdown();
+        let (was_analyzing, was_measuring) = (self.acoustic_job.is_some(), self.rg_job.is_some());
+        self.acoustic_job = embeddings::progress(cx);
+        self.rg_job = replaygain_job::progress(cx);
+        // A pass that just started needs its poll; one that was already
+        // running has a loop and doesn't need a second.
+        if !was_analyzing && self.acoustic_job.is_some() {
+            Self::poll_analyzing(cx);
+        }
+        if !was_measuring && self.rg_job.is_some() {
+            Self::poll_measuring(cx);
+        }
+        cx.notify();
+    }
+}
+
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let columns = grid_columns(window);
@@ -4609,6 +4705,9 @@ impl Render for SettingsWindow {
                 // The overwrite confirm floats over the whole window on its own
                 // occluding layer, last so it paints on top of the page.
                 .children(self.confirm_overlay(cx))
+                // The pass prompt shares that layer. Only one of the two can
+                // be up: nothing on a page raises both.
+                .children(pass_prompt::overlay(self, cx))
                 .into_any_element()
         })
     }

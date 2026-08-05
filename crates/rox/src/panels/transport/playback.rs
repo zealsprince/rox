@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     anchored, deferred, div, prelude::*, px, svg, AnyElement, App, Context, DismissEvent, Div,
-    Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Point, Subscription,
-    WeakEntity, Window,
+    Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Point, Stateful,
+    Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Side};
@@ -23,6 +23,7 @@ use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, Panel
 use crate::panel_settings;
 use crate::player::observe_view;
 use crate::settings::ShuffleMode;
+use crate::workspace::{TogglePlayback, PLAYBACK_TIP_SCOPE};
 
 use super::{default_true, transport_panel};
 
@@ -428,8 +429,9 @@ impl TransportPanel {
         button: ModeButton,
         icon: &'static str,
         color: gpui::Rgba,
+        tip: String,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Stateful<Div> {
         // A button whose menu would hold one row isn't a button with a menu.
         // Shuffle loses its hold while nothing has been described, since
         // Random is then the only order there is, and crossfade never has
@@ -438,37 +440,54 @@ impl TransportPanel {
             return panel::icon_control(
                 icon,
                 color,
+                panel::Tip::keyed("shuffle", tip),
                 |this: &mut Self, cx| this.state.player.update(cx, |p, cx| p.toggle_shuffle(cx)),
                 cx,
             );
         }
-        div()
-            .relative()
-            .p(tokens::ICON_PAD)
-            .rounded(tokens::RADIUS)
-            .hover(|d| d.bg(palette::bg_control()))
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                    this.press_mode(button, event.position, window, cx)
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.release_mode(cx)),
-            )
-            .child(svg().path(icon).size(px(16.)).text_color(color))
-            // The corner mark: without it nothing says the button has modes
-            // behind it, and a hold nobody knows about is a hold nobody does.
-            .child(
-                div().absolute().top(px(0.)).right(px(0.)).child(
-                    svg()
-                        .path(icons::CHEVRON_DOWN)
-                        .size(px(7.))
-                        .text_color(palette::text_faint()),
+        // The hold is the only way to the modes behind the button, and the
+        // corner chevron can only hint that there's something there. The
+        // tooltip is where it gets said.
+        let tip = panel::Tip::keyed(
+            match button {
+                ModeButton::Shuffle => "shuffle",
+                ModeButton::Crossfade => "crossfade",
+            },
+            match button {
+                ModeButton::Shuffle => format!("{tip}. Hold to pick an order"),
+                ModeButton::Crossfade => format!("{tip}. Hold to pick a length"),
+            },
+        );
+        tip.apply(
+            div()
+                .relative()
+                .p(tokens::ICON_PAD)
+                .rounded(tokens::RADIUS)
+                .hover(|d| d.bg(palette::bg_control()))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                        this.press_mode(button, event.position, window, cx)
+                    }),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.release_mode(cx)),
+                )
+                .child(svg().path(icon).size(px(16.)).text_color(color))
+                // The corner mark: without it nothing says the button has
+                // modes behind it, and a hold nobody knows about is a hold
+                // nobody does.
+                .child(
+                    div().absolute().top(px(0.)).right(px(0.)).child(
+                        svg()
+                            .path(icons::CHEVRON_DOWN)
+                            .size(px(7.))
+                            .text_color(palette::text_faint()),
+                    ),
                 ),
-            )
+        )
     }
 
     /// Start a press: arm the hold, and remember where it went down so the
@@ -777,11 +796,13 @@ impl TransportPanel {
         let playing = player.is_playing();
         let active = player.is_active();
         // Loop state reads through the button itself: dim while off, the
-        // accent while on, the one-track glyph for single-track loop.
-        let (loop_icon, loop_color) = match player.loop_mode() {
-            LoopMode::Off => (icons::REPEAT, palette::text_faint()),
-            LoopMode::All => (icons::REPEAT, palette::accent()),
-            LoopMode::One => (icons::REPEAT_1, palette::accent()),
+        // accent while on, the one-track glyph for single-track loop. The
+        // tooltip carries the same state in words, since a dim glyph and an
+        // accent one only differ once you've seen both.
+        let (loop_icon, loop_color, loop_tip) = match player.loop_mode() {
+            LoopMode::Off => (icons::REPEAT, palette::text_faint(), "Loop off"),
+            LoopMode::All => (icons::REPEAT, palette::accent(), "Loop the queue"),
+            LoopMode::One => (icons::REPEAT_1, palette::accent(), "Loop this track"),
         };
         // Shuffle reads the same way: dim while off, the accent while on.
         // Its glyph follows the mode rather than the on/off state, so the
@@ -793,6 +814,11 @@ impl TransportPanel {
         } else {
             palette::text_faint()
         };
+        let shuffle_tip = if player.shuffle() {
+            format!("Shuffle on, {} order", shuffle_mode.label().to_lowercase())
+        } else {
+            "Shuffle off".to_string()
+        };
         // Continuation the same: dim while off, the accent while something
         // is standing by to refill the queue.
         let continue_color = if player.continuation_mode() == continuation::Mode::Off {
@@ -800,18 +826,36 @@ impl TransportPanel {
         } else {
             palette::accent()
         };
+        // Which strategy is refilling matters here in a way the one glyph
+        // can't show, so the tooltip names it.
+        let continue_tip = match player.continuation_mode() {
+            continuation::Mode::Off => "Keep playing off",
+            continuation::Mode::Continue => "Keep playing, on down the list",
+            continuation::Mode::Weighted => "Keep playing, never played first",
+        };
         // Crossfade reads the same way: dim at zero length, the accent once
         // boundaries are overlapping.
-        let crossfade_color = if player.crossfade_secs() > 0.0 {
+        let crossfade_secs = player.crossfade_secs();
+        let crossfade_color = if crossfade_secs > 0.0 {
             palette::accent()
         } else {
             palette::text_faint()
+        };
+        let crossfade_tip = if crossfade_secs > 0.0 {
+            format!("Crossfade {}", length_label(crossfade_secs))
+        } else {
+            "Crossfade off".to_string()
         };
         // Stop-after too: dim until armed, the accent while it waits.
         let stop_after_color = if player.stop_after() {
             palette::accent()
         } else {
             palette::text_faint()
+        };
+        let stop_after_tip = if player.stop_after() {
+            "Stop after this track, armed"
+        } else {
+            "Stop after this track"
         };
         // A crossfade in flight sweeps across the button that started it,
         // so the overlap the ear is hearing is visible and reads in the
@@ -848,6 +892,7 @@ impl TransportPanel {
                 PlaybackItem::Prev => panel::icon_control_fading(
                     icons::SKIP_BACK,
                     palette::text(),
+                    "Previous",
                     fade.filter(|fade| fade.back),
                     outro
                         .filter(|(back, _)| *back)
@@ -859,6 +904,7 @@ impl TransportPanel {
                 PlaybackItem::SeekBack => panel::icon_control(
                     icons::REWIND,
                     palette::text(),
+                    "Back 10 seconds",
                     |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(-10.0)),
                     cx,
                 )
@@ -867,46 +913,55 @@ impl TransportPanel {
                 // fill while everything around it stays flat; the config
                 // picks the fill's shape, or drops it to match the
                 // neighbors.
-                PlaybackItem::Play => div()
-                    .size(tokens::PLAY_SIZE)
-                    .flex_none()
-                    .map(|d| match highlight {
-                        PlayHighlight::Circle => d
-                            .rounded_full()
-                            .bg(palette::accent())
-                            .hover(|d| d.bg(palette::accent_hover())),
-                        PlayHighlight::Square => d
-                            .rounded(tokens::RADIUS)
-                            .bg(palette::accent())
-                            .hover(|d| d.bg(palette::accent_hover())),
-                        PlayHighlight::None => d
-                            .rounded(tokens::RADIUS)
-                            .hover(|d| d.bg(palette::bg_control())),
-                    })
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this: &mut Self, _, _, cx| {
-                            this.state.player.update(cx, |p, _| p.toggle_pause())
-                        }),
-                    )
-                    .child(
-                        svg()
-                            .path(if playing { icons::PAUSE } else { icons::PLAY })
-                            .size_4()
-                            .text_color(if highlight == PlayHighlight::None {
-                                palette::text()
-                            } else {
-                                palette::text_on_accent()
-                            }),
-                    )
-                    .into_any_element(),
+                // The one button here that has a key of its own, so its tip
+                // trails the shortcut.
+                PlaybackItem::Play => {
+                    panel::Tip::keyed("play", if playing { "Pause" } else { "Play" })
+                        .action(&TogglePlayback, PLAYBACK_TIP_SCOPE)
+                        .apply(
+                            div()
+                                .size(tokens::PLAY_SIZE)
+                                .flex_none()
+                                .map(|d| match highlight {
+                                    PlayHighlight::Circle => d
+                                        .rounded_full()
+                                        .bg(palette::accent())
+                                        .hover(|d| d.bg(palette::accent_hover())),
+                                    PlayHighlight::Square => d
+                                        .rounded(tokens::RADIUS)
+                                        .bg(palette::accent())
+                                        .hover(|d| d.bg(palette::accent_hover())),
+                                    PlayHighlight::None => d
+                                        .rounded(tokens::RADIUS)
+                                        .hover(|d| d.bg(palette::bg_control())),
+                                })
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this: &mut Self, _, _, cx| {
+                                        this.state.player.update(cx, |p, _| p.toggle_pause())
+                                    }),
+                                )
+                                .child(
+                                    svg()
+                                        .path(if playing { icons::PAUSE } else { icons::PLAY })
+                                        .size_4()
+                                        .text_color(if highlight == PlayHighlight::None {
+                                            palette::text()
+                                        } else {
+                                            palette::text_on_accent()
+                                        }),
+                                ),
+                        )
+                        .into_any_element()
+                }
                 PlaybackItem::SeekForward => panel::icon_control(
                     icons::FAST_FORWARD,
                     palette::text(),
+                    "Forward 10 seconds",
                     |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.seek_by(10.0)),
                     cx,
                 )
@@ -914,6 +969,7 @@ impl TransportPanel {
                 PlaybackItem::Next => panel::icon_control_fading(
                     icons::SKIP_FORWARD,
                     palette::text(),
+                    "Next",
                     fade.filter(|fade| !fade.back),
                     outro
                         .filter(|(back, _)| !*back)
@@ -931,6 +987,7 @@ impl TransportPanel {
                     } else {
                         palette::text_faint()
                     },
+                    "Stop and unload the track",
                     |this: &mut Self, cx| this.state.player.update(cx, |p, cx| p.stop(cx)),
                     cx,
                 )
@@ -938,6 +995,9 @@ impl TransportPanel {
                 PlaybackItem::Repeat => panel::icon_control(
                     loop_icon,
                     loop_color,
+                    // Keyed, since the glyph and the words both follow the
+                    // mode and the id has to sit still under them.
+                    panel::Tip::keyed("loop", loop_tip),
                     |this: &mut Self, cx| this.state.player.update(cx, |p, _| p.cycle_loop()),
                     cx,
                 )
@@ -949,6 +1009,7 @@ impl TransportPanel {
                         ModeButton::Shuffle,
                         mode_icon(shuffle_mode),
                         shuffle_color,
+                        shuffle_tip.clone(),
                         cx,
                     )
                     .into_any_element(),
@@ -961,6 +1022,7 @@ impl TransportPanel {
                 PlaybackItem::Continue => panel::icon_control(
                     icons::INFINITY,
                     continue_color,
+                    panel::Tip::keyed("continue", continue_tip),
                     |this: &mut Self, cx| {
                         this.state
                             .player
@@ -973,11 +1035,18 @@ impl TransportPanel {
                 // the length: the lengths differ by degree, and the colour
                 // already says whether anything is fading at all.
                 PlaybackItem::Crossfade => self
-                    .mode_control(ModeButton::Crossfade, icons::BLEND, crossfade_color, cx)
+                    .mode_control(
+                        ModeButton::Crossfade,
+                        icons::BLEND,
+                        crossfade_color,
+                        crossfade_tip.clone(),
+                        cx,
+                    )
                     .into_any_element(),
                 PlaybackItem::Random => panel::icon_control(
                     icons::DICE,
                     palette::text(),
+                    "Play a random track",
                     |this: &mut Self, cx| this.play_random(cx),
                     cx,
                 )
@@ -985,6 +1054,7 @@ impl TransportPanel {
                 PlaybackItem::StopAfter => panel::icon_control(
                     icons::SQUARE_DASHED,
                     stop_after_color,
+                    panel::Tip::keyed("stop-after", stop_after_tip),
                     |this: &mut Self, cx| {
                         this.state
                             .player

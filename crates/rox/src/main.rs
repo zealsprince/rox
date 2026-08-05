@@ -32,10 +32,12 @@ mod lastfm;
 mod logging;
 mod lyrics;
 mod matching;
+mod pace;
 mod panel;
 mod panel_catalog;
 mod panel_settings;
 mod panels;
+mod pass_prompt;
 mod peaks;
 mod player;
 mod playlist_create;
@@ -50,6 +52,7 @@ mod source;
 mod startup;
 mod stats_window;
 mod tags;
+mod tasks_window;
 mod thumbs;
 mod track_ui;
 mod workspace;
@@ -288,6 +291,7 @@ fn main() {
         settings::set_quit_to_tray(settings.quit_to_tray);
         settings::set_experimental(settings.experimental, cx);
         settings::set_acoustic_analysis(settings.acoustic_analysis, cx);
+        settings::set_gain_mode(settings.replay_gain.mode, cx);
         settings::set_acoustic_model(&settings.acoustic_model, cx);
         integrations::tray::sync(cx);
         // Point the icon resolver at the chosen pack before any window

@@ -43,6 +43,7 @@ impl Workspace {
             }
             MenuAction::OpenStats => crate::stats_window::open(self.state.clone(), cx),
             MenuAction::OpenConsole => crate::console_window::open(cx),
+            MenuAction::OpenTasks => crate::tasks_window::open(cx),
             MenuAction::OpenEqualizer => crate::eq_window::open(cx),
             MenuAction::OpenWelcome => crate::startup::welcome_window::open(self.state.clone(), cx),
             MenuAction::OpenAbout => crate::startup::about_window::open(self.state.clone(), cx),
@@ -256,11 +257,17 @@ impl Workspace {
                     .font_features = Some(FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
                 d.child(badge.child(label))
             })
+            // Between the scan badge and the scan controls: it's the same
+            // kind of thing, work the library is doing that you didn't have
+            // to sit and watch. Always there, since the window behind it is
+            // also where those jobs are started from.
+            .child(crate::tasks_window::control(cx))
             .when(can_rescan && idle, |d| {
                 d.child(panel::icon_control_sized(
                     icons::REFRESH_CW,
                     px(12.),
                     palette::text_muted(),
+                    "Rescan the library folders",
                     |this: &mut Workspace, cx| {
                         this.state
                             .library
@@ -274,6 +281,7 @@ impl Workspace {
                     icons::CLOSE,
                     px(12.),
                     palette::text_muted(),
+                    "Stop the scan",
                     |this: &mut Workspace, cx| {
                         this.state
                             .library

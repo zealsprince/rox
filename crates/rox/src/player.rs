@@ -1511,6 +1511,9 @@ impl Player {
         self.settings.replay_gain.mode = mode;
         self.send_gain_rule();
         Settings::update(move |s| s.replay_gain.mode = mode);
+        // The library's Gain column draws whichever gain this reads, so
+        // publish the pick to the static it renders from.
+        crate::settings::set_gain_mode(mode, cx);
         cx.notify();
     }
 

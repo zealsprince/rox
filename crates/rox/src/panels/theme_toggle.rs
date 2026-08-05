@@ -53,34 +53,36 @@ impl ThemeTogglePanel {
         // The glyph shows where a click goes, following the palette in
         // effect rather than the persisted pick, so a System pick still
         // reads as the side it resolved to.
-        let (icon, next) = match palette::mode() {
-            palette::Mode::Dark => (icons::SUN, Theme::Light),
-            palette::Mode::Light => (icons::MOON, Theme::Dark),
+        let (icon, next, tip) = match palette::mode() {
+            palette::Mode::Dark => (icons::SUN, Theme::Light, "Switch to the light theme"),
+            palette::Mode::Light => (icons::MOON, Theme::Dark, "Switch to the dark theme"),
         };
 
-        let button = div()
-            .size(px(24.))
-            .rounded(tokens::RADIUS)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                svg()
-                    .path(icon)
-                    .size(px(14.))
-                    .text_color(palette::text_muted()),
-            )
-            .cursor_pointer()
-            .hover(|d| d.bg(palette::bg_control_hover()))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |_, _, _, cx| {
-                    // Through the settings pipe so every window eases over,
-                    // then into the file, the settings window's own route.
-                    settings::set_theme(next, cx);
-                    Settings::update(move |s| s.theme = next);
-                }),
-            );
+        let button = panel::Tip::keyed("theme-toggle", tip).apply(
+            div()
+                .size(px(24.))
+                .rounded(tokens::RADIUS)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path(icon)
+                        .size(px(14.))
+                        .text_color(palette::text_muted()),
+                )
+                .cursor_pointer()
+                .hover(|d| d.bg(palette::bg_control_hover()))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |_, _, _, cx| {
+                        // Through the settings pipe so every window eases over,
+                        // then into the file, the settings window's own route.
+                        settings::set_theme(next, cx);
+                        Settings::update(move |s| s.theme = next);
+                    }),
+                ),
+        );
 
         div()
             .size_full()

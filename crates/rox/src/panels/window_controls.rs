@@ -6,7 +6,7 @@
 
 use gpui::{
     div, prelude::*, px, rgb, svg, AnyElement, App, Context, Div, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseDownEvent, Pixels, Subscription, WeakEntity, Window,
+    Focusable, MouseButton, MouseDownEvent, Pixels, Stateful, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -120,7 +120,7 @@ impl WindowControlsPanel {
     /// The mini-layout toggle, the menubar button's twin: swaps the
     /// workspace between its mini and primary layouts. None while turned
     /// off, no mini layout is assigned, or the workspace is gone.
-    fn mini_button(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn mini_button(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         if !self.config.mini {
             return None;
         }
@@ -128,40 +128,42 @@ impl WindowControlsPanel {
         if !ws.read(cx).mini_assigned() {
             return None;
         }
-        let icon = if ws.read(cx).on_mini() {
-            icons::MAXIMIZE
+        let (icon, tip) = if ws.read(cx).on_mini() {
+            (icons::MAXIMIZE, "Back to the full layout")
         } else {
-            icons::MINIMIZE
+            (icons::MINIMIZE, "Shrink to the mini player")
         };
         Some(
-            div()
-                .size(px(24.))
-                .rounded(tokens::RADIUS)
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|d| d.bg(palette::bg_control_hover()))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        // Deferred out of this panel's update: the toggle
-                        // stashes a dock dump, and dumping reads every
-                        // panel, this one included - a read inside its own
-                        // update panics.
-                        let ws = this.workspace.clone();
-                        window.defer(cx, move |window, cx| {
-                            let Some(ws) = ws.upgrade() else { return };
-                            ws.update(cx, |ws, cx| ws.toggle_mini(window, cx));
-                        });
-                    }),
-                )
-                .child(
-                    svg()
-                        .path(icon)
-                        .size(px(14.))
-                        .text_color(palette::text_muted()),
-                ),
+            panel::Tip::keyed("mini-toggle", tip).apply(
+                div()
+                    .size(px(24.))
+                    .rounded(tokens::RADIUS)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(palette::bg_control_hover()))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            // Deferred out of this panel's update: the toggle
+                            // stashes a dock dump, and dumping reads every
+                            // panel, this one included - a read inside its own
+                            // update panics.
+                            let ws = this.workspace.clone();
+                            window.defer(cx, move |window, cx| {
+                                let Some(ws) = ws.upgrade() else { return };
+                                ws.update(cx, |ws, cx| ws.toggle_mini(window, cx));
+                            });
+                        }),
+                    )
+                    .child(
+                        svg()
+                            .path(icon)
+                            .size(px(14.))
+                            .text_color(palette::text_muted()),
+                    ),
+            ),
         )
     }
 
@@ -196,9 +198,11 @@ impl WindowControlsPanel {
                 // Windows order: minimize, maximize, close.
                 ControlStyle::Icons => d
                     .gap(tokens::SPACE_XS)
-                    .child(icon_button(icons::MINUS, |_, w, _| w.minimize_window()))
-                    .child(icon_button(icons::STOP, maximize))
-                    .child(icon_button(icons::CLOSE, cx.listener(close))),
+                    .child(icon_button(icons::MINUS, "Minimize", |_, w, _| {
+                        w.minimize_window()
+                    }))
+                    .child(icon_button(icons::STOP, MAXIMIZE_TIP, maximize))
+                    .child(icon_button(icons::CLOSE, "Close", cx.listener(close))),
                 // macOS order: close, minimize, zoom.
                 ControlStyle::Traffic => d
                     .gap(tokens::SPACE_SM)
@@ -219,26 +223,38 @@ fn maximize(event: &MouseDownEvent, window: &mut Window, _: &mut App) {
     }
 }
 
+/// What the maximize control does, which is two things on macOS and one
+/// everywhere else. The modifier is the part nobody guesses, so the tip is
+/// where it gets said.
+const MAXIMIZE_TIP: &str = if cfg!(target_os = "macos") {
+    "Fullscreen, or Option-click to zoom"
+} else {
+    "Maximize"
+};
+
 /// One flat button: an icon that runs its click handler.
 fn icon_button(
     icon: &'static str,
+    tip: &'static str,
     handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    div()
-        .size(px(24.))
-        .rounded(tokens::RADIUS)
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|d| d.bg(palette::bg_control_hover()))
-        .on_mouse_down(MouseButton::Left, handler)
-        .child(
-            svg()
-                .path(icon)
-                .size(px(14.))
-                .text_color(palette::text_muted()),
-        )
+) -> Stateful<Div> {
+    panel::Tip::from(tip).apply(
+        div()
+            .size(px(24.))
+            .rounded(tokens::RADIUS)
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|d| d.bg(palette::bg_control_hover()))
+            .on_mouse_down(MouseButton::Left, handler)
+            .child(
+                svg()
+                    .path(icon)
+                    .size(px(14.))
+                    .text_color(palette::text_muted()),
+            ),
+    )
 }
 
 /// The three traffic lights in macOS order - close, minimize, zoom - over
@@ -249,27 +265,32 @@ fn icon_button(
 /// them at its left edge.
 pub(crate) fn traffic_lights(
     close: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> [Div; 3] {
+) -> [Stateful<Div>; 3] {
     [
-        traffic_light(TRAFFIC_CLOSE, close),
-        traffic_light(TRAFFIC_MIN, |_, w, _| w.minimize_window()),
-        traffic_light(TRAFFIC_ZOOM, maximize),
+        traffic_light(TRAFFIC_CLOSE, "Close", close),
+        traffic_light(TRAFFIC_MIN, "Minimize", |_, w, _| w.minimize_window()),
+        traffic_light(TRAFFIC_ZOOM, MAXIMIZE_TIP, maximize),
     ]
 }
 
 /// One traffic light: a colored circle that runs its click handler. No
-/// hover glyphs, the color carries the meaning like macOS without focus.
+/// hover glyphs, the color carries the meaning like macOS without focus,
+/// and the tip is there for anyone who reads the color the other way
+/// round.
 fn traffic_light(
     color: u32,
+    tip: &'static str,
     handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    div()
-        .size(px(12.))
-        .rounded_full()
-        .bg(rgb(color))
-        .cursor_pointer()
-        .hover(|d| d.opacity(0.8))
-        .on_mouse_down(MouseButton::Left, handler)
+) -> Stateful<Div> {
+    panel::Tip::from(tip).apply(
+        div()
+            .size(px(12.))
+            .rounded_full()
+            .bg(rgb(color))
+            .cursor_pointer()
+            .hover(|d| d.opacity(0.8))
+            .on_mouse_down(MouseButton::Left, handler),
+    )
 }
 
 impl PanelSettings for WindowControlsPanel {

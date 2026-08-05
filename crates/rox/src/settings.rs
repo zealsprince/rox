@@ -19,9 +19,9 @@ pub mod layouts;
 pub mod ui;
 pub mod window;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use gpui::{App, SharedString, WindowAppearance, WindowDecorations};
@@ -460,6 +460,24 @@ pub struct Settings {
     /// picked and the pass is run from, since all three are about what the
     /// library knows.
     pub acoustic_analysis: bool,
+    /// How many tracks the analysis pass works on at once. The default
+    /// leaves the machine usable while a pass runs behind other work;
+    /// someone happy to hand the whole box over for an afternoon raises it
+    /// on the prompt that opens before a pass. Clamped to the machine's own
+    /// cores when a pass starts, so a settings file carried from a bigger
+    /// machine can't oversubscribe a smaller one. A pass already running
+    /// keeps the count it started with.
+    ///
+    /// Lives here rather than on the prompt alone so the last pick is the
+    /// next pass's default: someone who settled on two workers shouldn't
+    /// have to say so every time.
+    pub acoustic_workers: usize,
+    /// The same for the ReplayGain measurement pass, which parallelizes by
+    /// album. Its own field rather than a shared one because the two passes
+    /// don't cost the same thing: analysis is arithmetic start to finish,
+    /// while measurement in tags mode spends part of every file writing to
+    /// disk, so the counts that suit them differ.
+    pub replaygain_workers: usize,
     /// Which model the analysis pass runs and which model's vectors the
     /// similarity queries read, by its catalog id
     /// ([`crate::embeddings::models::CATALOG`]). Sits next to the switch
@@ -551,6 +569,10 @@ pub struct WindowsState {
     /// the window closes.
     #[serde(alias = "console_window", deserialize_with = "lenient::option")]
     pub console: Option<LayoutSize>,
+    /// The tasks window's last size, restored on the next open. None until
+    /// the window closes.
+    #[serde(deserialize_with = "lenient::option")]
+    pub tasks: Option<LayoutSize>,
     /// The equalizer window's last size, restored on the next open. None
     /// until the window closes. The curve itself lives in `eq`, since it
     /// shapes audio whether or not the window is ever opened.
@@ -623,6 +645,24 @@ pub struct SessionState {
         deserialize_with = "lenient::option"
     )]
     pub update_cache: Option<UpdateCache>,
+    /// What the last acoustic pass measured on this machine, worker-seconds
+    /// per track by model id, so the Library page can price Analyze Missing
+    /// before it runs: divide by the worker setting, multiply by what's
+    /// missing. Per model because the built-in sketch and a network differ
+    /// by most of an order of magnitude, and per machine (which is why it
+    /// sits in the session file) because a laptop and a desktop do too.
+    /// Empty until a pass has run long enough to measure.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub acoustic_pace: HashMap<String, f32>,
+    /// The same for ReplayGain measurement: worker-seconds per track the
+    /// last pass averaged. Zero until measured.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub replaygain_pace: f32,
+}
+
+/// Serde's skip test for an unmeasured pace.
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
 }
 
 /// The account connections: `accounts.json`'s whole contents. Split off so
@@ -657,6 +697,8 @@ impl Default for SessionState {
             last_queue: None,
             last_scan: 0,
             update_cache: None,
+            acoustic_pace: HashMap::new(),
+            replaygain_pace: 0.0,
         }
     }
 }
@@ -973,6 +1015,37 @@ pub fn acoustic_analysis() -> bool {
 /// caller's.
 pub fn set_acoustic_analysis(on: bool, cx: &mut App) {
     ACOUSTIC_ANALYSIS.store(on, Ordering::Relaxed);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
+/// The live leveling mode, a static for the column registry's reason: the
+/// library's Gain column reads it per cell, and the sort behind that column
+/// runs where there's no player entity to ask. Seeded at startup, flipped
+/// with the setting. The player keeps its own copy, which is the one the
+/// engine levels by; this is only what the library draws.
+static GAIN_MODE: AtomicU8 = AtomicU8::new(0);
+
+pub fn gain_mode() -> GainModeSetting {
+    match GAIN_MODE.load(Ordering::Relaxed) {
+        1 => GainModeSetting::Track,
+        2 => GainModeSetting::Album,
+        _ => GainModeSetting::Off,
+    }
+}
+
+/// Publish the mode and repaint, so a Gain column follows the pick without
+/// a relaunch. Persisting is the caller's, and startup seeds through here.
+pub fn set_gain_mode(mode: GainModeSetting, cx: &mut App) {
+    GAIN_MODE.store(
+        match mode {
+            GainModeSetting::Off => 0,
+            GainModeSetting::Track => 1,
+            GainModeSetting::Album => 2,
+        },
+        Ordering::Relaxed,
+    );
     for window in cx.windows() {
         window.update(cx, |_, window, _| window.refresh()).ok();
     }
@@ -1956,6 +2029,8 @@ impl Default for Settings {
             check_updates: true,
             experimental: false,
             acoustic_analysis: false,
+            acoustic_workers: crate::embeddings::DEFAULT_WORKERS,
+            replaygain_workers: crate::embeddings::DEFAULT_WORKERS,
             acoustic_model: crate::embeddings::MODEL.to_string(),
             acoustic_ml_model: crate::embeddings::models::PANNS_CNN10.to_string(),
             acoustic_local_model: None,

@@ -475,6 +475,34 @@ pub fn small_button(
         .child(label.into())
 }
 
+/// A confirm-dialog button: the primary one reads as a filled accent
+/// control, the rest as plain controls. Shared with the pass prompt, which
+/// is a dialog the settings window no longer owns alone.
+pub fn dialog_button(
+    label: &'static str,
+    primary: bool,
+    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    div()
+        .flex_none()
+        .px(tokens::SPACE_MD)
+        .py(tokens::SPACE_XS)
+        .rounded(tokens::RADIUS)
+        .cursor_pointer()
+        .map(|d| {
+            if primary {
+                d.bg(palette::accent())
+                    .text_color(palette::text_on_accent())
+                    .hover(|d| d.opacity(0.9))
+            } else {
+                d.bg(palette::bg_control())
+                    .hover(|d| d.bg(palette::bg_control_hover()))
+            }
+        })
+        .on_mouse_down(MouseButton::Left, on_click)
+        .child(label)
+}
+
 /// A flat icon-only button for table rows: the glyph alone at rest, a
 /// soft pill behind it on hover, dimmed and inert like the text buttons.
 pub fn icon_button(
@@ -591,13 +619,37 @@ pub fn scalar<P: 'static>(
     apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
-    panel::value_slider_edit_over(
+    scalar_sized(
+        scrub,
+        edit,
+        value,
+        span,
+        panel::SliderWidth::Fixed,
+        apply,
+        cx,
+    )
+}
+
+/// [`scalar`] with the strip's width said out loud. Pages take the fixed
+/// control column; a dialog builds its own row and asks the strip to fill it.
+#[allow(clippy::too_many_arguments)]
+pub fn scalar_sized<P: 'static>(
+    scrub: &ScrubState,
+    edit: &panel::ValueEdit,
+    value: f32,
+    span: Span,
+    width: panel::SliderWidth,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    panel::value_slider_edit_sized(
         scrub,
         edit,
         span.fraction(value),
         format!("{:.*}{}", span.decimals, value, span.unit),
         format!("{:.*}", span.decimals, value),
         span.over,
+        width,
         move |typed| span.unclamped(typed),
         move |this, fraction, cx| apply(this, span.value(fraction), cx),
         cx,

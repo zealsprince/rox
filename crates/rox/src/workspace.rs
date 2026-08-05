@@ -417,6 +417,12 @@ actions!(
 /// win over key listeners, the exclusion is what hands the keys back.
 const PLAYBACK_KEY_SCOPE: Option<&str> = Some("Workspace && !SearchInput");
 
+/// The same scope as a plain context, for the tooltips that show what key
+/// runs the button they're on. A lookup parses its argument as a context to
+/// match predicates against, and the predicate above isn't one, so passing
+/// it finds no binding and the tip loses its key.
+pub const PLAYBACK_TIP_SCOPE: Option<&'static str> = Some("Workspace");
+
 /// App-level key bindings; call once at startup.
 pub fn init(cx: &mut App) {
     // Quit binds unscoped so it fires in every window, popped-out panels
@@ -742,6 +748,7 @@ pub(crate) enum MenuAction {
     OpenSettings,
     OpenStats,
     OpenConsole,
+    OpenTasks,
     OpenEqualizer,
     OpenWelcome,
     OpenAbout,
@@ -799,6 +806,7 @@ impl MenuAction {
             MenuAction::Next => "next".into(),
             MenuAction::Previous => "previous".into(),
             MenuAction::OpenConsole => "console".into(),
+            MenuAction::OpenTasks => "tasks".into(),
             MenuAction::OpenEqualizer => "equalizer".into(),
             MenuAction::OpenWelcome => "welcome".into(),
             MenuAction::OpenAbout => "about".into(),
@@ -830,6 +838,7 @@ impl MenuAction {
             "next" => MenuAction::Next,
             "previous" => MenuAction::Previous,
             "console" => MenuAction::OpenConsole,
+            "tasks" => MenuAction::OpenTasks,
             "equalizer" => MenuAction::OpenEqualizer,
             "welcome" => MenuAction::OpenWelcome,
             "about" => MenuAction::OpenAbout,
@@ -1006,6 +1015,11 @@ pub(crate) const MENUS: &[Menu] = &[
                 label: "Console",
                 icon: icons::FILE_TEXT,
                 action: MenuAction::OpenConsole,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Tasks",
+                icon: icons::CLOCK,
+                action: MenuAction::OpenTasks,
             }),
             MenuEntry::Item(MenuItem {
                 label: "Equalizer",
@@ -2799,6 +2813,7 @@ impl Workspace {
                     panel::icon_control(
                         icons::INFO,
                         palette::text_muted(),
+                        "Open the welcome window",
                         |this: &mut Self, cx| {
                             crate::startup::welcome_window::open(this.state.clone(), cx);
                         },
@@ -2909,29 +2924,34 @@ impl Workspace {
     /// helper doesn't pass, and it reads like a menu button beside them.
     fn mini_button(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         self.mini_layout.as_ref()?;
-        let icon = if self.on_mini() {
-            icons::MAXIMIZE
+        // The glyph says which way the click goes and the tip says it in
+        // words, since two arrows pointing in and two pointing out are a
+        // coin flip to anyone who hasn't clicked it before.
+        let (icon, tip) = if self.on_mini() {
+            (icons::MAXIMIZE, "Back to the full layout")
         } else {
-            icons::MINIMIZE
+            (icons::MINIMIZE, "Shrink to the mini player")
         };
         Some(
-            div()
-                .h_full()
-                .px(tokens::SPACE_MD)
-                .flex()
-                .items_center()
-                .cursor_pointer()
-                .hover(|d| d.bg(palette::bg_menu_hover()))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.toggle_mini(window, cx)),
-                )
-                .child(
-                    svg()
-                        .path(icon)
-                        .size(px(14.))
-                        .text_color(palette::text_muted()),
-                ),
+            panel::Tip::keyed("mini-toggle", tip).apply(
+                div()
+                    .h_full()
+                    .px(tokens::SPACE_MD)
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(palette::bg_menu_hover()))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| this.toggle_mini(window, cx)),
+                    )
+                    .child(
+                        svg()
+                            .path(icon)
+                            .size(px(14.))
+                            .text_color(palette::text_muted()),
+                    ),
+            ),
         )
     }
 

@@ -462,6 +462,8 @@ impl StatsWindow {
                 ),
                 row.plays.to_string(),
                 Some(play_button(
+                    (label, i),
+                    "Play these tracks",
                     move |this, cx| this.play_name(by, &name, cx),
                     cx,
                 )),
@@ -505,7 +507,7 @@ impl StatsWindow {
         if rows.is_empty() {
             body = body.child(empty_note(self.range));
         }
-        for row in rows {
+        for (i, row) in rows.iter().enumerate() {
             let name = row.name.clone();
             let label_el = div()
                 .flex_1()
@@ -534,6 +536,8 @@ impl StatsWindow {
                 label_el.into_any_element(),
                 row.plays.to_string(),
                 Some(play_button(
+                    (label, i),
+                    "Play these tracks",
                     move |this, cx| this.play_name(by, &name, cx),
                     cx,
                 )),
@@ -585,7 +589,12 @@ impl StatsWindow {
             body = body.child(stat_row(
                 label.into_any_element(),
                 fmt_ago(now - row.last_played),
-                Some(play_button(move |this, cx| this.play_recent(ix, cx), cx)),
+                Some(play_button(
+                    ("recent", ix),
+                    "Play this track",
+                    move |this, cx| this.play_recent(ix, cx),
+                    cx,
+                )),
             ));
         }
         section("Recent Listens", None, body)
@@ -618,8 +627,12 @@ fn stat_row(label: gpui::AnyElement, readout: String, play: Option<gpui::AnyElem
 }
 
 /// A row's play control: invisible until the row is hovered, queueing
-/// on click.
+/// on click. Every row wears the same glyph, so the tip is keyed by the
+/// row's own id: a shared one would leave the whole column hovering on
+/// one timer.
 fn play_button(
+    id: impl Into<gpui::ElementId>,
+    tip: &'static str,
     on_click: impl Fn(&mut StatsWindow, &mut Context<StatsWindow>) + 'static,
     cx: &mut Context<StatsWindow>,
 ) -> gpui::AnyElement {
@@ -631,6 +644,7 @@ fn play_button(
         .child(panel::icon_control(
             icons::PLAY,
             palette::text_muted(),
+            panel::Tip::keyed(id, tip),
             on_click,
             cx,
         ))

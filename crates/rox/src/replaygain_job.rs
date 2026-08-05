@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use gpui::{App, Entity, Global};
 
@@ -25,6 +26,10 @@ use rox_playback::analysis::{self, AlbumAnalysis};
 use crate::catalog::Library;
 use crate::settings::{ReplayGainSave, Settings};
 
+/// Files a pass must get through before its rate is worth remembering as
+/// this machine's pace, the acoustic pass's `PACE_FLOOR`'s twin.
+const PACE_FLOOR: usize = 16;
+
 /// Live progress of a measurement pass: the worker writes it per file, the
 /// UI polls it. Zero total means the work list is still being built.
 #[derive(Default)]
@@ -34,11 +39,16 @@ pub struct Progress {
     /// Files the analyzer could not read at all, so the readout can own up
     /// to a pass that skipped some.
     failed: AtomicUsize,
-    /// Full path of the file being measured.
+    /// Full path of a file being measured. Whichever worker wrote last, so
+    /// it reads as a sample of the work rather than a queue position.
     current: Mutex<String>,
     /// Raised by [`stop`] and by app quit; the pass drops out at the next
     /// quarter second of audio.
     cancel: AtomicBool,
+    /// The pass's clock, for the "about 2 hours left" half of the readout.
+    /// Started once the work list is built, so the album walk doesn't bill
+    /// the first file.
+    pace: crate::pace::Pace,
 }
 
 impl Progress {
@@ -66,6 +76,17 @@ impl Progress {
     /// Whether a stop has been asked for and the pass is winding down.
     pub fn stopping(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Seconds each file has cost so far, measured over the whole pass.
+    /// None until enough have finished for the average to mean anything.
+    pub fn secs_per_track(&self) -> Option<f64> {
+        self.pace.secs_per_track(self.done())
+    }
+
+    /// Seconds the rest of the pass should take at the rate so far.
+    pub fn eta_secs(&self) -> Option<f64> {
+        self.pace.eta_secs(self.done(), self.total())
     }
 
     fn keep_going(&self) -> bool {
@@ -103,10 +124,16 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     let db_path = library.read(cx).db_path();
     // Read once, here: the pass writes an album at a time, and a flip
     // halfway through would leave one record split between the database and
-    // its own tags.
-    let save = Settings::load().replay_gain.save;
+    // its own tags. The worker count is read here for the same reason, so a
+    // pass keeps the pool it started with.
+    let settings = Settings::load();
+    let save = settings.replay_gain.save;
+    let workers = settings.replaygain_workers.max(1);
     let progress = Arc::new(Progress::default());
     cx.set_global(Running(Some(progress.clone())));
+    // Keeps the menubar chip and the tasks window ticking; nothing observes
+    // an app-global pass on its own.
+    crate::tasks_window::repaint_while_running(cx);
     // Quitting mid-pass shouldn't leave a tag write half done, so the same
     // flag the stop button raises goes up on the way out; the worker is
     // between files within a quarter second of audio.
@@ -123,11 +150,22 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
             .background_executor()
             .spawn({
                 let progress = progress.clone();
-                async move { run(&db_path, save, &progress) }
+                async move { run(&db_path, save, workers, &progress) }
             })
             .await;
         cx.update(|cx| {
             cx.set_global(Running(None));
+            // What this machine measures per file, remembered so the next
+            // Measure Missing can be priced before it runs. Worker-seconds,
+            // like the acoustic pace, so the prompt can price any worker
+            // count against it. Only off a decent stretch: a pass over a
+            // handful of files measures its own startup, not the rate.
+            if progress.done() >= PACE_FLOOR {
+                if let Some(per) = progress.secs_per_track() {
+                    let pace = (per * workers as f64) as f32;
+                    Settings::update(move |s| s.session.replaygain_pace = pace);
+                }
+            }
             library.update(cx, |library, cx| match written {
                 Ok(paths) => {
                     // Database mode wrote the columns itself and has nothing
@@ -144,6 +182,56 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
         .ok();
     })
     .detach();
+}
+
+/// Time a few files to learn what this machine costs per file, so a first
+/// pass can be priced before anyone commits an afternoon to it. Returns
+/// worker-seconds per file, the unit [`crate::pace::estimate`] divides.
+///
+/// Nothing is written. Measurement is only sound over a whole album, and a
+/// probe deliberately samples across the library rather than working through
+/// one record, so what it measures isn't a shape that can be saved. In tags
+/// mode saving would also mean rewriting audio files, which is not something
+/// a button called Estimate should do. The cost is a few seconds of decoding
+/// spent to avoid guessing at hours.
+///
+/// Rougher than the acoustic probe by nature: measuring reads the whole file,
+/// so its cost follows duration, and three files can't know a library's
+/// average length. It's the difference between "about 3 hours" and "about 5",
+/// not between hours and days, which is the question being asked.
+pub fn measure_pace(db_path: &Path) -> Result<f32, String> {
+    let conn = store::open(db_path).map_err(|e| e.to_string())?;
+    let albums = store::albums_missing_replaygain(&conn).map_err(|e| e.to_string())?;
+    // Flattened back to files: albums vary from a single to a box set, so
+    // sampling albums would let one long record stand for the library.
+    let paths: Vec<&String> = albums.iter().flat_map(|a| &a.paths).collect();
+    let picked = crate::pace::sample_indices(paths.len(), crate::pace::PROBE_TRACKS);
+    if picked.is_empty() {
+        return Err("there's nothing left to measure".into());
+    }
+
+    let started = Instant::now();
+    let mut measured = 0usize;
+    let mut last_err = String::new();
+    for index in picked {
+        let path = paths[index];
+        match analysis::measure(Path::new(path), || true, |_, _| {}) {
+            Ok(Some(_)) => measured += 1,
+            Ok(None) => {}
+            Err(e) => {
+                log::warn!("replaygain: probing {path}: {e}");
+                last_err = e;
+            }
+        }
+    }
+    if measured == 0 {
+        return Err(if last_err.is_empty() {
+            "nothing decodable".into()
+        } else {
+            last_err
+        });
+    }
+    Ok((started.elapsed().as_secs_f64() / measured as f64) as f32)
 }
 
 /// Whether this pass gets to put out an album gain, given how many of the
@@ -166,94 +254,147 @@ fn measures_album(grouped: bool, measured: usize, album_total: usize) -> bool {
 /// The blocking half: walk the albums, measure, write. Returns the paths
 /// whose files were rewritten, which is empty in database mode.
 ///
-/// Sequential on purpose for the first cut, one album and one file at a
-/// time. Album-parallel is the obvious upgrade and the work is already
-/// grouped for it: each album is independent, so a worker pool over the
-/// album list would scale straight across cores with no change to what gets
-/// written.
-fn run(db_path: &Path, save: ReplayGainSave, progress: &Progress) -> Result<Vec<PathBuf>, String> {
-    let mut conn = store::open(db_path).map_err(|e| e.to_string())?;
+/// Album-parallel through a bounded pool, the acoustic pass's shape. The
+/// album is the unit rather than the file because an album gain is measured
+/// over the whole record: splitting one across workers would mean collecting
+/// its tracks back together before anything could be written, and albums are
+/// plentiful enough to keep every worker busy on their own.
+///
+/// The one thing workers share is the database, behind a mutex. That
+/// serializes the writes, which is what SQLite wants anyway, and they're a
+/// rounding error next to the decode either way.
+fn run(
+    db_path: &Path,
+    save: ReplayGainSave,
+    workers: usize,
+    progress: &Progress,
+) -> Result<Vec<PathBuf>, String> {
+    let conn = store::open(db_path).map_err(|e| e.to_string())?;
     let albums = store::albums_missing_replaygain(&conn).map_err(|e| e.to_string())?;
     progress.total.store(
         albums.iter().map(|a| a.paths.len()).sum(),
         Ordering::Relaxed,
     );
+    progress.pace.begin();
 
-    let mut rewritten = Vec::new();
-    for album in albums {
+    let conn = Mutex::new(conn);
+    let rewritten = Mutex::new(Vec::new());
+    // The first write that failed, which ends the pass: a database that
+    // won't take a row won't take the next one either, and grinding through
+    // a library's worth of decoding to write none of it helps nobody.
+    let failure: Mutex<Option<String>> = Mutex::new(None);
+    let cursor = AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(workers.max(1))
+        .min(albums.len().max(1));
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                if !progress.keep_going() || failure.lock().unwrap().is_some() {
+                    break;
+                }
+                let Some(album) = albums.get(cursor.fetch_add(1, Ordering::Relaxed)) else {
+                    break;
+                };
+                if let Err(e) = measure_album(album, save, &conn, &rewritten, progress) {
+                    *failure.lock().unwrap() = Some(e);
+                    break;
+                }
+            });
+        }
+    });
+    if let Some(e) = failure.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok(rewritten.into_inner().unwrap())
+}
+
+/// One album measured and written. Errors are the database's alone: a file
+/// that won't decode and a tag write that won't land are both counted as
+/// skipped and left behind, because the next album is unaffected by either.
+fn measure_album(
+    album: &store::AlbumToMeasure,
+    save: ReplayGainSave,
+    conn: &Mutex<rox_library::rusqlite::Connection>,
+    rewritten: &Mutex<Vec<PathBuf>>,
+    progress: &Progress,
+) -> Result<(), String> {
+    let mut program = AlbumAnalysis::new();
+    let mut measured: Vec<String> = Vec::new();
+    for path in &album.paths {
         if !progress.keep_going() {
             break;
         }
-        let mut program = AlbumAnalysis::new();
-        let mut measured: Vec<String> = Vec::new();
-        for path in &album.paths {
-            if !progress.keep_going() {
-                break;
+        *progress.current.lock().unwrap() = path.clone();
+        // The per-file frame counts go unused: the readout counts files,
+        // and a bar that jitters inside every track says less than one
+        // that steps once per track.
+        match analysis::measure(Path::new(path), || progress.keep_going(), |_, _| {}) {
+            Ok(Some(track)) => {
+                program.push(track);
+                measured.push(path.clone());
             }
-            *progress.current.lock().unwrap() = path.clone();
-            // The per-file frame counts go unused: the readout counts files,
-            // and a bar that jitters inside every track says less than one
-            // that steps once per track.
-            match analysis::measure(Path::new(path), || progress.keep_going(), |_, _| {}) {
-                Ok(Some(track)) => {
-                    program.push(track);
-                    measured.push(path.clone());
-                }
-                // Cancelled mid-file; the album is incomplete either way.
-                Ok(None) => break,
-                Err(e) => {
-                    log::warn!("replaygain: {path}: {e}");
-                    progress.failed.fetch_add(1, Ordering::Relaxed);
-                }
+            // Cancelled mid-file; the album is incomplete either way.
+            Ok(None) => break,
+            Err(e) => {
+                log::warn!("replaygain: {path}: {e}");
+                progress.failed.fetch_add(1, Ordering::Relaxed);
             }
-            progress.done.fetch_add(1, Ordering::Relaxed);
         }
-        if measured.is_empty() {
-            continue;
-        }
-        // Counted after the loop, not before it: a file that wouldn't decode
-        // and a cancel partway both leave fewer files measured than the
-        // album holds, and either one makes this the partial case.
-        let whole = measures_album(album.group.is_some(), measured.len(), album.total);
-        let gains: Vec<replaygain::ReplayGain> = if whole {
-            program.replay_gains().into_iter().map(bridge).collect()
-        } else {
-            program
-                .tracks()
+        progress.done.fetch_add(1, Ordering::Relaxed);
+    }
+    if measured.is_empty() {
+        return Ok(());
+    }
+    // Counted after the loop, not before it: a file that wouldn't decode
+    // and a cancel partway both leave fewer files measured than the
+    // album holds, and either one makes this the partial case.
+    let whole = measures_album(album.group.is_some(), measured.len(), album.total);
+    let gains: Vec<replaygain::ReplayGain> = if whole {
+        program.replay_gains().into_iter().map(bridge).collect()
+    } else {
+        program
+            .tracks()
+            .iter()
+            .map(|t| bridge(t.replay_gain()))
+            .collect()
+    };
+    match save {
+        ReplayGainSave::Database => {
+            let rows: Vec<(&str, replaygain::ReplayGain)> = measured
                 .iter()
-                .map(|t| bridge(t.replay_gain()))
-                .collect()
-        };
-        match save {
-            ReplayGainSave::Database => {
-                let rows: Vec<(&str, replaygain::ReplayGain)> = measured
-                    .iter()
-                    .map(String::as_str)
-                    .zip(gains.iter().copied())
-                    .collect();
-                store::set_measured_replaygain(&mut conn, &rows).map_err(|e| e.to_string())?;
-            }
-            ReplayGainSave::Tags => {
-                for (path, gain) in measured.iter().zip(gains) {
-                    let file = PathBuf::from(path);
-                    // commit_replay_gain clears any field it's handed None,
-                    // which is right for a re-measure and wrong here: the
-                    // partial case leaves the album pair empty on purpose,
-                    // and a file that already carried album numbers from a
-                    // tagger would lose them. Carry the row's through.
-                    let gain = fill_album(&conn, path, gain);
-                    match writer::commit_replay_gain(&file, gain) {
-                        Ok(()) => rewritten.push(file),
-                        Err(e) => {
-                            log::warn!("replaygain: writing {path}: {e}");
-                            progress.failed.fetch_add(1, Ordering::Relaxed);
-                        }
+                .map(String::as_str)
+                .zip(gains.iter().copied())
+                .collect();
+            store::set_measured_replaygain(&mut conn.lock().unwrap(), &rows)
+                .map_err(|e| e.to_string())?;
+        }
+        ReplayGainSave::Tags => {
+            for (path, gain) in measured.iter().zip(gains) {
+                let file = PathBuf::from(path);
+                // commit_replay_gain clears any field it's handed None,
+                // which is right for a re-measure and wrong here: the
+                // partial case leaves the album pair empty on purpose,
+                // and a file that already carried album numbers from a
+                // tagger would lose them. Carry the row's through.
+                //
+                // The lock is held for the read alone: the tag write is the
+                // slow half and touches only this file, so every other
+                // worker is free to reach the database while it runs.
+                let gain = fill_album(&conn.lock().unwrap(), path, gain);
+                match writer::commit_replay_gain(&file, gain) {
+                    Ok(()) => rewritten.lock().unwrap().push(file),
+                    Err(e) => {
+                        log::warn!("replaygain: writing {path}: {e}");
+                        progress.failed.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
         }
     }
-    Ok(rewritten)
+    Ok(())
 }
 
 /// The engine's ReplayGain as the library spells it. Same four numbers, two

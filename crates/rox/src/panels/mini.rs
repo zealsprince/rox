@@ -81,36 +81,45 @@ impl MiniTogglePanel {
         } else {
             icons::MINIMIZE
         };
+        // The inert glyph says nothing about why it's inert, so its tip
+        // names the missing piece rather than the click it won't take.
+        let tip = match (assigned, on_mini) {
+            (false, _) => "No mini layout assigned",
+            (true, true) => "Back to the full layout",
+            (true, false) => "Shrink to the mini player",
+        };
 
-        let button = div()
-            .size(px(24.))
-            .rounded(tokens::RADIUS)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(svg().path(icon).size(px(14.)).text_color(if assigned {
-                palette::text_muted()
-            } else {
-                palette::text_faint()
-            }))
-            .when(assigned, |d| {
-                d.cursor_pointer()
-                    .hover(|d| d.bg(palette::bg_control_hover()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            // Deferred out of this panel's update: the toggle
-                            // stashes a dock dump, and dumping reads every
-                            // panel, this one included - a read inside its own
-                            // update panics.
-                            let ws = this.workspace.clone();
-                            window.defer(cx, move |window, cx| {
-                                let Some(ws) = ws.upgrade() else { return };
-                                ws.update(cx, |ws, cx| ws.toggle_mini(window, cx));
-                            });
-                        }),
-                    )
-            });
+        let button = panel::Tip::keyed("mini-toggle", tip).apply(
+            div()
+                .size(px(24.))
+                .rounded(tokens::RADIUS)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(svg().path(icon).size(px(14.)).text_color(if assigned {
+                    palette::text_muted()
+                } else {
+                    palette::text_faint()
+                }))
+                .when(assigned, |d| {
+                    d.cursor_pointer()
+                        .hover(|d| d.bg(palette::bg_control_hover()))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                // Deferred out of this panel's update: the toggle
+                                // stashes a dock dump, and dumping reads every
+                                // panel, this one included - a read inside its own
+                                // update panics.
+                                let ws = this.workspace.clone();
+                                window.defer(cx, move |window, cx| {
+                                    let Some(ws) = ws.upgrade() else { return };
+                                    ws.update(cx, |ws, cx| ws.toggle_mini(window, cx));
+                                });
+                            }),
+                        )
+                }),
+        );
 
         div()
             .size_full()

@@ -917,8 +917,8 @@ pub fn max_rowid(conn: &Connection) -> rusqlite::Result<i64> {
 /// Stream the projection columns for one rowid range, in id order. The
 /// sink's argument order mirrors the SELECT: path, title, artist, album
 /// artist, album, genre, then codec and the stream numbers after the tag
-/// numbers, the rating and scan time last. The path rides so the
-/// projection can derive each track's folder.
+/// numbers, the rating and scan time, then the two ReplayGain figures. The
+/// path rides so the projection can derive each track's folder.
 #[allow(clippy::type_complexity)]
 pub fn scan_range(
     conn: &Connection,
@@ -942,11 +942,14 @@ pub fn scan_range(
         u8,
         u8,
         i64,
+        Option<f32>,
+        Option<f32>,
     ),
 ) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, path, title, artist, album_artist, album, genre, year, disc_no, track_no,
-                duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added
+                duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added,
+                rg_track_gain, rg_album_gain
          FROM tracks WHERE id > ?1 AND id <= ?2 ORDER BY id",
     )?;
     let mut rows = stmt.query(rusqlite::params![lo, hi])?;
@@ -969,6 +972,8 @@ pub fn scan_range(
             row.get::<_, i64>(14)? as u8,
             row.get::<_, i64>(15)? as u8,
             row.get::<_, i64>(16)?,
+            row.get(17)?,
+            row.get(18)?,
         );
     }
     Ok(())

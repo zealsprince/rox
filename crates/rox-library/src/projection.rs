@@ -184,6 +184,35 @@ impl SymTable {
     }
 }
 
+/// What a ReplayGain column holds for a row whose file carries no gain of
+/// that kind. Sorts ahead of every real value the way an unrated row or a
+/// missing year does, and decodes back to None.
+pub const NO_GAIN: i16 = i16::MIN;
+
+/// A tagged gain packed for the projection: hundredths of a dB in an i16.
+/// Every real gain lands well inside the +-40 dB the engine will act on, so
+/// the integer holds the tag exactly, sorts without a float comparator, and
+/// costs a row two bytes instead of four plus a present flag. Nothing, and
+/// anything too wild to be a gain, packs to [`NO_GAIN`].
+fn pack_gain(db: Option<f32>) -> i16 {
+    match db {
+        Some(db) if db.is_finite() => {
+            let cdb = (db * 100.).round();
+            if cdb <= NO_GAIN as f32 + 1. || cdb >= i16::MAX as f32 {
+                NO_GAIN
+            } else {
+                cdb as i16
+            }
+        }
+        _ => NO_GAIN,
+    }
+}
+
+/// The dB back out of a packed gain.
+pub fn unpack_gain(cdb: i16) -> Option<f32> {
+    (cdb != NO_GAIN).then(|| cdb as f32 / 100.)
+}
+
 /// One shard of rows being loaded; also the whole library when loading serially.
 #[derive(Default)]
 pub struct Builder {
@@ -204,6 +233,8 @@ pub struct Builder {
     bit_depth: Vec<u8>,
     rating: Vec<u8>,
     added: Vec<i64>,
+    track_gain: Vec<i16>,
+    album_gain: Vec<i16>,
     folder: Vec<u32>,
     artists: Interner,
     album_artists: Interner,
@@ -248,6 +279,8 @@ impl Builder {
         bit_depth: u8,
         rating: u8,
         added: i64,
+        track_gain_db: Option<f32>,
+        album_gain_db: Option<f32>,
     ) {
         self.db_id.push(id);
         self.title.push(title);
@@ -267,6 +300,8 @@ impl Builder {
         self.bit_depth.push(bit_depth);
         self.rating.push(rating);
         self.added.push(added);
+        self.track_gain.push(pack_gain(track_gain_db));
+        self.album_gain.push(pack_gain(album_gain_db));
         // Interned per album directory, so it stays cheap even at ten
         // million rows; an empty parent (a bare filename) folds to "".
         let folder = Path::new(path)
@@ -315,6 +350,12 @@ pub struct Projection {
     /// so a play never pays a projection reload. Per ADR 11 the events
     /// stay the source; this column only caches their per-track count.
     pub plays: Vec<AtomicU32>,
+    /// The two ReplayGain figures a row carries (ADR 19), packed to
+    /// centi-dB per [`pack_gain`] with [`NO_GAIN`] for an untagged file.
+    /// Only the gains: the peaks bound playback, and nothing browsing the
+    /// library sorts or reads by them, so they stay in the database.
+    pub track_gain: Vec<i16>,
+    pub album_gain: Vec<i16>,
     /// Each track's parent directory, interned. Folders repeat once per
     /// album directory, so interning keeps this a handful of symbols even
     /// across a huge library. Searchable and filterable like artist/album.
@@ -367,6 +408,9 @@ pub struct RowView<'a> {
     pub rating: u8,
     pub plays: u32,
     pub added: i64,
+    /// The file's own ReplayGain figures in dB, None where it carries none.
+    pub track_gain_db: Option<f32>,
+    pub album_gain_db: Option<f32>,
     pub folder: &'a str,
 }
 
@@ -725,6 +769,12 @@ pub enum SortKey {
     Rating,
     Plays,
     Added,
+    /// The gain the Track leveling mode would read: the track figure, the
+    /// album one where a file only carries that, matching what the engine
+    /// falls back to and what the Gain column draws.
+    TrackGain,
+    /// The same the other way round, for the Album mode.
+    AlbumGain,
 }
 
 impl Projection {
@@ -762,7 +812,9 @@ impl Projection {
              hz,
              bits,
              rating,
-             added| {
+             added,
+             track_gain,
+             album_gain| {
                 b.push(
                     id,
                     path,
@@ -781,6 +833,8 @@ impl Projection {
                     bits,
                     rating,
                     added,
+                    track_gain,
+                    album_gain,
                 );
             },
         )?;
@@ -825,7 +879,9 @@ impl Projection {
                              hz,
                              bits,
                              rating,
-                             added| {
+                             added,
+                             track_gain,
+                             album_gain| {
                                 b.push(
                                     id,
                                     path,
@@ -844,6 +900,8 @@ impl Projection {
                                     bits,
                                     rating,
                                     added,
+                                    track_gain,
+                                    album_gain,
                                 );
                             },
                         )?;
@@ -904,6 +962,8 @@ impl Projection {
         out.bit_depth.reserve(total);
         out.rating.reserve(total);
         out.added.reserve(total);
+        out.track_gain.reserve(total);
+        out.album_gain.reserve(total);
         out.folder.reserve(total);
 
         for shard in shards {
@@ -935,6 +995,8 @@ impl Projection {
             out.bit_depth.extend_from_slice(&shard.bit_depth);
             out.rating.extend_from_slice(&shard.rating);
             out.added.extend_from_slice(&shard.added);
+            out.track_gain.extend_from_slice(&shard.track_gain);
+            out.album_gain.extend_from_slice(&shard.album_gain);
             out.folder
                 .extend(shard.folder.iter().map(|&s| map_f[s as usize]));
         }
@@ -958,6 +1020,8 @@ impl Projection {
             sample_rate_hz: out.sample_rate_hz,
             bit_depth: out.bit_depth,
             added: out.added,
+            track_gain: out.track_gain,
+            album_gain: out.album_gain,
             rating: out.rating.into_iter().map(AtomicU8::new).collect(),
             plays,
             folder: out.folder,
@@ -997,6 +1061,8 @@ impl Projection {
             rating: self.rating[i].load(Ordering::Relaxed),
             plays: self.plays[i].load(Ordering::Relaxed),
             added: self.added[i],
+            track_gain_db: unpack_gain(self.track_gain[i]),
+            album_gain_db: unpack_gain(self.album_gain[i]),
             folder: &self.folders.strings[self.folder[i] as usize],
         }
     }
@@ -1556,6 +1622,34 @@ impl Projection {
                 self.order_view(view, descending, |i| self.plays[i].load(Ordering::Relaxed))
             }
             SortKey::Added => self.order_view(view, descending, |i| self.added[i]),
+            // Packed centi-dB sorts as-is, and NO_GAIN being the floor puts
+            // the untagged rows first ascending, where a zero year or an
+            // unrated track sits too.
+            SortKey::TrackGain => self.order_view(view, descending, |i| self.gain_key(i, false)),
+            SortKey::AlbumGain => self.order_view(view, descending, |i| self.gain_key(i, true)),
+        }
+    }
+
+    /// One row's leveling gain in dB: the mode's own figure, the other as
+    /// the fallback, None for a file carrying neither. `album_first` is the
+    /// Album mode. Same pick [`crate::replaygain`] hands the engine, so the
+    /// number in the column is the one playback would act on, before the
+    /// preamp and the peak clamp.
+    pub fn gain_db(&self, row: u32, album_first: bool) -> Option<f32> {
+        unpack_gain(self.gain_key(row as usize, album_first))
+    }
+
+    /// The same pick, still packed, for sorting.
+    fn gain_key(&self, i: usize, album_first: bool) -> i16 {
+        let (first, second) = if album_first {
+            (self.album_gain[i], self.track_gain[i])
+        } else {
+            (self.track_gain[i], self.album_gain[i])
+        };
+        if first != NO_GAIN {
+            first
+        } else {
+            second
         }
     }
 
@@ -1869,6 +1963,79 @@ mod tests {
         let parallel = Projection::load_parallel(&db, 3, false).unwrap();
         assert_eq!(parallel.sample_rate_hz, p.sample_rate_hz);
         assert_eq!(parallel.bit_depth, p.bit_depth);
+    }
+
+    /// The ReplayGain figures load into the projection, come back as the
+    /// dB the file carries, and sort by whichever one the leveling mode
+    /// reads. A file tagged only one way is read by the other mode too,
+    /// the same fallback the engine levels by, and one carrying neither
+    /// stays None instead of a zero that would read as levelled.
+    #[test]
+    fn replay_gain_loads_and_sorts_by_the_mode() {
+        let dir = std::env::temp_dir().join("rox-projection-replay-gain");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("library.db");
+        let mut conn = store::open(&db).unwrap();
+        store::init_schema(&conn).unwrap();
+        let levelled = |path, title, track_db, album_db| {
+            let mut row = track(path, title, "A", 2000);
+            row.replay_gain = crate::replaygain::ReplayGain {
+                track_db,
+                track_peak: None,
+                album_db,
+                album_peak: None,
+            };
+            row
+        };
+        store::insert_batch(
+            &mut conn,
+            &[
+                levelled("/m/1.flac", "Loud", Some(-9.55), Some(-8.10)),
+                levelled("/m/2.flac", "Quiet", Some(-2.40), Some(-8.10)),
+                levelled("/m/3.flac", "Album Only", None, Some(-5.00)),
+                levelled("/m/4.flac", "Untagged", None, None),
+            ],
+        )
+        .unwrap();
+
+        let p = Projection::load_serial(&conn, false).unwrap();
+        let row_of = |title: &str| (0..p.len()).find(|&i| p.title.get(i) == title).unwrap() as u32;
+        assert_eq!(p.resolve(row_of("Loud")).track_gain_db, Some(-9.55));
+        assert_eq!(p.resolve(row_of("Loud")).album_gain_db, Some(-8.10));
+        assert_eq!(p.resolve(row_of("Untagged")).track_gain_db, None);
+
+        // Track mode reads the track figure and falls back to the album
+        // one; album mode the other way round.
+        assert_eq!(p.gain_db(row_of("Loud"), false), Some(-9.55));
+        assert_eq!(p.gain_db(row_of("Loud"), true), Some(-8.10));
+        assert_eq!(p.gain_db(row_of("Album Only"), false), Some(-5.00));
+        assert_eq!(p.gain_db(row_of("Untagged"), true), None);
+
+        let view: Vec<u32> = (0..p.len() as u32).collect();
+        let titles = |order: Vec<u32>| -> Vec<String> {
+            order
+                .iter()
+                .map(|&i| p.title.get(i as usize).to_string())
+                .collect()
+        };
+        // Ascending is quietest master first, the untagged row ahead of
+        // them all the way a zero year sorts.
+        assert_eq!(
+            titles(p.sort_view(&view, SortKey::TrackGain, false)),
+            ["Untagged", "Loud", "Album Only", "Quiet"]
+        );
+        // By album gain the two sharing a record tie and fall to the
+        // canonical order, and Album Only reads its own.
+        assert_eq!(
+            titles(p.sort_view(&view, SortKey::AlbumGain, false)),
+            ["Untagged", "Loud", "Quiet", "Album Only"]
+        );
+
+        // The sharded load merges to the same columns.
+        let parallel = Projection::load_parallel(&db, 3, false).unwrap();
+        assert_eq!(parallel.track_gain, p.track_gain);
+        assert_eq!(parallel.album_gain, p.album_gain);
     }
 
     /// `codec:` pins a term to the file's format, so one term narrows a

@@ -105,6 +105,8 @@ pub struct Projection {
     pub sample_rate_hz: Vec<u32>,
     pub bit_depth: Vec<u8>,
     pub added: Vec<i64>,
+    pub track_gain: Vec<i16>,   // ReplayGain in centi-dB, i16::MIN for untagged
+    pub album_gain: Vec<i16>,
     pub rating: Vec<AtomicU8>,  // written in place, no reload to rate a track
     pub plays: Vec<AtomicU32>,  // the listens table's per-track count, same reason
     pub artists: SymTable,      // symbol -> string, plus lowercase copy
@@ -126,6 +128,13 @@ pub struct Projection {
   heavily, so each interns to a `u32` symbol through a hash map during load. The finished `SymTable` is the symbol table
   plus a lowercase copy of every entry, built in parallel. Symbol tables run a
   hundredth the row count or less, which is what makes search and sort cheap.
+- **ReplayGain**: the two gains ride the projection so the library's Gain column can
+  draw and sort without a query per row, packed to hundredths of a dB in an `i16`
+  since every real gain sits inside the +-40 dB the engine acts on. `i16::MIN` is
+  untagged, which also sorts it ahead of every real value. The peaks stay in SQLite:
+  they bound playback and nothing browsing reads them. `gain_db(row, album_first)`
+  applies the leveling mode's pick and its fallback, the same one the engine levels
+  by, so the column and playback never disagree about which figure a track has.
 - **Resolve**: the UI renders through `resolve(row) -> RowView`, which borrows title,
   artist, and album straight out of the arena and tables. Resolving a visible window
   is O(visible), microseconds at any library size.

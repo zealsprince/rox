@@ -11,6 +11,7 @@ use crate::group_head::{self, ArtSide, HeadPiece, Headers};
 use crate::panel::{dedup, PanelChrome};
 use crate::query::shared_query::QuerySource;
 use crate::settings::ui as settings_ui;
+use crate::settings::GainModeSetting;
 
 /// One column the library can show: its stable key, header label, default
 /// width, and whether it renders right-aligned. The registry order is the
@@ -127,6 +128,17 @@ pub(crate) const COLUMNS: &[ColumnDef] = &[
         right: true,
         default_on: false,
         sort: SortKey::BitDepth,
+    },
+    ColumnDef {
+        // The ReplayGain the leveling would read, in dB. Which of the two
+        // figures that is follows the Audio page's mode, so the `sort` here
+        // is the Track reading and [`sort_key`] swaps it for Album's.
+        key: "gain",
+        label: "Gain",
+        default_width: 64.,
+        right: true,
+        default_on: false,
+        sort: SortKey::TrackGain,
     },
     ColumnDef {
         key: "duration",
@@ -593,6 +605,12 @@ pub(crate) fn sortable(key: &str) -> bool {
 pub(crate) fn sort_key(key: &str) -> Option<SortKey> {
     if key == "favourite" || key == "cover" || key == "similar" {
         return None;
+    }
+    // The Gain column draws whichever figure the leveling mode reads, so it
+    // has to sort by that one too, or the order and the numbers disagree.
+    // Off has no reading of its own and falls to the cell's, the track gain.
+    if key == "gain" && crate::settings::gain_mode() == GainModeSetting::Album {
+        return Some(SortKey::AlbumGain);
     }
     column_def(key).map(|def| def.sort)
 }

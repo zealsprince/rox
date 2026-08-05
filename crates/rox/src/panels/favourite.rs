@@ -162,41 +162,51 @@ impl FavouritePanel {
 
     fn body(&mut self, cx: &mut Context<Self>) -> Div {
         let (id, on) = self.current(cx);
-        let heart = div()
-            .size(px(24.))
-            .rounded(tokens::RADIUS)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                svg()
-                    .path(if on {
-                        icons::HEART_FILLED
-                    } else {
-                        icons::HEART
-                    })
-                    .size(px(15.))
-                    .text_color(if on {
-                        palette::accent()
-                    } else {
-                        palette::text_faint()
-                    }),
-            )
-            // Nothing to favourite: the heart stays up, dimmed and dead, so
-            // the panel holds its place in the strip.
-            .when(id.is_none(), |d| d.opacity(0.4))
-            .when_some(id, |d, id| {
-                d.cursor_pointer()
-                    .hover(|d| d.bg(palette::bg_control_hover()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this: &mut Self, _, _, cx| {
-                            this.state
-                                .library
-                                .update(cx, |library, cx| library.set_favourites(&[id], !on, cx));
+        // A dead heart gets a tip too: dimmed and unclickable says something
+        // is wrong with the button, where "nothing playing" says it's the
+        // source that's empty.
+        let tip = match (id.is_some(), on) {
+            (false, _) => "Nothing to favourite",
+            (true, true) => "Remove from favourites",
+            (true, false) => "Add to favourites",
+        };
+        let heart = panel::Tip::keyed("favourite", tip).apply(
+            div()
+                .size(px(24.))
+                .rounded(tokens::RADIUS)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path(if on {
+                            icons::HEART_FILLED
+                        } else {
+                            icons::HEART
+                        })
+                        .size(px(15.))
+                        .text_color(if on {
+                            palette::accent()
+                        } else {
+                            palette::text_faint()
                         }),
-                    )
-            });
+                )
+                // Nothing to favourite: the heart stays up, dimmed and dead, so
+                // the panel holds its place in the strip.
+                .when(id.is_none(), |d| d.opacity(0.4))
+                .when_some(id, |d, id| {
+                    d.cursor_pointer()
+                        .hover(|d| d.bg(palette::bg_control_hover()))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this: &mut Self, _, _, cx| {
+                                this.state.library.update(cx, |library, cx| {
+                                    library.set_favourites(&[id], !on, cx)
+                                });
+                            }),
+                        )
+                }),
+        );
 
         div()
             .size_full()

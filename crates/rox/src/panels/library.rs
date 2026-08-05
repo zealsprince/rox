@@ -33,7 +33,7 @@ use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
-use crate::settings::ShuffleMode;
+use crate::settings::{GainModeSetting, ShuffleMode};
 use crate::thumbs::Thumb;
 use crate::track_ui::track_cells;
 use crate::track_ui::track_drag::{PlayDrag, PlayDragPreview};
@@ -1307,6 +1307,20 @@ impl TableDelegate for TrackTable {
             "duration" => cell
                 .text_color(palette::text_muted())
                 .child(SharedString::from(fmt_ms(v.duration_ms))),
+            // The gain the leveling would read, signed so a boost reads as
+            // one, and blank for a file carrying neither figure rather than
+            // a 0.00 that would look like a levelled track. The tag as
+            // written: the preamp and the peak clamp land at playback, and
+            // folding them in here would turn a file's own number into one
+            // that moves when a slider does.
+            "gain" => match projection
+                .gain_db(row, crate::settings::gain_mode() == GainModeSetting::Album)
+            {
+                Some(db) => cell
+                    .text_color(palette::text_muted())
+                    .child(SharedString::from(format!("{db:+.2}"))),
+                None => cell,
+            },
             "rating" => {
                 track_cells::rating(self.state.clone(), projection.db_id[row as usize], v.rating)
             }

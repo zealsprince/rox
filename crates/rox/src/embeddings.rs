@@ -52,6 +52,7 @@ pub mod resample;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use gpui::{App, Entity, Global};
 
@@ -106,10 +107,17 @@ const ONSET_RELEASE: f32 = 0.1;
 /// Tracks per transaction. Big enough that committing isn't the cost, small
 /// enough that a cancel or a crash doesn't throw much decoding away.
 const BATCH: usize = 32;
-/// Ceiling on decode threads. Past a handful this is waiting on the disk
-/// rather than the CPU, and the machine is meant to stay usable while a
-/// library analyzes in the background.
-const MAX_WORKERS: usize = 4;
+/// The default for [`crate::settings::Settings::acoustic_workers`]: enough
+/// to make a dent, few enough that the machine stays usable while a library
+/// analyzes in the background. The setting exists because that trade is the
+/// user's to make: on a machine with cores to spare, more workers is the
+/// difference between a pass measured in days and one measured in hours.
+pub const DEFAULT_WORKERS: usize = 4;
+/// Tracks a pass must get through before its rate is worth remembering as
+/// this machine's pace. Half a batch: enough to wash out the cold start,
+/// small enough that stopping a pass early still teaches the estimate
+/// something.
+const PACE_FLOOR: usize = 16;
 
 /// Where a pass's weights come from: the catalog, or a file on disk the user
 /// pointed rox at.
@@ -241,20 +249,6 @@ impl Extractor {
         }
         Ok(vector)
     }
-
-    /// How many tracks this extractor wants analyzed at once.
-    ///
-    /// The DSP one is a decode and an FFT, so it scales across cores the way
-    /// the pool was built for. The network is the opposite: candle's matmuls
-    /// already spread across every core inside one forward pass, and running
-    /// four of those against each other just makes them queue for the same
-    /// cores while holding four tracks of spectrogram in memory.
-    fn workers(&self) -> usize {
-        match self {
-            Extractor::Dsp => MAX_WORKERS,
-            Extractor::Panns(_) => 1,
-        }
-    }
 }
 
 /// Live progress of a pass: the workers write it per file, the UI polls it.
@@ -275,6 +269,10 @@ pub struct Progress {
     /// Raised by [`stop`] and by app quit; the workers drop out at the next
     /// file.
     cancel: AtomicBool,
+    /// The pass's clock, for the "about 2 hours left" half of the readout.
+    /// Started once the work list is built, so the model load and the
+    /// database walk don't bill the first track.
+    pace: crate::pace::Pace,
 }
 
 impl Progress {
@@ -307,6 +305,18 @@ impl Progress {
     /// Whether a stop has been asked for and the pass is winding down.
     pub fn stopping(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Seconds each track has cost so far, measured over the whole pass.
+    /// None until enough tracks have finished for the average to mean
+    /// anything.
+    pub fn secs_per_track(&self) -> Option<f64> {
+        self.pace.secs_per_track(self.done())
+    }
+
+    /// Seconds the rest of the pass should take at the rate so far.
+    pub fn eta_secs(&self) -> Option<f64> {
+        self.pace.eta_secs(self.done(), self.total())
     }
 
     fn keep_going(&self) -> bool {
@@ -357,15 +367,22 @@ pub fn stop(cx: &mut App) {
 /// a caller that could hand in a different one would be able to fill the
 /// table under a name nothing reads.
 pub fn start(library: Entity<Library>, cx: &mut App) {
-    if progress(cx).is_some() || !Settings::load().acoustic_analysis {
+    let settings = Settings::load();
+    if progress(cx).is_some() || !settings.acoustic_analysis {
         return;
     }
+    // Read once here rather than inside the pass: a pass keeps the worker
+    // count it started with, and the next one picks up a changed setting.
+    let workers = settings.acoustic_workers.max(1);
     let source = crate::settings::acoustic_source();
     let db_path = library.read(cx).db_path();
     let progress = Arc::new(Progress::default());
     *progress.model.lock().unwrap() = source.id().to_string();
     cx.set_global(Running(Some(progress.clone())));
     cx.set_global(LastFailure(None));
+    // Keeps the menubar chip and the tasks window ticking; nothing observes
+    // an app-global pass on its own.
+    crate::tasks_window::repaint_while_running(cx);
     // Quitting mid-pass raises the same flag the stop button does, so the
     // workers land on a batch boundary instead of being killed mid-write.
     cx.on_app_quit({
@@ -382,11 +399,24 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
             .background_executor()
             .spawn({
                 let progress = progress.clone();
-                async move { run(&source, &db_path, &progress) }
+                async move { run(&source, &db_path, workers, &progress) }
             })
             .await;
         cx.update(|cx| {
             cx.set_global(Running(None));
+            // What this machine can do, remembered for the next estimate.
+            // Worker-seconds per track, so the Library page can price any
+            // worker setting against it. Only off a decent stretch: a pass
+            // over a handful of files measures its own startup, not the rate.
+            if progress.done() >= PACE_FLOOR {
+                if let Some(per) = progress.secs_per_track() {
+                    let pace = (per * workers as f64) as f32;
+                    let id = name.clone();
+                    Settings::update(move |s| {
+                        s.session.acoustic_pace.insert(id, pace);
+                    });
+                }
+            }
             match result {
                 Ok(written) => {
                     // The surfaces that offer ordering by sound are gated on
@@ -407,10 +437,66 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     .detach();
 }
 
+/// Time a few tracks to learn what this machine costs per track, so a first
+/// pass can be priced before anyone commits an afternoon to it. Returns
+/// worker-seconds per track, the unit [`crate::pace::estimate`] divides.
+///
+/// Sequential on one thread on purpose: one track at a time is exactly one
+/// worker-second per second, so the number needs no correcting for the pool
+/// it was measured under.
+///
+/// The vectors it produces are kept. They're the same vectors the pass would
+/// have written for those tracks, so throwing them away to keep the probe
+/// tidy would mean decoding them twice for nothing.
+///
+/// Blocking, and slow enough to want a background thread: it decodes and
+/// describes real files, which is the whole point.
+pub fn measure_pace(source: &Source, db_path: &Path) -> Result<f32, String> {
+    let extractor = Extractor::load(source)?;
+    let mut conn = store::open(db_path).map_err(|e| e.to_string())?;
+    let pending = embeddings::missing(&conn, source.id()).map_err(|e| e.to_string())?;
+    let picked = crate::pace::sample_indices(pending.len(), crate::pace::PROBE_TRACKS);
+    if picked.is_empty() {
+        return Err("there's nothing left to analyze".into());
+    }
+
+    let started = Instant::now();
+    let mut vectors = Vec::with_capacity(picked.len());
+    let mut last_err = String::new();
+    for index in picked {
+        let item = &pending[index];
+        match extractor.describe(Path::new(&item.path), item.duration_ms) {
+            Ok(vector) => vectors.push((item.id, vector)),
+            Err(e) => {
+                log::warn!("acoustic: probing {}: {e}", item.path);
+                last_err = e;
+            }
+        }
+    }
+    // Timed over what actually described: a file that wouldn't decode cost
+    // its share of the clock but produced no track, and counting it would
+    // read as the machine being slow rather than the file being broken.
+    if vectors.is_empty() {
+        return Err(if last_err.is_empty() {
+            "nothing decodable".into()
+        } else {
+            last_err
+        });
+    }
+    let per = started.elapsed().as_secs_f64() / vectors.len() as f64;
+    embeddings::upsert_many(&mut conn, source.id(), &vectors).map_err(|e| e.to_string())?;
+    Ok(per as f32)
+}
+
 /// The blocking half: walk what's missing, analyze in batches, write each
 /// batch in one transaction. Resumes by construction, since the work list is
 /// whatever has no vector yet.
-fn run(source: &Source, db_path: &Path, progress: &Progress) -> Result<usize, String> {
+fn run(
+    source: &Source,
+    db_path: &Path,
+    workers: usize,
+    progress: &Progress,
+) -> Result<usize, String> {
     // Before the work list, so a model whose weights went missing between
     // the settings page reading them and the pass starting says so instead
     // of counting a library's worth of work it can't do.
@@ -418,13 +504,14 @@ fn run(source: &Source, db_path: &Path, progress: &Progress) -> Result<usize, St
     let mut conn = store::open(db_path).map_err(|e| e.to_string())?;
     let pending = embeddings::missing(&conn, source.id()).map_err(|e| e.to_string())?;
     progress.total.store(pending.len(), Ordering::Relaxed);
+    progress.pace.begin();
 
     let mut written = 0;
     for batch in pending.chunks(BATCH) {
         if !progress.keep_going() {
             break;
         }
-        let vectors = analyze_batch(&extractor, batch, progress);
+        let vectors = analyze_batch(&extractor, batch, workers, progress);
         written += vectors.len();
         embeddings::upsert_many(&mut conn, source.id(), &vectors).map_err(|e| e.to_string())?;
     }
@@ -434,17 +521,25 @@ fn run(source: &Source, db_path: &Path, progress: &Progress) -> Result<usize, St
 /// One batch through a bounded pool. Every track is independent, so the
 /// workers just race a cursor down the slice; the order results come back in
 /// doesn't matter, they're keyed by id.
+///
+/// `workers` is the user's pick, clamped to the machine's cores and the
+/// batch. It bounds the network extractor too: its forward pass fans out
+/// through rayon's one shared pool, so concurrent tracks interleave there
+/// rather than fight, and the serial work around the network (decoding,
+/// resampling, the mel transform) is most of a track's wall time and only
+/// scales by running more tracks at once.
 fn analyze_batch(
     extractor: &Extractor,
     batch: &[Pending],
+    workers: usize,
     progress: &Progress,
 ) -> Vec<(i64, Vec<f32>)> {
     let cursor = AtomicUsize::new(0);
     let out = Mutex::new(Vec::with_capacity(batch.len()));
     let workers = std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(1).max(1))
+        .map(|n| n.get())
         .unwrap_or(1)
-        .min(extractor.workers())
+        .min(workers.max(1))
         .min(batch.len().max(1));
     std::thread::scope(|scope| {
         for _ in 0..workers {

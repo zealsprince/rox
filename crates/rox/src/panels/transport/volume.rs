@@ -7,7 +7,6 @@ use gpui::{
     Focusable, MouseButton, Pixels, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use gpui_component::tooltip::Tooltip;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -430,27 +429,30 @@ impl VolumePanel {
             (icons::VOLUME_2, palette::text())
         };
 
-        // Click toggles mute; with the readout off, the level rides
-        // along in a tooltip so it still has a home.
-        let tooltip_level = level.clone();
-        let icon = div()
-            .id("volume-icon")
-            .p(tokens::ICON_PAD)
-            .rounded(tokens::RADIUS)
-            .hover(|d| d.bg(palette::bg_control()))
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.state
-                        .player
-                        .update(cx, |player, cx| player.toggle_mute(cx));
-                }),
-            )
-            .when(!self.config.items.contains(&VolumeItem::Percent), |d| {
-                d.tooltip(move |window, cx| Tooltip::new(tooltip_level.clone()).build(window, cx))
-            })
-            .child(svg().path(speaker).size(px(16.)).text_color(speaker_color));
+        // Click toggles mute, so that's what the tip says; with the readout
+        // off, the level rides along behind it so it still has a home.
+        let tip = match (muted, self.config.items.contains(&VolumeItem::Percent)) {
+            (true, true) => "Unmute".to_string(),
+            (true, false) => format!("Unmute, {level}"),
+            (false, true) => "Mute".to_string(),
+            (false, false) => format!("Mute, {level}"),
+        };
+        let icon = panel::Tip::keyed("volume-icon", tip).apply(
+            div()
+                .p(tokens::ICON_PAD)
+                .rounded(tokens::RADIUS)
+                .hover(|d| d.bg(palette::bg_control()))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.state
+                            .player
+                            .update(cx, |player, cx| player.toggle_mute(cx));
+                    }),
+                )
+                .child(svg().path(speaker).size(px(16.)).text_color(speaker_color)),
+        );
 
         let scrub = self.scrub.clone();
         let player = self.state.player.clone();

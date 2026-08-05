@@ -100,6 +100,42 @@ struct ScanProgress {
     current: Mutex<String>,
     /// Raised by [`Library::abort_scan`]; the scan stops at the next file.
     cancel: AtomicBool,
+    /// The walk's clock, for the "about 20 minutes left" the tasks window
+    /// shows. Started on the first file rather than up front: the directory
+    /// walk that precedes it can run for a while on a big library, and
+    /// billing it to the first file would price the whole scan off it.
+    pace: crate::pace::Pace,
+    /// Whether the clock has been started, so the per-file tick only does it
+    /// once. The tick runs on the scanner's worker threads, so this is an
+    /// atomic rather than an `Option`.
+    timing: AtomicBool,
+}
+
+impl ScanProgress {
+    /// Note a file, starting the clock the first time through.
+    fn tick(&self, scanned: usize, total: usize, path: &std::path::Path) -> bool {
+        if !self.timing.swap(true, Ordering::Relaxed) {
+            self.pace.begin();
+        }
+        self.scanned.store(scanned, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+        *self.current.lock().unwrap() = path.to_string_lossy().into_owned();
+        !self.cancel.load(Ordering::Relaxed)
+    }
+}
+
+/// A running scan as the tasks window sees it: the same counts the menubar
+/// badge carries, plus the estimate and the file under the cursor that don't
+/// fit up there.
+pub struct ScanStatus {
+    pub done: usize,
+    pub total: usize,
+    pub current: String,
+    /// Seconds left at the rate so far, or None until the walk has been
+    /// going long enough for an average to mean anything.
+    pub eta: Option<f64>,
+    /// Whether a stop has been asked for and the walk is winding down.
+    pub stopping: bool,
 }
 
 /// What a background refresh does before the projection reloads.
@@ -333,6 +369,22 @@ impl Library {
     /// False for other background work: only scans can be aborted.
     pub fn scanning(&self) -> bool {
         self.scan.is_some()
+    }
+
+    /// The running scan in full, for the tasks window. The menubar keeps its
+    /// badge off `busy` and `status`; this is the same walk read at the
+    /// detail a window has room for.
+    pub fn scan_status(&self) -> Option<ScanStatus> {
+        let scan = self.scan.as_ref()?;
+        let done = scan.scanned.load(Ordering::Relaxed);
+        let total = scan.total.load(Ordering::Relaxed);
+        Some(ScanStatus {
+            done,
+            total,
+            current: scan.current.lock().unwrap().clone(),
+            eta: scan.pace.eta_secs(done, total),
+            stopping: scan.cancel.load(Ordering::Relaxed),
+        })
     }
 
     /// Stop the running scan at the next file. What it already indexed
@@ -1412,10 +1464,7 @@ fn load(
                 let root_total = AtomicUsize::new(0);
                 let s = scanner::scan(&mut conn, &root, |scanned, total, path| {
                     root_total.store(total, Ordering::Relaxed);
-                    progress.scanned.store(done + scanned, Ordering::Relaxed);
-                    progress.total.store(done + total, Ordering::Relaxed);
-                    *progress.current.lock().unwrap() = path.to_string_lossy().into_owned();
-                    !progress.cancel.load(Ordering::Relaxed)
+                    progress.tick(done + scanned, done + total, path)
                 })?;
                 done += root_total.load(Ordering::Relaxed);
                 summary.indexed += s.indexed;

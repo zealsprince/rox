@@ -1193,10 +1193,11 @@ impl TableDelegate for TrackTable {
                         }),
                 );
             }
-            // Queue what sounds like the clicked track. Only offered while
-            // acoustic analysis is on, since without vectors it would have
-            // nothing to answer with.
-            if crate::settings::acoustic_analysis() {
+            // Queue what sounds like the clicked track. Only offered once the
+            // pass has actually described something: the switch alone permits
+            // the vectors, it doesn't build them, and either action without
+            // them is a menu entry that does nothing.
+            if crate::settings::similarity_ready() {
                 let similar_panel = panel.clone();
                 menu = menu.item(
                     PopupMenuItem::new("Play Similar")
@@ -1777,15 +1778,15 @@ impl LibraryPanel {
             return;
         };
         let db_path = self.state.library.read(cx).db_path();
-        // Whichever model the Development page has selected, so the column
-        // shows distances under the same model the analysis pass filled.
-        let model = crate::settings::acoustic_model().id;
+        // Whichever model the Library page has selected, so the column shows
+        // distances under the same model the analysis pass filled.
+        let model = crate::settings::acoustic_source().id().to_string();
         cx.spawn(async move |this, cx| {
             let scored = cx
                 .background_executor()
                 .spawn(async move {
                     let conn = rox_library::store::open(&db_path).ok()?;
-                    rox_library::embeddings::scores(&conn, anchor, model).ok()
+                    rox_library::embeddings::scores(&conn, anchor, &model).ok()
                 })
                 .await;
             let Some(scored) = scored else { return };
@@ -2632,7 +2633,16 @@ impl LibraryPanel {
             }
         };
         self.state.player.update(cx, |player, cx| {
-            player.set_continuation_mode(continuation::Mode::Radio, cx);
+            // Radio is Similar shuffle plus a queue that doesn't end: the
+            // refill follows the order (`continuation::Mode::provider`), so
+            // this action is those two switches rather than a mode of its
+            // own. Continuation that's switched off is turned back on in
+            // whatever strategy it last used, since a radio that stops after
+            // one track isn't one.
+            player.shuffle_in_mode(ShuffleMode::Similar, cx);
+            if player.continuation_mode() == continuation::Mode::Off {
+                player.toggle_continuation(cx);
+            }
             player.play(paths, cx);
         });
     }

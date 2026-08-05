@@ -131,9 +131,6 @@ pub enum Mode {
     /// Draw from the whole library, never-played first and recent listens
     /// last. What the play history (ADR 11) is for.
     Weighted,
-    /// Keep drawing what sounds like the track that was playing, off the
-    /// acoustic vectors. Needs the library analyzed.
-    Radio,
 }
 
 /// Anything this doesn't recognize reads as the default rather than failing.
@@ -141,13 +138,17 @@ pub enum Mode {
 /// shard that won't parse is reset whole, so one unknown word here would cost
 /// the volume, the loop mode, and the saved queue with it. Written by hand
 /// rather than with `serde(other)`, which only covers tagged enums.
+///
+/// "radio" is deliberately not listed. It was a mode of its own until the
+/// radio draw became what Similar shuffle does when it runs out (see
+/// [`Mode::provider`]), so a settings file carrying it lands on the default
+/// and the listener's radio comes back from the shuffle order instead.
 impl<'de> Deserialize<'de> for Mode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Mode, D::Error> {
         let raw = serde_json::Value::deserialize(deserializer)?;
         Ok(match raw.as_str() {
             Some("off") => Mode::Off,
             Some("weighted") => Mode::Weighted,
-            Some("radio") => Mode::Radio,
             _ => Mode::Continue,
         })
     }
@@ -160,22 +161,29 @@ impl Mode {
             Mode::Off => "Off",
             Mode::Continue => "Continue",
             Mode::Weighted => "Weighted",
-            Mode::Radio => "Radio",
         }
     }
 
     /// Every mode in menu order.
-    pub const ALL: [Mode; 4] = [Mode::Off, Mode::Continue, Mode::Weighted, Mode::Radio];
+    pub const ALL: [Mode; 3] = [Mode::Off, Mode::Continue, Mode::Weighted];
 
     /// The strategy behind the pick, None while continuation is off.
     /// Built on the background executor, at the point of use, so a mode
     /// switched during a query can't leave a live provider behind.
-    pub fn provider(self) -> Option<Box<dyn Provider>> {
+    ///
+    /// `similar` is whether the queue is currently ordered by sound (shuffle
+    /// on, in [`crate::settings::ShuffleMode::Similar`]), and it takes the
+    /// draw over whatever mode is picked. Radio isn't a strategy the listener
+    /// chooses any more: a queue ordered by what sounds alike and then
+    /// refilled from browse order would answer two different questions in one
+    /// session, so the refill follows the order. Turning on Similar shuffle
+    /// is turning on radio, which is what it looked like it did anyway.
+    pub fn provider(self, similar: bool) -> Option<Box<dyn Provider>> {
         match self {
             Mode::Off => None,
+            _ if similar => Some(Box::new(Radio)),
             Mode::Continue => Some(Box::new(Browse)),
             Mode::Weighted => Some(Box::new(Weighted)),
-            Mode::Radio => Some(Box::new(Radio)),
         }
     }
 }
@@ -321,10 +329,13 @@ fn weighted_ids(conn: &Connection, seen: &HashSet<i64>, count: usize) -> Vec<i64
 /// same question without trusting the least consistent field in any real
 /// library.
 ///
-/// This is selection, and the Similar shuffle mode in the player is ordering.
-/// They compose rather than overlap: radio decides which tracks join the
-/// queue, and if shuffle is on the mode then decides what order the upcoming
-/// portion plays them in. Neither one does the other's job.
+/// This is selection, and the Similar shuffle mode in the player is ordering:
+/// radio decides which tracks join the queue, Similar decides what order the
+/// upcoming portion plays them in. Neither does the other's job, which is why
+/// the two used to be separate picks in two separate menus. Nobody could tell
+/// them apart, and they were only ever wanted together, so this one lost its
+/// menu entry: [`Mode::provider`] hands the draw to radio whenever the queue
+/// is being ordered by sound.
 struct Radio;
 
 impl Provider for Radio {
@@ -582,6 +593,42 @@ mod tests {
                 Mode::default(),
                 "{junk} should have degraded rather than failed"
             );
+        }
+    }
+
+    /// Radio isn't a strategy the listener picks any more: it's what the
+    /// draw becomes when the queue is ordered by sound. So an old settings
+    /// file that names it degrades to the default, the Similar order takes
+    /// the draw off whatever mode is set, and Off still means off, since a
+    /// queue that was told to end must not start growing because shuffle
+    /// happens to be on.
+    #[test]
+    fn similar_order_takes_the_draw_rather_than_a_mode_of_its_own() {
+        assert_eq!(
+            serde_json::from_str::<Mode>(r#""radio""#).unwrap(),
+            Mode::default()
+        );
+        assert!(Mode::Off.provider(true).is_none());
+
+        // The same mode, the same seed, the two orders: browse carries on
+        // down the view, radio leaves it. An unanalyzed library gives radio
+        // nothing to rank by and it falls through to the weighted draw, which
+        // is still not the view's next three.
+        let conn = library(10);
+        let all = ids(&conn);
+        let view = Arc::new(all.clone());
+        let played = all[2..6].to_vec();
+        let ordered = Mode::Continue
+            .provider(false)
+            .expect("continuation is on")
+            .next(&conn, &seed(Scope::View(view.clone()), played.clone(), 3));
+        assert_eq!(picked(ordered), all[6..9].to_vec(), "the browse resume");
+        let by_sound = Mode::Continue
+            .provider(true)
+            .expect("continuation is on")
+            .next(&conn, &seed(Scope::View(view), played.clone(), 3));
+        for id in picked(by_sound) {
+            assert!(!played.contains(&id), "radio replayed the session");
         }
     }
 

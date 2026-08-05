@@ -54,6 +54,9 @@ pub mod icons {
     /// "this keeps going" without borrowing the radio, which already means
     /// ordering by sound rather than never stopping.
     pub const INFINITY: &str = "icons/infinity.svg";
+    /// Crossfade (ADR 19): two circles overlapping, which is the picture of
+    /// one track lying over the next.
+    pub const BLEND: &str = "icons/blend.svg";
     pub const DICE: &str = "icons/dice-5.svg";
     pub const VOLUME_1: &str = "icons/volume-1.svg";
     pub const VOLUME_2: &str = "icons/volume-2.svg";

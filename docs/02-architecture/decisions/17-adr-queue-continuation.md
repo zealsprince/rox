@@ -77,6 +77,14 @@ queries are local. Continuation by default means rox plays things the user did n
 the bound is the same visibility argument as above plus the strategy being the user's
 choice.
 
-Open: the floor and the batch size are constants until real use argues otherwise. Whether
-a batch that lands after the queue drained auto-resumes or waits for a press is decided
-at implementation. The provider roster and its selection UI is #36.
+Resolved at implementation: a batch that lands after the queue drained auto-resumes. It
+needed no new mechanism. From the ended state the engine holds no open source, and its
+insert path already routes the first of a batch through the nav path when there is
+nothing playing, which reopens and clears the ended flag on the way. Waiting for a press
+would have meant teaching the engine a second kind of insert, and it would have made the
+race in the trade above audible as a stop rather than a gap. The trigger stays gated on
+the session reading as playing, so a paused queue and an armed stop-after still refuse to
+grow.
+
+Open: the floor and the batch size are constants until real use argues otherwise. The
+provider roster and its selection UI is #36.

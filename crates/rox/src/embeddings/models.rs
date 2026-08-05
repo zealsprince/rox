@@ -486,6 +486,15 @@ fn stream(
     Ok(())
 }
 
+/// SHA-256 of a file, as lowercase hex. What names a weights file the
+/// catalog knows nothing about: [`super::local_id`] takes the head of this,
+/// so two checkpoints can't share a name and the same one picked twice keeps
+/// the vectors it already wrote.
+pub fn hash_file(path: &std::path::Path) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    hash_reader(std::io::BufReader::new(file))
+}
+
 /// SHA-256 of everything a reader hands back, as lowercase hex.
 fn hash_reader(mut reader: impl Read) -> Result<String, String> {
     let mut hasher = Sha256::new();

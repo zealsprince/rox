@@ -453,6 +453,17 @@ impl Library {
     /// How many tracks the acoustic pass has described, against how many
     /// there are to describe. The Development page states this, and the
     /// missing count is the pass's work list.
+    /// Whether the acoustic pass has described anything under `model` yet.
+    /// What the modes that rank by sound are offered on: the switch being on
+    /// only means the vectors are allowed to exist, and until a pass has run
+    /// there's nothing for them to sort by.
+    pub fn analyzed(&self, model: &str) -> bool {
+        self.conn
+            .as_ref()
+            .and_then(|conn| embeddings::any(conn, model).ok())
+            .unwrap_or(false)
+    }
+
     pub fn acoustic_coverage(&self, model: &str) -> embeddings::Coverage {
         self.conn
             .as_ref()
@@ -1177,6 +1188,10 @@ impl Library {
         // with disk, so it stamps the catch-up clock; the incremental watch
         // syncs and projection loads leave it be.
         let was_scan = matches!(refresh, Refresh::Scan(_));
+        // Whether new files arrived under rox's nose rather than through a
+        // walk somebody asked for, which is what decides below whether the
+        // acoustic pass follows on its own.
+        let was_watch = matches!(refresh, Refresh::Watch { .. });
         let db_path = self.db_path.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -1213,6 +1228,12 @@ impl Library {
                         }
                     }
                 }
+                // Whether ranking by sound has anything to rank. The library
+                // holds the connection that knows, and a refresh is when the
+                // answer can have changed: the first load after launch is
+                // what seeds it.
+                let described = this.analyzed(crate::settings::acoustic_source().id());
+                crate::settings::set_acoustic_described(described, cx);
                 cx.emit(LibraryEvent::Updated);
                 cx.notify();
                 // On success, drain anything that arrived mid-refresh now that
@@ -1222,6 +1243,31 @@ impl Library {
                 // picks it back up.
                 if ok {
                     this.pump_watch(cx);
+                }
+                // Describe what just arrived, so a library with the acoustic
+                // switch on stays described as it grows instead of waiting
+                // for someone to open the settings and press a button. The
+                // pass is app-global, idempotent, and its work list is
+                // whatever has no vector yet, so firing it here needs no
+                // bookkeeping of its own: it no-ops while the switch is off
+                // and while a pass is already running.
+                //
+                // Only after a watch sync, deliberately. A full scan is an
+                // import or a manual rescan, and there the honest answer is
+                // the ReplayGain pass's: a library's worth of decoding is an
+                // afternoon and should be asked for. What arrives through the
+                // watcher is a handful of files, which is the case this
+                // exists for.
+                //
+                // After the pump rather than before, and only once it has
+                // nothing left, so a burst of watch events analyzes once at
+                // the end instead of putting a decode pass and a scan on the
+                // same database at the same time. They can still overlap if
+                // something lands mid-pass; the pass is resumable, so the
+                // worst case is that it gives up and the next sync picks the
+                // work back up.
+                if ok && was_watch && this.busy.is_none() {
+                    crate::embeddings::start(cx.entity(), cx);
                 }
             })
             .ok();

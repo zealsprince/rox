@@ -22,7 +22,7 @@ pub mod window;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use gpui::{App, SharedString, WindowAppearance, WindowDecorations};
 use serde::{Deserialize, Serialize};
@@ -408,6 +408,13 @@ pub struct Settings {
     /// fade is for the cut between unrelated music that shuffle and
     /// skipping make, not for a boundary an engineer meant to be seamless.
     pub crossfade_secs: f32,
+    /// The length a switched-off crossfade comes back at. The field above
+    /// says off with a zero, so it has nowhere to keep the number a toggle
+    /// would restore; this holds the last length that was actually set, and
+    /// the transport's crossfade button reads it when it turns the fade back
+    /// on. Never zero: with nothing ever set it stands at
+    /// [`DEFAULT_CROSSFADE_SECS`].
+    pub crossfade_restore_secs: f32,
     /// Whether the fade also takes boundaries inside one album, which the
     /// rule above leaves alone. Off by default: a record that runs track
     /// into track was made that way, and fading it is a change to the
@@ -454,6 +461,26 @@ pub struct Settings {
     /// sitting on the built-in sketch, and keeping them apart is what lets
     /// the switch go back to a model without asking which one again.
     pub acoustic_ml_model: String,
+    /// A weights file the user pointed rox at, outside the catalog. One at a
+    /// time: this is a way to run a checkpoint of your own, not a second
+    /// catalog to manage. Its id is derived from the file's hash rather than
+    /// chosen, so its vectors can never land in another model's coordinates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acoustic_local_model: Option<LocalModel>,
+}
+
+/// A weights file outside the catalog, as the settings file carries it. The
+/// live form is [`crate::embeddings::Local`]; this is the same pair of values
+/// with a serde derive on it.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct LocalModel {
+    /// Where the file is. Absolute, and not copied into the data folder: a
+    /// checkpoint someone is iterating on should stay where they're building
+    /// it, and rox re-reads it whenever a pass starts.
+    pub path: PathBuf,
+    /// The name its vectors are stored under, from
+    /// [`crate::embeddings::local_id`].
+    pub id: String,
 }
 
 /// Where this machine's windows sit: `windows.json`'s whole contents. Pure
@@ -906,36 +933,97 @@ pub fn set_acoustic_analysis(on: bool, cx: &mut App) {
     }
 }
 
+/// Whether the model in use has actually described anything. The switch
+/// above only permits the pass; this says it has run, which is the
+/// difference between a mode that ranks by sound and one that quietly does
+/// nothing.
+///
+/// A static for the same reason as its neighbours: the transport draws the
+/// shuffle button from it on every frame, and a settings load or a database
+/// query has no place there. Published by whoever learns the answer, which
+/// is the library on a refresh, the analysis pass when it finishes, and the
+/// settings window when the extractor changes under it.
+static ACOUSTIC_DESCRIBED: AtomicBool = AtomicBool::new(false);
+
+/// Whether ordering by sound can answer anything right now: the feature is
+/// switched on and its model has vectors in the table. What every surface
+/// that offers Similar is gated on.
+pub fn similarity_ready() -> bool {
+    acoustic_analysis() && ACOUSTIC_DESCRIBED.load(Ordering::Relaxed)
+}
+
+/// Publish whether the model in use has described anything, and repaint: the
+/// shuffle button grows and loses its menu on this, and nothing else would
+/// notice the answer changing.
+pub fn set_acoustic_described(described: bool, cx: &mut App) {
+    if ACOUSTIC_DESCRIBED.swap(described, Ordering::Relaxed) == described {
+        return;
+    }
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
 /// The live model pick, the flag above's other half: the Similar column
 /// reads it in the same render paths, and a query that used a different
 /// model from the one the pass filled would rank against an empty corpus.
-static ACOUSTIC_MODEL: RwLock<Option<&'static str>> = RwLock::new(None);
+static ACOUSTIC_MODEL: RwLock<Option<crate::embeddings::Source>> = RwLock::new(None);
+
+/// Resolve a stored model id to something that can actually run: a catalog
+/// entry whose weights are installed, or the local file the user picked.
+/// None for a name from a newer build, one whose download has since been
+/// deleted, or a local file that has moved.
+pub fn resolve_acoustic(id: &str) -> Option<crate::embeddings::Source> {
+    if let Some(model) = crate::embeddings::models::find(id).filter(|model| model.installed()) {
+        return Some(crate::embeddings::Source::Catalog(model));
+    }
+    let local = Settings::load().acoustic_local_model?;
+    (local.id == id && local.path.is_file()).then(|| {
+        crate::embeddings::Source::Local(Arc::new(crate::embeddings::Local {
+            path: local.path,
+            id: local.id,
+        }))
+    })
+}
 
 /// The model the pass runs and the similarity queries read.
 ///
-/// Resolved to a catalog entry rather than kept as the raw string, so a name
-/// from a newer build, or one whose weights have been deleted since, lands on
-/// the built-in extractor here, once, instead of at every call site. That's
-/// also why the static holds a `&'static str`: the catalog is code, so the
-/// resolved name outlives everything that reads it.
-pub fn acoustic_model() -> &'static crate::embeddings::models::Model {
-    let id = *ACOUSTIC_MODEL.read().unwrap();
-    id.and_then(crate::embeddings::models::find)
-        .filter(|model| model.installed())
-        .unwrap_or_else(crate::embeddings::models::fallback)
+/// Resolved once into the static rather than at every call site, so a name
+/// from a newer build, or one whose weights have gone missing since, lands on
+/// the built-in extractor here instead of turning into an empty ranking
+/// somewhere downstream.
+pub fn acoustic_source() -> crate::embeddings::Source {
+    ACOUSTIC_MODEL.read().unwrap().clone().unwrap_or_else(|| {
+        crate::embeddings::Source::Catalog(crate::embeddings::models::fallback())
+    })
 }
 
 /// The model the ML Models page is offering, which the Library page's
-/// extractor switch turns on. Falls back the same way [`acoustic_model`]
-/// does, so a name from a newer build degrades rather than breaking.
-pub fn acoustic_ml_model() -> &'static crate::embeddings::models::Model {
+/// extractor switch turns on. Never the built-in extractor: that one is the
+/// other side of the switch rather than something the shelf offers.
+///
+/// Read from the file rather than the static above, because this is the pick
+/// the switch would turn on rather than the one running now, and the two are
+/// different whenever the switch is sitting on Built-in.
+pub fn acoustic_ml_source() -> crate::embeddings::Source {
     let id = Settings::load().acoustic_ml_model;
-    crate::embeddings::models::find(&id)
-        .filter(|model| model.weights.is_some())
-        .unwrap_or_else(|| {
-            crate::embeddings::models::find(crate::embeddings::models::PANNS_CNN10)
-                .unwrap_or_else(crate::embeddings::models::fallback)
+    resolve_acoustic(&id)
+        .filter(|source| !source.is_builtin())
+        // An id that resolves to nothing still names a model the page can
+        // show as not-yet-downloaded, so fall back to the catalog entry
+        // before falling back to PANNs.
+        .or_else(|| {
+            crate::embeddings::models::find(&id)
+                .filter(|model| model.weights.is_some())
+                .map(crate::embeddings::Source::Catalog)
         })
+        .or_else(|| {
+            crate::embeddings::models::find(crate::embeddings::models::PANNS_CNN10)
+                .map(crate::embeddings::Source::Catalog)
+        })
+        .unwrap_or_else(
+            || crate::embeddings::Source::Catalog(crate::embeddings::models::fallback()),
+        )
 }
 
 /// Point the live pick at a model by id and repaint, so a switch moves the
@@ -944,7 +1032,7 @@ pub fn acoustic_ml_model() -> &'static crate::embeddings::models::Model {
 /// rewritten in the settings file, since that would silently discard a pick
 /// made by a newer build. Persisting is the caller's.
 pub fn set_acoustic_model(id: &str, cx: &mut App) {
-    *ACOUSTIC_MODEL.write().unwrap() = crate::embeddings::models::find(id).map(|model| model.id);
+    *ACOUSTIC_MODEL.write().unwrap() = resolve_acoustic(id);
     for window in cx.windows() {
         window.update(cx, |_, window, _| window.refresh()).ok();
     }
@@ -971,6 +1059,11 @@ pub fn set_app_font(font: Option<String>, cx: &mut App) {
         window.update(cx, |_, window, _| window.refresh()).ok();
     }
 }
+
+/// The length a crossfade takes when it's switched on without ever having
+/// been set: long enough to hear as an overlap rather than a click, short
+/// enough that it doesn't eat the end of a song.
+pub const DEFAULT_CROSSFADE_SECS: f32 = 4.0;
 
 /// The frame knobs' ceilings, in px: every knob runs from 0 (off) up to
 /// its own. Shared by the app defaults' clamp and both settings windows'
@@ -1760,6 +1853,7 @@ impl Default for Settings {
             restore_last_track: true,
             eq: EqSettings::default(),
             crossfade_secs: 0.0,
+            crossfade_restore_secs: DEFAULT_CROSSFADE_SECS,
             crossfade_albums: false,
             replay_gain: ReplayGainSettings::default(),
             output: OutputSettings::default(),
@@ -1769,6 +1863,7 @@ impl Default for Settings {
             acoustic_analysis: false,
             acoustic_model: crate::embeddings::MODEL.to_string(),
             acoustic_ml_model: crate::embeddings::models::PANNS_CNN10.to_string(),
+            acoustic_local_model: None,
         }
     }
 }

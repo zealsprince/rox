@@ -10,7 +10,7 @@ use gpui::{
     WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use gpui_component::Icon;
+use gpui_component::{Icon, Side};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +50,9 @@ pub enum PlaybackItem {
     /// The continuation button: whether a queue that runs out keeps playing,
     /// and which strategy refills it (ADR 17).
     Continue,
+    /// The crossfade button: whether track boundaries overlap, and for how
+    /// long (ADR 19).
+    Crossfade,
     /// The random button that plays one track from anywhere in the library.
     Random,
     /// The stop-after-current toggle: armed, the playing track ends the
@@ -109,6 +112,11 @@ const ITEMS: &[panel::ArrangeSpec<PlaybackItem>] = &[
         value: PlaybackItem::Continue,
     },
     panel::ArrangeSpec {
+        label: "Crossfade",
+        icon: Some(icons::BLEND),
+        value: PlaybackItem::Crossfade,
+    },
+    panel::ArrangeSpec {
         label: "Random",
         icon: Some(icons::DICE),
         value: PlaybackItem::Random,
@@ -146,13 +154,14 @@ pub struct TransportConfig {
 
 impl Default for TransportConfig {
     fn default() -> Self {
-        // Everything but stop and random ships on, in the order the strip
-        // always rendered: nudges around play, the modes trailing.
+        // The stock strip in the order it always rendered: nudges around
+        // play, the modes trailing. Stop, random, continue, crossfade and
+        // stop-after are opt-in from the panel's menu.
         //
-        // Continue is in that set rather than opt-in beside stop and random,
-        // because continuation is on out of the box (ADR 17): a mode that
-        // quietly changes what plays owes the transport a control that says
-        // it's doing that.
+        // Continue is opt-in even though continuation ships on (ADR 17). Its
+        // strategy is picked on the Behavior page, where each one explains
+        // itself, and a default strip carrying a button for every mode that
+        // quietly does something is how a transport turns into a dashboard.
         TransportConfig {
             chrome: PanelChrome::default(),
             align: Align::default(),
@@ -165,7 +174,6 @@ impl Default for TransportConfig {
                 PlaybackItem::Next,
                 PlaybackItem::Repeat,
                 PlaybackItem::Shuffle,
-                PlaybackItem::Continue,
             ],
         }
     }
@@ -222,10 +230,10 @@ impl From<TransportConfigDump> for TransportConfig {
                 on(dump.stop, PlaybackItem::Stop);
                 on(dump.repeat, PlaybackItem::Repeat);
                 on(dump.shuffle, PlaybackItem::Shuffle);
-                // No old layout had a toggle for this, and continuation ships
-                // on, so a layout from before the button existed gets it the
-                // same way a fresh install does.
-                on(true, PlaybackItem::Continue);
+                // Continue and crossfade aren't here: neither ships in the
+                // stock strip, so a layout from before those buttons existed
+                // comes back looking exactly like a fresh install rather than
+                // growing controls nobody asked for.
                 on(dump.random, PlaybackItem::Random);
                 items
             }
@@ -274,28 +282,32 @@ pub struct TransportPanel {
     /// the sweep. The gated observer goes quiet the moment the fade ends,
     /// so the render drives these frames itself.
     outro: Option<(Instant, bool)>,
-    /// Bumped on every press of a mode button, so a stale hold check can tell
-    /// it belongs to a press that is already over.
+    /// Bumped on every press of a mode button, so a stale hold check can
+    /// tell it belongs to a press that is already over.
     press_seq: u64,
-    /// The mode button press in flight, if any: which button it was on and
-    /// whether the hold has already opened the menu. Taken on release, so a
-    /// press that turned into a hold doesn't also toggle.
+    /// The mode press in flight, if any. Taken on release, so a press that
+    /// turned into a hold doesn't also toggle.
     press: Option<ModePress>,
-    /// The mode menu while it's open, hung from the point the press started.
-    /// The `PopoutHost` dock menu's shape (`panel.rs`), because a
+    /// The mode menu while it's open, hung from the point the press
+    /// started. The `PopoutHost` dock menu's shape (`panel.rs`), because a
     /// gpui-component context menu opens on right-click and can't be asked
     /// to open by anything else.
     mode_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
     _player_changed: Subscription,
 }
 
-/// A button whose click toggles a mode and whose hold opens the list of
-/// modes behind it. Two of them share the strip and the machinery below:
-/// shuffle picks how the queue is ordered, continue picks what refills it.
+/// A button whose click toggles something and whose hold opens the shades of
+/// it. Two of them: shuffle picks the order it puts the queue in, crossfade
+/// picks how long one track lies over the next.
+///
+/// Continue isn't one. Its strategies differ in kind rather than degree and
+/// they need a sentence each, which is what the Behavior page is for; these
+/// two are a short list of shades of the same thing, which is what a hold
+/// menu is good at.
 #[derive(Clone, Copy, PartialEq)]
 enum ModeButton {
     Shuffle,
-    Continue,
+    Crossfade,
 }
 
 /// A press on a mode button that hasn't been released yet.
@@ -321,9 +333,34 @@ fn mode_icon(mode: ShuffleMode) -> &'static str {
     }
 }
 
-/// How long a mode button has to be held before its menu opens. Long enough
-/// that a normal click never reaches it, short enough that the hold doesn't
-/// feel broken.
+/// The crossfade lengths the hold menu offers, in seconds, zero being off.
+/// A short list of round numbers: the Audio page's scrub is where a length
+/// between these gets set, and this button is for reaching the common ones
+/// without leaving the music.
+const CROSSFADE_LENGTHS: [f32; 5] = [0.0, 2.0, 4.0, 6.0, 10.0];
+
+/// Whether two crossfade lengths are the same one. Floats, and the scrub
+/// writes tenths, so this is the resolution the readout shows rather than
+/// bit equality.
+fn is_length(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.05
+}
+
+/// A crossfade length as the menu says it: off, whole seconds where the
+/// number is one, and a tenth where the scrub left it between.
+fn length_label(secs: f32) -> String {
+    if secs <= 0.0 {
+        "Off".to_string()
+    } else if is_length(secs, secs.round()) {
+        format!("{secs:.0} s")
+    } else {
+        format!("{secs:.1} s")
+    }
+}
+
+/// How long a mode button has to be held before its menu opens. Long
+/// enough that a normal click never reaches it, short enough that the hold
+/// doesn't feel broken.
 const SHUFFLE_HOLD: Duration = Duration::from_millis(350);
 
 /// A fade that got at least this far before disappearing finished; anything
@@ -359,6 +396,7 @@ impl TransportPanel {
         for (name, value) in [
             ("Stop Button", PlaybackItem::Stop),
             ("Continue Button", PlaybackItem::Continue),
+            ("Crossfade Button", PlaybackItem::Crossfade),
             ("Random Button", PlaybackItem::Random),
             ("Stop After Button", PlaybackItem::StopAfter),
         ] {
@@ -378,13 +416,13 @@ impl TransportPanel {
         menu
     }
 
-    /// A mode button: a plain click toggles the mode, and holding it opens
-    /// the list of modes behind it.
+    /// A mode button: a plain click toggles it, and holding it opens the
+    /// shades behind it.
     ///
     /// Its own control rather than [`panel::icon_control`] for two reasons.
-    /// That one fires on mouse down, and a hold has to be able to swallow
-    /// the click it started; and the corner arrow needs a positioned child,
-    /// which the shared button has no room for.
+    /// That one fires on mouse down, and a hold has to be able to swallow the
+    /// click it started; and the corner arrow needs a positioned child, which
+    /// the shared button has no room for.
     fn mode_control(
         &self,
         button: ModeButton,
@@ -392,6 +430,18 @@ impl TransportPanel {
         color: gpui::Rgba,
         cx: &mut Context<Self>,
     ) -> Div {
+        // A button whose menu would hold one row isn't a button with a menu.
+        // Shuffle loses its hold while nothing has been described, since
+        // Random is then the only order there is, and crossfade never has
+        // one to lose.
+        if button == ModeButton::Shuffle && !crate::settings::similarity_ready() {
+            return panel::icon_control(
+                icon,
+                color,
+                |this: &mut Self, cx| this.state.player.update(cx, |p, cx| p.toggle_shuffle(cx)),
+                cx,
+            );
+        }
         div()
             .relative()
             .p(tokens::ICON_PAD)
@@ -472,7 +522,7 @@ impl TransportPanel {
             .player
             .update(cx, |player, cx| match press.button {
                 ModeButton::Shuffle => player.toggle_shuffle(cx),
-                ModeButton::Continue => player.toggle_continuation(cx),
+                ModeButton::Crossfade => player.toggle_crossfade(cx),
             });
     }
 
@@ -486,7 +536,7 @@ impl TransportPanel {
     ) {
         let menu = match button {
             ModeButton::Shuffle => self.shuffle_menu(window, cx),
-            ModeButton::Continue => self.continuation_menu(window, cx),
+            ModeButton::Crossfade => self.crossfade_menu(window, cx),
         };
         menu.focus_handle(cx).focus(window);
         let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
@@ -497,23 +547,28 @@ impl TransportPanel {
         cx.notify();
     }
 
-    /// The orders shuffle can put the upcoming queue in.
+    /// The orders shuffle can put the upcoming queue in. The same two the
+    /// Behavior page lists, which is where they're explained; this is the
+    /// swap without the trip.
     fn shuffle_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Entity<PopupMenu> {
         let current = self.state.player.read(cx).shuffle_mode();
         let player = self.state.player.clone();
-        // Similar needs vectors to order by, and the switch that builds them
-        // is off by default. Offer it either way so the mode is discoverable,
-        // but say why it can't be picked rather than doing nothing quietly.
-        let analyzed = crate::settings::acoustic_analysis();
-        PopupMenu::build(window, cx, move |mut menu, _, _| {
+        PopupMenu::build(window, cx, move |menu, _, _| {
+            // The check goes on the right because these rows carry their own
+            // glyphs. A left check replaces the icon rather than joining it
+            // (`render_icon`), so a row with an icon silently loses its mark,
+            // which is exactly what was happening here: the menu said what
+            // the modes were and never which one was on.
+            let mut menu = menu.check_side(Side::Right);
+            // Every order this offers can run: the button drops its menu
+            // entirely while Similar has nothing to sort by, so there's no
+            // disabled row to explain here.
             for mode in ShuffleMode::ALL {
                 let player = player.clone();
-                let disabled = mode == ShuffleMode::Similar && !analyzed;
                 menu = menu.item(
                     PopupMenuItem::new(mode.label())
                         .icon(Icon::default().path(mode_icon(mode)))
                         .checked(mode == current)
-                        .disabled(disabled)
                         .on_click(move |_, _, cx| {
                             player.update(cx, |player, cx| player.set_shuffle_mode(mode, cx));
                         }),
@@ -523,29 +578,69 @@ impl TransportPanel {
         })
     }
 
-    /// The strategies that refill a queue which has run dry (ADR 17). Radio
-    /// gets the same treatment Similar does above: offered while the library
-    /// has no vectors so it's discoverable, disabled so it can't quietly do
-    /// nothing.
-    fn continuation_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Entity<PopupMenu> {
-        let current = self.state.player.read(cx).continuation_mode();
-        let player = self.state.player.clone();
-        let analyzed = crate::settings::acoustic_analysis();
-        PopupMenu::build(window, cx, move |mut menu, _, _| {
-            for mode in continuation::Mode::ALL {
-                let player = player.clone();
-                let disabled = mode == continuation::Mode::Radio && !analyzed;
+    /// How long one track lies over the next (ADR 19), and whether an
+    /// album's own boundaries get the fade too.
+    ///
+    /// Lengths rather than a free number, because a scrub belongs on the
+    /// Audio page, which owns the same two knobs and writes through the same
+    /// player. The album row wears a switch rather than a checkmark: it isn't
+    /// one of the lengths, it's the other knob, and a check in a list of
+    /// picks would read as a sixth length.
+    fn crossfade_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Entity<PopupMenu> {
+        let player = self.state.player.read(cx);
+        let current = player.crossfade_secs();
+        let albums = player.crossfade_albums();
+        let entity = self.state.player.clone();
+        // The presets, plus the length itself when the Audio page's scrub
+        // left it between them. A menu that can't mark what's set reads as
+        // though nothing is, and rounding 4.3 onto the 4 would be worse: it
+        // would mark a row that isn't what's playing.
+        let mut lengths = CROSSFADE_LENGTHS.to_vec();
+        if !lengths.iter().any(|secs| is_length(*secs, current)) {
+            lengths.push(current);
+            lengths.sort_by(f32::total_cmp);
+        }
+        PopupMenu::build(window, cx, move |menu, _, _| {
+            // The check on the right, so it joins the glyph instead of
+            // replacing it; see `shuffle_menu`.
+            let mut menu = menu.check_side(Side::Right);
+            for secs in lengths.iter().copied() {
+                let player = entity.clone();
                 menu = menu.item(
-                    PopupMenuItem::new(mode.label())
-                        .icon(Icon::default().path(icons::INFINITY))
-                        .checked(mode == current)
-                        .disabled(disabled)
+                    PopupMenuItem::new(length_label(secs))
+                        .icon(Icon::default().path(icons::BLEND))
+                        .checked(is_length(secs, current))
                         .on_click(move |_, _, cx| {
-                            player.update(cx, |player, cx| player.set_continuation_mode(mode, cx));
+                            player.update(cx, |player, cx| player.set_crossfade_secs(secs, cx));
                         }),
                 );
             }
-            menu
+            // The album switch only while something is fading. With the
+            // length off there are no boundaries for it to take, so the row
+            // would be a switch that changes nothing.
+            if current <= 0.0 {
+                return menu;
+            }
+            let player = entity.clone();
+            menu.separator().item(
+                PopupMenuItem::element(move |_, _| {
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(tokens::SPACE_MD)
+                        .w_full()
+                        .child("Inside Albums")
+                        // The switch is the row's face, not a control of its
+                        // own: the menu item takes the click, so a press
+                        // anywhere along the row flips it.
+                        .child(panel::toggle_face(albums))
+                })
+                .on_click(move |_, _, cx| {
+                    player.update(cx, |player, cx| player.set_crossfade_albums(!albums, cx));
+                }),
+            )
         })
     }
 
@@ -705,6 +800,13 @@ impl TransportPanel {
         } else {
             palette::accent()
         };
+        // Crossfade reads the same way: dim at zero length, the accent once
+        // boundaries are overlapping.
+        let crossfade_color = if player.crossfade_secs() > 0.0 {
+            palette::accent()
+        } else {
+            palette::text_faint()
+        };
         // Stop-after too: dim until armed, the accent while it waits.
         let stop_after_color = if player.stop_after() {
             palette::accent()
@@ -840,6 +942,8 @@ impl TransportPanel {
                     cx,
                 )
                 .into_any_element(),
+                // Shuffle's glyph follows its order and a hold swaps it; the
+                // colour is what says whether it's on.
                 PlaybackItem::Shuffle => self
                     .mode_control(
                         ModeButton::Shuffle,
@@ -848,13 +952,28 @@ impl TransportPanel {
                         cx,
                     )
                     .into_any_element(),
-                // Continue keeps one glyph whatever the strategy, unlike
-                // shuffle above: Continue, Weighted, and Radio all mean the
-                // same thing to the ear (the music doesn't stop) and differ
-                // only in taste, which is the menu's business rather than
-                // something worth three icons nobody could tell apart.
-                PlaybackItem::Continue => self
-                    .mode_control(ModeButton::Continue, icons::INFINITY, continue_color, cx)
+                // Continue is a plain toggle: which strategy refills the
+                // queue is the Behavior page's business, where each one has
+                // room to say what it does. One glyph whatever the strategy,
+                // unlike shuffle above, because Continue and Weighted mean
+                // the same thing to the ear (the music doesn't stop) and
+                // differ only in taste.
+                PlaybackItem::Continue => panel::icon_control(
+                    icons::INFINITY,
+                    continue_color,
+                    |this: &mut Self, cx| {
+                        this.state
+                            .player
+                            .update(cx, |p, cx| p.toggle_continuation(cx))
+                    },
+                    cx,
+                )
+                .into_any_element(),
+                // Crossfade holds like shuffle, and keeps one glyph whatever
+                // the length: the lengths differ by degree, and the colour
+                // already says whether anything is fading at all.
+                PlaybackItem::Crossfade => self
+                    .mode_control(ModeButton::Crossfade, icons::BLEND, crossfade_color, cx)
                     .into_any_element(),
                 PlaybackItem::Random => panel::icon_control(
                     icons::DICE,
@@ -887,7 +1006,7 @@ impl TransportPanel {
             .gap(tokens::SPACE_XS)
             .px(tokens::SPACE_SM)
             .children(controls)
-            // The mode menu, over everything and pinned where the hold
+            // The shuffle menu, over everything and pinned where the hold
             // started. The occluding layer under it is what closes the menu
             // on an outside click, `PopoutHost`'s arrangement in panel.rs.
             .when_some(self.mode_menu.as_ref(), |strip, (at, menu, _)| {
@@ -919,7 +1038,28 @@ transport_panel!(
 
 #[cfg(test)]
 mod tests {
-    use super::{PlaybackItem, TransportConfig};
+    use super::{is_length, length_label, PlaybackItem, TransportConfig, CROSSFADE_LENGTHS};
+
+    /// The hold menu has to be able to mark a length the Audio page's scrub
+    /// wrote, which is the case the presets alone can't cover: a 4.3 is not
+    /// the 4, and saying so is the difference between a menu that marks
+    /// nothing and one that marks the wrong row.
+    #[test]
+    fn a_length_between_the_presets_reads_as_itself() {
+        assert_eq!(length_label(0.0), "Off");
+        assert_eq!(length_label(4.0), "4 s");
+        assert_eq!(length_label(10.0), "10 s");
+        assert_eq!(length_label(4.3), "4.3 s");
+        // The scrub lands on tenths, so anything closer than that to a whole
+        // number is that number rather than a trailing zero.
+        assert_eq!(length_label(3.999), "4 s");
+
+        assert!(is_length(4.0, 4.0));
+        assert!(!is_length(4.0, 4.3));
+        assert!(!CROSSFADE_LENGTHS
+            .iter()
+            .any(|preset| is_length(*preset, 4.3)));
+    }
 
     /// A layout with no button fields at all decodes to the stock strip:
     /// nudges around play, the modes trailing, stop and random off.
@@ -931,8 +1071,7 @@ mod tests {
 
     /// The per-button toggles older layouts wrote fold into the list in
     /// the order the strip used to render; the one seek toggle was both
-    /// nudges. Continue had no toggle to write, and continuation ships on,
-    /// so an old layout picks it up where a fresh install has it.
+    /// nudges.
     #[test]
     fn legacy_toggles_fold_in_render_order() {
         let config: TransportConfig =
@@ -945,7 +1084,31 @@ mod tests {
                     PlaybackItem::Next,
                     PlaybackItem::Stop,
                     PlaybackItem::Repeat,
+                ]
+        );
+    }
+
+    /// Continue and crossfade are opt-in, so neither the stock strip nor a
+    /// layout from before they existed carries one; a layout that names one
+    /// keeps it.
+    #[test]
+    fn continue_and_crossfade_are_opt_in() {
+        let stock = TransportConfig::default();
+        assert!(!stock.items.contains(&PlaybackItem::Continue));
+        assert!(!stock.items.contains(&PlaybackItem::Crossfade));
+
+        let legacy: TransportConfig = serde_json::from_str(r#"{"shuffle": true}"#).unwrap();
+        assert!(!legacy.items.contains(&PlaybackItem::Continue));
+        assert!(!legacy.items.contains(&PlaybackItem::Crossfade));
+
+        let picked: TransportConfig =
+            serde_json::from_str(r#"{"items": ["play", "continue", "crossfade"]}"#).unwrap();
+        assert!(
+            picked.items
+                == vec![
+                    PlaybackItem::Play,
                     PlaybackItem::Continue,
+                    PlaybackItem::Crossfade
                 ]
         );
     }

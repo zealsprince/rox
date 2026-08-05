@@ -23,6 +23,10 @@
 //! arm. Nothing about the storage underneath ([`rox_library::embeddings`])
 //! changes at all.
 //!
+//! A weights file the user points rox at is the same thing without a catalog
+//! entry: [`Source`] carries either, and a local file takes its name from its
+//! own hash so its vectors sit beside the catalog's rather than in them.
+//!
 //! The pass itself is the ReplayGain measurement's shape (`replaygain_job`):
 //! app-global rather than owned by a window, blocking work on the background
 //! executor, an `Arc<Progress>` the UI samples on a timer. It differs in
@@ -45,7 +49,7 @@ pub mod models;
 pub mod panns;
 pub mod resample;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -107,6 +111,86 @@ const BATCH: usize = 32;
 /// library analyzes in the background.
 const MAX_WORKERS: usize = 4;
 
+/// Where a pass's weights come from: the catalog, or a file on disk the user
+/// pointed rox at.
+///
+/// The two are one type rather than two code paths because everything
+/// downstream only wants two things from a model, a name to store vectors
+/// under and something to load, and a local file answers both. What it
+/// doesn't have is a checksum in the catalog, which is why its name is
+/// derived from the file's own hash: a different checkpoint produces vectors
+/// in a different space, and letting one borrow another's name would mix two
+/// sets of coordinates in one table and quietly wrong every similarity
+/// answer after that.
+#[derive(Clone)]
+pub enum Source {
+    /// A catalog entry ([`models::CATALOG`]): the built-in extractor, or a
+    /// model rox ships a URL and a checksum for.
+    Catalog(&'static Model),
+    /// Weights the user picked off disk. Boxed in an `Arc` so the settings
+    /// static, the settings page, and a running pass can all hold the same
+    /// one without copying the path and the id around.
+    Local(Arc<Local>),
+}
+
+/// A weights file outside the catalog: where it is, and the name its vectors
+/// are stored under.
+pub struct Local {
+    pub path: PathBuf,
+    /// Derived from the file's SHA-256 by [`local_id`], so two different
+    /// checkpoints can never collide and the same one picked twice keeps the
+    /// vectors it already wrote.
+    pub id: String,
+}
+
+/// The name a local weights file's vectors are stored under: a fixed prefix
+/// and the head of the file's SHA-256. Sixteen hex digits is 64 bits, which
+/// is far past the point where two files a person owns collide, and short
+/// enough to read in a log line.
+pub fn local_id(sha256: &str) -> String {
+    format!("local-{}", &sha256[..sha256.len().min(16)])
+}
+
+impl Source {
+    /// The name this source's vectors are stored under.
+    pub fn id(&self) -> &str {
+        match self {
+            Source::Catalog(model) => model.id,
+            Source::Local(local) => &local.id,
+        }
+    }
+
+    /// What to call it on screen.
+    pub fn label(&self) -> String {
+        match self {
+            Source::Catalog(model) => model.label.to_string(),
+            // The file's own name: the id is a hash, and a row that said
+            // "local-9f2c..." would tell nobody which checkpoint they picked.
+            Source::Local(local) => local
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Custom model".into()),
+        }
+    }
+
+    /// Whether this is the built-in extractor rather than a network.
+    pub fn is_builtin(&self) -> bool {
+        matches!(self, Source::Catalog(model) if model.id == MODEL)
+    }
+
+    /// Whether the weights are there to load. Cheap enough for a settings
+    /// render: a length check on the catalog side, an existence check on the
+    /// local one. Whether the file is the right file is [`Extractor::load`]'s
+    /// answer, not this one's.
+    pub fn installed(&self) -> bool {
+        match self {
+            Source::Catalog(model) => model.installed(),
+            Source::Local(local) => local.path.is_file(),
+        }
+    }
+}
+
 /// Whichever extractor a pass is running.
 ///
 /// The built-in arm carries nothing, because [`extract`] is a free function
@@ -121,19 +205,29 @@ pub enum Extractor {
 }
 
 impl Extractor {
-    /// Build the extractor for a model, or say why it can't run. This is
-    /// where a missing or corrupt weights file is caught, so a pass either
-    /// starts with a working model or doesn't start at all.
-    pub fn load(model: &Model) -> Result<Self, String> {
-        match model.id {
-            MODEL => Ok(Extractor::Dsp),
-            models::PANNS_CNN10 => {
-                let net = panns::Cnn10::load(model)?;
-                log::info!("acoustic: {} loaded, running on {}", model.id, net.device());
-                Ok(Extractor::Panns(Box::new(net)))
-            }
-            other => Err(format!("no extractor is built for {other}")),
-        }
+    /// Build the extractor for a source, or say why it can't run. This is
+    /// where a missing, corrupt, or simply-not-this-network weights file is
+    /// caught, so a pass either starts with a working model or doesn't start
+    /// at all.
+    pub fn load(source: &Source) -> Result<Self, String> {
+        let net = match source {
+            Source::Catalog(model) => match model.id {
+                MODEL => return Ok(Extractor::Dsp),
+                models::PANNS_CNN10 => panns::Cnn10::load(model)?,
+                other => return Err(format!("no extractor is built for {other}")),
+            },
+            // No checksum to check it against, so the load itself is the
+            // validation: `build` reads named tensors at fixed shapes, and
+            // the mel filterbank the file carries is compared against the one
+            // the front end computes.
+            Source::Local(local) => panns::Cnn10::load_from(&local.path)?,
+        };
+        log::info!(
+            "acoustic: {} loaded, running on {}",
+            source.id(),
+            net.device()
+        );
+        Ok(Extractor::Panns(Box::new(net)))
     }
 
     /// One track's vector.
@@ -254,7 +348,7 @@ pub fn stop(cx: &mut App) {
 /// Analyze every track with no vector for the selected model. A no-op while
 /// a pass is already running, and while the feature is switched off.
 ///
-/// Which model runs is [`crate::settings::acoustic_model`], resolved here
+/// Which model runs is [`crate::settings::acoustic_source`], resolved here
 /// rather than passed in: it's the same pick the similarity queries read, and
 /// a caller that could hand in a different one would be able to fill the
 /// table under a name nothing reads.
@@ -262,10 +356,10 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     if progress(cx).is_some() || !Settings::load().acoustic_analysis {
         return;
     }
-    let model = crate::settings::acoustic_model();
+    let source = crate::settings::acoustic_source();
     let db_path = library.read(cx).db_path();
     let progress = Arc::new(Progress::default());
-    *progress.model.lock().unwrap() = model.id.to_string();
+    *progress.model.lock().unwrap() = source.id().to_string();
     cx.set_global(Running(Some(progress.clone())));
     cx.set_global(LastFailure(None));
     // Quitting mid-pass raises the same flag the stop button does, so the
@@ -279,17 +373,25 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     })
     .detach();
     cx.spawn(async move |cx| {
+        let name = source.id().to_string();
         let result = cx
             .background_executor()
             .spawn({
                 let progress = progress.clone();
-                async move { run(model, &db_path, &progress) }
+                async move { run(&source, &db_path, &progress) }
             })
             .await;
         cx.update(|cx| {
             cx.set_global(Running(None));
             match result {
-                Ok(written) => log::info!("acoustic: {written} tracks analyzed with {}", model.id),
+                Ok(written) => {
+                    // The surfaces that offer ordering by sound are gated on
+                    // there being vectors, and this is the moment there are.
+                    if written > 0 {
+                        crate::settings::set_acoustic_described(true, cx);
+                    }
+                    log::info!("acoustic: {written} tracks analyzed with {name}");
+                }
                 Err(e) => {
                     log::error!("acoustic: {e}");
                     cx.set_global(LastFailure(Some(e)));
@@ -304,13 +406,13 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
 /// The blocking half: walk what's missing, analyze in batches, write each
 /// batch in one transaction. Resumes by construction, since the work list is
 /// whatever has no vector yet.
-fn run(model: &'static Model, db_path: &Path, progress: &Progress) -> Result<usize, String> {
+fn run(source: &Source, db_path: &Path, progress: &Progress) -> Result<usize, String> {
     // Before the work list, so a model whose weights went missing between
     // the settings page reading them and the pass starting says so instead
     // of counting a library's worth of work it can't do.
-    let extractor = Extractor::load(model)?;
+    let extractor = Extractor::load(source)?;
     let mut conn = store::open(db_path).map_err(|e| e.to_string())?;
-    let pending = embeddings::missing(&conn, model.id).map_err(|e| e.to_string())?;
+    let pending = embeddings::missing(&conn, source.id()).map_err(|e| e.to_string())?;
     progress.total.store(pending.len(), Ordering::Relaxed);
 
     let mut written = 0;
@@ -320,7 +422,7 @@ fn run(model: &'static Model, db_path: &Path, progress: &Progress) -> Result<usi
         }
         let vectors = analyze_batch(&extractor, batch, progress);
         written += vectors.len();
-        embeddings::upsert_many(&mut conn, model.id, &vectors).map_err(|e| e.to_string())?;
+        embeddings::upsert_many(&mut conn, source.id(), &vectors).map_err(|e| e.to_string())?;
     }
     Ok(written)
 }
@@ -582,6 +684,22 @@ mod tests {
             .map(|(x, y)| (x - y) * (x - y))
             .sum::<f32>()
             .sqrt()
+    }
+
+    /// A local model's name comes off its own bytes, which is the whole
+    /// reason a user-supplied file is safe to store beside the catalog's:
+    /// two checkpoints can't land in one set of coordinates, and the same
+    /// file picked twice keeps the vectors it already wrote.
+    #[test]
+    fn a_local_model_is_named_after_its_own_bytes() {
+        let one = local_id("0f1ccbde4f8c3cdf29d2fa4006cd3bcd5583c9afe4ebeb76eea334e75f0a08e3");
+        let two = local_id("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(one, "local-0f1ccbde4f8c3cdf");
+        assert_ne!(one, two);
+        assert_eq!(local_id(&one), local_id(&one), "and it's a function");
+        // Never the catalog's names, whatever the hash.
+        assert_ne!(one, MODEL);
+        assert_ne!(one, models::PANNS_CNN10);
     }
 
     /// The same audio in gives the same vector out, every time. Without this

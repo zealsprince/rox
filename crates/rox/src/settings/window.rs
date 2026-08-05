@@ -47,13 +47,13 @@ use crate::query::search::{SearchBox, SearchEvent};
 use crate::replaygain_job;
 use crate::settings::layouts::Preset;
 use crate::settings::ui::{
-    self as settings_ui, grid_columns, icon_button, sidebar, small_button, PageBody, Query,
+    self as settings_ui, grid_columns, icon_button, sidebar, small_button, PageBody, Query, Rows,
     Section, SECTION_GAP,
 };
 use crate::settings::{
     self, data_dir, settings_path, Frame, GainModeSetting, LayoutSize, LyricsSave, NamedLayout,
-    Providers, RatingStyle, ReplayGainSave, Settings, Theme, WorkspaceBundle, BORDER_MAX,
-    MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
+    Providers, RatingStyle, ReplayGainSave, Settings, ShuffleMode, Theme, WorkspaceBundle,
+    BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
 };
 use crate::thumbs::Thumbs;
 use crate::workspace::Workspace;
@@ -163,6 +163,69 @@ const PAGES: &[(Page, &str, &str)] = &[
     (Page::Integrations, "Integrations", icons::RADIO),
     (Page::Storage, "Storage", icons::DATABASE),
     (Page::Development, "Development", icons::FLASK),
+];
+
+/// Where a model for a given job comes from: the shelf rox keeps, or a file
+/// the user supplies. Every model category on the ML Models page reads this
+/// way, so a second category (whatever it ends up answering) inherits the
+/// same two halves rather than inventing its own arrangement.
+#[derive(Clone, Copy, PartialEq)]
+enum ModelKind {
+    Recommended,
+    Custom,
+}
+
+const MODEL_KINDS: &[(&str, ModelKind)] = &[
+    ("Recommended", ModelKind::Recommended),
+    ("Custom", ModelKind::Custom),
+];
+
+/// The orders shuffle can put the upcoming queue in, and what each one
+/// means. Read on the Behavior page.
+const SHUFFLE_MODES: &[panel::ModeSpec<ShuffleMode>] = &[
+    panel::ModeSpec {
+        label: "Random",
+        description: "The shuffle everyone means by the word. What's coming plays in no \
+                      particular order",
+        value: ShuffleMode::Random,
+    },
+    panel::ModeSpec {
+        label: "Similar",
+        description: "Nearest first by sound. What's coming is sorted by how much it resembles \
+                      the track that was playing when you turned it on, and re-sorted on every \
+                      skip. Needs the library described on the Library page",
+        value: ShuffleMode::Similar,
+    },
+];
+
+/// The strategies that refill a queue which has run dry (ADR 17).
+///
+/// Note how these differ from the orders above: every one of them is about
+/// which tracks join the queue, and not one of them touches the order the
+/// queue already has.
+///
+/// There's no Radio here. The radio draw is what the Similar order does when
+/// it runs out, so it rides that pick instead of being a fourth strategy that
+/// only ever made sense alongside it.
+const CONTINUATION_MODES: &[panel::ModeSpec<continuation::Mode>] = &[
+    panel::ModeSpec {
+        label: "Off",
+        description: "The queue ends where it ends, and playback stops",
+        value: continuation::Mode::Off,
+    },
+    panel::ModeSpec {
+        label: "Continue",
+        description: "Carry on down the list you started from, then the rest of the library \
+                      behind it. Play an album from the middle of a view and the view keeps \
+                      going",
+        value: continuation::Mode::Continue,
+    },
+    panel::ModeSpec {
+        label: "Weighted",
+        description: "Draw from the whole library, what you've never played first and what you \
+                      heard recently last",
+        value: continuation::Mode::Weighted,
+    },
 ];
 
 /// The storage page's measurements, taken entering the page and after a
@@ -358,15 +421,31 @@ struct SettingsWindow {
     /// The running acoustic pass, while one runs. Polled like `rg_job`, and
     /// app-global for the same reason: closing this window leaves it going.
     acoustic_job: Option<Arc<embeddings::Progress>>,
-    /// Which model the pass runs and the similarity queries read, the
-    /// Development page's model list. Mirrors the setting; the coverage
-    /// above is counted against whichever this names.
-    acoustic_model: &'static str,
+    /// Which extractor the pass runs and the similarity queries read, the
+    /// Library page's switch. Mirrors the live pick; the coverage above is
+    /// counted against whatever this names.
+    acoustic_source: embeddings::Source,
     /// The model the ML Models page has marked as the one to use, which the
     /// Library page's extractor switch turns on. Separate from the field
     /// above because that one is what the library is running right now: the
     /// two differ whenever the switch is sitting on the built-in extractor.
-    acoustic_ml_model: &'static str,
+    acoustic_ml_source: embeddings::Source,
+    /// Which half of a model category is showing: the ones rox recommends
+    /// and can fetch, or the file the user supplies. A view state rather
+    /// than a setting, so flipping it to look at the other half doesn't
+    /// change what the library runs.
+    models_kind: ModelKind,
+    /// The weights file the user pointed at, if any, and why the last pick
+    /// was refused. The error lives here rather than in a log because a file
+    /// that isn't this network is the ordinary outcome of browsing to the
+    /// wrong `.safetensors`, and the row that caused it is where the reason
+    /// belongs.
+    acoustic_local: Option<settings::LocalModel>,
+    acoustic_local_error: Option<String>,
+    /// Whether a picked file is being hashed and loaded. It's a 25 MB read
+    /// and a forward pass, so the row says it's working rather than sitting
+    /// still for a second.
+    acoustic_local_checking: bool,
     /// The running model download, while one runs. Polled on the same timer
     /// as the pass, and app-global for the same reason.
     model_job: Option<Arc<embeddings::models::Progress>>,
@@ -413,6 +492,11 @@ struct SettingsWindow {
     /// on the output state alone, since a playing session notifies sixty
     /// times a second for a clock this window never draws.
     _player_changed: Subscription,
+    /// The mode rows follow the transport buttons: shuffle, continuation and
+    /// the crossfade length are all things this window draws and the strip
+    /// can change underneath it. Gated on [`crate::player::PlayerView`], so
+    /// it wakes on the press and not on the position clock.
+    _player_view: Subscription,
 }
 
 impl SettingsWindow {
@@ -427,6 +511,7 @@ impl SettingsWindow {
         let player = state.player.entity_id();
         let playback = state.player;
         let _player_changed = crate::player::observe_output(&playback, cx);
+        let _player_view = crate::player::observe_view(&playback, cx);
         // Off the player rather than the file: it holds the live copy, and a
         // toggle flipped here has to agree with the session it rebuilds.
         let output_exclusive = playback.read(cx).exclusive_output();
@@ -446,9 +531,9 @@ impl SettingsWindow {
         if rg_job.is_some() {
             Self::poll_measuring(cx);
         }
-        let acoustic_model = settings::acoustic_model().id;
-        let acoustic_ml_model = settings::acoustic_ml_model().id;
-        let acoustic_coverage = library.read(cx).acoustic_coverage(acoustic_model);
+        let acoustic_source = settings::acoustic_source();
+        let acoustic_ml_source = settings::acoustic_ml_source();
+        let acoustic_coverage = library.read(cx).acoustic_coverage(acoustic_source.id());
         let acoustic_job = embeddings::progress(cx);
         let model_job = embeddings::models::progress(cx);
         if acoustic_job.is_some() || model_job.is_some() {
@@ -641,8 +726,18 @@ impl SettingsWindow {
             acoustic_analysis: settings.acoustic_analysis,
             acoustic_coverage,
             acoustic_job,
-            acoustic_model,
-            acoustic_ml_model,
+            // Open on whichever half holds the model the page is offering,
+            // so someone running their own file lands on it rather than on a
+            // shelf that looks like nothing is picked.
+            models_kind: match &settings.acoustic_local_model {
+                Some(local) if local.id == acoustic_ml_source.id() => ModelKind::Custom,
+                _ => ModelKind::Recommended,
+            },
+            acoustic_source,
+            acoustic_ml_source,
+            acoustic_local: settings.acoustic_local_model.clone(),
+            acoustic_local_error: None,
+            acoustic_local_checking: false,
             model_job,
             model_sizes: Self::measure_models(),
             active_icon_pack: settings.icon_pack.clone(),
@@ -658,6 +753,7 @@ impl SettingsWindow {
             _dock_changes,
             _search_changes,
             _player_changed,
+            _player_view,
         }
     }
 
@@ -1487,17 +1583,6 @@ impl SettingsWindow {
                     .custom(&["crossfade", "fade", "gapless", "album", "splice"], || {
                         self.crossfade_albums_row(cx).into_any_element()
                     })
-                    .custom(
-                        &[
-                            "continue",
-                            "continuation",
-                            "endless",
-                            "queue",
-                            "radio",
-                            "weighted",
-                        ],
-                        || self.continuation_row(cx).into_any_element(),
-                    )
                 },
             ))
             .section(self.replay_gain_section(q, cx))
@@ -1551,53 +1636,6 @@ impl SettingsWindow {
                 |this: &mut Self, secs, cx| {
                     this.playback
                         .update(cx, |player, cx| player.set_crossfade_secs(secs, cx));
-                    cx.notify();
-                },
-                cx,
-            ),
-        )
-    }
-
-    /// What refills the queue when it runs out (ADR 17). The same pick the
-    /// transport's Continue button holds, here because a mode that decides
-    /// what plays next belongs somewhere you can read the strategies rather
-    /// than only somewhere you can cycle them.
-    fn continuation_row(&self, cx: &mut Context<Self>) -> Div {
-        /// Radio needs the acoustic vectors, so it's only offered once the
-        /// analysis switch is on. Two lists rather than a disabled segment,
-        /// because the picker has no disabled state and a dead-looking
-        /// option nobody can explain is worse than one that isn't there.
-        const WITH_RADIO: &[(&str, continuation::Mode)] = &[
-            ("Off", continuation::Mode::Off),
-            ("Continue", continuation::Mode::Continue),
-            ("Weighted", continuation::Mode::Weighted),
-            ("Radio", continuation::Mode::Radio),
-        ];
-        const WITHOUT_RADIO: &[(&str, continuation::Mode)] = &[
-            ("Off", continuation::Mode::Off),
-            ("Continue", continuation::Mode::Continue),
-            ("Weighted", continuation::Mode::Weighted),
-        ];
-        let mode = self.playback.read(cx).continuation_mode();
-        let options = if crate::settings::acoustic_analysis() {
-            WITH_RADIO
-        } else {
-            WITHOUT_RADIO
-        };
-        panel::setting_row(
-            "Keep Playing",
-            Some(
-                "What plays when the queue runs out. Continue carries on down the list you \
-                 started from, Weighted draws from the library with what you haven't heard \
-                 first, and Radio keeps finding tracks that sound like the one playing. Off \
-                 ends the queue where it ends",
-            ),
-            panel::choices(
-                options,
-                mode,
-                |this: &mut Self, mode, cx| {
-                    this.playback
-                        .update(cx, |player, cx| player.set_continuation_mode(mode, cx));
                     cx.notify();
                 },
                 cx,
@@ -2321,6 +2359,7 @@ impl SettingsWindow {
             );
         }
         PageBody::new()
+            .section(self.playback_behavior_section(q, cx))
             .section(Section::new(q, icons::PLAY, "Startup", None, |rows| {
                 rows.keyed(
                     &["resume", "reopen"],
@@ -2377,6 +2416,98 @@ impl SettingsWindow {
                     panel::toggle(self.rating_dots, Self::set_rating_dots, cx),
                 )
             }))
+    }
+
+    /// What the transport's shuffle and continue buttons are doing when
+    /// they're on.
+    ///
+    /// Here rather than behind the buttons themselves, which is where these
+    /// two lists used to live as press-and-hold menus. Both are a pick
+    /// between strategies that differ in kind, and the difference is the
+    /// whole question: a menu of four bare words next to a menu of two bare
+    /// words made the two buttons read as the same button twice. A settings
+    /// row has room to say what each one does, and the button goes back to
+    /// being a plain on/off.
+    fn playback_behavior_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        // Similar needs vectors to sort by, and the switch that builds them
+        // being on isn't enough: it permits the pass, it doesn't run it. The
+        // mode stays listed either way, so it's discoverable and its own row
+        // can say what's missing.
+        let analyzed = settings::similarity_ready();
+        let shuffle_mode = self.playback.read(cx).shuffle_mode();
+        let continuation = self.playback.read(cx).continuation_mode();
+        Section::new(q, icons::LIST_MUSIC, "Playback", None, move |rows| {
+            rows.custom(
+                &[
+                    "shuffle",
+                    "order",
+                    "random",
+                    "similar",
+                    "sound",
+                    "play order",
+                ],
+                || {
+                    panel::setting_block(
+                        "Play Order",
+                        Some(
+                            "How the tracks already queued are arranged while shuffle is on. \
+                             The transport's shuffle button turns it on and off; this is what \
+                             it does once it's on",
+                        ),
+                        None,
+                        panel::mode_list(
+                            SHUFFLE_MODES,
+                            shuffle_mode,
+                            move |mode| mode != ShuffleMode::Similar || analyzed,
+                            |this: &mut Self, mode, cx| {
+                                this.playback
+                                    .update(cx, |player, cx| player.set_shuffle_mode(mode, cx));
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .into_any_element()
+                },
+            )
+            .custom(
+                &[
+                    "continue",
+                    "continuation",
+                    "endless",
+                    "queue",
+                    "radio",
+                    "weighted",
+                    "keep playing",
+                ],
+                || {
+                    panel::setting_block(
+                        "Keep Playing",
+                        Some(
+                            "What plays when the queue runs out. Whatever this picks is \
+                             appended to the timeline as ordinary context, so it's visible \
+                             and removable rather than hidden state. With the order above \
+                             set to Similar it keeps finding tracks that sound like the one \
+                             playing, whichever of these is chosen",
+                        ),
+                        None,
+                        panel::mode_list(
+                            CONTINUATION_MODES,
+                            continuation,
+                            |_| true,
+                            |this: &mut Self, mode, cx| {
+                                this.playback.update(cx, |player, cx| {
+                                    player.set_continuation_mode(mode, cx)
+                                });
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .into_any_element()
+                },
+            )
+        })
     }
 
     /// The Integrations page: Last.fm account & scrobbling settings,
@@ -3228,16 +3359,285 @@ impl SettingsWindow {
         }))
     }
 
-    /// The models page: what can run the acoustic analysis, what it costs to
-    /// fetch, and which one the library uses.
+    /// The models page: what can run a job that needs a network, what it
+    /// costs to fetch, and which one the library uses.
     ///
     /// Its own page rather than a section under Library because a model is an
     /// asset with a lifecycle of its own. It's downloaded, it sits on disk, it
     /// can be replaced by a file the user supplies, and it will one day answer
     /// more than one question. The Library page picks a job's extractor; this
     /// page is the shelf that pick reads from.
+    ///
+    /// One section per job the models answer, which today is acoustic
+    /// analysis and one day won't be. Each section is the same shape: a
+    /// Recommended half rox keeps a catalog for, and a Custom half that is
+    /// whatever file the user points at. That's the whole reason the split
+    /// is a control on the section rather than a second section, since a
+    /// standalone "Custom Model" would have nothing to say about which job
+    /// it was custom for.
     fn ml_models_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
-        PageBody::new().section(self.models_section(q, cx))
+        PageBody::new().section(self.acoustic_models_section(q, cx))
+    }
+
+    /// Where the acoustic vectors come from: the catalog's downloads, or a
+    /// checkpoint of the user's own.
+    fn acoustic_models_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        let kind = self.models_kind;
+        let picker = panel::choices(
+            MODEL_KINDS,
+            kind,
+            |this: &mut Self, kind, cx| {
+                this.models_kind = kind;
+                cx.notify();
+            },
+            cx,
+        )
+        .into_any_element();
+        // The download's progress and the last pass's failure belong to the
+        // whole category, so they show under either half; a refused file is
+        // the Custom half's own business and only shows there.
+        let note = match kind {
+            ModelKind::Custom => self
+                .acoustic_local_error
+                .clone()
+                .or_else(|| self.model_note(cx)),
+            ModelKind::Recommended => self.model_note(cx),
+        };
+        // A search shows both halves. The picker is a way of putting one of
+        // them away, and a row nobody can find because it's behind a control
+        // the searcher can't see is worse than a longer section.
+        let searching = q.active();
+        Section::new(
+            q,
+            icons::AUDIO_WAVEFORM,
+            "Acoustic Analysis",
+            Some(picker),
+            move |mut rows| {
+                if searching || kind == ModelKind::Recommended {
+                    rows = self.recommended_model_rows(rows, cx);
+                }
+                if searching || kind == ModelKind::Custom {
+                    rows = self.custom_model_row(rows, cx);
+                }
+                match note {
+                    Some(note) => rows.custom(&["download", "progress", "model"], || {
+                        coverage_note(note).into_any_element()
+                    }),
+                    None => rows,
+                }
+            },
+        )
+    }
+
+    /// The catalog half: one row per model rox knows how to fetch, each
+    /// saying what it is, what it costs, and what licence it arrives under.
+    ///
+    /// The licence is on the row rather than in a footnote because the user
+    /// is the one accepting it. Nothing here is bundled, so a download is
+    /// them fetching a model for their own use, and that only works as an
+    /// arrangement if the terms are in front of them when they press the
+    /// button.
+    fn recommended_model_rows<'a>(&self, mut rows: Rows<'a>, cx: &mut Context<Self>) -> Rows<'a> {
+        // Only the ones with weights to fetch. The built-in extractor is
+        // code rather than a model, and it belongs on the Library page as
+        // the other side of the extractor switch, not on a shelf of
+        // downloads.
+        for model in embeddings::models::CATALOG
+            .iter()
+            .filter(|model| model.weights.is_some())
+        {
+            let size = self.model_size(model.id);
+            let mut description = format!(
+                "{}. {} values per track. {}",
+                model.summary, model.dim, model.licence
+            );
+            if size > 0 {
+                description.push_str(&format!(", {} on disk", human_size(size)));
+            } else if let Some(weights) = &model.weights {
+                description.push_str(&format!(", {} to download", human_size(weights.bytes)));
+            }
+            rows = rows.row_dyn(
+                &["model", "acoustic", "download", "embeddings", "similar"],
+                model.label,
+                Some(description.into()),
+                self.model_controls(model, cx),
+            );
+        }
+        rows
+    }
+
+    /// The custom half: a weights file on disk, for a CNN10 someone trained
+    /// or fine-tuned themselves. No download, no size to state before
+    /// fetching, and no licence rox can name, since the file is the user's
+    /// own.
+    fn custom_model_row<'a>(&self, rows: Rows<'a>, cx: &mut Context<Self>) -> Rows<'a> {
+        let busy = self.model_job.is_some() || self.acoustic_job.is_some();
+        let checking = self.acoustic_local_checking;
+        let local = self.acoustic_local.clone();
+        let description = match &local {
+            Some(local) => format!(
+                "{}. {} values per track, stored under {}, so its vectors never mix with \
+                 the catalog's",
+                local.path.display(),
+                embeddings::panns::DIM,
+                local.id
+            ),
+            None => "Point rox at a PANNs CNN10 checkpoint of your own, as safetensors. It's \
+                     read where it sits and named after its own hash, so a second checkpoint \
+                     describes the library separately rather than landing in the first one's \
+                     coordinates"
+                .to_string(),
+        };
+        let mut controls = div().flex().flex_row().items_center().gap(tokens::SPACE_SM);
+        if local.is_some() {
+            controls = controls.child(small_button(
+                "Clear",
+                icons::TRASH,
+                busy || checking,
+                cx.listener(|this, _, _, cx| this.clear_local_model(cx)),
+            ));
+        }
+        controls = controls.child(small_button(
+            if checking {
+                "Checking..."
+            } else {
+                "Choose File"
+            },
+            icons::FOLDER,
+            busy || checking,
+            cx.listener(|this, _, window, cx| this.pick_local_model(window, cx)),
+        ));
+        let running = local
+            .as_ref()
+            .is_some_and(|local| self.model_running(&local.id));
+        controls = controls.child(if running {
+            readout("Active".into()).into_any_element()
+        } else {
+            small_button(
+                "Use",
+                icons::CHECK,
+                local.is_none() || busy || checking,
+                cx.listener(|this, _, _, cx| this.use_local_model(cx)),
+            )
+            .into_any_element()
+        });
+        rows.row_dyn(
+            &["custom", "model", "local", "weights", "checkpoint", "file"],
+            "Weights File",
+            Some(description.into()),
+            controls.into_any_element(),
+        )
+    }
+
+    /// Whether a model row is the extractor the library is actually running.
+    /// Kept apart from the buttons because the shelf and the custom row draw
+    /// differently and have to agree exactly on this. Being the page's pick
+    /// isn't a state a row says anything about: with the Library page on
+    /// Built-in nothing here is running, and a row claiming otherwise reads
+    /// as though it were describing the library.
+    fn model_running(&self, id: &str) -> bool {
+        self.acoustic_source.id() == id
+    }
+
+    /// Browse for a weights file, then check it by loading it. The hash and
+    /// the load both happen off the UI thread: one reads 25 MB, the other
+    /// builds the network and runs a probe pass over it.
+    ///
+    /// Loading it is the validation. There's no checksum to compare against,
+    /// so the only honest way to find out whether a file is this network is
+    /// to ask candle to build it, which fails with the name of the tensor it
+    /// wanted when it isn't.
+    fn pick_local_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        self.acoustic_local_error = None;
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.pop() else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                this.acoustic_local_checking = true;
+                cx.notify();
+            })
+            .ok();
+            let checked = cx
+                .background_executor()
+                .spawn({
+                    let path = path.clone();
+                    async move {
+                        let digest = embeddings::models::hash_file(&path)?;
+                        embeddings::panns::Cnn10::load_from(&path)?;
+                        Ok::<String, String>(embeddings::local_id(&digest))
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.acoustic_local_checking = false;
+                match checked {
+                    Ok(id) => this.adopt_local_model(settings::LocalModel { path, id }, cx),
+                    Err(reason) => this.acoustic_local_error = Some(reason),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Take a checked file as the custom model and make it the page's offer,
+    /// since browsing to a file is a clearer "use this" than any button on
+    /// the row would be.
+    fn adopt_local_model(&mut self, local: settings::LocalModel, cx: &mut Context<Self>) {
+        self.acoustic_local = Some(local.clone());
+        let stored = local.clone();
+        // Before the pick below: resolving a local id reads this back out of
+        // the settings file.
+        Settings::update(move |s| s.acoustic_local_model = Some(stored.clone()));
+        self.set_acoustic_model(
+            embeddings::Source::Local(Arc::new(embeddings::Local {
+                path: local.path,
+                id: local.id,
+            })),
+            cx,
+        );
+    }
+
+    /// Offer the custom model again after something else was picked.
+    fn use_local_model(&mut self, cx: &mut Context<Self>) {
+        let Some(local) = self.acoustic_local.clone() else {
+            return;
+        };
+        self.set_acoustic_model(
+            embeddings::Source::Local(Arc::new(embeddings::Local {
+                path: local.path,
+                id: local.id,
+            })),
+            cx,
+        );
+    }
+
+    /// Forget the custom model. What it described stays in the database under
+    /// its own name, the way a deleted download's vectors do: point rox at
+    /// the same file again and it comes back to the work it already did.
+    fn clear_local_model(&mut self, cx: &mut Context<Self>) {
+        let was = self.acoustic_local.take();
+        self.acoustic_local_error = None;
+        Settings::update(|s| s.acoustic_local_model = None);
+        // Nothing to fall back to but the catalog, so a library running the
+        // file that just went away moves off it rather than failing at the
+        // next pass.
+        if was.is_some_and(|local| self.acoustic_source.id() == local.id) {
+            self.use_extractor(embeddings::MODEL, cx);
+        }
+        self.acoustic_ml_source = settings::acoustic_ml_source();
+        cx.notify();
     }
 
     /// What each catalog model weighs on disk right now. Walked entering the
@@ -3257,66 +3657,19 @@ impl SettingsWindow {
             .unwrap_or(0)
     }
 
-    /// The model list: one row per catalog entry, each saying what it is,
-    /// what it costs, and what licence it arrives under, with the controls
-    /// to fetch it, drop it, and make it the active one.
-    ///
-    /// The licence is on the row rather than in a footnote because the user
-    /// is the one accepting it. Nothing here is bundled, so a download is
-    /// them fetching a model for their own use, and that only works as an
-    /// arrangement if the terms are in front of them when they press the
-    /// button.
-    fn models_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
-        let note = self.model_note(cx);
-        Section::new(q, icons::DOWNLOAD, "Acoustic Models", None, |mut rows| {
-            // Only the ones with weights to fetch. The built-in extractor is
-            // code rather than a model, and it belongs on the Library page as
-            // the other side of the extractor switch, not on a shelf of
-            // downloads.
-            for model in embeddings::models::CATALOG
-                .iter()
-                .filter(|model| model.weights.is_some())
-            {
-                let size = self.model_size(model.id);
-                let mut description = format!(
-                    "{}. {} values per track. {}",
-                    model.summary, model.dim, model.licence
-                );
-                if size > 0 {
-                    description.push_str(&format!(", {} on disk", human_size(size)));
-                } else if let Some(weights) = &model.weights {
-                    description.push_str(&format!(", {} to download", human_size(weights.bytes)));
-                }
-                rows = rows.row_dyn(
-                    &["model", "acoustic", "download", "embeddings", "similar"],
-                    model.label,
-                    Some(description.into()),
-                    self.model_controls(model, cx),
-                );
-            }
-            match note {
-                Some(note) => rows.custom(&["download", "progress", "model"], || {
-                    coverage_note(note).into_any_element()
-                }),
-                None => rows,
-            }
-        })
-    }
-
-    /// One model row's buttons: make it active, and fetch or drop its
-    /// weights. A model whose download is running shows the stop instead,
-    /// and one that isn't installed can't be made active, since selecting a
-    /// model rox can't load would leave the pass failing with no explanation
-    /// on the row that caused it.
+    /// One model row's buttons: make it the page's offer, and fetch or drop
+    /// its weights. A model whose download is running shows the stop instead,
+    /// and one that isn't installed can't be offered, since selecting a model
+    /// rox can't load would leave the pass failing with no explanation on the
+    /// row that caused it.
     fn model_controls(
         &self,
         model: &'static embeddings::models::Model,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Against the page's own pick, not what the library is running: with
-        // the extractor switch on Built-in nothing here is running, and a
-        // shelf with no model marked would forget which one Model meant.
-        let active = self.acoustic_ml_model == model.id;
+        // Deleting the running model would leave the pass with nothing to
+        // load, so it holds its weights until something else is picked.
+        let running = self.model_running(model.id);
         let installed = model.installed();
         let downloading = self
             .model_job
@@ -3351,13 +3704,10 @@ impl SettingsWindow {
                     cx.listener(|_, _, _, cx| embeddings::models::stop(cx)),
                 )
             } else if installed {
-                // Deleting while this model is the active one would leave the
-                // pass with nothing to load, so the active model keeps its
-                // weights until something else is picked.
                 small_button(
                     "Delete",
                     icons::TRASH,
-                    busy || active,
+                    busy || running,
                     cx.listener(move |this, _, _, cx| this.delete_model(model, cx)),
                 )
             } else {
@@ -3369,14 +3719,20 @@ impl SettingsWindow {
                 )
             });
         }
-        row = row.child(if active {
+        // Only the running extractor gets a word. Pressing Use on a row while
+        // the Library page is on Built-in points the Model switch here, which
+        // the Extractor row spells out by name, so the shelf doesn't need a
+        // second mark for it.
+        row = row.child(if running {
             readout("Active".into()).into_any_element()
         } else {
             small_button(
                 "Use",
                 icons::CHECK,
                 !installed || busy,
-                cx.listener(move |this, _, _, cx| this.set_acoustic_model(model, cx)),
+                cx.listener(move |this, _, _, cx| {
+                    this.set_acoustic_model(embeddings::Source::Catalog(model), cx)
+                }),
             )
             .into_any_element()
         });
@@ -3387,9 +3743,7 @@ impl SettingsWindow {
     /// why the last one or the last pass gave up.
     fn model_note(&self, cx: &Context<Self>) -> Option<String> {
         if let Some(job) = &self.model_job {
-            let label = embeddings::models::find(&job.model())
-                .map(|model| model.label)
-                .unwrap_or("model");
+            let label = self.label_for(&job.model(), "model");
             if job.stopping() {
                 return Some(format!("Stopping the {label} download..."));
             }
@@ -3400,9 +3754,7 @@ impl SettingsWindow {
             ));
         }
         if let Some((id, reason)) = embeddings::models::last_failure(cx) {
-            let label = embeddings::models::find(&id)
-                .map(|model| model.label)
-                .unwrap_or("The model");
+            let label = self.label_for(&id, "The model");
             return Some(format!("{label} could not be downloaded: {reason}"));
         }
         // A pass that failed to start is nearly always the model rather than
@@ -3418,16 +3770,13 @@ impl SettingsWindow {
     /// app. When the library is already running a model rather than the
     /// built-in extractor, the switch follows the new pick straight away;
     /// when it's on Built-in this only changes what Model would mean.
-    fn set_acoustic_model(
-        &mut self,
-        model: &'static embeddings::models::Model,
-        cx: &mut Context<Self>,
-    ) {
-        self.acoustic_ml_model = model.id;
-        let id = model.id.to_string();
-        Settings::update(move |s| s.acoustic_ml_model = id.clone());
-        if self.acoustic_model != embeddings::MODEL {
-            self.use_extractor(model.id, cx);
+    fn set_acoustic_model(&mut self, source: embeddings::Source, cx: &mut Context<Self>) {
+        let id = source.id().to_string();
+        self.acoustic_ml_source = source;
+        let stored = id.clone();
+        Settings::update(move |s| s.acoustic_ml_model = stored.clone());
+        if !self.acoustic_source.is_builtin() {
+            self.use_extractor(&id, cx);
         }
         cx.notify();
     }
@@ -3436,23 +3785,34 @@ impl SettingsWindow {
     /// ML Models page is offering.
     fn set_acoustic_uses_model(&mut self, on: bool, cx: &mut Context<Self>) {
         let id = if on {
-            self.acoustic_ml_model
+            self.acoustic_ml_source.id().to_string()
         } else {
-            embeddings::MODEL
+            embeddings::MODEL.to_string()
         };
-        self.use_extractor(id, cx);
+        self.use_extractor(&id, cx);
         cx.notify();
     }
 
     /// Point the library at an extractor and re-read its coverage. Every
     /// model describes the library separately, so the count has to follow the
     /// pick rather than the pick alone.
-    fn use_extractor(&mut self, id: &'static str, cx: &mut Context<Self>) {
-        self.acoustic_model = id;
+    ///
+    /// The live pick is set from the id and then read back rather than
+    /// assigned here, so this window can't end up showing a model the rest of
+    /// the app refused to resolve.
+    fn use_extractor(&mut self, id: &str, cx: &mut Context<Self>) {
         let owned = id.to_string();
         Settings::update(move |s| s.acoustic_model = owned.clone());
         settings::set_acoustic_model(id, cx);
-        self.acoustic_coverage = self.library.read(cx).acoustic_coverage(id);
+        self.acoustic_source = settings::acoustic_source();
+        self.acoustic_coverage = self
+            .library
+            .read(cx)
+            .acoustic_coverage(self.acoustic_source.id());
+        // Every model describes the library separately, so switching can turn
+        // ordering by sound on or off for the surfaces that offer it.
+        let described = self.library.read(cx).analyzed(self.acoustic_source.id());
+        settings::set_acoustic_described(described, cx);
     }
 
     fn download_model(
@@ -3487,11 +3847,8 @@ impl SettingsWindow {
     fn acoustic_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let on = self.acoustic_analysis;
         let note = on.then(|| self.acoustic_note());
-        let ml_label = embeddings::models::find(self.acoustic_ml_model)
-            .map(|model| model.label)
-            .unwrap_or("the selected model");
-        let installed =
-            embeddings::models::find(self.acoustic_ml_model).is_some_and(|model| model.installed());
+        let ml_label = self.acoustic_ml_source.label();
+        let installed = self.acoustic_ml_source.installed();
         Section::new(
             q,
             icons::AUDIO_WAVEFORM,
@@ -3524,15 +3881,21 @@ impl SettingsWindow {
                         } else {
                             format!(
                                 "Built-in needs no download and describes timbre and rhythm. \
-                                 {ml_label} is not downloaded yet; fetch it on the ML Models \
-                                 page before switching"
+                                 No model is installed, so there's nothing to switch to yet: \
+                                 download {ml_label}, or pick a weights file of your own, on \
+                                 the ML Models page"
                             )
                         }
                         .into(),
                     ),
-                    panel::choices(
+                    // Model is dimmed with nothing installed rather than
+                    // simply refused. Pressing it used to fall straight back
+                    // to Built-in, since the pick can't resolve, which looks
+                    // like a broken button rather than a missing download.
+                    panel::choices_gated(
                         &[("Built-in", false), ("Model", true)],
-                        self.acoustic_model != embeddings::MODEL,
+                        !self.acoustic_source.is_builtin(),
+                        move |model| !model || installed,
                         Self::set_acoustic_uses_model,
                         cx,
                     ),
@@ -3548,14 +3911,27 @@ impl SettingsWindow {
         )
     }
 
+    /// What to call a model id on screen: the catalog's label, or the name of
+    /// the file behind a local pick. Ids from a newer build, and local ones
+    /// that have since been replaced, land on the fallback.
+    fn label_for(&self, id: &str, fallback: &str) -> String {
+        if let Some(model) = embeddings::models::find(id) {
+            return model.label.to_string();
+        }
+        self.acoustic_local
+            .as_ref()
+            .filter(|local| local.id == id)
+            .and_then(|local| local.path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
     fn acoustic_note(&self) -> String {
         if let Some(job) = &self.acoustic_job {
             // The running pass's own model, not the current pick: switching
             // models mid-pass is possible, and the line should say what's
             // actually being written.
-            let running = embeddings::models::find(&job.model())
-                .map(|model| model.label)
-                .unwrap_or("Analyzing");
+            let running = self.label_for(&job.model(), "Analyzing");
             let total = job.total();
             if total == 0 {
                 return format!("{running}: working out what's missing...");
@@ -3578,9 +3954,7 @@ impl SettingsWindow {
         // Named, because the count is per model: every model describes the
         // library separately, and a line that said "142 of 208" without
         // saying whose would read as the library's own progress.
-        let label = embeddings::models::find(self.acoustic_model)
-            .map(|model| model.label)
-            .unwrap_or("the selected model");
+        let label = self.acoustic_source.label();
         if coverage.missing() == 0 {
             return format!(
                 "All {} scanned tracks are described by {label}",
@@ -3646,8 +4020,10 @@ impl SettingsWindow {
                 let was_downloading = this.model_job.is_some();
                 this.model_job = embeddings::models::progress(cx);
                 if this.acoustic_job.is_none() {
-                    this.acoustic_coverage =
-                        this.library.read(cx).acoustic_coverage(this.acoustic_model);
+                    this.acoustic_coverage = this
+                        .library
+                        .read(cx)
+                        .acoustic_coverage(this.acoustic_source.id());
                 }
                 // A finished download changed what's on disk, so the sizes
                 // and the install marks have to be re-walked once.

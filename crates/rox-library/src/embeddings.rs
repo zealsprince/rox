@@ -104,6 +104,21 @@ pub fn coverage(conn: &Connection, model: &str) -> rusqlite::Result<Coverage> {
     })
 }
 
+/// Whether this model has described anything at all.
+///
+/// [`coverage`] answers the same question and more, at the cost of counting
+/// two tables; this stops at the first row, so it's cheap enough for the
+/// paths that only need to know whether ranking by sound can answer
+/// anything: a mode that would quietly do nothing is worth refusing, and
+/// refusing it is a decision drawn on every menu that offers it.
+pub fn any(conn: &Connection, model: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM embeddings WHERE model = ?1)",
+        [model],
+        |r| r.get(0),
+    )
+}
+
 /// Store one track's vector, replacing whatever this model had for it.
 pub fn upsert(conn: &Connection, track_id: i64, model: &str, vec: &[f32]) -> rusqlite::Result<()> {
     conn.execute(
@@ -426,6 +441,24 @@ mod tests {
         )
         .unwrap();
         conn.last_insert_rowid()
+    }
+
+    /// The cheap gate the modes that rank by sound are offered on: per
+    /// model, and false until that model has actually described something.
+    /// Its whole job is telling "the switch is on" apart from "the pass has
+    /// run", which are the two states a menu has to draw differently.
+    #[test]
+    fn nothing_is_analyzed_until_a_model_has_written_something() {
+        let conn = conn();
+        assert!(
+            !any(&conn, "m").unwrap(),
+            "an empty table describes nothing"
+        );
+        let id = add_track(&conn, "/m/1.mp3", 200_000);
+        upsert(&conn, id, "m", &[1.0, 2.0]).unwrap();
+        assert!(any(&conn, "m").unwrap());
+        // Per model: another model's vectors are not this one's.
+        assert!(!any(&conn, "other").unwrap());
     }
 
     #[test]

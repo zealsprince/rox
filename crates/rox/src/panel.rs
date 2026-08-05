@@ -1666,6 +1666,118 @@ pub fn setting_block(
         .child(div().mt(tokens::SPACE_XS).child(control))
 }
 
+/// One option in a [`mode_list`]: what it's called, what it does, and the
+/// value it stands for.
+pub struct ModeSpec<V: 'static> {
+    pub label: &'static str,
+    /// A sentence, not a phrase. The whole reason this control exists rather
+    /// than a segmented picker is that these options differ in kind, and a
+    /// picker leaves every option but the one you're looking at unexplained.
+    pub description: &'static str,
+    pub value: V,
+}
+
+/// A pick-one list where every option explains itself: a stacked row per
+/// option, the chosen one marked and accented.
+///
+/// For modes that differ in kind rather than degree, where the difference is
+/// the thing that needs saying. [`choices`] is still right for a short row of
+/// obvious alternatives; this is for the ones that need a sentence each.
+///
+/// `available` refuses an option the way [`choices_gated`] does: it dims and
+/// takes no press, since a mode that can't do anything yet should say so from
+/// where it sits rather than vanish and leave nothing to explain.
+pub fn mode_list<P: 'static, V: PartialEq + Copy + 'static>(
+    options: &'static [ModeSpec<V>],
+    current: V,
+    available: impl Fn(V) -> bool,
+    on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    let mut list = div().flex().flex_col().gap(tokens::SPACE_XS);
+    for option in options {
+        let value = option.value;
+        let picked = value == current;
+        let usable = available(value);
+        let on_pick = on_pick.clone();
+        list = list.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                // No width of its own: the row stretches to the list, which
+                // stretches to the page column, and that's what gives the
+                // description a width to wrap inside. An explicit `w_full`
+                // here is worse than nothing, since a percentage against a
+                // parent that hasn't resolved its own width falls back to
+                // auto, and the row shrinks to its longest line. `min_w_0` is
+                // the CSS one: it stops long copy pushing the row wider than
+                // what it was stretched to.
+                .min_w_0()
+                .p(tokens::SPACE_SM)
+                .rounded(tokens::RADIUS)
+                .border_1()
+                .border_color(if picked {
+                    palette::accent()
+                } else {
+                    palette::border()
+                })
+                .bg(if picked {
+                    palette::alpha(palette::accent(), 0x20)
+                } else {
+                    palette::bg_control()
+                })
+                .when(!usable, |d| d.opacity(0.5))
+                .when(usable && !picked, |d| {
+                    d.hover(|d| d.bg(palette::bg_control_hover()))
+                        .cursor_pointer()
+                })
+                .when(usable, |d| {
+                    d.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| on_pick(this, value, cx)),
+                    )
+                })
+                // The dot rides the label's own line rather than the whole
+                // row, so it centers on the text at any app font size instead
+                // of floating against the top of a description that wrapped.
+                // It says pick-one where a check would say on-and-off, which
+                // is the wrong promise for a list only one row can win.
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_SM)
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(px(10.))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(if picked {
+                                    palette::accent()
+                                } else {
+                                    palette::text_faint()
+                                })
+                                .when(picked, |d| d.bg(palette::accent())),
+                        )
+                        .child(div().text_color(palette::text()).child(option.label)),
+                )
+                // Indented past the dot so the description reads as the
+                // label's, not as another row.
+                .child(
+                    div()
+                        .pl(px(10.) + tokens::SPACE_SM)
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(option.description),
+                ),
+        );
+    }
+    list
+}
+
 /// The settings-page sliders' strip width and the readout beside them.
 pub const SLIDER_W: Pixels = px(150.);
 pub const READOUT_W: Pixels = px(60.);
@@ -1942,6 +2054,13 @@ pub fn value_slider_edit_over<P: 'static>(
     )
 }
 
+/// The switch pill and knob without any interaction, shared by [`toggle`],
+/// [`toggle_locked`], and the menu rows that flip a switch from their own
+/// click rather than from the widget.
+pub fn toggle_face(on: bool) -> Div {
+    toggle_track(on)
+}
+
 /// The switch pill and knob without any interaction, shared by [`toggle`] and
 /// [`toggle_locked`].
 fn toggle_track(on: bool) -> Div {
@@ -2142,6 +2261,7 @@ pub fn font_picker<P: 'static>(
 fn segments<P: 'static, V: PartialEq + Copy + 'static>(
     options: &'static [(&'static str, V)],
     picked: impl Fn(V) -> bool,
+    available: impl Fn(V) -> bool,
     render: impl Fn(&'static str, bool) -> AnyElement,
     on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
@@ -2151,6 +2271,11 @@ fn segments<P: 'static, V: PartialEq + Copy + 'static>(
     for (i, (key, value)) in options.iter().enumerate() {
         let value = *value;
         let picked = picked(value);
+        // A segment nothing can pick is dimmed and inert, `toggle_locked`'s
+        // treatment: it keeps its place in the group so the choice still
+        // reads as a choice, and says without a click that it isn't one
+        // right now.
+        let available = available(value);
         let on_pick = on_pick.clone();
         group = group.child(
             div()
@@ -2164,12 +2289,15 @@ fn segments<P: 'static, V: PartialEq + Copy + 'static>(
                 } else {
                     palette::bg_control()
                 })
-                .when(!picked, |d| d.hover(|d| d.bg(palette::bg_control_hover())))
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| on_pick(this, value, cx)),
-                )
+                .when(!available, |d| d.opacity(0.5))
+                .when(available, |d| {
+                    d.when(!picked, |d| d.hover(|d| d.bg(palette::bg_control_hover())))
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| on_pick(this, value, cx)),
+                        )
+                })
                 .child(render(key, picked)),
         );
     }
@@ -2183,9 +2311,27 @@ pub fn choices<P: 'static, V: PartialEq + Copy + 'static>(
     on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
+    choices_gated(options, current, |_| true, on_pick, cx)
+}
+
+/// [`choices`] where some options can't be taken yet: whatever `available`
+/// refuses is dimmed and swallows no press.
+///
+/// For a choice that exists but needs something first, where dropping the
+/// option entirely would leave the row unable to say what's missing. The
+/// description beside it is what explains why; this only stops the press
+/// that would otherwise land and appear to do nothing.
+pub fn choices_gated<P: 'static, V: PartialEq + Copy + 'static>(
+    options: &'static [(&'static str, V)],
+    current: V,
+    available: impl Fn(V) -> bool,
+    on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
     segments(
         options,
         move |value| value == current,
+        available,
         |label, picked| {
             div()
                 .text_color(if picked {
@@ -2212,6 +2358,7 @@ pub fn icon_choices<P: 'static, V: PartialEq + Copy + 'static>(
     segments(
         options,
         move |value| value == current,
+        |_| true,
         icon_segment,
         on_pick,
         cx,
@@ -2227,7 +2374,7 @@ pub fn icon_toggles<P: 'static, V: PartialEq + Copy + 'static>(
     on_toggle: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
-    segments(options, active, icon_segment, on_toggle, cx)
+    segments(options, active, |_| true, icon_segment, on_toggle, cx)
 }
 
 /// One icon segment's face, shared by the exclusive picker and the

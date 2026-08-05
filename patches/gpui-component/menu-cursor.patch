@@ -1,0 +1,62 @@
+--- a/src/menu/menu_item.rs
++++ b/src/menu/menu_item.rs
+@@ -95,25 +95,32 @@
+             .relative()
+             .items_center()
+             .justify_between()
++            // rox patch: a menu row registered no cursor style at all, so
++            // whatever sits behind the open menu decided the cursor. Over a
++            // panel that arms a window move (rox's title-bar strips) every
++            // row came up wearing the drag cursor. The arrow is the surface,
++            // and the hand goes on the rows that actually do something.
++            .cursor_default()
+             .refine_style(&self.style)
+             .when_some(self.on_hover, |this, on_hover| {
+                 this.on_hover(move |hovered, window, cx| (on_hover)(hovered, window, cx))
+             })
+             .when(!self.disabled, |this| {
+-                this.group_hover(self.group_name, |this| {
+-                    this.bg(cx.theme().accent)
+-                        .text_color(cx.theme().accent_foreground)
+-                })
+-                .when(self.selected, |this| {
+-                    this.bg(cx.theme().accent)
+-                        .text_color(cx.theme().accent_foreground)
+-                })
+-                .when_some(self.on_click, |this, on_click| {
+-                    this.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+-                        cx.stop_propagation();
++                this.cursor_pointer()
++                    .group_hover(self.group_name, |this| {
++                        this.bg(cx.theme().accent)
++                            .text_color(cx.theme().accent_foreground)
++                    })
++                    .when(self.selected, |this| {
++                        this.bg(cx.theme().accent)
++                            .text_color(cx.theme().accent_foreground)
++                    })
++                    .when_some(self.on_click, |this, on_click| {
++                        this.on_mouse_down(MouseButton::Left, move |_, _, cx| {
++                            cx.stop_propagation();
++                        })
++                        .on_click(on_click)
+                     })
+-                    .on_click(on_click)
+-                })
+             })
+             .when(self.disabled, |this| {
+                 this.text_color(cx.theme().muted_foreground)
+--- a/src/menu/popup_menu.rs
++++ b/src/menu/popup_menu.rs
+@@ -1273,6 +1273,11 @@
+             }))
+             .popover_style(cx)
+             .text_color(cx.theme().popover_foreground)
++            // rox patch: the rows carry their own cursor (menu_item.rs), and
++            // this is the rest of the surface: the padding and the gaps
++            // between them, which would otherwise keep showing whatever the
++            // menu opened over.
++            .cursor_default()
+             .relative()
+             .child(
+                 v_flex()

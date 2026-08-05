@@ -266,10 +266,19 @@ pub struct PlayerView {
     pub ended: bool,
     pub loop_mode: LoopMode,
     pub shuffle: bool,
+    /// Which order shuffle is in. Here beside the flag because the transport
+    /// button's glyph follows it, and the Behavior page can move it from
+    /// another window; without it the gated observer sees an unchanged view
+    /// and the strip keeps drawing the old order's icon.
+    pub shuffle_mode: ShuffleMode,
     /// Which strategy refills a dry queue. Here rather than read straight
     /// off the settings by whoever draws it, so the transport's gated
     /// observer wakes when the mode menu changes it.
     pub continuation: continuation::Mode,
+    /// How long a boundary fade runs, zero for off. Here for the same
+    /// reason the mode above is: the transport's crossfade button draws
+    /// from it, and the Audio page's scrub can move it under the panel.
+    pub crossfade_secs: f32,
     pub stop_after: bool,
     pub muted: bool,
     pub volume: f32,
@@ -865,7 +874,7 @@ impl Player {
                 // order it saved and asks for nothing.
                 if !preserve_order
                     && self.settings.session.shuffle
-                    && self.settings.session.shuffle_mode == ShuffleMode::Similar
+                    && self.shuffle_mode() == ShuffleMode::Similar
                 {
                     self.order_tail_by_similarity(1, None, cx);
                 }
@@ -1007,6 +1016,11 @@ impl Player {
             recent: self.pool_ids.iter().flatten().copied().collect(),
             count: continuation::BATCH,
         };
+        // A queue ordered by sound is refilled by sound: the radio draw
+        // belongs to the shuffle order rather than to a continuation mode of
+        // its own. Read here rather than inside the provider, because this is
+        // the same tick that decides the mode is still current.
+        let similar = self.settings.session.shuffle && self.shuffle_mode() == ShuffleMode::Similar;
         self.continuing = true;
         self.continued_rev = Some(rev);
         let db_path = crate::settings::data_dir().join("library.db");
@@ -1018,7 +1032,7 @@ impl Player {
             let picks = cx
                 .background_executor()
                 .spawn(async move {
-                    let provider = mode.provider()?;
+                    let provider = mode.provider(similar)?;
                     let conn = store::open(&db_path).ok()?;
                     Some(provider.next(&conn, &seed))
                 })
@@ -1080,9 +1094,7 @@ impl Player {
         // tracks, and a hand-built queue is explicit intent. It's also the
         // same answer: the trigger fires with at most a floor of tracks left,
         // so there is barely a tail to permute against.
-        if self.settings.session.shuffle
-            && self.settings.session.shuffle_mode == ShuffleMode::Random
-        {
+        if self.settings.session.shuffle && self.shuffle_mode() == ShuffleMode::Random {
             shuffle_slice(&mut resolved);
         }
         let (paths, groups): (Vec<PathBuf>, Vec<Option<u64>>) = resolved.into_iter().unzip();
@@ -1097,9 +1109,7 @@ impl Player {
         // just asking it again now the batch has arrived. Nothing to pin
         // here: an explicit queue under this mode was always going to be
         // reordered by it.
-        if self.settings.session.shuffle
-            && self.settings.session.shuffle_mode == ShuffleMode::Similar
-        {
+        if self.settings.session.shuffle && self.shuffle_mode() == ShuffleMode::Similar {
             self.order_tail_by_similarity(1, None, cx);
         }
     }
@@ -1362,11 +1372,42 @@ impl Player {
             return;
         }
         self.settings.crossfade_secs = secs;
+        // A length that isn't off is the one a toggle should come back to, so
+        // remember it here rather than in the button: the Audio page's slider
+        // and the transport's menu both land in this one place, and the two
+        // would otherwise disagree about what "back on" means.
+        if secs > 0.0 {
+            self.settings.crossfade_restore_secs = secs;
+        }
         self.send_crossfade();
         // Dragging the slider lands here per tick, same as the volume, so
         // the file write waits for the drag to settle.
         self.persist_playback_soon(cx);
         cx.notify();
+    }
+
+    /// Turn the crossfade off, or back on at the last length it ran at. The
+    /// transport button's plain press, `toggle_continuation`'s shape.
+    pub fn toggle_crossfade(&mut self, cx: &mut Context<Self>) {
+        let secs = if self.settings.crossfade_secs > 0.0 {
+            0.0
+        } else {
+            self.crossfade_restore_secs()
+        };
+        self.set_crossfade_secs(secs, cx);
+    }
+
+    /// The length a switched-off crossfade comes back at. Never zero, so the
+    /// toggle can't turn the fade "on" at no length; a settings file carrying
+    /// a zero here (hand-edited, or written before the field existed) reads as
+    /// the stock length.
+    pub fn crossfade_restore_secs(&self) -> f32 {
+        let secs = self.settings.crossfade_restore_secs;
+        if secs > 0.0 {
+            secs
+        } else {
+            crate::settings::DEFAULT_CROSSFADE_SECS
+        }
     }
 
     /// Fade inside an album as well, or leave a record's own splices alone.
@@ -1648,9 +1689,7 @@ impl Player {
     /// Skip to the next queued track.
     pub fn next(&mut self, cx: &mut Context<Self>) {
         self.send(Cmd::Next);
-        if !self.settings.session.shuffle
-            || self.settings.session.shuffle_mode != ShuffleMode::Similar
-        {
+        if !self.settings.session.shuffle || self.shuffle_mode() != ShuffleMode::Similar {
             return;
         }
         // A skip that follows a long stretch of listening isn't impatience,
@@ -1776,15 +1815,18 @@ impl Player {
             // A later tick bumped the gen past this capture, so only the last
             // edit in a burst writes. Read the values at write time, not
             // capture time, so a mute toggled during the wait persists as is.
-            let Ok((latest, volume, muted, crossfade, replay_gain)) = this.update(cx, |this, _| {
-                (
-                    this.persist_gen,
-                    this.settings.session.volume,
-                    this.settings.session.muted,
-                    this.settings.crossfade_secs,
-                    this.settings.replay_gain,
-                )
-            }) else {
+            let Ok((latest, volume, muted, crossfade, restore, replay_gain)) =
+                this.update(cx, |this, _| {
+                    (
+                        this.persist_gen,
+                        this.settings.session.volume,
+                        this.settings.session.muted,
+                        this.settings.crossfade_secs,
+                        this.settings.crossfade_restore_secs,
+                        this.settings.replay_gain,
+                    )
+                })
+            else {
                 return;
             };
             if latest == gen {
@@ -1792,6 +1834,7 @@ impl Player {
                     s.session.volume = volume;
                     s.session.muted = muted;
                     s.crossfade_secs = crossfade;
+                    s.crossfade_restore_secs = restore;
                     s.replay_gain = replay_gain;
                 });
             }
@@ -1813,9 +1856,19 @@ impl Player {
         self.settings.session.shuffle
     }
 
-    /// Which order shuffle puts the queue in, the persisted pick.
+    /// Which order shuffle is actually putting the queue in.
+    ///
+    /// Similar falls back to Random while nothing has been described: the
+    /// mode needs vectors to sort by, and one that can't sort is a mode that
+    /// silently does nothing. The pick itself is left alone in the settings
+    /// rather than rewritten, so describing the library later brings the
+    /// listener's order back without them asking for it twice.
     pub fn shuffle_mode(&self) -> ShuffleMode {
-        self.settings.session.shuffle_mode
+        let mode = self.settings.session.shuffle_mode;
+        if mode == ShuffleMode::Similar && !crate::settings::similarity_ready() {
+            return ShuffleMode::Random;
+        }
+        mode
     }
 
     /// Change the order shuffle uses and persist it. Takes effect at once
@@ -1888,7 +1941,7 @@ impl Player {
 
     /// Put the upcoming queue into the current mode's order.
     fn apply_shuffle_order(&mut self, cx: &mut Context<Self>) {
-        match self.settings.session.shuffle_mode {
+        match self.shuffle_mode() {
             ShuffleMode::Random => self.send(Cmd::SetShuffle(true)),
             ShuffleMode::Similar => self.order_tail_by_similarity(1, None, cx),
         }
@@ -1943,15 +1996,14 @@ impl Player {
                 return;
             };
             // Read on this thread, before the spawn: the pick is a process
-            // static and this only needs the name, which is a `&'static str`
-            // out of the catalog and so crosses the thread for free.
-            let model = crate::settings::acoustic_model().id;
+            // static, and this only needs the name it stores vectors under.
+            let model = crate::settings::acoustic_source().id().to_string();
             let ranked = cx
                 .background_executor()
                 .spawn(async move {
                     let conn = store::open(&db_path).ok()?;
                     let seed = store::id_for_path(&conn, seed_path.to_str()?).ok()??;
-                    let scores: HashMap<i64, f32> = embeddings::scores(&conn, seed, model)
+                    let scores: HashMap<i64, f32> = embeddings::scores(&conn, seed, &model)
                         .ok()?
                         .into_iter()
                         .collect();
@@ -1989,9 +2041,7 @@ impl Player {
                 // Still shuffling in the same mode? A toggle or a mode change
                 // while the scan ran means this answer is for a queue nobody
                 // asked about any more.
-                if this.settings.session.shuffle
-                    && this.settings.session.shuffle_mode == ShuffleMode::Similar
-                {
+                if this.settings.session.shuffle && this.shuffle_mode() == ShuffleMode::Similar {
                     this.send(Cmd::OrderTail(ids));
                     cx.notify();
                 }
@@ -2071,7 +2121,9 @@ impl Player {
             ended: self.queue_ended(),
             loop_mode: self.loop_mode(),
             shuffle: self.shuffle(),
+            shuffle_mode: self.shuffle_mode(),
             continuation: self.continuation_mode(),
+            crossfade_secs: self.crossfade_secs(),
             stop_after: self.stop_after(),
             muted: self.muted(),
             volume: self.volume(),

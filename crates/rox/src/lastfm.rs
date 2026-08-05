@@ -32,6 +32,7 @@ use crate::panels::library::{Library, LibraryEvent};
 use crate::player::Player;
 use crate::settings::{Lastfm, Settings};
 
+pub mod import;
 pub mod keys;
 
 /// Whether this build carries its own api identity; without one the
@@ -579,6 +580,16 @@ impl Scrobbler {
         self.love_error = None;
         self.persist();
         cx.notify();
+    }
+
+    /// Take hearts the import just wrote into the snapshot without sending
+    /// them. They came from Last.fm in the first place, so pushing them
+    /// back would be thousands of calls repeating what it just told us.
+    ///
+    /// The import calls this in the same update pass as its write, which is
+    /// what puts it ahead of the library event the mirror diffs on.
+    pub fn absorb_favourites(&mut self, cx: &mut Context<Self>) {
+        self.seed_favourites(cx);
     }
 
     /// Take the favourite snapshot fresh, sending nothing: what arming the

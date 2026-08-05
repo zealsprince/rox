@@ -37,7 +37,7 @@ use crate::design::tokens;
 use crate::embeddings;
 use crate::integrations::discord::DiscordPresence;
 use crate::integrations::tray;
-use crate::lastfm::{self, AuthPhase, Scrobbler};
+use crate::lastfm::{self, import, AuthPhase, Scrobbler};
 use crate::panel::{self, AppState, ScrubState};
 use crate::panel_settings;
 use crate::panels::library::{Library, LibraryEvent};
@@ -1877,6 +1877,34 @@ impl SettingsWindow {
         .into_any_element()
     }
 
+    /// The Favourites section's header control: start the loved-tracks
+    /// import, or stop the one that's running. The ReplayGain section's
+    /// control in every respect but the work, since it's the same shape of
+    /// thing - a job started from a page that doesn't have to stay open for
+    /// it. Inert with its reason on the line below, so a disconnected
+    /// account reads as a state rather than a dead button.
+    fn import_control(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(job) = import::progress(cx) {
+            let stopping = job.stopping();
+            return small_button(
+                if stopping { "Stopping..." } else { "Stop" },
+                icons::STOP,
+                stopping,
+                cx.listener(|_, _, _, cx| import::stop(cx)),
+            )
+            .into_any_element();
+        }
+        small_button(
+            "Import Loved Tracks",
+            icons::DOWNLOAD,
+            import::blocked_reason(cx).is_some(),
+            cx.listener(|this, _, _, cx| {
+                import::start(this.library.clone(), this.scrobbler.clone(), cx);
+            }),
+        )
+        .into_any_element()
+    }
+
     /// Mirror the running pass into the section, the scan badge's cadence.
     /// Stops itself once the pass clears the global.
     fn poll_measuring(cx: &mut Context<Self>) {
@@ -2716,34 +2744,40 @@ impl SettingsWindow {
                     ),
                 )
             }))
-            .section(Section::new(q, icons::HEART, "Favourites", None, |rows| {
-                rows.keyed(
-                    &["Last.fm", "love", "loved", "heart", "mirror"],
-                    "Love Favourites",
-                    Some(
-                        "Mirror hearts to Last.fm as loved tracks; \
-                         taking a heart back unloves it there",
-                    ),
-                    panel::toggle(
-                        config.love_favourites,
-                        |this: &mut Self, on, cx| {
-                            this.scrobbler
-                                .update(cx, |s, cx| s.set_love_favourites(on, cx));
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                )
-                .when_some(love_status, |rows, status| {
-                    rows.custom(&["love", "queue", "failed"], || {
-                        div()
-                            .text_xs()
-                            .text_color(palette::text_muted())
-                            .child(status)
-                            .into_any_element()
+            .section(Section::new(
+                q,
+                icons::HEART,
+                "Favourites",
+                Some(self.import_control(cx)),
+                |rows| {
+                    rows.keyed(
+                        &["Last.fm", "love", "loved", "heart", "mirror"],
+                        "Love Favourites",
+                        Some(
+                            "Mirror hearts to Last.fm as loved tracks; \
+                             taking a heart back unloves it there",
+                        ),
+                        panel::toggle(
+                            config.love_favourites,
+                            |this: &mut Self, on, cx| {
+                                this.scrobbler
+                                    .update(cx, |s, cx| s.set_love_favourites(on, cx));
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    )
+                    .when_some(love_status, |rows, status| {
+                        rows.custom(&["love", "queue", "failed"], || {
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(status)
+                                .into_any_element()
+                        })
                     })
-                })
-            }))
+                },
+            ))
             .section(Section::new(
                 q,
                 icons::GLOBE,

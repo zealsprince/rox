@@ -746,6 +746,19 @@ pub fn paths_for(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<String>
     Ok(out)
 }
 
+/// Every local track's id, artist, and title, for a caller matching outside
+/// names against the library. One walk of the table: the loved-tracks import
+/// folds this into its own lookup and asks it thousands of questions, which
+/// is a query each the other way around.
+pub fn name_index(conn: &Connection) -> rusqlite::Result<Vec<(i64, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, artist, title FROM tracks
+          WHERE source = 'local' AND artist <> '' AND title <> ''",
+    )?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    rows.collect()
+}
+
 /// Resolve track ids to the artist and title an online service names them
 /// by, skipping ids the library no longer holds. A track missing either tag
 /// is skipped too: nothing downstream can name it, so an empty pair would

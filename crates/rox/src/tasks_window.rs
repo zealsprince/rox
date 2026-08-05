@@ -8,10 +8,18 @@
 //! their page was closed: no count, no estimate, and no way to stop short of
 //! reopening whatever started them. This is that missing half.
 //!
-//! The rows are always there, idle or not. A list that only exists while
-//! something is running is a progress bar with extra steps; this one is also
-//! the answer to "what can I set going, and what would it cost", which is
-//! the question someone opens it with before they've started anything.
+//! Those three rows are always there, idle or not. A list that only exists
+//! while something is running is a progress bar with extra steps; this one
+//! is also the answer to "what can I set going, and what would it cost",
+//! which is the question someone opens it with before they've started
+//! anything.
+//!
+//! Dynamic jobs are the other kind. They're started somewhere else (the
+//! Last.fm loved-tracks import, from the settings window), they're measured
+//! in seconds rather than afternoons, and there's nothing to say about them
+//! before someone sets one going. Those rows appear when one runs and stay
+//! for the session to report what it did, rather than standing in the list
+//! saying nothing for the rest of the time.
 //!
 //! The scan keeps its menubar badge exactly as it was. The badge is a glance
 //! and this is the detail: the same walk with the estimate and the file under
@@ -29,6 +37,7 @@ use gpui_component::Root;
 use crate::assets::icons;
 use crate::catalog::{Library, LibraryEvent, ScanStatus};
 use crate::design::{palette, tokens};
+use crate::lastfm::import;
 use crate::settings::ui as settings_ui;
 use crate::settings::{LayoutSize, Settings};
 use crate::{embeddings, panel, pass_prompt, replaygain_job};
@@ -65,7 +74,9 @@ pub fn repaint_while_running(cx: &mut App) {
             // thing a pass does is stop, and that's the tick that swaps a
             // chip for nothing and a bar for a finished line.
             cx.refresh_windows();
-            embeddings::progress(cx).is_some() || replaygain_job::progress(cx).is_some()
+            embeddings::progress(cx).is_some()
+                || replaygain_job::progress(cx).is_some()
+                || import::progress(cx).is_some()
         });
         if !matches!(live, Ok(true)) {
             cx.update(|cx| cx.set_global(Ticking(false))).ok();
@@ -94,22 +105,32 @@ impl Global for Ticking {}
 /// The library scan is deliberately not in here: it has the badge and the
 /// status line to its left, and saying it twice in one bar would be noise.
 pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
-    let acoustic = embeddings::progress(cx);
-    let replaygain = replaygain_job::progress(cx);
-    // Two at once is a count rather than two chips: the bar is shared with
-    // the catalog status and the scan controls, and the window is one click
-    // away for the detail.
-    let running = match (&acoustic, &replaygain) {
-        (Some(a), None) => Some((
+    // More than one at a time is a count rather than a chip each: the bar is
+    // shared with the catalog status and the scan controls, and the window is
+    // one click away for the detail.
+    let mut live: Vec<(&'static str, String)> = Vec::new();
+    if let Some(job) = embeddings::progress(cx) {
+        live.push((
             Job::Acoustic.icon(),
-            format!("Analyzing {}", share(a.done(), a.total())),
-        )),
-        (None, Some(r)) => Some((
+            format!("Analyzing {}", share(job.done(), job.total())),
+        ));
+    }
+    if let Some(job) = replaygain_job::progress(cx) {
+        live.push((
             Job::ReplayGain.icon(),
-            format!("Measuring {}", share(r.done(), r.total())),
-        )),
-        (Some(_), Some(_)) => Some((icons::CLOCK, "2 tasks".to_string())),
-        (None, None) => None,
+            format!("Measuring {}", share(job.done(), job.total())),
+        ));
+    }
+    if let Some(job) = import::progress(cx) {
+        live.push((
+            Job::LovedImport.icon(),
+            format!("Importing {}", share(job.done(), job.total())),
+        ));
+    }
+    let running = match live.len() {
+        0 => None,
+        1 => live.pop(),
+        several => Some((icons::CLOCK, format!("{several} tasks"))),
     };
     let open = cx.listener(|_, _, _, cx| open(cx));
     // Idle the glyph is a clock and nothing else, so the tip is the only
@@ -215,7 +236,9 @@ fn open_now(cx: &mut App) {
         .tasks
         .filter(|s| s.width >= f32::from(MIN.width) && s.height >= f32::from(MIN.height))
         .map(|s| (s.width, s.height))
-        .unwrap_or((520., 420.));
+        // Room for the standing rows and a dynamic one under them without a
+        // scroll on first open.
+        .unwrap_or((640., 480.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle =
         panel::open_child_window(cx, "rox - Tasks", bounds, Some(MIN), move |window, cx| {
@@ -230,10 +253,14 @@ enum Job {
     Scan,
     Acoustic,
     ReplayGain,
+    /// The dynamic one: Last.fm's loved tracks pulled in as hearts, started
+    /// from the settings window rather than from here.
+    LovedImport,
 }
 
 /// Top to bottom, cheapest first: a scan is minutes and the two passes are
-/// afternoons, and the passes read what the scan writes.
+/// afternoons, and the passes read what the scan writes. The dynamic jobs
+/// fall in under these when they have anything to say.
 const JOBS: [Job; 3] = [Job::Scan, Job::Acoustic, Job::ReplayGain];
 
 impl Job {
@@ -242,6 +269,7 @@ impl Job {
             Job::Scan => "Library Scan",
             Job::Acoustic => "Acoustic Analysis",
             Job::ReplayGain => "ReplayGain",
+            Job::LovedImport => "Last.fm Loved Tracks",
         }
     }
 
@@ -250,24 +278,38 @@ impl Job {
             Job::Scan => icons::REFRESH_CW,
             Job::Acoustic => icons::FLASK,
             Job::ReplayGain => icons::GAUGE,
+            Job::LovedImport => icons::HEART,
         }
     }
 
-    /// What the start button says and wears. The wording matches the
-    /// settings page's buttons, since they start the same work.
-    fn start_label(self) -> (&'static str, &'static str) {
+    /// What the start button says and wears, or None for a job this window
+    /// only watches. The wording matches the settings page's buttons, since
+    /// they start the same work.
+    fn start_label(self) -> Option<(&'static str, &'static str)> {
         match self {
-            Job::Scan => ("Rescan", icons::REFRESH_CW),
-            Job::Acoustic => ("Analyze Missing", icons::FLASK),
-            Job::ReplayGain => ("Measure Missing", icons::GAUGE),
+            Job::Scan => Some(("Rescan", icons::REFRESH_CW)),
+            Job::Acoustic => Some(("Analyze Missing", icons::FLASK)),
+            Job::ReplayGain => Some(("Measure Missing", icons::GAUGE)),
+            // The import belongs to an account, not to a library, and it
+            // reads its user off the settings it's started from. Offering
+            // it here would be a second door into a room with one chair.
+            Job::LovedImport => None,
         }
     }
 
-    fn stop(self, library: &Entity<Library>, cx: &mut App) {
+    /// Ask a running job to stop. Only the scan needs the catalog to say it
+    /// to; the rest hold their own cancel flag, so a workspace closed under
+    /// them is no reason to have to wait one out.
+    fn stop(self, library: Option<&Entity<Library>>, cx: &mut App) {
         match self {
-            Job::Scan => library.update(cx, |library, cx| library.abort_scan(cx)),
+            Job::Scan => {
+                if let Some(library) = library {
+                    library.update(cx, |library, cx| library.abort_scan(cx));
+                }
+            }
             Job::Acoustic => embeddings::stop(cx),
             Job::ReplayGain => replaygain_job::stop(cx),
+            Job::LovedImport => import::stop(cx),
         }
     }
 }
@@ -280,6 +322,10 @@ struct Snapshot {
     total: usize,
     failed: usize,
     current: String,
+    /// Whether `current` is a file path, so the readout shows its name
+    /// rather than the whole line. The passes walk files; the import walks
+    /// track names, which are already what to show.
+    current_is_path: bool,
     eta: Option<f64>,
     stopping: bool,
 }
@@ -291,6 +337,22 @@ impl Snapshot {
             total: job.total(),
             failed: job.failed(),
             current: job.current(),
+            current_is_path: true,
+            eta: job.eta_secs(),
+            stopping: job.stopping(),
+        }
+    }
+
+    /// The import counts loved tracks read, and the ones it couldn't place
+    /// are what the failed count means for it: nothing went wrong with
+    /// them, this library just has no home for them.
+    fn import(job: &import::Progress) -> Snapshot {
+        Snapshot {
+            done: job.done(),
+            total: job.total(),
+            failed: job.unmatched(),
+            current: job.current(),
+            current_is_path: false,
             eta: job.eta_secs(),
             stopping: job.stopping(),
         }
@@ -302,6 +364,7 @@ impl Snapshot {
             total: job.total(),
             failed: job.failed(),
             current: job.current(),
+            current_is_path: true,
             eta: job.eta_secs(),
             stopping: job.stopping(),
         }
@@ -316,6 +379,7 @@ impl Snapshot {
             total: scan.total,
             failed: 0,
             current: scan.current,
+            current_is_path: true,
             eta: scan.eta,
             stopping: scan.stopping,
         }
@@ -581,7 +645,21 @@ impl TasksWindow {
                 .replaygain
                 .as_ref()
                 .map(|j| Snapshot::replaygain(j)),
+            // Read live rather than off the poll: the import is seconds
+            // long, so a sample taken a frame ago is a sample of a
+            // different job.
+            Job::LovedImport => import::progress(cx).as_deref().map(Snapshot::import),
         }
+    }
+
+    /// The jobs that only exist while something is happening. Started
+    /// elsewhere, so there's nothing to say about one before it runs and no
+    /// row for it either; once it has run, its row stays for the session
+    /// with what it did, the same as the standing rows report their last
+    /// pass.
+    fn dynamic(&self, cx: &App) -> Vec<Job> {
+        let import = import::progress(cx).is_some() || import::last(cx).is_some();
+        import.then_some(Job::LovedImport).into_iter().collect()
     }
 
     /// What an idle row says: where the library stands on this job, and what
@@ -668,6 +746,21 @@ impl TasksWindow {
                     lines.push(done.line());
                 }
             }
+            Job::LovedImport => match import::last(cx) {
+                Some(Ok(summary)) => {
+                    lines.push(summary.line());
+                    if summary.unmatched > 0 {
+                        lines.push(format!(
+                            "{} had no match in this library",
+                            summary.unmatched
+                        ));
+                    }
+                }
+                Some(Err(e)) => lines.push(format!("The last import failed: {e}")),
+                // Only reachable for a frame, between the row appearing and
+                // the first progress landing.
+                None => lines.push("Reading the loved list...".into()),
+            },
         }
         lines
     }
@@ -692,6 +785,9 @@ impl TasksWindow {
     /// the row saying the same thing twice. What earns a line is the reason
     /// that will pass, since that one is worth waiting out.
     fn blocked(&self, job: Job, cx: &App) -> Option<Blocked> {
+        // A watched job has no start button to explain the state of, and the
+        // import doesn't touch the rows a scan rewrites anyway.
+        job.start_label()?;
         let library = self.library()?;
         // Anything the library is already doing blocks all three: a scan
         // rewrites the very rows the passes read, and the catalog runs one
@@ -716,6 +812,8 @@ impl TasksWindow {
                 }
             }
             Job::ReplayGain => (self.facts.rg_missing == 0).then_some(Blocked(None)),
+            // Returned above; a watched job never reaches here.
+            Job::LovedImport => None,
         }
     }
 
@@ -733,7 +831,8 @@ impl TasksWindow {
                     .gap(tokens::SPACE_SM)
                     .child(icon(job.icon()))
                     .child(div().flex_1().child(job.label()))
-                    .child(self.button(job, running.as_ref(), blocked.is_some(), cx)),
+                    .children(self.button(job, running.as_ref(), blocked.is_some(), cx))
+                    .children(self.dismiss(job, running.is_some(), cx)),
             )
             .map(|d| match &running {
                 Some(snapshot) => d.children(self.running_lines(snapshot)),
@@ -770,11 +869,14 @@ impl TasksWindow {
             line.push_str(&format!(" ({} skipped)", snapshot.failed));
         }
         let mut lines = vec![bar(fraction), muted(line)];
-        lines.extend(
+        let current = if snapshot.current_is_path {
             std::path::Path::new(&snapshot.current)
                 .file_name()
-                .map(|name| muted(name.to_string_lossy().into_owned())),
-        );
+                .map(|name| name.to_string_lossy().into_owned())
+        } else {
+            Some(snapshot.current.clone()).filter(|line| !line.is_empty())
+        };
+        lines.extend(current.map(muted));
         lines
     }
 
@@ -785,29 +887,49 @@ impl TasksWindow {
         running: Option<&Snapshot>,
         blocked: bool,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Option<Div> {
         let live = self.library();
         if let Some(snapshot) = running {
             let stopping = snapshot.stopping;
             let library = live.clone();
-            return settings_ui::small_button(
+            // Only the scan needs the catalog to be stopped through, so only
+            // its button goes inert when the workspace is gone.
+            let inert = stopping || (library.is_none() && job == Job::Scan);
+            return Some(settings_ui::small_button(
                 if stopping { "Stopping..." } else { "Stop" },
                 icons::STOP,
-                stopping || library.is_none(),
-                cx.listener(move |_, _, _, cx| {
-                    if let Some(library) = &library {
-                        job.stop(library, cx);
-                    }
-                }),
-            );
+                inert,
+                cx.listener(move |_, _, _, cx| job.stop(library.as_ref(), cx)),
+            ));
         }
-        let (label, icon) = job.start_label();
-        settings_ui::small_button(
+        let (label, icon) = job.start_label()?;
+        Some(settings_ui::small_button(
             label,
             icon,
             blocked || live.is_none(),
             cx.listener(move |this: &mut Self, _, _, cx| this.start(job, cx)),
-        )
+        ))
+    }
+
+    /// The X that clears a finished dynamic row. Only there once the job
+    /// has stopped: a running one has a Stop beside it, and the two are
+    /// different enough that they shouldn't sit together. Standing rows
+    /// never have one, since there's nothing to clear them to.
+    fn dismiss(&self, job: Job, running: bool, cx: &mut Context<Self>) -> Option<Div> {
+        if running || job.start_label().is_some() {
+            return None;
+        }
+        Some(settings_ui::icon_button(
+            icons::CLOSE,
+            false,
+            // The standing rows returned above, so this is the only kind
+            // that reaches here.
+            cx.listener(move |_, _, _, cx| {
+                if job == Job::LovedImport {
+                    import::dismiss(cx);
+                }
+            }),
+        ))
     }
 
     /// Set a job going. The scan starts on the press, the same as the
@@ -824,10 +946,13 @@ impl TasksWindow {
             Job::Scan => library.update(cx, |library, cx| library.rescan(cx)),
             Job::Acoustic => pass_prompt::raise(self, pass_prompt::Pass::Acoustic, library, cx),
             Job::ReplayGain => pass_prompt::raise(self, pass_prompt::Pass::ReplayGain, library, cx),
+            // Watched, not started: it has no button here to reach this.
+            Job::LovedImport => {}
         }
     }
 
     fn body(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let dynamic = self.dynamic(cx);
         div()
             .id("tasks")
             .size_full()
@@ -835,10 +960,16 @@ impl TasksWindow {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .p(tokens::SPACE_MD)
-            // The three rows fit the default frame, but a resize down
-            // shouldn't clip the bottom one off the window.
+            // The standing rows fit the default frame, but a dynamic one, or
+            // a resize down, shouldn't clip the bottom off the window.
             .overflow_y_scroll()
             .children(JOBS.map(|job| self.row(job, cx)))
+            // The rule says these last ones are a different kind of thing:
+            // what happened, rather than what this window can set going.
+            .when(!dynamic.is_empty(), |d| {
+                d.child(div().flex_none().h(px(1.)).bg(palette::border()))
+            })
+            .children(dynamic.into_iter().map(|job| self.row(job, cx)))
             // Without a library there's nothing to drive: the workspace this
             // window opened over is gone, and the rows are reading its last
             // word rather than anything live.

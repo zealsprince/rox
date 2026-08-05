@@ -108,7 +108,9 @@ pub struct Config {
     /// what librosa does anyway.
     pub n_fft: usize,
     /// How many samples the window actually covers, zero-padded up to
-    /// `n_fft`. Equal to `n_fft` in most configs.
+    /// `n_fft` and sitting in the middle of it rather than at the front,
+    /// which is what librosa's `util.pad_center` does. Equal to `n_fft` in
+    /// most configs.
     pub win_length: usize,
     pub hop_length: usize,
     pub n_mels: usize,
@@ -298,7 +300,9 @@ fn window(config: &Config) -> Vec<f64> {
 /// zeros because a zero pad puts a step discontinuity at both ends of the
 /// clip and rings across the whole spectrum in the first and last frames.
 fn padded(samples: &[f32], config: &Config) -> Vec<f32> {
-    if !config.center {
+    // A clip of nothing has no edge to mirror, and the modular walk below
+    // divides by a period of 2 * (len - 1), which is negative for one.
+    if !config.center || samples.is_empty() {
         return samples.to_vec();
     }
     let pad = config.n_fft / 2;
@@ -450,6 +454,14 @@ impl Mel {
     /// original rate is known and a proper band-limited filter can run.
     pub fn spectrogram(&self, samples: &[f32]) -> Vec<Vec<f32>> {
         let config = &self.config;
+        // Centered framing counts 1 + len / hop, so a clip of no samples
+        // asks for one frame of nothing. There's no signal under it to
+        // transform, which makes it the same empty result a clip too short
+        // to frame gets. A decode can land here: a one-sample read
+        // resampled 44.1 kHz down to 32 kHz is zero samples long.
+        if samples.is_empty() {
+            return Vec::new();
+        }
         let frames = config.frames(samples.len());
         if frames == 0 {
             return Vec::new();
@@ -462,8 +474,16 @@ impl Mel {
         let mut spectrum = vec![0.0f32; bins];
         let mut out = Vec::with_capacity(frames);
 
+        // Where a window shorter than the transform sits inside the frame.
+        // librosa pads the window up to n_fft centered, so the samples it
+        // covers start half the difference in rather than at the frame's
+        // first sample. Which buffer slots the windowed block lands in is
+        // only a phase shift, and the power spectrum below throws that
+        // away; which samples the window covers is the part that decides
+        // what the model reads.
+        let offset = (config.n_fft - config.win_length) / 2;
         for frame in 0..frames {
-            let start = frame * config.hop_length;
+            let start = frame * config.hop_length + offset;
             re.fill(0.0);
             im.fill(0.0);
             // A centered clip's last frames read past the padded end when
@@ -471,7 +491,7 @@ impl Mel {
             // zero, which is what librosa's own centered tail does too.
             for (i, w) in self.window.iter().enumerate() {
                 if let Some(&sample) = signal.get(start + i) {
-                    re[i] = sample as f64 * w;
+                    re[offset + i] = sample as f64 * w;
                 }
             }
             fft(&mut re, &mut im);
@@ -697,6 +717,61 @@ mod tests {
 
         let mel = Mel::new(uncentered).unwrap();
         assert!(mel.spectrogram(&[0.0; 100]).is_empty());
+    }
+
+    /// A clip with no samples at all describes nothing, whichever framing
+    /// is asked for. Centered framing counts one frame for it, and a decode
+    /// really does produce one: a single-sample read resampled from 44.1 to
+    /// 32 kHz is zero samples long, and it used to walk the reflect pad off
+    /// the front of an empty slice and take the whole pass down.
+    #[test]
+    fn a_clip_of_no_samples_describes_nothing() {
+        let centered = librosa_default();
+        assert!(Mel::new(centered).unwrap().spectrogram(&[]).is_empty());
+        assert!(padded(&[], &centered).is_empty());
+        let uncentered = Config {
+            center: false,
+            ..centered
+        };
+        assert!(Mel::new(uncentered).unwrap().spectrogram(&[]).is_empty());
+    }
+
+    /// A window shorter than the transform sits in the middle of the frame,
+    /// the way librosa's `pad_center` puts it, so the samples it covers
+    /// start half the difference in. Nothing shipped uses a short window
+    /// (PANNs' is the full transform), which is exactly why it's pinned:
+    /// a catalog entry that wanted one would otherwise read the wrong
+    /// samples and produce embeddings nobody could tell were wrong.
+    #[test]
+    fn a_short_window_covers_the_middle_of_its_frame() {
+        let config = Config {
+            sample_rate: 16_000,
+            n_fft: 8,
+            win_length: 4,
+            hop_length: 8,
+            n_mels: 2,
+            fmin: 0.0,
+            fmax: 8000.0,
+            window: WindowKind::Hann,
+            center: false,
+            power: 2.0,
+            scale: Scale::Slaney,
+            norm: Norm::Area,
+            log: Log::Natural { offset: 1e-10 },
+        };
+        let mel = Mel::new(config).unwrap();
+        // Four into eight, so the window covers samples 2 through 5 and
+        // nothing outside them reaches the transform.
+        let covered = mel.spectrogram(&[0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]);
+        let noisy_edges = mel.spectrogram(&[9.0, 9.0, 1.0, 1.0, 1.0, 1.0, 9.0, 9.0]);
+        assert_eq!(covered.len(), 1);
+        assert_eq!(
+            covered, noisy_edges,
+            "samples outside the window changed the frame"
+        );
+        // And a sample the window does cover moves it.
+        let changed = mel.spectrogram(&[0.0, 0.0, 1.0, 1.0, 2.0, 1.0, 0.0, 0.0]);
+        assert_ne!(covered, changed);
     }
 
     /// Reflect padding mirrors without repeating the edge sample, numpy's

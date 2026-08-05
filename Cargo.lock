@@ -6125,6 +6125,7 @@ version = "1.11.0"
 dependencies = [
  "image",
  "lofty",
+ "log",
  "memchr",
  "rayon",
  "rusqlite",

@@ -450,9 +450,6 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// How many tracks the acoustic pass has described, against how many
-    /// there are to describe. The Development page states this, and the
-    /// missing count is the pass's work list.
     /// Whether the acoustic pass has described anything under `model` yet.
     /// What the modes that rank by sound are offered on: the switch being on
     /// only means the vectors are allowed to exist, and until a pass has run
@@ -464,6 +461,9 @@ impl Library {
             .unwrap_or(false)
     }
 
+    /// How many tracks the acoustic pass has described, against how many
+    /// there are to describe. The Library page states this, and the
+    /// missing count is the pass's work list.
     pub fn acoustic_coverage(&self, model: &str) -> embeddings::Coverage {
         self.conn
             .as_ref()

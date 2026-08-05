@@ -213,13 +213,17 @@ pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T, what: &str) -> bo
 /// the list, which fails the look, which resets a whole file to defaults over
 /// one bad entry. These narrow that blast radius to the piece that's actually
 /// broken. A collection drops the entries that don't parse and keeps the rest;
-/// an optional field reads as None. Both say what they dropped, since a
-/// silent one is a preset or a queue vanishing with no thread back to why.
+/// an optional field reads as None, a defaulted one as its default. All three
+/// say what they dropped, since a silent one is a preset or a queue vanishing
+/// with no thread back to why.
 ///
-/// Which of the two a field takes is not a style choice. A list of presets is
+/// Which of the three a field takes is not a style choice. A list of presets is
 /// independent, so dropping one costs one preset. A queue's `cursor` indexes
 /// its `entries`, so dropping an entry shifts the cursor and resumes the wrong
-/// track: that one has to fail whole, as an option, or not at all.
+/// track: that one has to fail whole, as an option, or not at all. A closed set
+/// of words, a mode or a style or a destination, takes the default: a spelling
+/// a newer build wrote is a word this build doesn't know rather than damage,
+/// and refusing it would cost the whole shard.
 mod lenient {
     use std::collections::BTreeMap;
 
@@ -252,6 +256,14 @@ mod lenient {
         T: serde::de::DeserializeOwned,
     {
         Ok(Option::<serde_json::Value>::deserialize(deserializer)?.and_then(parse))
+    }
+
+    pub fn or_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: serde::de::DeserializeOwned + Default,
+    {
+        Ok(parse(serde_json::Value::deserialize(deserializer)?).unwrap_or_default())
     }
 
     fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Option<T> {
@@ -382,6 +394,7 @@ pub struct Settings {
     pub split_genre_compounds: bool,
     /// The theme pick: which of the two user palettes renders, with
     /// System following the OS's light/dark preference live.
+    #[serde(deserialize_with = "lenient::or_default")]
     pub theme: Theme,
     /// The app-wide text size in px, the rem every window's rem-based text
     /// scales from. Clamped to the palette's shared range on apply; 16 is
@@ -443,8 +456,9 @@ pub struct Settings {
     /// behind "more like this". Off by default and separate from the panel
     /// switch above: this one costs real decoding time across the whole
     /// library rather than just showing something that was already built.
-    /// Flipped on the Development page, which is also where the pass runs
-    /// from while the feature vector is still being tuned.
+    /// Flipped on the Library page, which is also where the extractor is
+    /// picked and the pass is run from, since all three are about what the
+    /// library knows.
     pub acoustic_analysis: bool,
     /// Which model the analysis pass runs and which model's vectors the
     /// similarity queries read, by its catalog id
@@ -481,6 +495,34 @@ pub struct LocalModel {
     /// The name its vectors are stored under, from
     /// [`crate::embeddings::local_id`].
     pub id: String,
+    /// What the file looked like when that hash was taken, [`file_stamp`]'s
+    /// size and mtime. A checkpoint someone is iterating on gets rewritten at
+    /// the same path, and the id would then name bytes that are gone, so
+    /// [`resolve_acoustic`] checks these before it hands the file to a pass.
+    /// Zero in a file written before the stamp existed, which reads as changed
+    /// and costs one re-hash.
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub mtime: i64,
+}
+
+/// A weights file's size and its mtime in unix seconds, the pair that says
+/// whether the bytes behind a hash are still the ones it was taken from. The
+/// scan and the peaks cache stamp files the same way. None when the path isn't
+/// a readable file, which reads as the checkpoint being gone.
+///
+/// Seconds, like every other stamp here, so a rewrite inside the same second
+/// as the write that was hashed is the one change this can't see.
+pub fn file_stamp(path: &Path) -> Option<(u64, i64)> {
+    let meta = std::fs::metadata(path).ok().filter(|meta| meta.is_file())?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Some((meta.len(), mtime))
 }
 
 /// Where this machine's windows sit: `windows.json`'s whole contents. Pure
@@ -549,6 +591,7 @@ pub struct SessionState {
     /// Which order shuffle puts the queue in. Random is what shuffle has
     /// always meant; Similar orders what's coming by how much it sounds like
     /// the playing track, off the acoustic vectors.
+    #[serde(deserialize_with = "lenient::or_default")]
     pub shuffle_mode: ShuffleMode,
     /// Which strategy refills the queue when it runs dry (ADR 17). Continue
     /// out of the box: a local player that goes silent mid-flow feels broken,
@@ -642,7 +685,9 @@ impl SessionState {
 /// Unlike the loop mode above this is a real enum rather than a wire string,
 /// because an unknown value has a sensible answer: fall back to Random, which
 /// is what shuffle meant before modes existed and what a settings file
-/// written by a newer build should degrade to.
+/// written by a newer build should degrade to. The fallback rides the field
+/// that reads it, through `lenient::or_default`, so any other field holding one
+/// of these needs the same read or it goes back to failing its shard.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShuffleMode {
@@ -973,17 +1018,63 @@ static ACOUSTIC_MODEL: RwLock<Option<crate::embeddings::Source>> = RwLock::new(N
 /// entry whose weights are installed, or the local file the user picked.
 /// None for a name from a newer build, one whose download has since been
 /// deleted, or a local file that has moved.
+///
+/// A local id names the bytes it was hashed from, so the file is stamped
+/// rather than only looked for: a checkpoint retrained in place is a different
+/// vector space wearing the same path, and writing its vectors under the old
+/// id is the mixing that hashed naming exists to prevent. The stat keeps that
+/// off the common path, so only a file that actually changed pays a re-read.
 pub fn resolve_acoustic(id: &str) -> Option<crate::embeddings::Source> {
     if let Some(model) = crate::embeddings::models::find(id).filter(|model| model.installed()) {
         return Some(crate::embeddings::Source::Catalog(model));
     }
-    let local = Settings::load().acoustic_local_model?;
-    (local.id == id && local.path.is_file()).then(|| {
-        crate::embeddings::Source::Local(Arc::new(crate::embeddings::Local {
+    let local = Settings::load()
+        .acoustic_local_model
+        .filter(|local| local.id == id)?;
+    let stamp = file_stamp(&local.path)?;
+    if stamp != (local.bytes, local.mtime) && !rehashes_to_its_id(&local, stamp) {
+        return None;
+    }
+    Some(crate::embeddings::Source::Local(Arc::new(
+        crate::embeddings::Local {
             path: local.path,
             id: local.id,
-        }))
-    })
+        },
+    )))
+}
+
+/// Whether a weights file that no longer matches its stamp still hashes to the
+/// id it's stored under, recording what it looks like now when it does: a
+/// stamp from before the pair was written, or an mtime a copy or a touch
+/// moved, then costs one read rather than one on every resolve.
+///
+/// A file that hashes to something else is a different checkpoint and gets
+/// nothing, which drops the pick to the built-in extractor rather than filling
+/// the old id with the new network's coordinates. Pointing rox at the file
+/// again adopts it under its own name, with the work already done under the
+/// old one still sitting there.
+fn rehashes_to_its_id(local: &LocalModel, stamp: (u64, i64)) -> bool {
+    let Ok(digest) = crate::embeddings::models::hash_file(&local.path) else {
+        return false;
+    };
+    if crate::embeddings::local_id(&digest) != local.id {
+        log::warn!(
+            "settings: {} is no longer the checkpoint {} was named after",
+            local.path.display(),
+            local.id
+        );
+        return false;
+    }
+    let path = local.path.clone();
+    Settings::update(move |s| {
+        if let Some(stored) = s.acoustic_local_model.as_mut() {
+            if stored.path == path {
+                stored.bytes = stamp.0;
+                stored.mtime = stamp.1;
+            }
+        }
+    });
+    true
 }
 
 /// The model the pass runs and the similarity queries read.
@@ -1241,6 +1332,7 @@ pub struct Providers {
     /// Fetch lyrics from lrclib.net when the lyrics panel asks.
     pub lrclib: bool,
     /// Where a fetched sheet lands.
+    #[serde(deserialize_with = "lenient::or_default")]
     pub lyrics_save: LyricsSave,
     /// Look up tags on MusicBrainz when the metadata compare asks.
     pub musicbrainz: bool,
@@ -1292,7 +1384,7 @@ pub struct EqSettings {
     #[serde(default)]
     pub qs: Vec<f32>,
     /// How the live analyzer behind the curve is drawn, if at all.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::or_default")]
     pub analyzer: AnalyzerStyle,
     /// The analyzer's window, in samples. Snapped to a power of two the
     /// analyzer takes when it's read, so a hand-edited number can't panic
@@ -1339,6 +1431,7 @@ impl Default for EqSettings {
 #[serde(default)]
 pub struct ReplayGainSettings {
     /// Which of a file's two gains to read, or none at all.
+    #[serde(deserialize_with = "lenient::or_default")]
     pub mode: GainModeSetting,
     /// Added to every tagged gain, in dB. ReplayGain's reference sits well
     /// below where modern masters are cut, so a levelled library plays
@@ -1351,6 +1444,7 @@ pub struct ReplayGainSettings {
     /// Where the measurement pass puts what it measured. Nothing the engine
     /// reads: it sits here because it's about levelling, and the job reads
     /// it once when it starts.
+    #[serde(deserialize_with = "lenient::or_default")]
     pub save: ReplayGainSave,
 }
 
@@ -1598,6 +1692,7 @@ pub struct AppearanceBundle {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_font: Option<String>,
     /// How ratings read and click everywhere they show.
+    #[serde(deserialize_with = "lenient::or_default")]
     pub rating_style: RatingStyle,
     /// Whether unfilled star slots draw a faint dot, so an unrated row
     /// reads as a quiet row of dots instead of empty space.
@@ -2648,6 +2743,85 @@ mod tests {
         assert_eq!(session.last_scan, 12345);
     }
 
+    /// A shuffle mode this build has never heard of reads as Random and takes
+    /// nothing with it. Failing instead would cost the whole session shard: the
+    /// volume, the loop mode, the saved queue, and `last_scan`, which is a full
+    /// library rescan over one word a newer build wrote.
+    #[test]
+    fn an_unknown_shuffle_mode_costs_only_the_mode() {
+        let json = serde_json::json!({
+            "volume": 0.4,
+            "muted": true,
+            "loop_mode": "all",
+            "shuffle": true,
+            "shuffle_mode": "genre",
+            "last_scan": 12345,
+            "last_queue": { "entries": [{ "id": 1, "explicit": false }], "cursor": 0 },
+        });
+        let session: SessionState = serde_json::from_value(json).unwrap();
+        assert_eq!(session.shuffle_mode, ShuffleMode::Random);
+        assert_eq!(session.volume, 0.4);
+        assert!(session.muted);
+        assert!(session.loop_mode() == LoopMode::All);
+        assert!(session.shuffle);
+        assert_eq!(session.last_scan, 12345);
+        assert!(session.last_queue.is_some());
+
+        // A mode this build does know still reads as itself, and so does one
+        // written as something that was never a mode at all.
+        let session: SessionState =
+            serde_json::from_value(serde_json::json!({ "shuffle_mode": "similar" })).unwrap();
+        assert_eq!(session.shuffle_mode, ShuffleMode::Similar);
+        let session: SessionState =
+            serde_json::from_value(serde_json::json!({ "shuffle_mode": 7 })).unwrap();
+        assert_eq!(session.shuffle_mode, ShuffleMode::Random);
+    }
+
+    /// Every other closed set of words in the shards reads the same way, and
+    /// the blast radius is worse in each of them than in the session: the theme
+    /// sits beside the library folders, the rating style beside the palette,
+    /// and the lyrics destination beside the last.fm session key.
+    #[test]
+    fn an_unknown_enum_word_costs_only_its_field() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "theme": "midnight",
+            "library_roots": ["/music"],
+            "eq": { "enabled": true, "analyzer": "spectrogram" },
+            "replay_gain": { "mode": "loudest", "save": "cloud", "preamp_db": 3.0 },
+        }))
+        .unwrap();
+        assert!(settings.theme == Theme::default());
+        assert_eq!(settings.library_roots, vec![PathBuf::from("/music")]);
+        assert!(settings.eq.enabled);
+        assert_eq!(settings.eq.analyzer, AnalyzerStyle::default());
+        assert_eq!(settings.replay_gain.mode, GainModeSetting::default());
+        assert_eq!(settings.replay_gain.save, ReplayGainSave::default());
+        assert_eq!(settings.replay_gain.preamp_db, 3.0);
+
+        let accounts: AccountsState = serde_json::from_value(serde_json::json!({
+            "lastfm": { "session_key": "a-real-secret" },
+            "providers": { "lyrics_save": "somewhere-else", "musicbrainz": false },
+        }))
+        .unwrap();
+        assert!(accounts.providers.lyrics_save == LyricsSave::default());
+        assert!(!accounts.providers.musicbrainz);
+        assert_eq!(accounts.lastfm.session_key, "a-real-secret");
+
+        let look: LookState = serde_json::from_value(serde_json::json!({
+            "bundle": {
+                "appearance": { "rating_style": "hearts", "rating_dots": true },
+                "palette_dark": { "accent": "#336699" },
+            },
+        }))
+        .unwrap();
+        assert!(look.bundle.appearance.rating_style == RatingStyle::default());
+        assert!(look.bundle.appearance.rating_dots);
+        assert_eq!(
+            look.bundle.palette_dark.get("accent").map(String::as_str),
+            Some("#336699")
+        );
+    }
+
     /// A window shape that no longer parses costs that window's remembered
     /// size, not every window's.
     #[test]
@@ -2661,6 +2835,26 @@ mod tests {
         assert!(windows.stats.is_none());
         assert_eq!(windows.main.map(|w| w.width), Some(800.0));
         assert_eq!(windows.console.map(|s| s.width), Some(700.0));
+    }
+
+    /// The stamp is what separates a weights file that was rewritten in place
+    /// from one that's only being picked again, so it has to move when the
+    /// bytes do. Without that, a retrained checkpoint's vectors land under the
+    /// id the previous one was hashed to.
+    #[test]
+    fn a_rewritten_weights_file_stamps_differently() {
+        let dir = std::env::temp_dir().join(format!("rox-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("weights.safetensors");
+        std::fs::write(&path, b"one checkpoint").unwrap();
+        let first = file_stamp(&path).unwrap();
+        std::fs::write(&path, b"a different checkpoint").unwrap();
+        assert_ne!(file_stamp(&path), Some(first));
+        // Neither a folder nor a path with nothing at it is a checkpoint.
+        assert_eq!(file_stamp(&dir), None);
+        assert_eq!(file_stamp(&dir.join("gone")), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A migrated load rewrites its files even though the edit moved nothing.

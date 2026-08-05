@@ -194,9 +194,14 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
         }
     }
     // A miss: resolve the cover source off the lock, then key its bytes.
+    // The directory's identity is taken before the resolve reads it, the
+    // same order the folder cover's own stat runs in: a cover dropped in
+    // between the two then reads as a directory this row has never seen,
+    // rather than being stamped as already accounted for.
+    let (dir, dir_mtime, dir_size) = no_art_identity(path);
     let (art_hash, thumb, art_path, art_mtime, art_size, whole) = match art::cover_art_source(path)
     {
-        Some((bytes, _mime, source)) => {
+        art::Cover::Found { bytes, source, .. } => {
             let hash = content_hash(&bytes);
             // Bytes that stop short of their end marker are a file still
             // landing on disk. Serve what decodes, store nothing: the
@@ -236,13 +241,17 @@ pub fn thumbnail(conn: &Mutex<Connection>, path: &Path) -> Option<Vec<u8>> {
             let (art_path, art_mtime, art_size) = source_identity(&source);
             (hash, thumb, art_path, art_mtime, art_size, whole)
         }
+        // A cover file is sitting there whose bytes aren't an image yet: a
+        // download that has created the file and not filled it. The folder's
+        // mtime moved when the file was created and won't move again when
+        // the bytes land, so a negative entry stored now would answer for
+        // this album forever. Store nothing, the same as bytes caught short
+        // of their end marker.
+        art::Cover::Settling => (0, Vec::new(), dir, dir_mtime, dir_size, false),
         // No art: hash 0 references no pooled image, and the negative entry
         // keys on the directory's identity, so a cover dropped in later
         // bumps its mtime and forces a fresh look.
-        None => {
-            let (art_path, art_mtime, art_size) = no_art_identity(path);
-            (0, Vec::new(), art_path, art_mtime, art_size, true)
-        }
+        art::Cover::None => (0, Vec::new(), dir, dir_mtime, dir_size, true),
     };
     if whole {
         let conn = conn.lock().unwrap();
@@ -502,6 +511,50 @@ mod tests {
         let whole = thumbnail(&conn, &track).expect("a thumbnail");
         assert_eq!(count(&conn, "thumbs"), 1);
         assert_eq!(thumbnail(&conn, &track).as_ref(), Some(&whole));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cover file that exists but holds no image yet leaves no row
+    /// behind either. This is the download that preallocates: the folder's
+    /// mtime moved when the file was created and never moves again, so a
+    /// no-art row keyed on the folder here would outlive the download and
+    /// the album would show blank forever.
+    #[test]
+    fn a_cover_with_no_image_bytes_yet_caches_nothing() {
+        let dir = std::env::temp_dir().join("rox-thumbs-preallocated");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let track = dir.join("1.mp3");
+        std::fs::write(&track, b"not audio").unwrap();
+        std::fs::write(dir.join("cover.jpg"), [0u8; 64]).unwrap();
+
+        let conn = Mutex::new(open(&dir.join("thumbs.db")).unwrap());
+        assert!(thumbnail(&conn, &track).is_none());
+        assert_eq!(count(&conn, "thumbs"), 0, "the unfilled cover keys nothing");
+
+        // Filling the file leaves the folder's mtime where it was, so only
+        // the missing row lets the finished cover through.
+        std::fs::write(dir.join("cover.jpg"), jpeg(8, 1)).unwrap();
+        assert!(thumbnail(&conn, &track).is_some(), "the cover lands");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An album with nothing to show still caches that answer, so an
+    /// artless folder costs one cover search ever rather than one a launch.
+    #[test]
+    fn an_artless_folder_caches_its_answer() {
+        let dir = std::env::temp_dir().join("rox-thumbs-artless");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let track = dir.join("1.mp3");
+        std::fs::write(&track, b"not audio").unwrap();
+
+        let conn = Mutex::new(open(&dir.join("thumbs.db")).unwrap());
+        assert!(thumbnail(&conn, &track).is_none());
+        assert_eq!(count(&conn, "thumbs"), 1, "the no-art answer is stored");
+        assert_eq!(count(&conn, "images"), 0, "and references no image");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

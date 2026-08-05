@@ -542,9 +542,10 @@ pub(crate) fn track_columns(
                 _ => ColumnSort::Default,
             };
             let column = Column::new(def.key, def.label).width(px(spec.width));
-            // The favourite column toggles, it does not sort; leaving its sort
-            // unset keeps the header from cycling a sort that goes nowhere.
-            let column = if sort_key(def.key).is_some() {
+            // The cover and favourite columns show rather than sort; leaving
+            // their sort unset keeps the header from cycling a sort that goes
+            // nowhere.
+            let column = if sortable(def.key) {
                 column.sort(state)
             } else {
                 column
@@ -558,8 +559,37 @@ pub(crate) fn track_columns(
         .collect()
 }
 
-/// Map a column key to the projection's sort key. The favourite column has
-/// none - it toggles rather than sorts - so its header never triggers a sort.
+/// Mirror a header's advanced sort cycle onto a built column set: the
+/// clicked column takes the new state, the rest fall back to canonical.
+/// The columns that show rather than sort stay stateless throughout, since
+/// the table hands the delegate's columns back to its own column groups on
+/// the next refresh and a cover header carrying a state is one a click can
+/// sort the list by nothing with.
+pub(crate) fn mirror_sort(columns: &mut [Column], col_ix: usize, sort: ColumnSort) {
+    for (ix, column) in columns.iter_mut().enumerate() {
+        if !sortable(column.key.as_ref()) {
+            continue;
+        }
+        column.sort = Some(if ix == col_ix {
+            sort
+        } else {
+            ColumnSort::Default
+        });
+    }
+}
+
+/// Whether a column's header offers a sort at all. Wider than [`sort_key`]:
+/// Similar sorts without a projection key behind it, on the delegate's own
+/// score map, and the table widget ignores a header click on a column that
+/// carries no sort state, so this is what decides whether the column gets
+/// one built.
+pub(crate) fn sortable(key: &str) -> bool {
+    key == "similar" || sort_key(key).is_some()
+}
+
+/// Map a column key to the projection's sort key. Three columns have none:
+/// the cover and favourite ones show rather than sort, and Similar sorts on
+/// scores the delegate holds rather than a projection field.
 pub(crate) fn sort_key(key: &str) -> Option<SortKey> {
     if key == "favourite" || key == "cover" || key == "similar" {
         return None;
@@ -570,9 +600,91 @@ pub(crate) fn sort_key(key: &str) -> Option<SortKey> {
 #[cfg(test)]
 mod tests {
     use super::{
-        fold_head_lines, settings_ui, HeadPiece, LibraryConfig, HEAD_HEIGHT_MAX, HEAD_LINE_SLOTS,
-        ROW_HEIGHT_MIN,
+        fold_head_lines, mirror_sort, settings_ui, track_columns, ColumnSort, ColumnSpec,
+        HeadPiece, LibraryConfig, SharedString, HEAD_HEIGHT_MAX, HEAD_LINE_SLOTS, ROW_HEIGHT_MIN,
     };
+
+    /// Sorting leaves the show-only columns alone. The table reads the
+    /// delegate's columns back into its own column groups on a refresh, so
+    /// a state written onto cover or favourite here comes back as a header
+    /// that cycles, sorts by nothing, and saves the dead key into the
+    /// layout. Similar has to keep cycling through the same pass, which is
+    /// why the gate is [`sortable`] and not [`sort_key`].
+    #[test]
+    fn a_sort_leaves_the_show_only_columns_alone() {
+        let layout: Vec<ColumnSpec> = ["title", "cover", "favourite", "similar"]
+            .iter()
+            .map(|key| ColumnSpec {
+                key: key.to_string(),
+                width: 64.,
+            })
+            .collect();
+        let mut columns = track_columns(&layout, &None);
+        let ix = |columns: &[super::Column], key: &str| {
+            columns
+                .iter()
+                .position(|c| c.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("{key} should be built"))
+        };
+        let of = |columns: &[super::Column], key: &str| {
+            columns
+                .iter()
+                .find(|c| c.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("{key} should be built"))
+                .sort
+        };
+
+        let similar = ix(&columns, "similar");
+        mirror_sort(&mut columns, similar, ColumnSort::Descending);
+        assert!(of(&columns, "similar") == Some(ColumnSort::Descending));
+        assert!(of(&columns, "title") == Some(ColumnSort::Default));
+        assert!(
+            of(&columns, "cover").is_none(),
+            "the cover column shows, it sorts on nothing"
+        );
+        assert!(of(&columns, "favourite").is_none(), "and the heart toggles");
+
+        // The next click moves the cycle to another column, and the two
+        // stateless ones stay that way.
+        let title = ix(&columns, "title");
+        mirror_sort(&mut columns, title, ColumnSort::Ascending);
+        assert!(of(&columns, "title") == Some(ColumnSort::Ascending));
+        assert!(of(&columns, "similar") == Some(ColumnSort::Default));
+        assert!(of(&columns, "cover").is_none());
+        assert!(of(&columns, "favourite").is_none());
+    }
+
+    /// A restored layout has to build the Similar column sortable. Its
+    /// ordering runs off the delegate's score map rather than a projection
+    /// key, so the projection's answer can't be what decides: a column with
+    /// no sort state on it is one the table widget ignores header clicks
+    /// for, and the arrow never draws.
+    #[test]
+    fn a_restored_similar_column_sorts() {
+        let layout: Vec<ColumnSpec> = ["title", "cover", "favourite", "similar"]
+            .iter()
+            .map(|key| ColumnSpec {
+                key: key.to_string(),
+                width: 64.,
+            })
+            .collect();
+        let sort = Some((SharedString::from("similar"), true));
+        let columns = track_columns(&layout, &sort);
+        let of = |key: &str| {
+            columns
+                .iter()
+                .find(|c| c.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("{key} should be built"))
+                .sort
+        };
+        assert!(of("similar") == Some(ColumnSort::Descending));
+        assert!(of("title") == Some(ColumnSort::Default));
+        assert!(
+            of("cover").is_none(),
+            "the cover column shows, it sorts on nothing"
+        );
+        assert!(of("favourite").is_none(), "and the heart toggles");
+    }
 
     /// A layout saved before composition folds its year and details
     /// toggles into the stock lines, so old headers look unchanged.

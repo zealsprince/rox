@@ -42,8 +42,13 @@ const QUEUE_WAIT_STEP: Duration = Duration::from_millis(25);
 
 /// How long a track has to play before a skip counts as a fresh start rather
 /// than part of a run. Long enough that skipping an outro you enjoyed doesn't
-/// read as rejection, short enough that settling on something narrows the
-/// radio back down while you're still listening to it.
+/// read as rejection, short enough that a track you actually sat through
+/// hands the next press a fresh count instead of the pressure the last run
+/// built up.
+///
+/// Settling reorders nothing by itself. The band a run widened to is already
+/// in the queue and stays there, so the narrowing only shows in what the next
+/// skip draws from; there is no pass that walks it back while you listen.
 const SKIP_SETTLE: Duration = Duration::from_secs(30);
 
 /// The band a skip draws the next track from, as a count of the nearest
@@ -88,6 +93,20 @@ pub(crate) fn shuffle_head<T>(slice: &mut [T], width: usize) {
 /// already exists.
 fn queue_running_dry(upcoming: usize, loop_mode: LoopMode) -> bool {
     loop_mode == LoopMode::Off && upcoming <= continuation::FLOOR
+}
+
+/// Whether a session in this state is one continuation should be feeding
+/// (ADR 17). A paused queue refuses to grow, which is what keeps the launch
+/// restore from growing a queue nobody has pressed play on yet; a queue that
+/// played through to its end still reads as playing, which is how an ended
+/// session gets woken by the batch that lands behind it.
+///
+/// An armed stop-after is the one thing that pauses on its own, and it means
+/// stop, so the queue stays as it is until the listener says otherwise. It
+/// stays armed after the stop lands, so this keeps refusing until they clear
+/// it, which is the same stickiness the transport button has.
+fn continuation_wanted(playing: bool, stop_after: bool) -> bool {
+    playing && !stop_after
 }
 
 /// The band `skips` consecutive skips earns.
@@ -642,6 +661,23 @@ impl Player {
         snap.entries.iter().position(|e| e.idx == now.audible_idx)
     }
 
+    /// The queue entry index of the newest track the engine has taken on,
+    /// which is where a skip landed even while the position clock still reads
+    /// the track it left.
+    ///
+    /// The newest segment is the one the engine pushed when it adopted the
+    /// track, and under a crossfade it sits half a window in the future: the
+    /// clock flips at the fade's midpoint so nothing announces a track before
+    /// it's audible (ADR 19). Reading the segment itself is how a caller
+    /// learns where the queue went without waiting the fade out. None before
+    /// any track has been opened, or while the newest one isn't in the order
+    /// the snapshot was taken from.
+    fn adopted_index(&self, snap: &QueueSnapshot) -> Option<usize> {
+        let session = self.session.as_ref()?;
+        let adopted = session.shared.segments.lock().unwrap().last()?.track;
+        snap.entries.iter().position(|e| e.idx == adopted)
+    }
+
     /// The entry Play Next queues right after: the playing one. Falls back to
     /// the published cursor before audio starts.
     fn playing_after(&self) -> Option<u64> {
@@ -981,14 +1017,8 @@ impl Player {
         if mode == continuation::Mode::Off || self.continuing {
             return;
         }
-        // Only for music that's actually running out. A paused session isn't
-        // running out of anything, and this is what keeps the launch restore
-        // from growing a queue nobody has pressed play on yet. A queue that
-        // played through to its end still reads as playing, which is how an
-        // ended session gets woken by the batch that lands behind it; an
-        // armed stop-after is the one thing that pauses on its own, and it
-        // means stop, so it's right that this goes quiet for it too.
-        if !self.is_playing() {
+        // Only for music that's actually running out.
+        if !continuation_wanted(self.is_playing(), self.stop_after) {
             return;
         }
         let Some(session) = self.session.as_ref() else {
@@ -999,15 +1029,10 @@ impl Player {
             return;
         }
         // The audible cursor, not the decode cursor: that one has run a track
-        // ahead for the gapless boundary and would fire a track early. The
-        // published cursor stands in before any frame has played, so a
-        // session that comes up already short (a one-track queue, the random
-        // button, Start Radio) fires on its first tick, which is the point.
+        // ahead for the gapless boundary, and a batch seeded off a track
+        // nobody has heard yet is a batch for the wrong taste.
         let audible = session.shared.position(session.device_rate).map(|(t, _)| t);
-        let Some((_, upcoming)) = session.shared.upcoming_from(audible) else {
-            return;
-        };
-        if !queue_running_dry(upcoming, self.settings.session.loop_mode()) {
+        if !self.running_dry() {
             return;
         }
         let seed = continuation::Seed {
@@ -1015,12 +1040,18 @@ impl Player {
             scope: self.scope.clone(),
             recent: self.pool_ids.iter().flatten().copied().collect(),
             count: continuation::BATCH,
+            // The pick the Similar ordering ranks against, taken on this tick
+            // for the same reason the flag below is: a refill scoring one
+            // model while the queue is sorted by another is two answers to
+            // one question, and on a library described under a single model
+            // the wrong name scores nothing at all.
+            model: crate::settings::acoustic_source().id().to_string(),
         };
         // A queue ordered by sound is refilled by sound: the radio draw
         // belongs to the shuffle order rather than to a continuation mode of
         // its own. Read here rather than inside the provider, because this is
         // the same tick that decides the mode is still current.
-        let similar = self.settings.session.shuffle && self.shuffle_mode() == ShuffleMode::Similar;
+        let similar = self.similar_order();
         self.continuing = true;
         self.continued_rev = Some(rev);
         let db_path = crate::settings::data_dir().join("library.db");
@@ -1040,7 +1071,7 @@ impl Player {
                 .unwrap_or_default();
             this.update(cx, |this, cx| {
                 this.continuing = false;
-                this.land_continuation(mode, picks, cx);
+                this.land_continuation(mode, similar, picks, cx);
             })
             .ok();
         })
@@ -1057,6 +1088,7 @@ impl Player {
     fn land_continuation(
         &mut self,
         mode: continuation::Mode,
+        similar: bool,
         picks: Vec<Pick>,
         cx: &mut Context<Self>,
     ) {
@@ -1064,11 +1096,22 @@ impl Player {
         // question nobody is asking any more. A cleared revision says the
         // same thing about the session: a fresh context or a stream rebuild
         // resets it, and a batch picked for the queue that was playing then
-        // has no business landing in this one.
+        // has no business landing in this one. `similar` goes the same way,
+        // since a batch the radio drew is the wrong twenty tracks for a queue
+        // that has since gone back to browse order.
         if mode != self.settings.session.continuation
+            || similar != self.similar_order()
             || self.continued_rev.is_none()
             || self.session.is_none()
         {
+            return;
+        }
+        // The query took long enough to pause in, or to queue an album in, so
+        // the trigger's own conditions are asked again here rather than
+        // assumed to have held. Twenty context tracks landing behind a queue
+        // the listener just filled is the same wrong answer as one landing on
+        // a queue they just paused.
+        if !continuation_wanted(self.is_playing(), self.stop_after) || !self.running_dry() {
             return;
         }
         if picks.is_empty() {
@@ -1109,9 +1152,40 @@ impl Player {
         // just asking it again now the batch has arrived. Nothing to pin
         // here: an explicit queue under this mode was always going to be
         // reordered by it.
-        if self.settings.session.shuffle && self.shuffle_mode() == ShuffleMode::Similar {
+        if self.similar_order() {
             self.order_tail_by_similarity(1, None, cx);
         }
+    }
+
+    /// Whether the queue has run close enough to its end to want a batch
+    /// (ADR 17).
+    ///
+    /// Counted from the audible cursor, not the decode cursor, which has run
+    /// a track ahead for the gapless boundary and would fire a track early.
+    /// The published cursor stands in before any frame has played, so a
+    /// session that comes up already short (a one-track queue, the random
+    /// button, Start Radio) fires on its first tick, which is the point.
+    ///
+    /// Asked twice for every batch, once to fire the query and again when the
+    /// answer lands: a query is a hundred milliseconds, which is plenty of
+    /// room to queue an album into, and a batch that lands behind one is
+    /// twenty tracks nobody asked for.
+    fn running_dry(&self) -> bool {
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        let audible = session.shared.position(session.device_rate).map(|(t, _)| t);
+        let Some((_, upcoming)) = session.shared.upcoming_from(audible) else {
+            return false;
+        };
+        queue_running_dry(upcoming, self.settings.session.loop_mode())
+    }
+
+    /// Whether the queue is currently being ordered by what sounds alike:
+    /// shuffle on, in the Similar mode, with a library that has the vectors
+    /// to do it. What the radio draw rides on rather than a mode of its own.
+    fn similar_order(&self) -> bool {
+        self.settings.session.shuffle && self.shuffle_mode() == ShuffleMode::Similar
     }
 
     /// Resolve a batch to playable paths, each with the group its pick asked
@@ -2057,14 +2131,24 @@ impl Player {
     fn similarity_inputs(&self, leaving: Option<u64>) -> Option<(PathBuf, Vec<(u64, PathBuf)>)> {
         let session = self.session.as_ref()?;
         let snap = session.shared.queue_snapshot();
+        // A skip seeds on where it lands, so it reads the track the engine
+        // has taken on rather than the one still coming out of the speakers.
+        // Under a crossfade those are different for half a window: the clock
+        // flips at the midpoint (ADR 19), so on the default four seconds the
+        // audible track is the one being left for two whole seconds after the
+        // press, and steering that waited for the flip would give up first.
+        //
         // The published cursor when nothing is audible yet, which is where a
         // freshly started context sits: waiting for the first samples would
         // mean the ordering never ran for the case that needs it most.
-        let at = self.audible_index(&snap).unwrap_or(snap.cursor);
+        let at = leaving
+            .and_then(|_| self.adopted_index(&snap))
+            .or_else(|| self.audible_index(&snap))
+            .unwrap_or(snap.cursor);
         let entry = snap.entries.get(at)?;
-        // A skip asks for the ordering around where it lands, and the engine
-        // advances on its own thread. While the seed is still the track
-        // being left, the answer isn't ready to be computed.
+        // The engine takes the skip on from its own thread, so for the tries
+        // before it gets there the seed is still the track being left and the
+        // answer isn't ready to be computed.
         if leaving == Some(entry.id) {
             return None;
         }
@@ -2391,6 +2475,20 @@ mod tests {
         // Standing on the last entry, which is also where a queue that
         // played out to its end sits.
         assert!(queue_running_dry(0, LoopMode::Off));
+    }
+
+    /// The other half of the trigger's gate: a paused queue refuses to grow,
+    /// an ended one still wants a batch because it reads as playing, and an
+    /// armed stop-after means stop however the session reads.
+    #[test]
+    fn a_pause_or_an_armed_stop_keeps_the_queue_from_growing() {
+        assert!(continuation_wanted(true, false));
+        assert!(!continuation_wanted(false, false), "a paused queue");
+        assert!(
+            !continuation_wanted(true, true),
+            "stop-after is armed, so the queue stays as it is"
+        );
+        assert!(!continuation_wanted(false, true));
     }
 
     /// Loop is the user saying remain here, so the trigger never fires while

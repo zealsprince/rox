@@ -34,7 +34,7 @@
 //! every track here is independent and there are thirty seconds of decoding
 //! in each.
 //!
-//! Gated behind the Development page's acoustic switch while the feature
+//! Gated behind the Library page's acoustic switch while the feature
 //! vector is still being tuned.
 
 // The mel module's config vocabulary is deliberately complete rather than
@@ -230,12 +230,16 @@ impl Extractor {
         Ok(Extractor::Panns(Box::new(net)))
     }
 
-    /// One track's vector.
+    /// One track's vector, or why this file didn't produce one.
     fn describe(&self, path: &Path, duration_ms: u32) -> Result<Vec<f32>, String> {
-        match self {
+        let vector = match self {
             Extractor::Dsp => extract(path, duration_ms),
             Extractor::Panns(net) => net.extract(path, duration_ms),
+        }?;
+        if !usable(&vector) {
+            return Err("the description came out with a NaN or an infinity in it".into());
         }
+        Ok(vector)
     }
 
     /// How many tracks this extractor wants analyzed at once.
@@ -615,6 +619,21 @@ fn features(mono: &[f32]) -> Option<Vec<f32>> {
     Some(out)
 }
 
+/// Whether a vector is worth storing at all.
+///
+/// One NaN is not one bad number, it's the whole library's similarity: the
+/// query standardizes every dimension against the corpus, a NaN makes that
+/// dimension's mean NaN, and every vector measured against it comes back
+/// NaN too, so every score ties and the nearest tracks become whichever
+/// ones have the lowest ids. A float-format file carrying NaN samples is
+/// all it takes: the band logs and the energy spread here propagate it
+/// straight through, and so does the network. The storage layer skips a row
+/// like this on read as well, but the pass is where there's still a filename
+/// to name in the log.
+fn usable(vector: &[f32]) -> bool {
+    vector.iter().all(|v| v.is_finite())
+}
+
 /// Mean and population standard deviation, or zeros for nothing.
 fn mean_std(values: &[f32]) -> (f32, f32) {
     if values.is_empty() {
@@ -711,6 +730,23 @@ mod tests {
         let second = features(&audio).unwrap();
         assert_eq!(first.len(), DIM);
         assert_eq!(first, second);
+    }
+
+    /// A file whose samples are NaN, which a float-format WAV is free to
+    /// hold, describes as NaN. The pass has to catch that before it writes:
+    /// one such row standardizes the whole corpus into NaN and every
+    /// similarity answer in the library with it.
+    #[test]
+    fn a_description_carrying_a_nan_is_not_usable() {
+        assert!(usable(&features(&tone(440.0, 2.0)).unwrap()));
+        let mut audio = tone(440.0, 2.0);
+        audio[RATE as usize] = f32::NAN;
+        let poisoned = features(&audio).expect("it still frames and describes");
+        assert!(
+            !usable(&poisoned),
+            "a NaN sample went through the statistics unnoticed"
+        );
+        assert!(!usable(&[1.0, f32::INFINITY]));
     }
 
     /// A window too short to hold a few hops describes nothing, and says so

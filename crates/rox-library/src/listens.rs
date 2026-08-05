@@ -236,14 +236,15 @@ pub fn most_played(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<Trac
 }
 
 /// Library tracks no event has ever named, in the canonical browse
-/// order.
+/// order. Local rows only, the bound [`crate::store::all_ids`] reads the
+/// browse order under.
 pub fn never_played(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<TrackPlays>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, 0, 0, title, artist, album,
                 album_artist, year, genre, duration_ms, codec, bitrate,
                 sample_rate, bit_depth, rating, path
          FROM tracks
-         WHERE id NOT IN (SELECT track_id FROM listens)
+         WHERE source = 'local' AND id NOT IN (SELECT track_id FROM listens)
          ORDER BY album_artist, album, disc_no, track_no LIMIT ?1",
     )?;
     let rows = stmt.query_map([limit as i64], track_plays_row)?;
@@ -447,9 +448,10 @@ pub fn histogram(
 }
 
 /// Resolve one rollup name back to its library tracks in the canonical
-/// browse order, so a stats row can queue what it counts. Live catalog
-/// only: a deleted track's snapshot keeps its rows in the rollup, but
-/// there is no file left to play.
+/// browse order, so a stats row can queue what it counts. Live local
+/// catalog only: a deleted track's snapshot keeps its rows in the rollup
+/// but has no file left to play, and another source's row has nothing to
+/// open either.
 pub fn ids_for_name(
     conn: &Connection,
     by: Rollup,
@@ -468,7 +470,7 @@ pub fn ids_for_name(
     // album lookups keep the indexed query.
     if fold || matches!(by, Rollup::Genre) {
         let mut stmt = conn.prepare_cached(&format!(
-            "SELECT id, {column} FROM tracks
+            "SELECT id, {column} FROM tracks WHERE source = 'local'
              ORDER BY album_artist, album, disc_no, track_no"
         ))?;
         let rows = stmt.query_map([], |row| {
@@ -491,7 +493,7 @@ pub fn ids_for_name(
         return Ok(out);
     }
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT id FROM tracks WHERE {column} = ?1
+        "SELECT id FROM tracks WHERE source = 'local' AND {column} = ?1
          ORDER BY album_artist, album, disc_no, track_no LIMIT ?2"
     ))?;
     let rows = stmt.query_map(rusqlite::params![name, limit as i64], |row| row.get(0))?;
@@ -731,6 +733,63 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    /// The browse order this reads down is the local library's, so a row
+    /// from another source is not a track waiting to be heard. Nothing
+    /// writes one yet; the schema says streaming sources will add rows
+    /// rather than a table, and the first of them would otherwise turn up
+    /// in a list of files to go and play.
+    #[test]
+    fn another_sources_row_is_not_waiting_to_be_heard() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
+        conn.execute(
+            "INSERT INTO tracks (source, path, title, artist, album, genre, year, track_no,
+                duration_ms, size, mtime)
+             VALUES ('stream', 'rox://1', 'Streamed', 'B', 'Second', 'jazz', 0, 1, 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            never_played(&conn, 10)
+                .unwrap()
+                .iter()
+                .map(|t| t.title.clone())
+                .collect::<Vec<_>>(),
+            ["One"]
+        );
+    }
+
+    /// A rollup name resolves to tracks so a stats row can queue what it
+    /// counts, which means it can only offer rows with a file behind them.
+    /// Both lookups need the bound: the indexed one an exact artist takes,
+    /// and the row walk a genre or a folded name falls back to.
+    #[test]
+    fn another_sources_row_is_not_queueable() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(&mut conn, &[track("/m/1.mp3", "One", "A", "First", "rock")]).unwrap();
+        conn.execute(
+            "INSERT INTO tracks (source, path, title, artist, album_artist, album, genre, year,
+                track_no, duration_ms, size, mtime)
+             VALUES ('stream', 'rox://1', 'Streamed', 'A', 'A', 'First', 'rock', 0, 2, 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        let local = ids_for_name(&conn, Rollup::Artist, "A", 10, false).unwrap();
+        assert_eq!(local.len(), 1, "the indexed lookup skips another source");
+        assert_eq!(
+            ids_for_name(&conn, Rollup::Artist, "a", 10, true).unwrap(),
+            local,
+            "so does the walk a folded name takes"
+        );
+        assert_eq!(
+            ids_for_name(&conn, Rollup::Genre, "rock", 10, false).unwrap(),
+            local,
+            "and the one a genre takes"
         );
     }
 

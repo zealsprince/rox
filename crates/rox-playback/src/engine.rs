@@ -661,19 +661,14 @@ impl Engine {
                     // Queue exhausted, or an armed stop-after cut the
                     // gapless open: either way the ring drains first so the
                     // last samples play out.
-                    let cap = self.producer.buffer().capacity();
-                    if self.producer.slots() == cap {
+                    if self.ring_drained() {
                         if self.stop_pending {
                             // The stop landed: pause, then cue what EOF
                             // would have opened so Play resumes right
-                            // there. A stop disarmed during the drain just
-                            // rolls on. With nothing to cue (last track,
-                            // loop off) fall through to the ended state.
-                            self.stop_pending = false;
-                            if let Some(p) = self.next_pos() {
-                                if self.stop_after {
-                                    self.shared.playing.store(false, Ordering::Relaxed);
-                                }
+                            // there. With nothing to cue (last track, loop
+                            // off) fall through to the ended state, the
+                            // pause having landed all the same.
+                            if let Some(p) = self.land_stop() {
                                 source = self.open_at(p);
                                 if source.is_some() {
                                     continue;
@@ -776,6 +771,31 @@ impl Engine {
         } else {
             None
         }
+    }
+
+    /// Land an armed stop-after once the ring has drained: the session goes
+    /// quiet, and what EOF would have opened comes back so the caller can cue
+    /// it for the next Play. None when there is nothing to cue.
+    ///
+    /// The pause is stored whether or not there is a next position, or the
+    /// last track of a queue with looping off would end with the session
+    /// still reading as playing. Anything that wakes it later, a queue edit
+    /// or a continuation batch landing behind it, would then start audio
+    /// against a stop the listener asked for. A stop disarmed during the
+    /// drain rolls on instead, which is the whole point of asking here rather
+    /// than when the flag was set.
+    fn land_stop(&mut self) -> Option<usize> {
+        self.stop_pending = false;
+        if self.stop_after {
+            self.shared.playing.store(false, Ordering::Relaxed);
+        }
+        self.next_pos()
+    }
+
+    /// Whether everything pushed has been heard: the ring is empty, so
+    /// nothing is playing over whatever happens next.
+    fn ring_drained(&self) -> bool {
+        self.producer.slots() == self.producer.buffer().capacity()
     }
 
     /// Whether the boundary from order position `from` to `to` takes a
@@ -897,10 +917,26 @@ impl Engine {
     /// The open happens first so its probe and decoder build are paid for
     /// while the ring is still playing, and the flush has nothing left to
     /// hold the silence open for.
+    ///
+    /// One case takes no cut at all, see below: an ending still coming out of
+    /// the ring is left to finish.
     fn skip_to(&mut self, old: Option<Source>, p: usize, back: bool) -> Option<Source> {
         let opened = self.open_file_at(p);
+        // Nothing decoding, nothing mixing, and the ring still holding
+        // samples: this is the half second between the last track's EOF and
+        // the ended state. There's no music to hurry along, only an ending to
+        // let play out, and a batch landing here (ADR 17) or a queue edit
+        // would otherwise chop it with no fade. The new track goes in behind
+        // what's left the way it would at any gapless boundary, and
+        // `pushed_playable` already points past the tail, so the segment
+        // lands where the new track really becomes audible.
+        let draining = old.is_none() && self.fade.is_none() && !self.ring_drained();
         let leaving = self.prepare_skip_fade(old);
-        let cut = self.flush_ring();
+        let cut = if draining {
+            self.pushed_playable
+        } else {
+            self.flush_ring()
+        };
         self.shared.ended.store(false, Ordering::Relaxed);
         // Nothing opened means nothing drives the mix, so there's no fade to
         // install either. Publishing one here would leave the transport
@@ -2511,6 +2547,95 @@ mod tests {
         set_groups(&mut e, &[None, None]);
         e.fade_secs = crossfade_secs(f32::NAN);
         assert!(!e.window_open(Some(100), Some(0)));
+    }
+
+    /// The stop lands on the last track of a queue with looping off, so
+    /// there's nothing to cue. The pause still has to go in: a session left
+    /// reading as playing gets started again by the next thing that wakes it,
+    /// a queue edit or a continuation batch, against a stop the listener
+    /// asked for.
+    #[test]
+    fn a_stop_with_nothing_to_cue_still_pauses() {
+        let mut e = test_engine(2);
+        e.pos = 1;
+        e.stop_after = true;
+        e.stop_pending = true;
+        assert_eq!(e.land_stop(), None, "played out, nothing to cue");
+        assert!(!e.shared.playing.load(Ordering::Relaxed), "the stop landed");
+        assert!(!e.stop_pending, "and it only lands once");
+    }
+
+    /// The ordinary landing, mid-queue: paused, with the track EOF would have
+    /// opened handed back for Play to resume into.
+    #[test]
+    fn a_stop_mid_queue_pauses_and_names_what_play_resumes() {
+        let mut e = test_engine(3);
+        e.pos = 1;
+        e.stop_after = true;
+        e.stop_pending = true;
+        assert_eq!(e.land_stop(), Some(2));
+        assert!(!e.shared.playing.load(Ordering::Relaxed));
+    }
+
+    /// Disarmed while the ring drained: the session rolls on rather than
+    /// pausing, which is why the flag is read here and not where it was set.
+    #[test]
+    fn a_stop_disarmed_during_the_drain_rolls_on() {
+        let mut e = test_engine(3);
+        e.pos = 1;
+        e.stop_after = false;
+        e.stop_pending = true;
+        assert_eq!(e.land_stop(), Some(2));
+        assert!(e.shared.playing.load(Ordering::Relaxed), "no pause landed");
+    }
+
+    /// A batch landing (ADR 17) between the last track's EOF and the ended
+    /// state finds no source open, and the nav route it takes must not cut
+    /// the ring: the ending is still coming out of it, and there's nothing
+    /// playing over it that a cut would hurry along.
+    #[test]
+    fn a_skip_into_a_draining_ring_lets_the_ending_finish() {
+        let fx = Fixtures::new("skip-draining");
+        let mut e = engine_over(vec![fx.wav("a.wav", 1.0), fx.wav("b.wav", 1.0)]);
+        // Four frames of the last track still queued and unheard, with no
+        // source decoding: what the run loop sits in while the ring drains.
+        for _ in 0..8 {
+            e.producer.push(0.25).expect("room in the test ring");
+        }
+        e.pushed_playable = 1_000;
+        e.shared.playing.store(true, Ordering::Relaxed);
+        e.shared.frames_consumed.store(996, Ordering::Relaxed);
+        e.shared.flush_ack.store(u64::MAX, Ordering::Release);
+        let seq = e.shared.flush_seq.load(Ordering::Acquire);
+
+        let after = e.skip_to(None, 1, false);
+        assert!(after.is_some(), "the second fixture opens");
+        assert_eq!(
+            e.shared.flush_seq.load(Ordering::Acquire),
+            seq,
+            "no cut, so the backend keeps what it's holding"
+        );
+        assert_eq!(e.pushed_playable, 1_000, "the tail still counts as pushed");
+        // The new track's segment sits where its first sample will actually
+        // be heard, behind the tail rather than on top of it.
+        let segments = e.shared.segments.lock().unwrap();
+        assert_eq!(segments.last().map(|s| s.at_frame), Some(1_000));
+    }
+
+    /// The ring already empty is the ordinary ended state, and a skip out of
+    /// it cuts as it always did: there's nothing left to protect, and the
+    /// flush is what resyncs the clock onto the new track.
+    #[test]
+    fn a_skip_out_of_a_drained_ring_still_cuts() {
+        let fx = Fixtures::new("skip-drained");
+        let mut e = engine_over(vec![fx.wav("a.wav", 1.0), fx.wav("b.wav", 1.0)]);
+        e.pushed_playable = 1_000;
+        e.shared.frames_consumed.store(1_000, Ordering::Relaxed);
+        e.shared.flush_ack.store(u64::MAX, Ordering::Release);
+        let seq = e.shared.flush_seq.load(Ordering::Acquire);
+
+        assert!(e.skip_to(None, 1, false).is_some());
+        assert!(e.shared.flush_seq.load(Ordering::Acquire) > seq, "cut");
     }
 
     #[test]

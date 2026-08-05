@@ -305,9 +305,12 @@ struct TrackTable {
     /// vector is tens of milliseconds on a large library. Empty until the
     /// column is shown, and while nothing is playing.
     similar: Arc<HashMap<i64, f32>>,
-    /// Which track `similar` was scored against, so a rescore only runs when
-    /// the playing track actually moved.
-    similar_anchor: Option<i64>,
+    /// What `similar` holds the scores for: the track they were measured
+    /// against and the acoustic model they were measured under, so a rescore
+    /// runs when either moves and not otherwise. None while the map is empty,
+    /// including after a scoring pass that found no vectors to rank, so the
+    /// next look gets another go once something has described the library.
+    similar_anchor: Option<(i64, String)>,
     /// Resolved file paths for the cover column, cached per track id on the
     /// cell's first paint so the thumbnail lookup does not re-query the
     /// catalog every frame. Paths are stable per id; cleared on reload.
@@ -973,13 +976,7 @@ impl TableDelegate for TrackTable {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        for (ix, column) in self.columns.iter_mut().enumerate() {
-            column.sort = Some(if ix == col_ix {
-                sort
-            } else {
-                ColumnSort::Default
-            });
-        }
+        columns::mirror_sort(&mut self.columns, col_ix, sort);
         self.sort = match sort {
             ColumnSort::Ascending => Some((self.columns[col_ix].key.clone(), false)),
             ColumnSort::Descending => Some((self.columns[col_ix].key.clone(), true)),
@@ -1474,6 +1471,13 @@ pub struct LibraryPanel {
     /// mid-table-update). Order and width live on the delegate; only the
     /// shown set matters here.
     columns_shown: HashSet<String>,
+    /// The acoustic model and whether it has described anything, as of the
+    /// last look. Both are process statics rather than entities, so there's
+    /// nothing to subscribe to; both repaint every window when they move,
+    /// which is what brings [`LibraryPanel::watch_similarity`] round to
+    /// notice. Compared rather than acted on, so an idle frame costs two
+    /// reads and no work.
+    similar_watch: (String, bool),
     /// The header tiles' corner radius; the delegate mirrors it for the
     /// tile render, the config dump carries it.
     art_rounding: f32,
@@ -1577,8 +1581,13 @@ impl LibraryPanel {
         let art_margin = fold_margin(config.art_margin, ART_MARGIN_MAX);
         let header_gap_above = fold_margin(config.header_gap_above, HEAD_GAP_MAX);
         let header_gap_below = fold_margin(config.header_gap_below, HEAD_GAP_MAX);
+        // A layout written before the header gates could name a column that
+        // sorts on nothing. Dropping it here lands on the canonical order
+        // the panel would have drawn anyway, and the next save writes the
+        // truth instead of carrying the dead key forward.
         let sort = config
             .sort_key
+            .filter(|key| columns::sortable(key))
             .map(|key| (SharedString::from(key), config.sort_desc));
         let delegate = TrackTable {
             state: state.clone(),
@@ -1689,6 +1698,10 @@ impl LibraryPanel {
             headers: config.headers,
             group_by: config.group_by,
             columns_shown: HashSet::new(),
+            similar_watch: (
+                crate::settings::acoustic_source().id().to_string(),
+                crate::settings::similarity_ready(),
+            ),
             art_rounding: config.art_rounding,
             art_scrub: ScrubState::default(),
             art_side: config.art_side,
@@ -1750,6 +1763,23 @@ impl LibraryPanel {
         self.refresh_similarity(cx);
     }
 
+    /// Catch the two things that stale the Similar scores without the
+    /// playing track moving: a switched extractor, which keys a different
+    /// set of vectors, and an analysis pass landing where there was nothing
+    /// to rank before. Neither is an entity, so neither can be subscribed
+    /// to; both repaint every window when they change, so the render path
+    /// compares them instead. Edge-triggered on purpose: the scan behind
+    /// this belongs on a track change, never on a frame.
+    fn watch_similarity(&mut self, cx: &mut Context<Self>) {
+        let model = crate::settings::acoustic_source();
+        let ready = crate::settings::similarity_ready();
+        if self.similar_watch.0 == model.id() && self.similar_watch.1 == ready {
+            return;
+        }
+        self.similar_watch = (model.id().to_string(), ready);
+        self.refresh_similarity(cx);
+    }
+
     /// Rescore the library against the playing track for the Similar column.
     ///
     /// Off the UI thread on its own connection, the ReplayGain pass's move:
@@ -1761,16 +1791,30 @@ impl LibraryPanel {
         if !self.shown_columns(cx).contains("similar") {
             return;
         }
+        // Whichever model the Library page has selected, so the column shows
+        // distances under the same model the analysis pass filled. It's half
+        // the key the scores are held under: switching extractors leaves the
+        // old model's numbers on screen otherwise.
+        let model = crate::settings::acoustic_source().id().to_string();
         let delegate = self.table.read(cx).delegate();
         let anchor = delegate.playing_id;
-        if anchor == delegate.similar_anchor {
+        if delegate
+            .similar_anchor
+            .as_ref()
+            .is_some_and(|(id, under)| Some(*id) == anchor && *under == model)
+        {
             return;
         }
         let Some(anchor) = anchor else {
             // Nothing playing: drop the scores rather than leaving the
-            // column showing distances to a track that stopped.
+            // column showing distances to a track that stopped. Already
+            // empty is the common case here, and repainting for it would
+            // be a frame spent on nothing.
             self.table.update(cx, |table, cx| {
                 let delegate = table.delegate_mut();
+                if delegate.similar.is_empty() {
+                    return;
+                }
                 delegate.similar = Arc::new(HashMap::new());
                 delegate.similar_anchor = None;
                 cx.notify();
@@ -1778,23 +1822,25 @@ impl LibraryPanel {
             return;
         };
         let db_path = self.state.library.read(cx).db_path();
-        // Whichever model the Library page has selected, so the column shows
-        // distances under the same model the analysis pass filled.
-        let model = crate::settings::acoustic_source().id().to_string();
+        let scoring = model.clone();
         cx.spawn(async move |this, cx| {
             let scored = cx
                 .background_executor()
                 .spawn(async move {
                     let conn = rox_library::store::open(&db_path).ok()?;
-                    rox_library::embeddings::scores(&conn, anchor, &model).ok()
+                    rox_library::embeddings::scores(&conn, anchor, &scoring).ok()
                 })
                 .await;
             let Some(scored) = scored else { return };
             this.update(cx, |this, cx| {
                 this.table.update(cx, |table, cx| {
                     let delegate = table.delegate_mut();
+                    // An empty result is a corpus this model hasn't described
+                    // yet rather than an answer: leave the stamp off so a
+                    // later pass gets scored instead of this standing as the
+                    // last word on the track.
+                    delegate.similar_anchor = (!scored.is_empty()).then_some((anchor, model));
                     delegate.similar = Arc::new(scored.into_iter().collect());
-                    delegate.similar_anchor = Some(anchor);
                     cx.notify();
                 });
                 // A view ordered by similarity is now ordered by the old
@@ -2375,9 +2421,15 @@ impl LibraryPanel {
                     }
                 }
             } else {
-                let column = Column::new(def.key, def.label)
-                    .width(px(def.default_width))
-                    .sort(ColumnSort::Default);
+                let column = Column::new(def.key, def.label).width(px(def.default_width));
+                // Same gate the restored layout builds under, or a column
+                // would sort while it was added by hand this session and stop
+                // sorting on the next launch.
+                let column = if columns::sortable(def.key) {
+                    column.sort(ColumnSort::Default)
+                } else {
+                    column
+                };
                 delegate.columns.push(if def.right {
                     column.text_right()
                 } else {
@@ -3655,6 +3707,10 @@ impl LibraryPanel {
             self.resync_box = false;
             self.sync_query_box(window, cx);
         }
+        // An extractor switch and a finished analysis pass both land as a
+        // repaint and nothing else, so this is where the Similar column
+        // hears about them.
+        self.watch_similarity(cx);
         // The follow glide eases toward the playing row, stepped here in
         // render (the cover panel's fade idiom), one frame at a time until
         // it lands.

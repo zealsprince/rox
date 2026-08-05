@@ -73,6 +73,14 @@ pub struct Seed {
     pub recent: Vec<i64>,
     /// How many tracks to return. A provider may return fewer.
     pub count: usize,
+    /// Which model's vectors an acoustic draw scores against, read off the
+    /// live pick when the batch was asked for. In the seed rather than read
+    /// again down here, because the queue this batch joins was ordered
+    /// against that same name: a radio drawing off the built-in sketch under
+    /// a queue sorted by somebody's own weights answers a different question
+    /// every refill, and a library described under one model has nothing at
+    /// all filed under the other one.
+    pub model: String,
 }
 
 impl Seed {
@@ -362,7 +370,7 @@ fn radio_ids(conn: &Connection, seed: &Seed, seen: &HashSet<i64>) -> Vec<i64> {
     let Some(track) = seed.track else {
         return Vec::new();
     };
-    let Ok(mut scored) = embeddings::scores(conn, track, crate::embeddings::MODEL) else {
+    let Ok(mut scored) = embeddings::scores(conn, track, &seed.model) else {
         return Vec::new();
     };
     // Nearest first, ties by id so the ranking is the same between calls;
@@ -381,6 +389,12 @@ fn radio_ids(conn: &Connection, seed: &Seed, seen: &HashSet<i64>) -> Vec<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The name the fixtures file their vectors under, deliberately not
+    /// [`crate::embeddings::MODEL`]. The draw has to follow the model the
+    /// seed names, so a provider that reached for the built-in one on its
+    /// own would be scoring a corpus that isn't there.
+    const MODEL: &str = "test-vectors-1";
 
     /// A library of `n` tracks, one per album so the ids come back in a
     /// predictable order, plus the tables the providers read.
@@ -415,6 +429,7 @@ mod tests {
             scope,
             recent,
             count,
+            model: MODEL.to_string(),
         }
     }
 
@@ -537,7 +552,9 @@ mod tests {
 
     /// With vectors in the table the picks come off the acoustic ranking,
     /// out of the band at the near end of it rather than from anywhere in
-    /// the library.
+    /// the library. And off the model the seed names: the same library sits
+    /// here described twice, so a draw that went to the built-in name of its
+    /// own accord would pick out of a neighbourhood nobody asked for.
     #[test]
     fn radio_picks_out_of_the_band_nearest_the_seed() {
         const N: usize = 40;
@@ -550,6 +567,11 @@ mod tests {
         // until the opposite side of the circle.
         for (step, id) in all.iter().enumerate() {
             let angle = step as f32 / N as f32 * std::f32::consts::TAU;
+            embeddings::upsert(&conn, *id, MODEL, &[angle.cos(), angle.sin()]).unwrap();
+            // The built-in model's pass walks the same circle seven steps at
+            // a time, which is a full lap of the library with every track's
+            // neighbours somewhere else entirely.
+            let angle = (step * 7 % N) as f32 / N as f32 * std::f32::consts::TAU;
             embeddings::upsert(
                 &conn,
                 *id,

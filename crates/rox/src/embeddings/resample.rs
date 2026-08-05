@@ -88,14 +88,15 @@ pub fn convert(input: &[f32], from: u32, to: u32) -> Vec<f32> {
         for i in first..=last {
             let offset = i as f64 - center;
             let tap = 2.0 * cutoff * sinc(2.0 * cutoff * offset) * blackman(offset / half as f64);
-            // Samples off either end read as zero, which is the right
-            // boundary for a clip: it starts and it stops. The running
-            // weight sum below is what keeps that from dimming the first and
-            // last few output samples.
+            // Taps reaching past either end of the clip take no part, in
+            // this sum or in the weight beside it: a clip starts and it
+            // stops. Counting them in the divisor anyway is zero padding
+            // wearing edge compensation's clothes, and it swings the first
+            // and last few output samples by up to 14%.
             if let Some(&sample) = input.get(i.max(0) as usize).filter(|_| i >= 0) {
                 sum += sample as f64 * tap;
+                weight += tap;
             }
-            weight += tap;
         }
         // Normalizing by the taps actually applied rather than by their
         // ideal total: the kernel's own sum drifts a fraction of a percent
@@ -242,6 +243,20 @@ mod tests {
         let out = convert(&sine(32_000, 0.5, 10_000.0), 32_000, 48_000);
         let level = magnitude_at(&out, 48_000, 10_000.0);
         assert!((level - 1.0).abs() < 0.02, "came out at {level}");
+    }
+
+    /// The edges are normalized by the taps that landed on the clip rather
+    /// than by the whole kernel, so a constant comes back constant from the
+    /// very first sample. Dividing by the ideal total instead swings the
+    /// kernel's reach either side, half a millisecond at each end, by up to
+    /// 14%: 0.863 at the first sample, 1.095 at the last.
+    #[test]
+    fn a_constant_holds_its_level_right_up_to_the_edges() {
+        let out = convert(&vec![1.0f32; 4096], 44_100, 32_000);
+        assert_eq!(out.len(), 2972);
+        for (i, &s) in out.iter().enumerate() {
+            assert!((s - 1.0).abs() < 1e-4, "sample {i} came out at {s}");
+        }
     }
 
     /// Silence in, silence out, and no NaN from the normalization when a

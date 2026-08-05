@@ -65,12 +65,15 @@ impl Coverage {
 
 /// Every track with no vector for `model`, in id order. Zero-duration rows
 /// are skipped: the extractor picks its sample windows as fractions of the
-/// running time, and a track that claims none has nothing to aim at.
+/// running time, and a track that claims none has nothing to aim at. Local
+/// rows only, the same bound the rest of the store's work lists draw: the
+/// extractor opens a path with a decoder, and a streaming source's row
+/// carries nothing it could open.
 pub fn missing(conn: &Connection, model: &str) -> rusqlite::Result<Vec<Pending>> {
     let mut stmt = conn.prepare(
         "SELECT t.id, t.path, t.duration_ms FROM tracks t
          LEFT JOIN embeddings e ON e.track_id = t.id AND e.model = ?1
-         WHERE e.track_id IS NULL AND t.duration_ms > 0
+         WHERE e.track_id IS NULL AND t.source = 'local' AND t.duration_ms > 0
          ORDER BY t.id",
     )?;
     let rows = stmt.query_map([model], |r| {
@@ -88,13 +91,13 @@ pub fn missing(conn: &Connection, model: &str) -> rusqlite::Result<Vec<Pending>>
 /// two numbers converge on a finished pass.
 pub fn coverage(conn: &Connection, model: &str) -> rusqlite::Result<Coverage> {
     let total: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM tracks WHERE duration_ms > 0",
+        "SELECT COUNT(*) FROM tracks WHERE source = 'local' AND duration_ms > 0",
         [],
         |r| r.get(0),
     )?;
     let embedded: i64 = conn.query_row(
         "SELECT COUNT(*) FROM embeddings e JOIN tracks t ON t.id = e.track_id
-         WHERE e.model = ?1 AND t.duration_ms > 0",
+         WHERE e.model = ?1 AND t.source = 'local' AND t.duration_ms > 0",
         [model],
         |r| r.get(0),
     )?;
@@ -120,7 +123,21 @@ pub fn any(conn: &Connection, model: &str) -> rusqlite::Result<bool> {
 }
 
 /// Store one track's vector, replacing whatever this model had for it.
+///
+/// A vector carrying a NaN or an infinity is refused rather than written.
+/// One of them is enough to make every score in the library NaN, because
+/// the standardization takes its mean from the corpus and hands the poison
+/// to every vector it touches, and the row would go on doing that to every
+/// query until somebody deleted it by hand. The caller isn't told: the read
+/// side skips such a row anyway, this is the store declining to hold one at
+/// all, and failing a whole batch over a single bad track would throw away
+/// the good work beside it. Whoever produced the vector is the one that can
+/// name the file, so the app-side guard is where a listener hears about it.
 pub fn upsert(conn: &Connection, track_id: i64, model: &str, vec: &[f32]) -> rusqlite::Result<()> {
+    if !vec.iter().all(|v| v.is_finite()) {
+        log::warn!("embeddings: refusing a vector with a NaN or an infinity for track {track_id}");
+        return Ok(());
+    }
     conn.execute(
         "INSERT INTO embeddings (track_id, model, dim, vec) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(track_id, model) DO UPDATE
@@ -249,7 +266,12 @@ fn stride_for(conn: &Connection, model: &str, cap: usize) -> rusqlite::Result<i6
         [model],
         |r| r.get(0),
     )?;
-    Ok((total / cap.max(1) as i64) + 1)
+    // Ceiling division, so a corpus of exactly the cap is still read whole
+    // and one row past it is the first to stride. Adding one to a plain
+    // division instead strides by two at every exact multiple of the cap,
+    // which scores half a corpus the cap says to read all of.
+    let total = total.max(0) as usize;
+    Ok(total.div_ceil(cap.max(1)).max(1) as i64)
 }
 
 /// Walk a model's vectors, handing each to `visit` in turn. The vector is
@@ -278,8 +300,14 @@ fn each_vector(
                 .chunks_exact(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])),
         );
-        // A blob of the wrong width can't be compared against the rest.
-        if buf.len() == dim {
+        // A blob of the wrong width can't be compared against the rest, and
+        // neither can one carrying a NaN or an infinity: it wouldn't merely
+        // score badly, it would take the whole corpus with it. One NaN in a
+        // dimension makes that dimension's mean NaN, the variance clamp
+        // reads NaN as zero (f64::max ignores it), and every vector
+        // standardized against those statistics comes out NaN. Every score
+        // in the library then ties, and "nearest" quietly means "lowest id".
+        if buf.len() == dim && buf.iter().all(|v| v.is_finite()) {
             visit(id, &buf);
         }
     }
@@ -363,7 +391,11 @@ pub fn scores(conn: &Connection, track_id: i64, model: &str) -> rusqlite::Result
     let Some(raw) = vector(conn, track_id, model)? else {
         return Ok(Vec::new());
     };
-    if raw.len() != stats.dim {
+    // The seed is read straight from its row rather than through
+    // [`each_vector`], so it wants the same two checks: a width nothing can
+    // be compared against, and a non-finite value that would make every
+    // score in the answer NaN.
+    if raw.len() != stats.dim || raw.iter().any(|v| !v.is_finite()) {
         return Ok(Vec::new());
     }
     let mut seed = Vec::with_capacity(stats.dim);
@@ -413,7 +445,7 @@ fn encode(vec: &[f32]) -> Vec<u8> {
 
 /// The inverse, tolerant of a trailing partial float rather than panicking
 /// on one: a truncated blob reads as the floats it does hold, and the width
-/// check in [`load`] drops it.
+/// check in [`scores`] drops it.
 fn decode(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(4)
@@ -478,6 +510,26 @@ mod tests {
         assert_eq!(vector(&conn, id, "other").unwrap(), None);
     }
 
+    /// The store declines to hold a vector it knows ruins every query that
+    /// touches it. Refusing costs the one track, where writing costs every
+    /// score in the library: the standardization draws its mean from the
+    /// corpus, so a single NaN reaches vectors that never had one.
+    #[test]
+    fn a_vector_with_a_nan_never_reaches_the_table() {
+        let conn = conn();
+        let id = add_track(&conn, "/m/1.mp3", 200_000);
+        upsert(&conn, id, "m", &[1.0, f32::NAN]).unwrap();
+        assert_eq!(vector(&conn, id, "m").unwrap(), None);
+        assert!(!any(&conn, "m").unwrap(), "nothing was described");
+        upsert(&conn, id, "m", &[1.0, f32::INFINITY]).unwrap();
+        assert_eq!(vector(&conn, id, "m").unwrap(), None);
+        // A refusal leaves the row that was already there alone, rather
+        // than replacing a good description with nothing.
+        upsert(&conn, id, "m", &[1.0, 2.0]).unwrap();
+        upsert(&conn, id, "m", &[f32::NAN, 2.0]).unwrap();
+        assert_eq!(vector(&conn, id, "m").unwrap(), Some(vec![1.0, 2.0]));
+    }
+
     /// A library under the cap is read whole; past it the scan takes an
     /// even slice and stays near the ceiling however big the corpus gets.
     /// This is what keeps one "more like this" from turning into a full
@@ -516,6 +568,70 @@ mod tests {
         let mut again = Vec::new();
         each_vector(&conn, "m", 2, stride, |id, _| again.push(id)).unwrap();
         assert_eq!(seen, again);
+    }
+
+    /// The cap is a ceiling, so a corpus sitting exactly on it is still read
+    /// whole. Adding one to a plain division strides by two there instead,
+    /// and every score a "more like this" comes back with is drawn from
+    /// whichever half of the library the stride happened to land on.
+    #[test]
+    fn a_corpus_at_exactly_the_cap_is_still_read_whole() {
+        let conn = conn();
+        for i in 0..1000 {
+            let id = add_track(&conn, &format!("/m/{i}.mp3"), 200_000);
+            upsert(&conn, id, "m", &[i as f32, -(i as f32)]).unwrap();
+        }
+        assert_eq!(stride_for(&conn, "m", 1000).unwrap(), 1);
+        assert_eq!(stride_for(&conn, "m", 999).unwrap(), 2);
+        assert_eq!(stride_for(&conn, "m", 500).unwrap(), 2, "and so is half");
+        assert_eq!(stride_for(&conn, "m", 499).unwrap(), 3);
+        // An empty corpus and a nonsense cap still stride by something the
+        // scan's modulo can divide by.
+        assert_eq!(stride_for(&conn, "none", 1000).unwrap(), 1);
+        assert_eq!(stride_for(&conn, "m", 0).unwrap(), 1000);
+    }
+
+    /// One track whose vector came out NaN must not cost the library every
+    /// similarity answer it has. It would: a NaN makes that dimension's
+    /// mean NaN, the variance clamp reads NaN as zero, and every vector
+    /// standardized against those statistics comes out NaN too, so every
+    /// score ties and "nearest" degenerates into "lowest id". The row is
+    /// skipped on the way in and on the way out, and the rest of the corpus
+    /// ranks as though it were never there.
+    #[test]
+    fn one_poisoned_vector_does_not_take_the_corpus_with_it() {
+        let conn = conn();
+        let points = [
+            [0.0f32, 0.0],
+            [0.2, 0.1],
+            [0.9, 0.8],
+            [-0.7, 0.4],
+            [0.4, -0.6],
+            [-0.3, -0.9],
+        ];
+        let mut ids = Vec::new();
+        for (i, p) in points.iter().enumerate() {
+            let id = add_track(&conn, &format!("/m/{i}.mp3"), 200_000);
+            upsert(&conn, id, "m", p).unwrap();
+            ids.push(id);
+        }
+        let clean = nearest(&conn, ids[0], "m", 5).unwrap();
+        assert_eq!(clean.len(), 5);
+        assert!(clean.iter().all(|(_, score)| score.is_finite()));
+
+        // A row written by something that didn't check, or a blob that rotted
+        // in place: the right width, and not a number.
+        let bad = add_track(&conn, "/m/bad.mp3", 200_000);
+        upsert(&conn, bad, "m", &[f32::NAN, f32::INFINITY]).unwrap();
+        let after = nearest(&conn, ids[0], "m", 5).unwrap();
+        assert_eq!(after, clean, "the poisoned row changed nothing");
+        assert!(
+            after.iter().all(|(id, _)| *id != bad),
+            "and it is not a neighbour of anything"
+        );
+        // Asking what the poisoned track sounds like answers nothing rather
+        // than answering with the whole library at a score of NaN.
+        assert!(nearest(&conn, bad, "m", 5).unwrap().is_empty());
     }
 
     #[test]
@@ -560,6 +676,25 @@ mod tests {
             }
         );
         assert_eq!(coverage(&conn, "m").unwrap().missing(), 1);
+
+        // A row from another source has no file for the extractor to open,
+        // so it's neither work to do nor a track the coverage owes a vector.
+        conn.execute(
+            "INSERT INTO tracks (source, path, title, artist, album, genre, year, track_no,
+                duration_ms, size, mtime)
+             VALUES ('stream', 'rox://1', 'T', 'A', 'Al', 'g', 0, 1, 200000, 0, 0)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            missing(&conn, "m")
+                .unwrap()
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            vec![b]
+        );
+        assert_eq!(coverage(&conn, "m").unwrap().total, 2);
     }
 
     #[test]

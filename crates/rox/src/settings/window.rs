@@ -412,8 +412,8 @@ struct SettingsWindow {
     /// Whether the experimental panels show in the panel menus, the
     /// Development page toggle.
     experimental: bool,
-    /// Whether the library may build acoustic vectors, the Development page's
-    /// other toggle.
+    /// Whether the library may build acoustic vectors, the Library page's
+    /// acoustic switch.
     acoustic_analysis: bool,
     /// How much of the library the acoustic pass has described, counted
     /// alongside the rollups above rather than in a paint.
@@ -3539,14 +3539,7 @@ impl SettingsWindow {
         self.acoustic_source.id() == id
     }
 
-    /// Browse for a weights file, then check it by loading it. The hash and
-    /// the load both happen off the UI thread: one reads 25 MB, the other
-    /// builds the network and runs a probe pass over it.
-    ///
-    /// Loading it is the validation. There's no checksum to compare against,
-    /// so the only honest way to find out whether a file is this network is
-    /// to ask candle to build it, which fails with the name of the tensor it
-    /// wanted when it isn't.
+    /// Browse for a weights file and check what comes back.
     fn pick_local_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -3562,26 +3555,55 @@ impl SettingsWindow {
             let Some(path) = paths.pop() else {
                 return;
             };
-            this.update(cx, |this, cx| {
-                this.acoustic_local_checking = true;
-                cx.notify();
-            })
-            .ok();
+            this.update(cx, |this, cx| this.check_local_model(path, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Name a weights file by its hash, then check it by loading it, and take
+    /// it as the custom model. The hash and the load both happen off the UI
+    /// thread: one reads 25 MB, the other builds the network and runs a probe
+    /// pass over it.
+    ///
+    /// Loading it is the validation. There's no checksum to compare against,
+    /// so the only honest way to find out whether a file is this network is
+    /// to ask candle to build it, which fails with the name of the tensor it
+    /// wanted when it isn't.
+    fn check_local_model(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.acoustic_local_checking = true;
+        self.acoustic_local_error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
             let checked = cx
                 .background_executor()
                 .spawn({
                     let path = path.clone();
                     async move {
+                        // Stamped before the read rather than after it: a file
+                        // rewritten while this hashes then leaves a stamp that
+                        // matches nothing, which reads as changed and hashes
+                        // again, instead of one that vouches for bytes nobody
+                        // ever hashed.
+                        let stamp = settings::file_stamp(&path).unwrap_or_default();
                         let digest = embeddings::models::hash_file(&path)?;
                         embeddings::panns::Cnn10::load_from(&path)?;
-                        Ok::<String, String>(embeddings::local_id(&digest))
+                        Ok::<_, String>((embeddings::local_id(&digest), stamp))
                     }
                 })
                 .await;
             this.update(cx, |this, cx| {
                 this.acoustic_local_checking = false;
                 match checked {
-                    Ok(id) => this.adopt_local_model(settings::LocalModel { path, id }, cx),
+                    Ok((id, (bytes, mtime))) => this.adopt_local_model(
+                        settings::LocalModel {
+                            path,
+                            id,
+                            bytes,
+                            mtime,
+                        },
+                        cx,
+                    ),
                     Err(reason) => this.acoustic_local_error = Some(reason),
                 }
                 cx.notify();
@@ -3609,11 +3631,20 @@ impl SettingsWindow {
         );
     }
 
-    /// Offer the custom model again after something else was picked.
+    /// Offer the custom model again after something else was picked. A file
+    /// whose bytes have moved since it was named goes back through the check
+    /// instead: the id is the hash, so a checkpoint retrained in place is a
+    /// different model and has to be adopted under its own name rather than
+    /// filling the old one's coordinates. Nothing else can adopt it for the
+    /// user, since resolving that id refuses the file until it's re-hashed.
     fn use_local_model(&mut self, cx: &mut Context<Self>) {
         let Some(local) = self.acoustic_local.clone() else {
             return;
         };
+        if settings::file_stamp(&local.path) != Some((local.bytes, local.mtime)) {
+            self.check_local_model(local.path, cx);
+            return;
+        }
         self.set_acoustic_model(
             embeddings::Source::Local(Arc::new(embeddings::Local {
                 path: local.path,
@@ -4016,10 +4047,15 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(RG_POLL).await;
             let live = this.update(cx, |this, cx| {
+                let was_analyzing = this.acoustic_job.is_some();
                 this.acoustic_job = embeddings::progress(cx);
                 let was_downloading = this.model_job.is_some();
                 this.model_job = embeddings::models::progress(cx);
-                if this.acoustic_job.is_none() {
+                // Only the pass moves the count, so it's re-read on the tick
+                // the pass ends rather than on every tick: this loop also runs
+                // for the whole length of a model download, and the count is a
+                // walk of the tracks table on the UI thread.
+                if was_analyzing && this.acoustic_job.is_none() {
                     this.acoustic_coverage = this
                         .library
                         .read(cx)

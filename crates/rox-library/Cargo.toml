@@ -15,3 +15,7 @@ memchr = "2.7"
 lofty = "0.24"
 # Thumbnail decode, downscale, and re-encode for the artwork service.
 image = "0.25"
+# Saying so when the store refuses to write something. Rare enough that the
+# facade costs nothing without a logger behind it, and the alternative is a
+# refusal nobody can see.
+log = "0.4"

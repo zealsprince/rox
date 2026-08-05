@@ -77,7 +77,7 @@ impl ArtKind {
 /// picture failing that), else a cover image file in its folder. None when
 /// neither exists or nothing identifies as an image.
 pub fn cover_art(path: &Path) -> Option<(Vec<u8>, String)> {
-    cover_art_source(path).map(|(bytes, mime, _)| (bytes, mime))
+    cover_art_source(path).art()
 }
 
 /// [`cover_art`] with the slot pick: the asked-for picture type from the
@@ -87,7 +87,7 @@ pub fn cover_art_of(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
     if let Some(art) = embedded(path, kind) {
         return Some(art);
     }
-    folder_art(path, kind).map(|(bytes, mime, _)| (bytes, mime))
+    folder_art(path, kind).art()
 }
 
 /// Where a track's resolved cover came from, so a cache keyed on file
@@ -108,13 +108,50 @@ pub enum ArtSource {
     },
 }
 
+/// What a cover lookup found. An album with nothing to show and one whose
+/// cover file will not read as an image are different answers, and a cache
+/// has to keep them apart: the first is settled and worth storing, the
+/// second is a file still landing on disk. A downloader bumps the folder's
+/// mtime once, when it creates the file, so an entry stored while the
+/// bytes are still arriving would answer for that album forever.
+pub enum Cover {
+    /// A picture that reads as one: its bytes, its mime type, and where it
+    /// came from.
+    Found {
+        bytes: Vec<u8>,
+        mime: String,
+        source: ArtSource,
+    },
+    /// A cover file the pick would take is sitting there and its bytes are
+    /// not an image yet, whether that's an empty file, a zero-filled
+    /// preallocation, or one that won't read at all.
+    Settling,
+    /// Nothing in the tags, nothing in the folder.
+    None,
+}
+
+impl Cover {
+    /// The bytes and their mime type, dropping where they came from: what a
+    /// caller that only wants to draw the picture needs.
+    pub fn art(self) -> Option<(Vec<u8>, String)> {
+        match self {
+            Cover::Found { bytes, mime, .. } => Some((bytes, mime)),
+            Cover::Settling | Cover::None => None,
+        }
+    }
+}
+
 /// [`cover_art`] plus where the picture came from. The thumbnail cache uses
 /// the source to key a folder cover on that file's identity, so replacing
 /// or adding cover.jpg invalidates a thumb the audio file's own mtime/size
 /// would never notice.
-pub fn cover_art_source(path: &Path) -> Option<(Vec<u8>, String, ArtSource)> {
+pub fn cover_art_source(path: &Path) -> Cover {
     if let Some((bytes, mime)) = embedded(path, ArtKind::Front) {
-        return Some((bytes, mime, ArtSource::Embedded));
+        return Cover::Found {
+            bytes,
+            mime,
+            source: ArtSource::Embedded,
+        };
     }
     folder_art(path, ArtKind::Front)
 }
@@ -151,7 +188,14 @@ pub fn complete(bytes: &[u8]) -> bool {
         // FF is stuffed with a zero, so finding it means the real end.
         Some("image/jpeg") => ends_with(&[0xFF, 0xD9]),
         Some("image/png") => ends_with(b"IEND\xAEB\x60\x82"),
-        Some("image/gif") => tail.last() == Some(&0x3B),
+        // GIF's trailer is a single byte, so a bare scan for it would match
+        // any 0x3B the compressed data happens to end on. Take the last one
+        // and require the rest of the tail to be zeros, which is the shape
+        // padding actually comes in.
+        Some("image/gif") => tail
+            .iter()
+            .rposition(|b| *b == 0x3B)
+            .is_some_and(|end| tail[end + 1..].iter().all(|b| *b == 0)),
         // RIFF containers count their own length in the header.
         Some("image/webp") => bytes
             .get(4..8)
@@ -196,12 +240,19 @@ fn embedded(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String)> {
 
 /// A cover image sitting next to the track, the slot's best-ranked stem
 /// winning. Hands back the file it read, and the identity that file had
-/// going in, so a cache can key on it.
-fn folder_art(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String, ArtSource)> {
+/// going in, so a cache can key on it. A folder holding a cover whose bytes
+/// don't sniff answers [`Cover::Settling`] rather than None, so a caller
+/// can tell a download in flight from an album that has no art.
+fn folder_art(path: &Path, kind: ArtKind) -> Cover {
     let stems = kind.stems();
-    let dir = path.parent()?;
+    let Some(dir) = path.parent() else {
+        return Cover::None;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Cover::None;
+    };
     let mut best: Option<(usize, std::path::PathBuf)> = None;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+    for entry in entries.flatten() {
         let candidate = entry.path();
         let has_art_ext = candidate
             .extension()
@@ -221,14 +272,24 @@ fn folder_art(path: &Path, kind: ArtKind) -> Option<(Vec<u8>, String, ArtSource)
             best = Some((rank, candidate));
         }
     }
-    let file = best?.1;
+    let Some((_, file)) = best else {
+        return Cover::None;
+    };
     // Stat first, read second: a cover that finishes downloading between
     // the two then reads as a file the cache has never seen, instead of
     // stamping its finished identity on the bytes we caught mid-write.
     let (mtime, size) = identity(&file);
-    let bytes = std::fs::read(&file).ok()?;
-    let mime = sniff(&bytes)?.into();
-    Some((bytes, mime, ArtSource::Folder { file, mtime, size }))
+    let Ok(bytes) = std::fs::read(&file) else {
+        return Cover::Settling;
+    };
+    let Some(mime) = sniff(&bytes) else {
+        return Cover::Settling;
+    };
+    Cover::Found {
+        bytes,
+        mime: mime.into(),
+        source: ArtSource::Folder { file, mtime, size },
+    }
 }
 
 /// The picture pulled raw out of an ID3v2.4 tag whose header sets the
@@ -416,6 +477,20 @@ mod tests {
         assert!(complete(&png));
         assert!(!complete(&png[..png.len() - 1]));
         assert!(complete(b"not an image at all"));
+    }
+
+    /// GIF's one-byte trailer: it counts at the end and behind zero
+    /// padding, so a padded but finished cover caches instead of decoding
+    /// itself again on every request. Data that just stops does not.
+    #[test]
+    fn complete_reads_a_padded_gif_trailer() {
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend([0x2C, 0x01, 0x02, 0x03]);
+        assert!(!complete(&gif));
+        gif.push(0x3B);
+        assert!(complete(&gif));
+        gif.extend([0u8; 8]);
+        assert!(complete(&gif), "trailing zero padding still ends");
     }
 
     /// The unsynchronisation an encoder applies: a zero stuffed after

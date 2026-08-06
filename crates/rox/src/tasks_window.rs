@@ -30,8 +30,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     div, prelude::*, px, relative, size, App, Bounds, Context, Div, Entity, EntityId, Global,
-    SharedString, Stateful, Subscription, WeakEntity, Window, WindowHandle,
+    ScrollHandle, SharedString, Stateful, Subscription, WeakEntity, Window, WindowHandle,
 };
+use gpui_component::scroll::Scrollbar;
 use gpui_component::Root;
 
 use crate::assets::icons;
@@ -512,6 +513,8 @@ struct TasksWindow {
     /// The prompt slider's click-to-type state. One per window, since only
     /// one value is ever being typed into.
     value_edit: panel::ValueEdit,
+    /// The row list's scroll position, shared with the scrollbar.
+    scroll: ScrollHandle,
 }
 
 /// The pass prompt's host side. The window caches counts, so a start or a
@@ -585,6 +588,7 @@ impl TasksWindow {
             facts: Facts::default(),
             prompt: None,
             value_edit: panel::ValueEdit::default(),
+            scroll: ScrollHandle::new(),
         };
         this.read_facts(cx);
         this.sample(cx);
@@ -997,9 +1001,13 @@ impl TasksWindow {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .p(tokens::SPACE_MD)
+            // Room for the scrollbar's 16px lane, so a card's right edge
+            // never sits under the thumb.
+            .pr(tokens::SPACE_MD + px(16.))
             // The standing rows fit the default frame, but a dynamic one, or
             // a resize down, shouldn't clip the bottom off the window.
             .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .children(JOBS.map(|job| self.row(job, cx)))
             // The rule says these last ones are a different kind of thing:
             // what happened, rather than what this window can set going.
@@ -1034,7 +1042,20 @@ impl Render for TasksWindow {
                 .bg(palette::bg_elevated())
                 .text_color(palette::text_bright())
                 .text_sm()
-                .child(self.body(cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .relative()
+                        .child(self.body(cx))
+                        // Fades out when idle, same as the panels.
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .child(Scrollbar::vertical(&self.scroll)),
+                        ),
+                )
                 // The start prompt floats over the rows on its own occluding
                 // layer, last so it paints on top of them.
                 .children(pass_prompt::overlay(self, cx))

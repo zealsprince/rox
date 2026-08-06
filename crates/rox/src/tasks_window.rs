@@ -1001,9 +1001,6 @@ impl TasksWindow {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .p(tokens::SPACE_MD)
-            // Room for the scrollbar's 16px lane, so a card's right edge
-            // never sits under the thumb.
-            .pr(tokens::SPACE_MD + px(16.))
             // The standing rows fit the default frame, but a dynamic one, or
             // a resize down, shouldn't clip the bottom off the window.
             .overflow_y_scroll()

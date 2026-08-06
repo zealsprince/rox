@@ -235,18 +235,73 @@ pub fn most_played(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<Trac
     rows.collect()
 }
 
-/// Library tracks no event has ever named, in the canonical browse
-/// order. Local rows only, the bound [`crate::store::all_ids`] reads the
-/// browse order under.
-pub fn never_played(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<TrackPlays>> {
-    let mut stmt = conn.prepare_cached(
+/// What the never-played read orders by. Browse is the canonical album
+/// artist, album, disc, track order [`crate::store::all_ids`] reads in;
+/// the rest sort on one column with that order as the tie-break, so equal
+/// keys stay browsable.
+#[derive(Clone, Copy, Default, PartialEq)]
+pub enum NeverOrder {
+    #[default]
+    Browse,
+    Title,
+    Artist,
+    Album,
+    Year,
+    Duration,
+    Rating,
+    Added,
+}
+
+/// The canonical browse order, and what every other key falls back to on
+/// a tie.
+const BROWSE_ORDER: &str = "album_artist, album, disc_no, track_no";
+
+impl NeverOrder {
+    /// The ORDER BY expression this key sorts on. Text sorts fold case, so
+    /// a lowercase title lands among its peers rather than after Z.
+    fn column(self) -> &'static str {
+        match self {
+            NeverOrder::Browse => BROWSE_ORDER,
+            NeverOrder::Title => "title COLLATE NOCASE",
+            NeverOrder::Artist => "artist COLLATE NOCASE",
+            NeverOrder::Album => "album COLLATE NOCASE",
+            NeverOrder::Year => "year",
+            NeverOrder::Duration => "duration_ms",
+            NeverOrder::Rating => "rating",
+            NeverOrder::Added => "added",
+        }
+    }
+}
+
+/// Library tracks no event has ever named. Local rows only, the bound
+/// [`crate::store::all_ids`] reads the browse order under. The order runs
+/// over the whole set before the limit cuts it, so a sort picks the top of
+/// the library rather than re-arranging the first page of the browse order.
+pub fn never_played(
+    conn: &Connection,
+    order: NeverOrder,
+    descending: bool,
+    limit: usize,
+) -> rusqlite::Result<Vec<TrackPlays>> {
+    let dir = if descending { " DESC" } else { "" };
+    // The fragments come from the match above, never from a caller's string.
+    let by = match order {
+        // Browse is already a four-column order; reversing it means
+        // reversing each part, not appending itself as a tie-break.
+        NeverOrder::Browse if descending => {
+            "album_artist DESC, album DESC, disc_no DESC, track_no DESC".to_string()
+        }
+        NeverOrder::Browse => BROWSE_ORDER.to_string(),
+        other => format!("{}{dir}, {BROWSE_ORDER}", other.column()),
+    };
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT id, 0, 0, title, artist, album,
                 album_artist, year, genre, duration_ms, codec, bitrate,
                 sample_rate, bit_depth, rating, path
          FROM tracks
          WHERE source = 'local' AND id NOT IN (SELECT track_id FROM listens)
-         ORDER BY album_artist, album, disc_no, track_no LIMIT ?1",
-    )?;
+         ORDER BY {by} LIMIT ?1"
+    ))?;
     let rows = stmt.query_map([limit as i64], track_plays_row)?;
     rows.collect()
 }
@@ -267,6 +322,11 @@ pub struct NamePlays {
     pub name: String,
     pub sub: String,
     pub plays: u64,
+    /// A file under the name, for the row's cover: the live catalog's
+    /// path where the group still has a local track, the snapshot's
+    /// otherwise, so a pruned file whose bytes are still on disk keeps
+    /// its art. Empty when neither has one.
+    pub art: String,
 }
 
 /// Play counts grouped under one tag, most first, over the events at or
@@ -300,8 +360,13 @@ pub fn rollup(
     // the merged names below.
     let merges = fold || matches!(by, Rollup::Genre);
     let clip = if merges { i64::MAX } else { limit as i64 };
+    // The row's cover comes off one file under the name: a local track
+    // the group still has, or the newest snapshot path when every one of
+    // them is gone. Which file it is doesn't matter for an album, and for
+    // an artist or a genre one of their records is the point.
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT COALESCE(t.{column}, l.{column}) AS name, {sub}, COUNT(*) AS plays
+        "SELECT COALESCE(t.{column}, l.{column}) AS name, {sub}, COUNT(*) AS plays,
+                COALESCE(MAX(CASE WHEN t.source = 'local' THEN t.path END), MAX(l.path)) AS art
          FROM listens l LEFT JOIN tracks t ON t.id = l.track_id
          WHERE l.played_at >= ?1 AND name <> ''
          GROUP BY name
@@ -312,6 +377,7 @@ pub fn rollup(
             name: row.get(0)?,
             sub: row.get(1)?,
             plays: row.get::<_, i64>(2)? as u64,
+            art: row.get(3)?,
         })
     })?;
     if !merges {
@@ -325,10 +391,11 @@ pub fn rollup(
         name: String,
         sub: String,
         plays: u64,
+        art: String,
         best: u64,
     }
     let mut merged: HashMap<String, Merged> = HashMap::new();
-    let mut tally = |name: &str, sub: &str, plays: u64| {
+    let mut tally = |name: &str, sub: &str, plays: u64, art: &str| {
         let key = if fold {
             name.to_lowercase()
         } else {
@@ -338,6 +405,7 @@ pub fn rollup(
             name: name.to_string(),
             sub: sub.to_string(),
             plays: 0,
+            art: art.to_string(),
             best: 0,
         });
         entry.plays += plays;
@@ -345,6 +413,7 @@ pub fn rollup(
             entry.best = plays;
             entry.name = name.to_string();
             entry.sub = sub.to_string();
+            entry.art = art.to_string();
         }
     };
     for group in &groups {
@@ -364,10 +433,10 @@ pub fn rollup(
                     parts.dedup();
                 }
                 for part in parts {
-                    tally(&part, "", group.plays);
+                    tally(&part, "", group.plays, &group.art);
                 }
             }
-            _ => tally(&group.name, &group.sub, group.plays),
+            _ => tally(&group.name, &group.sub, group.plays, &group.art),
         }
     }
     let mut out: Vec<NamePlays> = merged
@@ -376,6 +445,7 @@ pub fn rollup(
             name: m.name,
             sub: m.sub,
             plays: m.plays,
+            art: m.art,
         })
         .collect();
     out.sort_unstable_by(|a, b| b.plays.cmp(&a.plays).then_with(|| a.name.cmp(&b.name)));
@@ -576,7 +646,7 @@ mod tests {
         let most = most_played(&conn, 10).unwrap();
         assert_eq!((most[0].title.as_str(), most[0].plays), ("One", 2));
 
-        let never = never_played(&conn, 10).unwrap();
+        let never = never_played(&conn, NeverOrder::Browse, false, 10).unwrap();
         assert_eq!(never.len(), 1);
         assert_eq!(never[0].title, "Two");
 
@@ -593,6 +663,10 @@ mod tests {
             (albums[0].name.as_str(), albums[0].sub.as_str()),
             ("First", "A"),
             "the album rollup carries the album artist"
+        );
+        assert!(
+            albums.iter().all(|a| a.art.starts_with("/m/")),
+            "and a file under the name, for the row's cover"
         );
 
         let recent_genres = rollup(&conn, Rollup::Genre, 200, 10, false).unwrap();
@@ -736,6 +810,59 @@ mod tests {
         );
     }
 
+    /// The waiting set orders by any of its tag columns, and the sort runs
+    /// in SQL so it picks the top of the library rather than re-arranging
+    /// the page the limit already cut. Ties fall back to the browse order,
+    /// which is what keeps a sort by year from scrambling the albums
+    /// inside it.
+    #[test]
+    fn never_played_takes_a_sort() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        // Browse order runs Zebra, Mango, apple: the two A/First tracks by
+        // track number, then the B/Second one.
+        let mut zebra = track("/m/1.mp3", "Zebra", "A", "First", "rock");
+        zebra.year = 2010;
+        let mut mango = track("/m/2.mp3", "Mango", "A", "First", "rock");
+        mango.track_no = 2;
+        mango.year = 1999;
+        let mut apple = track("/m/3.mp3", "apple", "B", "Second", "rock");
+        apple.year = 1999;
+        store::insert_batch(&mut conn, &[zebra, mango, apple]).unwrap();
+
+        let titles = |order, desc, limit| {
+            never_played(&conn, order, desc, limit)
+                .unwrap()
+                .iter()
+                .map(|t| t.title.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            titles(NeverOrder::Browse, false, 10),
+            ["Zebra", "Mango", "apple"]
+        );
+        assert_eq!(
+            titles(NeverOrder::Browse, true, 10),
+            ["apple", "Mango", "Zebra"],
+            "descending browse reverses every part of the order"
+        );
+        assert_eq!(
+            titles(NeverOrder::Title, false, 10),
+            ["apple", "Mango", "Zebra"],
+            "a title sort folds case, so a lowercase name lands among its peers"
+        );
+        assert_eq!(
+            titles(NeverOrder::Year, false, 10),
+            ["Mango", "apple", "Zebra"],
+            "equal years keep the browse order between them"
+        );
+        assert_eq!(
+            titles(NeverOrder::Title, false, 1),
+            ["apple"],
+            "the limit cuts after the sort, not before it"
+        );
+    }
+
     /// The browse order this reads down is the local library's, so a row
     /// from another source is not a track waiting to be heard. Nothing
     /// writes one yet; the schema says streaming sources will add rows
@@ -754,7 +881,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            never_played(&conn, 10)
+            never_played(&conn, NeverOrder::Browse, false, 10)
                 .unwrap()
                 .iter()
                 .map(|t| t.title.clone())
@@ -825,7 +952,7 @@ mod tests {
         let most = most_played(&conn, 10).unwrap();
         assert_eq!((most[0].track_id, most[0].plays), (new_id, 2));
         assert!(
-            never_played(&conn, 10)
+            never_played(&conn, NeverOrder::Browse, false, 10)
                 .unwrap()
                 .iter()
                 .all(|t| t.track_id != new_id),

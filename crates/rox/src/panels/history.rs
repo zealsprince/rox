@@ -12,12 +12,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
     div, prelude::*, px, uniform_list, App, Context, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseDownEvent, SharedString, Stateful, Subscription,
+    Focusable, MouseButton, MouseDownEvent, ScrollStrategy, SharedString, Stateful, Subscription,
     UniformListScrollHandle, WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
+use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
-use rox_library::listens::TrackPlays;
+use rox_library::listens::{NeverOrder, TrackPlays};
 use rox_library::projection::{parse_query, track_matches, FilterSet, TrackFields};
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +61,54 @@ impl HistoryView {
         }
     }
 }
+
+/// How the Never Played view orders its tracks. Recent and Most carry
+/// their own order out of the events table - newest first and by count -
+/// so this is the one view with nothing to sort it but the tags.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NeverSort {
+    /// The canonical album artist, album, disc, track walk.
+    #[default]
+    Browse,
+    Title,
+    Artist,
+    Album,
+    Year,
+    Duration,
+    Rating,
+    Added,
+}
+
+impl NeverSort {
+    /// The store's matching order key. The sort runs in SQL rather than
+    /// over the rows already read, so it picks the top of the library
+    /// instead of re-arranging the first [`ROWS_CAP`] of the browse order.
+    fn order(self) -> NeverOrder {
+        match self {
+            NeverSort::Browse => NeverOrder::Browse,
+            NeverSort::Title => NeverOrder::Title,
+            NeverSort::Artist => NeverOrder::Artist,
+            NeverSort::Album => NeverOrder::Album,
+            NeverSort::Year => NeverOrder::Year,
+            NeverSort::Duration => NeverOrder::Duration,
+            NeverSort::Rating => NeverOrder::Rating,
+            NeverSort::Added => NeverOrder::Added,
+        }
+    }
+}
+
+/// The Never Played sorts, in menu and settings order.
+const NEVER_SORTS: &[(&str, NeverSort)] = &[
+    ("Browse Order", NeverSort::Browse),
+    ("Title", NeverSort::Title),
+    ("Artist", NeverSort::Artist),
+    ("Album", NeverSort::Album),
+    ("Year", NeverSort::Year),
+    ("Duration", NeverSort::Duration),
+    ("Rating", NeverSort::Rating),
+    ("Date Added", NeverSort::Added),
+];
 
 /// The track columns, in render order. Plays and Last Played are the record's
 /// own, drawn here; the rest are the shared columns [`track_columns::cell`]
@@ -166,6 +215,13 @@ pub struct HistoryConfig {
     /// The album heading mode, honoured on the Recent view only - the Most
     /// and Never orders never keep an album's tracks together.
     pub headers: Headers,
+    /// The Never view's order, and whether it runs backwards. Recent and
+    /// Most come out of the events table already ordered, so neither reads
+    /// these.
+    #[serde(default)]
+    pub never_sort: NeverSort,
+    #[serde(default)]
+    pub never_desc: bool,
     /// The shown column keys; defaults to the registry's default-on set.
     pub columns: Vec<String>,
     /// Whether the search box shows; the query only filters while it does.
@@ -187,6 +243,8 @@ impl Default for HistoryConfig {
             chrome: PanelChrome::default(),
             view: HistoryView::default(),
             headers: Headers::Off,
+            never_sort: NeverSort::default(),
+            never_desc: false,
             columns: track_columns::default_columns(COLUMNS),
             search: false,
             query_source: QuerySource::default(),
@@ -361,7 +419,11 @@ impl HistoryPanel {
         self.tracks = match self.config.view {
             HistoryView::Recent => library.recent_listens(0, ROWS_CAP),
             HistoryView::Most => library.most_played(ROWS_CAP),
-            HistoryView::Never => library.never_played(ROWS_CAP),
+            HistoryView::Never => library.never_played(
+                self.config.never_sort.order(),
+                self.config.never_desc,
+                ROWS_CAP,
+            ),
         };
         self.favourites = library.favourite_ids();
         self.selected = None;
@@ -470,6 +532,55 @@ impl HistoryPanel {
         }
         self.config.view = view;
         self.refresh(cx);
+    }
+
+    /// The Never view's order. The sort lives in the query, so a change
+    /// re-reads rather than shuffling the rows in hand.
+    fn set_never_sort(&mut self, sort: NeverSort, cx: &mut Context<Self>) {
+        if self.config.never_sort == sort {
+            return;
+        }
+        self.config.never_sort = sort;
+        self.refresh(cx);
+    }
+
+    fn set_never_desc(&mut self, desc: bool, cx: &mut Context<Self>) {
+        if self.config.never_desc == desc {
+            return;
+        }
+        self.config.never_desc = desc;
+        self.refresh(cx);
+    }
+
+    /// Where the playing track sits, as a display row and its index into
+    /// `tracks`. Often nowhere: a listen only lands once the play passes
+    /// the scrobble threshold, so a track partway through its first play
+    /// is in the Never list until it has ever scrobbled and on the Recent
+    /// page only if an older play of it is still inside [`ROWS_CAP`]. A
+    /// file outside the library has no id to match at all. The menu reads
+    /// this to decide whether the jump is worth offering.
+    fn playing_row(&self) -> Option<(usize, usize)> {
+        let playing = self.playing?;
+        self.rows
+            .iter()
+            .enumerate()
+            .find_map(|(ix, row)| match row {
+                Row::Track(ti) if self.tracks[*ti as usize].track_id == playing => {
+                    Some((ix, *ti as usize))
+                }
+                _ => None,
+            })
+    }
+
+    /// Scroll the playing track into view and select it, the move every
+    /// other track surface's menu carries.
+    fn jump_to_playing(&mut self, cx: &mut Context<Self>) {
+        let Some((ix, ti)) = self.playing_row() else {
+            return;
+        };
+        self.select(ti, cx);
+        self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
+        cx.notify();
     }
 
     /// Map the shared box's events onto the panel: a changed query re-filters,
@@ -739,14 +850,46 @@ impl HistoryPanel {
                 "Columns",
                 track_columns::columns_submenu(COLUMNS, window, cx),
             ));
-        if self.config.view == HistoryView::Recent {
-            menu.item(PopupMenuItem::submenu(
+        match self.config.view {
+            HistoryView::Recent => menu.item(PopupMenuItem::submenu(
                 "Headings",
                 track_columns::headings_submenu(window, cx),
-            ))
-        } else {
-            menu
+            )),
+            // Recent and Most come out of the events table ordered; Never
+            // is the view with a sort to pick.
+            HistoryView::Never => menu.item(PopupMenuItem::submenu(
+                "Sort",
+                self.sort_submenu(window, cx),
+            )),
+            HistoryView::Most => menu,
         }
+    }
+
+    /// The Never view's sort keys, with the direction as a check under them.
+    fn sort_submenu(&self, window: &mut Window, cx: &mut Context<Self>) -> Entity<PopupMenu> {
+        let panel = cx.entity();
+        PopupMenu::build(window, cx, move |mut submenu, _, cx| {
+            panel::follow_panel(&panel, cx);
+            for &(label, sort) in NEVER_SORTS {
+                submenu = submenu.item(panel::check_row(
+                    label,
+                    None,
+                    move |this: &Self| this.config.never_sort == sort,
+                    move |this, cx| this.set_never_sort(sort, cx),
+                    &panel,
+                ));
+            }
+            submenu.separator().item(panel::check_row(
+                "Descending",
+                None,
+                |this: &Self| this.config.never_desc,
+                |this, cx| {
+                    let desc = this.config.never_desc;
+                    this.set_never_desc(!desc, cx);
+                },
+                &panel,
+            ))
+        })
     }
 }
 
@@ -860,6 +1003,8 @@ impl PanelSettings for HistoryPanel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let recent = self.config.view == HistoryView::Recent;
+        let never = self.config.view == HistoryView::Never;
+        let desc = self.config.never_desc;
         div()
             .flex()
             .flex_col()
@@ -878,6 +1023,29 @@ impl PanelSettings for HistoryPanel {
                     cx,
                 ),
             ))
+            // Only the Never view has a sort to pick: the other two come
+            // out of the events table in their own order.
+            .when(never, |d| {
+                d.child(panel::setting_row(
+                    "Sort",
+                    Some("How the never-played tracks are ordered"),
+                    panel::choices(
+                        NEVER_SORTS,
+                        self.config.never_sort,
+                        |this: &mut Self, sort, cx| this.set_never_sort(sort, cx),
+                        cx,
+                    ),
+                ))
+                .child(panel::setting_row(
+                    "Descending",
+                    Some("Run the sort backwards"),
+                    panel::toggle(
+                        desc,
+                        |this: &mut Self, on, cx| this.set_never_desc(on, cx),
+                        cx,
+                    ),
+                ))
+            })
             .child(panel::setting_block(
                 "Columns",
                 Some("Which track columns show"),
@@ -1023,6 +1191,24 @@ impl Panel for HistoryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
+        // Jump rides at the top, the move every other track surface's menu
+        // opens with - but only while the playing track is on the list.
+        // The views here are cuts of the record rather than the library,
+        // so most of the time it is not, and an entry that jumps nowhere
+        // is worse than no entry.
+        let weak = cx.entity().downgrade();
+        let menu = match self.playing_row() {
+            Some(_) => menu.item(
+                PopupMenuItem::new("Jump to Playing")
+                    .icon(Icon::default().path(icons::DISC))
+                    .on_click(move |_, _, cx| {
+                        if let Some(this) = weak.upgrade() {
+                            this.update(cx, |this, cx| this.jump_to_playing(cx));
+                        }
+                    }),
+            ),
+            None => menu,
+        };
         // The config block: the panel's quick entries and the settings
         // window, apart from the core panel items.
         let menu = self.config_menu(menu, window, cx);

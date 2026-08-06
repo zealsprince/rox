@@ -1539,7 +1539,11 @@ impl GenreGridPanel {
 /// One card's geometry, laid off the genre seed: sixteen motifs built
 /// from quads alone (a circle is a full-corner quad, a ring a
 /// border-only one), one canvas layer painted under the name, quiet
-/// enough that the name stays the loudest thing on the card. Beyond the motif pick, the
+/// enough that the name stays the loudest thing on the card. Shared with
+/// the stats window's genre cards, so a genre wears the same geometry
+/// wherever it turns up.
+///
+/// Beyond the motif pick, the
 /// seed places the layout in a corner, scales it a touch, and picks a
 /// symmetry: the motif alone, its mirror twin across either axis, or
 /// all four reflections at once, which folds a single shape into a
@@ -1547,7 +1551,7 @@ impl GenreGridPanel {
 /// card carries more geometry without carrying more weight. `ink` comes
 /// in solid; the alpha is this function's to set. The tile's
 /// overflow_hidden clips the bleed.
-fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
+pub fn motif(seed: u64, ink: gpui::Rgba) -> AnyElement {
     canvas(
         |_, _, _| (),
         move |bounds: Bounds<Pixels>, _, window, _| {

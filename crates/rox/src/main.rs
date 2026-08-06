@@ -41,6 +41,7 @@ mod pass_prompt;
 mod peaks;
 mod player;
 mod playlist_create;
+mod portraits;
 mod providers;
 mod query;
 mod quick_play;

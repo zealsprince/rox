@@ -76,6 +76,7 @@ use crate::panels::vu::VuPanel;
 use crate::panels::waveform::WaveformPanel;
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
 use crate::player::{NowPlaying, Player};
+use crate::portraits::Portraits;
 use crate::query::shared_query::SharedQuery;
 use crate::quick_play::QuickPlay;
 use crate::selection::Selection;
@@ -1438,6 +1439,7 @@ impl Workspace {
             let discord = cx.new(|cx| DiscordPresence::new(&player, &library, cx));
             AppState {
                 thumbs: cx.new(|cx| Thumbs::new(&library, cx)),
+                portraits: cx.new(|_| Portraits::default()),
                 history: cx.new(|cx| History::new(&scrobbler, cx)),
                 scrobbler,
                 discord,

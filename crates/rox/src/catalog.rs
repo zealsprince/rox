@@ -812,8 +812,13 @@ impl Library {
         self.listen_query(|conn| listens::most_played(conn, limit))
     }
 
-    pub fn never_played(&self, limit: usize) -> Vec<listens::TrackPlays> {
-        self.listen_query(|conn| listens::never_played(conn, limit))
+    pub fn never_played(
+        &self,
+        order: listens::NeverOrder,
+        descending: bool,
+        limit: usize,
+    ) -> Vec<listens::TrackPlays> {
+        self.listen_query(|conn| listens::never_played(conn, order, descending, limit))
     }
 
     /// Play counts grouped under one tag over a trailing range, the

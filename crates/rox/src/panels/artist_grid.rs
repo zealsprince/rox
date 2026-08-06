@@ -22,7 +22,7 @@
 //! view mode: per the workspace rule, browsing surfaces are panels of
 //! their own.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -31,8 +31,8 @@ use std::time::Instant;
 
 use gpui::{
     canvas, div, img, prelude::*, px, size, svg, Along, AnyElement, App, Axis, Context, Div,
-    Entity, EventEmitter, FocusHandle, Focusable, Image, ImageFormat, KeyDownEvent, Modifiers,
-    MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, Pixels, ScrollStrategy, ScrollWheelEvent,
+    Entity, EventEmitter, FocusHandle, Focusable, Image, KeyDownEvent, Modifiers, MouseButton,
+    MouseDownEvent, MouseUpEvent, ObjectFit, Pixels, ScrollStrategy, ScrollWheelEvent,
     SharedString, Size, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
@@ -42,7 +42,6 @@ use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::projection::{FilterField, FilterSet, Projection, SortKey, SymTable};
 use serde::{Deserialize, Serialize};
 
-use crate::artists;
 use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::panel::{
@@ -52,7 +51,6 @@ use crate::panel::{
 use crate::panel_settings;
 use crate::panels::grid::TitleAlign;
 use crate::panels::library::{LibraryEvent, QUEUE_CAP};
-use crate::providers;
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::selection::SelectionEvent;
@@ -89,16 +87,6 @@ const FALLBACK_COLS: usize = 5;
 /// Rows of tiles asked for past each edge of the viewport, so a scroll
 /// reveals loaded art instead of placeholders.
 const PREFETCH_ROWS: usize = 2;
-
-/// Decoded portraits kept at once. Faces come from the artist store at
-/// thumbnail size, so this is a few viewports' worth with headroom; below
-/// that the LRU thrashes every paint.
-const PORTRAIT_CAP: usize = 256;
-
-/// Portrait lookups in flight at once. Low on purpose: a cold one is a
-/// deezer round trip, and a wall scrolled fast would otherwise fire
-/// hundreds at a service that is doing us a favor.
-const PORTRAIT_POOL: usize = 4;
 
 fn default_tile() -> f32 {
     160.
@@ -309,15 +297,6 @@ struct Cell {
     faced: bool,
 }
 
-/// One cached portrait; `image` None is an artist with no picture on file
-/// and none to be had.
-struct Portrait {
-    image: Option<Arc<Image>>,
-    /// When the entry was last asked for, on the request clock; the LRU
-    /// evicts the smallest.
-    touch: u64,
-}
-
 pub struct ArtistGridPanel {
     state: AppState,
     config: ArtistGridConfig,
@@ -371,17 +350,6 @@ pub struct ArtistGridPanel {
     /// A portrait crossfade is in flight, the same gate for the same loop.
     /// Armed by the tile that first sees a face it hasn't faded in yet.
     face_fading: bool,
-    /// The decoded portraits, keyed by the folded name the store answers
-    /// under. Per panel rather than shared: the disk cache and its miss
-    /// markers mean a second wall costs decodes, never fetches.
-    portraits: HashMap<String, Portrait>,
-    /// Names with a lookup in flight; also the pool gauge.
-    portraits_pending: HashSet<String>,
-    /// The request clock behind [`Portrait::touch`].
-    portrait_clock: u64,
-    /// Discards in-flight portraits from before a settings change that
-    /// dropped the cache.
-    portrait_generation: u64,
     /// The tile size slider's scrub strip, for the settings window.
     tile_scrub: ScrubState,
     /// The tile rounding slider's scrub strip, same window.
@@ -410,14 +378,12 @@ pub struct ArtistGridPanel {
     tab_panel: Option<WeakEntity<TabPanel>>,
     _library_changed: Subscription,
     _thumbs_changed: Subscription,
+    /// Landing faces notify the shared service; repaint so tiles fill in.
+    _portraits_changed: Subscription,
     _search_events: Subscription,
     _query_changed: Subscription,
     _selection_changed: Subscription,
     _player_changed: Subscription,
-    /// Retires the decoded portraits when the panel is dropped. gpui's
-    /// asset cache never evicts on its own, so without this a closed wall
-    /// leaves every face it painted pinned for the life of the process.
-    _retire_on_drop: Subscription,
 }
 
 impl ArtistGridPanel {
@@ -445,6 +411,7 @@ impl ArtistGridPanel {
         );
         // Landing thumbnails notify the service; repaint so tiles fill in.
         let _thumbs_changed = cx.observe(&state.thumbs, |_, _, cx| cx.notify());
+        let _portraits_changed = cx.observe(&state.portraits, |_, _, cx| cx.notify());
         // A wall restored as global opens showing the shared query; a local
         // one shows its own.
         let initial = match config.query_source {
@@ -475,13 +442,6 @@ impl ArtistGridPanel {
         let _player_changed = cx.observe(&state.player, |this: &mut Self, _, cx| {
             this.sync_playing(cx)
         });
-        let _retire_on_drop = cx.on_release(|this, cx| {
-            for (_, entry) in this.portraits.drain() {
-                if let Some(image) = entry.image {
-                    image.remove_asset(cx);
-                }
-            }
-        });
         // Follow-playing owns the position on launch, so it skips the saved
         // scroll; every other panel restores where it was left.
         let restore = (!config.follow_playing && config.scroll > 0).then_some(config.scroll);
@@ -506,10 +466,6 @@ impl ArtistGridPanel {
             playing: false,
             dim_fading: false,
             face_fading: false,
-            portraits: HashMap::new(),
-            portraits_pending: HashSet::new(),
-            portrait_clock: 0,
-            portrait_generation: 0,
             tile_scrub: ScrubState::default(),
             rounding_scrub: ScrubState::default(),
             gap_scrub: ScrubState::default(),
@@ -524,11 +480,11 @@ impl ArtistGridPanel {
             tab_panel: None,
             _library_changed,
             _thumbs_changed,
+            _portraits_changed,
             _search_events,
             _query_changed,
             _selection_changed,
             _player_changed,
-            _retire_on_drop,
         };
         this.rebuild(cx);
         // A duplicate opens with a track already playing; pick it up now
@@ -900,100 +856,14 @@ impl ArtistGridPanel {
         path
     }
 
-    /// An artist's portrait, from the cache or on its way. A miss starts a
-    /// lookup when a pool slot is free and reports None either way; the
-    /// landing notifies, so visible tiles re-ask and drain the misses
-    /// without a queue - the thumbnail service's shape. None also covers a
-    /// settled miss, where the tile falls back to an album cover.
+    /// An artist's portrait through the shared service, which owns the
+    /// cache, the lookup pool, and the eviction; None is a face still on
+    /// its way or one no service knows, and the tile falls back to an
+    /// album cover either way.
     fn portrait(&mut self, ix: usize, cx: &mut Context<Self>) -> Option<Arc<Image>> {
         let name = self.cell_name(ix, cx);
-        if name.is_empty() {
-            return None;
-        }
-        // The store's own key: the folded name, except that punctuation-only
-        // acts ("!!!", "+/-") fold to nothing and would all share one entry,
-        // so those fall back to the raw name.
-        let key = match providers::normalize(&name) {
-            folded if folded.is_empty() => name.clone(),
-            folded => folded,
-        };
-        self.portrait_clock += 1;
-        if let Some(entry) = self.portraits.get_mut(&key) {
-            entry.touch = self.portrait_clock;
-            return entry.image.clone();
-        }
-        if self.portraits_pending.contains(&key) || self.portraits_pending.len() >= PORTRAIT_POOL {
-            return None;
-        }
-        self.portraits_pending.insert(key.clone());
-        let generation = self.portrait_generation;
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn({
-                    let name = name.clone();
-                    async move { artists::portrait_thumb(&name) }
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                if this.portrait_generation != generation {
-                    return;
-                }
-                this.portraits_pending.remove(&key);
-                // A network failure stays uncached, so the next scroll past
-                // asks again once the connection is back; only a settled
-                // answer takes a slot.
-                let image = match result {
-                    Ok(bytes) => bytes.map(|b| Arc::new(Image::from_bytes(ImageFormat::Jpeg, b))),
-                    Err(e) => {
-                        log::debug!("artist grid: {name}: {e}");
-                        cx.notify();
-                        return;
-                    }
-                };
-                let touch = this.portrait_clock;
-                this.portraits.insert(key, Portrait { image, touch });
-                this.evict_portraits(cx);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-        None
-    }
-
-    /// Trim the portrait cache to [`PORTRAIT_CAP`], least-recently-asked
-    /// first, releasing each evicted face from gpui's asset cache.
-    fn evict_portraits(&mut self, cx: &mut App) {
-        while self.portraits.len() > PORTRAIT_CAP {
-            let Some(oldest) = self
-                .portraits
-                .iter()
-                .min_by_key(|(_, entry)| entry.touch)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            if let Some(Portrait {
-                image: Some(image), ..
-            }) = self.portraits.remove(&oldest)
-            {
-                image.remove_asset(cx);
-            }
-        }
-    }
-
-    /// Drop every decoded portrait, orphaning the lookups in flight. The
-    /// disk cache stays, so turning faces back on re-reads rather than
-    /// refetches.
-    fn clear_portraits(&mut self, cx: &mut App) {
-        for (_, entry) in self.portraits.drain() {
-            if let Some(image) = entry.image {
-                image.remove_asset(cx);
-            }
-        }
-        self.portrait_generation += 1;
-        self.portraits_pending.clear();
+        let portraits = self.state.portraits.clone();
+        portraits.update(cx, |portraits, cx| portraits.get(&name, cx))
     }
 
     /// Put a click on an artist tile: plain picks just them, shift extends
@@ -1879,9 +1749,6 @@ impl PanelSettings for ArtistGridPanel {
                             self.config.portraits,
                             |this: &mut Self, on, cx| {
                                 this.config.portraits = on;
-                                if !on {
-                                    this.clear_portraits(cx);
-                                }
                                 cx.notify();
                             },
                             cx,
@@ -2212,9 +2079,6 @@ impl Panel for ArtistGridPanel {
             |this: &Self| this.config.portraits,
             |this, cx| {
                 this.config.portraits = !this.config.portraits;
-                if !this.config.portraits {
-                    this.clear_portraits(cx);
-                }
                 cx.notify();
             },
             &panel,

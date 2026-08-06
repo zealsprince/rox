@@ -1,17 +1,16 @@
 //! Small chart elements over gpui's paint primitives, shared by
-//! whichever views want one (the stats window today). A bar chart over
-//! counts with a hover pick, and a donut of fractional slices. Both draw
-//! with quads and path fans inside a canvas - cheap at any plausible
-//! size - and stay palette-agnostic: the caller passes colors, so they
-//! ride panel and song theming wherever they land. Text stays out of the
-//! paint closures (labels need the text system); the caller reads the
-//! hover pick back and writes its own readout.
+//! whichever views want one (the stats window today): a bar chart over
+//! counts with a hover pick. It draws with quads inside a canvas - cheap
+//! at any plausible size - and stays palette-agnostic: the caller passes
+//! colors, so it rides panel and song theming wherever it lands. Text
+//! stays out of the paint closure (labels need the text system); the
+//! caller reads the hover pick back and writes its own readout.
 
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, size, Bounds, Context, Div, MouseMoveEvent, Path,
-    Pixels, Rgba, Stateful,
+    canvas, div, fill, point, prelude::*, px, size, Bounds, Context, Div, MouseMoveEvent, Pixels,
+    Rgba, Stateful,
 };
 
 use crate::design::palette;
@@ -137,51 +136,5 @@ fn paint_bars(
             ),
             color,
         ));
-    }
-}
-
-/// A donut of fractional slices, clockwise from noon, each its own
-/// color; the caller sizes the returned element square. Fractions are
-/// of the whole ring, so an under-full set leaves a gap rather than
-/// stretching.
-pub fn donut(slices: Vec<(f32, Rgba)>) -> Div {
-    div().size_full().child(
-        canvas(
-            |_, _, _| {},
-            move |bounds, _, window, _| {
-                paint_donut(&slices, bounds, window);
-            },
-        )
-        .size_full(),
-    )
-}
-
-/// The donut's slices into their bounds: ring segments as triangle fans
-/// between the inner and outer radius.
-fn paint_donut(slices: &[(f32, Rgba)], bounds: Bounds<Pixels>, window: &mut gpui::Window) {
-    let side = f32::from(bounds.size.width).min(f32::from(bounds.size.height));
-    let center = bounds.center();
-    let (cx, cy) = (f32::from(center.x), f32::from(center.y));
-    let outer = side / 2.0;
-    let inner = outer * 0.62;
-    let mut angle = -std::f32::consts::FRAC_PI_2;
-    for &(fraction, color) in slices {
-        let sweep = fraction.clamp(0.0, 1.0) * std::f32::consts::TAU;
-        if sweep <= 0.0 {
-            continue;
-        }
-        // Enough steps that the arc reads round at this size.
-        let steps = ((sweep / std::f32::consts::TAU * 96.0).ceil() as usize).max(2);
-        let at = |a: f32, r: f32| point(px(cx + a.cos() * r), px(cy + a.sin() * r));
-        let mut path = Path::new(at(angle, outer));
-        for i in 0..steps {
-            let a0 = angle + sweep * i as f32 / steps as f32;
-            let a1 = angle + sweep * (i + 1) as f32 / steps as f32;
-            let solid = (point(0., 1.), point(0., 1.), point(0., 1.));
-            path.push_triangle((at(a0, outer), at(a0, inner), at(a1, outer)), solid);
-            path.push_triangle((at(a0, inner), at(a1, outer), at(a1, inner)), solid);
-        }
-        window.paint_path(path, color);
-        angle += sweep;
     }
 }

@@ -35,6 +35,7 @@ use crate::integrations::discord::DiscordPresence;
 use crate::lastfm::Scrobbler;
 use crate::panels::library::Library;
 use crate::player::{fmt_time, FadeView, Player};
+use crate::portraits::Portraits;
 use crate::query::shared_query::SharedQuery;
 use crate::selection::Selection;
 use crate::thumbs::Thumbs;
@@ -66,6 +67,9 @@ pub struct AppState {
     /// The artwork service's texture cache, shared by every view that
     /// draws cover thumbnails.
     pub thumbs: Entity<Thumbs>,
+    /// The artist portrait cache, shared by every view that draws faces:
+    /// the artist wall and the stats page.
+    pub portraits: Entity<Portraits>,
     /// The Last.fm scrobbler over this workspace's player; also where the
     /// live scrobble config lives, for the panels' threshold markers.
     pub scrobbler: Entity<Scrobbler>,

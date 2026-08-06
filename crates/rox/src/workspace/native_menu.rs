@@ -142,6 +142,9 @@ fn native_label(item: MenuItem, playing: bool) -> String {
         MenuAction::ToggleMenubar => showing(!settings::hide_menubar(), "Menubar"),
         MenuAction::ToggleDecorations => showing(settings::os_decorations(), "OS Decorations"),
         MenuAction::ToggleArtTheming => switching(palette::art_theming(), "Song Theming"),
+        MenuAction::TogglePostShader => {
+            switching(crate::workspace::post_shader_on(), "Screen Shader")
+        }
         MenuAction::ToggleQuitToTray => switching(settings::quit_to_tray(), "Remain in Tray"),
         _ => item.label.into(),
     }

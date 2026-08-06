@@ -16,6 +16,7 @@
 //! presets.
 
 pub mod layouts;
+pub mod shader_confirm;
 pub mod ui;
 pub mod window;
 
@@ -499,6 +500,9 @@ pub struct Settings {
     /// chosen, so its vectors can never land in another model's coordinates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acoustic_local_model: Option<LocalModel>,
+    /// The whole-window post-process shader, the Appearance page's Screen
+    /// shader section.
+    pub post_shader: PostShaderConfig,
 }
 
 /// A weights file outside the catalog, as the settings file carries it. The
@@ -1336,6 +1340,26 @@ impl Default for QuickPlayConfig {
     }
 }
 
+/// The whole-window post-process shader: whether it runs and which WGSL
+/// file it reads. The source lives in a file rather than here because the
+/// app has no multi-line editor, and a file gives shader authors hot reload
+/// with the editor they already have.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PostShaderConfig {
+    /// Whether the pass runs at all. Off is exactly today's rendering.
+    pub enabled: bool,
+    /// The user's WGSL fragment source file, absolute. None until picked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    /// Whether child windows (settings, stats, equalizer, popped-out
+    /// panels) wear the shader too. Off shades only the workspace
+    /// windows; meaningless while the switch above is off. The confirm
+    /// dialog stays bare either way, so a hostile shader can't take the
+    /// way out with it.
+    pub all_windows: bool,
+}
+
 /// The Last.fm account and how scrobbling behaves. The key and secret
 /// override the build's own api identity (`lastfm::keys`), for builds
 /// that ship none; the session key is what the connect flow lands and
@@ -2041,6 +2065,7 @@ impl Default for Settings {
             acoustic_model: crate::embeddings::MODEL.to_string(),
             acoustic_ml_model: crate::embeddings::models::PANNS_CNN10.to_string(),
             acoustic_local_model: None,
+            post_shader: PostShaderConfig::default(),
         }
     }
 }
@@ -2429,6 +2454,29 @@ mod tests {
         assert_eq!(back.library_roots, vec![PathBuf::from("/music")]);
     }
 
+    /// The post shader pick survives the file, and a file that predates the
+    /// field reads as off with no path rather than failing the load.
+    #[test]
+    fn post_shader_round_trips_and_defaults_off() {
+        let mut src = Settings::default();
+        src.post_shader.enabled = true;
+        src.post_shader.path = Some(PathBuf::from("/shaders/crt.wgsl"));
+        src.post_shader.all_windows = true;
+        let json = serde_json::to_string_pretty(&src).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert!(back.post_shader.enabled);
+        assert_eq!(
+            back.post_shader.path,
+            Some(PathBuf::from("/shaders/crt.wgsl"))
+        );
+        assert!(back.post_shader.all_windows);
+
+        let older: Settings = serde_json::from_str(r#"{"theme":"light"}"#).unwrap();
+        assert!(!older.post_shader.enabled);
+        assert!(older.post_shader.path.is_none());
+        assert!(!older.post_shader.all_windows);
+    }
+
     /// The measurement pass's destination survives the file, and an older
     /// file that predates the field reads as the database default rather
     /// than as permission to rewrite everyone's tags.
@@ -2514,8 +2562,10 @@ mod tests {
             "surface_opacity",
             "rating_style",
             "workspaces",
-            // the windows
-            "windows",
+            // the windows. Quote-anchored: the post shader's all_windows
+            // preference legitimately carries the substring, while a leaked
+            // shard would appear as this exact key.
+            "\"windows\"",
             "main",
             "tag_editor",
             "queue_view",

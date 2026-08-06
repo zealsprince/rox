@@ -9,21 +9,28 @@
 //!
 //! Two directions cross the thread boundary here. Key presses arrive on
 //! souvlaki's own event-loop thread; the attach callback maps each one to a
-//! [`MediaCommand`] and hands it to the UI over an async channel the workspace
+//! [`MediaCommand`] and hands it to the UI over an async channel the session
 //! awaits, so there is no poll. State and metadata go the other way: the
-//! workspace pushes the playing track and play state back out on the player
+//! session pushes the playing track and play state back out on the player
 //! observer, and the gating here keeps a steady stream of frame notifies from
 //! turning into a stream of D-Bus writes.
+//!
+//! [`MediaSession`] wraps both directions into one entity so the service can
+//! outlive the window that opened it. That is what keeps the media keys
+//! answering while the app sits in the tray with no window at all: the close
+//! hands the session to the tray's hold, and the reopen hands it back.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use gpui::Window;
+use gpui::{App, AppContext as _, Context, Entity, Subscription, Task, Window};
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
     SeekDirection,
 };
 
+use crate::panel::AppState;
+use crate::player::NowPlaying;
 use crate::APP_ID;
 use rox_library::hash::fnv1a;
 
@@ -227,6 +234,165 @@ impl MediaKeys {
         };
         let expected = base + advanced;
         pos.abs_diff(expected) > SEEK_EPSILON
+    }
+}
+
+/// The media service bound to a player: the souvlaki handle, the drain that
+/// turns key presses into transport calls, and the publish that keeps the
+/// desktop's now-playing card current.
+///
+/// An entity rather than a workspace field so its life is the service's life,
+/// not a window's. One exists per process at most, on the primary window while
+/// one is open and in the tray's hold while none is.
+pub struct MediaSession {
+    keys: MediaKeys,
+    /// The player and library this service speaks for. A reopen from the tray
+    /// adopts the same state, so the session carries over untouched.
+    state: AppState,
+    /// The path the widget's tags currently reflect, so the library resolve
+    /// behind them only runs on a track change, not every notify.
+    track: Option<PathBuf>,
+    /// The player pump notifies every tick while a session runs; the publish
+    /// rides it and its own gating drops the ones that would write nothing.
+    _player: Subscription,
+    /// The await loop pulling media-key presses off souvlaki's thread; dropped
+    /// with the session, which ends the loop.
+    _events: Task<()>,
+}
+
+impl MediaSession {
+    /// Register the OS media service over `state` and start answering keys.
+    /// `None` when the platform backend won't come up, so the app runs on
+    /// without media keys. Takes a window because Windows' SMTC binds to its
+    /// HWND; the other two backends read nothing from it.
+    pub fn new(state: AppState, window: &Window, cx: &mut App) -> Option<Entity<MediaSession>> {
+        let keys = MediaKeys::new(window)?;
+        Some(cx.new(|cx| {
+            let events = keys.events();
+            let mut session = MediaSession {
+                keys,
+                _player: cx.observe(&state.player, |this: &mut MediaSession, _, cx| {
+                    this.publish(cx)
+                }),
+                _events: cx.spawn(async move |this, cx| {
+                    while let Ok(cmd) = events.recv().await {
+                        let applied = this.update(cx, |this, cx| {
+                            this.apply(cmd, cx);
+                            this.publish(cx);
+                        });
+                        if applied.is_err() {
+                            break;
+                        }
+                    }
+                }),
+                state,
+                track: None,
+            };
+            // Seed the widget with whatever is already loaded: a reopen or a
+            // hand-off arrives mid-track, and the first notify may be a while
+            // out if the player is paused.
+            session.publish(cx);
+            session
+        }))
+    }
+
+    /// Apply one media-key press to the player. Play and Pause act on the edge
+    /// so the OS buttons never flip a state that's already right; Toggle is
+    /// the bare play/pause key.
+    fn apply(&mut self, cmd: MediaCommand, cx: &mut Context<Self>) {
+        self.state.player.update(cx, |player, cx| match cmd {
+            MediaCommand::Toggle => player.toggle_pause(),
+            MediaCommand::Play => {
+                if !player.is_playing() {
+                    player.toggle_pause();
+                }
+            }
+            MediaCommand::Pause => {
+                if player.is_playing() {
+                    player.toggle_pause();
+                }
+            }
+            MediaCommand::Next => player.next(cx),
+            MediaCommand::Prev => player.prev(),
+            MediaCommand::Stop => player.stop(cx),
+            MediaCommand::SeekBy(delta) => player.seek_by(delta),
+            MediaCommand::SeekTo(secs) => player.seek_to(secs),
+        });
+    }
+
+    /// Push the now-playing track and play state out to the media widget. The
+    /// tag resolve only runs when the track turns over and the play-state push
+    /// is gated in [`MediaKeys`], so this is cheap to call on every notify.
+    fn publish(&mut self, cx: &mut Context<Self>) {
+        let now = self.state.player.read(cx).now_playing();
+        let playing = self.state.player.read(cx).is_playing();
+        let path = now.as_ref().map(|now| now.path.clone());
+        if path != self.track {
+            self.track = path.clone();
+            let meta = now.as_ref().map(|now| self.now_playing_meta(now, cx));
+            self.keys.set_track(meta);
+            self.publish_cover(path.clone(), cx);
+        }
+        let position = now
+            .as_ref()
+            .map(|now| Duration::from_secs_f64(now.position_secs.max(0.0)));
+        self.keys.set_playing(path.is_some(), playing, position);
+    }
+
+    /// Resolve the current track's cover off the UI thread and hand it to the
+    /// media widget when it lands. `set_track` already cleared the old cover
+    /// with the text, so a track with no art (or `None`, nothing playing)
+    /// needs no further work. The result is dropped when the track has moved
+    /// on by the time the read finishes, so a late cover never lands on the
+    /// wrong track.
+    fn publish_cover(&mut self, track: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(track) = track else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let resolved = track.clone();
+            let cover = cx
+                .background_executor()
+                .spawn(async move {
+                    rox_library::art::cover_art(&resolved)
+                        .and_then(|(bytes, mime)| cache_now_playing_art(&resolved, &bytes, &mime))
+                })
+                .await;
+            this.update(cx, |this, _| {
+                if this.track.as_deref() != Some(track.as_path()) {
+                    return;
+                }
+                this.keys.set_cover(cover);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Resolve a playing track to the tags the widget shows, off the library.
+    /// An unknown file falls back to its filename for the title, empty for
+    /// the rest, so the widget never shows a blank card.
+    fn now_playing_meta(&self, now: &NowPlaying, cx: &App) -> NowPlayingMeta {
+        let tags = self.state.library.read(cx).meta_for(&now.path);
+        let title = tags
+            .as_ref()
+            .map(|m| m.title.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| {
+                now.path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+        NowPlayingMeta {
+            title,
+            artist: tags.as_ref().map(|m| m.artist.clone()).unwrap_or_default(),
+            album: tags.map(|m| m.album).unwrap_or_default(),
+            duration: now
+                .duration_secs
+                .filter(|d| *d > 0.0)
+                .map(Duration::from_secs_f64),
+        }
     }
 }
 

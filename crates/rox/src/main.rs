@@ -126,14 +126,15 @@ pub fn open_workspace_with(start: workspace::WorkspaceStart, cx: &mut App) {
 
 /// Reopen from the tray or the macOS dock: a window on the saved working
 /// layout over the state the last close handed to the hold, so playback
-/// carries straight over.
-pub fn open_workspace_adopting(state: panel::AppState, cx: &mut App) {
-    open_workspace_window(workspace::WorkspaceStart::Restore, Some(state), None, cx);
+/// carries straight over. The media service comes back with it where it
+/// stayed registered through the windowless stretch.
+pub fn open_workspace_adopting(adopt: workspace::Adopted, cx: &mut App) {
+    open_workspace_window(workspace::WorkspaceStart::Restore, Some(adopt), None, cx);
 }
 
 fn open_workspace_window(
     start: workspace::WorkspaceStart,
-    adopt: Option<panel::AppState>,
+    adopt: Option<workspace::Adopted>,
     // Audio files handed to us on the command line (`rox song.flac`, or the
     // .desktop actions), with the mode the launch asked for. Play overrides
     // the restore so double-clicking a file starts it; enqueue appends to the

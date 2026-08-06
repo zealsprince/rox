@@ -18,9 +18,11 @@
 //! alive, and the tray's Open (or the dock click) adopts it into a fresh
 //! window through [`crate::open_workspace_adopting`].
 
-use gpui::{App, Global, Subscription};
+use gpui::{App, Entity, Global, Subscription};
 
+use crate::integrations::media_controls::MediaSession;
 use crate::panel::AppState;
+use crate::workspace::Adopted;
 
 /// The tray's app-side state. The hold exists on every platform; the icon
 /// handle and its push gate exist where there is a real icon to talk to,
@@ -44,6 +46,11 @@ impl Global for TrayService {}
 /// player alive while no window holds it.
 struct Held {
     state: AppState,
+    /// The OS media service, still registered and still answering the
+    /// hardware keys with no window behind it. `None` on Windows, where SMTC
+    /// is bound to the window handle and can't outlive it, and wherever the
+    /// service never came up in the first place.
+    media: Option<Entity<MediaSession>>,
     /// Keeps the menu's Play/Pause label honest while no workspace drives
     /// the publish path - a track running out flips it windowless.
     _observer: Subscription,
@@ -86,9 +93,10 @@ pub(crate) fn resident(_cx: &mut App) -> bool {
     false
 }
 
-/// Stash the closing primary's state and watch its player so the tray
-/// label stays current without a window.
-pub(crate) fn hold(state: AppState, cx: &mut App) {
+/// Stash the closing primary's state and its media service, and watch the
+/// player so the tray label stays current without a window. The service
+/// keeps running here, which is what answers the media keys from the tray.
+pub(crate) fn hold(state: AppState, media: Option<Entity<MediaSession>>, cx: &mut App) {
     let observer = cx.observe(&state.player, |player, cx| {
         let (has_track, playing) = {
             let player = player.read(cx);
@@ -98,6 +106,7 @@ pub(crate) fn hold(state: AppState, cx: &mut App) {
     });
     cx.default_global::<TrayService>().hold = Some(Held {
         state,
+        media,
         _observer: observer,
     });
 }
@@ -106,13 +115,15 @@ pub(crate) fn hold(state: AppState, cx: &mut App) {
 /// stashed one, cold otherwise (quit-to-tray turned on mid-session on
 /// macOS, say, where no hold ever formed).
 pub(crate) fn reopen(cx: &mut App) {
-    let held = cx
-        .default_global::<TrayService>()
-        .hold
-        .take()
-        .map(|held| held.state);
+    let held = cx.default_global::<TrayService>().hold.take();
     match held {
-        Some(state) => crate::open_workspace_adopting(state, cx),
+        Some(held) => crate::open_workspace_adopting(
+            Adopted {
+                state: held.state,
+                media: held.media,
+            },
+            cx,
+        ),
         None => crate::open_workspace(cx),
     }
 }

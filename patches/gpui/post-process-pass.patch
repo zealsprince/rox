@@ -1,0 +1,510 @@
+diff -x .rox-stamp -ruN /tmp/gpui-pristine/Cargo.toml vendor/gpui/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -576,6 +576,10 @@
+ ]
+ optional = true
+ 
++[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.naga]
++version = "25.0"
++features = ["wgsl-in"]
++
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.build-dependencies.naga]
+ version = "25.0"
+ features = ["wgsl-in"]
+diff -x .rox-stamp -ruN /tmp/gpui-pristine/src/platform/blade/blade_renderer.rs vendor/gpui/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -107,6 +107,34 @@
+     s_surface: gpu::Sampler,
+ }
+ 
++// Uniforms for the whole-window post-process pass. Field names and layout
++// mirror the `ShaderParams` struct the shader template declares.
++#[repr(C)]
++#[derive(Clone, Copy, Pod, Zeroable)]
++struct ShaderParams {
++    time: f32,
++    pad: f32,
++    resolution: [f32; 2],
++    signals: [[f32; 4]; 4],
++}
++
++#[derive(blade_macros::ShaderData)]
++struct ShaderPostData {
++    params: ShaderParams,
++    screen: gpu::TextureView,
++    samp: gpu::Sampler,
++}
++
++struct PostShader {
++    pipeline: gpu::RenderPipeline,
++    // Kept so the pipeline can be rebuilt when the surface is reconfigured.
++    source: String,
++    // Advanced by `set_post_signals`, so time freezes when the caller stops
++    // feeding signals rather than when the window stops drawing.
++    time: f32,
++    last_feed: Option<std::time::Instant>,
++}
++
+ #[derive(Clone, Debug, Eq, PartialEq)]
+ #[repr(C)]
+ struct PathSprite {
+@@ -340,6 +368,9 @@
+     path_intermediate_texture_view: gpu::TextureView,
+     path_intermediate_msaa_texture: Option<gpu::Texture>,
+     path_intermediate_msaa_texture_view: Option<gpu::TextureView>,
++    post_shader: Option<PostShader>,
++    post_intermediate: Option<(gpu::Texture, gpu::TextureView)>,
++    post_signals: [f32; 16],
+     rendering_parameters: RenderingParameters,
+ }
+ 
+@@ -426,6 +457,9 @@
+             path_intermediate_texture_view,
+             path_intermediate_msaa_texture,
+             path_intermediate_msaa_texture_view,
++            post_shader: None,
++            post_intermediate: None,
++            post_signals: [0.0; 16],
+             rendering_parameters,
+         })
+     }
+@@ -508,6 +542,16 @@
+                 .unzip();
+             self.path_intermediate_msaa_texture = path_intermediate_msaa_texture;
+             self.path_intermediate_msaa_texture_view = path_intermediate_msaa_texture_view;
++            if let Some((texture, view)) = self.post_intermediate.take() {
++                self.gpu.destroy_texture(texture);
++                self.gpu.destroy_texture_view(view);
++                self.post_intermediate = Some(create_post_intermediate_texture(
++                    &self.gpu,
++                    self.surface.info().format,
++                    gpu_size.width,
++                    gpu_size.height,
++                ));
++            }
+         }
+     }
+ 
+@@ -523,6 +567,54 @@
+                 self.surface.info(),
+                 self.rendering_parameters.path_sample_count,
+             );
++            if let Some(post) = &mut self.post_shader {
++                self.gpu.destroy_render_pipeline(&mut post.pipeline);
++                post.pipeline = create_post_pipeline(&self.gpu, self.surface.info(), &post.source);
++            }
++        }
++    }
++
++    /// Installs or clears the whole-window post-process shader. The source is
++    /// the full composed WGSL module; callers are expected to have validated
++    /// it already, since blade panics on bad input.
++    pub fn set_post_shader(&mut self, source: Option<&str>) {
++        self.wait_for_gpu();
++        if let Some(mut post) = self.post_shader.take() {
++            self.gpu.destroy_render_pipeline(&mut post.pipeline);
++        }
++        let Some(source) = source else {
++            if let Some((texture, view)) = self.post_intermediate.take() {
++                self.gpu.destroy_texture(texture);
++                self.gpu.destroy_texture_view(view);
++            }
++            return;
++        };
++        let pipeline = create_post_pipeline(&self.gpu, self.surface.info(), source);
++        if self.post_intermediate.is_none() {
++            self.post_intermediate = Some(create_post_intermediate_texture(
++                &self.gpu,
++                self.surface.info().format,
++                self.surface_config.size.width,
++                self.surface_config.size.height,
++            ));
++        }
++        self.post_shader = Some(PostShader {
++            pipeline,
++            source: source.to_string(),
++            time: 0.0,
++            last_feed: None,
++        });
++    }
++
++    pub fn set_post_signals(&mut self, signals: [f32; 16]) {
++        self.post_signals = signals;
++        if let Some(post) = &mut self.post_shader {
++            let now = std::time::Instant::now();
++            if let Some(last) = post.last_feed {
++                // Cap the step so a long gap between feeds doesn't jump time.
++                post.time += now.duration_since(last).as_secs_f32().min(0.1);
++            }
++            post.last_feed = Some(now);
+         }
+     }
+ 
+@@ -638,6 +730,13 @@
+         if let Some(msaa_view) = self.path_intermediate_msaa_texture_view {
+             self.gpu.destroy_texture_view(msaa_view);
+         }
++        if let Some(mut post) = self.post_shader.take() {
++            self.gpu.destroy_render_pipeline(&mut post.pipeline);
++        }
++        if let Some((texture, view)) = self.post_intermediate.take() {
++            self.gpu.destroy_texture(texture);
++            self.gpu.destroy_texture_view(view);
++        }
+     }
+ 
+     pub fn draw(&mut self, scene: &Scene) {
+@@ -650,6 +749,18 @@
+         };
+         self.command_encoder.init_texture(frame.texture());
+ 
++        // With a post shader installed, the main pass renders into the post
++        // intermediate and a final pass samples it back to the swapchain.
++        let post_view = if self.post_shader.is_some() {
++            self.post_intermediate.map(|(texture, view)| {
++                self.command_encoder.init_texture(texture);
++                view
++            })
++        } else {
++            None
++        };
++        let main_target_view = post_view.unwrap_or_else(|| frame.texture_view());
++
+         let globals = GlobalParams {
+             viewport_size: [
+                 self.surface_config.size.width as f32,
+@@ -666,7 +777,7 @@
+             "main",
+             gpu::RenderTargetSet {
+                 colors: &[gpu::RenderTarget {
+-                    view: frame.texture_view(),
++                    view: main_target_view,
+                     init_op: gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack),
+                     finish_op: gpu::FinishOp::Store,
+                 }],
+@@ -716,7 +827,7 @@
+                         "main",
+                         gpu::RenderTargetSet {
+                             colors: &[gpu::RenderTarget {
+-                                view: frame.texture_view(),
++                                view: main_target_view,
+                                 init_op: gpu::InitOp::Load,
+                                 finish_op: gpu::FinishOp::Store,
+                             }],
+@@ -906,6 +1017,42 @@
+         }
+         drop(pass);
+ 
++        if let (Some(post), Some((_, screen_view))) = (&self.post_shader, self.post_intermediate) {
++            let params = ShaderParams {
++                time: post.time,
++                pad: 0.0,
++                resolution: [
++                    self.surface_config.size.width as f32,
++                    self.surface_config.size.height as f32,
++                ],
++                signals: bytemuck::cast(self.post_signals),
++            };
++            // Blending stays off: the shader's output is the final image, so
++            // the surface's premultiplied alpha passes through untouched.
++            if let mut pass = self.command_encoder.render(
++                "post-process",
++                gpu::RenderTargetSet {
++                    colors: &[gpu::RenderTarget {
++                        view: frame.texture_view(),
++                        init_op: gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack),
++                        finish_op: gpu::FinishOp::Store,
++                    }],
++                    depth_stencil: None,
++                },
++            ) {
++                let mut encoder = pass.with(&post.pipeline);
++                encoder.bind(
++                    0,
++                    &ShaderPostData {
++                        params,
++                        screen: screen_view,
++                        samp: self.atlas_sampler,
++                    },
++                );
++                encoder.draw(0, 3, 0, 1);
++            }
++        }
++
+         self.command_encoder.present(frame);
+         let sync_point = self.gpu.submit(&mut self.command_encoder);
+ 
+@@ -951,6 +1098,69 @@
+     (texture, texture_view)
+ }
+ 
++fn create_post_intermediate_texture(
++    gpu: &gpu::Context,
++    format: gpu::TextureFormat,
++    width: u32,
++    height: u32,
++) -> (gpu::Texture, gpu::TextureView) {
++    let texture = gpu.create_texture(gpu::TextureDesc {
++        name: "post intermediate",
++        format,
++        size: gpu::Extent {
++            width,
++            height,
++            depth: 1,
++        },
++        array_layer_count: 1,
++        mip_level_count: 1,
++        sample_count: 1,
++        dimension: gpu::TextureDimension::D2,
++        usage: gpu::TextureUsage::RESOURCE | gpu::TextureUsage::TARGET,
++        external: None,
++    });
++    let texture_view = gpu.create_texture_view(
++        texture,
++        gpu::TextureViewDesc {
++            name: "post intermediate view",
++            format,
++            dimension: gpu::ViewDimension::D2,
++            subresources: &Default::default(),
++        },
++    );
++    (texture, texture_view)
++}
++
++fn create_post_pipeline(
++    gpu: &gpu::Context,
++    surface_info: gpu::SurfaceInfo,
++    source: &str,
++) -> gpu::RenderPipeline {
++    use gpu::ShaderData as _;
++
++    let shader = gpu.create_shader(gpu::ShaderDesc { source });
++    shader.check_struct_size::<ShaderParams>();
++
++    gpu.create_render_pipeline(gpu::RenderPipelineDesc {
++        name: "post-process",
++        data_layouts: &[&ShaderPostData::layout()],
++        vertex: shader.at("vs_post"),
++        vertex_fetches: &[],
++        primitive: gpu::PrimitiveState {
++            topology: gpu::PrimitiveTopology::TriangleList,
++            ..Default::default()
++        },
++        depth_stencil: None,
++        fragment: Some(shader.at("fs_post")),
++        color_targets: &[gpu::ColorTargetState {
++            format: surface_info.format,
++            blend: None,
++            write_mask: gpu::ColorWrites::default(),
++        }],
++        multisample_state: gpu::MultisampleState::default(),
++    })
++}
++
+ fn create_msaa_texture_if_needed(
+     gpu: &gpu::Context,
+     format: gpu::TextureFormat,
+diff -x .rox-stamp -ruN /tmp/gpui-pristine/src/platform/linux/wayland/window.rs vendor/gpui/src/platform/linux/wayland/window.rs
+--- a/src/platform/linux/wayland/window.rs
++++ b/src/platform/linux/wayland/window.rs
+@@ -1136,6 +1136,15 @@
+     fn gpu_specs(&self) -> Option<GpuSpecs> {
+         self.borrow().renderer.gpu_specs().into()
+     }
++
++    fn set_post_shader(&self, source: Option<&str>) -> Result<(), String> {
++        self.borrow_mut().renderer.set_post_shader(source);
++        Ok(())
++    }
++
++    fn set_post_signals(&self, signals: [f32; 16]) {
++        self.borrow_mut().renderer.set_post_signals(signals);
++    }
+ }
+ 
+ fn update_window(mut state: RefMut<WaylandWindowState>) {
+diff -x .rox-stamp -ruN /tmp/gpui-pristine/src/platform/linux/x11/window.rs vendor/gpui/src/platform/linux/x11/window.rs
+--- a/src/platform/linux/x11/window.rs
++++ b/src/platform/linux/x11/window.rs
+@@ -1667,4 +1667,17 @@
+     fn gpu_specs(&self) -> Option<GpuSpecs> {
+         self.0.state.borrow().renderer.gpu_specs().into()
+     }
++
++    fn set_post_shader(&self, source: Option<&str>) -> Result<(), String> {
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .set_post_shader(source);
++        Ok(())
++    }
++
++    fn set_post_signals(&self, signals: [f32; 16]) {
++        self.0.state.borrow_mut().renderer.set_post_signals(signals);
++    }
+ }
+diff -x .rox-stamp -ruN /tmp/gpui-pristine/src/platform.rs vendor/gpui/src/platform.rs
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -548,6 +548,12 @@
+     fn set_client_inset(&self, _inset: Pixels) {}
+     fn gpu_specs(&self) -> Option<GpuSpecs>;
+ 
++    // Whole-window post-process pass; only the blade backends implement it.
++    fn set_post_shader(&self, _source: Option<&str>) -> Result<(), String> {
++        Err("unsupported".to_string())
++    }
++    fn set_post_signals(&self, _signals: [f32; 16]) {}
++
+     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
+ 
+     #[cfg(any(test, feature = "test-support"))]
+diff -x .rox-stamp -ruN /tmp/gpui-pristine/src/window.rs vendor/gpui/src/window.rs
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -3239,6 +3239,39 @@
+         Ok(())
+     }
+ 
++    /// Installs or clears a whole-window post-process shader.
++    ///
++    /// The source is a WGSL fragment stage defining
++    /// `fn fs_user(uv: vec2<f32>) -> vec4<f32>`, with `params: ShaderParams`,
++    /// `screen: texture_2d<f32>` and `samp: sampler` in scope from the
++    /// wrapping template. Output is premultiplied alpha. The source is
++    /// validated with naga first; `Err` carries the validation message.
++    /// Backends without a post pass (anything but blade) return
++    /// `Err("unsupported")`.
++    ///
++    /// rox patch: part of the post-process pass.
++    pub fn set_post_shader(&mut self, source: Option<&str>) -> std::result::Result<(), String> {
++        let Some(user_source) = source else {
++            return self.platform_window.set_post_shader(None);
++        };
++        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++        {
++            let decorated = compose_post_shader_source(user_source, true);
++            validate_post_shader_source(&decorated)?;
++        }
++        self.platform_window
++            .set_post_shader(Some(&compose_post_shader_source(user_source, false)))
++    }
++
++    /// Feeds this frame's values for the post shader's 16 signal slots.
++    /// Shader time advances with these calls, so a caller that stops feeding
++    /// freezes the shader's clock.
++    ///
++    /// rox patch: part of the post-process pass.
++    pub fn set_post_signals(&mut self, signals: [f32; 16]) {
++        self.platform_window.set_post_signals(signals);
++    }
++
+     /// Add a node to the layout tree for the current frame. Takes the `Style` of the element for which
+     /// layout is being requested, along with the layout ids of any children. This method is called during
+     /// calls to the [`Element::request_layout`] trait method and enables any element to participate in layout.
+@@ -5132,3 +5165,102 @@
+         border_style,
+     }
+ }
++
++// rox patch: template and validation for the whole-window post-process pass.
++// The template supplies the vertex stage (a fullscreen triangle), the uniform
++// block and the screen texture bindings; user source only defines `fs_user`.
++const POST_SHADER_TEMPLATE: &str = "
++struct ShaderParams {
++    time: f32,
++    _pad: f32,
++    resolution: vec2<f32>,
++    signals: array<vec4<f32>, 4>,
++}
++
++struct PostVarying {
++    @builtin(position) position: vec4<f32>,
++    @location(0) uv: vec2<f32>,
++}
++
++@vertex
++fn vs_post(@builtin(vertex_index) vertex_id: u32) -> PostVarying {
++    let corner = vec2<f32>(f32((vertex_id << 1u) & 2u), f32(vertex_id & 2u));
++    var out = PostVarying();
++    out.position = vec4<f32>(corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0);
++    out.uv = corner;
++    return out;
++}
++
++@fragment
++fn fs_post(input: PostVarying) -> @location(0) vec4<f32> {
++    return fs_user(input.uv);
++}
++";
++
++// Blade assigns bind points from the pipeline's data layout, while naga
++// validation of a standalone module requires explicit ones, hence two variants.
++fn compose_post_shader_source(user_source: &str, decorated: bool) -> String {
++    let bindings = if decorated {
++        "@group(0) @binding(0) var<uniform> params: ShaderParams;\n\
++         @group(0) @binding(1) var screen: texture_2d<f32>;\n\
++         @group(0) @binding(2) var samp: sampler;\n"
++    } else {
++        "var<uniform> params: ShaderParams;\n\
++         var screen: texture_2d<f32>;\n\
++         var samp: sampler;\n"
++    };
++    format!("{POST_SHADER_TEMPLATE}\n{bindings}\n{user_source}")
++}
++
++// Blade panics on bad WGSL, so anything user-supplied gets checked up front.
++#[cfg(any(target_os = "linux", target_os = "freebsd"))]
++fn validate_post_shader_source(source: &str) -> std::result::Result<(), String> {
++    let module = naga::front::wgsl::parse_str(source).map_err(|err| err.emit_to_string(source))?;
++    naga::valid::Validator::new(
++        naga::valid::ValidationFlags::all(),
++        naga::valid::Capabilities::default(),
++    )
++    .validate(&module)
++    .map(|_| ())
++    .map_err(|err| err.emit_to_string(source))
++}
++
++#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
++mod post_shader_tests {
++    use super::*;
++
++    #[test]
++    fn identity_shader_validates() {
++        let user = "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++            return textureSample(screen, samp, uv);
++        }";
++        let decorated = compose_post_shader_source(user, true);
++        validate_post_shader_source(&decorated).unwrap();
++    }
++
++    #[test]
++    fn signal_tint_shader_validates() {
++        let user = "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++            let base = textureSample(screen, samp, uv);
++            let bass = params.signals[0].x;
++            let tint = vec4<f32>(bass, 0.0, 0.0, 0.0) * sin(params.time);
++            return base + tint * base.a;
++        }";
++        let decorated = compose_post_shader_source(user, true);
++        validate_post_shader_source(&decorated).unwrap();
++    }
++
++    #[test]
++    fn broken_shader_reports_error() {
++        let user = "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return uv; }";
++        let decorated = compose_post_shader_source(user, true);
++        let err = validate_post_shader_source(&decorated).unwrap_err();
++        assert!(!err.is_empty());
++    }
++
++    #[test]
++    fn missing_entry_point_reports_error() {
++        let decorated = compose_post_shader_source("", true);
++        assert!(validate_post_shader_source(&decorated).is_err());
++    }
++}

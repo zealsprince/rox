@@ -8,8 +8,9 @@
 //! playback's sake.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use gpui::{
     actions, deferred, div, prelude::*, px, svg, AnyElement, AnyWindowHandle, App, Axis, Context,
@@ -33,7 +34,7 @@ use crate::composite;
 use crate::design::{palette, tokens};
 use crate::history::{History, HistoryEvent};
 use crate::integrations::discord::DiscordPresence;
-use crate::integrations::media_controls::{MediaCommand, MediaKeys, NowPlayingMeta};
+use crate::integrations::media_controls::MediaSession;
 use crate::integrations::tray;
 use crate::lastfm::Scrobbler;
 use crate::panel::{self, AppState, TabHosts};
@@ -75,7 +76,7 @@ use crate::panels::transport::{SeekStripPanel, TrackInfoPanel, TransportPanel, V
 use crate::panels::vu::VuPanel;
 use crate::panels::waveform::WaveformPanel;
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
-use crate::player::{NowPlaying, Player};
+use crate::player::Player;
 use crate::portraits::Portraits;
 use crate::query::shared_query::SharedQuery;
 use crate::quick_play::QuickPlay;
@@ -129,6 +130,180 @@ pub(crate) fn apply_decorations(cx: &mut App) {
     });
 }
 
+/// What the last post shader compile said, for the Appearance page's
+/// readout: None is a clean compile (or nothing installed). Shared across
+/// windows because they all wear the same file; the last one to compile
+/// wins, which for one file is the same message.
+static POST_SHADER_ERROR: RwLock<Option<String>> = RwLock::new(None);
+
+/// The last post shader compile error, read live by the settings window.
+pub(crate) fn post_shader_error() -> Option<String> {
+    POST_SHADER_ERROR.read().unwrap().clone()
+}
+
+/// The shader switch as it currently stands, mirroring the settings file.
+/// A live static like `hide_menubar`'s, because the Appearance toggle, the
+/// menu row, and the hotkey all flip it and all have to show one state.
+static POST_SHADER_ON: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn post_shader_on() -> bool {
+    POST_SHADER_ON.load(Ordering::Relaxed)
+}
+
+/// Flip the screen shader everywhere: the menu row and the hotkey. This is
+/// the escape hatch for a shader that makes windows unusable, so it binds
+/// unscoped, applies immediately, and never prompts in either direction.
+pub(crate) fn toggle_post_shader(cx: &mut App) {
+    let on = !Settings::load().post_shader.enabled;
+    POST_SHADER_ON.store(on, Ordering::Relaxed);
+    Settings::update(move |s| s.post_shader.enabled = on);
+    apply_post_shader(cx);
+}
+
+/// The child windows currently wearing the shader under the all-windows
+/// option, and the composed source they wear. Workspace windows never
+/// appear here; they keep their own [`PostShaderDriver`]s.
+#[derive(Default)]
+struct ShadedChildren {
+    source: Option<String>,
+    windows: Vec<AnyWindowHandle>,
+}
+
+impl Global for ShadedChildren {}
+
+/// The shader confirm dialog's window while one is up. The sweeps skip it
+/// unconditionally: it's the way back from a bad shader, so it can never
+/// be shaded itself.
+#[derive(Default)]
+struct PostShaderConfirmWindow(Option<AnyWindowHandle>);
+
+impl Global for PostShaderConfirmWindow {}
+
+/// Register (or clear) the confirm dialog's window before any sweep can
+/// reach it. Called by the dialog on open and release.
+pub(crate) fn note_confirm_window(handle: Option<AnyWindowHandle>, cx: &mut App) {
+    cx.default_global::<PostShaderConfirmWindow>().0 = handle;
+}
+
+/// Reapply the configured post shader everywhere. The Appearance page's
+/// controls, the toggle action, the confirm dialog's revert, and the hot
+/// reload all land here; each workspace window re-reads the file and
+/// compiles it fresh, then the child windows follow when the all-windows
+/// option is on. Deferred like the decorations apply, so an in-window
+/// trigger can't re-enter its own update.
+pub(crate) fn apply_post_shader(cx: &mut App) {
+    cx.defer(|cx| {
+        let config = Settings::load().post_shader;
+        POST_SHADER_ON.store(config.enabled, Ordering::Relaxed);
+        for (handle, workspace) in cx.default_global::<WorkspaceWindows>().0.clone() {
+            let Some(workspace) = workspace.upgrade() else {
+                continue;
+            };
+            handle
+                .update(cx, |_, window, cx| {
+                    workspace.update(cx, |workspace, _| workspace.apply_post_shader(window));
+                })
+                .ok();
+        }
+        // The child pass: cache the source and shade every eligible window,
+        // or strip the ones shaded before. Read errors fall through as None
+        // here; the workspace pass above already surfaced them.
+        let source = (config.enabled && config.all_windows)
+            .then(|| config.path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()))
+            .flatten();
+        let previous = std::mem::take(&mut cx.default_global::<ShadedChildren>().windows);
+        cx.default_global::<ShadedChildren>().source = source.clone();
+        if source.is_some() {
+            sweep_shaded_children(cx);
+        } else {
+            for handle in previous {
+                handle
+                    .update(cx, |_, window, _| {
+                        window.set_post_shader(None).ok();
+                    })
+                    .ok();
+            }
+        }
+        // Repaint everything so the settings window's error readout and the
+        // shaded windows land in the same frame.
+        for window in cx.windows() {
+            window.update(cx, |_, window, _| window.refresh()).ok();
+        }
+    });
+}
+
+/// Shade every eligible window that isn't wearing the source yet: child
+/// windows opened after the apply join through the workspace's periodic
+/// sweep. Workspace windows keep their own drivers, and the confirm
+/// dialog is always skipped.
+fn sweep_shaded_children(cx: &mut App) {
+    let Some(source) = cx.default_global::<ShadedChildren>().source.clone() else {
+        return;
+    };
+    let workspaces: Vec<AnyWindowHandle> = cx
+        .default_global::<WorkspaceWindows>()
+        .0
+        .iter()
+        .map(|(handle, _)| *handle)
+        .collect();
+    let confirm = cx.default_global::<PostShaderConfirmWindow>().0;
+    let shaded = cx.default_global::<ShadedChildren>().windows.clone();
+    for handle in cx.windows() {
+        if workspaces.contains(&handle) || Some(handle) == confirm || shaded.contains(&handle) {
+            continue;
+        }
+        let installed = handle
+            .update(cx, |_, window, _| {
+                window.set_post_shader(Some(&source)).is_ok()
+            })
+            .unwrap_or(false);
+        if installed {
+            cx.default_global::<ShadedChildren>().windows.push(handle);
+        }
+    }
+}
+
+/// Push this frame's signal values into every shaded child window and keep
+/// their frames coming. Child windows have no driver of their own; the
+/// primary workspace's frame loop calls this through a defer, since a
+/// window can't update its siblings mid-render. Redraws go through
+/// `refresh`, the only wake that's legal outside the child's own frame;
+/// each push refreshes again, so the cadence rides the workspace loop.
+fn push_child_signals(signals: [f32; 16], cx: &mut App) {
+    let shaded = cx.default_global::<ShadedChildren>().windows.clone();
+    for handle in shaded {
+        let alive = handle
+            .update(cx, |_, window, _| {
+                window.set_post_signals(signals);
+                window.refresh();
+            })
+            .is_ok();
+        if !alive {
+            cx.default_global::<ShadedChildren>()
+                .windows
+                .retain(|h| *h != handle);
+        }
+    }
+}
+
+/// The per-window side of the post shader (the Appearance page's Screen
+/// Shader section): which file this window wears and its stamp, for the
+/// render loop's hot reload.
+struct PostShaderDriver {
+    path: PathBuf,
+    /// The file's stamp when it was last read, [`settings::file_stamp`]'s
+    /// size and mtime. A change re-reads; None (unreadable) counts as a
+    /// change too, so a file swapped back into place reloads.
+    stamp: Option<(u64, i64)>,
+    /// The last stat, so the hot-reload check costs one syscall a second
+    /// rather than one per frame.
+    checked: Instant,
+    /// Whether a compiled shader is actually installed on the window. A
+    /// compile error leaves the last good shader running, so this stays
+    /// true through a broken edit and false only until the first success.
+    active: bool,
+}
+
 /// Tear down a workspace window's app-level state: persist its layout, drop
 /// its player's art tint, forget the window, and quit once the last one
 /// goes. The OS close runs this from `on_window_should_close`; the Window
@@ -151,25 +326,40 @@ pub(crate) fn close_workspace_window(
     open.0.retain(|(h, _)| *h != handle);
     let last = open.0.is_empty();
     let stay = last && settings::quit_to_tray() && tray::resident(cx) && workspace.is_some();
-    let mut had_media = false;
+    let mut media = None;
     if let Some(ws) = workspace {
         let player = ws.read(cx).state.player.entity_id();
         let state = stay.then(|| ws.read(cx).state.clone());
         ws.update(cx, |this, cx| {
             this.persist(window, cx);
-            // Free the OS media service before a survivor re-registers it; the
-            // D-Bus name is per-process, so both can't hold it at once.
-            had_media = this.release_media();
+            // Take the OS media service off the window before a survivor
+            // re-registers it; the D-Bus name is per-process, so both can't
+            // hold it at once.
+            media = this.take_media();
         });
         match state {
-            Some(state) => tray::hold(state, cx),
+            // Going to the tray keeps the service running where the platform
+            // allows one with no window behind it, so the media keys still
+            // answer while the app is only an icon. Windows' SMTC is bound to
+            // the window handle it registered against, so there it goes down
+            // with the window and the reopen registers a fresh one.
+            Some(state) => tray::hold(
+                state,
+                media.take().filter(|_| !cfg!(target_os = "windows")),
+                cx,
+            ),
             // A shared pop-out re-seeds on its next track change, so a
             // stale entry never lingers.
             None => palette::forget(player, cx),
         }
     }
+    // Whatever the tray didn't take ends here, which frees the per-process
+    // name before the hand-off below claims it again.
+    let had_media = media.take().is_some();
     // The window that owned the media service just closed with others still
     // open; hand the service to a survivor so the media keys keep working.
+    // Each window's service speaks for its own player, so the survivor
+    // registers anew rather than inheriting this one.
     if had_media && !last {
         if let Some((handle, ws)) = cx.default_global::<WorkspaceWindows>().0.first().cloned() {
             let _ = handle.update(cx, |_, window, cx| {
@@ -407,6 +597,7 @@ actions!(
         IncreaseFontSize,
         DecreaseFontSize,
         ResetFontSize,
+        TogglePostShader,
         CloseWindow,
         Quit
     ]
@@ -482,6 +673,14 @@ pub fn init(cx: &mut App) {
     } else {
         "ctrl-w"
     };
+    // The screen shader kill switch, X as in fx. Unscoped on purpose: a
+    // hostile shader can bury every control this key would be reached by,
+    // so it has to fire from whichever window still has focus.
+    let post_shader_keys = if cfg!(target_os = "macos") {
+        "cmd-shift-x"
+    } else {
+        "ctrl-shift-x"
+    };
     cx.bind_keys([
         KeyBinding::new("space", TogglePlayback, PLAYBACK_KEY_SCOPE),
         KeyBinding::new("left", SeekBackward, PLAYBACK_KEY_SCOPE),
@@ -507,6 +706,7 @@ pub fn init(cx: &mut App) {
         // chord on every platform and the input leaves it unbound, unlike
         // plain and secondary Enter which type a newline.
         KeyBinding::new("shift-enter", StampLine, Some("LyricsEdit")),
+        KeyBinding::new(post_shader_keys, TogglePostShader, None),
         KeyBinding::new(close_window_keys, CloseWindow, None),
         KeyBinding::new(quit_keys, Quit, None),
     ]);
@@ -553,6 +753,9 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &IncreaseFontSize, cx| nudge_font_size(1.0, cx));
     cx.on_action(|_: &DecreaseFontSize, cx| nudge_font_size(-1.0, cx));
     cx.on_action(|_: &ResetFontSize, cx| set_font_size(palette::FONT_SIZE_DEFAULT, cx));
+    // The shader flip is app-wide like the zoom chords: whichever window
+    // has focus dispatches, and the apply reaches them all.
+    cx.on_action(|_: &TogglePostShader, cx| toggle_post_shader(cx));
 }
 
 /// Nudge the app font size by `delta` px from where it stands.
@@ -757,6 +960,8 @@ pub(crate) enum MenuAction {
     ToggleDecorations,
     /// Flip song theming: the playing track's art tinting the palette.
     ToggleArtTheming,
+    /// Flip the screen shader, the hotkey's menu twin. Never prompts.
+    TogglePostShader,
     /// Pick a workspace file and add it to the collection.
     ImportWorkspace,
     /// Open a catalog panel with its default config, landing where its
@@ -814,6 +1019,7 @@ impl MenuAction {
             MenuAction::ToggleMenubar => "toggle-menubar".into(),
             MenuAction::ToggleDecorations => "toggle-decorations".into(),
             MenuAction::ToggleArtTheming => "toggle-art-theming".into(),
+            MenuAction::TogglePostShader => "toggle-post-shader".into(),
             MenuAction::ImportWorkspace => "import-workspace".into(),
             MenuAction::ToggleQuitToTray => "toggle-quit-to-tray".into(),
             MenuAction::CloseWindow => "close-window".into(),
@@ -846,6 +1052,7 @@ impl MenuAction {
             "toggle-menubar" => MenuAction::ToggleMenubar,
             "toggle-decorations" => MenuAction::ToggleDecorations,
             "toggle-art-theming" => MenuAction::ToggleArtTheming,
+            "toggle-post-shader" => MenuAction::TogglePostShader,
             "import-workspace" => MenuAction::ImportWorkspace,
             "toggle-quit-to-tray" => MenuAction::ToggleQuitToTray,
             "close-window" => MenuAction::CloseWindow,
@@ -1100,6 +1307,11 @@ pub(crate) const MENUS: &[Menu] = &[
                 icon: icons::DISC,
                 action: MenuAction::ToggleArtTheming,
             }),
+            MenuEntry::Item(MenuItem {
+                label: "Screen Shader",
+                icon: icons::BLEND,
+                action: MenuAction::TogglePostShader,
+            }),
             MenuEntry::Section("Session"),
             MenuEntry::Item(MenuItem {
                 label: "Remain in Tray",
@@ -1193,6 +1405,11 @@ pub(crate) fn shortcut_for(action: MenuAction) -> Option<&'static str> {
             "Cmd-Shift-S"
         } else {
             "Ctrl-Shift-S"
+        }),
+        MenuAction::TogglePostShader => Some(if cfg!(target_os = "macos") {
+            "Cmd-Shift-X"
+        } else {
+            "Ctrl-Shift-X"
         }),
         _ => None,
     }
@@ -1309,14 +1526,13 @@ pub struct Workspace {
     _backdrop_changed: Subscription,
     /// The OS media service, on the primary window only: the D-Bus name is
     /// per-process, so a second window never registers its own. `None` on
-    /// every other window and when the platform backend won't come up.
-    media: Option<MediaKeys>,
-    /// The path the media widget's tags currently reflect, so the library
-    /// resolve behind them only runs on a track change, not every frame.
-    media_track: Option<PathBuf>,
-    /// The await loop pulling media-key presses off souvlaki's thread; dropped
-    /// with the window, which ends the loop.
-    _media_events: Option<Task<()>>,
+    /// every other window and when the platform backend won't come up. The
+    /// window holds it rather than owns it - a close hands it to a surviving
+    /// window or to the tray, and it only dies when the app does.
+    media: Option<Entity<MediaSession>>,
+    /// The whole-window post shader this window wears, None while the
+    /// setting is off or pathless. See [`PostShaderDriver`].
+    post_shader: Option<PostShaderDriver>,
 }
 
 /// A one-group tabs item plus the TabPanel entity inside it, for wiring the
@@ -1402,29 +1618,18 @@ fn layout_views(
     (view.clone(), center_tabs, bottom)
 }
 
-/// Drain the OS media service's key presses onto the shared player and keep
-/// the widget in step. Shared by the primary window's launch and the hand-off
-/// when that window closes with another still open.
-fn spawn_media_events(keys: &MediaKeys, cx: &mut Context<Workspace>) -> Task<()> {
-    let events = keys.events();
-    cx.spawn(async move |this, cx| {
-        let _ = this.update(cx, |this, cx| this.publish_media(cx));
-        while let Ok(cmd) = events.recv().await {
-            let applied = this.update(cx, |this, cx| {
-                this.apply_media(cmd, cx);
-                this.publish_media(cx);
-            });
-            if applied.is_err() {
-                break;
-            }
-        }
-    })
+/// What a window opening over the tray's hold takes back from it: the live
+/// shared state, and the OS media service when it stayed up while no window
+/// was open. Only a reopen carries one; every other open starts from nothing.
+pub struct Adopted {
+    pub state: AppState,
+    pub media: Option<Entity<MediaSession>>,
 }
 
 impl Workspace {
     pub fn new(
         start: WorkspaceStart,
-        adopt: Option<AppState>,
+        adopt: Option<Adopted>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1432,6 +1637,10 @@ impl Workspace {
         // the hold, so the playing player, library, and art carry straight
         // over; every other open builds its own world.
         let adopted = adopt.is_some();
+        let (adopt, adopt_media) = match adopt {
+            Some(adopt) => (Some(adopt.state), adopt.media),
+            None => (None, None),
+        };
         let state = adopt.unwrap_or_else(|| {
             let player = cx.new(Player::new);
             let library = cx.new(Library::new);
@@ -1622,7 +1831,7 @@ impl Workspace {
         });
         let _player_changed = cx.observe_in(&state.player, window, |this, _, window, cx| {
             this.refresh_title(window, cx);
-            this.publish_media(cx);
+            this.publish_tray(cx);
             // The native Play/Pause row is baked in, so it has to be rebuilt
             // when the player flips. Read here and handed over, since the
             // rebuild can't reach back through this workspace mid-update.
@@ -1661,18 +1870,18 @@ impl Workspace {
             });
         });
 
-        // The primary window registers the OS media service and drains its
-        // key presses on an await loop. A press maps to a transport verb and
-        // lands on the shared player; the publish keeps the widget's state in
-        // step, both on launch and after each press.
+        // The primary window owns the OS media service: a session the tray
+        // hands back when it kept one alive, a fresh registration otherwise.
+        // Everything past that point is the session's own business - it
+        // drains the keys onto the player and publishes back out on its own
+        // observer, with or without a window in front of it.
         let media = if is_primary {
-            MediaKeys::new(window)
+            adopt_media.or_else(|| MediaSession::new(state.clone(), window, cx))
         } else {
             None
         };
-        let _media_events = media.as_ref().map(|keys| spawn_media_events(keys, cx));
 
-        Workspace {
+        let mut this = Workspace {
             open_menu: None,
             open_submenu: None,
             pointer_down: false,
@@ -1700,8 +1909,113 @@ impl Workspace {
             _history_changed,
             _backdrop_changed,
             media,
-            media_track: None,
-            _media_events,
+            post_shader: None,
+        };
+        // The configured screen shader goes on as the window opens, so a
+        // restart wears it without a trip through the settings window.
+        this.apply_post_shader(window);
+        // With the all-windows option on, the per-window apply above isn't
+        // enough: the app-level pass has to run once to cache the source
+        // for the child sweeps, or children opened later stay bare.
+        let config = Settings::load().post_shader;
+        if config.enabled && config.all_windows {
+            apply_post_shader(cx);
+        }
+        this
+    }
+
+    /// Install or clear this window's post shader from the settings file.
+    /// The read and compile happen here, synchronously: a failure logs, lands
+    /// its message in the shared readout, and leaves whatever compiled last
+    /// still running, so a broken edit never blanks the effect.
+    fn apply_post_shader(&mut self, window: &mut Window) {
+        let config = Settings::load().post_shader;
+        // Keep the live switch in step; the startup path lands here before
+        // any app-level apply has run.
+        POST_SHADER_ON.store(config.enabled, Ordering::Relaxed);
+        let (true, Some(path)) = (config.enabled, config.path) else {
+            if self.post_shader.take().is_some_and(|driver| driver.active) {
+                window.set_post_shader(None).ok();
+            }
+            *POST_SHADER_ERROR.write().unwrap() = None;
+            return;
+        };
+        let mut driver = PostShaderDriver {
+            stamp: settings::file_stamp(&path),
+            checked: Instant::now(),
+            active: self
+                .post_shader
+                .as_ref()
+                .is_some_and(|driver| driver.active),
+            path,
+        };
+        let result = std::fs::read_to_string(&driver.path)
+            .map_err(|e| format!("reading {}: {e}", driver.path.display()))
+            .and_then(|source| window.set_post_shader(Some(&source)));
+        match result {
+            Ok(()) => {
+                driver.active = true;
+                *POST_SHADER_ERROR.write().unwrap() = None;
+            }
+            Err(error) => {
+                log::warn!("post shader: {error}");
+                *POST_SHADER_ERROR.write().unwrap() = Some(error);
+            }
+        }
+        self.post_shader = Some(driver);
+    }
+
+    /// The screen shader's frame loop, run from render: re-read the file
+    /// when its stamp moves (one stat a second, the pump cadence render
+    /// already rides), and while audio moves, feed the pool's signals into
+    /// the shader's slots (slot i takes pool signal i) and ask for the next
+    /// frame. A silent hub stops the feed, which freezes the shader clock
+    /// and parks the frame requests, the same self-parking discipline the
+    /// visualizer panels keep.
+    fn drive_post_shader(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(driver) = &mut self.post_shader else {
+            return;
+        };
+        // The oldest open workspace speaks for the app-wide concerns: the
+        // child sweeps and their signal feed run once, not per workspace.
+        let primary = cx
+            .default_global::<WorkspaceWindows>()
+            .0
+            .first()
+            .is_some_and(|(handle, _)| *handle == window.window_handle());
+        if driver.checked.elapsed().as_secs_f32() > 1.0 {
+            driver.checked = Instant::now();
+            if settings::file_stamp(&driver.path) != driver.stamp {
+                // Through the app-level apply, so every shaded window
+                // follows the edit rather than just this one. Never
+                // prompts: the hot reload is the authoring loop.
+                apply_post_shader(cx);
+            } else if primary {
+                // Catch child windows opened since the last apply.
+                cx.defer(sweep_shaded_children);
+            }
+        }
+        let Some(driver) = &self.post_shader else {
+            return;
+        };
+        if !driver.active {
+            return;
+        }
+        let hub = &self.state.signals;
+        if !hub.live() {
+            return;
+        }
+        hub.tick(&self.state.player.read(cx).feed());
+        let mut signals = [0.0f32; 16];
+        for (slot, signal) in hub.pool().iter().take(signals.len()).enumerate() {
+            signals[slot] = hub.value(signal.id).unwrap_or(0.0);
+        }
+        window.set_post_signals(signals);
+        window.request_animation_frame();
+        if primary {
+            // Deferred: a window can't update its siblings from inside its
+            // own render.
+            cx.defer(move |cx| push_child_signals(signals, cx));
         }
     }
 
@@ -2487,136 +2801,33 @@ impl Workspace {
         }
     }
 
-    /// Apply one media-key press to the shared player. Play and Pause act on
-    /// the edge so the OS buttons never flip a state that's already right;
-    /// Toggle is the bare play/pause key.
-    fn apply_media(&mut self, cmd: MediaCommand, cx: &mut Context<Self>) {
-        self.state.player.update(cx, |player, cx| match cmd {
-            MediaCommand::Toggle => player.toggle_pause(),
-            MediaCommand::Play => {
-                if !player.is_playing() {
-                    player.toggle_pause();
-                }
-            }
-            MediaCommand::Pause => {
-                if player.is_playing() {
-                    player.toggle_pause();
-                }
-            }
-            MediaCommand::Next => player.next(cx),
-            MediaCommand::Prev => player.prev(),
-            MediaCommand::Stop => player.stop(cx),
-            MediaCommand::SeekBy(delta) => player.seek_by(delta),
-            MediaCommand::SeekTo(secs) => player.seek_to(secs),
-        });
-    }
-
-    /// Register the OS media service on this window and start draining its key
-    /// presses. The hand-off target when the window that owned the service
-    /// closes with this one still open. The D-Bus name is per-process, so the
-    /// old owner has to release it first.
+    /// Register the OS media service over this window's state. The hand-off
+    /// target when the window that owned the service closes with this one
+    /// still open. The D-Bus name is per-process, so the old owner has to
+    /// release it first.
     fn install_media(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let media = MediaKeys::new(window);
-        self._media_events = media.as_ref().map(|keys| spawn_media_events(keys, cx));
-        self.media = media;
+        self.media = MediaSession::new(self.state.clone(), window, cx);
     }
 
-    /// Tear down the OS media service this window owned, freeing the per-process
-    /// D-Bus name for a survivor to claim. Returns whether it held one.
-    fn release_media(&mut self) -> bool {
-        self._media_events = None;
-        self.media.take().is_some()
+    /// Hand the OS media service off this window, freeing the per-process
+    /// D-Bus name. The service itself only ends when whoever takes it here
+    /// drops it.
+    fn take_media(&mut self) -> Option<Entity<MediaSession>> {
+        self.media.take()
     }
 
-    /// Push the now-playing track and play state out to the media widget. A
-    /// no-op off the primary window (no service there); the tag resolve only
-    /// runs when the track turns over, the play-state push is gated in
-    /// [`MediaKeys`], so this is cheap to call on every player notify.
-    fn publish_media(&mut self, cx: &mut Context<Self>) {
+    /// Push the play state to the tray's Play/Pause label, from the window
+    /// that owns the media service so several windows don't fight over it.
+    /// Gated in the tray, so player notifies don't turn into D-Bus writes.
+    fn publish_tray(&mut self, cx: &mut Context<Self>) {
         if self.media.is_none() {
             return;
         }
-        let now = self.state.player.read(cx).now_playing();
-        let playing = self.state.player.read(cx).is_playing();
-        let path = now.as_ref().map(|now| now.path.clone());
-        if path != self.media_track {
-            self.media_track = path.clone();
-            let meta = now.as_ref().map(|now| self.now_playing_meta(now, cx));
-            if let Some(media) = self.media.as_mut() {
-                media.set_track(meta);
-            }
-            self.publish_cover(path.clone(), cx);
-        }
-        let position = now
-            .as_ref()
-            .map(|now| Duration::from_secs_f64(now.position_secs.max(0.0)));
-        if let Some(media) = self.media.as_mut() {
-            media.set_playing(path.is_some(), playing, position);
-        }
-        // The tray's Play/Pause label rides the same choke point, gated the
-        // same way so player notifies don't turn into D-Bus writes.
-        tray::set_playing(path.is_some(), playing, cx);
-    }
-
-    /// Resolve the current track's cover off the UI thread and hand it to the
-    /// media widget when it lands. `set_track` already cleared the old cover
-    /// with the text, so a track with no art (or `None`, nothing playing)
-    /// needs no further work. The result is dropped when the track has moved
-    /// on by the time the read finishes, so a late cover never lands on the
-    /// wrong track.
-    fn publish_cover(&mut self, track: Option<PathBuf>, cx: &mut Context<Self>) {
-        let Some(track) = track else {
-            return;
+        let (has_track, playing) = {
+            let player = self.state.player.read(cx);
+            (player.now_playing().is_some(), player.is_playing())
         };
-        cx.spawn(async move |this, cx| {
-            let resolved = track.clone();
-            let cover = cx
-                .background_executor()
-                .spawn(async move {
-                    rox_library::art::cover_art(&resolved).and_then(|(bytes, mime)| {
-                        crate::integrations::media_controls::cache_now_playing_art(
-                            &resolved, &bytes, &mime,
-                        )
-                    })
-                })
-                .await;
-            this.update(cx, |this, _| {
-                if this.media_track.as_deref() != Some(track.as_path()) {
-                    return;
-                }
-                if let Some(media) = this.media.as_mut() {
-                    media.set_cover(cover);
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Resolve a playing track to the tags the widget shows, off the library.
-    /// An unknown file falls back to its filename for the title, empty for
-    /// the rest, so the widget never shows a blank card.
-    fn now_playing_meta(&self, now: &NowPlaying, cx: &App) -> NowPlayingMeta {
-        let tags = self.state.library.read(cx).meta_for(&now.path);
-        let title = tags
-            .as_ref()
-            .map(|m| m.title.clone())
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| {
-                now.path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            });
-        NowPlayingMeta {
-            title,
-            artist: tags.as_ref().map(|m| m.artist.clone()).unwrap_or_default(),
-            album: tags.map(|m| m.album).unwrap_or_default(),
-            duration: now
-                .duration_secs
-                .filter(|d| *d > 0.0)
-                .map(Duration::from_secs_f64),
-        }
+        tray::set_playing(has_track, playing, cx);
     }
 
     /// Debounced persist: wait out [`SAVE_DEBOUNCE`] of quiet, then dump.
@@ -3354,6 +3565,9 @@ fn dialog_button(
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The screen shader's hot reload and signal feed ride the render
+        // loop; it keeps its own frame requests going while audio moves.
+        self.drive_post_shader(window, cx);
         // A hidden menubar comes back while alt is held, and stays while a
         // dropdown is open so releasing alt can't strand one barless.
         let menubar_hidden = settings::hide_menubar();

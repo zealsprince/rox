@@ -66,6 +66,10 @@ impl Workspace {
                 Settings::update(move |s| s.look.bundle.appearance.art_theming = on);
                 native_menu::rebuild(cx);
             }
+            MenuAction::TogglePostShader => {
+                crate::workspace::toggle_post_shader(cx);
+                native_menu::rebuild(cx);
+            }
             MenuAction::ImportWorkspace => self.import_workspace(window, cx),
             MenuAction::ToggleQuitToTray => {
                 let on = !settings::quit_to_tray();
@@ -373,6 +377,7 @@ impl Workspace {
             MenuAction::ToggleDecorations => settings::os_decorations(),
             MenuAction::ToggleQuitToTray => settings::quit_to_tray(),
             MenuAction::ToggleArtTheming => palette::art_theming(),
+            MenuAction::TogglePostShader => crate::workspace::post_shader_on(),
             _ => false,
         };
         let is_playing = self.state.player.read(cx).is_playing();

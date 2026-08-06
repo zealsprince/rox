@@ -480,6 +480,15 @@ struct SettingsWindow {
     /// the directory on every Appearance render; create, switch, and
     /// delete refresh it.
     icon_packs: Vec<String>,
+    /// The screen shader's file and all-windows option, mirrored from
+    /// settings so the Appearance section doesn't re-read the file per
+    /// render. The enable switch is not mirrored: the hotkey and menu row
+    /// flip it from outside this window, so the row reads the workspace's
+    /// live static, like the menubar toggle does. The compile error reads
+    /// the workspace's live readout the same way, since the hot reload
+    /// rewrites it without this window hearing about it.
+    post_shader_path: Option<PathBuf>,
+    post_shader_all_windows: bool,
     /// Bumped on every appearance-slider tick; a debounced writer flushes the
     /// current values once the scrub settles instead of rewriting the whole
     /// settings file per tick.
@@ -765,6 +774,8 @@ impl SettingsWindow {
             model_sizes: Self::measure_models(),
             active_icon_pack: settings.icon_pack.clone(),
             icon_packs: crate::startup::icon_packs::all(),
+            post_shader_path: settings.post_shader.path.clone(),
+            post_shader_all_windows: settings.post_shader.all_windows,
             persist_gen: 0,
             persist_palette: false,
             _picker_changes,
@@ -1388,6 +1399,7 @@ impl SettingsWindow {
                     ),
                 )
             }))
+            .section(self.screen_shader_section(q, cx))
             .section(Section::new(q, icons::SQUARE_DASHED, "Frame", None, |rows| {
                 rows.keyed(
                     &["spacing", "gap", "outside"],
@@ -1421,6 +1433,158 @@ impl SettingsWindow {
                 )
             }))
             .section(self.colors_section(q, columns, cx))
+    }
+
+    /// The Screen Shader section: a WGSL post-process over the whole
+    /// window, run by the workspace's driver. The toggle and file land in
+    /// settings and reapply everywhere; the error line reads the driver's
+    /// live readout, so a broken edit caught by the hot reload shows here
+    /// without a round trip through this window.
+    fn screen_shader_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        let enabled = crate::workspace::post_shader_on();
+        let all_windows = self.post_shader_all_windows;
+        let path = self.post_shader_path.clone();
+        let error = crate::workspace::post_shader_error();
+        let description = match &path {
+            Some(path) => format!(
+                "{}. Reads a fragment stage defining fs_user(uv), with the screen \
+                 texture and the signal pool's first 16 signals bound; edits to the \
+                 file reload live",
+                path.display()
+            ),
+            None => "Pick a WGSL file with a fragment stage defining fs_user(uv); the \
+                     screen texture and the signal pool's first 16 signals come bound, \
+                     and edits to the file reload live"
+                .to_string(),
+        };
+        let controls = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .child(small_button(
+                "Reload",
+                icons::REFRESH_CW,
+                path.is_none(),
+                cx.listener(|this, _, _, cx| this.reload_post_shader(cx)),
+            ))
+            .child(small_button(
+                "Choose File",
+                icons::FOLDER,
+                false,
+                cx.listener(|this, _, window, cx| this.pick_post_shader(window, cx)),
+            ));
+        Section::new(q, icons::BLEND, "Screen Shader", None, move |mut rows| {
+            rows = rows
+                .keyed(
+                    &["shader", "wgsl", "post process", "effect", "crt"],
+                    "Screen Shader",
+                    Some("Run a music-reactive WGSL shader over the whole window"),
+                    panel::toggle(enabled, Self::set_post_shader_enabled, cx),
+                )
+                .row_dyn(
+                    &["shader", "wgsl", "file", "reload"],
+                    "Shader File",
+                    Some(description.into()),
+                    controls.into_any_element(),
+                )
+                .keyed(
+                    &["shader", "child windows", "settings", "everywhere"],
+                    "All Windows",
+                    Some(
+                        "Shade the child windows too: settings, stats, equalizer, \
+                         popped-out panels. The revert countdown stays unshaded either way",
+                    ),
+                    panel::toggle(all_windows, Self::set_post_shader_all_windows, cx),
+                );
+            match error {
+                Some(error) => rows.custom(&["shader", "error", "compile"], || {
+                    coverage_note(error).into_any_element()
+                }),
+                None => rows,
+            }
+        })
+    }
+
+    /// The shader switch: into the file, then every shaded window
+    /// reapplies, which is also what clears the pass when it goes off.
+    /// Turning it on runs the countdown confirm; a shader can bury the
+    /// very toggle that would undo it, so the change has to prove itself
+    /// or roll back on its own. Off needs no proof.
+    fn set_post_shader_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
+        let prior = Settings::load().post_shader;
+        Settings::update(move |s| s.post_shader.enabled = on);
+        crate::workspace::apply_post_shader(cx);
+        if on && prior.path.is_some() {
+            self.confirm_post_shader(prior, cx);
+        }
+        cx.notify();
+    }
+
+    /// The all-windows switch: no confirm of its own, the countdown window
+    /// stays out of the shading regardless.
+    fn set_post_shader_all_windows(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.post_shader_all_windows = on;
+        Settings::update(move |s| s.post_shader.all_windows = on);
+        crate::workspace::apply_post_shader(cx);
+        cx.notify();
+    }
+
+    /// Browse for the shader file. Picking one turns nothing on by itself;
+    /// the toggle stays the one switch. A pick that lands while the shader
+    /// runs takes visible effect, so that path runs the confirm too.
+    fn pick_post_shader(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.pop() else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                let prior = Settings::load().post_shader;
+                this.post_shader_path = Some(path.clone());
+                Settings::update(move |s| s.post_shader.path = Some(path));
+                crate::workspace::apply_post_shader(cx);
+                if prior.enabled {
+                    this.confirm_post_shader(prior, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Put the just-applied shader on the countdown clock, with this
+    /// window's mirrors refreshed if the clock wins.
+    fn confirm_post_shader(&mut self, prior: settings::PostShaderConfig, cx: &mut Context<Self>) {
+        let weak = cx.entity().downgrade();
+        crate::settings::shader_confirm::open(
+            prior,
+            self.player,
+            move |cx| {
+                weak.update(cx, |this, cx| {
+                    this.post_shader_path = Settings::load().post_shader.path.clone();
+                    cx.notify();
+                })
+                .ok();
+            },
+            cx,
+        );
+    }
+
+    /// Recompile the file as it stands, for shader edits the mtime watch
+    /// missed (a same-second rewrite) or a nudge after fixing an error.
+    fn reload_post_shader(&mut self, cx: &mut Context<Self>) {
+        crate::workspace::apply_post_shader(cx);
+        cx.notify();
     }
 
     /// The Icons section: the built-in set and every pack the user has as a

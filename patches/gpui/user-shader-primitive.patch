@@ -1,0 +1,1040 @@
+# rox patch: user shader primitive (WT-S2).
+#
+# Adds Window::register_user_shader / paint_user_shader and the in-scene
+# UserShader primitive that draws through a runtime-compiled blade pipeline,
+# and rebases the post-process pass onto the same registry. Blade only: the
+# Metal and D3D renderers skip the batch the way blade skips surfaces off mac.
+# macOS is meant to ride the macos-blade feature rather than a Metal port.
+#
+# Applies on top of post-process-pass.patch.
+diff -x .rox-stamp -ruN base/src/elements/mod.rs work/src/elements/mod.rs
+--- a/src/elements/mod.rs
++++ b/src/elements/mod.rs
+@@ -10,6 +10,7 @@
+ mod svg;
+ mod text;
+ mod uniform_list;
++mod user_shader;
+ 
+ pub use anchored::*;
+ pub use animation::*;
+@@ -23,3 +24,4 @@
+ pub use svg::*;
+ pub use text::*;
+ pub use uniform_list::*;
++pub use user_shader::*;
+diff -x .rox-stamp -ruN base/src/elements/user_shader.rs work/src/elements/user_shader.rs
+--- a/src/elements/user_shader.rs
++++ b/src/elements/user_shader.rs
+@@ -0,0 +1,96 @@
++use crate::{
++    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
++    Pixels, Style, StyleRefinement, Styled, UserShaderId, Window,
++};
++use refineable::Refineable;
++
++/// rox patch: an element that fills its bounds with a shader registered
++/// through [`Window::register_user_shader`].
++pub struct UserShaderElement {
++    shader: UserShaderId,
++    signals: [f32; 16],
++    style: StyleRefinement,
++}
++
++/// Create a new user shader element. Sizing is ordinary style; the shader
++/// gets the element's bounds and nothing else unless you feed it signals.
++pub fn user_shader(shader: UserShaderId) -> UserShaderElement {
++    UserShaderElement {
++        shader,
++        signals: [0.0; 16],
++        style: Default::default(),
++    }
++}
++
++impl UserShaderElement {
++    /// Set this frame's values for the shader's 16 signal slots. Unset slots
++    /// stay at zero.
++    pub fn signals(mut self, signals: [f32; 16]) -> Self {
++        self.signals = signals;
++        self
++    }
++}
++
++impl Element for UserShaderElement {
++    type RequestLayoutState = ();
++    type PrepaintState = ();
++
++    fn id(&self) -> Option<ElementId> {
++        None
++    }
++
++    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
++        None
++    }
++
++    fn request_layout(
++        &mut self,
++        _global_id: Option<&GlobalElementId>,
++        _inspector_id: Option<&InspectorElementId>,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> (LayoutId, Self::RequestLayoutState) {
++        let mut style = Style::default();
++        style.refine(&self.style);
++        let layout_id = window.request_layout(style, [], cx);
++        (layout_id, ())
++    }
++
++    fn prepaint(
++        &mut self,
++        _global_id: Option<&GlobalElementId>,
++        _inspector_id: Option<&InspectorElementId>,
++        _bounds: Bounds<Pixels>,
++        _request_layout: &mut Self::RequestLayoutState,
++        _window: &mut Window,
++        _cx: &mut App,
++    ) -> Self::PrepaintState {
++    }
++
++    fn paint(
++        &mut self,
++        _global_id: Option<&GlobalElementId>,
++        _inspector_id: Option<&InspectorElementId>,
++        bounds: Bounds<Pixels>,
++        _: &mut Self::RequestLayoutState,
++        _: &mut Self::PrepaintState,
++        window: &mut Window,
++        _: &mut App,
++    ) {
++        window.paint_user_shader(bounds, self.shader, self.signals);
++    }
++}
++
++impl IntoElement for UserShaderElement {
++    type Element = Self;
++
++    fn into_element(self) -> Self::Element {
++        self
++    }
++}
++
++impl Styled for UserShaderElement {
++    fn style(&mut self) -> &mut StyleRefinement {
++        &mut self.style
++    }
++}
+diff -x .rox-stamp -ruN base/src/platform/blade/blade_renderer.rs work/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -4,13 +4,14 @@
+ use super::{BladeAtlas, BladeContext};
+ use crate::{
+     Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point, PolychromeSprite,
+-    PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, Underline,
++    PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, Underline, UserShader,
+ };
+ use blade_graphics as gpu;
+ use blade_util::{BufferBelt, BufferBeltDescriptor};
+ use bytemuck::{Pod, Zeroable};
+ #[cfg(target_os = "macos")]
+ use media::core_video::CVMetalTextureCache;
++use std::collections::HashMap;
+ use std::sync::Arc;
+ 
+ const MAX_FRAME_TIME_MS: u32 = 10000;
+@@ -125,6 +126,24 @@
+     samp: gpu::Sampler,
+ }
+ 
++#[derive(blade_macros::ShaderData)]
++struct ShaderUserData {
++    globals: GlobalParams,
++    params: ShaderParams,
++    b_user_shaders: gpu::BufferPiece,
++}
++
++// One runtime-compiled pipeline per registered user shader.
++struct UserShaderPipeline {
++    pipeline: gpu::RenderPipeline,
++    // Kept so the pipeline can be rebuilt when the surface is reconfigured.
++    source: String,
++    // Advanced by this shader's own draws, capped the same way the post pass
++    // caps its feed, so one long-parked frame doesn't jump the clock.
++    time: f32,
++    last_draw: Option<std::time::Instant>,
++}
++
+ struct PostShader {
+     pipeline: gpu::RenderPipeline,
+     // Kept so the pipeline can be rebuilt when the surface is reconfigured.
+@@ -371,6 +390,7 @@
+     post_shader: Option<PostShader>,
+     post_intermediate: Option<(gpu::Texture, gpu::TextureView)>,
+     post_signals: [f32; 16],
++    user_shaders: HashMap<u32, UserShaderPipeline>,
+     rendering_parameters: RenderingParameters,
+ }
+ 
+@@ -460,6 +480,7 @@
+             post_shader: None,
+             post_intermediate: None,
+             post_signals: [0.0; 16],
++            user_shaders: HashMap::default(),
+             rendering_parameters,
+         })
+     }
+@@ -571,7 +592,32 @@
+                 self.gpu.destroy_render_pipeline(&mut post.pipeline);
+                 post.pipeline = create_post_pipeline(&self.gpu, self.surface.info(), &post.source);
+             }
++            for entry in self.user_shaders.values_mut() {
++                self.gpu.destroy_render_pipeline(&mut entry.pipeline);
++                entry.pipeline =
++                    create_user_shader_pipeline(&self.gpu, self.surface.info(), &entry.source);
++            }
++        }
++    }
++
++    /// Compiles a user shader into a pipeline this window can draw with. The
++    /// source is the full composed WGSL module and is expected to have been
++    /// validated already, since blade panics on bad input. Registering an id
++    /// twice is a no-op.
++    pub fn register_user_shader(&mut self, id: u32, source: &str) {
++        if self.user_shaders.contains_key(&id) {
++            return;
+         }
++        let pipeline = create_user_shader_pipeline(&self.gpu, self.surface.info(), source);
++        self.user_shaders.insert(
++            id,
++            UserShaderPipeline {
++                pipeline,
++                source: source.to_string(),
++                time: 0.0,
++                last_draw: None,
++            },
++        );
+     }
+ 
+     /// Installs or clears the whole-window post-process shader. The source is
+@@ -737,6 +783,9 @@
+             self.gpu.destroy_texture(texture);
+             self.gpu.destroy_texture_view(view);
+         }
++        for mut entry in std::mem::take(&mut self.user_shaders).into_values() {
++            self.gpu.destroy_render_pipeline(&mut entry.pipeline);
++        }
+     }
+ 
+     pub fn draw(&mut self, scene: &Scene) {
+@@ -1013,6 +1062,57 @@
+                         }
+                     }
+                 }
++                PrimitiveBatch::UserShaders(user_shaders) => {
++                    let Some(first) = user_shaders.first() else {
++                        continue;
++                    };
++                    // The clock ticks on this shader's own draws, so a panel
++                    // that stops painting freezes rather than jumping ahead.
++                    let Some(entry) = self.user_shaders.get_mut(&first.shader_id) else {
++                        continue;
++                    };
++                    let now = std::time::Instant::now();
++                    if let Some(last) = entry.last_draw {
++                        entry.time += now.duration_since(last).as_secs_f32().min(0.1);
++                    }
++                    entry.last_draw = Some(now);
++                    let time = entry.time;
++                    let pipeline = &self.user_shaders[&first.shader_id].pipeline;
++
++                    // `params` is one uniform for the whole draw, so instances
++                    // only ride together while their signals and size match.
++                    let mut start = 0;
++                    while start < user_shaders.len() {
++                        let head = &user_shaders[start];
++                        let mut end = start + 1;
++                        while end < user_shaders.len()
++                            && user_shaders[end].params == head.params
++                            && user_shaders[end].bounds.size == head.bounds.size
++                        {
++                            end += 1;
++                        }
++                        let run = &user_shaders[start..end];
++                        let params = ShaderParams {
++                            time,
++                            pad: 0.0,
++                            resolution: [head.bounds.size.width.0, head.bounds.size.height.0],
++                            signals: bytemuck::cast(head.params),
++                        };
++                        let instance_buf =
++                            unsafe { self.instance_belt.alloc_typed(run, &self.gpu) };
++                        let mut encoder = pass.with(pipeline);
++                        encoder.bind(
++                            0,
++                            &ShaderUserData {
++                                globals,
++                                params,
++                                b_user_shaders: instance_buf,
++                            },
++                        );
++                        encoder.draw(0, 4, 0, run.len() as u32);
++                        start = end;
++                    }
++                }
+             }
+         }
+         drop(pass);
+@@ -1158,6 +1258,40 @@
+             write_mask: gpu::ColorWrites::default(),
+         }],
+         multisample_state: gpu::MultisampleState::default(),
++    })
++}
++
++fn create_user_shader_pipeline(
++    gpu: &gpu::Context,
++    surface_info: gpu::SurfaceInfo,
++    source: &str,
++) -> gpu::RenderPipeline {
++    use gpu::ShaderData as _;
++
++    let shader = gpu.create_shader(gpu::ShaderDesc { source });
++    shader.check_struct_size::<GlobalParams>();
++    shader.check_struct_size::<ShaderParams>();
++    shader.check_struct_size::<UserShader>();
++
++    gpu.create_render_pipeline(gpu::RenderPipelineDesc {
++        name: "user-shader",
++        data_layouts: &[&ShaderUserData::layout()],
++        vertex: shader.at("vs_user_shader"),
++        vertex_fetches: &[],
++        primitive: gpu::PrimitiveState {
++            topology: gpu::PrimitiveTopology::TriangleStrip,
++            ..Default::default()
++        },
++        depth_stencil: None,
++        fragment: Some(shader.at("fs_user_shader")),
++        // Fixed at premultiplied-over: the contract says user output is
++        // premultiplied, and an in-scene quad composites over what's under it.
++        color_targets: &[gpu::ColorTargetState {
++            format: surface_info.format,
++            blend: Some(gpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
++            write_mask: gpu::ColorWrites::default(),
++        }],
++        multisample_state: gpu::MultisampleState::default(),
+     })
+ }
+ 
+diff -x .rox-stamp -ruN base/src/platform/linux/wayland/window.rs work/src/platform/linux/wayland/window.rs
+--- a/src/platform/linux/wayland/window.rs
++++ b/src/platform/linux/wayland/window.rs
+@@ -1098,9 +1098,12 @@
+         self.borrow().renderer.gpu_specs().into()
+     }
+ 
+-    fn set_post_shader(&self, source: Option<&str>) -> Result<(), String> {
++    fn register_user_shader(&self, id: u32, source: &str) {
++        self.borrow_mut().renderer.register_user_shader(id, source);
++    }
++
++    fn set_post_shader(&self, source: Option<&str>) {
+         self.borrow_mut().renderer.set_post_shader(source);
+-        Ok(())
+     }
+ 
+     fn set_post_signals(&self, signals: [f32; 16]) {
+diff -x .rox-stamp -ruN base/src/platform/linux/x11/window.rs work/src/platform/linux/x11/window.rs
+--- a/src/platform/linux/x11/window.rs
++++ b/src/platform/linux/x11/window.rs
+@@ -1668,13 +1668,16 @@
+         self.0.state.borrow().renderer.gpu_specs().into()
+     }
+ 
+-    fn set_post_shader(&self, source: Option<&str>) -> Result<(), String> {
++    fn register_user_shader(&self, id: u32, source: &str) {
+         self.0
+             .state
+             .borrow_mut()
+             .renderer
+-            .set_post_shader(source);
+-        Ok(())
++            .register_user_shader(id, source);
++    }
++
++    fn set_post_shader(&self, source: Option<&str>) {
++        self.0.state.borrow_mut().renderer.set_post_shader(source);
+     }
+ 
+     fn set_post_signals(&self, signals: [f32; 16]) {
+diff -x .rox-stamp -ruN base/src/platform/mac/metal_renderer.rs work/src/platform/mac/metal_renderer.rs
+--- a/src/platform/mac/metal_renderer.rs
++++ b/src/platform/mac/metal_renderer.rs
+@@ -522,6 +522,9 @@
+                     viewport_size,
+                     command_encoder,
+                 ),
++                // rox patch: user shaders are blade only, the way surfaces
++                // are mac only. Skipped rather than ported to Metal.
++                PrimitiveBatch::UserShaders(_) => true,
+             };
+             if !ok {
+                 command_encoder.end_encoding();
+diff -x .rox-stamp -ruN base/src/platform/windows/directx_renderer.rs work/src/platform/windows/directx_renderer.rs
+--- a/src/platform/windows/directx_renderer.rs
++++ b/src/platform/windows/directx_renderer.rs
+@@ -303,6 +303,9 @@
+                     sprites,
+                 } => self.draw_polychrome_sprites(texture_id, sprites),
+                 PrimitiveBatch::Surfaces(surfaces) => self.draw_surfaces(surfaces),
++                // rox patch: user shaders are blade only. Skipped rather than
++                // ported to HLSL.
++                PrimitiveBatch::UserShaders(_) => Ok(()),
+             }.context(format!("scene too large: {} paths, {} shadows, {} quads, {} underlines, {} mono, {} poly, {} surfaces",
+                     scene.paths.len(),
+                     scene.shadows.len(),
+diff -x .rox-stamp -ruN base/src/platform.rs work/src/platform.rs
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -548,10 +548,11 @@
+     fn set_client_inset(&self, _inset: Pixels) {}
+     fn gpu_specs(&self) -> Option<GpuSpecs>;
+ 
+-    // Whole-window post-process pass; only the blade backends implement it.
+-    fn set_post_shader(&self, _source: Option<&str>) -> Result<(), String> {
+-        Err("unsupported".to_string())
+-    }
++    // User shaders and the whole-window post-process pass; only the blade
++    // backends implement them. Validation happens in `Window`, so by the time
++    // a source reaches here it has already passed naga.
++    fn register_user_shader(&self, _id: u32, _source: &str) {}
++    fn set_post_shader(&self, _source: Option<&str>) {}
+     fn set_post_signals(&self, _signals: [f32; 16]) {}
+ 
+     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
+diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
+--- a/src/scene.rs
++++ b/src/scene.rs
+@@ -32,6 +32,8 @@
+     pub(crate) monochrome_sprites: Vec<MonochromeSprite>,
+     pub(crate) polychrome_sprites: Vec<PolychromeSprite>,
+     pub(crate) surfaces: Vec<PaintSurface>,
++    // rox patch: user shader primitives, painted by `Window::paint_user_shader`.
++    pub(crate) user_shaders: Vec<UserShader>,
+ }
+ 
+ impl Scene {
+@@ -46,6 +48,7 @@
+         self.monochrome_sprites.clear();
+         self.polychrome_sprites.clear();
+         self.surfaces.clear();
++        self.user_shaders.clear();
+     }
+ 
+     pub fn len(&self) -> usize {
+@@ -109,6 +112,10 @@
+                 surface.order = order;
+                 self.surfaces.push(surface.clone());
+             }
++            Primitive::UserShader(user_shader) => {
++                user_shader.order = order;
++                self.user_shaders.push(user_shader.clone());
++            }
+         }
+         self.paint_operations
+             .push(PaintOperation::Primitive(primitive));
+@@ -134,6 +141,9 @@
+         self.polychrome_sprites
+             .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+         self.surfaces.sort_by_key(|surface| surface.order);
++        // Sorted by shader too, so a run of one shader batches into one draw.
++        self.user_shaders
++            .sort_by_key(|user_shader| (user_shader.order, user_shader.shader_id));
+     }
+ 
+     #[cfg_attr(
+@@ -166,6 +176,9 @@
+             surfaces: &self.surfaces,
+             surfaces_start: 0,
+             surfaces_iter: self.surfaces.iter().peekable(),
++            user_shaders: &self.user_shaders,
++            user_shaders_start: 0,
++            user_shaders_iter: self.user_shaders.iter().peekable(),
+         }
+     }
+ }
+@@ -187,6 +200,7 @@
+     MonochromeSprite,
+     PolychromeSprite,
+     Surface,
++    UserShader,
+ }
+ 
+ pub(crate) enum PaintOperation {
+@@ -204,6 +218,7 @@
+     MonochromeSprite(MonochromeSprite),
+     PolychromeSprite(PolychromeSprite),
+     Surface(PaintSurface),
++    UserShader(UserShader),
+ }
+ 
+ impl Primitive {
+@@ -216,6 +231,7 @@
+             Primitive::MonochromeSprite(sprite) => &sprite.bounds,
+             Primitive::PolychromeSprite(sprite) => &sprite.bounds,
+             Primitive::Surface(surface) => &surface.bounds,
++            Primitive::UserShader(user_shader) => &user_shader.bounds,
+         }
+     }
+ 
+@@ -228,6 +244,7 @@
+             Primitive::MonochromeSprite(sprite) => &sprite.content_mask,
+             Primitive::PolychromeSprite(sprite) => &sprite.content_mask,
+             Primitive::Surface(surface) => &surface.content_mask,
++            Primitive::UserShader(user_shader) => &user_shader.content_mask,
+         }
+     }
+ }
+@@ -261,6 +278,9 @@
+     surfaces: &'a [PaintSurface],
+     surfaces_start: usize,
+     surfaces_iter: Peekable<slice::Iter<'a, PaintSurface>>,
++    user_shaders: &'a [UserShader],
++    user_shaders_start: usize,
++    user_shaders_iter: Peekable<slice::Iter<'a, UserShader>>,
+ }
+ 
+ impl<'a> Iterator for BatchIterator<'a> {
+@@ -290,6 +310,10 @@
+                 self.surfaces_iter.peek().map(|s| s.order),
+                 PrimitiveKind::Surface,
+             ),
++            (
++                self.user_shaders_iter.peek().map(|s| s.order),
++                PrimitiveKind::UserShader,
++            ),
+         ];
+         orders_and_kinds.sort_by_key(|(order, kind)| (order.unwrap_or(u32::MAX), *kind));
+ 
+@@ -420,6 +444,28 @@
+                     &self.surfaces[surfaces_start..surfaces_end],
+                 ))
+             }
++            PrimitiveKind::UserShader => {
++                // One batch per shader, so the renderer binds a pipeline once
++                // and draws the whole run instanced.
++                let shader_id = self.user_shaders_iter.peek().unwrap().shader_id;
++                let user_shaders_start = self.user_shaders_start;
++                let mut user_shaders_end = user_shaders_start + 1;
++                self.user_shaders_iter.next();
++                while self
++                    .user_shaders_iter
++                    .next_if(|user_shader| {
++                        (user_shader.order, batch_kind) < max_order_and_kind
++                            && user_shader.shader_id == shader_id
++                    })
++                    .is_some()
++                {
++                    user_shaders_end += 1;
++                }
++                self.user_shaders_start = user_shaders_end;
++                Some(PrimitiveBatch::UserShaders(
++                    &self.user_shaders[user_shaders_start..user_shaders_end],
++                ))
++            }
+         }
+     }
+ }
+@@ -446,6 +492,7 @@
+         sprites: &'a [PolychromeSprite],
+     },
+     Surfaces(&'a [PaintSurface]),
++    UserShaders(&'a [UserShader]),
+ }
+ 
+ #[derive(Default, Debug, Clone)]
+@@ -671,6 +718,27 @@
+     }
+ }
+ 
++/// rox patch: one instance of a user-registered shader, drawn as a quad
++/// through a runtime-compiled pipeline. Layout matches the `UserShader`
++/// struct the shader template declares, hence the explicit padding: WGSL
++/// aligns the signal array to 16 bytes and Rust would not.
++#[derive(Clone, Debug)]
++#[repr(C)]
++pub(crate) struct UserShader {
++    pub order: DrawOrder,
++    pub shader_id: u32,
++    pub bounds: Bounds<ScaledPixels>,
++    pub content_mask: ContentMask<ScaledPixels>,
++    pub pad: [u32; 2],
++    pub params: [f32; 16],
++}
++
++impl From<UserShader> for Primitive {
++    fn from(user_shader: UserShader) -> Self {
++        Primitive::UserShader(user_shader)
++    }
++}
++
+ #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+ pub(crate) struct PathId(pub(crate) usize);
+ 
+diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -872,6 +872,9 @@
+     pub(crate) pending_input_observers: SubscriberSet<(), AnyObserver>,
+     prompt: Option<RenderablePromptHandle>,
+     pub(crate) client_inset: Option<Pixels>,
++    // rox patch: shaders registered through `register_user_shader`, ids local
++    // to this window because the pipelines live in this window's renderer.
++    pub(crate) user_shaders: UserShaderRegistry,
+     #[cfg(any(feature = "inspector", debug_assertions))]
+     inspector: Option<Entity<Inspector>>,
+ }
+@@ -1255,6 +1258,7 @@
+             pending_input_observers: SubscriberSet::new(),
+             prompt: None,
+             client_inset: None,
++            user_shaders: UserShaderRegistry::default(),
+             image_cache_stack: Vec::new(),
+             #[cfg(any(feature = "inspector", debug_assertions))]
+             inspector: None,
+@@ -3239,28 +3243,93 @@
+         Ok(())
+     }
+ 
+-    /// Installs or clears a whole-window post-process shader.
++    /// Validates, compiles and caches a user shader, handing back the id the
++    /// paint and post-pass calls take.
+     ///
+     /// The source is a WGSL fragment stage defining
+-    /// `fn fs_user(uv: vec2<f32>) -> vec4<f32>`, with `params: ShaderParams`,
+-    /// `screen: texture_2d<f32>` and `samp: sampler` in scope from the
+-    /// wrapping template. Output is premultiplied alpha. The source is
+-    /// validated with naga first; `Err` carries the validation message.
+-    /// Backends without a post pass (anything but blade) return
+-    /// `Err("unsupported")`.
++    /// `fn fs_user(uv: vec2<f32>) -> vec4<f32>`, with `params: ShaderParams`
++    /// in scope from the wrapping template, plus `screen: texture_2d<f32>`
++    /// and `samp: sampler` when it runs as a post pass. Output is
++    /// premultiplied alpha. A shader that samples `screen` is post-only:
++    /// `paint_user_shader` skips it, since an in-scene quad has no window
++    /// texture to read.
++    ///
++    /// Registration is idempotent per source text, so re-registering the same
++    /// shader hands back the same id without recompiling. `Err` carries the
++    /// naga validation message verbatim. Backends without a shader pipeline
++    /// (anything but blade) return `Err("unsupported")`.
+     ///
+-    /// rox patch: part of the post-process pass.
+-    pub fn set_post_shader(&mut self, source: Option<&str>) -> std::result::Result<(), String> {
+-        let Some(user_source) = source else {
+-            return self.platform_window.set_post_shader(None);
+-        };
++    /// rox patch: part of the user shader primitive.
++    pub fn register_user_shader(
++        &mut self,
++        source: &str,
++    ) -> std::result::Result<UserShaderId, String> {
+         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+         {
+-            let decorated = compose_post_shader_source(user_source, true);
+-            validate_post_shader_source(&decorated)?;
++            let (id, is_new) = self.user_shaders.register(source)?;
++            let primitive = if is_new {
++                self.user_shaders
++                    .primitive_source(id)
++                    .map(|source| source.to_string())
++            } else {
++                None
++            };
++            if let Some(primitive) = primitive {
++                self.platform_window.register_user_shader(id.0, &primitive);
++            }
++            Ok(id)
+         }
+-        self.platform_window
+-            .set_post_shader(Some(&compose_post_shader_source(user_source, false)))
++        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
++        {
++            let _ = source;
++            Err("unsupported".to_string())
++        }
++    }
++
++    /// Paints one instance of a registered shader over `bounds`, with this
++    /// frame's values for its 16 signal slots. Post-only shaders (the ones
++    /// that sample the screen) silently paint nothing.
++    ///
++    /// This method should only be called as part of the paint phase of
++    /// element drawing.
++    ///
++    /// rox patch: part of the user shader primitive.
++    pub fn paint_user_shader(
++        &mut self,
++        bounds: Bounds<Pixels>,
++        shader: UserShaderId,
++        signals: [f32; 16],
++    ) {
++        use crate::UserShader;
++
++        self.invalidator.debug_assert_paint();
++
++        if self.user_shaders.primitive_source(shader).is_none() {
++            return;
++        }
++        let scale_factor = self.scale_factor();
++        let bounds = bounds.scale(scale_factor);
++        let content_mask = self.content_mask().scale(scale_factor);
++        self.next_frame.scene.insert_primitive(UserShader {
++            order: 0,
++            shader_id: shader.0,
++            bounds,
++            content_mask,
++            pad: [0; 2],
++            params: signals,
++        });
++    }
++
++    /// Installs or clears the whole-window post-process shader. Validation
++    /// happened at registration, so this can't fail; an unknown id and `None`
++    /// both clear the pass.
++    ///
++    /// rox patch: part of the post-process pass.
++    pub fn set_post_shader(&mut self, shader: Option<UserShaderId>) {
++        let source = shader
++            .and_then(|id| self.user_shaders.post_source(id))
++            .map(|source| source.to_string());
++        self.platform_window.set_post_shader(source.as_deref());
+     }
+ 
+     /// Feeds this frame's values for the post shader's 16 signal slots.
+@@ -5213,16 +5282,18 @@
+ }
+ 
+ // Blade panics on bad WGSL, so anything user-supplied gets checked up front.
++// The parsed module comes back so the caller can inspect what the source
++// declared.
+ #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+-fn validate_post_shader_source(source: &str) -> std::result::Result<(), String> {
++fn validate_shader_source(source: &str) -> std::result::Result<naga::Module, String> {
+     let module = naga::front::wgsl::parse_str(source).map_err(|err| err.emit_to_string(source))?;
+     naga::valid::Validator::new(
+         naga::valid::ValidationFlags::all(),
+         naga::valid::Capabilities::default(),
+     )
+     .validate(&module)
+-    .map(|_| ())
+-    .map_err(|err| err.emit_to_string(source))
++    .map_err(|err| err.emit_to_string(source))?;
++    Ok(module)
+ }
+ 
+ #[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
+@@ -5235,7 +5306,7 @@
+             return textureSample(screen, samp, uv);
+         }";
+         let decorated = compose_post_shader_source(user, true);
+-        validate_post_shader_source(&decorated).unwrap();
++        validate_shader_source(&decorated).unwrap();
+     }
+ 
+     #[test]
+@@ -5247,20 +5318,292 @@
+             return base + tint * base.a;
+         }";
+         let decorated = compose_post_shader_source(user, true);
+-        validate_post_shader_source(&decorated).unwrap();
++        validate_shader_source(&decorated).unwrap();
+     }
+ 
+     #[test]
+     fn broken_shader_reports_error() {
+         let user = "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return uv; }";
+         let decorated = compose_post_shader_source(user, true);
+-        let err = validate_post_shader_source(&decorated).unwrap_err();
++        let err = validate_shader_source(&decorated).unwrap_err();
+         assert!(!err.is_empty());
+     }
+ 
+     #[test]
+     fn missing_entry_point_reports_error() {
+         let decorated = compose_post_shader_source("", true);
+-        assert!(validate_post_shader_source(&decorated).is_err());
++        assert!(validate_shader_source(&decorated).is_err());
++    }
++}
++
++/// rox patch: identifies a shader registered with
++/// [`Window::register_user_shader`]. Ids are local to the window that handed
++/// them out, since the compiled pipeline lives in that window's renderer.
++#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
++pub struct UserShaderId(pub u32);
++
++// rox patch: template for the in-scene shader primitive. Same uniform block
++// as the post pass, but the vertex stage builds an instanced quad from the
++// scene's `UserShader` primitives and there is no screen texture to read.
++const USER_SHADER_TEMPLATE: &str = "
++struct ShaderParams {
++    time: f32,
++    _pad: f32,
++    resolution: vec2<f32>,
++    signals: array<vec4<f32>, 4>,
++}
++
++struct GlobalParams {
++    viewport_size: vec2<f32>,
++    premultiplied_alpha: u32,
++    pad: u32,
++}
++
++struct UserShaderBounds {
++    origin: vec2<f32>,
++    size: vec2<f32>,
++}
++
++struct UserShader {
++    order: u32,
++    shader_id: u32,
++    bounds: UserShaderBounds,
++    content_mask: UserShaderBounds,
++    signals: array<vec4<f32>, 4>,
++}
++
++struct UserShaderVarying {
++    @builtin(position) position: vec4<f32>,
++    @location(0) uv: vec2<f32>,
++    @location(1) clip_distances: vec4<f32>,
++}
++
++@vertex
++fn vs_user_shader(
++    @builtin(vertex_index) vertex_id: u32,
++    @builtin(instance_index) instance_id: u32,
++) -> UserShaderVarying {
++    let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
++    let quad = b_user_shaders[instance_id];
++    let position = unit_vertex * quad.bounds.size + quad.bounds.origin;
++    let device_position =
++        position / globals.viewport_size * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
++    let top_left = position - quad.content_mask.origin;
++    let bottom_right = quad.content_mask.origin + quad.content_mask.size - position;
++
++    var out = UserShaderVarying();
++    out.position = vec4<f32>(device_position, 0.0, 1.0);
++    out.uv = unit_vertex;
++    out.clip_distances = vec4<f32>(top_left.x, bottom_right.x, top_left.y, bottom_right.y);
++    return out;
++}
++
++@fragment
++fn fs_user_shader(input: UserShaderVarying) -> @location(0) vec4<f32> {
++    // Alpha clip first, the way the built-in primitives do: WGSL has no
++    // clip_distance here either.
++    if (any(input.clip_distances < vec4<f32>(0.0))) {
++        return vec4<f32>(0.0);
++    }
++    return fs_user(input.uv);
++}
++";
++
++// Same two-variant trick as the post pass: naga wants explicit bind points on
++// a standalone module, blade assigns them from the pipeline's data layout.
++fn compose_user_shader_source(user_source: &str, decorated: bool) -> String {
++    let bindings = if decorated {
++        "@group(0) @binding(0) var<uniform> globals: GlobalParams;\n\
++         @group(0) @binding(1) var<uniform> params: ShaderParams;\n\
++         @group(0) @binding(2) var<storage, read> b_user_shaders: array<UserShader>;\n"
++    } else {
++        "var<uniform> globals: GlobalParams;\n\
++         var<uniform> params: ShaderParams;\n\
++         var<storage, read> b_user_shaders: array<UserShader>;\n"
++    };
++    format!("{USER_SHADER_TEMPLATE}\n{bindings}\n{user_source}")
++}
++
++/// rox patch: one entry per registered shader. Both composed variants are
++/// kept as text, because the renderer rebuilds pipelines whenever the surface
++/// is reconfigured.
++pub(crate) struct UserShaderEntry {
++    post_source: String,
++    // `None` for a shader that samples the screen texture: there is no such
++    // texture in scene space, so it can only ever run as a post pass.
++    primitive_source: Option<String>,
++}
++
++/// rox patch: this window's user shaders, keyed by source content so the same
++/// text registered twice compiles once.
++#[derive(Default)]
++pub(crate) struct UserShaderRegistry {
++    by_hash: std::collections::HashMap<u64, UserShaderId>,
++    entries: Vec<UserShaderEntry>,
++}
++
++impl UserShaderRegistry {
++    fn entry(&self, id: UserShaderId) -> Option<&UserShaderEntry> {
++        self.entries.get(id.0 as usize)
++    }
++
++    /// The composed module for the whole-window post pass.
++    pub(crate) fn post_source(&self, id: UserShaderId) -> Option<&str> {
++        self.entry(id).map(|entry| entry.post_source.as_str())
++    }
++
++    /// The composed module for the in-scene primitive, absent for a
++    /// screen-sampling (post-only) shader.
++    pub(crate) fn primitive_source(&self, id: UserShaderId) -> Option<&str> {
++        self.entry(id)
++            .and_then(|entry| entry.primitive_source.as_deref())
++    }
++
++    /// Registers `source`, returning its id and whether this call is what
++    /// created it. Re-registering the same text is a lookup, not a compile.
++    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++    fn register(&mut self, source: &str) -> std::result::Result<(UserShaderId, bool), String> {
++        use std::hash::{Hash as _, Hasher as _};
++
++        let mut hasher = std::collections::hash_map::DefaultHasher::new();
++        source.hash(&mut hasher);
++        let hash = hasher.finish();
++        if let Some(id) = self.by_hash.get(&hash) {
++            return Ok((*id, false));
++        }
++
++        // The post variant is the superset (params plus the screen texture and
++        // its sampler), so it's what decides whether the source is valid at
++        // all, and its globals are what the guard below compares against.
++        let post_decorated = compose_post_shader_source(source, true);
++        let module = validate_shader_source(&post_decorated)?;
++        // A shader declaring its own module-scope variables passes validation
++        // and then panics blade's pipeline layout match, so it stops here.
++        for variable in module.global_variables.iter() {
++            let name = variable.1.name.as_deref().unwrap_or_default();
++            if !matches!(name, "params" | "screen" | "samp") {
++                return Err(format!(
++                    "user shaders can't declare module-scope variables, found `{name}`; \
++                     the template provides params, screen and samp"
++                ));
++            }
++        }
++
++        // A shader that reads `screen` won't resolve against the primitive
++        // template, which is exactly how a post-only shader identifies itself.
++        let primitive_decorated = compose_user_shader_source(source, true);
++        let primitive_source = validate_shader_source(&primitive_decorated)
++            .ok()
++            .map(|_| compose_user_shader_source(source, false));
++
++        let id = UserShaderId(self.entries.len() as u32);
++        self.entries.push(UserShaderEntry {
++            post_source: compose_post_shader_source(source, false),
++            primitive_source,
++        });
++        self.by_hash.insert(hash, id);
++        Ok((id, true))
++    }
++}
++
++#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
++mod user_shader_registry_tests {
++    use super::*;
++
++    const SOLID: &str = "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++        return vec4<f32>(uv.x, uv.y, 1.0, 1.0);
++    }";
++
++    #[test]
++    fn valid_source_registers_and_is_paintable() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, is_new) = registry.register(SOLID).unwrap();
++        assert_eq!(id, UserShaderId(0));
++        assert!(is_new);
++        assert!(registry.primitive_source(id).is_some());
++        assert!(registry.post_source(id).is_some());
++    }
++
++    #[test]
++    fn same_source_returns_same_id() {
++        let mut registry = UserShaderRegistry::default();
++        let (first, first_new) = registry.register(SOLID).unwrap();
++        let (second, second_new) = registry.register(SOLID).unwrap();
++        assert_eq!(first, second);
++        assert!(first_new);
++        assert!(!second_new);
++        assert_eq!(registry.entries.len(), 1);
++    }
++
++    #[test]
++    fn distinct_sources_get_distinct_ids() {
++        let mut registry = UserShaderRegistry::default();
++        let (first, _) = registry.register(SOLID).unwrap();
++        let (second, _) = registry
++            .register("fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }")
++            .unwrap();
++        assert_ne!(first, second);
++        assert_eq!(second, UserShaderId(1));
++    }
++
++    #[test]
++    fn invalid_source_returns_the_naga_message() {
++        let mut registry = UserShaderRegistry::default();
++        let error = registry
++            .register("fn fs_user(uv: vec2<f32>) -> vec4<f32> { return uv; }")
++            .unwrap_err();
++        assert!(error.contains("error"), "{error}");
++        assert!(registry.entries.is_empty());
++    }
++
++    #[test]
++    fn missing_entry_point_is_rejected() {
++        let mut registry = UserShaderRegistry::default();
++        assert!(registry.register("").is_err());
++    }
++
++    #[test]
++    fn extra_module_scope_variable_is_rejected() {
++        let mut registry = UserShaderRegistry::default();
++        let error = registry
++            .register(
++                "var<private> scratch: f32;
++                 fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                     return vec4<f32>(scratch, uv.y, 0.0, 1.0);
++                 }",
++            )
++            .unwrap_err();
++        assert!(error.contains("scratch"), "{error}");
++        assert!(registry.entries.is_empty());
++    }
++
++    #[test]
++    fn screen_sampling_source_is_post_only() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry
++            .register(
++                "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                     return textureSample(screen, samp, uv);
++                 }",
++            )
++            .unwrap();
++        assert!(registry.primitive_source(id).is_none());
++        assert!(registry.post_source(id).is_some());
++    }
++
++    #[test]
++    fn signals_and_time_reach_the_primitive_variant() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry
++            .register(
++                "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                     let bass = params.signals[0].x;
++                     let wobble = sin(params.time) * params.resolution.x;
++                     return vec4<f32>(bass, uv.x, wobble, 1.0);
++                 }",
++            )
++            .unwrap();
++        assert!(registry.primitive_source(id).is_some());
++        assert!(registry.primitive_source(UserShaderId(42)).is_none());
+     }
+ }

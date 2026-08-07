@@ -56,12 +56,14 @@ use crate::settings::{
     Providers, RatingStyle, ReplayGainSave, Settings, ShuffleMode, Theme, WorkspaceBundle,
     BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
 };
+use crate::signal_ui::{self, routes::RouteEditState};
 use crate::thumbs::Thumbs;
 use crate::workspace::Workspace;
 use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
 use rox_library::store::{GainCoverage, Stats};
 use rox_playback::engine;
 use rox_playback::output;
+use rox_viz::signal::Route;
 
 /// The folder table's fixed columns: the rollup numbers and the remove
 /// control, the last sized to [`icon_button`]'s footprint so the header
@@ -332,6 +334,9 @@ struct SettingsWindow {
     scroll: ScrollHandle,
     /// The shared catalog, the Library page's subject.
     library: Entity<Library>,
+    /// The app-wide signal pool, for the screen shader's route editor: the
+    /// routes it edits are the app's, and so are the signals they ride.
+    signals: Arc<rox_viz::signal::SignalHub>,
     /// The workspace that opened this window, the Layout page's subject:
     /// the tree walks its dock and imports rebuild it. Weak, so the
     /// settings window never keeps a closed workspace alive.
@@ -489,6 +494,17 @@ struct SettingsWindow {
     /// rewrites it without this window hearing about it.
     post_shader_path: Option<PathBuf>,
     post_shader_all_windows: bool,
+    /// The screen shader's routes, mirrored for the same reason the path
+    /// is: the section renders per keystroke under search and the settings
+    /// file carries the dock dumps. Edits write here, into the workspace's
+    /// live feed, and into the file on a debounce.
+    post_shader_routes: Vec<Route>,
+    /// The route editor's span sliders and fold state, kept in step with
+    /// the list above on every render.
+    post_shader_route_ui: RouteEditState,
+    /// The route write's own debounce generation, kept apart from the
+    /// appearance one so neither burst cancels the other's write.
+    route_persist_gen: u64,
     /// Bumped on every appearance-slider tick; a debounced writer flushes the
     /// current values once the scrub settles instead of rewriting the whole
     /// settings file per tick.
@@ -718,6 +734,7 @@ impl SettingsWindow {
             value_edit: panel::ValueEdit::default(),
             scroll: ScrollHandle::new(),
             library,
+            signals: state.signals,
             workspace,
             workspace_window,
             now_art: state.now_art,
@@ -776,6 +793,9 @@ impl SettingsWindow {
             icon_packs: crate::startup::icon_packs::all(),
             post_shader_path: settings.post_shader.path.clone(),
             post_shader_all_windows: settings.post_shader.all_windows,
+            post_shader_routes: settings.post_shader.routes.clone(),
+            post_shader_route_ui: RouteEditState::default(),
+            route_persist_gen: 0,
             persist_gen: 0,
             persist_palette: false,
             _picker_changes,
@@ -1474,6 +1494,27 @@ impl SettingsWindow {
                 false,
                 cx.listener(|this, _, window, cx| this.pick_post_shader(window, cx)),
             ));
+        // The same route editor the panel Shader page and the Shader
+        // panel's Bindings page wear, over the app-wide list. Its slot
+        // names come off the file the workspace compiled, so a shader that
+        // declares them reads the same here as it does on a panel.
+        let hub = self.signals.clone();
+        let labels = crate::workspace::post_shader_slot_labels();
+        let editor = signal_ui::routes::RouteEditor {
+            id: "screen-shader-route",
+            hub: &hub,
+            routes: &self.post_shader_routes,
+            labels: &labels,
+            value_edit: &self.value_edit,
+            ui: &self.post_shader_route_ui,
+            ui_mut: |this: &mut Self| &mut this.post_shader_route_ui,
+            mutate: Arc::new(
+                |this: &mut Self, edit: &mut dyn FnMut(&mut Vec<Route>), cx: &mut Context<Self>| {
+                    this.edit_post_shader_routes(edit, cx);
+                },
+            ),
+        };
+        let legacy = self.post_shader_routes.is_empty();
         Section::new(q, icons::BLEND, "Screen Shader", None, move |mut rows| {
             rows = rows
                 .keyed(
@@ -1497,13 +1538,75 @@ impl SettingsWindow {
                     ),
                     panel::toggle(all_windows, Self::set_post_shader_all_windows, cx),
                 );
-            match error {
+            rows = match error {
                 Some(error) => rows.custom(&["shader", "error", "compile"], || {
                     coverage_note(error).into_any_element()
                 }),
                 None => rows,
+            };
+            rows.custom(
+                &["shader", "signal", "route", "slot", "bind", "modulation"],
+                || {
+                    let add = editor.add_button(cx);
+                    let mut body = div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens::SPACE_MD)
+                        .child(editor.list(cx));
+                    if legacy {
+                        // Nothing routed is not nothing happening here, and
+                        // saying so is the only way the first route someone
+                        // adds doesn't look like it broke the other fifteen
+                        // slots.
+                        body = body.child(div().text_xs().text_color(palette::text_muted()).child(
+                            "With nothing routed the pool feeds the slots in its own \
+                                     order: the first signal into slot 0, the second into slot 1, \
+                                     and so on. The first route you add takes over the whole feed.",
+                        ));
+                    }
+                    panel::setting_block(
+                        "Signals",
+                        Some("Which shared signal each of the shader's sixteen slots reads"),
+                        Some(add.into_any_element()),
+                        body,
+                    )
+                    .into_any_element()
+                },
+            )
+        })
+    }
+
+    /// One edit to the screen shader's routes: into this window's mirror,
+    /// into the workspace's live feed so the shader follows the drag, and
+    /// into the file once the burst settles. The file write waits because
+    /// it reloads and reserializes every shard, dock dumps and all, which
+    /// is not what a slider tick should cost.
+    fn edit_post_shader_routes(
+        &mut self,
+        edit: &mut dyn FnMut(&mut Vec<Route>),
+        cx: &mut Context<Self>,
+    ) {
+        edit(&mut self.post_shader_routes);
+        let routes = self.post_shader_routes.clone();
+        crate::workspace::set_post_shader_routes(routes.clone());
+        // Its own generation, not the appearance one: a route drag must not
+        // cancel a pending palette write, and the two bursts overlap the
+        // moment someone tunes a shader against a color.
+        self.route_persist_gen += 1;
+        let gen = self.route_persist_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            let latest = this
+                .update(cx, |this, _| this.route_persist_gen)
+                .unwrap_or(gen);
+            if latest == gen {
+                Settings::update(move |s| s.post_shader.routes = routes);
             }
         })
+        .detach();
+        cx.notify();
     }
 
     /// The shader switch: into the file, then every shaded window
@@ -4835,6 +4938,13 @@ impl Render for SettingsWindow {
         // editor follows it here since every switch path repaints all
         // windows.
         self.sync_editor_side(window, cx);
+
+        // The Appearance page builds from `&self`, so the shader route
+        // editor's sliders and folds are matched to the list here, before
+        // any page renders. Search builds every page each keystroke, which
+        // is the other reason it can't happen down there.
+        self.post_shader_route_ui
+            .sync(self.post_shader_routes.len());
 
         // A live query builds every page and stacks the survivors; the
         // sidebar dims the pages that kept nothing. No query builds just

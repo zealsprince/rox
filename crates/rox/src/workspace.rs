@@ -66,6 +66,7 @@ use crate::panels::queue::QueuePanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
 use crate::panels::rating::RatingPanel;
 use crate::panels::search::{SearchConfig, SearchPanel};
+use crate::panels::shader::ShaderPanel;
 use crate::panels::slide::SlidePanel;
 use crate::panels::spacer::SpacerPanel;
 use crate::panels::spectrum::SpectrumPanel;
@@ -87,6 +88,7 @@ use crate::settings::{
 };
 use crate::thumbs::Thumbs;
 use crate::track_ui::track_drag::PlayDrag;
+use rox_viz::signal::{Route, SignalHub};
 
 mod menubar;
 pub(crate) mod native_menu;
@@ -148,6 +150,29 @@ static POST_SHADER_ON: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn post_shader_on() -> bool {
     POST_SHADER_ON.load(Ordering::Relaxed)
+}
+
+/// The screen shader's routes as the frame loop sees them. Live rather
+/// than read from settings per frame for the obvious reason, but also so
+/// editing a route never touches the file the shader is compiled from: a
+/// settings reapply re-reads and recompiles the WGSL, which is not what a
+/// slider drag should cost.
+static POST_SHADER_ROUTES: RwLock<Vec<Route>> = RwLock::new(Vec::new());
+
+/// Point the screen shader at a new route list. The settings window calls
+/// this as it edits; the per-window apply seeds it from the file.
+pub(crate) fn set_post_shader_routes(routes: Vec<Route>) {
+    *POST_SHADER_ROUTES.write().unwrap() = routes;
+}
+
+/// The slot names the screen shader's source declares, from its `// @slot
+/// n: name` comments. Read where the file is, published here so the
+/// settings window's route editor can name slots without opening the file
+/// on every render.
+static POST_SHADER_LABELS: RwLock<Vec<Option<String>>> = RwLock::new(Vec::new());
+
+pub(crate) fn post_shader_slot_labels() -> Vec<Option<String>> {
+    POST_SHADER_LABELS.read().unwrap().clone()
 }
 
 /// Flip the screen shader everywhere: the menu row and the hotkey. This is
@@ -224,7 +249,7 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
             for handle in previous {
                 handle
                     .update(cx, |_, window, _| {
-                        window.set_post_shader(None).ok();
+                        window.set_post_shader(None);
                     })
                     .ok();
             }
@@ -259,7 +284,13 @@ fn sweep_shaded_children(cx: &mut App) {
         }
         let installed = handle
             .update(cx, |_, window, _| {
-                window.set_post_shader(Some(&source)).is_ok()
+                match window.register_user_shader(&source) {
+                    Ok(id) => {
+                        window.set_post_shader(Some(id));
+                        true
+                    }
+                    Err(_) => false,
+                }
             })
             .unwrap_or(false);
         if installed {
@@ -284,7 +315,8 @@ fn push_child_signals(signals: [f32; 16], cx: &mut App) {
     for handle in shaded {
         let alive = handle
             .update(cx, |root, window, cx| {
-                window.set_post_signals(signals);
+                // Zeroed meta until a later unit assigns the eight slots.
+                window.set_post_signals(signals, [0.0; 8]);
                 cx.notify(root.entity_id());
             })
             .is_ok();
@@ -294,6 +326,30 @@ fn push_child_signals(signals: [f32; 16], cx: &mut App) {
                 .retain(|h| *h != handle);
         }
     }
+}
+
+/// This frame's slot values for the screen shader, the app-wide twin of a
+/// panel surface's own resolve.
+///
+/// Two ways in, and which one runs is decided by whether anything has been
+/// routed. With routes, they resolve into slots exactly like a panel's do.
+/// With none, the pool feeds the slots in its own order - the behaviour
+/// from before the routes existed, kept because a setup tuned against it
+/// would otherwise go dark on upgrade. The first route someone adds takes
+/// over the whole feed, which is the only reading that doesn't have two
+/// things writing the same slot.
+fn post_shader_signals(hub: &SignalHub) -> [f32; panel::shader::SLOTS] {
+    let routes = POST_SHADER_ROUTES.read().unwrap();
+    if routes.is_empty() {
+        let mut signals = [0.0f32; panel::shader::SLOTS];
+        for (slot, signal) in hub.pool().iter().take(signals.len()).enumerate() {
+            signals[slot] = hub.value(signal.id).unwrap_or(0.0);
+        }
+        return signals;
+    }
+    let mut targets = panel::shader::SlotTargets::default();
+    crate::signal_ui::apply_routes(&routes, hub, &mut targets);
+    targets.slots
 }
 
 /// The per-window side of the post shader (the Appearance page's Screen
@@ -945,6 +1001,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     // Registered whether or not experimental features are on: the flag
     // gates the panel menus, not a layout that already holds one.
     configured!("particles", ParticlesPanel);
+    configured!("shader", ShaderPanel);
     configured!("drag anchor", DragAnchorPanel);
     configured!("spacer", SpacerPanel);
     configured!("theme toggle", ThemeTogglePanel);
@@ -1985,6 +2042,9 @@ impl Workspace {
             media,
             post_shader: None,
         };
+        // Panel surface shaders paint far from any state handle, so the
+        // window's hub and player go on the registry they look up.
+        panel::shader::note_window(window, &this.state, cx);
         // The configured screen shader goes on as the window opens, so a
         // restart wears it without a trip through the settings window.
         this.apply_post_shader(window);
@@ -2004,14 +2064,16 @@ impl Workspace {
     /// still running, so a broken edit never blanks the effect.
     fn apply_post_shader(&mut self, window: &mut Window) {
         let config = Settings::load().post_shader;
-        // Keep the live switch in step; the startup path lands here before
-        // any app-level apply has run.
+        // Keep the live switch and the route feed in step; the startup path
+        // lands here before any app-level apply has run.
         POST_SHADER_ON.store(config.enabled, Ordering::Relaxed);
+        set_post_shader_routes(config.routes);
         let (true, Some(path)) = (config.enabled, config.path) else {
             if self.post_shader.take().is_some_and(|driver| driver.active) {
-                window.set_post_shader(None).ok();
+                window.set_post_shader(None);
             }
             *POST_SHADER_ERROR.write().unwrap() = None;
+            *POST_SHADER_LABELS.write().unwrap() = Vec::new();
             return;
         };
         let mut driver = PostShaderDriver {
@@ -2025,9 +2087,15 @@ impl Workspace {
         };
         let result = std::fs::read_to_string(&driver.path)
             .map_err(|e| format!("reading {}: {e}", driver.path.display()))
-            .and_then(|source| window.set_post_shader(Some(&source)));
+            .and_then(|source| {
+                // The slot names travel with the source, so the settings
+                // window's route editor names them the way a panel's does.
+                *POST_SHADER_LABELS.write().unwrap() = panel::shader::slot_labels(&source);
+                window.register_user_shader(&source)
+            });
         match result {
-            Ok(()) => {
+            Ok(id) => {
+                window.set_post_shader(Some(id));
                 driver.active = true;
                 *POST_SHADER_ERROR.write().unwrap() = None;
             }
@@ -2086,11 +2154,9 @@ impl Workspace {
         if !hub.live() {
             return;
         }
-        let mut signals = [0.0f32; 16];
-        for (slot, signal) in hub.pool().iter().take(signals.len()).enumerate() {
-            signals[slot] = hub.value(signal.id).unwrap_or(0.0);
-        }
-        window.set_post_signals(signals);
+        let signals = post_shader_signals(hub);
+        // Zeroed meta until a later unit assigns the eight slots.
+        window.set_post_signals(signals, [0.0; 8]);
         window.request_animation_frame();
         if primary {
             // Deferred: a window can't update its siblings from inside its
@@ -3902,5 +3968,68 @@ mod tests {
         let once = v.clone();
         denoise_f32(&mut v);
         assert_eq!(v, once);
+    }
+}
+
+#[cfg(test)]
+mod shader_feed_tests {
+    use super::*;
+    use rox_viz::signal::Source;
+    use rox_viz::AudioFeed;
+
+    /// A hub carrying one band signal, ticked once so the engine has a slot
+    /// to read. Silent: what's being checked here is which path fills the
+    /// slots, and a route's Quiet end is what it reads at silence, which
+    /// makes the two paths tell themselves apart with no audio at all.
+    fn silent_hub() -> (SignalHub, u64) {
+        let hub = SignalHub::new(Vec::new());
+        let (id, _) = hub.add(
+            Source::Band {
+                lo: 30.0,
+                hi: 120.0,
+            },
+            0.0,
+        );
+        hub.tick(&AudioFeed::new(), None);
+        (hub, id)
+    }
+
+    /// Both paths in one test on purpose: they share a process-wide static,
+    /// and two tests setting it would race each other in the same binary.
+    #[test]
+    fn routes_take_over_the_feed_and_nothing_routed_keeps_pool_order() {
+        let (hub, id) = silent_hub();
+        set_post_shader_routes(Vec::new());
+        assert_eq!(post_shader_signals(&hub), [0.0; panel::shader::SLOTS]);
+
+        set_post_shader_routes(vec![Route {
+            enabled: true,
+            signal: id,
+            target: panel::shader::slot_target(3),
+            from: 0.5,
+            to: 1.0,
+        }]);
+        let signals = post_shader_signals(&hub);
+        // The route's Quiet end, which the pool-order feed has no way to
+        // produce: it can only ever hand a slot the signal's own value.
+        assert!(
+            (signals[3] - 0.5).abs() < 1e-4,
+            "slot 3 should read the route's quiet end, got {}",
+            signals[3]
+        );
+        // And slot 0 no longer takes pool signal 0 just for being first.
+        assert_eq!(signals[0], 0.0);
+
+        // A route pointing at a signal the pool never carried leaves its
+        // slot alone rather than falling back to the pool order.
+        set_post_shader_routes(vec![Route {
+            enabled: true,
+            signal: id + 99,
+            target: panel::shader::slot_target(1),
+            from: 0.5,
+            to: 1.0,
+        }]);
+        assert_eq!(post_shader_signals(&hub), [0.0; panel::shader::SLOTS]);
+        set_post_shader_routes(Vec::new());
     }
 }

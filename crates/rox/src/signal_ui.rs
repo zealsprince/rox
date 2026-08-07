@@ -9,6 +9,13 @@
 //! host exposes each frame. The pool itself is app-wide in [`SignalHub`];
 //! edits write through to settings, so a relaunch finds what every open
 //! panel was riding.
+//!
+//! Shader slots don't route through [`bindable_row`] - a slot has no knob
+//! of its own to hang a route under, and three different windows edit the
+//! same list. That editor is [`routes`], built over a borrowed slice and a
+//! write-back closure rather than a host trait.
+
+pub mod routes;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,12 +56,10 @@ const SPAN_OVER: f32 = 4.0;
 /// a static table and a list read off a live config implement it the
 /// same way.
 pub trait RouteTargets {
-    /// Every bindable target as `(id, label)`, in display order. The
-    /// listing is half the contract even while no picker renders it:
-    /// a host declaring only `apply` would leave its bindable surface
-    /// discoverable by grepping row call sites, which is the shape this
-    /// trait exists to replace.
-    #[allow(dead_code)]
+    /// Every bindable target as `(id, label)`, in display order. The shader
+    /// panel's Bindings page is built straight off this listing, since its
+    /// slots and their names come from the source rather than a table in
+    /// the code.
     fn targets(&self) -> Vec<(String, String)>;
 
     /// Land one resolved factor on the target `id` names. Unknown ids do
@@ -359,8 +364,10 @@ pub fn meter(hub: Arc<SignalHub>, id: u64, fill: Rgba, marker: Option<f32>) -> D
 
 /// One chip of a binding's scope row: the segmented control's look, built
 /// by hand because the scope list follows the live pool, which the static
-/// segmented options can't carry.
-fn scope_chip<P: SignalHost>(
+/// segmented options can't carry. Open to any view, not just a
+/// [`SignalHost`]: the panel settings window's Shader page picks slots and
+/// signals with the same chips while holding its panel weakly.
+pub fn scope_chip<P: 'static>(
     label: String,
     picked: bool,
     on_pick: impl Fn(&mut P, &mut Context<P>) + 'static,
@@ -1309,7 +1316,7 @@ pub fn bindable_row<P: RouteHost>(
         .flex()
         .flex_col()
         .gap(tokens::SPACE_SM)
-        .child(setting_row(label, description, control));
+        .child(panel::setting_row(label, description, control));
     if open {
         if let Some(index) = bound {
             let header = settings_ui::block_header(

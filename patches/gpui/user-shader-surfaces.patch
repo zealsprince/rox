@@ -1,0 +1,1999 @@
+# rox patch: user shader surfaces (WT-S5).
+#
+# Widens ShaderParams to time/delta/resolution/mouse/user_meta/signals (128
+# bytes), classifies `prev` references at registration and exposes
+# Window::user_shader_caps, and adds Window::paint_screen_shader: a real scene
+# primitive that makes the renderer re-run a shader over everything composed
+# under a bounds, at frame end, with an optional per-instance feedback buffer.
+#
+# The main pass renders into the post intermediate whenever region entries
+# exist or a post shader is installed; regions read rects back out of it in
+# paint order and write back scissored; the window post pass runs last. Blade
+# only, like the two patches under it.
+#
+# Applies on top of user-shader-primitive.patch.
+diff -x .rox-stamp -ruN base/src/elements/user_shader.rs work/src/elements/user_shader.rs
+--- a/src/elements/user_shader.rs
++++ b/src/elements/user_shader.rs
+@@ -9,6 +9,7 @@
+ pub struct UserShaderElement {
+     shader: UserShaderId,
+     signals: [f32; 16],
++    meta: [f32; 8],
+     style: StyleRefinement,
+ }
+ 
+@@ -18,6 +19,7 @@
+     UserShaderElement {
+         shader,
+         signals: [0.0; 16],
++        meta: [0.0; 8],
+         style: Default::default(),
+     }
+ }
+@@ -29,6 +31,13 @@
+         self.signals = signals;
+         self
+     }
++
++    /// Set the 8 `meta` floats. gpui passes them through uninterpreted, so
++    /// what the slots mean is between you and the shader.
++    pub fn meta(mut self, meta: [f32; 8]) -> Self {
++        self.meta = meta;
++        self
++    }
+ }
+ 
+ impl Element for UserShaderElement {
+@@ -77,7 +86,7 @@
+         window: &mut Window,
+         _: &mut App,
+     ) {
+-        window.paint_user_shader(bounds, self.shader, self.signals);
++        window.paint_user_shader(bounds, self.shader, self.signals, self.meta);
+     }
+ }
+ 
+diff -x .rox-stamp -ruN base/src/platform/blade/blade_renderer.rs work/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -5,6 +5,7 @@
+ use crate::{
+     Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point, PolychromeSprite,
+     PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, Underline, UserShader,
++    UserShaderRegion,
+ };
+ use blade_graphics as gpu;
+ use blade_util::{BufferBelt, BufferBeltDescriptor};
+@@ -108,17 +109,25 @@
+     s_surface: gpu::Sampler,
+ }
+ 
+-// Uniforms for the whole-window post-process pass. Field names and layout
+-// mirror the `ShaderParams` struct the shader template declares.
++// Uniforms every user shader pass shares - post, region, primitive. Field
++// names and layout mirror the `ShaderParams` struct the shader template
++// declares; 128 bytes, and `check_struct_size` is what catches a drift.
+ #[repr(C)]
+ #[derive(Clone, Copy, Pod, Zeroable)]
+ struct ShaderParams {
+     time: f32,
+-    pad: f32,
++    delta: f32,
+     resolution: [f32; 2],
++    mouse: [f32; 4],
++    meta: [[f32; 4]; 2],
+     signals: [[f32; 4]; 4],
+ }
+ 
++// Belt and braces next to blade's `check_struct_size`, which only fires once
++// a pipeline is actually built on a GPU.
++const _: () = assert!(std::mem::size_of::<ShaderParams>() == 128);
++const _: () = assert!(std::mem::size_of::<UserShader>() == 160);
++
+ #[derive(blade_macros::ShaderData)]
+ struct ShaderPostData {
+     params: ShaderParams,
+@@ -126,6 +135,71 @@
+     samp: gpu::Sampler,
+ }
+ 
++// Same pass, plus the shader's own previous output. A separate layout because
++// blade matches the bind group against the module's globals, and the composed
++// source only declares `prev` when the shader actually reads it.
++#[derive(blade_macros::ShaderData)]
++struct ShaderPostPrevData {
++    params: ShaderParams,
++    screen: gpu::TextureView,
++    samp: gpu::Sampler,
++    prev: gpu::TextureView,
++}
++
++#[derive(blade_macros::ShaderData)]
++struct ShaderBlitData {
++    screen: gpu::TextureView,
++    samp: gpu::Sampler,
++}
++
++// Straight copy of an intermediate onto the swapchain. Needed because the
++// surface texture isn't a copy destination, so "no post shader but there were
++// region passes" still has to get the composed image across as a draw.
++const BLIT_SHADER: &str = "
++var screen: texture_2d<f32>;
++var samp: sampler;
++
++struct BlitVarying {
++    @builtin(position) position: vec4<f32>,
++    @location(0) uv: vec2<f32>,
++}
++
++@vertex
++fn vs_blit(@builtin(vertex_index) vertex_id: u32) -> BlitVarying {
++    let corner = vec2<f32>(f32((vertex_id << 1u) & 2u), f32(vertex_id & 2u));
++    var out = BlitVarying();
++    out.position = vec4<f32>(corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0);
++    out.uv = corner;
++    return out;
++}
++
++@fragment
++fn fs_blit(input: BlitVarying) -> @location(0) vec4<f32> {
++    return textureSample(screen, samp, input.uv);
++}
++";
++
++// A shader's clock. Every step is capped so one long-parked frame doesn't
++// jump time, and `delta` is that same capped step - zero on the first tick.
++#[derive(Default)]
++struct ShaderClock {
++    time: f32,
++    delta: f32,
++    last: Option<std::time::Instant>,
++}
++
++impl ShaderClock {
++    fn tick(&mut self) {
++        let now = std::time::Instant::now();
++        self.delta = match self.last {
++            Some(last) => now.duration_since(last).as_secs_f32().min(0.1),
++            None => 0.0,
++        };
++        self.time += self.delta;
++        self.last = Some(now);
++    }
++}
++
+ #[derive(blade_macros::ShaderData)]
+ struct ShaderUserData {
+     globals: GlobalParams,
+@@ -133,25 +207,47 @@
+     b_user_shaders: gpu::BufferPiece,
+ }
+ 
+-// One runtime-compiled pipeline per registered user shader.
++// One runtime-compiled pipeline per registered user shader. The primitive and
++// region variants of one shader are different modules with different layouts,
++// so they get one entry each, in their own map.
+ struct UserShaderPipeline {
+     pipeline: gpu::RenderPipeline,
+     // Kept so the pipeline can be rebuilt when the surface is reconfigured.
+     source: String,
+-    // Advanced by this shader's own draws, capped the same way the post pass
+-    // caps its feed, so one long-parked frame doesn't jump the clock.
+-    time: f32,
+-    last_draw: Option<std::time::Instant>,
++    // Advanced by this shader's own draws.
++    clock: ShaderClock,
++}
++
++// The region variant. Its clock lives per instance instead, since two panels
++// running the same shader each want their own.
++struct RegionShaderPipeline {
++    pipeline: gpu::RenderPipeline,
++    source: String,
++    uses_prev: bool,
++}
++
++// Per-instance textures for the region pass: `scratch` holds the copy of the
++// composed image the shader reads as `screen`, `feedback` last frame's output
++// for shaders that read `prev`. Sized to the region's device pixels, so a
++// resize throws both away and trails restart.
++struct RegionInstance {
++    shader_id: u32,
++    width: u32,
++    height: u32,
++    scratch: gpu::Texture,
++    scratch_view: gpu::TextureView,
++    feedback: Option<(gpu::Texture, gpu::TextureView)>,
++    clock: ShaderClock,
+ }
+ 
+ struct PostShader {
+     pipeline: gpu::RenderPipeline,
+     // Kept so the pipeline can be rebuilt when the surface is reconfigured.
+     source: String,
++    uses_prev: bool,
+     // Advanced by `set_post_signals`, so time freezes when the caller stops
+     // feeding signals rather than when the window stops drawing.
+-    time: f32,
+-    last_feed: Option<std::time::Instant>,
++    clock: ShaderClock,
+ }
+ 
+ #[derive(Clone, Debug, Eq, PartialEq)]
+@@ -389,8 +485,18 @@
+     path_intermediate_msaa_texture_view: Option<gpu::TextureView>,
+     post_shader: Option<PostShader>,
+     post_intermediate: Option<(gpu::Texture, gpu::TextureView)>,
++    // Ping-pong pair for a post shader that reads `prev`: this frame renders
++    // into one and samples the other, then they swap. Only allocated when a
++    // post shader actually asks for feedback.
++    post_prev: Option<[(gpu::Texture, gpu::TextureView); 2]>,
++    post_prev_index: usize,
+     post_signals: [f32; 16],
++    post_meta: [f32; 8],
++    post_mouse: [f32; 4],
++    blit_pipeline: Option<gpu::RenderPipeline>,
+     user_shaders: HashMap<u32, UserShaderPipeline>,
++    region_shaders: HashMap<u32, RegionShaderPipeline>,
++    region_instances: HashMap<u64, RegionInstance>,
+     rendering_parameters: RenderingParameters,
+ }
+ 
+@@ -479,8 +585,15 @@
+             path_intermediate_msaa_texture_view,
+             post_shader: None,
+             post_intermediate: None,
++            post_prev: None,
++            post_prev_index: 0,
+             post_signals: [0.0; 16],
++            post_meta: [0.0; 8],
++            post_mouse: [0.0; 4],
++            blit_pipeline: None,
+             user_shaders: HashMap::default(),
++            region_shaders: HashMap::default(),
++            region_instances: HashMap::default(),
+             rendering_parameters,
+         })
+     }
+@@ -573,6 +686,13 @@
+                     gpu_size.height,
+                 ));
+             }
++            // Feedback buffers are sized to what they were drawn over, so a
++            // window resize restarts every trail, not just the ones whose
++            // own bounds happened to change.
++            self.destroy_post_prev();
++            for instance in std::mem::take(&mut self.region_instances).into_values() {
++                self.destroy_region_instance(instance);
++            }
+         }
+     }
+ 
+@@ -590,13 +710,30 @@
+             );
+             if let Some(post) = &mut self.post_shader {
+                 self.gpu.destroy_render_pipeline(&mut post.pipeline);
+-                post.pipeline = create_post_pipeline(&self.gpu, self.surface.info(), &post.source);
++                post.pipeline = create_screen_shader_pipeline(
++                    &self.gpu,
++                    self.surface.info(),
++                    &post.source,
++                    post.uses_prev,
++                );
+             }
+             for entry in self.user_shaders.values_mut() {
+                 self.gpu.destroy_render_pipeline(&mut entry.pipeline);
+                 entry.pipeline =
+                     create_user_shader_pipeline(&self.gpu, self.surface.info(), &entry.source);
+             }
++            for entry in self.region_shaders.values_mut() {
++                self.gpu.destroy_render_pipeline(&mut entry.pipeline);
++                entry.pipeline = create_screen_shader_pipeline(
++                    &self.gpu,
++                    self.surface.info(),
++                    &entry.source,
++                    entry.uses_prev,
++                );
++            }
++            if let Some(mut pipeline) = self.blit_pipeline.take() {
++                self.gpu.destroy_render_pipeline(&mut pipeline);
++            }
+         }
+     }
+ 
+@@ -614,8 +751,26 @@
+             UserShaderPipeline {
+                 pipeline,
+                 source: source.to_string(),
+-                time: 0.0,
+-                last_draw: None,
++                clock: ShaderClock::default(),
++            },
++        );
++    }
++
++    /// Compiles the region variant of a user shader - the one that reads the
++    /// composed image under its bounds. Same expectations as
++    /// `register_user_shader`: pre-validated source, second call is a no-op.
++    pub fn register_screen_shader(&mut self, id: u32, source: &str, uses_prev: bool) {
++        if self.region_shaders.contains_key(&id) {
++            return;
++        }
++        let pipeline =
++            create_screen_shader_pipeline(&self.gpu, self.surface.info(), source, uses_prev);
++        self.region_shaders.insert(
++            id,
++            RegionShaderPipeline {
++                pipeline,
++                source: source.to_string(),
++                uses_prev,
+             },
+         );
+     }
+@@ -623,19 +778,23 @@
+     /// Installs or clears the whole-window post-process shader. The source is
+     /// the full composed WGSL module; callers are expected to have validated
+     /// it already, since blade panics on bad input.
+-    pub fn set_post_shader(&mut self, source: Option<&str>) {
++    pub fn set_post_shader(&mut self, source: Option<&str>, uses_prev: bool) {
+         self.wait_for_gpu();
+         if let Some(mut post) = self.post_shader.take() {
+             self.gpu.destroy_render_pipeline(&mut post.pipeline);
+         }
++        self.destroy_post_prev();
+         let Some(source) = source else {
++            // The intermediate is still what region passes render into, so it
++            // gets rebuilt on demand in `draw` rather than kept around here.
+             if let Some((texture, view)) = self.post_intermediate.take() {
+                 self.gpu.destroy_texture(texture);
+                 self.gpu.destroy_texture_view(view);
+             }
+             return;
+         };
+-        let pipeline = create_post_pipeline(&self.gpu, self.surface.info(), source);
++        let pipeline =
++            create_screen_shader_pipeline(&self.gpu, self.surface.info(), source, uses_prev);
+         if self.post_intermediate.is_none() {
+             self.post_intermediate = Some(create_post_intermediate_texture(
+                 &self.gpu,
+@@ -647,20 +806,36 @@
+         self.post_shader = Some(PostShader {
+             pipeline,
+             source: source.to_string(),
+-            time: 0.0,
+-            last_feed: None,
++            uses_prev,
++            clock: ShaderClock::default(),
+         });
+     }
+ 
+-    pub fn set_post_signals(&mut self, signals: [f32; 16]) {
++    pub fn set_post_signals(&mut self, signals: [f32; 16], meta: [f32; 8], mouse: [f32; 4]) {
+         self.post_signals = signals;
++        self.post_meta = meta;
++        self.post_mouse = mouse;
+         if let Some(post) = &mut self.post_shader {
+-            let now = std::time::Instant::now();
+-            if let Some(last) = post.last_feed {
+-                // Cap the step so a long gap between feeds doesn't jump time.
+-                post.time += now.duration_since(last).as_secs_f32().min(0.1);
++            post.clock.tick();
++        }
++    }
++
++    fn destroy_post_prev(&mut self) {
++        if let Some(pair) = self.post_prev.take() {
++            for (texture, view) in pair {
++                self.gpu.destroy_texture(texture);
++                self.gpu.destroy_texture_view(view);
+             }
+-            post.last_feed = Some(now);
++        }
++        self.post_prev_index = 0;
++    }
++
++    fn destroy_region_instance(&mut self, instance: RegionInstance) {
++        self.gpu.destroy_texture(instance.scratch);
++        self.gpu.destroy_texture_view(instance.scratch_view);
++        if let Some((texture, view)) = instance.feedback {
++            self.gpu.destroy_texture(texture);
++            self.gpu.destroy_texture_view(view);
+         }
+     }
+ 
+@@ -786,6 +961,360 @@
+         for mut entry in std::mem::take(&mut self.user_shaders).into_values() {
+             self.gpu.destroy_render_pipeline(&mut entry.pipeline);
+         }
++        for mut entry in std::mem::take(&mut self.region_shaders).into_values() {
++            self.gpu.destroy_render_pipeline(&mut entry.pipeline);
++        }
++        for instance in std::mem::take(&mut self.region_instances).into_values() {
++            self.destroy_region_instance(instance);
++        }
++        self.destroy_post_prev();
++        if let Some(mut pipeline) = self.blit_pipeline.take() {
++            self.gpu.destroy_render_pipeline(&mut pipeline);
++        }
++    }
++
++    /// Re-runs one registered shader over everything already composed under
++    /// `region.bounds`, writing back into the same intermediate.
++    fn draw_shader_region(
++        &mut self,
++        region: &UserShaderRegion,
++        target: gpu::Texture,
++        target_view: gpu::TextureView,
++    ) {
++        if !self.region_shaders.contains_key(&region.shader_id) {
++            return;
++        }
++
++        let surface_width = self.surface_config.size.width as i32;
++        let surface_height = self.surface_config.size.height as i32;
++        let left = region.bounds.origin.x.0.round() as i32;
++        let top = region.bounds.origin.y.0.round() as i32;
++        let width = region.bounds.size.width.0.round().max(0.0) as u32;
++        let height = region.bounds.size.height.0.round().max(0.0) as u32;
++        if width == 0 || height == 0 {
++            return;
++        }
++
++        // The copy takes whatever part of the bounds is actually on screen;
++        // the shader still sees uv 0..1 across the whole bounds, so a panel
++        // hanging off the edge reads transparent black out there rather than
++        // a stretched image.
++        let copy_left = left.max(0);
++        let copy_top = top.max(0);
++        let copy_right = (left + width as i32).min(surface_width);
++        let copy_bottom = (top + height as i32).min(surface_height);
++        if copy_right <= copy_left || copy_bottom <= copy_top {
++            return;
++        }
++
++        // Everything outside the content mask belongs to whoever drew it, so
++        // the scissor is what keeps this pass inside its own lane.
++        let mask = region.content_mask.bounds;
++        let clip_left = left.max(mask.origin.x.0.round() as i32).max(0);
++        let clip_top = top.max(mask.origin.y.0.round() as i32).max(0);
++        let clip_right = (left + width as i32)
++            .min((mask.origin.x.0 + mask.size.width.0).round() as i32)
++            .min(surface_width);
++        let clip_bottom = (top + height as i32)
++            .min((mask.origin.y.0 + mask.size.height.0).round() as i32)
++            .min(surface_height);
++        if clip_right <= clip_left || clip_bottom <= clip_top {
++            return;
++        }
++
++        self.ensure_region_instance(region, width, height);
++
++        let shader = &self.region_shaders[&region.shader_id];
++        let Some(instance) = self.region_instances.get_mut(&region.instance) else {
++            return;
++        };
++        instance.clock.tick();
++        let params = ShaderParams {
++            time: instance.clock.time,
++            delta: instance.clock.delta,
++            resolution: [width as f32, height as f32],
++            mouse: region.mouse,
++            meta: bytemuck::cast(region.meta),
++            signals: bytemuck::cast(region.signals),
++        };
++
++        let copy_extent = gpu::Extent {
++            width: (copy_right - copy_left) as u32,
++            height: (copy_bottom - copy_top) as u32,
++            depth: 1,
++        };
++        let source_piece = gpu::TexturePiece {
++            texture: target,
++            mip_level: 0,
++            array_layer: 0,
++            origin: [copy_left as u32, copy_top as u32, 0],
++        };
++        let local_origin = [(copy_left - left) as u32, (copy_top - top) as u32, 0];
++
++        {
++            let mut transfers = self.command_encoder.transfer("shader region read");
++            transfers.copy_texture_to_texture(
++                source_piece,
++                gpu::TexturePiece {
++                    texture: instance.scratch,
++                    mip_level: 0,
++                    array_layer: 0,
++                    origin: local_origin,
++                },
++                copy_extent,
++            );
++        }
++
++        // No blending: the pass replaces its rect outright, the way the whole
++        // window post pass replaces the frame. The scissor is what bounds it.
++        if let mut pass = self.command_encoder.render(
++            "shader region",
++            gpu::RenderTargetSet {
++                colors: &[gpu::RenderTarget {
++                    view: target_view,
++                    init_op: gpu::InitOp::Load,
++                    finish_op: gpu::FinishOp::Store,
++                }],
++                depth_stencil: None,
++            },
++        ) {
++            let mut encoder = pass.with(&shader.pipeline);
++            encoder.set_viewport(&gpu::Viewport {
++                x: left as f32,
++                y: top as f32,
++                w: width as f32,
++                h: height as f32,
++                depth: 0.0..1.0,
++            });
++            encoder.set_scissor_rect(&gpu::ScissorRect {
++                x: clip_left,
++                y: clip_top,
++                w: (clip_right - clip_left) as u32,
++                h: (clip_bottom - clip_top) as u32,
++            });
++            match instance.feedback {
++                Some((_, prev_view)) => encoder.bind(
++                    0,
++                    &ShaderPostPrevData {
++                        params,
++                        screen: instance.scratch_view,
++                        samp: self.atlas_sampler,
++                        prev: prev_view,
++                    },
++                ),
++                None => encoder.bind(
++                    0,
++                    &ShaderPostData {
++                        params,
++                        screen: instance.scratch_view,
++                        samp: self.atlas_sampler,
++                    },
++                ),
++            }
++            encoder.draw(0, 3, 0, 1);
++        }
++
++        if let Some((feedback, _)) = instance.feedback {
++            let mut transfers = self.command_encoder.transfer("shader region feedback");
++            transfers.copy_texture_to_texture(
++                source_piece,
++                gpu::TexturePiece {
++                    texture: feedback,
++                    mip_level: 0,
++                    array_layer: 0,
++                    origin: local_origin,
++                },
++                copy_extent,
++            );
++        }
++    }
++
++    /// Makes sure this instance has scratch (and, for a feedback shader,
++    /// `prev`) textures at the region's current size. A size change, a
++    /// different shader or a newly needed feedback buffer all rebuild from
++    /// scratch, cleared: trails restart rather than smearing the old size.
++    fn ensure_region_instance(&mut self, region: &UserShaderRegion, width: u32, height: u32) {
++        let stale = match self.region_instances.get(&region.instance) {
++            Some(instance) => {
++                instance.width != width
++                    || instance.height != height
++                    || instance.shader_id != region.shader_id
++                    || (region.uses_prev && instance.feedback.is_none())
++            }
++            None => true,
++        };
++        if !stale {
++            return;
++        }
++        if let Some(previous) = self.region_instances.remove(&region.instance) {
++            self.destroy_region_instance(previous);
++        }
++
++        let format = self.surface.info().format;
++        let (scratch, scratch_view) =
++            create_region_texture(&self.gpu, format, width, height, "shader region scratch");
++        self.command_encoder.init_texture(scratch);
++        self.clear_texture(scratch_view);
++
++        let mut feedback = None;
++        if region.uses_prev {
++            let pair =
++                create_region_texture(&self.gpu, format, width, height, "shader region feedback");
++            self.command_encoder.init_texture(pair.0);
++            self.clear_texture(pair.1);
++            feedback = Some(pair);
++        }
++
++        self.region_instances.insert(
++            region.instance,
++            RegionInstance {
++                shader_id: region.shader_id,
++                width,
++                height,
++                scratch,
++                scratch_view,
++                feedback,
++                clock: ShaderClock::default(),
++            },
++        );
++    }
++
++    /// The whole-window pass. Without feedback it writes straight to the
++    /// swapchain; with it, it ping-pongs two intermediates so `prev` is last
++    /// frame's finished image, and blits the winner across.
++    fn draw_post_pass(&mut self, frame_view: gpu::TextureView, screen_view: gpu::TextureView) {
++        let Some(post) = &self.post_shader else {
++            return;
++        };
++        let uses_prev = post.uses_prev;
++        let params = ShaderParams {
++            time: post.clock.time,
++            delta: post.clock.delta,
++            resolution: [
++                self.surface_config.size.width as f32,
++                self.surface_config.size.height as f32,
++            ],
++            mouse: self.post_mouse,
++            meta: bytemuck::cast(self.post_meta),
++            signals: bytemuck::cast(self.post_signals),
++        };
++
++        if uses_prev {
++            self.ensure_post_prev();
++        }
++        let feedback = uses_prev.then_some(()).and(self.post_prev);
++        let (target_view, prev_view) = match feedback {
++            Some(pair) => (pair[self.post_prev_index].1, pair[1 - self.post_prev_index].1),
++            None => (frame_view, frame_view),
++        };
++        let Some(post) = &self.post_shader else {
++            return;
++        };
++
++        // Blending stays off: the shader's output is the final image, so
++        // the surface's premultiplied alpha passes through untouched.
++        if let mut pass = self.command_encoder.render(
++            "post-process",
++            gpu::RenderTargetSet {
++                colors: &[gpu::RenderTarget {
++                    view: target_view,
++                    init_op: gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack),
++                    finish_op: gpu::FinishOp::Store,
++                }],
++                depth_stencil: None,
++            },
++        ) {
++            let mut encoder = pass.with(&post.pipeline);
++            if feedback.is_some() {
++                encoder.bind(
++                    0,
++                    &ShaderPostPrevData {
++                        params,
++                        screen: screen_view,
++                        samp: self.atlas_sampler,
++                        prev: prev_view,
++                    },
++                );
++            } else {
++                encoder.bind(
++                    0,
++                    &ShaderPostData {
++                        params,
++                        screen: screen_view,
++                        samp: self.atlas_sampler,
++                    },
++                );
++            }
++            encoder.draw(0, 3, 0, 1);
++        }
++
++        if feedback.is_some() {
++            self.blit(frame_view, target_view);
++            self.post_prev_index = 1 - self.post_prev_index;
++        }
++    }
++
++    fn ensure_post_prev(&mut self) {
++        if self.post_prev.is_some() {
++            return;
++        }
++        let format = self.surface.info().format;
++        let width = self.surface_config.size.width;
++        let height = self.surface_config.size.height;
++        let first = create_region_texture(&self.gpu, format, width, height, "post feedback a");
++        let second = create_region_texture(&self.gpu, format, width, height, "post feedback b");
++        for (texture, view) in [first, second] {
++            self.command_encoder.init_texture(texture);
++            self.clear_texture(view);
++        }
++        self.post_prev = Some([first, second]);
++    }
++
++    /// Straight copy of `source` onto `target`, as a draw rather than a
++    /// transfer because the swapchain texture isn't a copy destination.
++    fn blit(&mut self, target_view: gpu::TextureView, source_view: gpu::TextureView) {
++        if self.blit_pipeline.is_none() {
++            self.blit_pipeline = Some(create_blit_pipeline(&self.gpu, self.surface.info()));
++        }
++        let Some(pipeline) = &self.blit_pipeline else {
++            return;
++        };
++        if let mut pass = self.command_encoder.render(
++            "blit",
++            gpu::RenderTargetSet {
++                colors: &[gpu::RenderTarget {
++                    view: target_view,
++                    init_op: gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack),
++                    finish_op: gpu::FinishOp::Store,
++                }],
++                depth_stencil: None,
++            },
++        ) {
++            let mut encoder = pass.with(pipeline);
++            encoder.bind(
++                0,
++                &ShaderBlitData {
++                    screen: source_view,
++                    samp: self.atlas_sampler,
++                },
++            );
++            encoder.draw(0, 3, 0, 1);
++        }
++    }
++
++    /// A render pass with no draws, so the target comes out transparent black.
++    fn clear_texture(&mut self, view: gpu::TextureView) {
++        let _pass = self.command_encoder.render(
++            "shader texture clear",
++            gpu::RenderTargetSet {
++                colors: &[gpu::RenderTarget {
++                    view,
++                    init_op: gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack),
++                    finish_op: gpu::FinishOp::Store,
++                }],
++                depth_stencil: None,
++            },
++        );
+     }
+ 
+     pub fn draw(&mut self, scene: &Scene) {
+@@ -798,17 +1327,33 @@
+         };
+         self.command_encoder.init_texture(frame.texture());
+ 
+-        // With a post shader installed, the main pass renders into the post
+-        // intermediate and a final pass samples it back to the swapchain.
+-        let post_view = if self.post_shader.is_some() {
+-            self.post_intermediate.map(|(texture, view)| {
+-                self.command_encoder.init_texture(texture);
+-                view
++        // Region entries and the post shader both need the main pass to land
++        // in the intermediate first: the one so it can be read back per
++        // region, the other so it can be read whole. With neither, the main
++        // pass goes straight to the swapchain and this all costs nothing.
++        let needs_intermediate =
++            self.post_shader.is_some() || !scene.user_shader_regions().is_empty();
++        if needs_intermediate && self.post_intermediate.is_none() {
++            self.post_intermediate = Some(create_post_intermediate_texture(
++                &self.gpu,
++                self.surface.info().format,
++                self.surface_config.size.width,
++                self.surface_config.size.height,
++            ));
++        }
++        let intermediate = if needs_intermediate {
++            self.post_intermediate.inspect(|(texture, _)| {
++                self.command_encoder.init_texture(*texture);
+             })
+         } else {
+             None
+         };
+-        let main_target_view = post_view.unwrap_or_else(|| frame.texture_view());
++        let main_target_view = intermediate
++            .map(|(_, view)| view)
++            .unwrap_or_else(|| frame.texture_view());
++        // Filled during the batch walk below, so the order the renderer runs
++        // them in is the order they were painted in.
++        let mut regions: Vec<&UserShaderRegion> = Vec::new();
+ 
+         let globals = GlobalParams {
+             viewport_size: [
+@@ -1071,31 +1616,31 @@
+                     let Some(entry) = self.user_shaders.get_mut(&first.shader_id) else {
+                         continue;
+                     };
+-                    let now = std::time::Instant::now();
+-                    if let Some(last) = entry.last_draw {
+-                        entry.time += now.duration_since(last).as_secs_f32().min(0.1);
+-                    }
+-                    entry.last_draw = Some(now);
+-                    let time = entry.time;
++                    entry.clock.tick();
++                    let (time, delta) = (entry.clock.time, entry.clock.delta);
+                     let pipeline = &self.user_shaders[&first.shader_id].pipeline;
+ 
+-                    // `params` is one uniform for the whole draw, so instances
+-                    // only ride together while their signals and size match.
++                    // `params` is one uniform for the whole draw, and `mouse`
++                    // is bounds-local, so instances only ride together while
++                    // their feed and their whole bounds match.
+                     let mut start = 0;
+                     while start < user_shaders.len() {
+                         let head = &user_shaders[start];
+                         let mut end = start + 1;
+                         while end < user_shaders.len()
+                             && user_shaders[end].params == head.params
+-                            && user_shaders[end].bounds.size == head.bounds.size
++                            && user_shaders[end].meta == head.meta
++                            && user_shaders[end].bounds == head.bounds
+                         {
+                             end += 1;
+                         }
+                         let run = &user_shaders[start..end];
+                         let params = ShaderParams {
+                             time,
+-                            pad: 0.0,
++                            delta,
+                             resolution: [head.bounds.size.width.0, head.bounds.size.height.0],
++                            mouse: head.mouse,
++                            meta: bytemuck::cast(head.meta),
+                             signals: bytemuck::cast(head.params),
+                         };
+                         let instance_buf =
+@@ -1113,43 +1658,25 @@
+                         start = end;
+                     }
+                 }
++                // Regions draw nothing here. They're in the scene so cached
++                // views replay them, and the renderer runs them at frame end
++                // once the whole image they post-process exists.
++                PrimitiveBatch::UserShaderRegions(entries) => regions.extend(entries),
+             }
+         }
+         drop(pass);
+ 
+-        if let (Some(post), Some((_, screen_view))) = (&self.post_shader, self.post_intermediate) {
+-            let params = ShaderParams {
+-                time: post.time,
+-                pad: 0.0,
+-                resolution: [
+-                    self.surface_config.size.width as f32,
+-                    self.surface_config.size.height as f32,
+-                ],
+-                signals: bytemuck::cast(self.post_signals),
+-            };
+-            // Blending stays off: the shader's output is the final image, so
+-            // the surface's premultiplied alpha passes through untouched.
+-            if let mut pass = self.command_encoder.render(
+-                "post-process",
+-                gpu::RenderTargetSet {
+-                    colors: &[gpu::RenderTarget {
+-                        view: frame.texture_view(),
+-                        init_op: gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack),
+-                        finish_op: gpu::FinishOp::Store,
+-                    }],
+-                    depth_stencil: None,
+-                },
+-            ) {
+-                let mut encoder = pass.with(&post.pipeline);
+-                encoder.bind(
+-                    0,
+-                    &ShaderPostData {
+-                        params,
+-                        screen: screen_view,
+-                        samp: self.atlas_sampler,
+-                    },
+-                );
+-                encoder.draw(0, 3, 0, 1);
++        if let Some((intermediate_texture, intermediate_view)) = intermediate {
++            // In paint order, so a later region reads what the earlier ones
++            // left behind, and a region under the post pass gets
++            // post-processed like everything else.
++            for region in regions {
++                self.draw_shader_region(region, intermediate_texture, intermediate_view);
++            }
++            if self.post_shader.is_some() {
++                self.draw_post_pass(frame.texture_view(), intermediate_view);
++            } else {
++                self.blit(frame.texture_view(), intermediate_view);
+             }
+         }
+ 
+@@ -1216,7 +1743,10 @@
+         mip_level_count: 1,
+         sample_count: 1,
+         dimension: gpu::TextureDimension::D2,
+-        usage: gpu::TextureUsage::RESOURCE | gpu::TextureUsage::TARGET,
++        // COPY on top of S1's flags: region passes read rects back out of it.
++        usage: gpu::TextureUsage::COPY
++            | gpu::TextureUsage::RESOURCE
++            | gpu::TextureUsage::TARGET,
+         external: None,
+     });
+     let texture_view = gpu.create_texture_view(
+@@ -1231,19 +1761,27 @@
+     (texture, texture_view)
+ }
+ 
+-fn create_post_pipeline(
++/// Builds the pipeline for a screen-reading pass. Post and region share it:
++/// same template, same layout, same target format - a region pass just aims
++/// its fullscreen triangle with a viewport instead of filling the window.
++fn create_screen_shader_pipeline(
+     gpu: &gpu::Context,
+     surface_info: gpu::SurfaceInfo,
+     source: &str,
++    uses_prev: bool,
+ ) -> gpu::RenderPipeline {
+     use gpu::ShaderData as _;
+ 
+     let shader = gpu.create_shader(gpu::ShaderDesc { source });
+     shader.check_struct_size::<ShaderParams>();
+ 
++    let with_prev = ShaderPostPrevData::layout();
++    let without_prev = ShaderPostData::layout();
++    let layout: &gpu::ShaderDataLayout = if uses_prev { &with_prev } else { &without_prev };
++
+     gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+-        name: "post-process",
+-        data_layouts: &[&ShaderPostData::layout()],
++        name: "screen-shader",
++        data_layouts: &[layout],
+         vertex: shader.at("vs_post"),
+         vertex_fetches: &[],
+         primitive: gpu::PrimitiveState {
+@@ -1261,6 +1799,74 @@
+     })
+ }
+ 
++fn create_blit_pipeline(
++    gpu: &gpu::Context,
++    surface_info: gpu::SurfaceInfo,
++) -> gpu::RenderPipeline {
++    use gpu::ShaderData as _;
++
++    let shader = gpu.create_shader(gpu::ShaderDesc {
++        source: BLIT_SHADER,
++    });
++
++    gpu.create_render_pipeline(gpu::RenderPipelineDesc {
++        name: "blit",
++        data_layouts: &[&ShaderBlitData::layout()],
++        vertex: shader.at("vs_blit"),
++        vertex_fetches: &[],
++        primitive: gpu::PrimitiveState {
++            topology: gpu::PrimitiveTopology::TriangleList,
++            ..Default::default()
++        },
++        depth_stencil: None,
++        fragment: Some(shader.at("fs_blit")),
++        color_targets: &[gpu::ColorTargetState {
++            format: surface_info.format,
++            blend: None,
++            write_mask: gpu::ColorWrites::default(),
++        }],
++        multisample_state: gpu::MultisampleState::default(),
++    })
++}
++
++/// A scratch or feedback texture for one region instance. TARGET is only
++/// there so a fresh one can be cleared with an empty render pass.
++fn create_region_texture(
++    gpu: &gpu::Context,
++    format: gpu::TextureFormat,
++    width: u32,
++    height: u32,
++    name: &str,
++) -> (gpu::Texture, gpu::TextureView) {
++    let texture = gpu.create_texture(gpu::TextureDesc {
++        name,
++        format,
++        size: gpu::Extent {
++            width,
++            height,
++            depth: 1,
++        },
++        array_layer_count: 1,
++        mip_level_count: 1,
++        sample_count: 1,
++        dimension: gpu::TextureDimension::D2,
++        usage: gpu::TextureUsage::COPY
++            | gpu::TextureUsage::RESOURCE
++            | gpu::TextureUsage::TARGET,
++        external: None,
++    });
++    let texture_view = gpu.create_texture_view(
++        texture,
++        gpu::TextureViewDesc {
++            name,
++            format,
++            dimension: gpu::ViewDimension::D2,
++            subresources: &Default::default(),
++        },
++    );
++    (texture, texture_view)
++}
++
+ fn create_user_shader_pipeline(
+     gpu: &gpu::Context,
+     surface_info: gpu::SurfaceInfo,
+diff -x .rox-stamp -ruN base/src/platform/linux/wayland/window.rs work/src/platform/linux/wayland/window.rs
+--- a/src/platform/linux/wayland/window.rs
++++ b/src/platform/linux/wayland/window.rs
+@@ -1102,12 +1102,20 @@
+         self.borrow_mut().renderer.register_user_shader(id, source);
+     }
+ 
+-    fn set_post_shader(&self, source: Option<&str>) {
+-        self.borrow_mut().renderer.set_post_shader(source);
++    fn register_screen_shader(&self, id: u32, source: &str, uses_prev: bool) {
++        self.borrow_mut()
++            .renderer
++            .register_screen_shader(id, source, uses_prev);
+     }
+ 
+-    fn set_post_signals(&self, signals: [f32; 16]) {
+-        self.borrow_mut().renderer.set_post_signals(signals);
++    fn set_post_shader(&self, source: Option<&str>, uses_prev: bool) {
++        self.borrow_mut().renderer.set_post_shader(source, uses_prev);
++    }
++
++    fn set_post_signals(&self, signals: [f32; 16], meta: [f32; 8], mouse: [f32; 4]) {
++        self.borrow_mut()
++            .renderer
++            .set_post_signals(signals, meta, mouse);
+     }
+ }
+ 
+diff -x .rox-stamp -ruN base/src/platform/linux/x11/window.rs work/src/platform/linux/x11/window.rs
+--- a/src/platform/linux/x11/window.rs
++++ b/src/platform/linux/x11/window.rs
+@@ -1676,11 +1676,27 @@
+             .register_user_shader(id, source);
+     }
+ 
+-    fn set_post_shader(&self, source: Option<&str>) {
+-        self.0.state.borrow_mut().renderer.set_post_shader(source);
++    fn register_screen_shader(&self, id: u32, source: &str, uses_prev: bool) {
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .register_screen_shader(id, source, uses_prev);
+     }
+ 
+-    fn set_post_signals(&self, signals: [f32; 16]) {
+-        self.0.state.borrow_mut().renderer.set_post_signals(signals);
++    fn set_post_shader(&self, source: Option<&str>, uses_prev: bool) {
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .set_post_shader(source, uses_prev);
++    }
++
++    fn set_post_signals(&self, signals: [f32; 16], meta: [f32; 8], mouse: [f32; 4]) {
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .set_post_signals(signals, meta, mouse);
+     }
+ }
+diff -x .rox-stamp -ruN base/src/platform/mac/metal_renderer.rs work/src/platform/mac/metal_renderer.rs
+--- a/src/platform/mac/metal_renderer.rs
++++ b/src/platform/mac/metal_renderer.rs
+@@ -524,7 +524,7 @@
+                 ),
+                 // rox patch: user shaders are blade only, the way surfaces
+                 // are mac only. Skipped rather than ported to Metal.
+-                PrimitiveBatch::UserShaders(_) => true,
++                PrimitiveBatch::UserShaders(_) | PrimitiveBatch::UserShaderRegions(_) => true,
+             };
+             if !ok {
+                 command_encoder.end_encoding();
+diff -x .rox-stamp -ruN base/src/platform/windows/directx_renderer.rs work/src/platform/windows/directx_renderer.rs
+--- a/src/platform/windows/directx_renderer.rs
++++ b/src/platform/windows/directx_renderer.rs
+@@ -305,7 +305,7 @@
+                 PrimitiveBatch::Surfaces(surfaces) => self.draw_surfaces(surfaces),
+                 // rox patch: user shaders are blade only. Skipped rather than
+                 // ported to HLSL.
+-                PrimitiveBatch::UserShaders(_) => Ok(()),
++                PrimitiveBatch::UserShaders(_) | PrimitiveBatch::UserShaderRegions(_) => Ok(()),
+             }.context(format!("scene too large: {} paths, {} shadows, {} quads, {} underlines, {} mono, {} poly, {} surfaces",
+                     scene.paths.len(),
+                     scene.shadows.len(),
+diff -x .rox-stamp -ruN base/src/platform.rs work/src/platform.rs
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -548,12 +548,13 @@
+     fn set_client_inset(&self, _inset: Pixels) {}
+     fn gpu_specs(&self) -> Option<GpuSpecs>;
+ 
+-    // User shaders and the whole-window post-process pass; only the blade
+-    // backends implement them. Validation happens in `Window`, so by the time
+-    // a source reaches here it has already passed naga.
++    // User shaders, the region pass and the whole-window post-process pass;
++    // only the blade backends implement them. Validation happens in `Window`,
++    // so by the time a source reaches here it has already passed naga.
+     fn register_user_shader(&self, _id: u32, _source: &str) {}
+-    fn set_post_shader(&self, _source: Option<&str>) {}
+-    fn set_post_signals(&self, _signals: [f32; 16]) {}
++    fn register_screen_shader(&self, _id: u32, _source: &str, _uses_prev: bool) {}
++    fn set_post_shader(&self, _source: Option<&str>, _uses_prev: bool) {}
++    fn set_post_signals(&self, _signals: [f32; 16], _meta: [f32; 8], _mouse: [f32; 4]) {}
+ 
+     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
+ 
+diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
+--- a/src/scene.rs
++++ b/src/scene.rs
+@@ -34,6 +34,10 @@
+     pub(crate) surfaces: Vec<PaintSurface>,
+     // rox patch: user shader primitives, painted by `Window::paint_user_shader`.
+     pub(crate) user_shaders: Vec<UserShader>,
++    // rox patch: screen-shader region entries, painted by
++    // `Window::paint_screen_shader`. They draw nothing in the main pass; the
++    // renderer walks them at frame end.
++    pub(crate) user_shader_regions: Vec<UserShaderRegion>,
+ }
+ 
+ impl Scene {
+@@ -49,6 +53,7 @@
+         self.polychrome_sprites.clear();
+         self.surfaces.clear();
+         self.user_shaders.clear();
++        self.user_shader_regions.clear();
+     }
+ 
+     pub fn len(&self) -> usize {
+@@ -116,6 +121,10 @@
+                 user_shader.order = order;
+                 self.user_shaders.push(user_shader.clone());
+             }
++            Primitive::UserShaderRegion(region) => {
++                region.order = order;
++                self.user_shader_regions.push(region.clone());
++            }
+         }
+         self.paint_operations
+             .push(PaintOperation::Primitive(primitive));
+@@ -144,6 +153,9 @@
+         // Sorted by shader too, so a run of one shader batches into one draw.
+         self.user_shaders
+             .sort_by_key(|user_shader| (user_shader.order, user_shader.shader_id));
++        // Plain order sort: the renderer replays these in paint order, and a
++        // later entry is meant to see the earlier ones' output.
++        self.user_shader_regions.sort_by_key(|region| region.order);
+     }
+ 
+     #[cfg_attr(
+@@ -179,8 +191,17 @@
+             user_shaders: &self.user_shaders,
+             user_shaders_start: 0,
+             user_shaders_iter: self.user_shaders.iter().peekable(),
++            user_shader_regions: &self.user_shader_regions,
++            user_shader_regions_start: 0,
++            user_shader_regions_iter: self.user_shader_regions.iter().peekable(),
+         }
+     }
++
++    /// rox patch: this frame's screen-shader regions in paint order. The
++    /// renderer runs them after the main pass rather than inside it.
++    pub(crate) fn user_shader_regions(&self) -> &[UserShaderRegion] {
++        &self.user_shader_regions
++    }
+ }
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
+@@ -201,6 +222,7 @@
+     PolychromeSprite,
+     Surface,
+     UserShader,
++    UserShaderRegion,
+ }
+ 
+ pub(crate) enum PaintOperation {
+@@ -219,6 +241,7 @@
+     PolychromeSprite(PolychromeSprite),
+     Surface(PaintSurface),
+     UserShader(UserShader),
++    UserShaderRegion(UserShaderRegion),
+ }
+ 
+ impl Primitive {
+@@ -232,6 +255,7 @@
+             Primitive::PolychromeSprite(sprite) => &sprite.bounds,
+             Primitive::Surface(surface) => &surface.bounds,
+             Primitive::UserShader(user_shader) => &user_shader.bounds,
++            Primitive::UserShaderRegion(region) => &region.bounds,
+         }
+     }
+ 
+@@ -245,6 +269,7 @@
+             Primitive::PolychromeSprite(sprite) => &sprite.content_mask,
+             Primitive::Surface(surface) => &surface.content_mask,
+             Primitive::UserShader(user_shader) => &user_shader.content_mask,
++            Primitive::UserShaderRegion(region) => &region.content_mask,
+         }
+     }
+ }
+@@ -281,6 +306,9 @@
+     user_shaders: &'a [UserShader],
+     user_shaders_start: usize,
+     user_shaders_iter: Peekable<slice::Iter<'a, UserShader>>,
++    user_shader_regions: &'a [UserShaderRegion],
++    user_shader_regions_start: usize,
++    user_shader_regions_iter: Peekable<slice::Iter<'a, UserShaderRegion>>,
+ }
+ 
+ impl<'a> Iterator for BatchIterator<'a> {
+@@ -314,6 +342,10 @@
+                 self.user_shaders_iter.peek().map(|s| s.order),
+                 PrimitiveKind::UserShader,
+             ),
++            (
++                self.user_shader_regions_iter.peek().map(|r| r.order),
++                PrimitiveKind::UserShaderRegion,
++            ),
+         ];
+         orders_and_kinds.sort_by_key(|(order, kind)| (order.unwrap_or(u32::MAX), *kind));
+ 
+@@ -466,6 +498,25 @@
+                     &self.user_shaders[user_shaders_start..user_shaders_end],
+                 ))
+             }
++            PrimitiveKind::UserShaderRegion => {
++                // Walked so the iterator advances; the main pass draws nothing
++                // for these. Each entry stays its own batch so the renderer
++                // sees them in paint order.
++                let regions_start = self.user_shader_regions_start;
++                let mut regions_end = regions_start + 1;
++                self.user_shader_regions_iter.next();
++                while self
++                    .user_shader_regions_iter
++                    .next_if(|region| (region.order, batch_kind) < max_order_and_kind)
++                    .is_some()
++                {
++                    regions_end += 1;
++                }
++                self.user_shader_regions_start = regions_end;
++                Some(PrimitiveBatch::UserShaderRegions(
++                    &self.user_shader_regions[regions_start..regions_end],
++                ))
++            }
+         }
+     }
+ }
+@@ -493,6 +544,7 @@
+     },
+     Surfaces(&'a [PaintSurface]),
+     UserShaders(&'a [UserShader]),
++    UserShaderRegions(&'a [UserShaderRegion]),
+ }
+ 
+ #[derive(Default, Debug, Clone)]
+@@ -730,7 +782,9 @@
+     pub bounds: Bounds<ScaledPixels>,
+     pub content_mask: ContentMask<ScaledPixels>,
+     pub pad: [u32; 2],
++    pub mouse: [f32; 4],
+     pub params: [f32; 16],
++    pub meta: [f32; 8],
+ }
+ 
+ impl From<UserShader> for Primitive {
+@@ -739,6 +793,32 @@
+     }
+ }
+ 
++/// rox patch: one screen-shader region for this frame, recorded by
++/// [`crate::Window::paint_screen_shader`]. This never reaches the GPU as a
++/// buffer - the renderer reads the fields directly - so its layout is free.
++#[derive(Clone, Debug)]
++pub(crate) struct UserShaderRegion {
++    pub order: DrawOrder,
++    pub shader_id: u32,
++    pub bounds: Bounds<ScaledPixels>,
++    pub content_mask: ContentMask<ScaledPixels>,
++    /// Keys this region's scratch and feedback textures. Callers keep it
++    /// unique per surface; two entries sharing one fight over one texture.
++    pub instance: u64,
++    /// Whether the shader reads `prev`, so the renderer knows to keep a
++    /// feedback texture for it.
++    pub uses_prev: bool,
++    pub mouse: [f32; 4],
++    pub signals: [f32; 16],
++    pub meta: [f32; 8],
++}
++
++impl From<UserShaderRegion> for Primitive {
++    fn from(region: UserShaderRegion) -> Self {
++        Primitive::UserShaderRegion(region)
++    }
++}
++
+ #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+ pub(crate) struct PathId(pub(crate) usize);
+ 
+diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -852,6 +852,9 @@
+     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
+     default_prevented: bool,
+     mouse_position: Point<Pixels>,
++    // rox patch: gpui tracks the cursor but not which buttons are held, and
++    // the shader uniform's mouse.zw wants exactly that.
++    mouse_buttons_down: [bool; 2],
+     mouse_hit_test: HitTest,
+     modifiers: Modifiers,
+     capslock: Capslock,
+@@ -1259,6 +1262,7 @@
+             prompt: None,
+             client_inset: None,
+             user_shaders: UserShaderRegistry::default(),
++            mouse_buttons_down: [false; 2],
+             image_cache_stack: Vec::new(),
+             #[cfg(any(feature = "inspector", debug_assertions))]
+             inspector: None,
+@@ -3286,9 +3290,20 @@
+         }
+     }
+ 
++    /// What registration decided about a shader's source: whether it samples
++    /// the screen under it, and whether it reads its own previous output.
++    /// `None` for an id this window never handed out, and on backends without
++    /// a shader pipeline.
++    ///
++    /// rox patch: part of the user shader surfaces.
++    pub fn user_shader_caps(&self, shader: UserShaderId) -> Option<UserShaderCaps> {
++        self.user_shaders.caps(shader)
++    }
++
+     /// Paints one instance of a registered shader over `bounds`, with this
+-    /// frame's values for its 16 signal slots. Post-only shaders (the ones
+-    /// that sample the screen) silently paint nothing.
++    /// frame's values for its 16 signal slots and 8 caller `meta` floats.
++    /// Shaders that sample the screen or read `prev` silently paint nothing:
++    /// an in-scene quad has no copy point for either.
+     ///
+     /// This method should only be called as part of the paint phase of
+     /// element drawing.
+@@ -3299,6 +3314,7 @@
+         bounds: Bounds<Pixels>,
+         shader: UserShaderId,
+         signals: [f32; 16],
++        meta: [f32; 8],
+     ) {
+         use crate::UserShader;
+ 
+@@ -3308,6 +3324,7 @@
+             return;
+         }
+         let scale_factor = self.scale_factor();
++        let mouse = self.shader_mouse(bounds.origin, scale_factor);
+         let bounds = bounds.scale(scale_factor);
+         let content_mask = self.content_mask().scale(scale_factor);
+         self.next_frame.scene.insert_primitive(UserShader {
+@@ -3316,29 +3333,121 @@
+             bounds,
+             content_mask,
+             pad: [0; 2],
++            mouse,
+             params: signals,
++            meta,
+         });
+     }
+ 
++    /// Records a screen-shader region over `bounds` for this frame: at frame
++    /// end the renderer re-runs `shader` over everything composed under those
++    /// bounds, in paint order relative to the other regions.
++    ///
++    /// `instance` keys this surface's scratch and feedback textures - rox uses
++    /// the panel's entity id. Two live regions sharing one key fight over one
++    /// texture, so keep them unique. A shader that reads `prev` gets a
++    /// persistent per-instance buffer; resizing the bounds clears it.
++    ///
++    /// An unknown id is skipped. On backends without a region pass this is a
++    /// no-op.
++    ///
++    /// This method should only be called as part of the paint phase of
++    /// element drawing.
++    ///
++    /// rox patch: part of the user shader surfaces.
++    pub fn paint_screen_shader(
++        &mut self,
++        bounds: Bounds<Pixels>,
++        shader: UserShaderId,
++        instance: u64,
++        signals: [f32; 16],
++        meta: [f32; 8],
++    ) {
++        self.invalidator.debug_assert_paint();
++
++        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++        {
++            use crate::UserShaderRegion;
++
++            let Some(caps) = self.user_shaders.caps(shader) else {
++                return;
++            };
++            // Compiled on first use rather than at registration, so a shader
++            // that only ever runs as a primitive never pays for the variant.
++            if let Some(source) = self.user_shaders.take_pending_screen_source(shader) {
++                self.platform_window
++                    .register_screen_shader(shader.0, &source, caps.uses_prev);
++            }
++            let scale_factor = self.scale_factor();
++            let mouse = self.shader_mouse(bounds.origin, scale_factor);
++            let bounds = bounds.scale(scale_factor);
++            let content_mask = self.content_mask().scale(scale_factor);
++            self.next_frame.scene.insert_primitive(UserShaderRegion {
++                order: 0,
++                shader_id: shader.0,
++                bounds,
++                content_mask,
++                instance,
++                uses_prev: caps.uses_prev,
++                mouse,
++                signals,
++                meta,
++            });
++        }
++        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
++        {
++            let _ = (bounds, shader, instance, signals, meta);
++        }
++    }
++
++    /// Which `mouse` slot a button drives, if any: z is primary, w secondary,
++    /// and the rest of the buttons don't reach shaders.
++    fn shader_mouse_button_slot(button: MouseButton) -> Option<usize> {
++        match button {
++            MouseButton::Left => Some(0),
++            MouseButton::Right => Some(1),
++            _ => None,
++        }
++    }
++
++    /// The shader `mouse` uniform for a shader drawn with its top-left at
++    /// `origin`: xy is the cursor in bounds-local device pixels (the same
++    /// space as `resolution`, and free to sit outside it), zw are the primary
++    /// and secondary buttons.
++    fn shader_mouse(&self, origin: Point<Pixels>, scale_factor: f32) -> [f32; 4] {
++        let local = self.mouse_position - origin;
++        [
++            local.x.0 * scale_factor,
++            local.y.0 * scale_factor,
++            if self.mouse_buttons_down[0] { 1.0 } else { 0.0 },
++            if self.mouse_buttons_down[1] { 1.0 } else { 0.0 },
++        ]
++    }
++
+     /// Installs or clears the whole-window post-process shader. Validation
+     /// happened at registration, so this can't fail; an unknown id and `None`
+     /// both clear the pass.
+     ///
+     /// rox patch: part of the post-process pass.
+     pub fn set_post_shader(&mut self, shader: Option<UserShaderId>) {
++        let uses_prev = shader
++            .and_then(|id| self.user_shaders.caps(id))
++            .is_some_and(|caps| caps.uses_prev);
+         let source = shader
+-            .and_then(|id| self.user_shaders.post_source(id))
++            .and_then(|id| self.user_shaders.screen_source(id))
+             .map(|source| source.to_string());
+-        self.platform_window.set_post_shader(source.as_deref());
++        self.platform_window
++            .set_post_shader(source.as_deref(), uses_prev);
+     }
+ 
+-    /// Feeds this frame's values for the post shader's 16 signal slots.
+-    /// Shader time advances with these calls, so a caller that stops feeding
+-    /// freezes the shader's clock.
++    /// Feeds this frame's values for the post shader's 16 signal slots and 8
++    /// caller `meta` floats. Shader time advances with these calls, so a
++    /// caller that stops feeding freezes the shader's clock.
+     ///
+     /// rox patch: part of the post-process pass.
+-    pub fn set_post_signals(&mut self, signals: [f32; 16]) {
+-        self.platform_window.set_post_signals(signals);
++    pub fn set_post_signals(&mut self, signals: [f32; 16], meta: [f32; 8]) {
++        let mouse = self.shader_mouse(Point::default(), self.scale_factor());
++        self.platform_window.set_post_signals(signals, meta, mouse);
+     }
+ 
+     /// Add a node to the layout tree for the current frame. Takes the `Style` of the element for which
+@@ -3729,11 +3838,19 @@
+             PlatformInput::MouseDown(mouse_down) => {
+                 self.mouse_position = mouse_down.position;
+                 self.modifiers = mouse_down.modifiers;
++                // rox patch: shader uniforms want held-button state.
++                if let Some(slot) = Self::shader_mouse_button_slot(mouse_down.button) {
++                    self.mouse_buttons_down[slot] = true;
++                }
+                 PlatformInput::MouseDown(mouse_down)
+             }
+             PlatformInput::MouseUp(mouse_up) => {
+                 self.mouse_position = mouse_up.position;
+                 self.modifiers = mouse_up.modifiers;
++                // rox patch: shader uniforms want held-button state.
++                if let Some(slot) = Self::shader_mouse_button_slot(mouse_up.button) {
++                    self.mouse_buttons_down[slot] = false;
++                }
+                 PlatformInput::MouseUp(mouse_up)
+             }
+             PlatformInput::MouseExited(mouse_exited) => {
+@@ -5235,17 +5352,28 @@
+     }
+ }
+ 
+-// rox patch: template and validation for the whole-window post-process pass.
+-// The template supplies the vertex stage (a fullscreen triangle), the uniform
+-// block and the screen texture bindings; user source only defines `fs_user`.
+-const POST_SHADER_TEMPLATE: &str = "
++// rox patch: the uniform block every pass shares. 128 bytes; the Rust mirror
++// in `blade_renderer.rs` has to match it field for field, and blade's
++// `check_struct_size` is what catches a drift.
++//
++// `user_meta` rather than `meta`, which WGSL reserves. The Rust-side argument
++// is still called `meta`.
++const SHADER_PARAMS_STRUCT: &str = "
+ struct ShaderParams {
+     time: f32,
+-    _pad: f32,
++    delta: f32,
+     resolution: vec2<f32>,
++    mouse: vec4<f32>,
++    user_meta: array<vec4<f32>, 2>,
+     signals: array<vec4<f32>, 4>,
+ }
++";
+ 
++// rox patch: template for the passes that read the composed image under them
++// - the whole-window post pass and the per-bounds region pass. Both draw a
++// fullscreen triangle; the region pass aims it with a viewport and clips it
++// with a scissor, so one template and one pipeline serve both.
++const SCREEN_SHADER_TEMPLATE: &str = "
+ struct PostVarying {
+     @builtin(position) position: vec4<f32>,
+     @location(0) uv: vec2<f32>,
+@@ -5266,20 +5394,47 @@
+ }
+ ";
+ 
++// Which of the screen-pass bindings a composition puts in scope. Registration
++// composes several of these to work out what the source actually references.
++#[derive(Copy, Clone, Debug, Eq, PartialEq)]
++struct ScreenBindings {
++    screen: bool,
++    prev: bool,
++}
++
+ // Blade assigns bind points from the pipeline's data layout, while naga
+ // validation of a standalone module requires explicit ones, hence two variants.
+-fn compose_post_shader_source(user_source: &str, decorated: bool) -> String {
+-    let bindings = if decorated {
+-        "@group(0) @binding(0) var<uniform> params: ShaderParams;\n\
+-         @group(0) @binding(1) var screen: texture_2d<f32>;\n\
+-         @group(0) @binding(2) var samp: sampler;\n"
+-    } else {
+-        "var<uniform> params: ShaderParams;\n\
+-         var screen: texture_2d<f32>;\n\
+-         var samp: sampler;\n"
++fn compose_screen_shader_source(
++    user_source: &str,
++    decorated: bool,
++    bindings: ScreenBindings,
++) -> String {
++    let mut declarations = String::new();
++    let mut slot = 0;
++    let mut push = |declaration: &str, name: &str, kind: &str| {
++        if decorated {
++            declarations.push_str(&format!("@group(0) @binding({slot}) "));
++        }
++        declarations.push_str(&format!("{declaration}{name}: {kind};\n"));
++        slot += 1;
+     };
+-    format!("{POST_SHADER_TEMPLATE}\n{bindings}\n{user_source}")
+-}
++    push("var<uniform> ", "params", "ShaderParams");
++    if bindings.screen {
++        push("var ", "screen", "texture_2d<f32>");
++    }
++    push("var ", "samp", "sampler");
++    if bindings.prev {
++        push("var ", "prev", "texture_2d<f32>");
++    }
++    format!("{SHADER_PARAMS_STRUCT}\n{SCREEN_SHADER_TEMPLATE}\n{declarations}\n{user_source}")
++}
++
++// Everything a screen pass can offer, which is what registration validates
++// against and what the module-scope guard compares names to.
++const SCREEN_SUPERSET: ScreenBindings = ScreenBindings {
++    screen: true,
++    prev: true,
++};
+ 
+ // Blade panics on bad WGSL, so anything user-supplied gets checked up front.
+ // The parsed module comes back so the caller can inspect what the source
+@@ -5305,7 +5460,7 @@
+         let user = "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
+             return textureSample(screen, samp, uv);
+         }";
+-        let decorated = compose_post_shader_source(user, true);
++        let decorated = compose_screen_shader_source(user, true, SCREEN_SUPERSET);
+         validate_shader_source(&decorated).unwrap();
+     }
+ 
+@@ -5317,21 +5472,21 @@
+             let tint = vec4<f32>(bass, 0.0, 0.0, 0.0) * sin(params.time);
+             return base + tint * base.a;
+         }";
+-        let decorated = compose_post_shader_source(user, true);
++        let decorated = compose_screen_shader_source(user, true, SCREEN_SUPERSET);
+         validate_shader_source(&decorated).unwrap();
+     }
+ 
+     #[test]
+     fn broken_shader_reports_error() {
+         let user = "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return uv; }";
+-        let decorated = compose_post_shader_source(user, true);
++        let decorated = compose_screen_shader_source(user, true, SCREEN_SUPERSET);
+         let err = validate_shader_source(&decorated).unwrap_err();
+         assert!(!err.is_empty());
+     }
+ 
+     #[test]
+     fn missing_entry_point_reports_error() {
+-        let decorated = compose_post_shader_source("", true);
++        let decorated = compose_screen_shader_source("", true, SCREEN_SUPERSET);
+         assert!(validate_shader_source(&decorated).is_err());
+     }
+ }
+@@ -5346,13 +5501,6 @@
+ // as the post pass, but the vertex stage builds an instanced quad from the
+ // scene's `UserShader` primitives and there is no screen texture to read.
+ const USER_SHADER_TEMPLATE: &str = "
+-struct ShaderParams {
+-    time: f32,
+-    _pad: f32,
+-    resolution: vec2<f32>,
+-    signals: array<vec4<f32>, 4>,
+-}
+-
+ struct GlobalParams {
+     viewport_size: vec2<f32>,
+     premultiplied_alpha: u32,
+@@ -5369,7 +5517,9 @@
+     shader_id: u32,
+     bounds: UserShaderBounds,
+     content_mask: UserShaderBounds,
++    mouse: vec4<f32>,
+     signals: array<vec4<f32>, 4>,
++    user_meta: array<vec4<f32>, 2>,
+ }
+ 
+ struct UserShaderVarying {
+@@ -5421,17 +5571,36 @@
+          var<uniform> params: ShaderParams;\n\
+          var<storage, read> b_user_shaders: array<UserShader>;\n"
+     };
+-    format!("{USER_SHADER_TEMPLATE}\n{bindings}\n{user_source}")
++    format!("{SHADER_PARAMS_STRUCT}\n{USER_SHADER_TEMPLATE}\n{bindings}\n{user_source}")
+ }
+ 
+ /// rox patch: one entry per registered shader. Both composed variants are
+ /// kept as text, because the renderer rebuilds pipelines whenever the surface
+ /// is reconfigured.
+ pub(crate) struct UserShaderEntry {
+-    post_source: String,
+-    // `None` for a shader that samples the screen texture: there is no such
+-    // texture in scene space, so it can only ever run as a post pass.
++    // Serves both the whole-window post pass and the per-bounds region pass;
++    // they share a template, a pipeline layout and a target format.
++    screen_source: String,
++    // `None` for a shader that samples the screen texture or reads `prev`:
++    // neither exists in scene space, so it can only ever run as a screen pass.
+     primitive_source: Option<String>,
++    caps: UserShaderCaps,
++    // The region pipeline is compiled on first `paint_screen_shader`, so a
++    // shader that only ever runs as a primitive never pays for the variant.
++    region_registered: bool,
++}
++
++/// rox patch: what registration worked out about a shader's source, from
++/// [`Window::user_shader_caps`].
++#[derive(Copy, Clone, Debug, Eq, PartialEq)]
++pub struct UserShaderCaps {
++    /// The source reads `screen`, the composed image under its bounds. Such a
++    /// shader needs a screen pass; [`Window::paint_user_shader`] skips it.
++    pub samples_screen: bool,
++    /// The source reads `prev`, its own output from the previous frame. Such a
++    /// shader gets a persistent feedback texture in a screen pass, and
++    /// [`Window::paint_user_shader`] skips it for the same reason.
++    pub uses_prev: bool,
+ }
+ 
+ /// rox patch: this window's user shaders, keyed by source content so the same
+@@ -5447,18 +5616,38 @@
+         self.entries.get(id.0 as usize)
+     }
+ 
+-    /// The composed module for the whole-window post pass.
+-    pub(crate) fn post_source(&self, id: UserShaderId) -> Option<&str> {
+-        self.entry(id).map(|entry| entry.post_source.as_str())
++    pub(crate) fn caps(&self, id: UserShaderId) -> Option<UserShaderCaps> {
++        self.entry(id).map(|entry| entry.caps)
++    }
++
++    /// The composed module for a screen pass, post or region.
++    pub(crate) fn screen_source(&self, id: UserShaderId) -> Option<&str> {
++        self.entry(id).map(|entry| entry.screen_source.as_str())
+     }
+ 
+-    /// The composed module for the in-scene primitive, absent for a
+-    /// screen-sampling (post-only) shader.
++    /// The composed module for the in-scene primitive, absent for a shader
++    /// that reads `screen` or `prev`.
+     pub(crate) fn primitive_source(&self, id: UserShaderId) -> Option<&str> {
+         self.entry(id)
+             .and_then(|entry| entry.primitive_source.as_deref())
+     }
+ 
++    /// Hands back the screen-pass module the first time a region wants it, and
++    /// nothing on every call after. Keeps the region pipeline lazy without the
++    /// caller tracking what has been compiled.
++    #[cfg_attr(
++        not(any(target_os = "linux", target_os = "freebsd")),
++        allow(dead_code)
++    )]
++    pub(crate) fn take_pending_screen_source(&mut self, id: UserShaderId) -> Option<String> {
++        let entry = self.entries.get_mut(id.0 as usize)?;
++        if entry.region_registered {
++            return None;
++        }
++        entry.region_registered = true;
++        Some(entry.screen_source.clone())
++    }
++
+     /// Registers `source`, returning its id and whether this call is what
+     /// created it. Re-registering the same text is a lookup, not a compile.
+     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+@@ -5472,34 +5661,69 @@
+             return Ok((*id, false));
+         }
+ 
+-        // The post variant is the superset (params plus the screen texture and
+-        // its sampler), so it's what decides whether the source is valid at
+-        // all, and its globals are what the guard below compares against.
+-        let post_decorated = compose_post_shader_source(source, true);
+-        let module = validate_shader_source(&post_decorated)?;
++        // The superset screen variant (params, screen, samp and prev all in
++        // scope) is what decides whether the source is valid at all, and its
++        // globals are what the guard below compares against.
++        let superset = compose_screen_shader_source(source, true, SCREEN_SUPERSET);
++        let module = validate_shader_source(&superset)?;
+         // A shader declaring its own module-scope variables passes validation
+         // and then panics blade's pipeline layout match, so it stops here.
+         for variable in module.global_variables.iter() {
+             let name = variable.1.name.as_deref().unwrap_or_default();
+-            if !matches!(name, "params" | "screen" | "samp") {
++            if !matches!(name, "params" | "screen" | "samp" | "prev") {
+                 return Err(format!(
+                     "user shaders can't declare module-scope variables, found `{name}`; \
+-                     the template provides params, screen and samp"
++                     the template provides params, screen, samp and prev"
+                 ));
+             }
+         }
+ 
+-        // A shader that reads `screen` won't resolve against the primitive
+-        // template, which is exactly how a post-only shader identifies itself.
++        // Classification by composition: drop a binding, and the source only
++        // still resolves if it never referenced it. Cheaper to reason about
++        // than walking naga's usage graph, and it's the same trick S2 used to
++        // spot a screen-sampling source.
++        let without_prev = ScreenBindings {
++            screen: true,
++            prev: false,
++        };
++        let uses_prev = validate_shader_source(&compose_screen_shader_source(
++            source,
++            true,
++            without_prev,
++        ))
++        .is_err();
++        let without_screen = ScreenBindings {
++            screen: false,
++            prev: true,
++        };
++        let samples_screen = validate_shader_source(&compose_screen_shader_source(
++            source,
++            true,
++            without_screen,
++        ))
++        .is_err();
++
++        // The primitive template offers neither screen nor prev nor a sampler,
++        // so a source that touches any of them fails here - which is exactly
++        // how a screen-pass-only shader identifies itself.
+         let primitive_decorated = compose_user_shader_source(source, true);
+         let primitive_source = validate_shader_source(&primitive_decorated)
+             .ok()
+             .map(|_| compose_user_shader_source(source, false));
+ 
++        let bindings = ScreenBindings {
++            screen: true,
++            prev: uses_prev,
++        };
+         let id = UserShaderId(self.entries.len() as u32);
+         self.entries.push(UserShaderEntry {
+-            post_source: compose_post_shader_source(source, false),
++            screen_source: compose_screen_shader_source(source, false, bindings),
+             primitive_source,
++            caps: UserShaderCaps {
++                samples_screen,
++                uses_prev,
++            },
++            region_registered: false,
+         });
+         self.by_hash.insert(hash, id);
+         Ok((id, true))
+@@ -5521,7 +5745,7 @@
+         assert_eq!(id, UserShaderId(0));
+         assert!(is_new);
+         assert!(registry.primitive_source(id).is_some());
+-        assert!(registry.post_source(id).is_some());
++        assert!(registry.screen_source(id).is_some());
+     }
+ 
+     #[test]
+@@ -5588,7 +5812,7 @@
+             )
+             .unwrap();
+         assert!(registry.primitive_source(id).is_none());
+-        assert!(registry.post_source(id).is_some());
++        assert!(registry.screen_source(id).is_some());
+     }
+ 
+     #[test]
+@@ -5606,4 +5830,130 @@
+         assert!(registry.primitive_source(id).is_some());
+         assert!(registry.primitive_source(UserShaderId(42)).is_none());
+     }
++
++    #[test]
++    fn mouse_delta_and_meta_reach_the_primitive_variant() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry
++            .register(
++                "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                     let cursor = params.mouse.xy / params.resolution;
++                     let held = params.mouse.z + params.mouse.w;
++                     let volume = params.user_meta[0].x + params.user_meta[1].w;
++                     return vec4<f32>(cursor, held * params.delta, volume);
++                 }",
++            )
++            .unwrap();
++        assert!(registry.primitive_source(id).is_some());
++        assert!(registry.screen_source(id).is_some());
++    }
++
++    #[test]
++    fn prev_reference_is_classified_as_feedback() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry
++            .register(
++                "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                     let now = textureSample(screen, samp, uv);
++                     let before = textureSample(prev, samp, uv);
++                     return mix(now, before, 0.9);
++                 }",
++            )
++            .unwrap();
++        let caps = registry.caps(id).unwrap();
++        assert!(caps.uses_prev);
++        assert!(caps.samples_screen);
++        // Feedback has no copy point in scene space, so it's screen-pass only.
++        assert!(registry.primitive_source(id).is_none());
++        // The composed screen module has to declare the binding it will bind.
++        assert!(registry.screen_source(id).unwrap().contains("prev"));
++    }
++
++    #[test]
++    fn prev_only_source_still_needs_a_screen_pass() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry
++            .register(
++                "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                     return textureSample(prev, samp, uv) * 0.98;
++                 }",
++            )
++            .unwrap();
++        let caps = registry.caps(id).unwrap();
++        assert!(caps.uses_prev);
++        assert!(!caps.samples_screen);
++        assert!(registry.primitive_source(id).is_none());
++    }
++
++    #[test]
++    fn caps_are_false_for_a_pure_shader_and_none_for_an_unknown_id() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry.register(SOLID).unwrap();
++        assert_eq!(
++            registry.caps(id),
++            Some(UserShaderCaps {
++                samples_screen: false,
++                uses_prev: false,
++            })
++        );
++        assert_eq!(registry.caps(UserShaderId(7)), None);
++        // A pure shader binds no textures, so its screen module must not
++        // declare `prev`.
++        assert!(!registry.screen_source(id).unwrap().contains("prev"));
++    }
++
++    #[test]
++    fn the_region_variant_compiles_once() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry.register(SOLID).unwrap();
++        assert!(registry.take_pending_screen_source(id).is_some());
++        assert!(registry.take_pending_screen_source(id).is_none());
++        assert!(registry.take_pending_screen_source(UserShaderId(9)).is_none());
++    }
++
++    #[test]
++    fn the_superset_template_puts_prev_in_scope() {
++        let user = "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++            return textureSample(prev, samp, uv);
++        }";
++        let decorated = compose_screen_shader_source(user, true, SCREEN_SUPERSET);
++        validate_shader_source(&decorated).unwrap();
++    }
++
++    #[test]
++    fn the_params_block_is_128_bytes_in_wgsl() {
++        // The Rust mirror lives in `blade_renderer.rs`, which only builds on
++        // blade platforms; this pins the WGSL half, and blade's
++        // `check_struct_size` pins them to each other at pipeline creation.
++        let user = "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(uv, 0.0, 1.0); }";
++        let module =
++            validate_shader_source(&compose_screen_shader_source(user, true, SCREEN_SUPERSET))
++                .unwrap();
++        let params = module
++            .types
++            .iter()
++            .find(|(_, ty)| ty.name.as_deref() == Some("ShaderParams"))
++            .expect("ShaderParams in the template");
++        let naga::TypeInner::Struct { span, .. } = params.1.inner else {
++            panic!("ShaderParams should be a struct");
++        };
++        assert_eq!(span, 128);
++    }
++
++    #[test]
++    fn the_primitive_instance_block_is_160_bytes_in_wgsl() {
++        // Mirrors `scene::UserShader`, which has a matching compile-time
++        // assertion on the Rust side.
++        let user = "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(uv, 0.0, 1.0); }";
++        let module = validate_shader_source(&compose_user_shader_source(user, true)).unwrap();
++        let quad = module
++            .types
++            .iter()
++            .find(|(_, ty)| ty.name.as_deref() == Some("UserShader"))
++            .expect("UserShader in the template");
++        let naga::TypeInner::Struct { span, .. } = quad.1.inner else {
++            panic!("UserShader should be a struct");
++        };
++        assert_eq!(span, 160);
++    }
+ }

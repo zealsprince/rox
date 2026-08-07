@@ -39,6 +39,7 @@ use crate::panels::queue::{QueueConfig, QueuePanel};
 use crate::panels::queue_widget::{QueueWidgetConfig, QueueWidgetPanel};
 use crate::panels::rating::{RatingConfig, RatingPanel};
 use crate::panels::search::{SearchConfig, SearchPanel};
+use crate::panels::shader::{ShaderConfig, ShaderPanel};
 use crate::panels::slide::{SlideConfig, SlidePanel};
 use crate::panels::spacer::{SpacerConfig, SpacerPanel};
 use crate::panels::spectrum::{SpectrumConfig, SpectrumPanel};
@@ -508,16 +509,26 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
 /// belongs in, and nothing else about it changes.
 pub(crate) static EXPERIMENTAL: PanelSection = PanelSection {
     group: Some(("Experimental", icons::FLASK)),
-    panels: &[PanelDef {
-        label: "Particles",
-        icon: icons::STAR,
-        placement: PanelPlacement::Bottom,
-        build: |state, _, _, cx| {
-            Arc::new(
-                cx.new(|cx| ParticlesPanel::new(state.clone(), ParticlesConfig::default(), cx)),
-            )
+    panels: &[
+        PanelDef {
+            label: "Particles",
+            icon: icons::STAR,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(
+                    cx.new(|cx| ParticlesPanel::new(state.clone(), ParticlesConfig::default(), cx)),
+                )
+            },
         },
-    }],
+        PanelDef {
+            label: "Shader",
+            icon: icons::BLEND,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| ShaderPanel::new(state.clone(), ShaderConfig::default(), cx)))
+            },
+        },
+    ],
 };
 
 /// Whether a section holds the composition hosts (group, overlay, slide).
@@ -543,7 +554,7 @@ pub(crate) fn is_experimental(section: &PanelSection) -> bool {
 /// A panel joins the list by implementing [`crate::signal_ui::RouteHost`]
 /// and wrapping the rows it wants bindable in
 /// [`crate::signal_ui::bindable_row`].
-const SIGNAL_PANELS: &[&str] = &["Particles"];
+const SIGNAL_PANELS: &[&str] = &["Particles", "Shader"];
 
 pub(crate) fn supports_signals(def: &PanelDef) -> bool {
     SIGNAL_PANELS.contains(&def.label)

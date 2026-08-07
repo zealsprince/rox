@@ -47,6 +47,9 @@ pub use arrange::*;
 mod gesture;
 pub use gesture::*;
 
+pub mod shader;
+pub use shader::PanelShader;
+
 mod tracked_load;
 pub use tracked_load::TrackedImage;
 
@@ -805,6 +808,9 @@ pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
         // The Wayland backend ignores the creation-time titlebar title;
         // only set_window_title reaches the compositor.
         window.set_window_title(&title);
+        // A popped-out panel keeps its surface shader, so this window needs
+        // the hub and player its slots read from.
+        shader::note_window(window, &state, cx);
         let host = cx.new(|cx| {
             // A popped-out window pumps its own frames, so the backdrop
             // needs its own wake on a new bake.
@@ -939,6 +945,11 @@ pub struct PanelChrome {
     /// [`min_width`](Self::min_width).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_height: Option<f32>,
+    /// A WGSL shader over the panel's own surface, run after its body
+    /// paints. None on every panel that has never been given one, which is
+    /// what keeps older layout dumps loading clean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shader: Option<PanelShader>,
 }
 
 /// The panel's size cap as a [`Size`], reading the chrome's optional
@@ -1197,13 +1208,13 @@ fn arm_window_move(root: Div) -> Div {
 pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
     let theme = &chrome.theme;
     let anchor = chrome.anchor;
+    // The panel's own knob wins where it sets one; unset, the panel
+    // takes the app-wide default. Zero reads as no knob either way, so
+    // an explicit zero over a rounded app default squares this one
+    // panel back off, the same as rounding's absence.
+    let app = crate::settings::app_frame();
+    let margin = theme.margin.unwrap_or(app.margin);
     let frame = {
-        // The panel's own knob wins where it sets one; unset, the panel
-        // takes the app-wide default. Zero reads as no knob either way, so
-        // an explicit zero over a rounded app default squares this one
-        // panel back off, the same as rounding's absence.
-        let app = crate::settings::app_frame();
-        let margin = theme.margin.unwrap_or(app.margin);
         let padding = theme.padding.unwrap_or(app.padding);
         let rounding = theme.rounding.unwrap_or(app.rounding);
         let border = theme.border.unwrap_or(app.border);
@@ -1262,7 +1273,11 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
         .font_scale
         .map(|s| s.clamp(palette::PANEL_FONT_SCALE_MIN, palette::PANEL_FONT_SCALE_MAX))
         .filter(|s| (s - 1.0).abs() > 0.001);
-    if scope.is_none() && rem_scale.is_none() {
+    // A surface shader rides the same wrapper: it needs the element's
+    // bounds and a paint hook after the body, which is exactly what
+    // `Themed` already is.
+    let surface = shader::PanelSurface::build(chrome, margin);
+    if scope.is_none() && rem_scale.is_none() && surface.is_none() {
         return frame();
     }
     // Build the element under both channels, so a scoped color and a
@@ -1272,6 +1287,7 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
     Themed {
         scope,
         rem_scale,
+        surface,
         child,
     }
     .into_any_element()
@@ -1305,6 +1321,8 @@ fn panel_env<R>(
 struct Themed {
     scope: Option<palette::Scope>,
     rem_scale: Option<f32>,
+    /// The panel's surface shader, recorded after the body paints.
+    surface: Option<shader::PanelSurface>,
     child: AnyElement,
 }
 
@@ -1369,7 +1387,7 @@ impl Element for Themed {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         _prepaint: &mut Self::PrepaintState,
         window: &mut Window,
@@ -1382,6 +1400,13 @@ impl Element for Themed {
         window.with_rem_size(rem, |window| {
             panel_env(scope, rem_scale, || child.paint(window, cx));
         });
+        // Post-order: the body is in the scene before the shader records,
+        // so a screen pass samples what this panel drew - and a shaded
+        // panel nested in a shaded host composes child first, the host
+        // reading the finished result.
+        if let Some(surface) = &self.surface {
+            surface.paint(bounds, window, cx);
+        }
     }
 }
 
@@ -1675,7 +1700,7 @@ pub fn setting_row(
 /// [`setting_row`] with a built description, for the rare row whose note
 /// carries live numbers rather than fixed copy.
 pub fn setting_row_dyn(
-    label: &'static str,
+    label: impl Into<SharedString>,
     description: Option<SharedString>,
     control: impl IntoElement,
 ) -> Div {
@@ -1690,7 +1715,7 @@ pub fn setting_row_dyn(
                 .items_center()
                 .justify_between()
                 .gap(tokens::SPACE_MD)
-                .child(label)
+                .child(label.into())
                 .child(div().flex_none().child(control)),
         )
         .when_some(description, |d, description| {
@@ -2727,5 +2752,84 @@ impl Render for PopoutHost {
                 })
                 .into_any_element()
         })
+    }
+}
+
+#[cfg(test)]
+mod chrome_tests {
+    use super::*;
+
+    /// A panel config the way every real one is shaped: its own fields
+    /// beside the flattened chrome.
+    #[derive(Default, Serialize, Deserialize)]
+    struct StubConfig {
+        #[serde(default)]
+        tile: f32,
+        #[serde(flatten)]
+        chrome: PanelChrome,
+    }
+
+    #[test]
+    fn chrome_round_trips_with_a_shader() {
+        let mut chrome = PanelChrome {
+            title: Some("Wall".to_string()),
+            locked: true,
+            ..PanelChrome::default()
+        };
+        chrome.shader = Some(PanelShader {
+            enabled: true,
+            source: "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }"
+                .to_string(),
+            path: Some("/tmp/smudge.wgsl".into()),
+            routes: vec![rox_viz::signal::Route {
+                enabled: true,
+                signal: 3,
+                target: shader::slot_target(1),
+                from: 0.0,
+                to: 1.0,
+            }],
+            run_when_idle: true,
+        });
+        let config = StubConfig { tile: 96.0, chrome };
+
+        let dumped = serde_json::to_value(&config).expect("dump");
+        let read: StubConfig = serde_json::from_value(dumped).expect("read back");
+
+        assert_eq!(read.tile, 96.0);
+        assert_eq!(read.chrome.title.as_deref(), Some("Wall"));
+        let shader = read.chrome.shader.expect("the shader survives the round trip");
+        assert!(shader.enabled);
+        assert!(shader.run_when_idle);
+        assert!(shader.source.contains("fs_user"));
+        assert_eq!(shader.routes.len(), 1);
+        assert_eq!(shader.routes[0].target, "slot1");
+    }
+
+    #[test]
+    fn chrome_without_a_shader_writes_no_field() {
+        let config = StubConfig::default();
+        let dumped = serde_json::to_value(&config).expect("dump");
+        assert!(
+            dumped.get("shader").is_none(),
+            "an unshaded panel shouldn't grow a shader key: {dumped}"
+        );
+    }
+
+    #[test]
+    fn an_old_dump_loads_clean() {
+        // A layout written before panel shaders existed: chrome fields and
+        // the panel's own, no shader key anywhere.
+        let dumped = serde_json::json!({
+            "tile": 120.0,
+            "title": "Grid",
+            "locked": true,
+            "max_width": 400.0,
+        });
+        let read: StubConfig = serde_json::from_value(dumped).expect("old dumps still load");
+        assert_eq!(read.tile, 120.0);
+        assert_eq!(read.chrome.title.as_deref(), Some("Grid"));
+        assert!(read.chrome.locked);
+        assert_eq!(read.chrome.max_width, Some(400.0));
+        assert!(read.chrome.shader.is_none());
     }
 }

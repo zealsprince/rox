@@ -8,12 +8,14 @@
 //! per-view knob.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
     div, prelude::*, px, size, AnyElement, App, Bounds, Context, Div, Entity, EntityId,
-    Focusable as _, Global, Hsla, ScrollHandle, SharedString, Subscription, WeakEntity, Window,
-    WindowHandle,
+    Focusable as _, Global, Hsla, PathPromptOptions, ScrollHandle, SharedString, Subscription,
+    WeakEntity, Window, WindowHandle,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -26,7 +28,7 @@ use crate::assets::icons;
 use crate::backdrop::WindowBackdrop;
 use crate::design::palette::{self, BorderEdge, BorderEdges, Palette, PanelTheme, ROLES};
 use crate::design::tokens;
-use crate::panel::{self, AppState, PanelSettings, ScrubState};
+use crate::panel::{self, shader, AppState, PanelSettings, ScrubState};
 use crate::panels::art::ArtPanel;
 use crate::panels::artist_grid::ArtistGridPanel;
 use crate::panels::biography::BiographyPanel;
@@ -54,6 +56,7 @@ use crate::panels::queue::QueuePanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
 use crate::panels::rating::RatingPanel;
 use crate::panels::search::SearchPanel;
+use crate::panels::shader::ShaderPanel;
 use crate::panels::slide::SlidePanel;
 use crate::panels::spacer::SpacerPanel;
 use crate::panels::spectrum::SpectrumPanel;
@@ -72,7 +75,9 @@ use crate::settings::ui::{
     self as settings_ui, grid_columns, section, sidebar, small_button, SECTION_GAP,
 };
 use crate::settings::{BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX};
+use crate::signal_ui::{self, routes::RouteEditState};
 use rox_dock::{PanelView, TabPanel};
+use rox_viz::signal::Route;
 
 /// The open panel settings windows, keyed by the panel they edit:
 /// opening a panel's settings again focuses its window instead of
@@ -182,6 +187,7 @@ macro_rules! with_settings_panel {
             SpectrumPanel,
             WaveformPanel,
             ParticlesPanel,
+            ShaderPanel,
             StatusPanel,
             MenuPanel,
             DragAnchorPanel,
@@ -395,6 +401,10 @@ struct PanelSettingsWindow<P: PanelSettings> {
     rounding_scrub: ScrubState,
     border_scrub: ScrubState,
     font_scale_scrub: ScrubState,
+    /// The Shader page's route editor state: span sliders and which rows
+    /// stand open, kept in step with the panel's route list. Ephemeral on
+    /// purpose - a fold is where you are, not what you set.
+    shader_routes: RouteEditState,
     /// The size limit fields, typed in px; empty means no limit.
     min_width_input: Entity<InputState>,
     min_height_input: Entity<InputState>,
@@ -516,6 +526,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             rounding_scrub: ScrubState::default(),
             border_scrub: ScrubState::default(),
             font_scale_scrub: ScrubState::default(),
+            shader_routes: RouteEditState::default(),
             min_width_input,
             min_height_input,
             max_width_input,
@@ -1087,6 +1098,227 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .children(extra)
     }
 
+    /// The shared Shader page: a WGSL fragment stage over this panel's own
+    /// surface, and the routes feeding its sixteen signal slots.
+    ///
+    /// No countdown confirm here, unlike the app-wide screen shader. That
+    /// one exists because a hostile whole-window shader can bury the very
+    /// control that would undo it; a panel shader leaves this window, the
+    /// menus, and every other panel exactly where they were.
+    fn shader_page(&mut self, cx: &mut Context<Self>) -> Div {
+        let Some(panel) = self.panel.upgrade() else {
+            return div();
+        };
+        let configured = panel.read(cx).chrome().shader.clone();
+        // A panel that has never been given a shader reads as off, whatever
+        // the default a fresh config would carry.
+        let enabled = configured.as_ref().is_some_and(|shader| shader.enabled);
+        let shader = configured.unwrap_or_default();
+        // Only speak up about a compile while the thing is meant to run;
+        // a message from before the switch went off is just noise.
+        let error = (enabled && shader.runnable())
+            .then(|| shader::error(panel.entity_id()))
+            .flatten();
+        let labels = shader::slot_labels(&shader.source);
+        self.shader_routes.sync(shader.routes.len());
+
+        let controls = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .child(small_button(
+                "Reload",
+                icons::REFRESH_CW,
+                shader.path.is_none(),
+                cx.listener(|this, _, _, cx| this.reload_shader(cx)),
+            ))
+            .child(small_button(
+                "Choose File",
+                icons::FOLDER,
+                false,
+                cx.listener(|this, _, window, cx| this.pick_shader_file(window, cx)),
+            ));
+        let source_note: SharedString = match (&shader.path, shader.source.is_empty()) {
+            (Some(path), _) => format!(
+                "{}. The source is copied into the layout, so the panel keeps its \
+                 shader on a machine that never had the file; Reload picks up edits",
+                path.display()
+            )
+            .into(),
+            (None, false) => "Loaded from a file that is no longer recorded; the source \
+                              rides the layout"
+                .into(),
+            (None, true) => "Pick a WGSL file with a fragment stage defining fs_user(uv). \
+                             Reading `screen` shades what the panel drew, `prev` gives it \
+                             a frame of feedback, and neither draws a plain quad"
+                .into(),
+        };
+        let mut source = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(panel::setting_row(
+                "Surface Shader",
+                Some("Run a WGSL shader over this panel's body, under the app's screen shader"),
+                panel::toggle(
+                    enabled,
+                    |this: &mut Self, on, cx| {
+                        this.edit_shader(move |shader| shader.enabled = on, cx)
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row_dyn(
+                "Shader File",
+                Some(source_note),
+                controls,
+            ));
+        if let Some(error) = error {
+            source = source.child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(error),
+            );
+        }
+        source = source.child(panel::setting_row(
+            "Run When Idle",
+            Some(
+                "Keep drawing frames while the audio is silent. Off, the shader parks \
+                 where it stands and the panel costs nothing",
+            ),
+            panel::toggle(
+                shader.run_when_idle,
+                |this: &mut Self, on, cx| {
+                    this.edit_shader(move |shader| shader.run_when_idle = on, cx)
+                },
+                cx,
+            ),
+        ));
+
+        // The one route editor every shader surface wears, over this
+        // panel's own list: the write goes back through `edit_shader`, so
+        // the panel's config stays the only copy.
+        let hub = self.state.signals.clone();
+        let editor = signal_ui::routes::RouteEditor {
+            id: "panel-shader-route",
+            hub: &hub,
+            routes: &shader.routes,
+            labels: &labels,
+            value_edit: &self.value_edit,
+            ui: &self.shader_routes,
+            ui_mut: |this: &mut Self| &mut this.shader_routes,
+            mutate: Arc::new(
+                |this: &mut Self, edit: &mut dyn FnMut(&mut Vec<Route>), cx: &mut Context<Self>| {
+                    this.edit_shader(|shader| edit(&mut shader.routes), cx);
+                },
+            ),
+        };
+        let add = editor.add_button(cx);
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(SECTION_GAP)
+            .child(section("Shader", None, source))
+            .child(section(
+                "Signals",
+                Some(add.into_any_element()),
+                editor.list(cx),
+            ))
+    }
+
+    /// Edit the panel's shader config, seeding a default one on first
+    /// touch. The stored compile message goes with it: whatever it said
+    /// was about a source that just moved.
+    fn edit_shader(&mut self, edit: impl FnOnce(&mut shader::PanelShader), cx: &mut Context<Self>) {
+        let Some(panel) = self.panel.upgrade() else {
+            return;
+        };
+        shader::note_error(panel.entity_id(), None);
+        panel.update(cx, |panel, cx| {
+            edit(
+                panel
+                    .chrome_mut()
+                    .shader
+                    .get_or_insert_with(shader::PanelShader::default),
+            );
+            cx.notify();
+        });
+        cx.notify();
+        // The compile message is written where the shader paints, which is
+        // the panel's window drawing after this one - so the readout here
+        // would sit a frame behind, and with a broken shader asking for no
+        // frames, sit there. One nudge once the draw has landed.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(150))
+                .await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
+    }
+
+    /// Browse for a shader file. The source is copied into the panel's
+    /// config on the way in, so the path is only ever a bookmark for
+    /// Reload - a layout or a workspace bundle carries the shader itself.
+    fn pick_shader_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.pop() else {
+                return;
+            };
+            this.update(cx, |this, cx| this.load_shader_file(path, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Re-read the file the shader came from, for edits made outside the
+    /// app. There is no mtime watch on a panel shader the way there is on
+    /// the app-wide one; this button is the authoring loop.
+    fn reload_shader(&mut self, cx: &mut Context<Self>) {
+        let path = self
+            .panel
+            .upgrade()
+            .and_then(|panel| panel.read(cx).chrome().shader.as_ref()?.path.clone());
+        if let Some(path) = path {
+            self.load_shader_file(path, cx);
+        }
+    }
+
+    /// Snapshot a file into the panel's shader source. A file that won't
+    /// read lands in the same readout a failed compile does.
+    fn load_shader_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        match std::fs::read_to_string(&path) {
+            Ok(source) => self.edit_shader(
+                move |shader| {
+                    shader.source = source;
+                    shader.path = Some(path);
+                },
+                cx,
+            ),
+            Err(error) => {
+                if let Some(panel) = self.panel.upgrade() {
+                    shader::note_error(
+                        panel.entity_id(),
+                        Some(format!("reading {}: {error}", path.display())),
+                    );
+                }
+                cx.notify();
+            }
+        }
+    }
+
     /// The shared Appearance page: the panel's opacity fork, the frame
     /// knobs, the panel's own appearance section when it has one, and
     /// the override grid, the app palette editor's shape with inherit
@@ -1417,12 +1649,13 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                 ),
                 Some(panel) => {
                     let pages = panel.read(cx).pages();
-                    // Appearance and Behavior lead the nav on every panel, the
-                    // app settings window's order, so how a panel looks and how
-                    // it acts always sit in the same two spots no matter what
-                    // pages it brings. `page` 0 is Appearance, 1 is Behavior,
-                    // and the panel's own pages follow at 2..
-                    let picked = self.page.min(pages.len() + 1);
+                    // Appearance, Behavior and Shader lead the nav on every
+                    // panel, the app settings window's order, so how a panel
+                    // looks and how it acts always sit in the same spots no
+                    // matter what pages it brings. `page` 0 is Appearance, 1
+                    // is Behavior, 2 is Shader, and the panel's own pages
+                    // follow at 3..
+                    let picked = self.page.min(pages.len() + 2);
                     let mut nav = sidebar()
                         .child(settings_ui::nav_item(
                             "Appearance",
@@ -1443,9 +1676,19 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                                 cx.notify();
                             },
                             cx,
+                        ))
+                        .child(settings_ui::nav_item(
+                            "Shader",
+                            icons::BLEND,
+                            picked == 2,
+                            move |this: &mut Self, _window, cx| {
+                                this.page = 2;
+                                cx.notify();
+                            },
+                            cx,
                         ));
                     for (i, &(label, icon)) in pages.iter().enumerate() {
-                        let page = i + 2;
+                        let page = i + 3;
                         nav = nav.child(settings_ui::nav_item(
                             label,
                             icon,
@@ -1497,8 +1740,9 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                             )
                             .into_any_element()
                         }
+                        2 => self.shader_page(cx).into_any_element(),
                         _ => panel
-                            .update(cx, |panel, cx| panel.page(pages[picked - 2].0, window, cx)),
+                            .update(cx, |panel, cx| panel.page(pages[picked - 3].0, window, cx)),
                     };
                     (nav, body)
                 }

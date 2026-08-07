@@ -29,7 +29,7 @@ use gpui::{App, SharedString, WindowAppearance, WindowDecorations};
 use serde::{Deserialize, Serialize};
 
 use rox_playback::engine::LoopMode;
-use rox_viz::signal::Signal;
+use rox_viz::signal::{Route, Signal};
 
 use crate::design::palette::{self, Palette};
 
@@ -1363,6 +1363,13 @@ pub struct PostShaderConfig {
     /// dialog stays bare either way, so a hostile shader can't take the
     /// way out with it.
     pub all_windows: bool,
+    /// The signal routes filling the shader's sixteen slots, the same list
+    /// a panel's surface shader carries. Empty is the older behaviour and
+    /// stays supported rather than migrated: the pool feeds the slots in
+    /// its own order, signal i into slot i. Adding one route takes over the
+    /// whole feed, so an unrouted slot reads zero from then on.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<Route>,
 }
 
 /// The Last.fm account and how scrobbling behaves. The key and secret
@@ -2502,6 +2509,36 @@ mod tests {
         assert!(!older.post_shader.enabled);
         assert!(older.post_shader.path.is_none());
         assert!(!older.post_shader.all_windows);
+        assert!(older.post_shader.routes.is_empty());
+    }
+
+    /// The screen shader's routes ride the same field, and a file written
+    /// before they existed reads as none - which is what keeps the older
+    /// pool-order feed running for anyone who never opens the editor.
+    #[test]
+    fn post_shader_routes_round_trip_and_stay_out_of_older_files() {
+        let mut src = Settings::default();
+        src.post_shader.routes = vec![Route {
+            enabled: true,
+            signal: 7,
+            target: "slot3".to_string(),
+            from: 0.25,
+            to: 1.5,
+        }];
+        let json = serde_json::to_string_pretty(&src).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.post_shader.routes.len(), 1);
+        assert_eq!(back.post_shader.routes[0].signal, 7);
+        assert_eq!(back.post_shader.routes[0].target, "slot3");
+        assert_eq!(back.post_shader.routes[0].to, 1.5);
+
+        // An empty list writes nothing at all, so a settings file that was
+        // never routed stays exactly as it was.
+        let bare = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(!bare.contains("routes"));
+
+        let older: Settings = serde_json::from_str(r#"{"post_shader":{"enabled":true}}"#).unwrap();
+        assert!(older.post_shader.routes.is_empty());
     }
 
     /// The measurement pass's destination survives the file, and an older

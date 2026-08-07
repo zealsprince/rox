@@ -29,6 +29,7 @@ pub mod queue;
 pub mod queue_widget;
 pub mod rating;
 pub mod search;
+pub mod shader;
 pub mod slide;
 pub mod spacer;
 pub mod spectrum;

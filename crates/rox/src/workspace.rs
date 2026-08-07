@@ -209,7 +209,12 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
         // or strip the ones shaded before. Read errors fall through as None
         // here; the workspace pass above already surfaced them.
         let source = (config.enabled && config.all_windows)
-            .then(|| config.path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()))
+            .then(|| {
+                config
+                    .path
+                    .as_ref()
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+            })
             .flatten();
         let previous = std::mem::take(&mut cx.default_global::<ShadedChildren>().windows);
         cx.default_global::<ShadedChildren>().source = source.clone();
@@ -266,16 +271,21 @@ fn sweep_shaded_children(cx: &mut App) {
 /// Push this frame's signal values into every shaded child window and keep
 /// their frames coming. Child windows have no driver of their own; the
 /// primary workspace's frame loop calls this through a defer, since a
-/// window can't update its siblings mid-render. Redraws go through
-/// `refresh`, the only wake that's legal outside the child's own frame;
-/// each push refreshes again, so the cadence rides the workspace loop.
+/// window can't update its siblings mid-render. The wake is a notify on
+/// the child's root view, the same wake `request_animation_frame` uses:
+/// it schedules a draw where everything but the root reuses its prepaint
+/// cache. A `refresh` here instead sets the window-wide refreshing flag,
+/// which rebuilds every view in the child uncached, and at frame cadence
+/// across a few open windows that saturated the main thread and stalled
+/// the shader clock everywhere. Each push notifies again, so the cadence
+/// rides the workspace loop.
 fn push_child_signals(signals: [f32; 16], cx: &mut App) {
     let shaded = cx.default_global::<ShadedChildren>().windows.clone();
     for handle in shaded {
         let alive = handle
-            .update(cx, |_, window, _| {
+            .update(cx, |root, window, cx| {
                 window.set_post_signals(signals);
-                window.refresh();
+                cx.notify(root.entity_id());
             })
             .is_ok();
         if !alive {
@@ -550,9 +560,29 @@ fn add_panel_item(
     workspace: WeakEntity<Workspace>,
     tabs: WeakEntity<TabPanel>,
 ) -> PopupMenu {
-    menu.item(
+    // A panel the signal pool can drive trails the glyph, which a plain
+    // item has no room for, so those rows render their own line.
+    let item = if catalog::supports_signals(def) {
+        gpui_component::menu::PopupMenuItem::element(move |_, _| {
+            div()
+                .flex()
+                .flex_1()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_SM)
+                .child(div().flex_1().child(def.label))
+                .child(
+                    svg()
+                        .path(icons::AUDIO_WAVEFORM)
+                        .size_3()
+                        .text_color(palette::text_faint()),
+                )
+        })
+    } else {
         gpui_component::menu::PopupMenuItem::new(def.label)
-            .icon(Icon::default().path(def.icon))
+    };
+    menu.item(
+        item.icon(Icon::default().path(def.icon))
             .on_click(move |_, window, cx| {
                 let (Some(ws), Some(tabs)) = (workspace.upgrade(), tabs.upgrade()) else {
                     return;
@@ -954,6 +984,8 @@ pub(crate) enum MenuAction {
     OpenConsole,
     OpenTasks,
     OpenEqualizer,
+    /// Open the shared signal pool, the window every panel's routes ride.
+    OpenSignals,
     OpenWelcome,
     OpenAbout,
     ToggleMenubar,
@@ -1014,6 +1046,7 @@ impl MenuAction {
             MenuAction::OpenConsole => "console".into(),
             MenuAction::OpenTasks => "tasks".into(),
             MenuAction::OpenEqualizer => "equalizer".into(),
+            MenuAction::OpenSignals => "signals".into(),
             MenuAction::OpenWelcome => "welcome".into(),
             MenuAction::OpenAbout => "about".into(),
             MenuAction::ToggleMenubar => "toggle-menubar".into(),
@@ -1047,6 +1080,7 @@ impl MenuAction {
             "console" => MenuAction::OpenConsole,
             "tasks" => MenuAction::OpenTasks,
             "equalizer" => MenuAction::OpenEqualizer,
+            "signals" => MenuAction::OpenSignals,
             "welcome" => MenuAction::OpenWelcome,
             "about" => MenuAction::OpenAbout,
             "toggle-menubar" => MenuAction::ToggleMenubar,
@@ -1214,25 +1248,35 @@ pub(crate) const MENUS: &[Menu] = &[
                 icon: icons::SETTINGS,
                 action: MenuAction::OpenSettings,
             }),
+            // The two instruments: windows you work while the music plays,
+            // rather than preferences you set and close.
+            MenuEntry::Section("Tuning"),
+            MenuEntry::Item(MenuItem {
+                label: "Equalizer",
+                icon: icons::AUDIO_LINES,
+                action: MenuAction::OpenEqualizer,
+            }),
+            MenuEntry::Item(MenuItem {
+                label: "Signals",
+                icon: icons::AUDIO_WAVEFORM,
+                action: MenuAction::OpenSignals,
+            }),
+            MenuEntry::Section("Library"),
             MenuEntry::Item(MenuItem {
                 label: "Stats",
                 icon: icons::CHART_PIE,
                 action: MenuAction::OpenStats,
             }),
             MenuEntry::Item(MenuItem {
-                label: "Console",
-                icon: icons::FILE_TEXT,
-                action: MenuAction::OpenConsole,
-            }),
-            MenuEntry::Item(MenuItem {
                 label: "Tasks",
                 icon: icons::CLOCK,
                 action: MenuAction::OpenTasks,
             }),
+            MenuEntry::Section("App"),
             MenuEntry::Item(MenuItem {
-                label: "Equalizer",
-                icon: icons::AUDIO_LINES,
-                action: MenuAction::OpenEqualizer,
+                label: "Console",
+                icon: icons::FILE_TEXT,
+                action: MenuAction::OpenConsole,
             }),
             MenuEntry::Item(MenuItem {
                 label: "Welcome",
@@ -1376,9 +1420,23 @@ pub(crate) const MENUS: &[Menu] = &[
             MenuEntry::Panels(&catalog::CATALOGUE),
             MenuEntry::Panels(&catalog::DETAILS),
             MenuEntry::Panels(&catalog::VISUALIZERS),
+            // Drawn only while the flag is on, the gate [`section_shows`]
+            // applies for every menu that renders this table. It was
+            // missing here entirely, so turning experimental features on
+            // grew the right-click Add Panel flyout, which reads the
+            // catalog directly, and left this menu one group short.
+            MenuEntry::Panels(&catalog::EXPERIMENTAL),
         ],
     },
 ];
+
+/// Whether a catalog section shows in the menus as things stand: the
+/// experimental run stays out until the Development page turns it on, the
+/// same gate [`catalog::sections`] applies to the pickers that read the
+/// table directly.
+pub(crate) fn section_shows(section: &'static PanelSection) -> bool {
+    !catalog::is_experimental(section) || settings::experimental()
+}
 
 /// The keybinding a dropdown row trails, Zed-style, matching [`init`]'s
 /// bindings. Only the primary chord shows; secondaries like Ctrl+I stay
@@ -1391,6 +1449,14 @@ pub(crate) fn menu_item_display(item: MenuItem, is_playing: bool) -> (&'static s
         MenuAction::TogglePlayback if is_playing => ("Pause", icons::PAUSE),
         _ => (item.label, item.icon),
     }
+}
+
+/// Whether a dropdown row trails the signal glyph: a catalog row for a
+/// panel whose settings carry knobs the shared pool can drive. Read by
+/// every menu that renders the catalog, so the mark can't be in one list
+/// and missing from the next.
+pub(crate) fn signal_marked(action: MenuAction) -> bool {
+    matches!(action, MenuAction::OpenPanel(def) if catalog::supports_signals(def))
 }
 
 pub(crate) fn shortcut_for(action: MenuAction) -> Option<&'static str> {
@@ -1832,6 +1898,14 @@ impl Workspace {
         let _player_changed = cx.observe_in(&state.player, window, |this, _, window, cx| {
             this.refresh_title(window, cx);
             this.publish_tray(cx);
+            // The shader's frame loop lives in render and sustains itself
+            // through frame requests, but only render can start it. Nothing
+            // else re-renders the workspace on a resume, so a parked shader
+            // would sit frozen until a track change; while one is worn, the
+            // pump's tick is what re-arms it.
+            if this.post_shader.as_ref().is_some_and(|d| d.active) {
+                cx.notify();
+            }
             // The native Play/Pause row is baked in, so it has to be rebuilt
             // when the player flips. Read here and handed over, since the
             // rebuild can't reach back through this workspace mid-update.
@@ -2002,10 +2076,16 @@ impl Workspace {
             return;
         }
         let hub = &self.state.signals;
+        // Tick before the live check. Live only goes true once a tick has
+        // seen the feed move, and on a workspace without a particles panel
+        // or the signals window this loop is the hub's only ticker, so
+        // checking first parked the shader for good: no signals, frozen
+        // clock. The tick itself is cheap and TICK_MIN-deduped.
+        let player = self.state.player.read(cx);
+        hub.tick(&player.feed(), player.playing_entry());
         if !hub.live() {
             return;
         }
-        hub.tick(&self.state.player.read(cx).feed());
         let mut signals = [0.0f32; 16];
         for (slot, signal) in hub.pool().iter().take(signals.len()).enumerate() {
             signals[slot] = hub.value(signal.id).unwrap_or(0.0);
@@ -3089,6 +3169,7 @@ impl Workspace {
                             launcher_tile(
                                 def.label,
                                 def.icon,
+                                catalog::supports_signals(def),
                                 cx.listener(move |this, _, window, cx| {
                                     this.run(MenuAction::OpenPanel(def), window, cx);
                                 }),
@@ -3508,10 +3589,12 @@ fn launcher_section(header: impl Into<SharedString>, tiles: impl IntoIterator<It
 }
 
 /// A launcher tile: an icon-and-label chip that opens a panel or applies
-/// a layout with one click.
+/// a layout with one click. `signals` trails the pool's glyph, the mark
+/// the menus put on the same panels.
 fn launcher_tile(
     label: impl Into<SharedString>,
     icon: &'static str,
+    signals: bool,
     on_click: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
     div()
@@ -3534,6 +3617,14 @@ fn launcher_tile(
                 .text_color(palette::text_muted()),
         )
         .child(label.into())
+        .when(signals, |d| {
+            d.child(
+                svg()
+                    .path(icons::AUDIO_WAVEFORM)
+                    .size_3()
+                    .text_color(palette::text_faint()),
+            )
+        })
 }
 
 /// A dialog button: the primary one reads as a filled accent control, the

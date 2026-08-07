@@ -620,6 +620,56 @@ impl LyricsPanel {
         crate::lyrics::matcher::open(self.state.clone(), path, cx);
     }
 
+    /// Say the shown track has no lyrics: out of the sidecar, the store,
+    /// and the embedded tag, and marked so nothing puts them back. Both
+    /// halves matter. Clearing alone leaves the next automatic lookup free
+    /// to refill it, and marking alone would hide words the file still
+    /// carries.
+    fn wipe(&mut self, cx: &mut Context<Self>) {
+        self.set_none(true, cx);
+    }
+
+    /// Hand the track back: the mark comes off and the lookups may fill it
+    /// again. Nothing to restore, since the wipe was the deletion.
+    fn unmark_none(&mut self, cx: &mut Context<Self>) {
+        self.set_none(false, cx);
+    }
+
+    /// The two above, off the UI thread. Setting wipes first and marks on
+    /// the way out, so a failed delete never leaves the track marked with
+    /// words still in it.
+    fn set_none(&mut self, on: bool, cx: &mut Context<Self>) {
+        let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
+            return;
+        };
+        // Auto-search runs once per track path, so lifting the mark has to
+        // hand this track back to it or the switch reads as one-way.
+        if !on && self.auto_tried.as_deref() == Some(path.as_path()) {
+            self.auto_tried = None;
+        }
+        cx.spawn(async move |_, cx| {
+            let done = cx
+                .background_executor()
+                .spawn({
+                    let path = path.clone();
+                    async move {
+                        let dir = lyrics_dir();
+                        if on {
+                            lyrics::wipe(&path, Some(&dir))?;
+                        }
+                        lyrics::set_marked_none(&path, &dir, on)
+                    }
+                })
+                .await;
+            if done.is_ok() {
+                // Every panel on this track re-reads, the same poke a save
+                // from the edit or match window sends.
+                cx.update(|cx| crate::lyrics::saved(&path, cx)).ok();
+            }
+        })
+        .detach();
+    }
+
     /// Drop the cached sheet for `path` and repaint, so a save made
     /// outside the panel (the edit or match window, in this panel or any
     /// other) shows on the next render. Lyrics do not ride the projection,
@@ -1087,6 +1137,43 @@ impl Panel for LyricsPanel {
         } else {
             menu
         };
+        // Getting rid of a wrong sheet, and keeping it gone. The two read
+        // as one switch and only ever one of them applies: a marked track
+        // loads as empty, so a sheet showing means it is not marked, and
+        // the wipe is what marks it.
+        let menu = match self.resolved.get(self.config.source, &self.state, cx) {
+            Some(path) if self.lyrics_for(&path).is_some() => {
+                let weak = cx.entity().downgrade();
+                menu.item(
+                    PopupMenuItem::new("Wipe Lyrics")
+                        .icon(Icon::default().path(icons::TRASH))
+                        .on_click(move |_, _, cx| {
+                            let Some(this) = weak.upgrade() else { return };
+                            this.update(cx, |this, cx| this.wipe(cx));
+                        }),
+                )
+            }
+            Some(path) => {
+                let marked = lyrics::marked_none(&path, Some(&lyrics_dir()));
+                let weak = cx.entity().downgrade();
+                menu.item(
+                    PopupMenuItem::new("No Lyrics for This Track")
+                        .icon(Icon::default().path(icons::MINUS))
+                        .checked(marked)
+                        .on_click(move |_, _, cx| {
+                            let Some(this) = weak.upgrade() else { return };
+                            this.update(cx, |this, cx| {
+                                if marked {
+                                    this.unmark_none(cx);
+                                } else {
+                                    this.wipe(cx);
+                                }
+                            });
+                        }),
+                )
+            }
+            None => menu,
+        };
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
@@ -1274,6 +1361,10 @@ impl LyricsPanel {
     /// match when it clears [`AUTO_SAVE_CONFIDENCE`]. A weak match is left
     /// alone for the manual search, which shows every candidate. Runs once
     /// per track path so a repaint never re-queries.
+    ///
+    /// A track marked as carrying no lyrics is skipped: the mark is there
+    /// precisely because a lookup got it wrong, and this is what would
+    /// otherwise put the wrong sheet back every session.
     fn maybe_auto_search(&mut self, path: &Path, cx: &mut Context<Self>) {
         if !self.config.auto_search || !providers::lyrics_online() {
             return;
@@ -1282,6 +1373,9 @@ impl LyricsPanel {
             return;
         }
         self.auto_tried = Some(path.to_path_buf());
+        if lyrics::marked_none(path, Some(&lyrics_dir())) {
+            return;
+        }
         let query = crate::lyrics::matcher::query_for(&self.state, path, cx);
         if query.artist.is_empty() || query.title.is_empty() {
             return;
@@ -1299,7 +1393,7 @@ impl LyricsPanel {
                             return None;
                         }
                         let target = crate::lyrics::matcher::save_target(&path);
-                        lyrics::save(&path, &target, &best.text).ok()?;
+                        lyrics::save(&path, &target, &best.text, Some(&lyrics_dir())).ok()?;
                         Some(())
                     }
                 })

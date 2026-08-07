@@ -1139,6 +1139,111 @@ fn axis_mark(orientation: Orientation, frac: f32, label: Option<String>) -> Div 
     }
 }
 
+/// How much of the axis a band has to cover before both its bounds get
+/// their number: under this the two would print over each other, and the
+/// low bound is the one carrying the name.
+const BAND_LABEL_GAP: f32 = 0.08;
+
+/// Mark a frequency band across a spectrum drawn with `config`: a rule at
+/// each bound, each saying its own frequency, with the band's name leading
+/// the low one. Positioned off the same log mapping the bars use, so a
+/// bound picked here lands where the eye put it.
+///
+/// Both labels hang inside the band, so the pair brackets what it covers
+/// rather than trailing off one side, and neither runs off the panel when a
+/// bound sits near an edge. They ride the edge the frequency scale's own
+/// numbers leave alone, or the two would sit on top of each other.
+///
+/// `strong` is the drag: a band brightens while one of its bounds is
+/// actually moving, so the one being edited stands out from the rest.
+///
+/// A bound outside the analyzed range draws nothing, the way the split
+/// marker sits out: pinning it to the edge would put a line where the
+/// bound isn't, and the slider's own readout has the number.
+pub fn band_overlay(
+    config: &SpectrumConfig,
+    lo: f32,
+    hi: f32,
+    label: Option<String>,
+    strong: bool,
+) -> Div {
+    let (freq_lo, freq_hi) = config.range();
+    let span = (freq_hi / freq_lo).ln();
+    let color = palette::alpha(palette::highlight(), if strong { 0xe6 } else { 0x8c });
+    let frac = |hz: f32| (hz / freq_lo).ln() / span;
+    let (frac_lo, frac_hi) = (frac(lo), frac(hi));
+    // The name leads the low bound's number, in the slider's own wording,
+    // so the mark and the row that moves it read the same.
+    let low = match &label {
+        Some(name) => format!("{name}, {}", fmt_hz(lo)),
+        None => fmt_hz(lo),
+    };
+    let bounds = [
+        (frac_lo, Some(low), false),
+        (
+            frac_hi,
+            (frac_hi - frac_lo >= BAND_LABEL_GAP).then(|| fmt_hz(hi)),
+            true,
+        ),
+    ];
+    let mut overlay = div().absolute().inset_0();
+    for (frac, text, far) in bounds {
+        if !(0.0..=1.0).contains(&frac) {
+            continue;
+        }
+        // Symmetric panels fold the range into both halves, so a bound
+        // stands in two places; the text only goes on the first, the way
+        // the scale labels only the unreflected half.
+        for (i, frac) in axis_fracs(config.symmetry, frac).into_iter().enumerate() {
+            overlay = overlay.child(match text.clone().filter(|_| i == 0) {
+                Some(text) => band_mark(config.orientation, frac, &text, color, far),
+                None => axis_rule(config.orientation, frac, color),
+            });
+        }
+    }
+    overlay
+}
+
+/// One bound's rule with its text against it. `far` anchors the rule from
+/// the other end of the axis, which hangs the text on the other side of the
+/// line: the high bound reads inwards, the low bound outwards from it, and
+/// the two bracket the band between them.
+fn band_mark(orientation: Orientation, frac: f32, text: &str, color: Rgba, far: bool) -> Div {
+    let label = div()
+        .text_xs()
+        .text_color(color)
+        .whitespace_nowrap()
+        .child(text.to_string());
+    let rule = div().absolute().border_color(color);
+    if orientation.horizontal() {
+        let rule = if far {
+            rule.top_0()
+                .bottom_0()
+                .right(relative(1.0 - frac))
+                .border_r_1()
+        } else {
+            rule.top_0().bottom_0().left(relative(frac)).border_l_1()
+        };
+        // Along the top edge on the upright orientations, since the scale's
+        // numbers run along the base.
+        rule.flex().flex_col().justify_start().child(if far {
+            label.pr(px(3.)).pt(px(2.))
+        } else {
+            label.pl(px(3.)).pt(px(2.))
+        })
+    } else {
+        let rule = if far {
+            rule.left_0()
+                .right_0()
+                .top(relative(1.0 - frac))
+                .border_t_1()
+        } else {
+            rule.left_0().right_0().bottom(relative(frac)).border_b_1()
+        };
+        rule.flex().justify_end().child(label.pr(px(3.)).py(px(2.)))
+    }
+}
+
 /// A labelled config toggle for the Display menu: the row label, a getter for
 /// its current state, and a setter that flips it.
 type ConfigToggle = (

@@ -7,6 +7,12 @@
 //! atomic layer; the sidecar and store saves clone and rename the same way.
 //! Blocking IO throughout, run it off the UI thread.
 //!
+//! A fourth state sits over those three: a track can be marked as carrying
+//! no lyrics at all. Clearing a sheet only empties whichever home held it,
+//! and an instrumental or a mis-tagged track would just be refilled by the
+//! next automatic lookup, so a save of nothing leaves a marker in the store
+//! and the marker outranks every home on the way back in.
+//!
 //! The parser is deliberately forgiving. A line's leading `[mm:ss.xx]`
 //! groups become timestamps (several on one line repeat the text at each
 //! time), an `[offset:ms]` tag shifts them, and the other id tags
@@ -61,7 +67,13 @@ pub struct Lyrics {
 /// when none carries any. A sidecar wins over everything: it is where
 /// timed `.lrc` lyrics live, and a file placed next to the track is the
 /// stronger signal of intent than the store the app fills on its own.
+///
+/// A track marked as carrying none reads as none whatever the homes hold,
+/// so the mark is one answer and not three to keep in step.
 pub fn load(path: &Path, store_dir: Option<&Path>) -> Option<Lyrics> {
+    if marked_none(path, store_dir) {
+        return None;
+    }
     for side in sidecar_candidates(path) {
         if let Ok(text) = fs::read_to_string(&side) {
             if !text.trim().is_empty() {
@@ -77,20 +89,75 @@ pub fn load(path: &Path, store_dir: Option<&Path>) -> Option<Lyrics> {
             }
         }
     }
-    let text = writer::read(path)
+    Some(build(tag_lyrics(path)?, Source::Tag))
+}
+
+/// The words the embedded tag carries, or None when the frame is missing
+/// or blank. Blank counts as missing throughout: a file that kept an empty
+/// USLT frame reads as a track with no lyrics, not a track with none of
+/// them.
+fn tag_lyrics(path: &Path) -> Option<String> {
+    writer::read(path)
         .ok()?
         .into_iter()
         .find(|(field, _)| *field == Field::Lyrics)
         .map(|(_, value)| value)
-        .filter(|text| !text.trim().is_empty())?;
-    Some(build(text, Source::Tag))
+        .filter(|text| !text.trim().is_empty())
+}
+
+/// Take a track's lyrics out of every home at once: each sidecar beside
+/// it, the store sheet, and the embedded tag. [`save`] only ever touches
+/// the one home its target names, which leaves the others to surface the
+/// moment the first is gone, so wiping is its own operation rather than a
+/// clear of whichever home happened to win the last load.
+///
+/// The tag is only rewritten when it actually carries words, so wiping a
+/// track whose sheet was a sidecar never rewrites the audio file. The mark
+/// is left to the caller: this removes, [`set_marked_none`] is what makes
+/// it stay removed.
+pub fn wipe(path: &Path, store_dir: Option<&Path>) -> Result<(), String> {
+    for side in sidecar_candidates(path) {
+        remove_if_present(&side).map_err(|e| format!("remove lyrics file: {e}"))?;
+    }
+    if let Some(dir) = store_dir {
+        remove_if_present(&store_file(dir, path))
+            .map_err(|e| format!("remove lyrics file: {e}"))?;
+    }
+    if tag_lyrics(path).is_some() {
+        writer::commit(
+            path,
+            &[Change {
+                field: Field::Lyrics,
+                value: None,
+            }],
+        )?;
+    }
+    Ok(())
+}
+
+/// Delete a file, counting an absent one as done. Every lyrics home is
+/// optional, so a clear walks over the ones that were never there.
+fn remove_if_present(file: &Path) -> Result<(), std::io::Error> {
+    match fs::remove_file(file) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 /// Save edited lyrics back to `target`. Tag lyrics go through the
 /// writer's atomic commit (a clear removes the frame); a sidecar or
 /// store file is rewritten in place, or unlinked when cleared. The store
 /// folder is created on the first write.
-pub fn save(path: &Path, target: &Source, text: &str) -> Result<(), String> {
+///
+/// Saving nothing is a statement, not just an empty write: it marks the
+/// track as carrying no lyrics under `store_dir`, and saving words again
+/// takes the mark back off.
+pub fn save(
+    path: &Path,
+    target: &Source,
+    text: &str,
+    store_dir: Option<&Path>,
+) -> Result<(), String> {
     match target {
         Source::Tag => {
             let value = (!text.trim().is_empty()).then(|| text.to_string());
@@ -104,18 +171,38 @@ pub fn save(path: &Path, target: &Source, text: &str) -> Result<(), String> {
         }
         Source::Sidecar(file) => save_file(file, text, false),
         Source::Store(file) => save_file(file, text, true),
+    }?;
+    // Only once the write landed, so a failed save leaves the mark where
+    // it was rather than claiming a clear that never happened.
+    match store_dir {
+        Some(dir) => set_marked_none(path, dir, text.trim().is_empty()),
+        None => Ok(()),
     }
+}
+
+/// Whether the track is marked as carrying no lyrics, the state a cleared
+/// sheet leaves behind so nothing refills it.
+pub fn marked_none(path: &Path, store_dir: Option<&Path>) -> bool {
+    store_dir.is_some_and(|dir| none_marker(dir, path).exists())
+}
+
+/// Set or lift the "no lyrics" mark. The mark is an empty file beside the
+/// store's sheets, so it costs a `stat` to read and survives restarts
+/// without a column of its own.
+pub fn set_marked_none(path: &Path, store_dir: &Path, on: bool) -> Result<(), String> {
+    let file = none_marker(store_dir, path);
+    if !on {
+        return remove_if_present(&file).map_err(|e| format!("clear lyrics mark: {e}"));
+    }
+    fs::create_dir_all(store_dir).map_err(|e| format!("create lyrics folder: {e}"))?;
+    fs::write(&file, []).map_err(|e| format!("write lyrics mark: {e}"))
 }
 
 /// Write or clear one plain lyrics file, making its folder first when
 /// asked (the store's folder does not exist until something saves).
 fn save_file(file: &Path, text: &str, make_dir: bool) -> Result<(), String> {
     if text.trim().is_empty() {
-        return match fs::remove_file(file) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("remove lyrics file: {e}")),
-        };
+        return remove_if_present(file).map_err(|e| format!("remove lyrics file: {e}"));
     }
     if make_dir {
         if let Some(parent) = file.parent() {
@@ -131,15 +218,27 @@ fn save_file(file: &Path, text: &str, make_dir: bool) -> Result<(), String> {
 
 /// The store file for a track: one flat folder, the name a stable hash
 /// of the whole track path, so no library folder shape gets mirrored
-/// and a track maps to the same file every time. FNV-1a, plenty of
-/// spread for library-sized sets.
+/// and a track maps to the same file every time.
 pub fn store_file(dir: &Path, path: &Path) -> PathBuf {
+    store_entry(dir, path, "lrc")
+}
+
+/// The "no lyrics" mark for a track, the store sheet's name under another
+/// extension so both sit together and neither can be mistaken for the
+/// other.
+pub fn none_marker(dir: &Path, path: &Path) -> PathBuf {
+    store_entry(dir, path, "none")
+}
+
+/// One store entry for a track under `ext`. FNV-1a over the whole track
+/// path, plenty of spread for library-sized sets.
+fn store_entry(dir: &Path, path: &Path, ext: &str) -> PathBuf {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in path.as_os_str().as_encoded_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    dir.join(format!("{hash:016x}.lrc"))
+    dir.join(format!("{hash:016x}.{ext}"))
 }
 
 /// The `.lrc` sidecar path for a track, for saving lyrics to a file when
@@ -315,6 +414,91 @@ mod tests {
         assert_eq!(strip_leading_stamps("[00:12.00]hello"), "hello");
         assert_eq!(strip_leading_stamps("[00:01.00][00:05.00]hi"), "hi");
         assert_eq!(strip_leading_stamps("[ti:Song]"), "[ti:Song]");
+    }
+
+    #[test]
+    fn clearing_a_store_sheet_marks_the_track_and_writing_lifts_it() {
+        let dir = std::env::temp_dir().join(format!("rox-lyrics-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let track = Path::new("/music/instrumental.flac");
+        let target = Source::Store(store_file(&dir, track));
+
+        save(track, &target, "[00:01.00]words", Some(&dir)).unwrap();
+        assert!(!marked_none(track, Some(&dir)));
+        assert!(load(track, Some(&dir)).is_some());
+
+        // Clearing says the track has none, and it stays said.
+        save(track, &target, "", Some(&dir)).unwrap();
+        assert!(marked_none(track, Some(&dir)));
+        assert!(load(track, Some(&dir)).is_none());
+
+        // Words again take the mark back off.
+        save(track, &target, "words", Some(&dir)).unwrap();
+        assert!(!marked_none(track, Some(&dir)));
+        assert!(load(track, Some(&dir)).is_some());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A wipe has to reach the homes a load never got to. A track holding
+    /// both a sidecar and an embedded sheet loads as the sidecar, so
+    /// clearing what loaded would leave the tag to surface the moment the
+    /// sidecar is gone.
+    #[test]
+    fn wipe_clears_every_home_including_the_tag() {
+        let dir = crate::writer::scratch("lyrics-wipe");
+        let track = crate::writer::flac_file(&dir, "track.flac");
+        let store = dir.join("store");
+        writer::commit(
+            &track,
+            &[Change {
+                field: Field::Lyrics,
+                value: Some("embedded words".into()),
+            }],
+        )
+        .unwrap();
+        fs::write(track.with_extension("lrc"), "[00:01.00]sidecar words").unwrap();
+        save(
+            &track,
+            &Source::Store(store_file(&store, &track)),
+            "stored",
+            Some(&store),
+        )
+        .unwrap();
+
+        // The sidecar is what loads, so it is all a clear of the loaded
+        // source would have taken.
+        let loaded = load(&track, Some(&store)).unwrap();
+        assert!(matches!(loaded.source, Source::Sidecar(_)));
+
+        wipe(&track, Some(&store)).unwrap();
+        assert!(!track.with_extension("lrc").exists());
+        assert!(!store_file(&store, &track).exists());
+        assert!(tag_lyrics(&track).is_none());
+        assert!(load(&track, Some(&store)).is_none());
+
+        // Nothing left to take, and the audio file is not rewritten for it.
+        wipe(&track, Some(&store)).unwrap();
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_mark_outranks_a_sidecar() {
+        let dir = std::env::temp_dir().join(format!("rox-lyrics-mark-{}", std::process::id()));
+        let side = dir.join("track.lrc");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&side, "[00:01.00]words").unwrap();
+        let track = dir.join("track.flac");
+
+        assert!(load(&track, Some(&dir)).is_some());
+        set_marked_none(&track, &dir, true).unwrap();
+        assert!(load(&track, Some(&dir)).is_none());
+        set_marked_none(&track, &dir, false).unwrap();
+        assert!(load(&track, Some(&dir)).is_some());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

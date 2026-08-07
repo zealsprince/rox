@@ -23,8 +23,8 @@ use crate::panel_catalog::PanelDef;
 use crate::panel_settings;
 use crate::settings::{self, Settings};
 use crate::workspace::{
-    menu_item_display, menu_section, panel_menu_item, shortcut_for, LayoutTarget, Menu, MenuAction,
-    MenuEntry, MenuItem, Workspace, WorkspaceTarget, MENUS,
+    menu_item_display, menu_section, panel_menu_item, section_shows, shortcut_for, signal_marked,
+    LayoutTarget, Menu, MenuAction, MenuEntry, MenuItem, Workspace, WorkspaceTarget, MENUS,
 };
 
 /// The menu panel's per-view config: what a saved layout restores, and
@@ -152,6 +152,11 @@ impl MenuPanel {
                         }))
                         .into_any_element(),
                     MenuEntry::Section(label) => menu_section(label).into_any_element(),
+                    // A gated-off section draws nothing rather than an
+                    // empty group row.
+                    MenuEntry::Panels(section) if !section_shows(section) => {
+                        div().into_any_element()
+                    }
                     MenuEntry::Panels(section) => match section.group {
                         // A bare section is a run of plain rows in place.
                         None => div()
@@ -237,6 +242,16 @@ impl MenuPanel {
                         .path(icons::CHECK)
                         .size_3()
                         .text_color(palette::text_muted()),
+                )
+            })
+            // Panels the signal pool can drive say so here, the menubar's
+            // mark in the panel that mirrors it.
+            .when(signal_marked(action), |d| {
+                d.child(div().flex_1().min_w(px(24.))).child(
+                    svg()
+                        .path(icons::AUDIO_WAVEFORM)
+                        .size_3()
+                        .text_color(palette::text_faint()),
                 )
             })
     }

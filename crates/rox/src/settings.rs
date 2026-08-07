@@ -582,6 +582,11 @@ pub struct WindowsState {
     /// shapes audio whether or not the window is ever opened.
     #[serde(alias = "eq_window", deserialize_with = "lenient::option")]
     pub eq: Option<LayoutSize>,
+    /// The signals window's last size and the fold state of its explainer,
+    /// restored on the next open. None until the window closes. The pool it
+    /// edits lives in the look bundle, since it travels with a workspace.
+    #[serde(deserialize_with = "lenient::option")]
+    pub signals: Option<SignalsWindowState>,
     /// The panel settings window's last size, shared across panels and
     /// restored on the next open. None until a window closes.
     #[serde(alias = "panel_settings_window", deserialize_with = "lenient::option")]
@@ -2019,6 +2024,28 @@ pub struct StatsWindowState {
     pub width: f32,
     pub height: f32,
     pub range: String,
+}
+
+/// The signals window's remembered shape: size in logical pixels, written
+/// on close, and whether the page's explainer is unfolded, written when it
+/// folds. An older file carrying only the size reads back with the
+/// explainer open, which is where a first run starts anyway.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SignalsWindowState {
+    pub width: f32,
+    pub height: f32,
+    pub about: bool,
+}
+
+impl Default for SignalsWindowState {
+    fn default() -> Self {
+        SignalsWindowState {
+            width: 0.,
+            height: 0.,
+            about: true,
+        }
+    }
 }
 
 /// A window frame in logical pixels, plus whether the window was maximized

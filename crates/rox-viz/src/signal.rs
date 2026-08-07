@@ -1,8 +1,9 @@
 //! The app's shared modulation layer: named signals over the playback
 //! spectrum that any parameter anywhere can ride. A [`Signal`] is one
-//! source (a frequency band's energy, the whole mix's level, or a
-//! transient detector) with its response smoothing; a [`Route`] attaches
-//! one signal to one host-defined parameter with an output span. The pool
+//! source (a frequency band's energy, the whole mix's level, a transient
+//! detector, or a running total of another signal) with its response
+//! smoothing and its gate; a [`Route`] attaches one signal to one
+//! host-defined parameter with an output span. The pool
 //! lives in a [`SignalHub`] evaluated once per frame off the shared
 //! [`crate::AudioFeed`], so ten panels riding the same kick read the same
 //! value from one FFT. What a target id means, and how a span fraction
@@ -58,6 +59,17 @@ pub enum Source {
     /// past its own recent average, decaying at the response rate. The
     /// signal a hit rides, where Band is the signal a swell rides.
     Onset { lo: f32, hi: f32 },
+    /// A running total of another signal's output: music-driven time. It
+    /// climbs by `of`'s value times `rate` each second and wraps at 1, so
+    /// a shader reads it as a phase (`sin(TAU * s)` runs straight through
+    /// the wrap) and it keeps its precision however long the app is up,
+    /// which an unbounded float would not.
+    ///
+    /// Its own signal rather than a second channel on `of`: a route, a
+    /// meter and a shader slot all address one id and read one number, and
+    /// a signal carrying two values would break that everywhere at once.
+    /// Wanting both the level and its total is two pool entries.
+    Aggregate { of: u64, rate: f32 },
 }
 
 impl Source {
@@ -69,11 +81,18 @@ impl Source {
                 let lo = lo.clamp(BAND_MIN_HZ, BAND_MAX_HZ);
                 (lo, hi.clamp(lo * 1.01, BAND_MAX_HZ))
             }
-            Source::Level => (BAND_MIN_HZ, BAND_MAX_HZ),
+            // An aggregate watches a signal rather than a spectrum, so it
+            // never asks for bins; the arm is here for the match.
+            Source::Level | Source::Aggregate { .. } => (BAND_MIN_HZ, BAND_MAX_HZ),
         };
         log_bands(1, lo, hi, sample_rate, half)[0]
     }
 }
+
+/// The fastest an aggregate may climb, wraps per second at full input. A
+/// hand-edited file can't ask for a phase that laps several times a frame,
+/// which would read as noise rather than motion.
+pub const AGGREGATE_RATE_MAX: f32 = 8.0;
 
 /// One shared signal in the pool: a stable id routes point at, the source,
 /// and the response smoothing every route off it shares.
@@ -88,6 +107,23 @@ pub struct Signal {
     /// Response smoothing, 0 to 1: 0 snaps to the music, 1 drifts after
     /// it. On an onset source this is the pulse's decay instead.
     pub smooth: f32,
+    /// The gate: anything under this reads as nothing, 0 to 1 against the
+    /// signal's own output, 0 for no gate. What it buys is silence between
+    /// the hits - a band riding room tone holds every knob on it slightly
+    /// off its slider forever, and a gate is how the quiet parts get to be
+    /// quiet.
+    pub threshold: f32,
+    /// How long the gate takes to open and shut, 0 to 1, 0 for a hard
+    /// switch. The gate is a factor the value passes through rather than a
+    /// branch on it, so this glides the factor: without it a signal
+    /// crossing the threshold jumps to whatever it happened to be at, and
+    /// one hovering right on the threshold strobes.
+    pub gate_glide: f32,
+    /// Aggregates only: drain back to zero when the track changes, so a
+    /// phase doesn't carry a song's worth of accumulation into the next
+    /// one. A drain rather than a snap, since a shader riding the phase
+    /// would pop on a jump.
+    pub reset_on_track: bool,
 }
 
 impl Default for Signal {
@@ -100,6 +136,12 @@ impl Default for Signal {
                 hi: 120.0,
             },
             smooth: 0.3,
+            threshold: 0.0,
+            // A hard gate by default: a threshold with no glide does
+            // exactly what its own row says it does, and the glide is
+            // something asked for rather than discovered.
+            gate_glide: 0.0,
+            reset_on_track: false,
         }
     }
 }
@@ -107,6 +149,22 @@ impl Default for Signal {
 impl Signal {
     fn smooth(&self) -> f32 {
         self.smooth.clamp(0.0, 1.0)
+    }
+
+    /// What this aggregates and how fast, or None for a spectral source.
+    pub fn aggregate(&self) -> Option<(u64, f32)> {
+        match self.source {
+            Source::Aggregate { of, rate } => Some((of, rate.clamp(0.0, AGGREGATE_RATE_MAX))),
+            _ => None,
+        }
+    }
+
+    pub fn threshold(&self) -> f32 {
+        self.threshold.clamp(0.0, 1.0)
+    }
+
+    pub fn gate_glide(&self) -> f32 {
+        self.gate_glide.clamp(0.0, 1.0)
     }
 
     /// The picker's face for this signal: the given name, or a label
@@ -128,6 +186,11 @@ impl Signal {
             Source::Band { lo, hi } => format!("Band {} - {} Hz", hz(lo), hz(hi)),
             Source::Onset { lo, hi } => format!("Onset {} - {} Hz", hz(lo), hz(hi)),
             Source::Level => "Level".to_string(),
+            // What it follows can't be named from here without the pool,
+            // so the rate is what distinguishes two of them at a glance.
+            // Anything more wants a name typed in, which is what names are
+            // for.
+            Source::Aggregate { rate, .. } => format!("Aggregate {rate:.2}/s"),
         }
     }
 }
@@ -181,6 +244,19 @@ const ONSET_REF_RELEASE: f32 = 2.0;
 const ONSET_MARGIN: f32 = 0.12;
 const ONSET_FLOOR: f32 = 0.15;
 
+/// The per-second rates the gate's glide knob spans, interpolated
+/// exponentially like the response knob's. The fast end is a couple of
+/// frames, which takes the click off a switch without being a fade; the
+/// slow end is most of a second, a swell.
+const GATE_FAST: f32 = 25.0;
+const GATE_SLOW: f32 = 1.5;
+
+/// How fast a flushed aggregate falls back to zero, and how near zero ends
+/// the fall. Quick enough to read as the cycle collapsing rather than as a
+/// slow fade, slow enough that a shader riding the phase doesn't pop.
+const FLUSH_DRAIN: f32 = 8.0;
+const FLUSH_DONE: f32 = 0.002;
+
 /// One signal's running state in the engine.
 #[derive(Clone, Copy)]
 struct Slot {
@@ -189,6 +265,20 @@ struct Slot {
     reference: f32,
     /// Whether an onset slot is ready to fire again.
     armed: bool,
+    /// An aggregate on its way back to zero: set by a flush or a track
+    /// change, cleared when it lands. Accumulation pauses while it drains,
+    /// so a flush during a loud passage still gets there.
+    draining: bool,
+    /// How far the gate is open, 0 shut and 1 through. What leaves the
+    /// engine is `value * gate`, so an ungated signal (threshold 0) is
+    /// pinned at 1 and costs a comparison. Held here rather than derived
+    /// at read time because a glide is state: it's where the gate got to,
+    /// not what the value is.
+    ///
+    /// A fresh slot starts shut, since a fresh value starts at zero and
+    /// that's under any gate worth having. The ungated case is pinned open
+    /// on its first pass, so nothing fades in that shouldn't.
+    gate: f32,
 }
 
 impl Default for Slot {
@@ -197,6 +287,8 @@ impl Default for Slot {
             value: 0.0,
             reference: 0.0,
             armed: true,
+            draining: false,
+            gate: 0.0,
         }
     }
 }
@@ -214,10 +306,18 @@ impl Signals {
         }
     }
 
-    /// The signal's current value, `None` for an id the pool doesn't
-    /// carry, which is what lets routes to deleted signals skip quietly.
+    /// The signal's running value before its gate, `None` for an id the
+    /// pool doesn't carry, which is what lets routes to deleted signals
+    /// skip quietly.
     pub fn value(&self, id: u64) -> Option<f32> {
         self.slots.get(&id).map(|slot| slot.value)
+    }
+
+    /// What actually leaves the signal: the running value through its
+    /// gate. Everything downstream reads this; [`Signals::value`] is for
+    /// the meter, which draws what the gate is holding back.
+    pub fn output(&self, id: u64) -> Option<f32> {
+        self.slots.get(&id).map(|slot| slot.value * slot.gate)
     }
 
     /// Fold one frame into the signals. `mags` is the newest half-spectrum
@@ -234,6 +334,9 @@ impl Signals {
     ) {
         self.slots.retain(|id, _| pool.iter().any(|s| s.id == *id));
         for signal in pool {
+            if signal.aggregate().is_some() {
+                continue;
+            }
             let slot = self.slots.entry(signal.id).or_default();
             let smooth = signal.smooth();
             let raw = mags.map(|mags| {
@@ -282,6 +385,74 @@ impl Signals {
                         slot.armed = true;
                     }
                 }
+                // Handled in the second pass, which needs the values the
+                // first one just wrote.
+                Source::Aggregate { .. } => {}
+            }
+        }
+        // Second pass: the gates, over every slot the first pass just
+        // moved. Ahead of the aggregates so a total integrates what its
+        // source is actually putting out this frame rather than last
+        // frame's opening.
+        for signal in pool {
+            let threshold = signal.threshold();
+            let Some(slot) = self.slots.get_mut(&signal.id) else {
+                continue;
+            };
+            // No gate is the common case and stays exact: a signal nobody
+            // thresholded passes whole from the first frame rather than
+            // gliding up from nothing.
+            if threshold <= 0.0 {
+                slot.gate = 1.0;
+                continue;
+            }
+            let target = if slot.value >= threshold { 1.0 } else { 0.0 };
+            let glide = signal.gate_glide();
+            if glide <= 0.0 {
+                slot.gate = target;
+                continue;
+            }
+            let rate = GATE_FAST * (GATE_SLOW / GATE_FAST).powf(glide);
+            slot.gate += (target - slot.gate) * (rate * dt).min(1.0);
+        }
+        // Third pass: the aggregates, reading what the sources landed on
+        // this frame. An aggregate pointed at another aggregate reads last
+        // frame's value instead, which is what keeps a chain (or a ring)
+        // from being an ordering problem or a hang.
+        for signal in pool {
+            let Some((of, rate)) = signal.aggregate() else {
+                continue;
+            };
+            let input = self
+                .slots
+                .get(&of)
+                .filter(|_| of != signal.id)
+                .map_or(0.0, |slot| slot.value * slot.gate);
+            let slot = self.slots.entry(signal.id).or_default();
+            if slot.draining {
+                slot.value -= slot.value * (FLUSH_DRAIN * dt).min(1.0);
+                if slot.value <= FLUSH_DONE {
+                    slot.value = 0.0;
+                    slot.draining = false;
+                }
+                continue;
+            }
+            // Wrapped rather than grown: a phase keeps every bit of its
+            // precision however long the app is up, and a shader reading
+            // it through a sine runs straight across the seam.
+            slot.value = (slot.value + input * rate * dt).fract();
+        }
+    }
+
+    /// Send one aggregate back to zero, over the drain rather than at
+    /// once. A signal that's already there, or isn't an aggregate at all,
+    /// takes it as a no-op: the spectral sources rewrite their value every
+    /// frame regardless.
+    pub fn flush(&mut self, id: u64) {
+        if let Some(slot) = self.slots.get_mut(&id) {
+            slot.draining = slot.value > FLUSH_DONE;
+            if !slot.draining {
+                slot.value = 0.0;
             }
         }
     }
@@ -310,6 +481,11 @@ struct Hub {
     last_written: u64,
     last_fresh: Option<Instant>,
     last_tick: Option<Instant>,
+    /// The last track the tickers reported, for the aggregates that reset
+    /// between songs. Only ever holds a real id: the gap between two
+    /// tracks reads as nothing playing, and treating that as a change
+    /// would flush twice on every advance.
+    last_track: Option<u64>,
 }
 
 impl SignalHub {
@@ -323,6 +499,7 @@ impl SignalHub {
                 last_written: 0,
                 last_fresh: None,
                 last_tick: None,
+                last_track: None,
             }),
         }
     }
@@ -330,8 +507,28 @@ impl SignalHub {
     /// Advance the engine one frame off the feed. Cheap to call from every
     /// consumer: calls landing within the same frame window return
     /// immediately, so the clock only moves once however many panels ask.
-    pub fn tick(&self, feed: &AudioFeed) {
+    ///
+    /// `track` is what's playing, so the hub can see a song change for the
+    /// aggregates that reset on one. Every ticker passes it rather than
+    /// one privileged caller owning the edge: whichever surface happens to
+    /// be painting has to be the one that notices.
+    pub fn tick(&self, feed: &AudioFeed, track: Option<u64>) {
         let mut hub = self.inner.lock().unwrap();
+        // Ahead of the throttle below, so a change never rides on which
+        // caller won the frame.
+        if let Some(track) = track {
+            if hub.last_track.replace(track) != Some(track) {
+                let ids: Vec<u64> = hub
+                    .pool
+                    .iter()
+                    .filter(|s| s.reset_on_track && s.aggregate().is_some())
+                    .map(|s| s.id)
+                    .collect();
+                for id in ids {
+                    hub.engine.flush(id);
+                }
+            }
+        }
         let now = Instant::now();
         let dt = match hub.last_tick {
             Some(t) => {
@@ -376,10 +573,28 @@ impl SignalHub {
         engine.step(mags, rate, stopped, dt, pool);
     }
 
-    /// The signal's current value, `None` for an id the pool doesn't
-    /// carry.
+    /// The signal's current value with its gate applied, `None` for an id
+    /// the pool doesn't carry. Everything riding a signal reads it through
+    /// here, so the gate lands on routes, meters and the shader alike. The
+    /// gate moves on the tick rather than the read, since a glide is
+    /// something that takes time by definition.
     pub fn value(&self, id: u64) -> Option<f32> {
+        self.inner.lock().unwrap().engine.output(id)
+    }
+
+    /// The value before the gate, for the meter that draws the threshold as
+    /// a mark across it: a readout that only ever showed the gated value
+    /// would sit at nothing under the mark, which is the one place the gate
+    /// wants watching.
+    pub fn raw_value(&self, id: u64) -> Option<f32> {
         self.inner.lock().unwrap().engine.value(id)
+    }
+
+    /// Send one aggregate back to zero by hand, the debugging way out of
+    /// "what is this phase actually at". Drains rather than snaps, so
+    /// pressing it while a shader rides the phase doesn't tear the frame.
+    pub fn flush(&self, id: u64) {
+        self.inner.lock().unwrap().engine.flush(id);
     }
 
     /// Whether audio has moved recently enough that meters reading the hub
@@ -523,6 +738,177 @@ mod tests {
             "removed id should resolve to nothing"
         );
         assert!(engine.value(2).unwrap() > 0.9, "survivor keeps its value");
+    }
+
+    #[test]
+    fn the_gate_silences_what_sits_under_it_and_leaves_the_engine_alone() {
+        // A band with energy well down the dB window: enough to read, not
+        // enough to clear a gate set above it.
+        let mut mags = vec![0.0f32; 2048];
+        mags[100] = 0.02;
+        let mut quiet = band(1, 800.0, 2000.0);
+        let hub = SignalHub::new(vec![quiet.clone()]);
+        let run = |frames: usize| {
+            let mut inner = hub.inner.lock().unwrap();
+            let Hub { engine, pool, .. } = &mut *inner;
+            for _ in 0..frames {
+                engine.step(Some(&mags), 48_000, false, 0.016, pool);
+            }
+        };
+        run(30);
+        let ungated = hub.raw_value(1).expect("signal is in the pool");
+        assert!(
+            (0.05..0.6).contains(&ungated),
+            "test tone should land mid-window, got {ungated}"
+        );
+        assert_eq!(hub.value(1), Some(ungated), "no gate lets it all through");
+
+        // Gated above where it sits: nothing leaves, and what the engine
+        // holds is untouched, so lifting the gate restores it at once.
+        // Hard gate here, so one frame is the whole story.
+        quiet.threshold = ungated + 0.1;
+        hub.set_pool(vec![quiet.clone()]);
+        run(1);
+        assert_eq!(hub.value(1), Some(0.0), "under the gate reads as nothing");
+        assert!(
+            (hub.raw_value(1).unwrap() - ungated).abs() < 1e-4,
+            "the engine keeps its value"
+        );
+
+        quiet.threshold = ungated - 0.01;
+        hub.set_pool(vec![quiet]);
+        run(1);
+        assert!(
+            (hub.value(1).unwrap() - ungated).abs() < 1e-4,
+            "over the gate passes whole"
+        );
+    }
+
+    #[test]
+    fn a_glided_gate_ramps_where_a_hard_one_switches() {
+        let mut engine = Signals::new();
+        let mut mags = vec![0.0f32; 2048];
+        mags[100] = 1.0;
+        // Same band, same gate, one switching and one gliding.
+        let gated = |id: u64, glide: f32| Signal {
+            threshold: 0.5,
+            gate_glide: glide,
+            ..band(id, 800.0, 2000.0)
+        };
+        let pool = vec![gated(1, 0.0), gated(2, 0.5)];
+        engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+        let raw = engine.value(2).unwrap();
+        assert!(raw > 0.5, "the band should already be over the gate");
+        assert_eq!(
+            engine.output(1),
+            Some(raw),
+            "a hard gate is all the way open on the frame it opens"
+        );
+        let opening = engine.output(2).unwrap();
+        assert!(
+            opening > 0.0 && opening < raw * 0.5,
+            "a glided gate should still be on its way up, got {opening}"
+        );
+        for _ in 0..60 {
+            engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+        }
+        let open = engine.output(2).unwrap();
+        assert!(
+            (open - engine.value(2).unwrap()).abs() < 0.02,
+            "it should land wide open, got {open}"
+        );
+    }
+
+    fn aggregate(id: u64, of: u64, rate: f32) -> Signal {
+        Signal {
+            id,
+            source: Source::Aggregate { of, rate },
+            ..Signal::default()
+        }
+    }
+
+    #[test]
+    fn an_aggregate_climbs_with_its_source_and_wraps_instead_of_growing() {
+        let mut engine = Signals::new();
+        let mut mags = vec![0.0f32; 2048];
+        mags[100] = 1.0;
+        // Rate 2/s over a source pinned near 1: a full wrap every half
+        // second, so a second of frames laps twice and lands mid-ramp
+        // rather than at 2.0.
+        let pool = vec![band(1, 800.0, 2000.0), aggregate(2, 1, 2.0)];
+        for _ in 0..10 {
+            engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+        }
+        let early = engine.value(2).unwrap();
+        assert!(early > 0.0, "an aggregate over a live source should climb");
+        for _ in 0..60 {
+            engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+        }
+        let later = engine.value(2).unwrap();
+        assert!(
+            (0.0..1.0).contains(&later),
+            "a wrapped phase never leaves 0..1, got {later}"
+        );
+        // Silence stalls it: the source releases to nothing and the total
+        // stops moving rather than drifting on.
+        let quiet = vec![0.0f32; 2048];
+        for _ in 0..120 {
+            engine.step(Some(&quiet), 48_000, true, 0.016, &pool);
+        }
+        let parked = engine.value(2).unwrap();
+        for _ in 0..60 {
+            engine.step(Some(&quiet), 48_000, true, 0.016, &pool);
+        }
+        assert!(
+            (engine.value(2).unwrap() - parked).abs() < 1e-4,
+            "silence should stall the total, not advance it"
+        );
+    }
+
+    #[test]
+    fn a_flushed_aggregate_drains_to_zero_rather_than_snapping() {
+        let mut engine = Signals::new();
+        let mut mags = vec![0.0f32; 2048];
+        mags[100] = 1.0;
+        let pool = vec![band(1, 800.0, 2000.0), aggregate(2, 1, 1.0)];
+        for _ in 0..30 {
+            engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+        }
+        assert!(engine.value(2).unwrap() > 0.1, "something to flush");
+        engine.flush(2);
+        engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+        let mid = engine.value(2).unwrap();
+        assert!(
+            mid > 0.0,
+            "the first frame after a flush should still be on its way down"
+        );
+        for _ in 0..60 {
+            engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+        }
+        // Landed, and accumulating again: the drain releases the slot
+        // rather than pinning it at zero.
+        let after = engine.value(2).unwrap();
+        assert!(after > 0.0 && after < mid, "it should resume from zero");
+    }
+
+    #[test]
+    fn an_aggregate_over_a_missing_or_circular_source_stays_put() {
+        let mut engine = Signals::new();
+        let mags = vec![0.0f32; 2048];
+        // One pointed at an id nobody carries, and a pair pointed at each
+        // other. Neither should hang or panic; the ring reads last frame's
+        // values, which are zero, so nothing climbs.
+        let pool = vec![
+            aggregate(1, 99, 1.0),
+            aggregate(2, 3, 1.0),
+            aggregate(3, 2, 1.0),
+        ];
+        for _ in 0..30 {
+            engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+        }
+        assert_eq!(engine.value(1), Some(0.0));
+        assert_eq!(engine.value(2), Some(0.0));
+        assert_eq!(engine.value(3), Some(0.0));
     }
 
     #[test]

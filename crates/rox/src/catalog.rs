@@ -1341,7 +1341,8 @@ impl Library {
                 // worst case is that it gives up and the next sync picks the
                 // work back up.
                 if ok && was_watch && this.busy.is_none() {
-                    crate::embeddings::start(cx.entity(), cx);
+                    let db_path = this.db_path();
+                    crate::embeddings::start(db_path, cx);
                 }
             })
             .ok();

@@ -117,11 +117,15 @@ pub fn stop(cx: &mut App) {
 
 /// Measure every library file with no ReplayGain and save what it measured.
 /// A no-op while a pass is already running.
+///
+/// Safe to call from inside the library's own update: nothing reads the
+/// entity until the spawned task, by which time the lease is gone. The
+/// acoustic pass is started that way from the watch sync, and reading a
+/// leased entity panics.
 pub fn start(library: Entity<Library>, cx: &mut App) {
     if progress(cx).is_some() {
         return;
     }
-    let db_path = library.read(cx).db_path();
     // Read once, here: the pass writes an album at a time, and a flip
     // halfway through would leave one record split between the database and
     // its own tags. The worker count is read here for the same reason, so a
@@ -146,6 +150,13 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     })
     .detach();
     cx.spawn(async move |cx| {
+        // The library says where its database is, and asking here rather
+        // than up top is what keeps a caller inside its update safe. The
+        // read only fails with the app already on its way out, where the
+        // flag raised above has nothing left to mislead.
+        let Ok(db_path) = cx.update(|cx| library.read(cx).db_path()) else {
+            return;
+        };
         let written = cx
             .background_executor()
             .spawn({

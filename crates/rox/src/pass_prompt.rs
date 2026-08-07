@@ -173,7 +173,10 @@ fn start<V: Host>(this: &mut V, cx: &mut Context<V>) {
     // the slider was at before the drag.
     prompt.persist();
     match prompt.pass {
-        Pass::Acoustic => embeddings::start(prompt.library.clone(), cx),
+        Pass::Acoustic => {
+            let db_path = prompt.library.read(cx).db_path();
+            embeddings::start(db_path, cx)
+        }
         Pass::ReplayGain => replaygain_job::start(prompt.library.clone(), cx),
     }
     this.pass_changed(cx);

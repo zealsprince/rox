@@ -212,6 +212,10 @@ impl LyricsEdit {
     /// Nothing moved closes the window; a failed save keeps it open with the
     /// error inline, the file untouched. Success pokes every panel to
     /// re-read.
+    ///
+    /// Saving an empty sheet says the track has no lyrics rather than just
+    /// emptying its home, so the automatic lookup leaves it alone from then
+    /// on. The panel's "No Lyrics for This Track" takes that back.
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(baseline), false) = (&self.baseline, self.saving) else {
             return;
@@ -233,7 +237,7 @@ impl LyricsEdit {
                     let path = path.clone();
                     let target = target.clone();
                     let text = text.clone();
-                    async move { lyrics::save(&path, &target, &text) }
+                    async move { lyrics::save(&path, &target, &text, Some(&lyrics_dir())) }
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {

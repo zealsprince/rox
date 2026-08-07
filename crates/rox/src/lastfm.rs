@@ -219,6 +219,28 @@ struct Watch {
     /// crossing whether or not scrobbling is armed.
     listened: bool,
     scrobbled: bool,
+    /// Where the scrobble rule crossed, 0 to 1: stamped once so the
+    /// marker stays put after the fact instead of trailing later seeks.
+    scrobble_at: Option<f32>,
+}
+
+impl Watch {
+    /// Project where the scrobble crossing lands, 0 to 1: the current
+    /// position plus the listening still owed against the threshold.
+    /// Seeked past the end it returns None - this play can't reach the
+    /// threshold anymore. A crossed threshold pins the line where it
+    /// happened; seeks after the fact have nothing left to move.
+    fn marker(&self, threshold: f32) -> Option<f32> {
+        if let Some(at) = self.scrobble_at {
+            return Some(at);
+        }
+        let Some(duration) = self.duration.filter(|d| *d > 0.0) else {
+            return Some(threshold);
+        };
+        let owed = (duration * threshold as f64 - self.played).max(0.0);
+        let at = ((self.last_pos + owed) / duration) as f32;
+        (at <= 1.0).then_some(at)
+    }
 }
 
 /// A heart waiting to reach Last.fm. The track it belongs to is the
@@ -375,8 +397,17 @@ impl Scrobbler {
 
     /// Where the threshold marker sits, 0 to 1 - or None while scrobbling
     /// couldn't happen anyway, so the panels never draw a line that lies.
+    /// Only audio that actually sounds counts toward the threshold, so
+    /// the line rides the watch: seeks shift where the crossing lands.
     pub fn marker(&self) -> Option<f32> {
-        self.armed().then_some(self.config.threshold)
+        if !self.armed() {
+            return None;
+        }
+        let threshold = self.config.threshold;
+        match &self.watch {
+            Some(watch) => watch.marker(threshold),
+            None => Some(threshold),
+        }
     }
 
     /// The signing pair the calls use: the settings override when the
@@ -423,6 +454,25 @@ impl Scrobbler {
         Settings::update(move |s| s.accounts.lastfm = lastfm);
     }
 
+    /// Persist once the edit burst settles, the store-then-settle shape the
+    /// EQ curve uses: the config field already carries the value, so only
+    /// the file write waits out the drag. A settings write reloads and
+    /// reserializes every shard, and per scrub tick that stutters the app.
+    fn persist_soon(&self, cx: &mut Context<Self>) {
+        static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mine = GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            if GEN.load(std::sync::atomic::Ordering::Relaxed) != mine {
+                return;
+            }
+            this.update(cx, |this, _| this.persist()).ok();
+        })
+        .detach();
+    }
+
     pub fn set_api_key(&mut self, key: String, cx: &mut Context<Self>) {
         self.config.api_key = key;
         self.persist();
@@ -462,7 +512,9 @@ impl Scrobbler {
         // The same band the settings loader enforces; the slider's low end
         // stops short of a threshold that scrobbles on the first note.
         self.config.threshold = threshold.clamp(0.1, 1.0);
-        self.persist();
+        // Settled, not straight through: this rides a slider scrub, the one
+        // scrobbler write that can fire per mouse move.
+        self.persist_soon(cx);
         cx.notify();
     }
 
@@ -802,6 +854,14 @@ impl Scrobbler {
                     started: watch.started,
                 });
             }
+            // Pin the marker at the crossing, armed or not: where the
+            // threshold fell is a fact of the play, not of the account.
+            if scrobbles && watch.scrobble_at.is_none() {
+                watch.scrobble_at = watch
+                    .duration
+                    .filter(|d| *d > 0.0)
+                    .map(|d| (watch.last_pos / d).clamp(0.0, 1.0) as f32);
+            }
         }
 
         if !self.armed() {
@@ -869,6 +929,7 @@ impl Scrobbler {
             now_playing_sent: false,
             listened: false,
             scrobbled: false,
+            scrobble_at: None,
         });
     }
 
@@ -920,6 +981,61 @@ mod tests {
 
     fn track(title: &str) -> (String, String) {
         ("Boards of Canada".to_string(), title.to_string())
+    }
+
+    fn watch(duration: f64, played: f64, pos: f64) -> Watch {
+        Watch {
+            path: PathBuf::from("/music/track.flac"),
+            meta: None,
+            duration: Some(duration),
+            started: 0,
+            played,
+            last_pos: pos,
+            now_playing_sent: false,
+            listened: false,
+            scrobbled: false,
+            scrobble_at: None,
+        }
+    }
+
+    #[test]
+    fn the_marker_sits_at_the_threshold_on_a_straight_play() {
+        // Played and position agree: nobody seeked, the line is the knob.
+        assert_eq!(watch(200.0, 50.0, 50.0).marker(0.5), Some(0.5));
+    }
+
+    #[test]
+    fn a_seek_forward_pushes_the_crossing_out() {
+        // 50s sounded, then a jump to 120s: 50s still owed, landing at 170s.
+        assert_eq!(watch(200.0, 50.0, 120.0).marker(0.5), Some(0.85));
+    }
+
+    #[test]
+    fn a_seek_back_pulls_the_crossing_in() {
+        // 80s sounded, rewound to 30s: 20s owed, the line lands at 50s.
+        assert_eq!(watch(200.0, 80.0, 30.0).marker(0.5), Some(0.25));
+    }
+
+    #[test]
+    fn seeked_past_reach_the_marker_disappears() {
+        // 10s sounded, jumped to 150s: 90s owed with 50s left in the track.
+        assert_eq!(watch(200.0, 10.0, 150.0).marker(0.5), None);
+    }
+
+    #[test]
+    fn a_crossed_threshold_pins_the_line() {
+        let mut w = watch(200.0, 100.0, 100.0);
+        w.scrobble_at = Some(0.5);
+        // A seek after the scrobble moves nothing.
+        w.last_pos = 180.0;
+        assert_eq!(w.marker(0.5), Some(0.5));
+    }
+
+    #[test]
+    fn no_duration_falls_back_to_the_knob() {
+        let mut w = watch(200.0, 0.0, 0.0);
+        w.duration = None;
+        assert_eq!(w.marker(0.5), Some(0.5));
     }
 
     #[test]

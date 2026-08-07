@@ -45,6 +45,7 @@ impl Workspace {
             MenuAction::OpenConsole => crate::console_window::open(cx),
             MenuAction::OpenTasks => crate::tasks_window::open(cx),
             MenuAction::OpenEqualizer => crate::eq_window::open(cx),
+            MenuAction::OpenSignals => crate::signals_window::open(cx),
             MenuAction::OpenWelcome => crate::startup::welcome_window::open(self.state.clone(), cx),
             MenuAction::OpenAbout => crate::startup::about_window::open(self.state.clone(), cx),
             MenuAction::ToggleMenubar => {
@@ -325,6 +326,11 @@ impl Workspace {
                         }))
                         .into_any_element(),
                     MenuEntry::Section(label) => menu_section(label).into_any_element(),
+                    // A gated-off section draws nothing rather than an
+                    // empty group row.
+                    MenuEntry::Panels(section) if !section_shows(section) => {
+                        div().into_any_element()
+                    }
                     MenuEntry::Panels(section) => match section.group {
                         // A bare section is a run of plain rows in place.
                         None => div()
@@ -423,6 +429,16 @@ impl Workspace {
                         .path(icons::CHECK)
                         .size_3()
                         .text_color(palette::text_muted()),
+                )
+            })
+            // Panels with knobs the signal pool can drive say so here, so
+            // the list itself answers which ones the pool reaches.
+            .when(signal_marked(action), |d| {
+                d.child(div().flex_1().min_w(px(24.))).child(
+                    svg()
+                        .path(icons::AUDIO_WAVEFORM)
+                        .size_3()
+                        .text_color(palette::text_faint()),
                 )
             })
     }

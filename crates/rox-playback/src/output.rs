@@ -447,24 +447,28 @@ pub(crate) fn fill<T>(
             frame.fill(T::from_sample(0.0f32));
             continue;
         }
-        // Unity short-circuits (ADR 19's bypass rule): at volume 1.0 the
-        // samples pass through untouched, so chain off + volume at 100% +
-        // equal rates delivers the decoder's output bit-identically.
-        let (l, r) = if volume == 1.0 {
-            (ring.pop().unwrap(), ring.pop().unwrap())
-        } else {
-            (ring.pop().unwrap() * volume, ring.pop().unwrap() * volume)
-        };
+        let (l, r) = (ring.pop().unwrap(), ring.pop().unwrap());
 
         // Lossy PCM tap: if the visualizer side is behind, drop, never
         // wait. Push L and R together or not at all, so a single free
         // slot can't drop R while L lands and leave the tap stream
-        // frame-misaligned for good. Tapped post-volume, i.e. what the
-        // device gets.
+        // frame-misaligned for good. Tapped pre-volume, so the spectrum
+        // and signals read the program material, not the listening level;
+        // chain DSP (EQ, ReplayGain) still shows because it runs before
+        // the ring.
         if tap.slots() >= 2 {
             let _ = tap.push(l);
             let _ = tap.push(r);
         }
+
+        // Unity short-circuits (ADR 19's bypass rule): at volume 1.0 the
+        // samples pass through untouched, so chain off + volume at 100% +
+        // equal rates delivers the decoder's output bit-identically.
+        let (l, r) = if volume == 1.0 {
+            (l, r)
+        } else {
+            (l * volume, r * volume)
+        };
 
         match device_channels {
             1 => frame[0] = T::from_sample((l + r) * 0.5),
@@ -600,14 +604,16 @@ mod tests {
     }
 
     #[test]
-    fn tap_takes_a_post_volume_copy_of_every_frame() {
+    fn tap_takes_a_pre_volume_copy_of_every_frame() {
         let (shared, mut ring, mut tap_tx, mut tap) = primed(2);
         shared
             .volume_bits
             .store(0.5f32.to_bits(), Ordering::Relaxed);
         let mut data = [0.0f32; 4];
         fill(&mut data, 2, &shared, &mut ring, &mut tap_tx);
-        assert_eq!(drain(&mut tap), vec![0.5, -0.5, 1.0, -1.0]);
+        // The device hears half scale, the visualizers hear the program.
+        assert_eq!(data, [0.5, -0.5, 1.0, -1.0]);
+        assert_eq!(drain(&mut tap), vec![1.0, -1.0, 2.0, -2.0]);
     }
 
     #[test]

@@ -65,6 +65,9 @@ fn entry_items(entry: &'static MenuEntry, playing: bool) -> Vec<gpui::MenuItem> 
     match entry {
         MenuEntry::Item(item) => action_item(*item, playing).into_iter().collect(),
         MenuEntry::Section(_) => vec![gpui::MenuItem::separator()],
+        // A gated-off section contributes nothing, so the bar doesn't carry
+        // an empty submenu. The bar is rebuilt when the flag flips.
+        MenuEntry::Panels(section) if !crate::workspace::section_shows(section) => Vec::new(),
         MenuEntry::Panels(section) => match section.group {
             // A bare section is a run of rows in place, same as in-window.
             None => section

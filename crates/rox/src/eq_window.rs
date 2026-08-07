@@ -327,13 +327,20 @@ impl EqWindow {
 
     /// Pull the newest window off the feed and fold it into the bars behind
     /// the curve. Returns whether anything is still moving, which is what
-    /// decides if the window asks for another frame: a paused player should
-    /// let the bars fall to nothing and then stop costing frames.
+    /// decides if the window asks for another frame.
+    ///
+    /// Pausing mid-track holds the last frame rather than letting the bars
+    /// fall away, the spectrum panel's freeze: the curve is dragged against
+    /// what the music was doing, and pausing on the bar worth looking at is
+    /// how you get to look at it. A queue that played out has nothing to
+    /// hold, so that decays as before and the window stops costing frames.
     fn step_spectrum(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let feed = state.player.read(cx).feed();
+        let player = state.player.read(cx);
+        let hold = !player.is_playing() && player.now_playing().is_some() && !player.queue_ended();
+        let feed = player.feed();
         let rate = feed.sample_rate();
         if rate == 0 {
             return false;
@@ -354,6 +361,13 @@ impl EqWindow {
         let written = feed.written();
         let fresh = written != self.last_written;
         self.last_written = written;
+        // Frozen: the bars stay exactly where the pause caught them, and
+        // nothing here asks for another frame. The bar count is fixed, so
+        // there's no remap that could leave the standing frame drawn
+        // against a mapping it wasn't analyzed at.
+        if hold && !fresh {
+            return false;
+        }
         // Only analyze on new audio. Between pump ticks the last frame still
         // stands, and the decay below is what keeps it from looking frozen.
         if fresh && feed.latest_mono(&mut self.mono) == self.mono.len() {
@@ -449,11 +463,12 @@ impl EqWindow {
 
     /// A transport strip, so the curve can be judged against something
     /// playing without going back to the workspace window for every pause.
-    /// Only the three verbs worth having here: the rest of the transport is
-    /// a panel away.
+    /// Only the four verbs worth having here: the rest of the transport is
+    /// a panel away. Centered under the plot, where the eye already is.
     fn transport(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let player = self.state.as_ref()?.player.clone();
-        Some(panel::transport_strip(&player, cx))
+        let state = self.state.as_ref()?;
+        let strip = panel::transport_strip(&state.player.clone(), &state.library.clone(), cx);
+        Some(div().flex().flex_row().justify_center().child(strip))
     }
 
     /// The enable switch and Flatten, the two controls that act on the whole
@@ -846,13 +861,14 @@ impl EqWindow {
         let hz = player::eq_freq(band);
         labelled(
             "Freq",
-            panel::value_slider_edit_over(
+            panel::value_slider_edit_sized(
                 &self.scrubs[0],
                 &self.value_edit,
                 freq_frac(hz),
                 format!("{hz:.0} Hz"),
                 format!("{hz:.0}"),
                 1.0,
+                panel::SliderWidth::Fill,
                 freq_frac,
                 move |_: &mut Self, fraction, cx| {
                     player::set_eq_freq(band, frac_freq(fraction), cx);
@@ -879,11 +895,12 @@ impl EqWindow {
     ) -> Div {
         labelled(
             label,
-            settings_ui::scalar(
+            settings_ui::scalar_sized(
                 &self.scrubs[slot],
                 &self.value_edit,
                 value,
                 span,
+                panel::SliderWidth::Fill,
                 move |_: &mut Self, value, cx| {
                     apply(band, value, cx);
                     cx.notify();
@@ -895,10 +912,14 @@ impl EqWindow {
 }
 
 /// A readout row's label beside its control, the shape the three rows share.
+/// The strip takes the rest of the window: there's no settings-page control
+/// column to line up with here, and a short slider under a full-width plot
+/// reads as a mistake.
 fn labelled(label: &'static str, control: Div) -> Div {
     div()
         .flex()
         .flex_row()
+        .w_full()
         .items_center()
         .gap(tokens::SPACE_SM)
         .child(
@@ -909,7 +930,7 @@ fn labelled(label: &'static str, control: Div) -> Div {
                 .text_color(palette::text_muted())
                 .child(label),
         )
-        .child(control)
+        .child(div().flex_1().min_w_0().child(control))
 }
 
 /// Keep a live band drag following the pointer and let go when the button
@@ -954,9 +975,17 @@ impl Render for EqWindow {
         palette::note_focus(player, window.is_window_active(), cx);
         // The whole tree builds inside the closure: an element made outside it
         // reads the palette before the tint is in place and paints untinted.
-        // The analyzer steps once per frame and asks for the next one only
-        // while something is still moving, so a paused EQ costs nothing.
-        if self.step_spectrum(cx) {
+        // The analyzer steps once per frame. While audio moves the player
+        // observe re-renders on every pump tick, the only rate new samples
+        // arrive at; frame polling is just for the falling bars after
+        // playback stops, the same gate every meter panel keeps. Without it
+        // the bars rarely read fully settled mid-track, so the window
+        // repainted at monitor refresh instead of the pump's clock.
+        let playing = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.player.read(cx).is_playing());
+        if self.step_spectrum(cx) && !playing {
             window.request_animation_frame();
         }
         panel::window_body(player, || {
@@ -998,11 +1027,11 @@ impl Render for EqWindow {
                         .child(plot)
                         .child(axis),
                 )
-                .child(readouts)
-                // The transport sits under the curve, not over it: the bands
-                // are what this window is for, and a strip above them would
-                // read as the headline.
+                // Straight under the plot: the transport belongs to what's
+                // being listened to, and the readouts below are the tail of
+                // the curve rather than something a play button sits over.
                 .when_some(transport, |d, transport| d.child(transport))
+                .child(readouts)
                 .into_any_element()
         })
     }

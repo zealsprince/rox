@@ -533,6 +533,22 @@ pub(crate) fn is_experimental(section: &PanelSection) -> bool {
     std::ptr::eq(section, &EXPERIMENTAL)
 }
 
+/// The panels whose settings carry knobs the shared signal pool can drive,
+/// by label, the way the native menu keys its rows. Every menu that lists
+/// the catalog marks these with the signal glyph, which is what the signals
+/// window tells people to look for, so what the pool can reach is readable
+/// from the menus rather than found by opening panels until a bindable row
+/// turns up.
+///
+/// A panel joins the list by implementing [`crate::signal_ui::RouteHost`]
+/// and wrapping the rows it wants bindable in
+/// [`crate::signal_ui::bindable_row`].
+const SIGNAL_PANELS: &[&str] = &["Particles"];
+
+pub(crate) fn supports_signals(def: &PanelDef) -> bool {
+    SIGNAL_PANELS.contains(&def.label)
+}
+
 /// Every section in menu order, the groups laid out alphabetically so the
 /// list reads the same in the menubar and the Add Panel flyout, with the
 /// experimental run last. Read it through [`sections`] rather than

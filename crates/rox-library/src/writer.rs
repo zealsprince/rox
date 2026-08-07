@@ -1141,11 +1141,16 @@ fn hash_span(path: &Path, (start, end): (u64, u64)) -> Result<u64, String> {
     Ok(hash)
 }
 
+/// The tag fixtures, for the modules that write through this one and want
+/// a real file under their tests rather than a second copy of the bytes.
+#[cfg(test)]
+pub(crate) use tests::{flac_file, scratch};
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
+    pub(crate) fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rox-writer-{name}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -1185,7 +1190,7 @@ mod tests {
     /// A bare FLAC container: magic, one last-flagged STREAMINFO claiming
     /// 44.1 kHz stereo 16-bit, then patterned bytes standing in for the
     /// frames.
-    fn flac_file(dir: &Path, name: &str) -> PathBuf {
+    pub(crate) fn flac_file(dir: &Path, name: &str) -> PathBuf {
         let mut bytes = b"fLaC".to_vec();
         bytes.extend([0x80, 0, 0, 34]);
         let mut info = [0u8; 34];

@@ -14,15 +14,16 @@ path is gpui's `canvas()`.
 
 The engine's PCM tap is the input. It is a second rtrb SPSC ring beside the sample
 ring, 16,384 `f32` samples (`TAP_SAMPLES` in `rox-playback/src/output.rs`), and the RT
-callback pushes a post-volume copy of every stereo frame it plays and ignores push
-failure. Lossy by design: a slow visualizer loses samples, never slows audio. This is
+callback pushes a pre-volume copy of every stereo frame it plays and ignores push
+failure, so the visuals track the program material rather than the listening level.
+Lossy by design: a slow visualizer loses samples, never slows audio. This is
 the same tap the [playback doc](01-playback.md#thread-and-channel-wiring) describes from
 the producer side.
 
 ```
  RT output callback            UI pump (60 Hz)                 paint callback (canvas)
  ──────────────────            ───────────────                 ───────────────────────
- push post-volume  ──tap ring──▶ drain_tap: read all slots
+ push pre-volume   ──tap ring──▶ drain_tap: read all slots
  stereo frames                   push into AudioFeed
                                  (interleaved stereo)  ──feed──▶ latest_mono window
                                                                   Hann + FFT per zone

@@ -54,13 +54,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use gpui::{App, Entity, Global};
+use gpui::{App, Global};
 
 use rox_library::embeddings::{self, Pending};
 use rox_library::store;
 use rox_viz::analysis::{self, Analyzer};
 
-use crate::catalog::Library;
 use crate::embeddings::models::Model;
 use crate::settings::Settings;
 
@@ -366,7 +365,11 @@ pub fn stop(cx: &mut App) {
 /// rather than passed in: it's the same pick the similarity queries read, and
 /// a caller that could hand in a different one would be able to fill the
 /// table under a name nothing reads.
-pub fn start(library: Entity<Library>, cx: &mut App) {
+///
+/// The database path comes in rather than the library entity, because the
+/// watch sync starts this from inside the library's own update and reading a
+/// leased entity panics.
+pub fn start(db_path: PathBuf, cx: &mut App) {
     let settings = Settings::load();
     if progress(cx).is_some() || !settings.acoustic_analysis {
         return;
@@ -375,7 +378,6 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     // count it started with, and the next one picks up a changed setting.
     let workers = settings.acoustic_workers.max(1);
     let source = crate::settings::acoustic_source();
-    let db_path = library.read(cx).db_path();
     let progress = Arc::new(Progress::default());
     *progress.model.lock().unwrap() = source.id().to_string();
     cx.set_global(Running(Some(progress.clone())));

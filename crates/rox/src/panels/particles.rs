@@ -20,13 +20,12 @@ use gpui::{
     Pixels, Rgba, SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
-use gpui_component::{Icon, Sizable as _};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::Sizable as _;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use rox_viz::signal::{Route, Signal, SignalHub, Source};
+use rox_viz::signal::{Route, SignalHub};
 use rox_viz::AudioFeed;
 
 use crate::assets::icons;
@@ -36,18 +35,7 @@ use crate::panel::{
 };
 use crate::panel_settings;
 use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
-
-/// The frequency band an emitter's trigger may pick between, and the
-/// smallest span it keeps between its bounds: tight enough for a kick,
-/// wide enough that the mapping never inverts.
-const SLIDER_MIN_HZ: f32 = 20.0;
-const SLIDER_MAX_HZ: f32 = 20_000.0;
-const MIN_RATIO: f32 = 1.2;
-
-/// How far past its own setting a route may push a knob: the span reads
-/// as a share of what the slider says, and a route is allowed to overshoot
-/// it before the knob's own range clamps the result.
-const SPAN_OVER: f32 = 4.0;
+use crate::signal_ui::{self, RouteHost, RouteTargets, SignalHost, SignalUi};
 
 /// Where a burst emitter's routed signal reads as a hit and where it
 /// re-arms, with hysteresis between so one swell can't stutter-fire.
@@ -153,38 +141,44 @@ const TRIGGER_CHOICES: &[(&str, Trigger)] = &[
     ("Burst", Trigger::Burst),
 ];
 
-/// One scene or force knob a route may drive: the persisted id and how a
-/// route's factor lands on it. The factor scales the knob's own setting,
-/// so the slider stays the reference a route works against rather than
-/// going dead once bound, and a knob set to zero is off, route or no
-/// route. The ids only ever grow; a config carrying an unknown one goes
-/// quiet rather than misfiring. Making a new value bindable is one entry
-/// here plus wrapping its settings row in
-/// [`ParticlesPanel::bindable_row`].
+/// One scene or force knob a route may drive: the persisted id, the label
+/// the target list shows, and how a route's factor lands on it. The
+/// factor scales the knob's own setting, so the slider stays the
+/// reference a route works against rather than going dead once bound, and
+/// a knob set to zero is off, route or no route. The ids only ever grow;
+/// a config carrying an unknown one goes quiet rather than misfiring.
+/// Making a new value bindable is one entry here plus wrapping its
+/// settings row in [`crate::signal_ui::bindable_row`].
 struct BindTarget {
     id: &'static str,
+    label: &'static str,
     apply: fn(&mut Scene, &mut Forces, f32),
 }
 
 const BIND_TARGETS: &[BindTarget] = &[
     BindTarget {
         id: "gravity",
+        label: "Gravity",
         apply: |scene, _, k| scene.gravity *= k,
     },
     BindTarget {
         id: "drag",
+        label: "Drag",
         apply: |scene, _, k| scene.drag *= k,
     },
     BindTarget {
         id: "turbulence",
+        label: "Turbulence",
         apply: |_, forces, k| forces.turbulence *= k,
     },
     BindTarget {
         id: "scale",
+        label: "Turbulence Scale",
         apply: |_, forces, k| forces.turbulence_scale *= k,
     },
     BindTarget {
         id: "drift",
+        label: "Turbulence Drift",
         apply: |_, forces, k| forces.turbulence_speed *= k,
     },
 ];
@@ -194,49 +188,41 @@ const BIND_TARGETS: &[BindTarget] = &[
 /// scales that emitter's own setting.
 struct EmitterBindTarget {
     id: &'static str,
+    label: &'static str,
     apply: fn(&mut Emitter, f32),
 }
 
 const EMITTER_BIND_TARGETS: &[EmitterBindTarget] = &[
     EmitterBindTarget {
         id: "speed",
+        label: "Speed",
         apply: |emitter, k| emitter.speed *= k,
     },
     EmitterBindTarget {
         id: "rate",
+        label: "Rate",
         apply: |emitter, k| emitter.rate *= k,
     },
     EmitterBindTarget {
         id: "burst",
+        label: "Burst",
         apply: |emitter, k| emitter.burst *= k,
     },
     EmitterBindTarget {
         id: "cone",
+        label: "Cone",
         apply: |emitter, k| emitter.cone *= k,
     },
     EmitterBindTarget {
         id: "size",
+        label: "Size",
         apply: |emitter, k| emitter.size *= k,
     },
     EmitterBindTarget {
         id: "life",
+        label: "Lifetime",
         apply: |emitter, k| emitter.life *= k,
     },
-];
-
-/// The source picker's face for [`Source`], which carries band bounds the
-/// segmented control can't.
-#[derive(Clone, Copy, PartialEq)]
-enum SourceKind {
-    Band,
-    Level,
-    Onset,
-}
-
-const SOURCE_CHOICES: &[(&str, SourceKind)] = &[
-    ("Band", SourceKind::Band),
-    ("Level", SourceKind::Level),
-    ("Onset", SourceKind::Onset),
 ];
 
 /// One emitter: pure geometry and throw. It carries no audio of its own;
@@ -495,26 +481,6 @@ impl Default for ParticlesConfig {
     }
 }
 
-/// A strip fraction (0 to 1) as a log-spaced frequency across the slider
-/// band, and back. Log so an octave takes the same travel anywhere, the way
-/// the spectrum's bounds sliders map.
-fn frac_to_hz(fraction: f32) -> f32 {
-    SLIDER_MIN_HZ * (SLIDER_MAX_HZ / SLIDER_MIN_HZ).powf(fraction.clamp(0.0, 1.0))
-}
-
-fn hz_to_frac(hz: f32) -> f32 {
-    (hz / SLIDER_MIN_HZ).ln() / (SLIDER_MAX_HZ / SLIDER_MIN_HZ).ln()
-}
-
-/// A bound's Hz for the slider readout, compact enough for the strip.
-fn fmt_hz(hz: f32) -> String {
-    if hz >= 1000.0 {
-        format!("{:.1} kHz", hz / 1000.0)
-    } else {
-        format!("{:.0} Hz", hz.round())
-    }
-}
-
 /// Give every emitter a unique id, keeping the ones a loaded config
 /// carries: zeroes (configs from before ids existed) and hand-edited
 /// duplicates get fresh ones, and any binding that pointed at a replaced
@@ -536,41 +502,58 @@ fn emitter_route(target: &str) -> Option<(u64, &str)> {
     Some((id.parse().ok()?, knob))
 }
 
-/// Resolve the routes against the hub's live signals into the emitters,
-/// scene, and forces this frame runs with. A route's span maps through the
-/// same range its target's slider covers, so it can do exactly what a hand
-/// on the slider could and nothing more. Later routes to the same target
-/// win; routes whose signal is gone contribute nothing.
-fn modulated(config: &ParticlesConfig, hub: &SignalHub) -> (Vec<Emitter>, Scene, Forces) {
-    let mut emitters = config.emitters.clone();
-    let mut scene = config.scene.clone();
-    let mut forces = config.forces.clone();
-    for route in &config.routes {
-        if !route.enabled {
-            continue;
+/// The frame's working copies the routes land on, dispatching plain ids
+/// through the scene and force table and `e<id>.<knob>` ids through the
+/// emitter table. Unknown ids fall through quietly, the tables' contract.
+struct Modulated {
+    emitters: Vec<Emitter>,
+    scene: Scene,
+    forces: Forces,
+}
+
+impl RouteTargets for Modulated {
+    fn targets(&self) -> Vec<(String, String)> {
+        let mut targets: Vec<(String, String)> = BIND_TARGETS
+            .iter()
+            .map(|t| (t.id.to_string(), t.label.to_string()))
+            .collect();
+        for (i, emitter) in self.emitters.iter().enumerate() {
+            for t in EMITTER_BIND_TARGETS {
+                targets.push((
+                    format!("e{}.{}", emitter.id, t.id),
+                    format!("Emitter {} {}", i + 1, t.label),
+                ));
+            }
         }
-        let Some(signal) = hub.value(route.signal) else {
-            continue;
-        };
-        // The span is a share of the knob's own setting: at full signal a
-        // route reaches `to` of what the slider says, at silence `from`.
-        // Overshoot past 100% is allowed and the knob's own accessor
-        // clamps it to the range the sim will take.
-        let factor = (route.from + (route.to - route.from) * signal).max(0.0);
-        if let Some((id, knob)) = emitter_route(&route.target) {
+        targets
+    }
+
+    fn apply(&mut self, id: &str, value: f32) {
+        if let Some((eid, knob)) = emitter_route(id) {
             if let (Some(emitter), Some(target)) = (
-                emitters.iter_mut().find(|e| e.id == id),
+                self.emitters.iter_mut().find(|e| e.id == eid),
                 EMITTER_BIND_TARGETS.iter().find(|t| t.id == knob),
             ) {
-                (target.apply)(emitter, factor);
+                (target.apply)(emitter, value);
             }
-            continue;
+            return;
         }
-        if let Some(target) = BIND_TARGETS.iter().find(|t| t.id == route.target) {
-            (target.apply)(&mut scene, &mut forces, factor);
+        if let Some(target) = BIND_TARGETS.iter().find(|t| t.id == id) {
+            (target.apply)(&mut self.scene, &mut self.forces, value);
         }
     }
-    (emitters, scene, forces)
+}
+
+/// Resolve the routes against the hub's live signals into the emitters,
+/// scene, and forces this frame runs with.
+fn modulated(config: &ParticlesConfig, hub: &SignalHub) -> (Vec<Emitter>, Scene, Forces) {
+    let mut targets = Modulated {
+        emitters: config.emitters.clone(),
+        scene: config.scene.clone(),
+        forces: config.forces.clone(),
+    };
+    signal_ui::apply_routes(&config.routes, hub, &mut targets);
+    (targets.emitters, targets.scene, targets.forces)
 }
 
 /// The signal a burst emitter watches for its trigger: the last enabled
@@ -682,10 +665,12 @@ impl Sim {
     /// frame's emitters and field, fire what they call for, and move what
     /// is already in the air. `hold` is the freeze-on-pause option, which
     /// parks the field where it stands.
+    #[allow(clippy::too_many_arguments)]
     fn step(
         &mut self,
         feed: &AudioFeed,
         hub: &SignalHub,
+        track: Option<u64>,
         w: f32,
         h: f32,
         config: &ParticlesConfig,
@@ -705,7 +690,7 @@ impl Sim {
         }
         self.clock += dt;
 
-        hub.tick(feed);
+        hub.tick(feed, track);
         let (emitters, scene, forces) = modulated(config, hub);
         self.carry.resize(emitters.len(), 0.0);
         self.armed.resize(emitters.len(), true);
@@ -895,114 +880,6 @@ impl Sim {
 /// editor, px.
 const GRAB_RADIUS: f32 = 24.0;
 
-/// Write the shared pool through to settings, the hub's one persistence
-/// path, so a relaunch finds what every open panel was riding.
-fn persist_pool(pool: Vec<Signal>) {
-    crate::settings::Settings::update(move |s| s.look.bundle.signals = pool);
-}
-
-/// Apply one edit to a pool signal through the hub and persist the result.
-/// Editing tunes the signal for every route riding it, which is the point
-/// of sharing.
-fn edit_signal(panel: &ParticlesPanel, id: u64, edit: impl FnOnce(&mut Signal)) {
-    let pool = panel.state.signals.edit(|pool| {
-        if let Some(signal) = pool.iter_mut().find(|s| s.id == id) {
-            edit(signal);
-        }
-    });
-    persist_pool(pool);
-}
-
-/// A thin live meter for the customize window: one signal's value read off
-/// the hub at paint time, so tuning happens against what the music is
-/// actually sending. Keeps frames coming while audio moves, since that
-/// window renders on its own clock, not the panel's.
-fn meter(hub: Arc<SignalHub>, id: u64, fill: Rgba, marker: Option<f32>) -> Div {
-    div().h(px(6.)).w_full().child(
-        canvas(
-            move |_, _, _| {},
-            move |bounds, _, window, _| {
-                let value = hub.value(id).unwrap_or(0.0).clamp(0.0, 1.0);
-                let live = hub.live();
-                let radius = bounds.size.height / 2.0;
-                window.paint_quad(gpui::quad(
-                    bounds,
-                    radius,
-                    palette::bg_control(),
-                    0.,
-                    gpui::transparent_black(),
-                    BorderStyle::default(),
-                ));
-                if value > 0.0 {
-                    window.paint_quad(gpui::quad(
-                        Bounds::new(
-                            bounds.origin,
-                            size(bounds.size.width * value, bounds.size.height),
-                        ),
-                        radius,
-                        palette::alpha(fill, 210),
-                        0.,
-                        gpui::transparent_black(),
-                        BorderStyle::default(),
-                    ));
-                }
-                if let Some(marker) = marker {
-                    window.paint_quad(gpui::quad(
-                        Bounds::new(
-                            point(
-                                bounds.origin.x + bounds.size.width * marker - px(0.75),
-                                bounds.origin.y,
-                            ),
-                            size(px(1.5), bounds.size.height),
-                        ),
-                        0.,
-                        palette::text_faint(),
-                        0.,
-                        gpui::transparent_black(),
-                        BorderStyle::default(),
-                    ));
-                }
-                if live {
-                    window.request_animation_frame();
-                }
-            },
-        )
-        .size_full(),
-    )
-}
-
-/// One chip of a binding's scope row: the segmented control's look, built
-/// by hand because the scope list follows the live emitter list, which the
-/// static segmented options can't carry.
-fn scope_chip(
-    label: String,
-    picked: bool,
-    on_pick: impl Fn(&mut ParticlesPanel, &mut Context<ParticlesPanel>) + 'static,
-    cx: &mut Context<ParticlesPanel>,
-) -> Div {
-    div()
-        .px(tokens::SPACE_SM)
-        .py(tokens::SPACE_XS)
-        .rounded(tokens::RADIUS)
-        .bg(if picked {
-            palette::accent()
-        } else {
-            palette::bg_control()
-        })
-        .when(!picked, |d| d.hover(|d| d.bg(palette::bg_control_hover())))
-        .text_color(if picked {
-            palette::text_on_accent()
-        } else {
-            palette::text()
-        })
-        .cursor_pointer()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _, _, cx| on_pick(this, cx)),
-        )
-        .child(label)
-}
-
 /// The editor overlay: every emitter's footprint dotted onto the field and
 /// its center as the grab handle, in the emitter's own color so the markers
 /// read against the settings list. Disabled emitters dim; the dragged one
@@ -1107,22 +984,6 @@ struct EmitterScrubs {
     speed: ScrubState,
 }
 
-/// One route's span sliders, index-aligned with the config's list.
-#[derive(Default)]
-struct RouteScrubs {
-    from: ScrubState,
-    to: ScrubState,
-}
-
-/// One pool signal's tuning sliders, keyed by signal id since the same
-/// signal can be edited from several surfaces.
-#[derive(Default)]
-struct SignalScrubs {
-    lo: ScrubState,
-    hi: ScrubState,
-    smooth: ScrubState,
-}
-
 /// A labelled config toggle for the Display menu: the row label, a getter
 /// for its current state, and a setter that flips it.
 type ConfigToggle = (
@@ -1144,10 +1005,9 @@ pub struct ParticlesPanel {
     /// emitter shifts every index after it.
     emitter_pickers: Vec<Entity<ColorPickerState>>,
     _emitter_changes: Vec<Subscription>,
-    /// Per-route slider state, kept the same length as the list, and the
-    /// pool signals' tuning state by id.
-    route_scrubs: Vec<RouteScrubs>,
-    signal_scrubs: std::collections::HashMap<u64, SignalScrubs>,
+    /// The shared route and pool widgets' state, kept in step with the
+    /// lists by [`signal_ui::sync`] on every settings render.
+    signal_ui: SignalUi,
     gravity_scrub: ScrubState,
     gravity_angle_scrub: ScrubState,
     drag_scrub: ScrubState,
@@ -1157,14 +1017,6 @@ pub struct ParticlesPanel {
     focus: FocusHandle,
     /// The one readout being typed into across all the settings sliders.
     value_edit: ValueEdit,
-    /// The one signal being renamed: the input holding the draft and the
-    /// subscription that commits it on Enter. The bounds cell backs the
-    /// click-outside cancel, since nothing else in the settings window
-    /// takes focus and blur alone never fires.
-    rename: Option<(u64, Entity<InputState>, Subscription)>,
-    rename_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
-    /// The target whose route is expanded inline under its settings row.
-    open_bind: Option<String>,
     /// The editor overlay: markers over the field for arranging emitters
     /// by hand. Session state, deliberately not persisted.
     edit: bool,
@@ -1193,8 +1045,7 @@ impl ParticlesPanel {
             emitter_scrubs: Vec::new(),
             emitter_pickers: Vec::new(),
             _emitter_changes: Vec::new(),
-            route_scrubs: Vec::new(),
-            signal_scrubs: std::collections::HashMap::new(),
+            signal_ui: SignalUi::default(),
             gravity_scrub: ScrubState::default(),
             gravity_angle_scrub: ScrubState::default(),
             drag_scrub: ScrubState::default(),
@@ -1203,9 +1054,6 @@ impl ParticlesPanel {
             turb_speed_scrub: ScrubState::default(),
             focus: cx.focus_handle(),
             value_edit: ValueEdit::default(),
-            rename: None,
-            rename_bounds: Arc::new(Mutex::new(None)),
-            open_bind: None,
             edit: false,
             drag: None,
             canvas_bounds: Arc::new(Mutex::new(Bounds::default())),
@@ -1226,96 +1074,6 @@ impl ParticlesPanel {
             self.config.emitters.remove(index);
             cx.notify();
         }
-    }
-
-    /// Attach the row's route to ride `signal`, repointing an existing
-    /// route rather than stacking a second, and open its editor.
-    fn attach_signal(&mut self, target: String, signal: u64, cx: &mut Context<Self>) {
-        if let Some(route) = self
-            .config
-            .routes
-            .iter_mut()
-            .rev()
-            .find(|r| r.target == target)
-        {
-            route.signal = signal;
-        } else {
-            self.config.routes.push(Route {
-                signal,
-                target: target.clone(),
-                ..Route::default()
-            });
-        }
-        self.open_bind = Some(target);
-        cx.notify();
-    }
-
-    /// The context menu's deliberate "Add Signal": a fresh pool signal,
-    /// routed to the row on the spot.
-    fn attach_new_signal(&mut self, target: String, cx: &mut Context<Self>) {
-        let (id, pool) = self.state.signals.add(
-            Source::Band {
-                lo: 30.0,
-                hi: 120.0,
-            },
-            0.3,
-        );
-        persist_pool(pool);
-        self.attach_signal(target, id, cx);
-    }
-
-    /// Start renaming a signal: an input seeded with the given name (not
-    /// the derived label, so clearing the field is how a name goes back
-    /// to following the source). Enter commits, clicking away cancels.
-    fn begin_rename(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let current = self
-            .state
-            .signals
-            .pool()
-            .iter()
-            .find(|s| s.id == id)
-            .map(|s| s.name.clone())
-            .unwrap_or_default();
-        let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Signal name")
-                .default_value(current)
-        });
-        let sub = cx.subscribe_in(
-            &input,
-            window,
-            move |this: &mut Self, input, event: &InputEvent, _, cx| match event {
-                InputEvent::PressEnter { .. } => {
-                    let name = input.read(cx).value().trim().to_string();
-                    edit_signal(this, id, |signal| signal.name = name);
-                    this.rename = None;
-                    cx.notify();
-                }
-                InputEvent::Blur => {
-                    this.rename = None;
-                    cx.notify();
-                }
-                _ => {}
-            },
-        );
-        window.focus(&input.read(cx).focus_handle(cx));
-        self.rename = Some((id, input, sub));
-        cx.notify();
-    }
-
-    fn remove_route(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index < self.config.routes.len() {
-            self.config.routes.remove(index);
-            cx.notify();
-        }
-    }
-
-    /// Drop a signal from the shared pool. Routes riding it stay where
-    /// they are and go quiet, so re-adding or repointing restores them.
-    fn remove_signal(&mut self, id: u64, cx: &mut Context<Self>) {
-        let pool = self.state.signals.edit(|pool| pool.retain(|s| s.id != id));
-        persist_pool(pool);
-        cx.notify();
     }
 
     /// A press in the editor: pick the emitter whose center sits nearest,
@@ -1402,6 +1160,40 @@ impl ParticlesPanel {
     }
 }
 
+/// The shared route and pool widgets read this panel through the trait:
+/// its routes are per-view config, its widget state the embedded bundle,
+/// and its value edit the panel-wide one so a route slider and an emitter
+/// slider never type at once.
+impl SignalHost for ParticlesPanel {
+    fn hub(&self) -> &Arc<SignalHub> {
+        &self.state.signals
+    }
+
+    fn routes(&self) -> &[Route] {
+        &self.config.routes
+    }
+
+    fn signal_ui(&self) -> &SignalUi {
+        &self.signal_ui
+    }
+
+    fn signal_ui_mut(&mut self) -> &mut SignalUi {
+        &mut self.signal_ui
+    }
+
+    fn value_edit(&self) -> &ValueEdit {
+        &self.value_edit
+    }
+}
+
+/// The routes are this view's own, unlike the pool they ride: two particles
+/// panels bind their own knobs to the same signals.
+impl RouteHost for ParticlesPanel {
+    fn routes_mut(&mut self) -> &mut Vec<Route> {
+        &mut self.config.routes
+    }
+}
+
 impl PanelSettings for ParticlesPanel {
     fn state(&self) -> AppState {
         self.state.clone()
@@ -1422,9 +1214,11 @@ impl PanelSettings for ParticlesPanel {
     }
 
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        // No Signals page: the pool is app-wide, so it has a window of its
+        // own ([`crate::signals_window`]). What stays here is the binding,
+        // which belongs to this panel's knobs.
         &[
             ("Emitters", icons::AUDIO_LINES),
-            ("Signals", icons::AUDIO_WAVEFORM),
             ("Forces", icons::MOVE),
             ("Scene", icons::GLOBE),
         ]
@@ -1439,18 +1233,8 @@ impl PanelSettings for ParticlesPanel {
         // Any page can host a route's tuning rows, so the route and signal
         // slider state syncs here: a route created from a Forces row must
         // find its scrubs on the very next render.
-        let count = self.config.routes.len();
-        if self.route_scrubs.len() != count {
-            self.route_scrubs.resize_with(count, RouteScrubs::default);
-        }
-        let pool = self.state.signals.pool();
-        self.signal_scrubs
-            .retain(|id, _| pool.iter().any(|s| s.id == *id));
-        for signal in &pool {
-            self.signal_scrubs.entry(signal.id).or_default();
-        }
+        signal_ui::sync(self);
         match page {
-            "Signals" => self.signals_page(cx).into_any_element(),
             "Forces" => self.forces_page(cx).into_any_element(),
             "Scene" => self.scene_page(cx).into_any_element(),
             _ => self.emitters_page(window, cx).into_any_element(),
@@ -1617,7 +1401,8 @@ impl ParticlesPanel {
                 ),
             ))
             .when(mode == Trigger::Continuous, |d| {
-                d.child(self.bindable_row(
+                d.child(signal_ui::bindable_row(
+                    self,
                     "Rate",
                     None,
                     format!("e{eid}.rate"),
@@ -1640,7 +1425,8 @@ impl ParticlesPanel {
                 ))
             })
             .when(mode == Trigger::Burst, |d| {
-                d.child(self.bindable_row(
+                d.child(signal_ui::bindable_row(
+                    self,
                     "Burst",
                     None,
                     format!("e{eid}.burst"),
@@ -1818,7 +1604,8 @@ impl ParticlesPanel {
                     ),
                 ))
             })
-            .child(self.bindable_row(
+            .child(signal_ui::bindable_row(
+                self,
                 "Cone",
                 None,
                 format!("e{eid}.cone"),
@@ -1839,7 +1626,8 @@ impl ParticlesPanel {
                 ),
                 cx,
             ))
-            .child(self.bindable_row(
+            .child(signal_ui::bindable_row(
+                self,
                 "Speed",
                 None,
                 format!("e{eid}.speed"),
@@ -1860,7 +1648,8 @@ impl ParticlesPanel {
                 ),
                 cx,
             ))
-            .child(self.bindable_row(
+            .child(signal_ui::bindable_row(
+                self,
                 "Size",
                 None,
                 format!("e{eid}.size"),
@@ -1881,7 +1670,8 @@ impl ParticlesPanel {
                 ),
                 cx,
             ))
-            .child(self.bindable_row(
+            .child(signal_ui::bindable_row(
+                self,
                 "Lifetime",
                 None,
                 format!("e{eid}.life"),
@@ -1905,561 +1695,6 @@ impl ParticlesPanel {
             .child(setting_row("Color", None, color_row))
     }
 
-    /// The Signals page: the app's shared pool, tended from any particles
-    /// panel because it is one pool. Routes live inline under the knobs
-    /// they drive; this page is where the signals themselves are tuned,
-    /// and an edit lands on every route riding the signal, in every panel.
-    fn signals_page(&mut self, cx: &mut Context<Self>) -> Div {
-        let pool = self.state.signals.pool();
-        let add = settings_ui::small_button(
-            "Add Signal",
-            icons::PLUS,
-            false,
-            cx.listener(|this, _, _, cx| {
-                let (_, pool) = this.state.signals.add(
-                    Source::Band {
-                        lo: 30.0,
-                        hi: 120.0,
-                    },
-                    0.3,
-                );
-                persist_pool(pool);
-                cx.notify();
-            }),
-        );
-        let mut list = div().flex().flex_col().gap(tokens::SPACE_MD);
-        if pool.is_empty() {
-            list = list.child(
-                div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child("No signals yet - add one, or right-click any bindable knob."),
-            );
-        }
-        for signal in &pool {
-            list = list.child(self.signal_block(signal.id, cx));
-        }
-        div().flex().flex_col().gap(SECTION_GAP).child(section(
-            "Signals",
-            Some(add.into_any_element()),
-            list,
-        ))
-    }
-
-    /// One pool signal's block on the Signals page: its derived name, the
-    /// live meter, its tuning, how many of this panel's routes ride it,
-    /// and the delete that lets those routes go quiet.
-    fn signal_block(&self, id: u64, cx: &mut Context<Self>) -> Div {
-        let pool = self.state.signals.pool();
-        let Some(signal) = pool.iter().find(|s| s.id == id) else {
-            return div();
-        };
-        let riders = self.config.routes.iter().filter(|r| r.signal == id).count();
-        // While this signal is being renamed the label swaps for the
-        // input; committing or clicking away swaps it back. A one-frame
-        // window handler cancels on any press outside the field.
-        let name: AnyElement = match &self.rename {
-            Some((rid, input, _)) if *rid == id => {
-                let entity = cx.entity();
-                let cell = self.rename_bounds.clone();
-                div()
-                    .relative()
-                    .w(px(180.))
-                    .child(
-                        canvas(
-                            {
-                                let cell = cell.clone();
-                                move |bounds, _, _| *cell.lock().unwrap() = Some(bounds)
-                            },
-                            move |_, _, window, _| {
-                                let cell = cell.clone();
-                                let entity = entity.clone();
-                                window.on_mouse_event(
-                                    move |event: &MouseDownEvent, phase, _, cx| {
-                                        if !phase.bubble() {
-                                            return;
-                                        }
-                                        let inside = cell
-                                            .lock()
-                                            .unwrap()
-                                            .is_some_and(|b| b.contains(&event.position));
-                                        if inside {
-                                            return;
-                                        }
-                                        entity.update(cx, |this, cx| {
-                                            if this.rename.is_some() {
-                                                this.rename = None;
-                                                cx.notify();
-                                            }
-                                        });
-                                    },
-                                );
-                            },
-                        )
-                        .absolute()
-                        .inset_0(),
-                    )
-                    .child(Input::new(input).small().w_full())
-                    .into_any_element()
-            }
-            _ => div()
-                .text_xs()
-                .text_color(palette::text_muted())
-                .child(signal.label())
-                .into_any_element(),
-        };
-        let header = settings_ui::block_header(
-            name,
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(tokens::SPACE_XS)
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_faint())
-                        .child(match riders {
-                            0 => "no routes in this panel".to_string(),
-                            1 => "1 route in this panel".to_string(),
-                            n => format!("{n} routes in this panel"),
-                        }),
-                )
-                .child(settings_ui::icon_button(
-                    icons::PENCIL,
-                    false,
-                    cx.listener(move |this, _, window, cx| this.begin_rename(id, window, cx)),
-                ))
-                .child(settings_ui::icon_button(
-                    icons::TRASH,
-                    false,
-                    cx.listener(move |this, _, _, cx| this.remove_signal(id, cx)),
-                )),
-        );
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_SM)
-            .child(header)
-            .child(meter(
-                self.state.signals.clone(),
-                id,
-                palette::accent(),
-                None,
-            ))
-            .child(self.signal_tuning(id, cx))
-    }
-
-    /// One shared signal's tuning rows: what it listens to and how it
-    /// responds. Edits go through the hub, so every route riding it, in
-    /// every panel, follows.
-    fn signal_tuning(&self, id: u64, cx: &mut Context<Self>) -> Div {
-        let pool = self.state.signals.pool();
-        let Some(signal) = pool.iter().find(|s| s.id == id) else {
-            return div();
-        };
-        let Some(scrubs) = self.signal_scrubs.get(&id) else {
-            return div();
-        };
-        let (kind, freq_lo, freq_hi) = match signal.source {
-            Source::Band { lo, hi } => (SourceKind::Band, lo, hi),
-            Source::Onset { lo, hi } => (SourceKind::Onset, lo, hi),
-            Source::Level => (SourceKind::Level, 30.0, 120.0),
-        };
-        let smooth = signal.smooth.clamp(0.0, 1.0);
-        div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_SM)
-            .child(setting_row(
-                "Source",
-                Some(
-                    "What the signal listens to: Band follows one frequency range, \
-                     Level the whole mix, Onset pulses on each hit in the range",
-                ),
-                panel::choices(
-                    SOURCE_CHOICES,
-                    kind,
-                    move |this: &mut Self, kind, cx| {
-                        // Switching kinds carries the band along, so Band
-                        // to Onset keeps the range the ear already picked.
-                        edit_signal(this, id, |signal| {
-                            let (lo, hi) = match signal.source {
-                                Source::Band { lo, hi } | Source::Onset { lo, hi } => (lo, hi),
-                                Source::Level => (30.0, 120.0),
-                            };
-                            signal.source = match kind {
-                                SourceKind::Band => Source::Band { lo, hi },
-                                SourceKind::Onset => Source::Onset { lo, hi },
-                                SourceKind::Level => Source::Level,
-                            };
-                        });
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-            .when(kind != SourceKind::Level, |d| {
-                d.child(setting_row(
-                    "Low Bound",
-                    None,
-                    panel::value_slider_edit(
-                        &scrubs.lo,
-                        &self.value_edit,
-                        hz_to_frac(freq_lo),
-                        fmt_hz(freq_lo),
-                        format!("{freq_lo:.0}"),
-                        hz_to_frac,
-                        move |this: &mut Self, fraction, cx| {
-                            edit_signal(this, id, |signal| {
-                                if let Source::Band { lo, hi } | Source::Onset { lo, hi } =
-                                    &mut signal.source
-                                {
-                                    let ceil = (*hi / MIN_RATIO).max(SLIDER_MIN_HZ);
-                                    *lo = frac_to_hz(fraction).clamp(SLIDER_MIN_HZ, ceil);
-                                }
-                            });
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-                .child(setting_row(
-                    "High Bound",
-                    None,
-                    panel::value_slider_edit(
-                        &scrubs.hi,
-                        &self.value_edit,
-                        hz_to_frac(freq_hi),
-                        fmt_hz(freq_hi),
-                        format!("{freq_hi:.0}"),
-                        hz_to_frac,
-                        move |this: &mut Self, fraction, cx| {
-                            edit_signal(this, id, |signal| {
-                                if let Source::Band { lo, hi } | Source::Onset { lo, hi } =
-                                    &mut signal.source
-                                {
-                                    let floor = (*lo * MIN_RATIO).min(SLIDER_MAX_HZ);
-                                    *hi = frac_to_hz(fraction).clamp(floor, SLIDER_MAX_HZ);
-                                }
-                            });
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-            })
-            .child(setting_row(
-                "Response",
-                Some(if kind == SourceKind::Onset {
-                    "How long each pulse rings before it dies away"
-                } else {
-                    "0 snaps to the music, 100 drifts after it"
-                }),
-                panel::value_slider_edit(
-                    &scrubs.smooth,
-                    &self.value_edit,
-                    smooth,
-                    format!("{}%", (smooth * 100.0).round() as i32),
-                    format!("{}", (smooth * 100.0).round() as i32),
-                    |v| v / 100.0,
-                    move |this: &mut Self, fraction, cx| {
-                        edit_signal(this, id, |signal| {
-                            signal.smooth = fraction.clamp(0.0, 1.0);
-                        });
-                        cx.notify();
-                    },
-                    cx,
-                ),
-            ))
-    }
-
-    /// One route's tuning rows for the inline editor: which shared signal
-    /// it rides (with the pool as a picker), that signal's tuning in
-    /// place, and the span it sweeps. A route whose signal is gone says so
-    /// and waits for a repoint instead of pretending.
-    fn route_tuning(&self, index: usize, cx: &mut Context<Self>) -> Div {
-        let route = &self.config.routes[index];
-        let scrubs = &self.route_scrubs[index];
-        let pool = self.state.signals.pool();
-        let known = pool.iter().any(|s| s.id == route.signal);
-        let from = route.from.clamp(0.0, SPAN_OVER);
-        let to = route.to.clamp(0.0, SPAN_OVER);
-
-        let mut chips = div().flex().flex_row().flex_wrap().gap(px(1.));
-        for signal in &pool {
-            let id = signal.id;
-            chips = chips.child(scope_chip(
-                signal.label(),
-                known && route.signal == id,
-                move |this, cx| {
-                    if let Some(route) = this.config.routes.get_mut(index) {
-                        route.signal = id;
-                    }
-                    cx.notify();
-                },
-                cx,
-            ));
-        }
-        chips = chips.child(scope_chip(
-            "New Signal".to_string(),
-            false,
-            move |this, cx| {
-                let (id, pool) = this.state.signals.add(
-                    Source::Band {
-                        lo: 30.0,
-                        hi: 120.0,
-                    },
-                    0.3,
-                );
-                persist_pool(pool);
-                if let Some(route) = this.config.routes.get_mut(index) {
-                    route.signal = id;
-                }
-                cx.notify();
-            },
-            cx,
-        ));
-
-        let mut col = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_SM)
-            .child(panel::setting_block(
-                "Signal",
-                Some(
-                    "Which shared signal this route rides; tuning it here tunes every route on it",
-                ),
-                None,
-                chips,
-            ));
-        if known {
-            col = col
-                .child(meter(
-                    self.state.signals.clone(),
-                    route.signal,
-                    palette::accent(),
-                    None,
-                ))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_faint())
-                        .child("Shared by every route on this signal"),
-                )
-                .child(self.signal_tuning(route.signal, cx));
-        } else {
-            col = col.child(div().text_xs().text_color(palette::text_muted()).child(
-                "This route's signal is gone; the knob holds its slider value \
-                        until another is picked above.",
-            ));
-        }
-        // The span belongs to this route alone, where everything above it
-        // is the shared signal: the same signal can pull one knob all the
-        // way and nudge another, so the two halves are labelled apart.
-        col.child(
-            div()
-                .pt(tokens::SPACE_XS)
-                .text_xs()
-                .text_color(palette::text_faint())
-                .child("Range for this parameter only"),
-        )
-        .child(setting_row(
-            "Quiet",
-            Some("What the knob reaches at silence, as a share of its own setting"),
-            panel::value_slider_edit_over(
-                &scrubs.from,
-                &self.value_edit,
-                from,
-                format!("{}%", (from * 100.0).round() as i32),
-                format!("{}", (from * 100.0).round() as i32),
-                SPAN_OVER,
-                |v| v / 100.0,
-                move |this: &mut Self, fraction, cx| {
-                    if let Some(route) = this.config.routes.get_mut(index) {
-                        route.from = fraction.clamp(0.0, SPAN_OVER);
-                    }
-                    cx.notify();
-                },
-                cx,
-            ),
-        ))
-        .child(setting_row(
-            "Loud",
-            Some("What it reaches at full signal; 100% is the slider's own value, below Quiet modulates down"),
-            panel::value_slider_edit_over(
-                &scrubs.to,
-                &self.value_edit,
-                to,
-                format!("{}%", (to * 100.0).round() as i32),
-                format!("{}", (to * 100.0).round() as i32),
-                SPAN_OVER,
-                |v| v / 100.0,
-                move |this: &mut Self, fraction, cx| {
-                    if let Some(route) = this.config.routes.get_mut(index) {
-                        route.to = fraction.clamp(0.0, SPAN_OVER);
-                    }
-                    cx.notify();
-                },
-                cx,
-            ),
-        ))
-    }
-
-    /// A settings row whose knob a route can drive: the row itself with a
-    /// bind toggle at its edge, and the route's tuning expanded beneath
-    /// while open. The slider keeps working while bound, since the route's
-    /// span is a share of it: the slider sets what full signal reaches and
-    /// the span decides how far the music pulls it back. Clicking the
-    /// toggle on an unbound row creates the route on the spot, and a
-    /// right-click anywhere on the row's control does the same, so binding
-    /// never needs the little icon found first. Removing the route lives
-    /// on the trash inside the expanded editor.
-    fn bindable_row(
-        &self,
-        label: &'static str,
-        description: Option<&'static str>,
-        target: String,
-        control: Div,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let bound = self.config.routes.iter().rposition(|r| r.target == target);
-        let open = self.open_bind.as_deref() == Some(target.as_str());
-        let weak = cx.entity().downgrade();
-        let menu_target = target.clone();
-        let control = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_XS)
-            // Right-click routes: pick a pool signal to ride, or add one
-            // deliberately. The menu shows even over an empty pool, so the
-            // way in is never invisible.
-            .context_menu(move |mut menu, _, cx| {
-                let Some(this) = weak.upgrade() else {
-                    return menu;
-                };
-                let pool = this.read(cx).state.signals.pool();
-                for signal in &pool {
-                    let id = signal.id;
-                    let panel = weak.clone();
-                    let target = menu_target.clone();
-                    menu = menu.item(PopupMenuItem::new(signal.label()).on_click(
-                        move |_, _, cx| {
-                            if let Some(this) = panel.upgrade() {
-                                this.update(cx, |this, cx| {
-                                    this.attach_signal(target.clone(), id, cx)
-                                });
-                            }
-                        },
-                    ));
-                }
-                if !pool.is_empty() {
-                    menu = menu.separator();
-                }
-                let panel = weak.clone();
-                let target = menu_target.clone();
-                menu.item(
-                    PopupMenuItem::new("Add Signal")
-                        .icon(Icon::default().path(icons::PLUS))
-                        .on_click(move |_, _, cx| {
-                            if let Some(this) = panel.upgrade() {
-                                this.update(cx, |this, cx| {
-                                    this.attach_new_signal(target.clone(), cx)
-                                });
-                            }
-                        }),
-                )
-            })
-            // The slider keeps its full weight while bound: it is what the
-            // route's span is a share of, so it still sets the ceiling.
-            .child(control)
-            // The bind mark only exists once a route does; an unbound row
-            // keeps an empty slot the same size so the sliders stay in
-            // column, and the context menu is the way in.
-            .map(|d| {
-                if bound.is_some() {
-                    d.child(settings_ui::icon_button(
-                        icons::AUDIO_WAVEFORM,
-                        false,
-                        cx.listener({
-                            let target = target.clone();
-                            move |this: &mut Self, _, _, cx| {
-                                this.open_bind =
-                                    if this.open_bind.as_deref() == Some(target.as_str()) {
-                                        None
-                                    } else {
-                                        Some(target.clone())
-                                    };
-                                cx.notify();
-                            }
-                        }),
-                    ))
-                } else {
-                    d.child(
-                        div()
-                            .flex_none()
-                            .w(tokens::SPACE_XS * 2.0 + px(14.))
-                            .h(px(14.)),
-                    )
-                }
-            });
-        // The context menu keys its open state on the element id path, and
-        // `context_menu` names every one of them the same thing. Several
-        // bindable rows on a page would land on one shared state, rendering
-        // one menu entity in several places and swallowing its clicks, so
-        // each row's control sits under an id of its own.
-        let control = div()
-            .id(SharedString::from(format!("bind-row-{target}")))
-            .child(control);
-        let mut row = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_SM)
-            .child(setting_row(label, description, control));
-        if open {
-            if let Some(index) = bound {
-                let header = settings_ui::block_header(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_muted())
-                        .child("Route"),
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(tokens::SPACE_XS)
-                        .child(toggle(
-                            self.config.routes[index].enabled,
-                            move |this: &mut Self, on, cx| {
-                                if let Some(route) = this.config.routes.get_mut(index) {
-                                    route.enabled = on;
-                                }
-                                cx.notify();
-                            },
-                            cx,
-                        ))
-                        .child(settings_ui::icon_button(
-                            icons::TRASH,
-                            false,
-                            cx.listener(move |this, _, _, cx| {
-                                this.open_bind = None;
-                                this.remove_route(index, cx);
-                            }),
-                        )),
-                );
-                row = row.child(settings_ui::nested(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(tokens::SPACE_SM)
-                        .child(header)
-                        .child(self.route_tuning(index, cx)),
-                ));
-            }
-        }
-        row
-    }
     /// The Forces page: the drift laid over the scene's steady pull. Every
     /// knob here is a binding target, so each row carries the bind toggle.
     fn forces_page(&mut self, cx: &mut Context<Self>) -> Div {
@@ -2513,21 +1748,24 @@ impl ParticlesPanel {
                 .flex()
                 .flex_col()
                 .gap(tokens::SPACE_MD)
-                .child(self.bindable_row(
+                .child(signal_ui::bindable_row(
+                    self,
                     "Strength",
                     Some("How hard the field pushes particles around; zero is off"),
                     "turbulence".to_string(),
                     strength_slider,
                     cx,
                 ))
-                .child(self.bindable_row(
+                .child(signal_ui::bindable_row(
+                    self,
                     "Scale",
                     Some("How wide one swirl runs; small churns, large rolls"),
                     "scale".to_string(),
                     scale_slider,
                     cx,
                 ))
-                .child(self.bindable_row(
+                .child(signal_ui::bindable_row(
+                    self,
                     "Drift",
                     Some("How fast the field itself moves, so the swirls don't stand still"),
                     "drift".to_string(),
@@ -2593,7 +1831,8 @@ impl ParticlesPanel {
                     .flex()
                     .flex_col()
                     .gap(tokens::SPACE_MD)
-                    .child(self.bindable_row(
+                    .child(signal_ui::bindable_row(
+                        self,
                         "Strength",
                         Some("Constant pull on everything in flight"),
                         "gravity".to_string(),
@@ -2609,7 +1848,8 @@ impl ParticlesPanel {
             .child(section(
                 "Medium",
                 None,
-                self.bindable_row(
+                signal_ui::bindable_row(
+                    self,
                     "Drag",
                     Some("How much speed the air eats each second; zero is a vacuum"),
                     "drag".to_string(),
@@ -2795,6 +2035,10 @@ impl ParticlesPanel {
         let player = self.state.player.read(cx);
         let session = player.now_playing().is_some();
         let playing = player.is_playing();
+        // Read here rather than in the paint closure, which has no cx: the
+        // hub wants it to spot a song change for the aggregates that reset
+        // on one, and a render happens every frame audio moves.
+        let track = player.playing_entry();
         // Freeze on pause holds the standing field: paused mid-session, not
         // a played-out queue.
         let hold = self.config.scene.freeze && session && !playing && !player.queue_ended();
@@ -2821,7 +2065,7 @@ impl ParticlesPanel {
                         return;
                     }
                     let mut sim = sim.lock().unwrap();
-                    sim.step(&feed, &hub, w, h, &config, hold);
+                    sim.step(&feed, &hub, track, w, h, &config, hold);
                     sim.paint(bounds, window, &config.scene);
                     if edit {
                         paint_markers(&config, drag, bounds, window);

@@ -25,7 +25,7 @@ output callback owns nothing.
   prev/volume/loop/quit)            processing chain                  write device format
                                     push f32 frames ────sample ring──▶ count frames played
  read atomics + segments ◀───────── shared state (Arc) ◀──────────────
- drain PCM tap ◀────────────────────────────────────────tap ring────── push post-volume copy
+ drain PCM tap ◀────────────────────────────────────────tap ring────── push pre-volume copy
 ```
 
 - **Sample ring**: rtrb SPSC, `f32` interleaved stereo at the device rate, allocated
@@ -34,9 +34,10 @@ output callback owns nothing.
   callback; shallow enough that it drains fast on flush. The capacity is fixed for the
   life of the stream; how full the decode thread lets it get is not, see the fill gate
   under the decode loop.
-- **PCM tap**: second rtrb SPSC, 16,384 samples. The callback pushes a post-volume copy
+- **PCM tap**: second rtrb SPSC, 16,384 samples. The callback pushes a pre-volume copy
   of every frame it plays and ignores push failure. A slow visualizer loses samples,
-  never slows audio.
+  never slows audio. Pre-volume, so the spectrum and signals track the program
+  material, not the listening level; chain DSP still shows because it runs upstream.
 - **Commands**: `std::sync::mpsc` into the decode thread, drained with `try_recv` at
   the top of every loop iteration. The decode loop naps 3 ms when the ring is full and
   20 ms when idle, so worst-case command latency stays under one video frame.

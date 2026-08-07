@@ -46,6 +46,11 @@ pub mod icons {
     pub const SKIP_FORWARD: &str = "icons/skip-forward.svg";
     pub const REWIND: &str = "icons/rewind.svg";
     pub const FAST_FORWARD: &str = "icons/fast-forward.svg";
+    /// The timed nudges where no skip buttons sit alongside to disambiguate:
+    /// on their own, the double triangles read as track changes, and the
+    /// circular arrow is the established mark for a jump by seconds.
+    pub const SEEK_BACK: &str = "icons/rotate-ccw.svg";
+    pub const SEEK_FORWARD: &str = "icons/rotate-cw.svg";
     pub const REPEAT: &str = "icons/repeat.svg";
     pub const REPEAT_1: &str = "icons/repeat-1.svg";
     pub const STOP: &str = "icons/square.svg";
@@ -195,6 +200,8 @@ pub mod icons {
         SKIP_FORWARD,
         REWIND,
         FAST_FORWARD,
+        SEEK_BACK,
+        SEEK_FORWARD,
         REPEAT,
         REPEAT_1,
         STOP,

@@ -179,13 +179,15 @@ impl LyricsMatch {
         self.error = None;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let saved = cx
-                .background_executor()
-                .spawn({
-                    let path = path.clone();
-                    async move { lyrics::save(&path, &save_target(&path), &text) }
-                })
-                .await;
+            let saved =
+                cx.background_executor()
+                    .spawn({
+                        let path = path.clone();
+                        async move {
+                            lyrics::save(&path, &save_target(&path), &text, Some(&lyrics_dir()))
+                        }
+                    })
+                    .await;
             this.update_in(cx, |this, window, cx| {
                 match saved {
                     Ok(()) => {

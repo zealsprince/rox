@@ -1602,55 +1602,66 @@ fn banner_shaped(
     shell.flex_col().child(head).child(body)
 }
 
-/// Previous, play/pause, next, and what's playing. For the windows that
+/// How far the nudges jump. Longer than the transport panel's ten, since
+/// this strip is worked while listening for a change rather than while
+/// looking for a spot in a track: fifteen is about how long it takes to
+/// hear whether a band or a curve did what was wanted.
+const STRIP_SEEK: f64 = 15.0;
+
+/// Back fifteen, play/pause, forward fifteen, random. For the windows that
 /// aren't the workspace but still want playback within reach: judging an EQ
-/// curve or an output setting means starting and stopping music, and going
-/// back to the main window for every pause gets old fast. Three verbs only;
-/// the full transport is a panel.
+/// curve, a signal's band or an output setting means starting and stopping
+/// music, and going back to the main window for every pause gets old fast.
+/// Four verbs only; the full transport is a panel.
+///
+/// The nudges take the track buttons' place because of what these windows
+/// are for: hearing the same passage again with a knob moved is the loop,
+/// and a skip would throw away the passage being judged.
+///
+/// Nothing says what's playing here. The strip sits centered under a plot
+/// in two of its three homes, and a title that grows with the track would
+/// shift the buttons out from under the pointer every time one ended.
 ///
 /// The caller has to keep the view awake, since this reads the player every
 /// frame and the play/pause face goes stale the moment a track ends on its
 /// own. An `cx.observe(&player, ...)` held somewhere does it.
-pub fn transport_strip<P: 'static>(player: &Entity<Player>, cx: &mut Context<P>) -> Div {
+pub fn transport_strip<P: 'static>(
+    player: &Entity<Player>,
+    library: &Entity<Library>,
+    cx: &mut Context<P>,
+) -> Div {
     let playing = player.read(cx).is_playing();
-    let title = player
-        .read(cx)
-        .now_playing()
-        .and_then(|now| {
-            now.path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-        })
-        .unwrap_or_else(|| "Nothing playing".into());
-    // Through `update` rather than `read`: skipping is a mutation now that
-    // the radio counts consecutive skips to widen what it draws from.
     let button = |icon: &'static str,
                   player: Entity<Player>,
                   verb: fn(&mut Player, &mut Context<Player>)| {
         crate::settings::ui::icon_button(icon, false, move |_, _, cx| player.update(cx, verb))
+    };
+    let random = {
+        let player = player.clone();
+        let library = library.clone();
+        crate::settings::ui::icon_button(icons::DICE, false, move |_, _, cx| {
+            player.update(cx, |player, cx| player.play_random(&library, cx));
+        })
     };
     div()
         .flex()
         .flex_row()
         .items_center()
         .gap(tokens::SPACE_SM)
-        .child(button(icons::SKIP_BACK, player.clone(), |p, _| p.prev()))
+        .child(button(icons::SEEK_BACK, player.clone(), |p, _| {
+            p.seek_by(-STRIP_SEEK)
+        }))
         .child(button(
             if playing { icons::PAUSE } else { icons::PLAY },
             player.clone(),
             |p, _| p.toggle_pause(),
         ))
-        .child(button(icons::SKIP_FORWARD, player.clone(), |p, cx| {
-            p.next(cx)
+        .child(button(icons::SEEK_FORWARD, player.clone(), |p, _| {
+            p.seek_by(STRIP_SEEK)
         }))
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .text_xs()
-                .text_color(palette::text_muted())
-                .child(title),
-        )
+        // Random draws through the scope the continuation system tracks, so
+        // it stays inside a playlist the way the transport panel's does.
+        .child(random)
 }
 
 pub fn setting_row(

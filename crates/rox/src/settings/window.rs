@@ -1755,13 +1755,13 @@ impl SettingsWindow {
                 None,
                 |rows| {
                     rows.keyed(
-                        &["play", "pause", "skip", "preview"],
+                        &["play", "pause", "seek", "random", "preview"],
                         "Transport",
                         Some(
                             "Start and stop without leaving this page, since every setting \
                          below is judged by ear",
                         ),
-                        panel::transport_strip(&self.playback, cx),
+                        panel::transport_strip(&self.playback, &self.library, cx),
                     )
                     .custom(
                         &["crossfade", "fade", "gapless", "overlap", "transition"],
@@ -3625,6 +3625,10 @@ impl SettingsWindow {
         self.experimental = on;
         Settings::update(move |s| s.experimental = on);
         settings::set_experimental(on, cx);
+        // The in-window menus read the flag as they draw, so the refresh
+        // above is enough for them; the macOS bar is built once and held by
+        // the system, so it has to be told.
+        crate::workspace::native_menu::rebuild(cx);
         cx.notify();
     }
 

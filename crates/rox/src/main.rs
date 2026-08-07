@@ -49,6 +49,8 @@ mod rating_ui;
 mod replaygain_job;
 mod selection;
 mod settings;
+mod signal_ui;
+mod signals_window;
 mod source;
 mod startup;
 mod stats_window;

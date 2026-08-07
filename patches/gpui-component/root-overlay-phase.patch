@@ -1,0 +1,62 @@
+diff -x .rox-stamp -ruN a/src/root.rs b/src/root.rs
+--- a/src/root.rs	2006-07-23 19:21:28.000000000 -0600
++++ b/src/root.rs	2026-08-07 11:33:41.466480979 -0600
+@@ -9,7 +9,7 @@
+ use gpui::{
+     AnyView, App, AppContext, Context, DefiniteLength, Entity, FocusHandle, InteractiveElement,
+     IntoElement, KeyBinding, ParentElement as _, Render, Styled, Window, actions, canvas, div,
+-    prelude::FluentBuilder as _,
++    overlay_phase, prelude::FluentBuilder as _,
+ };
+ use std::{any::TypeId, rc::Rc};
+ 
+@@ -290,7 +290,10 @@
+             _ => (None, None),
+         };
+ 
+-        Some(
++        // rox patch: overlay layers paint in the window's overlay phase, so a
++        // panel's region shader runs on the content underneath them instead of
++        // washing them out. Same range gpui already puts menus and tooltips in.
++        Some(overlay_phase(
+             div()
+                 .absolute()
+                 .top_0()
+@@ -298,7 +301,7 @@
+                 .when_some(mt, |this, offset| this.mt(offset))
+                 .when_some(mr, |this, offset| this.mr(offset))
+                 .child(root.read(cx).notification.clone()),
+-        )
++        ))
+     }
+ 
+     /// Render the Sheet layer.
+@@ -316,7 +319,8 @@
+ 
+             let size = sheet.size;
+ 
+-            return Some(
++            // rox patch: overlay phase, same as the notification layer.
++            return Some(overlay_phase(
+                 div().relative().child(sheet).child(
+                     canvas(
+                         move |_, _, cx| root.update(cx, |r, _| r.sheet_size = Some(size)),
+@@ -325,7 +329,7 @@
+                     .absolute()
+                     .size_full(),
+                 ),
+-            );
++            ));
+         }
+ 
+         None
+@@ -376,7 +380,8 @@
+             }
+         }
+ 
+-        Some(div().children(dialogs))
++        // rox patch: overlay phase, same as the notification layer.
++        Some(overlay_phase(div().children(dialogs)))
+     }
+ 
+     /// Return the root view of the Root.

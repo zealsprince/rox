@@ -8,14 +8,14 @@
 //! per-view knob.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
     div, prelude::*, px, size, AnyElement, App, Bounds, Context, Div, Entity, EntityId,
-    Focusable as _, Global, Hsla, PathPromptOptions, ScrollHandle, SharedString, Subscription,
-    WeakEntity, Window, WindowHandle,
+    Focusable as _, Global, Hsla, MouseDownEvent, PathPromptOptions, ScrollHandle, SharedString,
+    Subscription, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -227,6 +227,85 @@ pub fn toggle_locked_for_view(panel: &Arc<dyn PanelView>, cx: &mut App) {
         let on = !panel.chrome().locked;
         panel.set_locked(on, cx);
     }));
+}
+
+/// How much of a pending source the approval block prints. Long enough to
+/// read a real shader, short enough that a file someone pasted a novel into
+/// doesn't build ten thousand elements.
+const PENDING_LINES: usize = 400;
+
+/// The approval block both shader surfaces wear: what arrived, where it says
+/// it came from, and the two ways out. Shaders travel inside layout dumps
+/// and workspace bundles as plain WGSL, so applying somebody's look hands
+/// rox their code; this is where a person reads it before it runs.
+///
+/// Read-only on purpose. rox has no code editor, and a box that let the
+/// source be edited before approving would only be a slower way to reach
+/// the same yes.
+pub fn pending_shader(
+    id: &'static str,
+    source: &str,
+    path: Option<&Path>,
+    approve: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    discard: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    let lines: Vec<String> = source
+        .lines()
+        .take(PENDING_LINES)
+        .map(str::to_string)
+        .collect();
+    let clipped = source.lines().count().saturating_sub(lines.len());
+    let origin: SharedString = match path {
+        Some(path) => format!("Said to come from {}", path.display()).into(),
+        None => "No file behind it; the source rode the layout".into(),
+    };
+    let listing = div()
+        .id(id)
+        .max_h(px(280.))
+        .overflow_y_scroll()
+        .p(tokens::SPACE_SM)
+        .rounded(tokens::RADIUS)
+        .bg(palette::bg_control())
+        .flex()
+        .flex_col()
+        .text_xs()
+        .text_color(palette::text_muted())
+        .children(lines)
+        .when(clipped > 0, |listing| {
+            listing.child(
+                div()
+                    .text_color(palette::text_faint())
+                    .child(format!("... {clipped} more lines")),
+            )
+        });
+    div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_MD)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(
+                    "This shader arrived inside a layout or a workspace. It doesn't run \
+                     until you've read it and approved it on this machine.",
+                )
+                .child(origin)
+                .child(format!("Hash {}", shader::fingerprint(source))),
+        )
+        .child(listing)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_SM)
+                .child(small_button("Approve", icons::CHECK, false, approve))
+                .child(small_button("Discard", icons::TRASH, false, discard)),
+        )
 }
 
 /// The open rename windows, keyed by the panel they rename; the same
@@ -1109,11 +1188,45 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         let Some(panel) = self.panel.upgrade() else {
             return div();
         };
+        // An edit picked up from the file while this window was closed is
+        // running but not yet written down; fold it back before anything
+        // reads the config, so what the page shows and what a layout dump
+        // saves are both the text on screen.
+        self.absorb_hot_source(cx);
         let configured = panel.read(cx).chrome().shader.clone();
         // A panel that has never been given a shader reads as off, whatever
         // the default a fresh config would carry.
         let enabled = configured.as_ref().is_some_and(|shader| shader.enabled);
         let shader = configured.unwrap_or_default();
+        // A source that arrived inside a layout or a bundle doesn't run
+        // until it's read and approved here.
+        let pending = (!shader.source.trim().is_empty()
+            && !crate::panel::shader::approved(&shader.source))
+        .then(|| {
+            let source = shader.source.clone();
+            pending_shader(
+                "panel-shader-pending",
+                &shader.source,
+                shader.path.as_deref(),
+                cx.listener(move |this, _, _, cx| {
+                    crate::panel::shader::approve(&source);
+                    // The path named a file on whichever machine wrote the
+                    // bundle. If this one happens to have something there,
+                    // the watch would pull it over the text just approved,
+                    // so an imported shader keeps no bookmark.
+                    this.edit_shader(|shader| shader.path = None, cx);
+                }),
+                cx.listener(|this, _, _, cx| {
+                    this.edit_shader(
+                        |shader| {
+                            shader.source = String::new();
+                            shader.path = None;
+                        },
+                        cx,
+                    )
+                }),
+            )
+        });
         // Only speak up about a compile while the thing is meant to run;
         // a message from before the switch went off is just noise.
         let error = (enabled && shader.runnable())
@@ -1221,12 +1334,40 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex()
             .flex_col()
             .gap(SECTION_GAP)
+            .children(pending.map(|body| section("Awaiting Approval", None, body)))
             .child(section("Shader", None, source))
             .child(section(
                 "Signals",
                 Some(add.into_any_element()),
                 editor.list(cx),
             ))
+    }
+
+    /// Write a hot-reloaded source back into the panel's config, so the
+    /// layout dump carries what's actually running. The wrapper paints from
+    /// a file it can't write back through - it has the panel's id and
+    /// nothing else - so the fold happens here, where the panel is typed.
+    fn absorb_hot_source(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = self.panel.upgrade() else {
+            return;
+        };
+        let Some(hot) = shader::hot_source(panel.entity_id()) else {
+            return;
+        };
+        let stale = panel
+            .read(cx)
+            .chrome()
+            .shader
+            .as_ref()
+            .is_some_and(|shader| shader.source != hot);
+        if stale {
+            panel.update(cx, |panel, cx| {
+                if let Some(shader) = panel.chrome_mut().shader.as_mut() {
+                    shader.source = hot;
+                }
+                cx.notify();
+            });
+        }
     }
 
     /// Edit the panel's shader config, seeding a default one on first
@@ -1283,9 +1424,9 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         .detach();
     }
 
-    /// Re-read the file the shader came from, for edits made outside the
-    /// app. There is no mtime watch on a panel shader the way there is on
-    /// the app-wide one; this button is the authoring loop.
+    /// Re-read the file the shader came from. The panel watches it while it
+    /// draws, so this is for a panel that has been sitting parked, or an
+    /// edit that landed between stats and shouldn't have to wait.
     fn reload_shader(&mut self, cx: &mut Context<Self>) {
         let path = self
             .panel
@@ -1298,10 +1439,15 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
 
     /// Snapshot a file into the panel's shader source. A file that won't
     /// read lands in the same readout a failed compile does.
+    ///
+    /// Picking a file is the user putting the source there, so it approves
+    /// itself on the way in; the gate is for sources that arrive inside a
+    /// layout or a workspace bundle without anyone choosing them.
     fn load_shader_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match std::fs::read_to_string(&path) {
             Ok(source) => self.edit_shader(
                 move |shader| {
+                    crate::panel::shader::approve(&source);
                     shader.source = source;
                     shader.path = Some(path);
                 },
@@ -1655,7 +1801,15 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                     // matter what pages it brings. `page` 0 is Appearance, 1
                     // is Behavior, 2 is Shader, and the panel's own pages
                     // follow at 3..
-                    let picked = self.page.min(pages.len() + 2);
+                    let surface_shader = panel.read(cx).surface_shader();
+                    let mut picked = self.page.min(pages.len() + 2);
+                    // A panel that opted out of the shared page (the Shader
+                    // panel, whose body already is one) keeps the numbering so
+                    // its own pages stay at 3.., but slot 2 falls back to
+                    // Appearance instead of a nav item it doesn't show.
+                    if !surface_shader && picked == 2 {
+                        picked = 0;
+                    }
                     let mut nav = sidebar()
                         .child(settings_ui::nav_item(
                             "Appearance",
@@ -1676,8 +1830,9 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                                 cx.notify();
                             },
                             cx,
-                        ))
-                        .child(settings_ui::nav_item(
+                        ));
+                    if surface_shader {
+                        nav = nav.child(settings_ui::nav_item(
                             "Shader",
                             icons::BLEND,
                             picked == 2,
@@ -1687,6 +1842,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                             },
                             cx,
                         ));
+                    }
                     for (i, &(label, icon)) in pages.iter().enumerate() {
                         let page = i + 3;
                         nav = nav.child(settings_ui::nav_item(

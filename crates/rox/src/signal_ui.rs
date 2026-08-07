@@ -83,8 +83,8 @@ pub fn apply_routes(routes: &[Route], hub: &SignalHub, targets: &mut impl RouteT
         };
         // The span is a share of the knob's own setting: at full signal a
         // route reaches `to` of what the slider says, at silence `from`.
-        // Overshoot past 100% is allowed and the knob's own accessor
-        // clamps it to the range the host will take.
+        // Overshoot past 100% is allowed and the knob's own accessor clamps
+        // it to the range the host will take.
         let factor = (route.from + (route.to - route.from) * signal).max(0.0);
         targets.apply(&route.target, factor);
     }
@@ -129,7 +129,6 @@ struct SignalScrubs {
     hi: ScrubState,
     smooth: ScrubState,
     threshold: ScrubState,
-    glide: ScrubState,
     rate: ScrubState,
 }
 
@@ -311,8 +310,8 @@ pub fn meter(hub: Arc<SignalHub>, id: u64, fill: Rgba, marker: Option<f32>) -> D
                 let value = hub.raw_value(id).unwrap_or(0.0).clamp(0.0, 1.0);
                 // How far the gate is open, read back off the two values
                 // rather than asked for: what leaves over what the engine
-                // holds is exactly the gate. The bar fades with it, so a
-                // glide shows as the bar dimming rather than a switch.
+                // holds is exactly the gate. The bar fades with it, so the
+                // ramp shows as the bar dimming rather than a switch.
                 let open = if value > 1e-4 {
                     (hub.value(id).unwrap_or(0.0) / value).clamp(0.0, 1.0)
                 } else {
@@ -700,7 +699,6 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
     };
     let smooth = signal.smooth.clamp(0.0, 1.0);
     let threshold = signal.threshold();
-    let glide = signal.gate_glide();
     // A total watches a signal rather than a spectrum, so the band, the
     // response and the gate all belong to the signal it follows; its own
     // rows are what it follows and how fast.
@@ -851,8 +849,9 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
             .child(setting_row(
                 "Threshold",
                 Some(
-                    "Under this the signal reads as nothing, so the quiet parts leave \
-                     the knob alone; the mark on the meter above is where it sits",
+                    "Under this the signal reads as nothing, and above it the output \
+                     climbs from zero again, so the quiet parts leave the knob alone; \
+                     the mark on the meter above is where it sits",
                 ),
                 panel::value_slider_edit(
                     &scrubs.threshold,
@@ -875,39 +874,6 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                     cx,
                 ),
             ))
-            // Only with a gate to glide. On an ungated signal the row
-            // would be a knob that does nothing, which reads as broken
-            // rather than as inapplicable.
-            .when(threshold > 0.0, |d| {
-                d.child(setting_row(
-                    "Gate Glide",
-                    Some(
-                        "How long the gate takes to open and shut; 0 switches, which \
-                         snaps the knob to wherever the signal was and chatters when \
-                         the level sits right on the threshold",
-                    ),
-                    panel::value_slider_edit(
-                        &scrubs.glide,
-                        host.value_edit(),
-                        glide,
-                        format!("{}%", (glide * 100.0).round() as i32),
-                        format!("{}", (glide * 100.0).round() as i32),
-                        |v| v / 100.0,
-                        move |this: &mut P, fraction, cx| {
-                            edit_signal(
-                                this.hub(),
-                                id,
-                                |signal| {
-                                    signal.gate_glide = fraction.clamp(0.0, 1.0);
-                                },
-                                cx,
-                            );
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-            })
         })
 }
 

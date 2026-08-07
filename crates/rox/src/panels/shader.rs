@@ -19,10 +19,9 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use gpui::{
-    canvas, div, prelude::*, px, AnyElement, App, Context, Div, EntityId, EventEmitter,
+    canvas, div, prelude::*, px, svg, AnyElement, App, Context, Div, EntityId, EventEmitter,
     FocusHandle, Focusable, PathPromptOptions, SharedString, Subscription, UserShaderId,
     WeakEntity, Window,
 };
@@ -38,26 +37,19 @@ use crate::design::{palette, tokens};
 // The surface-shader module, whose helpers this panel shares. Aliased
 // because this file is `panels::shader` and that one is `panel::shader`,
 // one letter apart.
-use crate::panel::shader::{self as surface, SlotTargets};
-use crate::panel::{self, setting_row, toggle, AppState, PanelChrome, PanelSettings, ValueEdit};
+use crate::panel::shader::{self as surface, SlotTargets, SourceWatch};
+use crate::panel::{
+    self, setting_row, toggle, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit,
+};
 use crate::panel_settings;
 use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
-use crate::signal_ui::{
-    self, routes::RouteEditState, RouteHost, RouteTargets, SignalHost, SignalUi,
-};
+use crate::signal_ui::{self, routes::RouteEditState, RouteTargets};
 
 /// The builtin shaders, so a fresh panel draws something before anyone has
-/// written a line of WGSL. One of each kind on purpose: Plasma is a pure
-/// primitive, Trails reads its own last frame and proves the region pass.
-const PLASMA: &str = include_str!("shader/plasma.wgsl");
-const TRAILS: &str = include_str!("shader/trails.wgsl");
-
-const PRESETS: &[(&str, &str)] = &[("Plasma", PLASMA), ("Trails", TRAILS)];
-
-/// How often the file watch stats the source, while the panel is drawing.
-/// One syscall a second rather than one a frame, the app-wide screen
-/// shader's driver cadence.
-const RELOAD_EVERY: Duration = Duration::from_secs(1);
+/// written a line of WGSL. They live beside the surface shader's pieces
+/// because the approval gate has to know them: what ships with the binary
+/// runs without anybody agreeing to it a second time.
+use surface::{PLASMA, PRESETS};
 
 /// How much of a compile message the panel body shows. naga points at the
 /// offending span with a caret line, which is the useful part; the rest is
@@ -83,6 +75,13 @@ pub struct ShaderConfig {
     /// Attachments of the app's shared signals onto the shader's slots. A
     /// route whose signal is gone from the pool leaves its slot at zero.
     pub routes: Vec<Route>,
+    /// Hand-set slot values, from the Bindings page's slot rows: what a
+    /// slot reads with no route feeding it, which is how a shader's named
+    /// parameters get tweaked without a signal in sight. A route on the
+    /// same slot wins while it's there; the hand-set value comes back when
+    /// it goes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub manual: Vec<(u8, f32)>,
     /// Keep asking for frames while the audio is silent. Off, the shader
     /// parks where it stands and the panel costs nothing, which is the
     /// freeze-on-pause value the other visualizers hold.
@@ -96,7 +95,39 @@ impl Default for ShaderConfig {
             source: PLASMA.to_string(),
             path: None,
             routes: Vec::new(),
+            manual: Vec::new(),
             run_when_idle: false,
+        }
+    }
+}
+
+/// The hand-set value a slot holds, if one was set. The page reads slots
+/// through the resolver, which sees these as seeds, so only the tests ask
+/// directly.
+#[cfg(test)]
+fn manual_value(manual: &[(u8, f32)], slot: usize) -> Option<f32> {
+    manual
+        .iter()
+        .find(|(at, _)| *at as usize == slot)
+        .map(|(_, value)| *value)
+}
+
+/// Set or replace a slot's hand-set value.
+fn set_manual_value(manual: &mut Vec<(u8, f32)>, slot: usize, value: f32) {
+    let value = value.clamp(0.0, 1.0);
+    match manual.iter_mut().find(|(at, _)| *at as usize == slot) {
+        Some(entry) => entry.1 = value,
+        None => manual.push((slot as u8, value)),
+    }
+}
+
+/// Lay the hand-set values into the slots before the routes resolve over
+/// them: a route wins while it's there, and the hand-set value holds the
+/// slot when it isn't.
+fn seed_manual(targets: &mut SlotTargets, manual: &[(u8, f32)]) {
+    for (slot, value) in manual {
+        if let Some(entry) = targets.slots.get_mut(*slot as usize) {
+            *entry = value.clamp(0.0, 1.0);
         }
     }
 }
@@ -112,6 +143,10 @@ struct Compiled {
     /// Whether an attempt has happened at all. A fresh panel and a panel
     /// whose shader hashes to zero are otherwise the same thing.
     ran: bool,
+    /// What paints: the current source's registration, or the last one that
+    /// compiled while a fresh edit is broken. An authoring loop saves
+    /// half-written files constantly, and a panel that blanks on each of
+    /// them is unusable.
     shader: Option<UserShaderId>,
     /// What registration said, verbatim from naga. None on a clean compile.
     error: Option<String>,
@@ -125,31 +160,19 @@ fn source_hash(source: &str) -> u64 {
     hasher.finish()
 }
 
-/// The hot-reload watch on the config's path.
-#[derive(Default)]
-struct Watch {
-    /// The file's size and mtime when it was last read.
-    stamp: Option<(u64, i64)>,
-    /// Whether a stamp has been taken since this source was set. The first
-    /// check re-reads whatever the stamp says, so an edit made while rox
-    /// was closed lands on open rather than on the edit after it.
-    seeded: bool,
-    /// The last stat, so the check costs a syscall a second.
-    checked: Option<Instant>,
-}
-
 pub struct ShaderPanel {
     state: AppState,
     config: ShaderConfig,
     feed: Arc<AudioFeed>,
     compiled: Arc<Mutex<Compiled>>,
-    watch: Watch,
-    /// The shared route and pool widgets' state, kept in step with the
-    /// lists by [`signal_ui::sync`] on every settings render.
-    signal_ui: SignalUi,
+    /// The hot-reload watch on the config's path, the same one a panel's
+    /// surface shader wears.
+    watch: SourceWatch,
     /// The Bindings page's route editor state: span sliders and which rows
     /// stand open. Not config - the fold is where you are in the page.
     routes_ui: RouteEditState,
+    /// One scrub per slot row, for the hand-set values on unrouted slots.
+    slot_scrubs: Vec<ScrubState>,
     /// The one readout being typed into across all the settings sliders.
     value_edit: ValueEdit,
     focus: FocusHandle,
@@ -169,9 +192,9 @@ impl ShaderPanel {
             state,
             config,
             compiled: Arc::new(Mutex::new(Compiled::default())),
-            watch: Watch::default(),
-            signal_ui: SignalUi::default(),
+            watch: SourceWatch::default(),
             routes_ui: RouteEditState::default(),
+            slot_scrubs: (0..surface::SLOTS).map(|_| ScrubState::default()).collect(),
             value_edit: ValueEdit::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
@@ -183,51 +206,81 @@ impl ShaderPanel {
     /// render, which the player's pump drives, so the watch runs while
     /// there is anything to watch it for; a parked panel reloads on the
     /// button instead.
+    ///
+    /// A source still waiting on approval doesn't reload: the path arrived
+    /// with it, and reading a file a bundle chose would be trusting the
+    /// bundle by the back door.
     fn poll_reload(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.config.path.clone() else {
             return;
         };
-        let now = Instant::now();
-        if self
-            .watch
-            .checked
-            .is_some_and(|last| now.duration_since(last) < RELOAD_EVERY)
-        {
+        if self.pending() {
             return;
         }
-        self.watch.checked = Some(now);
-        let Some(stamp) = crate::settings::file_stamp(&path) else {
-            // Gone, or not a file at all. The inline source keeps running,
-            // which is the whole reason it's inline, and the watch stays
-            // armed for the file coming back.
-            return;
-        };
-        if self.watch.seeded && self.watch.stamp == Some(stamp) {
-            return;
-        }
-        self.watch.seeded = true;
-        self.watch.stamp = Some(stamp);
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            return;
-        };
-        if source != self.config.source {
-            self.set_source(source, Some(path), cx);
+        if let Some(source) = self.watch.poll(&path) {
+            if source != self.config.source {
+                self.set_source(source, Some(path), cx);
+            }
         }
     }
 
     /// Put a new source in place and forget everything about the last one:
     /// its compile message was about text that just left, and its file
-    /// stamp would have the watch pull the old file back over it.
+    /// stamp would have the watch pull the old file back over it. The
+    /// registration stands until the new source compiles, so a save from an
+    /// editor mid-edit shows its error over the shader that was running
+    /// rather than a blank panel.
+    ///
+    /// Every caller is the user putting the source there - a preset, a file
+    /// they picked, a reload, an edit under a file they pointed rox at - so
+    /// this is where a source earns its approval.
     fn set_source(&mut self, source: String, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        surface::approve(&source);
+        let cleared = source.trim().is_empty();
         self.config.source = source;
         self.config.path = path.clone();
-        self.watch = Watch {
-            stamp: path.as_deref().and_then(crate::settings::file_stamp),
-            seeded: path.is_some(),
-            checked: Some(Instant::now()),
-        };
+        self.watch = SourceWatch::seeded(path.as_deref());
+        {
+            let mut compiled = self.compiled.lock().unwrap();
+            // A cleared source leaves nothing to keep on screen; any other
+            // one holds the last good registration until it has its own.
+            let keep = if cleared { None } else { compiled.shader };
+            *compiled = Compiled {
+                shader: keep,
+                ..Compiled::default()
+            };
+        }
+        cx.notify();
+    }
+
+    /// Whether the source is waiting on approval: it arrived inside a
+    /// layout or a workspace bundle and nobody on this machine has agreed
+    /// to run it yet.
+    fn pending(&self) -> bool {
+        !surface::approved(&self.config.source)
+    }
+
+    /// Agree to run what the config carries. The one button that puts a
+    /// hash in the approved list without the source having come from a file
+    /// or a preset.
+    ///
+    /// The path goes: it named a file on whichever machine wrote the
+    /// bundle, and if this one happens to have something at that path, the
+    /// watch would pull it straight over the text just approved. Picking a
+    /// file again is how an imported shader gets a local one.
+    fn approve(&mut self, cx: &mut Context<Self>) {
+        surface::approve(&self.config.source);
+        self.config.path = None;
+        self.watch = SourceWatch::default();
         *self.compiled.lock().unwrap() = Compiled::default();
         cx.notify();
+    }
+
+    /// Throw the pending source away. The path goes with it: it points at
+    /// whatever the bundle pointed at, and keeping it would leave Reload
+    /// aimed there.
+    fn discard(&mut self, cx: &mut Context<Self>) {
+        self.set_source(String::new(), None, cx);
     }
 
     /// Snapshot a file into the panel's source. A file that won't read
@@ -292,6 +345,15 @@ impl ShaderPanel {
                 "Pick a preset or a .wgsl file on this panel's Source settings page.".to_string(),
             ]);
         }
+        if self.pending() {
+            return Some(vec![
+                "This shader is awaiting approval.".to_string(),
+                "It arrived with a layout or a workspace rather than from this machine, \
+                 so it doesn't run until you've read it."
+                    .to_string(),
+                "Read it and approve it on this panel's Source settings page.".to_string(),
+            ]);
+        }
         let error = self.compiled.lock().unwrap().error.clone()?;
         // naga's message runs several lines, with a caret under the span it
         // is complaining about. They have to stay lines: one text element
@@ -304,41 +366,15 @@ impl ShaderPanel {
     }
 }
 
-/// The shared route and pool widgets read this panel through the trait: its
-/// routes are per-view config, its widget state the embedded bundle.
-impl SignalHost for ShaderPanel {
-    fn hub(&self) -> &Arc<rox_viz::signal::SignalHub> {
-        &self.state.signals
-    }
-
-    fn routes(&self) -> &[Route] {
-        &self.config.routes
-    }
-
-    fn signal_ui(&self) -> &SignalUi {
-        &self.signal_ui
-    }
-
-    fn signal_ui_mut(&mut self) -> &mut SignalUi {
-        &mut self.signal_ui
-    }
-
-    fn value_edit(&self) -> &ValueEdit {
-        &self.value_edit
-    }
-}
-
-/// The routes are this view's own, unlike the pool they ride: two shader
-/// panels bind their own slots to the same signals.
-impl RouteHost for ShaderPanel {
-    fn routes_mut(&mut self) -> &mut Vec<Route> {
-        &mut self.config.routes
-    }
-}
-
 impl PanelSettings for ShaderPanel {
     fn state(&self) -> AppState {
         self.state.clone()
+    }
+
+    // The body already is a shader; offering a second one over it reads
+    // as a mistake.
+    fn surface_shader(&self) -> bool {
+        false
     }
 
     fn chrome(&self) -> &PanelChrome {
@@ -356,15 +392,10 @@ impl PanelSettings for ShaderPanel {
     }
 
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
-        // Signals is here, unlike on the particles panel, because this is
-        // the one panel where the pool is the entire input: a shader with
-        // nothing routed is sixteen zeroes, so tuning the pool and binding
-        // it are the same sitting.
-        &[
-            ("Source", icons::BLEND),
-            ("Bindings", icons::SLIDERS),
-            ("Signals", icons::AUDIO_WAVEFORM),
-        ]
+        // No Signals page: the pool is app-global and edits in the Signals
+        // window, same as everywhere else. Bindings points there when the
+        // pool is empty.
+        &[("Source", icons::BLEND), ("Bindings", icons::SLIDERS)]
     }
 
     fn page(
@@ -373,12 +404,8 @@ impl PanelSettings for ShaderPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Any page can host a route's tuning rows, so the route and signal
-        // slider state syncs here rather than per page.
-        signal_ui::sync(self);
         match page {
             "Bindings" => self.bindings_page(cx).into_any_element(),
-            "Signals" => signal_ui::signals_page(self, cx).into_any_element(),
             _ => self.source_page(cx).into_any_element(),
         }
     }
@@ -392,6 +419,15 @@ impl ShaderPanel {
         let path = self.config.path.clone();
         let error = self.compiled.lock().unwrap().error.clone();
         let run_when_idle = self.config.run_when_idle;
+        let pending = self.pending().then(|| {
+            panel_settings::pending_shader(
+                "shader-panel-pending",
+                &source,
+                path.as_deref(),
+                cx.listener(|this, _, _, cx| this.approve(cx)),
+                cx.listener(|this, _, _, cx| this.discard(cx)),
+            )
+        });
 
         let mut presets = div().flex().flex_row().flex_wrap().gap(px(1.));
         for (index, (label, preset)) in PRESETS.iter().enumerate() {
@@ -481,6 +517,7 @@ impl ShaderPanel {
             .flex()
             .flex_col()
             .gap(SECTION_GAP)
+            .children(pending.map(|body| section("Awaiting Approval", None, body)))
             .child(section("Shader", None, shader))
             .child(section("Writing One", None, conventions()))
     }
@@ -494,6 +531,7 @@ impl ShaderPanel {
         // This frame's resolved values, so the readout says what is
         // actually reaching the shader rather than what was set.
         let mut resolved = SlotTargets::default();
+        seed_manual(&mut resolved, &self.config.manual);
         signal_ui::apply_routes(&self.config.routes, &self.state.signals, &mut resolved);
         self.routes_ui.sync(self.config.routes.len());
 
@@ -515,10 +553,11 @@ impl ShaderPanel {
         };
         let add = editor.add_button(cx);
 
-        // The slot table stays read-only. Every slot the shader can read is
-        // worth showing whether anything feeds it or not - that's what says
-        // where a value lands in the WGSL - but binding one happens in the
-        // route list above, where the whole list is in view at once.
+        // Every slot the shader can read is worth showing whether anything
+        // feeds it or not - that's what says where a value lands in the
+        // WGSL. A slot a route feeds shows the live value it's getting; one
+        // nothing feeds is a hand-set knob, typed or dragged, which is how
+        // a shader's named parameters get exposed without a signal.
         let mut slots = div().flex().flex_col().gap(tokens::SPACE_MD);
         for (slot, (_, label)) in SlotTargets::labelled(&self.config.source)
             .targets()
@@ -526,10 +565,30 @@ impl ShaderPanel {
             .enumerate()
         {
             let value = resolved.slots.get(slot).copied().unwrap_or(0.0);
+            let routed =
+                self.config.routes.iter().any(|route| {
+                    route.enabled && surface::target_slot(&route.target) == Some(slot)
+                });
+            let control = match (routed, self.slot_scrubs.get(slot)) {
+                (false, Some(scrub)) => panel::value_slider_edit(
+                    scrub,
+                    &self.value_edit,
+                    value,
+                    format!("{value:.2}"),
+                    format!("{value:.2}"),
+                    |typed| typed,
+                    move |this: &mut Self, fraction, cx| {
+                        set_manual_value(&mut this.config.manual, slot, fraction);
+                        cx.notify();
+                    },
+                    cx,
+                ),
+                _ => slot_readout(value),
+            };
             slots = slots.child(panel::setting_row_dyn(
                 label,
                 Some(slot_accessor(slot).into()),
-                slot_readout(value),
+                control,
             ));
         }
 
@@ -578,9 +637,11 @@ fn slot_accessor(slot: usize) -> String {
     format!("params.signals[{}].{lane}", slot / 4)
 }
 
-/// A slot's live value, standing in for the knob a bindable row usually
-/// wraps. A shader slot has no slider of its own: the route is the whole
-/// value, so what belongs here is a readout rather than a control.
+/// A routed slot's live value. While a route feeds the slot, the route is
+/// the whole value, so what belongs here is a readout rather than a
+/// control; the unrouted slots get the hand-set slider instead. The signal
+/// glyph up front is what says "connected" at a glance against the sliders
+/// around it.
 fn slot_readout(value: f32) -> Div {
     const BAR: f32 = 64.0;
     div()
@@ -588,6 +649,13 @@ fn slot_readout(value: f32) -> Div {
         .flex_row()
         .items_center()
         .gap(tokens::SPACE_XS)
+        .child(
+            svg()
+                .path(icons::AUDIO_WAVEFORM)
+                .size(px(12.))
+                .flex_none()
+                .text_color(palette::accent()),
+        )
         .child(
             div()
                 .w(px(28.))
@@ -722,9 +790,12 @@ impl Panel for ShaderPanel {
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let menu = self.preset_menu(menu, window, cx);
+        // Icon on the row so it lines up with Rename and the rest of the tail
+        // and the tick lands on the right, the way every other top-level
+        // check row in the app reads. The icon-less form is for flyouts.
         let menu = menu.item(panel::check_row(
             "Run When Idle",
-            None,
+            Some(icons::CLOCK),
             |this: &Self| this.config.run_when_idle,
             |this: &mut Self, _| this.config.run_when_idle = !this.config.run_when_idle,
             &cx.entity(),
@@ -769,8 +840,15 @@ impl ShaderPanel {
         let track = self.state.player.read(cx).playing_entry();
         let note = self.body_note();
 
-        let source = self.config.source.clone();
+        // A source waiting on approval never reaches registration: the
+        // canvas paints nothing and the body carries the note above.
+        let source = if self.pending() {
+            String::new()
+        } else {
+            self.config.source.clone()
+        };
         let routes = self.config.routes.clone();
+        let manual = self.config.manual.clone();
         let run_when_idle = self.config.run_when_idle;
         let hub = self.state.signals.clone();
         let feed = self.feed.clone();
@@ -791,6 +869,7 @@ impl ShaderPanel {
                             cx,
                             &source,
                             &routes,
+                            &manual,
                             run_when_idle,
                             &hub,
                             &feed,
@@ -829,6 +908,7 @@ fn paint(
     cx: &mut App,
     source: &str,
     routes: &[Route],
+    manual: &[(u8, f32)],
     run_when_idle: bool,
     hub: &Arc<rox_viz::signal::SignalHub>,
     feed: &AudioFeed,
@@ -848,6 +928,10 @@ fn paint(
             // every frame. So a broken source is tried once and the answer
             // kept until the text moves.
             let previous = compiled.error.take();
+            // What's on screen stays on screen through a failed compile:
+            // the message lands in the body over a shader that still runs,
+            // which is what makes saving from an editor bearable.
+            let good = compiled.shader;
             *compiled = match window.register_user_shader(source) {
                 Ok(shader) => Compiled {
                     source: hash,
@@ -858,7 +942,7 @@ fn paint(
                 Err(message) => Compiled {
                     source: hash,
                     ran: true,
-                    shader: None,
+                    shader: good,
                     error: Some(message),
                 },
             };
@@ -878,6 +962,7 @@ fn paint(
     };
 
     let mut targets = SlotTargets::default();
+    seed_manual(&mut targets, manual);
     // The tick is deduped inside the hub, so several panels riding the pool
     // cost one.
     hub.tick(feed, track);
@@ -912,6 +997,9 @@ fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The other builtin, checked here for the paint path it covers. Both
+    // live with the gate now, since the gate is what has to know them.
+    use surface::TRAILS;
 
     /// The one thing a source has to define, in the shape the template
     /// calls it by.
@@ -944,6 +1032,7 @@ mod tests {
                     to: 2.0,
                 },
             ],
+            manual: vec![(3, 0.5)],
             run_when_idle: true,
         }
     }
@@ -967,6 +1056,39 @@ mod tests {
         assert!(!read.routes[1].enabled);
         assert_eq!(read.routes[1].target, "slot11");
         assert_eq!(read.routes[1].to, 2.0);
+        assert_eq!(read.manual, vec![(3, 0.5)]);
+    }
+
+    #[test]
+    fn hand_set_values_hold_slots_no_route_feeds() {
+        let mut manual = Vec::new();
+        set_manual_value(&mut manual, 3, 0.5);
+        set_manual_value(&mut manual, 0, 2.0);
+        // A second write replaces, and typed values clamp to the slot's
+        // 0..1.
+        set_manual_value(&mut manual, 3, 0.75);
+        assert_eq!(manual_value(&manual, 3), Some(0.75));
+        assert_eq!(manual_value(&manual, 0), Some(1.0));
+        assert_eq!(manual_value(&manual, 5), None);
+
+        // Seeded under the routes: a live route writes over its slot, the
+        // hand-set value holds the ones nothing feeds.
+        let hub = rox_viz::signal::SignalHub::new(Vec::new());
+        let routes = vec![Route {
+            enabled: true,
+            signal: 1,
+            target: surface::slot_target(0),
+            from: 0.0,
+            to: 1.0,
+        }];
+        let mut targets = SlotTargets::default();
+        seed_manual(&mut targets, &manual);
+        signal_ui::apply_routes(&routes, &hub, &mut targets);
+        // The route's signal is gone from the pool, so it contributes
+        // nothing and the seed survives even on the routed slot.
+        assert_eq!(targets.slots[0], 1.0);
+        assert_eq!(targets.slots[3], 0.75);
+        assert_eq!(targets.slots[5], 0.0);
     }
 
     #[test]
@@ -978,6 +1100,7 @@ mod tests {
         assert_eq!(read.source, PLASMA);
         assert!(read.path.is_none());
         assert!(read.routes.is_empty());
+        assert!(read.manual.is_empty());
         assert!(!read.run_when_idle);
     }
 

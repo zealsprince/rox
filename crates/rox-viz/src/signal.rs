@@ -111,14 +111,12 @@ pub struct Signal {
     /// signal's own output, 0 for no gate. What it buys is silence between
     /// the hits - a band riding room tone holds every knob on it slightly
     /// off its slider forever, and a gate is how the quiet parts get to be
-    /// quiet.
+    /// quiet. Above the threshold the output isn't the raw value but a
+    /// smoothstep of it across what's left of the range, 0 at the cross
+    /// and 1 at full scale, so clearing the gate hands over nothing rather
+    /// than a jump, and a level hovering right on it ripples instead of
+    /// strobing.
     pub threshold: f32,
-    /// How long the gate takes to open and shut, 0 to 1, 0 for a hard
-    /// switch. The gate is a factor the value passes through rather than a
-    /// branch on it, so this glides the factor: without it a signal
-    /// crossing the threshold jumps to whatever it happened to be at, and
-    /// one hovering right on the threshold strobes.
-    pub gate_glide: f32,
     /// Aggregates only: drain back to zero when the track changes, so a
     /// phase doesn't carry a song's worth of accumulation into the next
     /// one. A drain rather than a snap, since a shader riding the phase
@@ -137,10 +135,6 @@ impl Default for Signal {
             },
             smooth: 0.3,
             threshold: 0.0,
-            // A hard gate by default: a threshold with no glide does
-            // exactly what its own row says it does, and the glide is
-            // something asked for rather than discovered.
-            gate_glide: 0.0,
             reset_on_track: false,
         }
     }
@@ -163,8 +157,23 @@ impl Signal {
         self.threshold.clamp(0.0, 1.0)
     }
 
-    pub fn gate_glide(&self) -> f32 {
-        self.gate_glide.clamp(0.0, 1.0)
+    /// The gate's transfer: what leaves for a running value. Ungated
+    /// passes exactly, so a signal nobody thresholded costs nothing and
+    /// loses nothing. Gated remaps the span above the threshold to the
+    /// whole output, through a smoothstep so both ends land flat: the
+    /// cross hands over zero rather than a jump, and full scale still
+    /// reads as full. A pure curve of the value, no state, which is what
+    /// lets the value's own smoothing be the only clock involved.
+    pub fn gated(&self, value: f32) -> f32 {
+        let threshold = self.threshold();
+        if threshold <= 0.0 {
+            return value;
+        }
+        // The span floor keeps a threshold parked at 1.0 a switch rather
+        // than a divide by zero.
+        let span = (1.0 - threshold).max(1e-3);
+        let x = ((value - threshold) / span).clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
     }
 
     /// The picker's face for this signal: the given name, or a label
@@ -244,13 +253,6 @@ const ONSET_REF_RELEASE: f32 = 2.0;
 const ONSET_MARGIN: f32 = 0.12;
 const ONSET_FLOOR: f32 = 0.15;
 
-/// The per-second rates the gate's glide knob spans, interpolated
-/// exponentially like the response knob's. The fast end is a couple of
-/// frames, which takes the click off a switch without being a fade; the
-/// slow end is most of a second, a swell.
-const GATE_FAST: f32 = 25.0;
-const GATE_SLOW: f32 = 1.5;
-
 /// How fast a flushed aggregate falls back to zero, and how near zero ends
 /// the fall. Quick enough to read as the cycle collapsing rather than as a
 /// slow fade, slow enough that a shader riding the phase doesn't pop.
@@ -269,16 +271,10 @@ struct Slot {
     /// change, cleared when it lands. Accumulation pauses while it drains,
     /// so a flush during a loud passage still gets there.
     draining: bool,
-    /// How far the gate is open, 0 shut and 1 through. What leaves the
-    /// engine is `value * gate`, so an ungated signal (threshold 0) is
-    /// pinned at 1 and costs a comparison. Held here rather than derived
-    /// at read time because a glide is state: it's where the gate got to,
-    /// not what the value is.
-    ///
-    /// A fresh slot starts shut, since a fresh value starts at zero and
-    /// that's under any gate worth having. The ungated case is pinned open
-    /// on its first pass, so nothing fades in that shouldn't.
-    gate: f32,
+    /// What actually leaves the slot: the value through its signal's gate
+    /// curve. Written on the tick rather than derived at read time only
+    /// because the readers don't carry the pool; it's a cache, not state.
+    output: f32,
 }
 
 impl Default for Slot {
@@ -288,7 +284,7 @@ impl Default for Slot {
             reference: 0.0,
             armed: true,
             draining: false,
-            gate: 0.0,
+            output: 0.0,
         }
     }
 }
@@ -314,10 +310,10 @@ impl Signals {
     }
 
     /// What actually leaves the signal: the running value through its
-    /// gate. Everything downstream reads this; [`Signals::value`] is for
-    /// the meter, which draws what the gate is holding back.
+    /// gate curve. Everything downstream reads this; [`Signals::value`]
+    /// is for the meter, which draws what the gate is holding back.
     pub fn output(&self, id: u64) -> Option<f32> {
-        self.slots.get(&id).map(|slot| slot.value * slot.gate)
+        self.slots.get(&id).map(|slot| slot.output)
     }
 
     /// Fold one frame into the signals. `mags` is the newest half-spectrum
@@ -395,25 +391,10 @@ impl Signals {
         // source is actually putting out this frame rather than last
         // frame's opening.
         for signal in pool {
-            let threshold = signal.threshold();
             let Some(slot) = self.slots.get_mut(&signal.id) else {
                 continue;
             };
-            // No gate is the common case and stays exact: a signal nobody
-            // thresholded passes whole from the first frame rather than
-            // gliding up from nothing.
-            if threshold <= 0.0 {
-                slot.gate = 1.0;
-                continue;
-            }
-            let target = if slot.value >= threshold { 1.0 } else { 0.0 };
-            let glide = signal.gate_glide();
-            if glide <= 0.0 {
-                slot.gate = target;
-                continue;
-            }
-            let rate = GATE_FAST * (GATE_SLOW / GATE_FAST).powf(glide);
-            slot.gate += (target - slot.gate) * (rate * dt).min(1.0);
+            slot.output = signal.gated(slot.value);
         }
         // Third pass: the aggregates, reading what the sources landed on
         // this frame. An aggregate pointed at another aggregate reads last
@@ -427,7 +408,7 @@ impl Signals {
                 .slots
                 .get(&of)
                 .filter(|_| of != signal.id)
-                .map_or(0.0, |slot| slot.value * slot.gate);
+                .map_or(0.0, |slot| slot.output);
             let slot = self.slots.entry(signal.id).or_default();
             if slot.draining {
                 slot.value -= slot.value * (FLUSH_DRAIN * dt).min(1.0);
@@ -435,12 +416,15 @@ impl Signals {
                     slot.value = 0.0;
                     slot.draining = false;
                 }
-                continue;
+            } else {
+                // Wrapped rather than grown: a phase keeps every bit of
+                // its precision however long the app is up, and a shader
+                // reading it through a sine runs straight across the seam.
+                slot.value = (slot.value + input * rate * dt).fract();
             }
-            // Wrapped rather than grown: a phase keeps every bit of its
-            // precision however long the app is up, and a shader reading
-            // it through a sine runs straight across the seam.
-            slot.value = (slot.value + input * rate * dt).fract();
+            // Behind the value move, so the total's own output is this
+            // frame's rather than the gate pass's stale read.
+            slot.output = signal.gated(slot.value);
         }
     }
 
@@ -575,9 +559,7 @@ impl SignalHub {
 
     /// The signal's current value with its gate applied, `None` for an id
     /// the pool doesn't carry. Everything riding a signal reads it through
-    /// here, so the gate lands on routes, meters and the shader alike. The
-    /// gate moves on the tick rather than the read, since a glide is
-    /// something that takes time by definition.
+    /// here, so the gate lands on routes, meters and the shader alike.
     pub fn value(&self, id: u64) -> Option<f32> {
         self.inner.lock().unwrap().engine.output(id)
     }
@@ -765,7 +747,7 @@ mod tests {
 
         // Gated above where it sits: nothing leaves, and what the engine
         // holds is untouched, so lifting the gate restores it at once.
-        // Hard gate here, so one frame is the whole story.
+        // The curve is stateless, so one frame is the whole story.
         quiet.threshold = ungated + 0.1;
         hub.set_pool(vec![quiet.clone()]);
         run(1);
@@ -778,44 +760,44 @@ mod tests {
         quiet.threshold = ungated - 0.01;
         hub.set_pool(vec![quiet]);
         run(1);
+        let out = hub.value(1).unwrap();
         assert!(
-            (hub.value(1).unwrap() - ungated).abs() < 1e-4,
-            "over the gate passes whole"
+            out > 0.0 && out < ungated * 0.5,
+            "just over the gate leaves a whisper, not the whole value, got {out}"
         );
     }
 
     #[test]
-    fn a_glided_gate_ramps_where_a_hard_one_switches() {
+    fn the_gate_ramps_from_nothing_at_the_cross_to_whole_at_full_scale() {
+        let signal = Signal {
+            threshold: 0.5,
+            ..band(1, 800.0, 2000.0)
+        };
+        assert_eq!(signal.gated(0.5), 0.0, "the cross hands over nothing");
+        assert_eq!(signal.gated(1.0), 1.0, "full scale still reads as full");
+        let mid = signal.gated(0.75);
+        assert!(
+            (mid - 0.5).abs() < 1e-4,
+            "halfway up the span is halfway out, got {mid}"
+        );
+        let low = signal.gated(0.55);
+        assert!(
+            low > 0.0 && low < 0.1,
+            "just over the cross eases in rather than jumping, got {low}"
+        );
+        // And through the engine: a loud band over a mid gate still lands
+        // wide open, since the remap tops out where the value does.
         let mut engine = Signals::new();
         let mut mags = vec![0.0f32; 2048];
         mags[100] = 1.0;
-        // Same band, same gate, one switching and one gliding.
-        let gated = |id: u64, glide: f32| Signal {
-            threshold: 0.5,
-            gate_glide: glide,
-            ..band(id, 800.0, 2000.0)
-        };
-        let pool = vec![gated(1, 0.0), gated(2, 0.5)];
-        engine.step(Some(&mags), 48_000, false, 0.016, &pool);
-        let raw = engine.value(2).unwrap();
-        assert!(raw > 0.5, "the band should already be over the gate");
-        assert_eq!(
-            engine.output(1),
-            Some(raw),
-            "a hard gate is all the way open on the frame it opens"
-        );
-        let opening = engine.output(2).unwrap();
-        assert!(
-            opening > 0.0 && opening < raw * 0.5,
-            "a glided gate should still be on its way up, got {opening}"
-        );
-        for _ in 0..60 {
+        let pool = vec![signal];
+        for _ in 0..30 {
             engine.step(Some(&mags), 48_000, false, 0.016, &pool);
         }
-        let open = engine.output(2).unwrap();
+        let open = engine.output(1).unwrap();
         assert!(
-            (open - engine.value(2).unwrap()).abs() < 0.02,
-            "it should land wide open, got {open}"
+            open > 0.9,
+            "a pinned band should clear the whole ramp, got {open}"
         );
     }
 
@@ -917,6 +899,23 @@ mod tests {
         let mags = vec![0.0f32; 1024];
         let pool = vec![band(1, 5000.0, 40.0), band(2, -10.0, 1e9)];
         engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+    }
+
+    /// A route on disk has to come back as exactly what it was, byte for
+    /// byte, or every saved layout and settings file drifts on load.
+    #[test]
+    fn route_json_round_trips_unchanged() {
+        let old = r#"{"enabled":true,"signal":7,"target":"slot3","from":0.25,"to":1.5}"#;
+        let route: Route = serde_json::from_str(old).unwrap();
+        assert!(route.enabled);
+        assert_eq!(route.signal, 7);
+        assert_eq!(route.target, "slot3");
+        assert_eq!((route.from, route.to), (0.25, 1.5));
+        assert_eq!(serde_json::to_string(&route).unwrap(), old);
+
+        // A partial route, the other shape a hand-edited file takes.
+        let sparse: Route = serde_json::from_str(r#"{"target":"slot0"}"#).unwrap();
+        assert_eq!(sparse.signal, 0);
     }
 
     #[test]

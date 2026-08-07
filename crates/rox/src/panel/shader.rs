@@ -11,10 +11,11 @@
 //! count on.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
+use std::time::{Duration, Instant};
 
-use gpui::{App, Bounds, EntityId, Global, Pixels, WeakEntity, Window, WindowId};
+use gpui::{App, Bounds, EntityId, Global, Pixels, UserShaderId, WeakEntity, Window, WindowId};
 use serde::{Deserialize, Serialize};
 
 use rox_viz::signal::{Route, SignalHub};
@@ -26,6 +27,21 @@ use super::{AppState, PanelChrome};
 
 /// How many signal slots a shader sees, the uniform block's width.
 pub const SLOTS: usize = 16;
+
+/// The builtins, shared by both shader surfaces: the Shader panel offers
+/// them as presets, and the gate below trusts them by construction. One of
+/// each kind on purpose - Plasma is a pure primitive, Trails reads its own
+/// last frame and proves the region pass.
+pub const PLASMA: &str = include_str!("../panels/shader/plasma.wgsl");
+pub const TRAILS: &str = include_str!("../panels/shader/trails.wgsl");
+
+pub const PRESETS: &[(&str, &str)] = &[("Plasma", PLASMA), ("Trails", TRAILS)];
+
+/// How often a watched source file gets stat'd while its surface draws.
+/// Twice a second: fast enough that a save in the editor lands before the
+/// hand is back on the mouse, slow enough to be one syscall rather than one
+/// a frame.
+pub const RELOAD_EVERY: Duration = Duration::from_millis(500);
 
 /// A panel's surface shader as it persists: the source text inline, the
 /// file it was last loaded from, and the routes feeding its slots.
@@ -68,6 +84,104 @@ impl PanelShader {
     /// Whether there is anything to paint: switched on with source text.
     pub fn runnable(&self) -> bool {
         self.enabled && !self.source.trim().is_empty()
+    }
+}
+
+/// A source's identity in the approved list: hex SHA-256 of the trimmed
+/// text. Trimmed so an editor's trailing newline isn't a different program,
+/// and hashed rather than stored so the list stays a few lines whatever the
+/// shaders weigh.
+pub fn fingerprint(source: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(source.trim().as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Whether a source is one the app ships. Builtins are approved by
+/// construction: they came with the binary, so a list entry would only be a
+/// second copy of a decision already made by installing rox.
+pub fn builtin(source: &str) -> bool {
+    let source = source.trim();
+    PRESETS.iter().any(|(_, preset)| preset.trim() == source)
+}
+
+/// Whether this source may run on this machine.
+///
+/// Shaders ride layout dumps and workspace bundles as inline WGSL, so
+/// applying somebody else's look hands rox somebody else's code. Nothing
+/// registers until its hash is in the machine-local approved list, which
+/// only a direct action writes to: a file pick, a reload, a preset, or the
+/// Approve button on the panel's settings page. An empty source reads as
+/// approved because there is nothing to run.
+pub fn approved(source: &str) -> bool {
+    source.trim().is_empty()
+        || builtin(source)
+        || crate::settings::shader_approved(&fingerprint(source))
+}
+
+/// Record a source as approved, on this machine and on disk. Every path
+/// where the user themselves put the source there calls this; nothing on
+/// the apply or restore side ever does.
+pub fn approve(source: &str) {
+    if source.trim().is_empty() || builtin(source) {
+        return;
+    }
+    crate::settings::approve_shader(&fingerprint(source));
+}
+
+/// The mtime watch behind hot reload, worn by both shader surfaces: the
+/// Shader panel over its own config, and [`PanelSurface`] over a panel's
+/// chrome. An external editor plus this is the authoring loop, so it never
+/// prompts and never asks for a frame of its own - it rides the paint the
+/// shader was already asking for.
+#[derive(Default)]
+pub struct SourceWatch {
+    /// The file's size and mtime when it was last read.
+    stamp: Option<(u64, i64)>,
+    /// Whether a stamp has been taken for the source in hand. Unseeded, the
+    /// first check reads the file whatever the stamp says, so an edit made
+    /// while rox was closed lands on open rather than on the edit after it.
+    seeded: bool,
+    /// The last stat, so the check costs a syscall every
+    /// [`RELOAD_EVERY`] rather than one a frame.
+    checked: Option<Instant>,
+}
+
+impl SourceWatch {
+    /// A watch for a source that was just read from `path`, so the next
+    /// edit is what wakes it. A source with no file behind it gets an
+    /// unseeded watch that never has anything to poll.
+    pub fn seeded(path: Option<&Path>) -> SourceWatch {
+        SourceWatch {
+            stamp: path.and_then(crate::settings::file_stamp),
+            seeded: path.is_some(),
+            checked: Some(Instant::now()),
+        }
+    }
+
+    /// The file's contents when it has moved since the last look, or None
+    /// when it hasn't, when the throttle hasn't elapsed, or when the file
+    /// has gone. A file that disappears leaves the running source alone -
+    /// that is the whole reason the source is stored inline - and the watch
+    /// stays armed for it coming back.
+    pub fn poll(&mut self, path: &Path) -> Option<String> {
+        let now = Instant::now();
+        if self
+            .checked
+            .is_some_and(|last| now.duration_since(last) < RELOAD_EVERY)
+        {
+            return None;
+        }
+        self.checked = Some(now);
+        let stamp = crate::settings::file_stamp(path)?;
+        if self.seeded && self.stamp == Some(stamp) {
+            return None;
+        }
+        self.seeded = true;
+        self.stamp = Some(stamp);
+        std::fs::read_to_string(path).ok()
     }
 }
 
@@ -231,10 +345,53 @@ fn source_hash(source: &str) -> u64 {
     hasher.finish()
 }
 
+/// What a panel's surface is running, per window it draws in. The wrapper
+/// paints from an element with nothing but the panel's entity id to hand,
+/// so the watch and the last good registration live out here rather than on
+/// the panel. Keyed by window as well as panel because a popped-out panel
+/// draws in two, and a `UserShaderId` belongs to the window that made it.
+struct Live {
+    /// The config source this entry was armed for. An edit in the settings
+    /// window moves it, which re-arms the watch instead of letting the file
+    /// pull the old text back over the edit.
+    config: u64,
+    watch: SourceWatch,
+    /// The file's text, once a reload has moved past the config's copy.
+    hot: Option<String>,
+    /// The last registration that compiled clean, kept painting while a
+    /// fresh edit is broken so an authoring loop doesn't strobe the panel
+    /// off and on with every unfinished save.
+    good: Option<UserShaderId>,
+    /// Last time the entry was painted from, so entries for panels that
+    /// closed don't hold their sources forever.
+    touched: Instant,
+}
+
+static LIVE: LazyLock<RwLock<HashMap<(u64, EntityId), Live>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// How long an untouched entry sticks around before the next insert drops
+/// it. Long enough that a panel in a background window keeps its state.
+const LIVE_TTL: Duration = Duration::from_secs(300);
+
+/// The source a panel's surface is actually running, when a hot reload has
+/// moved it past the copy in the config. The settings window folds this back
+/// into the config, so a layout saved after an external edit carries the
+/// text that was on screen.
+pub fn hot_source(panel: EntityId) -> Option<String> {
+    LIVE.read()
+        .unwrap()
+        .iter()
+        .find(|((_, id), live)| *id == panel && live.hot.is_some())
+        .and_then(|(_, live)| live.hot.clone())
+}
+
 /// The render side of a panel's shader, built fresh each render from the
 /// chrome and carried by the [`Themed`](super::themed) wrapper.
 pub struct PanelSurface {
     source: String,
+    /// The file the source was last read from, watched for edits.
+    path: Option<PathBuf>,
     routes: Vec<Route>,
     run_when_idle: bool,
     /// The chrome margin, so the shader covers the panel's body rect and
@@ -244,12 +401,18 @@ pub struct PanelSurface {
 
 impl PanelSurface {
     /// The surface a chrome asks for, or None when it carries no runnable
-    /// shader. `margin` is the resolved frame margin, the gutter the body
-    /// sits inside.
+    /// shader - which includes one waiting on approval. An unapproved
+    /// source builds no surface at all, so the panel renders exactly as it
+    /// would with the shader switched off, and the Shader page is where the
+    /// pending source and its Approve button live.
     pub fn build(chrome: &PanelChrome, margin: f32) -> Option<PanelSurface> {
         let shader = chrome.shader.as_ref().filter(|s| s.runnable())?;
+        if !approved(&shader.source) {
+            return None;
+        }
         Some(PanelSurface {
             source: shader.source.clone(),
+            path: shader.path.clone(),
             routes: shader.routes.clone(),
             run_when_idle: shader.run_when_idle,
             inset: gpui::px(margin.max(0.0)),
@@ -257,30 +420,38 @@ impl PanelSurface {
     }
 
     /// Record the shader over the panel's body, after the body itself has
-    /// painted. A source that won't compile paints nothing and leaves its
-    /// message for the panel's settings window; everything no-ops on a
-    /// backend without a shader pipeline, which registration reports the
-    /// same way.
+    /// painted. A source that won't compile keeps the last good one on
+    /// screen and leaves its message for the panel's settings window;
+    /// everything no-ops on a backend without a shader pipeline, which
+    /// registration reports the same way.
     pub fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         let panel = window.current_view();
-        let key = (
-            window.window_handle().window_id().as_u64(),
-            source_hash(&self.source),
-        );
-        if let Some(message) = FAILED.read().unwrap().get(&key).cloned() {
-            note_error(panel, Some(message));
-            return;
-        }
-        let shader = match window.register_user_shader(&self.source) {
-            Ok(shader) => {
-                note_error(panel, None);
-                shader
-            }
-            Err(message) => {
-                FAILED.write().unwrap().insert(key, message.clone());
+        let window_id = window.window_handle().window_id().as_u64();
+        let (source, last_good) = self.current(window_id, panel);
+        let key = (window_id, source_hash(&source));
+        let failed = FAILED.read().unwrap().get(&key).cloned();
+        let shader = match failed {
+            Some(message) => {
                 note_error(panel, Some(message));
-                return;
+                last_good
             }
+            None => match window.register_user_shader(&source) {
+                Ok(shader) => {
+                    note_error(panel, None);
+                    self.note_good(window_id, panel, shader);
+                    Some(shader)
+                }
+                Err(message) => {
+                    FAILED.write().unwrap().insert(key, message.clone());
+                    note_error(panel, Some(message));
+                    last_good
+                }
+            },
+        };
+        // Nothing has ever compiled here, so there is nothing to keep on
+        // screen either. The message is on its way to the settings window.
+        let Some(shader) = shader else {
+            return;
         };
         let (signals, live) = self.signals(window, cx);
         let meta = meta_slots(window, cx);
@@ -306,6 +477,80 @@ impl PanelSurface {
         // stall the whole frame loop.
         if live || self.run_when_idle {
             window.request_animation_frame();
+        }
+    }
+
+    /// The source to run this frame and the last one that compiled, taking
+    /// the hot reload with it: the watch stats the config's file every
+    /// [`RELOAD_EVERY`], and a file that has moved becomes what runs until
+    /// the settings window folds it back into the config.
+    ///
+    /// The reload only happens for a surface that is already painting, which
+    /// means already approved. A pending source never gets here, so a bundle
+    /// can't have rox read a path of its choosing and trust what comes back.
+    fn current(&self, window: u64, panel: EntityId) -> (String, Option<UserShaderId>) {
+        let config = source_hash(&self.source);
+        let mut fresh = None;
+        let (source, good) = {
+            let mut live = LIVE.write().unwrap();
+            let entry = match live.entry((window, panel)) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    // A panel restored from a layout has a source snapshot
+                    // and maybe a path, with no telling whether they still
+                    // agree, so its watch starts unseeded and reads once.
+                    entry.insert(Live {
+                        config,
+                        watch: SourceWatch::default(),
+                        hot: None,
+                        good: None,
+                        touched: Instant::now(),
+                    })
+                }
+            };
+            if entry.config != config {
+                // The settings window wrote a new source; it wins over
+                // whatever the file said, and the watch re-arms from it.
+                entry.config = config;
+                entry.hot = None;
+                entry.watch = SourceWatch::seeded(self.path.as_deref());
+            }
+            entry.touched = Instant::now();
+            if let Some(path) = &self.path {
+                if let Some(text) = entry.watch.poll(path) {
+                    let running = entry.hot.as_deref().unwrap_or(&self.source);
+                    if text.trim() != running.trim() {
+                        // The user pointed rox at this file, so what comes
+                        // out of it is theirs; approving here is what keeps
+                        // the edit from tripping the gate on restart.
+                        fresh = Some(text.clone());
+                        entry.hot = Some(text);
+                    }
+                }
+            }
+            (
+                entry.hot.clone().unwrap_or_else(|| self.source.clone()),
+                entry.good,
+            )
+        };
+        // Outside the lock: approving writes the settings file, and no other
+        // panel's paint should wait on that.
+        if let Some(text) = fresh {
+            approve(&text);
+        }
+        (source, good)
+    }
+
+    /// Remember a clean registration as this surface's fallback, and drop
+    /// the entries of panels that stopped drawing a while back.
+    fn note_good(&self, window: u64, panel: EntityId, shader: UserShaderId) {
+        let mut live = LIVE.write().unwrap();
+        if let Some(entry) = live.get_mut(&(window, panel)) {
+            entry.good = Some(shader);
+        }
+        if live.len() > 32 {
+            let now = Instant::now();
+            live.retain(|_, entry| now.duration_since(entry.touched) < LIVE_TTL);
         }
     }
 
@@ -416,7 +661,13 @@ mod tests {
     /// throttles), so this walks it there rather than faking a value.
     fn loud_hub() -> (SignalHub, u64) {
         let hub = SignalHub::new(Vec::new());
-        let (id, _) = hub.add(Source::Band { lo: 800.0, hi: 2000.0 }, 0.0);
+        let (id, _) = hub.add(
+            Source::Band {
+                lo: 800.0,
+                hi: 2000.0,
+            },
+            0.0,
+        );
         let feed = AudioFeed::new();
         // 1.17 kHz at 48 kHz, the midrange tone the engine's own tests use.
         let mut phase = 0.0f32;
@@ -483,6 +734,137 @@ mod tests {
         assert_eq!(listed.len(), SLOTS);
         assert_eq!(listed[1], ("slot1".to_string(), "mids".to_string()));
         assert_eq!(listed[4], ("slot4".to_string(), "slot 4".to_string()));
+    }
+
+    /// A source no list will ever carry, unique per call so two tests
+    /// approving at once can't see each other's.
+    fn novel_source(tag: &str) -> String {
+        format!(
+            "// {tag} {:?}\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {{ return vec4<f32>(uv, 0.0, 1.0); }}",
+            std::time::SystemTime::now()
+        )
+    }
+
+    #[test]
+    fn a_source_that_arrives_serialized_waits() {
+        let source = novel_source("arrived");
+        assert!(
+            !approved(&source),
+            "a source nobody has agreed to must not run"
+        );
+        // What the Approve button does, minus the settings write (which
+        // would land in the machine's real session file).
+        let print = fingerprint(&source);
+        assert!(crate::settings::note_approved(&print));
+        assert!(approved(&source), "an approved hash runs");
+        // The same program with a different name in it is a different
+        // program, and doesn't ride the first one's approval.
+        assert!(!approved(&novel_source("arrived twice")));
+        crate::settings::forget_approved(&print);
+        assert!(!approved(&source), "and the gate closes again");
+    }
+
+    #[test]
+    fn the_builtins_need_no_list() {
+        for (label, preset) in PRESETS {
+            assert!(builtin(preset), "{label} is one of ours");
+            assert!(approved(preset), "{label} ships with the binary");
+            assert!(
+                !crate::settings::shader_approved(&fingerprint(preset)),
+                "{label} shouldn't need a list entry to pass the gate"
+            );
+        }
+        // Approving a builtin is a no-op rather than a list entry, so the
+        // file doesn't fill up with hashes of what shipped.
+        approve(PLASMA);
+        assert!(!crate::settings::shader_approved(&fingerprint(PLASMA)));
+        // Nothing to run is nothing to gate.
+        assert!(approved(""));
+        assert!(approved("   \n "));
+    }
+
+    #[test]
+    fn fingerprints_ignore_the_edges_and_nothing_else() {
+        let source = "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }";
+        assert_eq!(fingerprint(source), fingerprint(&format!("\n{source}\n\n")));
+        assert_ne!(
+            fingerprint(source),
+            fingerprint(&source.replace("1.0", "0.0")),
+            "a changed constant is a changed shader"
+        );
+        // Hex of a SHA-256, so the list stays readable and fixed width.
+        let print = fingerprint(source);
+        assert_eq!(print.len(), 64);
+        assert!(print.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn a_builtin_survives_a_round_trip_through_a_layout() {
+        // Presets ride a dump as inline source like anything else, and
+        // serde's string round trip is where a trailing newline would go
+        // missing. The gate has to still know it as ours on the way back.
+        let dumped = serde_json::to_string(&PLASMA.to_string()).expect("dump");
+        let read: String = serde_json::from_str(&dumped).expect("read");
+        assert!(approved(&read));
+    }
+
+    /// A file to watch, in a directory of this test's own so a parallel
+    /// test run can't stat somebody else's writes.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rox-shader-watch-{name}"));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir.join("shader.wgsl")
+    }
+
+    #[test]
+    fn an_unseeded_watch_reads_once_then_waits_for_the_file_to_move() {
+        let path = scratch("unseeded");
+        std::fs::write(&path, "one").expect("write");
+        let mut watch = SourceWatch::default();
+        // Unseeded, so an edit made while rox was closed lands on open
+        // rather than on the edit after it.
+        assert_eq!(watch.poll(&path).as_deref(), Some("one"));
+        // Throttled: the next look inside the window costs no syscall and
+        // reports nothing.
+        assert_eq!(watch.poll(&path), None);
+        watch.checked = None;
+        assert_eq!(watch.poll(&path), None, "nothing moved");
+        // The stamp is size and mtime, and mtime only resolves to the
+        // second, so the change here is a length.
+        watch.checked = None;
+        std::fs::write(&path, "one two three").expect("rewrite");
+        assert_eq!(watch.poll(&path).as_deref(), Some("one two three"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_seeded_watch_waits_for_the_next_edit() {
+        let path = scratch("seeded");
+        std::fs::write(&path, "one").expect("write");
+        // What a file pick leaves behind: the source was just read from
+        // here, so the file as it stands is not news.
+        let mut watch = SourceWatch::seeded(Some(path.as_path()));
+        watch.checked = None;
+        assert_eq!(watch.poll(&path), None);
+        watch.checked = None;
+        std::fs::write(&path, "one two three").expect("rewrite");
+        assert_eq!(watch.poll(&path).as_deref(), Some("one two three"));
+        // A file that goes missing leaves the running source alone and the
+        // watch armed for it coming back.
+        watch.checked = None;
+        std::fs::remove_file(&path).ok();
+        assert_eq!(watch.poll(&path), None);
+        watch.checked = None;
+        std::fs::write(&path, "back again, longer").expect("rewrite");
+        assert_eq!(watch.poll(&path).as_deref(), Some("back again, longer"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_watch_with_no_file_has_nothing_to_seed() {
+        let watch = SourceWatch::seeded(None);
+        assert!(!watch.seeded);
+        assert!(watch.stamp.is_none());
     }
 
     #[test]

@@ -563,10 +563,16 @@ pub fn reveal_item(menu: PopupMenu, state: AppState, id: Option<i64>) -> PopupMe
 /// so there is no reopen to rebuild them), so a static tick would sit wrong
 /// until the whole menu is closed and reopened.
 ///
-/// `is_on` reads the state each render, `toggle` flips it. A left `icon`
-/// keeps the row looking like its plain sibling, with the tick pushed to the
-/// right so the icon is not replaced. Without an icon the tick takes the left
-/// slot, matching the default check side.
+/// `is_on` reads the state each render, `toggle` flips it. An `icon` rides on
+/// the item rather than inside our element, so it lands in the same reserved
+/// left slot the plain rows use and the row lines up with its neighbours;
+/// the tick then sits on the right, matching `check_side(Side::Right)`.
+/// Without an icon the tick takes the left slot, matching the default check
+/// side, which is the shape flyouts of bare toggles use.
+///
+/// Drawing the icon inside the element instead would double-indent the row:
+/// the menu reserves a left slot as soon as any item carries an icon, so a
+/// self-drawn icon sits one slot further in than everything around it.
 pub fn check_row<P: 'static>(
     label: impl Into<SharedString>,
     icon: Option<&'static str>,
@@ -577,20 +583,15 @@ pub fn check_row<P: 'static>(
     let label: SharedString = label.into();
     let read = panel.clone();
     let weak = panel.downgrade();
-    PopupMenuItem::element(move |_, cx| {
+    let has_icon = icon.is_some();
+    let item = PopupMenuItem::element(move |_, cx| {
         let on = is_on(read.read(cx));
-        if let Some(icon) = icon {
+        if has_icon {
             h_flex()
                 .w_full()
                 .items_center()
                 .justify_between()
-                .child(
-                    h_flex()
-                        .gap_x_1()
-                        .items_center()
-                        .child(Icon::default().path(icon).xsmall())
-                        .child(label.clone()),
-                )
+                .child(label.clone())
                 .when(on, |row| row.child(Icon::new(IconName::Check).xsmall()))
         } else {
             h_flex()
@@ -603,8 +604,12 @@ pub fn check_row<P: 'static>(
                 })
                 .child(label.clone())
         }
-    })
-    .on_click(move |_, _, cx| {
+    });
+    let item = match icon {
+        Some(icon) => item.icon(Icon::default().path(icon)),
+        None => item,
+    };
+    item.on_click(move |_, _, cx| {
         let Some(this) = weak.upgrade() else { return };
         this.update(cx, |this, cx| {
             toggle(this, cx);
@@ -1003,6 +1008,13 @@ pub trait PanelSettings: Panel {
     /// knobs beyond its appearance.
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
         &[]
+    }
+
+    /// Whether the settings window offers the shared surface-shader page.
+    /// On for every panel by default; a panel whose body already is a
+    /// shader opts out rather than wearing two.
+    fn surface_shader(&self) -> bool {
+        true
     }
 
     /// One of the panel's own pages: control rows editing the config in
@@ -2778,8 +2790,7 @@ mod chrome_tests {
         };
         chrome.shader = Some(PanelShader {
             enabled: true,
-            source: "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }"
-                .to_string(),
+            source: "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }".to_string(),
             path: Some("/tmp/smudge.wgsl".into()),
             routes: vec![rox_viz::signal::Route {
                 enabled: true,
@@ -2797,7 +2808,10 @@ mod chrome_tests {
 
         assert_eq!(read.tile, 96.0);
         assert_eq!(read.chrome.title.as_deref(), Some("Wall"));
-        let shader = read.chrome.shader.expect("the shader survives the round trip");
+        let shader = read
+            .chrome
+            .shader
+            .expect("the shader survives the round trip");
         assert!(shader.enabled);
         assert!(shader.run_when_idle);
         assert!(shader.source.contains("fs_user"));

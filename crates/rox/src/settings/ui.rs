@@ -6,9 +6,10 @@
 //! with each window; only the shell lives here.
 
 use gpui::{
-    div, prelude::*, px, svg, AnyElement, App, Context, Div, MouseButton, MouseDownEvent, Pixels,
-    SharedString, Window,
+    div, prelude::*, px, svg, AnyElement, App, Context, Div, ElementId, Interactivity, MouseButton,
+    MouseDownEvent, Pixels, SharedString, Stateful, StyleRefinement, Window,
 };
+use gpui_component::Selectable;
 
 use crate::assets::icons;
 use crate::design::palette::{self, ROLES};
@@ -510,6 +511,132 @@ pub fn dialog_button(
         })
         .on_mouse_down(MouseButton::Left, on_click)
         .child(label)
+}
+
+/// How wide a select field draws unless the caller says otherwise: room
+/// for a signal's derived name ("Band 30 - 1.5k Hz") without the list
+/// pushing the row's label off its own line.
+pub const SELECT_W: Pixels = px(190.);
+
+/// A select field: the bordered control that shows what's picked and drops
+/// its list under itself. The app's field styling rather than a button's,
+/// because a pick from a list is a value the row holds, not an action the
+/// row takes, and a button reads as the second thing.
+///
+/// Reach for it wherever [`crate::panel::picker`] would otherwise put a
+/// small outline button in a settings row. Attach the list with
+/// gpui-component's `DropdownMenu::dropdown_menu`, which this implements:
+///
+/// ```ignore
+/// select_field("route-signal-0", "Kick", false)
+///     .dropdown_menu(move |mut menu, _, _| { .. })
+/// ```
+///
+/// The list is a `PopupMenu`, so arrow keys, Enter, Escape and a scrollbar
+/// past a screenful come with it. The popup defers, so don't host one
+/// inside another deferred overlay - gpui 0.2.2 panics on nested deferred.
+pub fn select_field(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    // Whether the label is a prompt rather than a pick, drawn muted the
+    // way an empty input's placeholder is.
+    placeholder: bool,
+) -> SelectField {
+    SelectField {
+        base: div()
+            .id(id)
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(tokens::SPACE_XS)
+            .w(SELECT_W)
+            .h(tokens::CONTROL_H)
+            .px(tokens::SPACE_SM)
+            .text_xs()
+            .overflow_hidden()
+            .rounded(tokens::RADIUS)
+            .bg(palette::bg_control())
+            .border_1()
+            .cursor_pointer(),
+        label: label.into(),
+        placeholder,
+        open: false,
+    }
+}
+
+/// [`select_field`]'s element. Styles applied to it land on the field
+/// itself, so a caller wanting a wider one just says `.w(px(240.))`.
+#[derive(IntoElement)]
+pub struct SelectField {
+    base: Stateful<Div>,
+    label: SharedString,
+    placeholder: bool,
+    open: bool,
+}
+
+impl Styled for SelectField {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.base.style()
+    }
+}
+
+impl InteractiveElement for SelectField {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.base.interactivity()
+    }
+}
+
+/// What the popover uses to tell the field its list is open, so the border
+/// and the caret light with it.
+impl Selectable for SelectField {
+    fn selected(mut self, selected: bool) -> Self {
+        self.open = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.open
+    }
+}
+
+impl gpui_component::menu::DropdownMenu for SelectField {}
+
+impl RenderOnce for SelectField {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let SelectField {
+            base,
+            label,
+            placeholder,
+            open,
+        } = self;
+        base.border_color(if open {
+            palette::accent()
+        } else {
+            palette::border()
+        })
+        .hover(|d| d.bg(palette::bg_control_hover()))
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .when(placeholder, |d| d.text_color(palette::text_muted()))
+                .child(label),
+        )
+        // One caret either way: there's no up chevron in the icon set, and
+        // the lit border already says the list is down.
+        .child(
+            svg()
+                .path(icons::CHEVRON_DOWN)
+                .size(px(12.))
+                .flex_none()
+                .text_color(if open {
+                    palette::accent()
+                } else {
+                    palette::text_muted()
+                }),
+        )
+    }
 }
 
 /// A flat icon-only button for table rows: the glyph alone at rest, a

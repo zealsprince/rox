@@ -11,7 +11,7 @@
 //!
 //! The rows fold. A collapsed one says which slot it fills and what it
 //! rides, with the switch and the delete at its edge; opening one brings
-//! out the slot stepper, the signal picker, and the span. The fold lives in
+//! out the slot and signal dropdowns and the span. The fold lives in
 //! [`RouteEditState`] on the host window, never in config: which row you
 //! left open is where you are, not what you set.
 
@@ -19,11 +19,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::{div, prelude::*, px, svg, Context, Div, MouseButton, SharedString};
-use gpui_component::button::Button;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_component::Sizable as _;
 
-use rox_viz::signal::{Route, SignalHub};
+use rox_viz::signal::{Route, Signal, SignalHub};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
@@ -95,6 +93,25 @@ impl RouteEditState {
     }
 }
 
+/// What the field shows and whether that's a prompt rather than a pick: a
+/// signal the pool no longer carries reads as an invitation, drawn muted
+/// the way an empty input's placeholder is.
+fn pick_label(route: &Route, pool: &[Signal]) -> (String, bool) {
+    match pool.iter().find(|signal| signal.id == route.signal) {
+        Some(signal) => (signal.label(), false),
+        None => ("Pick a signal".to_string(), true),
+    }
+}
+
+/// What a folded row says it rides: the signal's name, or that it rides
+/// nothing yet.
+fn ride_summary(route: &Route, pool: &[Signal]) -> String {
+    match pool.iter().find(|signal| signal.id == route.signal) {
+        Some(signal) => signal.label(),
+        None => "no signal".to_string(),
+    }
+}
+
 /// The lowest slot no route fills yet, or None with all sixteen taken.
 /// What "Add Route" lands on, so adding four in a row fills 0 through 3
 /// rather than stacking them all on the same slot.
@@ -133,10 +150,10 @@ impl<P: 'static> RouteEditor<'_, P> {
     /// says why underneath.
     pub fn add_button(&self, cx: &mut Context<P>) -> Div {
         let full = next_free_slot(self.routes).is_none();
-        // A fresh route rides whatever the pool already carries. Nothing to
-        // ride is not faked into existence: the row says so and points at
-        // the Signals window.
-        let signal = self.hub.pool().first().map(|signal| signal.id).unwrap_or(0);
+        // A fresh route rides whatever the pool already carries; with an
+        // empty pool it arrives asking for a signal, and the row points at
+        // the window where one gets made.
+        let signal = self.hub.pool().first().map(|signal| signal.id);
         let mutate = self.mutate.clone();
         let ui_mut = self.ui_mut;
         settings_ui::small_button(
@@ -151,7 +168,7 @@ impl<P: 'static> RouteEditor<'_, P> {
                         let slot = next_free_slot(routes).unwrap_or(0);
                         routes.push(Route {
                             enabled: true,
-                            signal,
+                            signal: signal.unwrap_or(0),
                             target: slot_target(slot),
                             from: 0.0,
                             to: 1.0,
@@ -175,8 +192,9 @@ impl<P: 'static> RouteEditor<'_, P> {
         let mut list = div().flex().flex_col().gap(tokens::SPACE_MD);
         if self.routes.is_empty() {
             list = list.child(note(
-                "Nothing routed: every slot reads zero. A shader can name its slots with \
-                 `// @slot 0: bass` comments and the names show up here.",
+                "Nothing routed: every slot reads zero until a route feeds it a signal. \
+                 A shader can name its slots with `// @slot 0: bass` comments and the \
+                 names show up here.",
             ));
         }
         for index in 0..self.routes.len() {
@@ -232,10 +250,7 @@ impl<P: 'static> RouteEditor<'_, P> {
                 div()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child(match signal {
-                        Some(signal) => signal.label(),
-                        None => "no signal".to_string(),
-                    }),
+                    .child(ride_summary(route, &pool)),
             )
             .on_mouse_down(
                 MouseButton::Left,
@@ -299,9 +314,9 @@ impl<P: 'static> RouteEditor<'_, P> {
                 .child(panel::setting_row(
                     "Slot",
                     Some("Which of the shader's sixteen signal slots this route fills"),
-                    self.stepper(index, slot, cx),
+                    self.slot_field(index, slot, cx),
                 ))
-                .child(self.signal_row(index, signal.is_some(), &pool, cx));
+                .child(self.signal_row(index, &pool, cx));
             if let Some(signal) = signal {
                 block = block.child(meter(
                     self.hub.clone(),
@@ -315,107 +330,31 @@ impl<P: 'static> RouteEditor<'_, P> {
         settings_ui::nested(block)
     }
 
-    /// The slot stepper: minus, the slot's name or number, plus. A counter
-    /// rather than a grid of sixteen chips - the slots are an ordered range
-    /// and picking one is a small move from where the route already sits.
-    fn stepper(&self, index: usize, slot: Option<usize>, cx: &mut Context<P>) -> Div {
-        // A route whose target names no slot counts as sitting at zero, so
-        // either step lands it back in range rather than doing nothing.
-        let current = slot.unwrap_or(0);
-        let mutate = self.mutate.clone();
-        let bump = move |cx: &mut Context<P>, to: usize, inert: bool, icon: &'static str| {
-            let mutate = mutate.clone();
-            settings_ui::icon_button(
-                icon,
-                inert,
-                cx.listener(move |this: &mut P, _, _, cx| {
-                    mutate(
-                        this,
-                        &mut |routes| {
-                            if let Some(route) = routes.get_mut(index) {
-                                route.target = slot_target(to);
-                            }
-                        },
-                        cx,
-                    );
-                    cx.notify();
-                }),
-            )
+    /// The slot picker: a select field over all sixteen slots, each under
+    /// the name the shader gives it where it gives one.
+    fn slot_field(&self, index: usize, slot: Option<usize>, cx: &mut Context<P>) -> Div {
+        // A route whose target names no slot reads as a prompt.
+        let label = match slot {
+            Some(slot) => slot_label(self.labels, slot),
+            None => "Pick a slot".to_string(),
         };
-        let down = bump(cx, current.saturating_sub(1), slot == Some(0), icons::MINUS);
-        let up = bump(
-            cx,
-            (current + 1).min(SLOTS - 1),
-            slot == Some(SLOTS - 1),
-            icons::PLUS,
-        );
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_XS)
-            .child(down)
-            .child(
-                div()
-                    .w(px(84.))
-                    .text_xs()
-                    .text_center()
-                    .child(slot_label(self.labels, current)),
-            )
-            .child(up)
-    }
-
-    /// The signal picker: a dropdown over the shared pool. An empty pool
-    /// gets neither a dead control nor a hidden one - it says a signal has
-    /// to exist first and opens the window where they're made.
-    fn signal_row(
-        &self,
-        index: usize,
-        known: bool,
-        pool: &[rox_viz::signal::Signal],
-        cx: &mut Context<P>,
-    ) -> Div {
-        if pool.is_empty() {
-            return panel::setting_block(
-                "Signal",
-                Some(
-                    "There are no signals to ride yet. Make one and it shows up in this \
-                     list; until then the slot reads zero.",
-                ),
-                None,
-                div().child(settings_ui::small_button(
-                    "Open Signals",
-                    icons::AUDIO_WAVEFORM,
-                    false,
-                    |_, _, cx| crate::signals_window::open(cx),
-                )),
-            );
-        }
-        let Some(route) = self.routes.get(index) else {
-            return div();
-        };
-        let current = route.signal;
-        let options: Vec<(u64, String)> = pool
-            .iter()
-            .map(|signal| (signal.id, signal.label()))
+        let names: Vec<String> = (0..SLOTS)
+            .map(|option| slot_label(self.labels, option))
             .collect();
-        let label = match options.iter().find(|(id, _)| *id == current) {
-            Some((_, label)) => label.clone(),
-            None => "Pick a signal".to_string(),
-        };
         let weak = cx.entity().downgrade();
         let mutate = self.mutate.clone();
-        let picker = Button::new(SharedString::from(format!("{}-signal-{index}", self.id)))
-            .label(label)
-            .small()
-            .outline()
-            .dropdown_caret(true)
+        div().child(
+            settings_ui::select_field(
+                SharedString::from(format!("{}-slot-{index}", self.id)),
+                label,
+                slot.is_none(),
+            )
             .dropdown_menu(move |mut menu, _, _| {
-                for (id, label) in &options {
-                    let (id, host, mutate) = (*id, weak.clone(), mutate.clone());
+                for (option, name) in names.iter().enumerate() {
+                    let (host, mutate) = (weak.clone(), mutate.clone());
                     menu = menu.item(
-                        PopupMenuItem::new(label.clone())
-                            .checked(id == current)
+                        PopupMenuItem::new(name.clone())
+                            .checked(slot == Some(option))
                             .on_click(move |_, _, cx| {
                                 let Some(host) = host.upgrade() else {
                                     return;
@@ -425,7 +364,7 @@ impl<P: 'static> RouteEditor<'_, P> {
                                         this,
                                         &mut |routes| {
                                             if let Some(route) = routes.get_mut(index) {
-                                                route.signal = id;
+                                                route.target = slot_target(option);
                                             }
                                         },
                                         cx,
@@ -436,7 +375,83 @@ impl<P: 'static> RouteEditor<'_, P> {
                     );
                 }
                 menu
-            });
+            }),
+        )
+    }
+
+    /// The signal picker: a select field over the shared pool. An empty
+    /// pool gets no dead control - the row says a signal has to exist
+    /// first and opens the window where they're made.
+    fn signal_row(&self, index: usize, pool: &[Signal], cx: &mut Context<P>) -> Div {
+        let Some(route) = self.routes.get(index) else {
+            return div();
+        };
+        if pool.is_empty() {
+            return div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(panel::setting_row_dyn(
+                    "Signal",
+                    Some("Which shared signal this route rides".into()),
+                    div(),
+                ))
+                .child(note(
+                    "There are no signals to ride yet. Make one and it shows up here; \
+                     until then the slot reads zero.",
+                ))
+                .child(div().child(settings_ui::small_button(
+                    "Open Signals",
+                    icons::AUDIO_WAVEFORM,
+                    false,
+                    |_, _, cx| crate::signals_window::open(cx),
+                )));
+        }
+        let current = route.signal;
+        let (label, placeholder) = pick_label(route, pool);
+        let options: Vec<(u64, String)> = pool
+            .iter()
+            .map(|signal| (signal.id, signal.label()))
+            .collect();
+        let weak = cx.entity().downgrade();
+        let mutate = self.mutate.clone();
+        let field = settings_ui::select_field(
+            SharedString::from(format!("{}-signal-{index}", self.id)),
+            label,
+            placeholder,
+        )
+        .dropdown_menu(move |mut menu, _, _| {
+            for (id, label) in &options {
+                let (id, host, mutate) = (*id, weak.clone(), mutate.clone());
+                menu = menu.item(
+                    PopupMenuItem::new(label.clone())
+                        .checked(id == current)
+                        .on_click(move |_, _, cx| {
+                            let Some(host) = host.upgrade() else {
+                                return;
+                            };
+                            host.update(cx, |this: &mut P, cx| {
+                                mutate(
+                                    this,
+                                    &mut |routes| {
+                                        if let Some(route) = routes.get_mut(index) {
+                                            route.signal = id;
+                                        }
+                                    },
+                                    cx,
+                                );
+                                cx.notify();
+                            });
+                        }),
+                );
+            }
+            // The way out of the list: a fresh signal gets made in the
+            // Signals window, and it shows up here on the next open.
+            menu.separator().item(
+                PopupMenuItem::new("Create New Signal")
+                    .on_click(|_, _, cx| crate::signals_window::open(cx)),
+            )
+        });
         let mut block = div()
             .flex()
             .flex_col()
@@ -444,9 +459,9 @@ impl<P: 'static> RouteEditor<'_, P> {
             .child(panel::setting_row_dyn(
                 "Signal",
                 Some("Which shared signal this route rides".into()),
-                picker,
+                field,
             ));
-        if !known {
+        if placeholder {
             block = block.child(note(
                 "This route's signal is gone; the slot reads zero until another is picked.",
             ));
@@ -541,11 +556,38 @@ fn note(text: &'static str) -> Div {
 mod tests {
     use super::*;
 
+    use rox_viz::signal::Source;
+
     fn route(target: &str) -> Route {
         Route {
             target: target.to_string(),
             ..Route::default()
         }
+    }
+
+    fn signal(id: u64, name: &str) -> Signal {
+        Signal {
+            id,
+            name: name.to_string(),
+            source: Source::Level,
+            ..Signal::default()
+        }
+    }
+
+    #[test]
+    fn the_field_names_what_the_route_is_on() {
+        let pool = vec![signal(1, "Kick")];
+        let mut riding = route("slot0");
+        riding.signal = 1;
+        assert_eq!(pick_label(&riding, &pool), ("Kick".to_string(), false));
+        assert_eq!(ride_summary(&riding, &pool), "Kick");
+
+        // A signal that left the pool prompts rather than lying about a
+        // name it no longer has.
+        let mut orphan = route("slot1");
+        orphan.signal = 99;
+        assert_eq!(pick_label(&orphan, &pool), ("Pick a signal".into(), true));
+        assert_eq!(ride_summary(&orphan, &pool), "no signal");
     }
 
     #[test]

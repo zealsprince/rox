@@ -144,27 +144,40 @@ pub fn open(
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Appearance,
-    Behavior,
     Audio,
-    Workspace,
+    Behavior,
+    Integrations,
     Library,
     MlModels,
     Providers,
-    Integrations,
+    Shader,
     Storage,
+    Workspace,
     Development,
 }
 
+/// The sidebar order: every page A-Z by its label, with Development
+/// pinned after them. Alphabetical because there's no reading order that
+/// survives a tenth page, and one that's only in someone's head costs a
+/// scan of the whole list to find Storage. Development sits out because
+/// it's the escape hatch, not a subject: it belongs with the raw file and
+/// the data folder at the bottom rather than wedged between Behavior and
+/// Integrations.
+///
+/// Nothing keys off a page's position here - the sidebar, the search
+/// results stack, and every jump carry the [`Page`] itself - so this list
+/// can be resorted without touching anything else.
 const PAGES: &[(Page, &str, &str)] = &[
     (Page::Appearance, "Appearance", icons::PALETTE),
-    (Page::Behavior, "Behavior", icons::SLIDERS),
     (Page::Audio, "Audio", icons::AUDIO_LINES),
-    (Page::Workspace, "Workspace", icons::APP_WINDOW),
+    (Page::Behavior, "Behavior", icons::SLIDERS),
+    (Page::Integrations, "Integrations", icons::RADIO),
     (Page::Library, "Library", icons::LIST_MUSIC),
     (Page::MlModels, "ML Models", icons::LAYERS),
     (Page::Providers, "Providers", icons::DOWNLOAD),
-    (Page::Integrations, "Integrations", icons::RADIO),
+    (Page::Shader, "Shader", icons::BLEND),
     (Page::Storage, "Storage", icons::DATABASE),
+    (Page::Workspace, "Workspace", icons::APP_WINDOW),
     (Page::Development, "Development", icons::FLASK),
 ];
 
@@ -486,7 +499,7 @@ struct SettingsWindow {
     /// delete refresh it.
     icon_packs: Vec<String>,
     /// The screen shader's file and all-windows option, mirrored from
-    /// settings so the Appearance section doesn't re-read the file per
+    /// settings so the Shader page doesn't re-read the file per
     /// render. The enable switch is not mirrored: the hotkey and menu row
     /// flip it from outside this window, so the row reads the workspace's
     /// live static, like the menubar toggle does. The compile error reads
@@ -1419,7 +1432,6 @@ impl SettingsWindow {
                     ),
                 )
             }))
-            .section(self.screen_shader_section(q, cx))
             .section(Section::new(q, icons::SQUARE_DASHED, "Frame", None, |rows| {
                 rows.keyed(
                     &["spacing", "gap", "outside"],
@@ -1453,6 +1465,17 @@ impl SettingsWindow {
                 )
             }))
             .section(self.colors_section(q, columns, cx))
+    }
+
+    /// The Shader page: the whole-window post-process and what drives it.
+    /// Its own page rather than a section under Appearance because it
+    /// isn't a look setting - it's a program the app runs over every
+    /// frame, with a file, a compile error, and sixteen signal routes,
+    /// and it had already outgrown sitting between Transparency and
+    /// Frame. Matches the panel settings window, where a panel's shader
+    /// is its own page under the same icon.
+    fn shader_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
+        PageBody::new().section(self.screen_shader_section(q, cx))
     }
 
     /// The Screen Shader section: a WGSL post-process over the whole
@@ -4529,14 +4552,15 @@ impl SettingsWindow {
     ) -> PageBody {
         match page {
             Page::Appearance => self.appearance_page(q, columns, cx),
-            Page::Behavior => self.behavior_page(q, cx),
             Page::Audio => self.audio_page(q, cx),
-            Page::Workspace => self.workspace_page(q, cx),
+            Page::Behavior => self.behavior_page(q, cx),
+            Page::Integrations => self.integrations_page(q, cx),
             Page::Library => self.library_page(q, cx),
             Page::MlModels => self.ml_models_page(q, cx),
             Page::Providers => self.providers_page(q, cx),
-            Page::Integrations => self.integrations_page(q, cx),
+            Page::Shader => self.shader_page(q, cx),
             Page::Storage => self.storage_page(q, cx),
+            Page::Workspace => self.workspace_page(q, cx),
             Page::Development => self.development_page(q, cx),
         }
     }
@@ -4939,7 +4963,7 @@ impl Render for SettingsWindow {
         // windows.
         self.sync_editor_side(window, cx);
 
-        // The Appearance page builds from `&self`, so the shader route
+        // The Shader page builds from `&self`, so the shader route
         // editor's sliders and folds are matched to the list here, before
         // any page renders. Search builds every page each keystroke, which
         // is the other reason it can't happen down there.
@@ -5065,5 +5089,82 @@ impl Render for SettingsWindow {
                 .children(pass_prompt::overlay(self, cx))
                 .into_any_element()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Page, PAGES};
+    use crate::assets::icons;
+
+    /// The label each page wears in the sidebar. Exhaustive on purpose:
+    /// a new variant doesn't compile until it's named here, and the
+    /// checks below then hold it to the ordering.
+    fn label(page: Page) -> &'static str {
+        match page {
+            Page::Appearance => "Appearance",
+            Page::Audio => "Audio",
+            Page::Behavior => "Behavior",
+            Page::Integrations => "Integrations",
+            Page::Library => "Library",
+            Page::MlModels => "ML Models",
+            Page::Providers => "Providers",
+            Page::Shader => "Shader",
+            Page::Storage => "Storage",
+            Page::Workspace => "Workspace",
+            Page::Development => "Development",
+        }
+    }
+
+    const ALL: &[Page] = &[
+        Page::Appearance,
+        Page::Audio,
+        Page::Behavior,
+        Page::Integrations,
+        Page::Library,
+        Page::MlModels,
+        Page::Providers,
+        Page::Shader,
+        Page::Storage,
+        Page::Workspace,
+        Page::Development,
+    ];
+
+    /// Every page reaches the sidebar under its own label, and the list
+    /// holds nothing else: a page that exists but isn't in [`PAGES`] can
+    /// only be reached by search, which is never what was meant.
+    #[test]
+    fn every_page_is_in_the_sidebar() {
+        for &page in ALL {
+            let label = label(page);
+            assert!(
+                PAGES.iter().any(|&(p, l, _)| p == page && l == label),
+                "{label} is missing from the sidebar"
+            );
+        }
+        assert_eq!(PAGES.len(), ALL.len(), "the sidebar has a stray entry");
+    }
+
+    /// The nav sorts A-Z, with Development pinned to the tail as the
+    /// escape hatch beside the raw file and the data folder.
+    #[test]
+    fn the_nav_sorts_alphabetically_with_development_last() {
+        let (last, sorted) = PAGES.split_last().expect("pages");
+        assert_eq!(last.1, "Development");
+        let labels: Vec<String> = sorted.iter().map(|&(_, l, _)| l.to_lowercase()).collect();
+        let mut want = labels.clone();
+        want.sort();
+        assert_eq!(labels, want, "the sidebar is out of alphabetical order");
+    }
+
+    /// The shader lives on its own page, under the icon the panel
+    /// settings window's Shader page wears.
+    #[test]
+    fn the_shader_page_wears_the_blend_icon() {
+        let entry = PAGES
+            .iter()
+            .find(|&&(_, label, _)| label == "Shader")
+            .expect("a Shader page");
+        assert_eq!(entry.2, icons::BLEND);
     }
 }

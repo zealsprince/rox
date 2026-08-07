@@ -20,10 +20,10 @@ pub mod shader_confirm;
 pub mod ui;
 pub mod window;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
 use gpui::{App, SharedString, WindowAppearance, WindowDecorations};
 use serde::{Deserialize, Serialize};
@@ -500,7 +500,7 @@ pub struct Settings {
     /// chosen, so its vectors can never land in another model's coordinates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acoustic_local_model: Option<LocalModel>,
-    /// The whole-window post-process shader, the Appearance page's Screen
+    /// The whole-window post-process shader, the Shader settings page's Screen
     /// shader section.
     pub post_shader: PostShaderConfig,
 }
@@ -667,6 +667,17 @@ pub struct SessionState {
     /// last pass averaged. Zero until measured.
     #[serde(skip_serializing_if = "is_zero")]
     pub replaygain_pace: f32,
+    /// The shader sources this machine has agreed to run, hex SHA-256 of the
+    /// trimmed WGSL. Panel shaders ride layout dumps and workspace bundles as
+    /// inline source, so an imported look arrives carrying somebody else's
+    /// code; nothing registers until its hash is in here. Written by a file
+    /// pick, a reload, a preset, or the Approve button, never by an apply.
+    /// Machine-local for the same reason the window frames are: a trust
+    /// decision belongs to the person who made it, so copying a settings file
+    /// around must not carry it. Losing the list costs one Approve per
+    /// imported shader, which is why it can sit in the disposable file.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub approved_shaders: BTreeSet<String>,
 }
 
 /// Serde's skip test for an unmeasured pace.
@@ -708,6 +719,7 @@ impl Default for SessionState {
             update_cache: None,
             acoustic_pace: HashMap::new(),
             replaygain_pace: 0.0,
+            approved_shaders: BTreeSet::new(),
         }
     }
 }
@@ -1370,6 +1382,50 @@ pub struct PostShaderConfig {
     /// whole feed, so an unrouted slot reads zero from then on.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
+}
+
+/// The approved shader hashes, cached out of the session file. The gate is
+/// read where a shader is about to register, which is a paint path with no
+/// business touching the disk, so the file is read once on the first look
+/// and every write goes through [`approve_shader`], which keeps the cache
+/// and the file in step.
+static APPROVED_SHADERS: LazyLock<RwLock<BTreeSet<String>>> =
+    LazyLock::new(|| RwLock::new(Settings::load().session.approved_shaders));
+
+/// Whether this machine has agreed to run the source behind this hash.
+pub fn shader_approved(fingerprint: &str) -> bool {
+    APPROVED_SHADERS.read().unwrap().contains(fingerprint)
+}
+
+/// Put a hash in the live list, answering whether it wasn't there already.
+/// The half of an approval that costs nothing, split out so the gate's tests
+/// can exercise it without a settings file underneath them. Everything
+/// outside a test approves through [`approve_shader`], which persists.
+pub(crate) fn note_approved(fingerprint: &str) -> bool {
+    APPROVED_SHADERS
+        .write()
+        .unwrap()
+        .insert(fingerprint.to_string())
+}
+
+/// Record a source as approved, here and on disk. Idempotent: approving a
+/// hash the list already holds writes nothing, so a reload landing the same
+/// text twice doesn't touch the file.
+pub fn approve_shader(fingerprint: &str) {
+    if !note_approved(fingerprint) {
+        return;
+    }
+    let fingerprint = fingerprint.to_string();
+    Settings::update(move |s| {
+        s.session.approved_shaders.insert(fingerprint);
+    });
+}
+
+/// Drop a hash from the live list. Nothing in the UI revokes one yet; this
+/// is what the gate's tests clean up after themselves with.
+#[cfg(test)]
+pub(crate) fn forget_approved(fingerprint: &str) {
+    APPROVED_SHADERS.write().unwrap().remove(fingerprint);
 }
 
 /// The Last.fm account and how scrobbling behaves. The key and secret
@@ -2916,6 +2972,61 @@ mod tests {
         assert_eq!(look.bundle.signals.len(), 1);
         assert_eq!(look.bundle.signals[0].name, "Kick");
         assert_eq!(look.active_layout.as_deref(), Some("good"));
+    }
+
+    /// The approved shader hashes ride the session file: machine-local, so a
+    /// copied settings file carries none of them, and absent from a file
+    /// nobody has approved anything on.
+    #[test]
+    fn approved_shaders_ride_the_session_shard() {
+        let mut session = SessionState::default();
+        assert!(session.approved_shaders.is_empty());
+        let written = serde_json::to_value(&session).expect("dump");
+        assert!(
+            written.get("approved_shaders").is_none(),
+            "an empty list writes no key"
+        );
+
+        session.approved_shaders.insert("beef".to_string());
+        session.approved_shaders.insert("cafe".to_string());
+        let written = serde_json::to_value(&session).expect("dump");
+        let read: SessionState = serde_json::from_value(written.clone()).expect("read back");
+        assert!(read.approved_shaders.contains("beef"));
+        assert!(read.approved_shaders.contains("cafe"));
+        assert_eq!(read.approved_shaders.len(), 2);
+        // A set, sorted, so two approvals in the other order don't rewrite
+        // the file and the diff stays readable.
+        assert_eq!(
+            written["approved_shaders"],
+            serde_json::json!(["beef", "cafe"])
+        );
+
+        // A file written before the gate existed loads clean, approving
+        // nothing.
+        let older: SessionState =
+            serde_json::from_value(serde_json::json!({ "volume": 0.4 })).expect("read");
+        assert!(older.approved_shaders.is_empty());
+
+        // The workspace bundle is what a shared look travels as; the trust
+        // list is not in it, and can't be.
+        let bundle = serde_json::to_value(WorkspaceBundle::default()).expect("dump");
+        assert!(bundle.get("approved_shaders").is_none());
+    }
+
+    /// The live list and the file stay in step, and approving the same hash
+    /// twice is a no-op rather than a second write.
+    #[test]
+    fn the_approved_list_is_a_set() {
+        let print = "0123456789abcdef-not-a-real-hash";
+        assert!(!shader_approved(print));
+        assert!(note_approved(print), "the first approval is news");
+        assert!(shader_approved(print));
+        assert!(
+            !note_approved(print),
+            "the second is not, so nothing writes"
+        );
+        forget_approved(print);
+        assert!(!shader_approved(print));
     }
 
     /// A queue that no longer parses reads as no queue, and takes nothing with

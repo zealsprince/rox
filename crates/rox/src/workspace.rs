@@ -13,10 +13,10 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    actions, deferred, div, prelude::*, px, svg, AnyElement, AnyWindowHandle, App, Axis, Context,
-    DismissEvent, Div, Entity, ExternalPaths, FocusHandle, Focusable as _, FontFeatures, Global,
-    KeyBinding, KeyDownEvent, MouseButton, PathPromptOptions, SharedString, Subscription, Task,
-    WeakEntity, Window, WindowBounds,
+    actions, deferred, div, overlay_phase, prelude::*, px, svg, AnyElement, AnyWindowHandle, App,
+    Axis, Context, DismissEvent, Div, Entity, ExternalPaths, FocusHandle, Focusable as _,
+    FontFeatures, Global, KeyBinding, KeyDownEvent, MouseButton, PathPromptOptions, SharedString,
+    Subscription, Task, WeakEntity, Window, WindowBounds,
 };
 use rox_dock::{
     register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo, PanelView,
@@ -132,7 +132,7 @@ pub(crate) fn apply_decorations(cx: &mut App) {
     });
 }
 
-/// What the last post shader compile said, for the Appearance page's
+/// What the last post shader compile said, for the Shader settings page's
 /// readout: None is a clean compile (or nothing installed). Shared across
 /// windows because they all wear the same file; the last one to compile
 /// wins, which for one file is the same message.
@@ -210,7 +210,7 @@ pub(crate) fn note_confirm_window(handle: Option<AnyWindowHandle>, cx: &mut App)
     cx.default_global::<PostShaderConfirmWindow>().0 = handle;
 }
 
-/// Reapply the configured post shader everywhere. The Appearance page's
+/// Reapply the configured post shader everywhere. The Shader settings page's
 /// controls, the toggle action, the confirm dialog's revert, and the hot
 /// reload all land here; each workspace window re-reads the file and
 /// compiles it fresh, then the child windows follow when the all-windows
@@ -352,7 +352,7 @@ fn post_shader_signals(hub: &SignalHub) -> [f32; panel::shader::SLOTS] {
     targets.slots
 }
 
-/// The per-window side of the post shader (the Appearance page's Screen
+/// The per-window side of the post shader (the Shader settings page's Screen
 /// Shader section): which file this window wears and its stamp, for the
 /// render loop's hot reload.
 struct PostShaderDriver {
@@ -3890,9 +3890,13 @@ impl Render for Workspace {
                 // on whatever sits underneath. Not deferred: it is the last
                 // child so it already paints on top, and the search box's
                 // suggestion popover defers itself - gpui panics on a
-                // defer_draw inside a deferred draw.
+                // defer_draw inside a deferred draw. `overlay_phase` is what
+                // buys the rest of that deal: painting last puts it over the
+                // dock's primitives, but a panel's region shader pass runs at
+                // the end of the frame and would swallow it, so it has to
+                // record in the same draw-order range menus and tooltips do.
                 .when_some(self.quick_play.clone(), |d, modal| {
-                    d.child(
+                    d.child(overlay_phase(
                         div()
                             .absolute()
                             .inset_0()
@@ -3902,19 +3906,19 @@ impl Render for Workspace {
                             .items_center()
                             .pt(px(96.))
                             .child(modal),
-                    )
+                    ))
                 })
                 // The layout save/apply dialog floats over everything, same as
                 // quick-play and for the same reasons: last child, not deferred.
-                .children(self.layout_dialog_overlay(cx))
+                .children(self.layout_dialog_overlay(cx).map(overlay_phase))
                 // The queue modal floats the same way, last so it paints over
                 // the dock.
-                .children(self.queue_modal_overlay(cx))
+                .children(self.queue_modal_overlay(cx).map(overlay_phase))
                 // The Play now / Add to queue drop zones. Last child so they
                 // sit on top of every panel, which also makes them the topmost
                 // hitbox: an occluded workspace-root drop target would miss the
                 // drop entirely (panels block the hit test).
-                .children(self.drop_zones_overlay(cx))
+                .children(self.drop_zones_overlay(cx).map(overlay_phase))
                 .into_any_element()
         })
     }

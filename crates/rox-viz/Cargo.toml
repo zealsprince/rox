@@ -6,3 +6,8 @@ license.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+# Routes and signals are only ever read back off disk as JSON, so the
+# back-compat tests have to speak it.
+serde_json = "1"

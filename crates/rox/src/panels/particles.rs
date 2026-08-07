@@ -1984,9 +1984,12 @@ impl Panel for ParticlesPanel {
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let menu = self.config_menu(menu, window, cx);
+        // Icon on the row so it lines up with Rename and the rest of the tail
+        // and the tick lands on the right, the way every other top-level
+        // check row in the app reads. The icon-less form is for flyouts.
         let menu = menu.item(panel::check_row(
             "Edit Emitters",
-            None,
+            Some(icons::MOVE),
             |this: &Self| this.edit,
             |this, _| {
                 this.edit = !this.edit;

@@ -1,5 +1,5 @@
 //! The screen shader confirm: one small OS window opened after a risky
-//! apply from the Appearance page (the enable toggle, a file pick), the
+//! apply from the Shader settings page (the enable toggle, a file pick), the
 //! display-settings pattern. Keep locks the change in; Revert, the
 //! countdown running out, or closing the window restores the state from
 //! before the apply and persists it. Hot reloads and the toggle hotkey

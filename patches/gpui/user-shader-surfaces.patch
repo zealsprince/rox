@@ -1,20 +1,110 @@
-# rox patch: user shader surfaces (WT-S5).
-#
-# Widens ShaderParams to time/delta/resolution/mouse/user_meta/signals (128
-# bytes), classifies `prev` references at registration and exposes
-# Window::user_shader_caps, and adds Window::paint_screen_shader: a real scene
-# primitive that makes the renderer re-run a shader over everything composed
-# under a bounds, at frame end, with an optional per-instance feedback buffer.
-#
-# The main pass renders into the post intermediate whenever region entries
-# exist or a post shader is installed; regions read rects back out of it in
-# paint order and write back scissored; the window post pass runs last. Blade
-# only, like the two patches under it.
-#
-# Applies on top of user-shader-primitive.patch.
-diff -x .rox-stamp -ruN base/src/elements/user_shader.rs work/src/elements/user_shader.rs
---- a/src/elements/user_shader.rs
-+++ b/src/elements/user_shader.rs
+diff -x .rox-stamp -ruN a/src/elements/mod.rs b/src/elements/mod.rs
+--- a/src/elements/mod.rs	2026-08-07 11:33:05.946179304 -0600
++++ b/src/elements/mod.rs	2026-08-07 11:30:36.324642440 -0600
+@@ -6,6 +6,8 @@
+ mod image_cache;
+ mod img;
+ mod list;
++// rox patch: paints a child in the overlay phase.
++mod overlay_phase;
+ mod surface;
+ mod svg;
+ mod text;
+@@ -20,6 +22,7 @@
+ pub use image_cache::*;
+ pub use img::*;
+ pub use list::*;
++pub use overlay_phase::*;
+ pub use surface::*;
+ pub use svg::*;
+ pub use text::*;
+diff -x .rox-stamp -ruN a/src/elements/overlay_phase.rs b/src/elements/overlay_phase.rs
+--- a/src/elements/overlay_phase.rs	1969-12-31 17:00:00.000000000 -0700
++++ b/src/elements/overlay_phase.rs	2026-08-07 11:30:31.724591840 -0600
+@@ -0,0 +1,80 @@
++use crate::{
++    AnyElement, App, Bounds, Element, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
++    Pixels, Window,
++};
++
++/// rox patch: paints `child` in the window's overlay phase, the same range of
++/// the draw order that context menus, tooltips and drag previews land in. Use
++/// it for a surface that is conceptually an overlay but sits in the element
++/// tree as an ordinary child - a modal hosted as the last child of a root
++/// view, say - so region shader passes run underneath it instead of over it.
++///
++/// Layout and prepaint are untouched, and so is hit testing: only the draw
++/// order the child's primitives record moves.
++pub fn overlay_phase(child: impl IntoElement) -> OverlayPhase {
++    OverlayPhase {
++        child: child.into_any_element(),
++    }
++}
++
++/// The element [`overlay_phase`] builds.
++pub struct OverlayPhase {
++    child: AnyElement,
++}
++
++impl Element for OverlayPhase {
++    type RequestLayoutState = ();
++    type PrepaintState = ();
++
++    fn id(&self) -> Option<crate::ElementId> {
++        None
++    }
++
++    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
++        None
++    }
++
++    fn request_layout(
++        &mut self,
++        _id: Option<&GlobalElementId>,
++        _inspector_id: Option<&InspectorElementId>,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> (LayoutId, ()) {
++        (self.child.request_layout(window, cx), ())
++    }
++
++    fn prepaint(
++        &mut self,
++        _id: Option<&GlobalElementId>,
++        _inspector_id: Option<&InspectorElementId>,
++        _bounds: Bounds<Pixels>,
++        _request_layout: &mut Self::RequestLayoutState,
++        window: &mut Window,
++        cx: &mut App,
++    ) {
++        self.child.prepaint(window, cx);
++    }
++
++    fn paint(
++        &mut self,
++        _id: Option<&GlobalElementId>,
++        _inspector_id: Option<&InspectorElementId>,
++        _bounds: Bounds<Pixels>,
++        _request_layout: &mut Self::RequestLayoutState,
++        _prepaint: &mut Self::PrepaintState,
++        window: &mut Window,
++        cx: &mut App,
++    ) {
++        let child = &mut self.child;
++        window.with_overlay_phase(|window| child.paint(window, cx));
++    }
++}
++
++impl IntoElement for OverlayPhase {
++    type Element = Self;
++
++    fn into_element(self) -> Self::Element {
++        self
++    }
++}
+diff -x .rox-stamp -ruN a/src/elements/user_shader.rs b/src/elements/user_shader.rs
+--- a/src/elements/user_shader.rs	2026-08-07 11:33:05.946179304 -0600
++++ b/src/elements/user_shader.rs	2026-08-07 11:29:59.943291613 -0600
 @@ -9,6 +9,7 @@
  pub struct UserShaderElement {
      shader: UserShaderId,
@@ -54,9 +144,9 @@ diff -x .rox-stamp -ruN base/src/elements/user_shader.rs work/src/elements/user_
      }
  }
  
-diff -x .rox-stamp -ruN base/src/platform/blade/blade_renderer.rs work/src/platform/blade/blade_renderer.rs
---- a/src/platform/blade/blade_renderer.rs
-+++ b/src/platform/blade/blade_renderer.rs
+diff -x .rox-stamp -ruN a/src/platform/blade/blade_renderer.rs b/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs	2026-08-07 11:33:05.947104245 -0600
++++ b/src/platform/blade/blade_renderer.rs	2026-08-07 11:29:59.943552697 -0600
 @@ -5,6 +5,7 @@
  use crate::{
      Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point, PolychromeSprite,
@@ -763,7 +853,7 @@ diff -x .rox-stamp -ruN base/src/platform/blade/blade_renderer.rs work/src/platf
      }
  
      pub fn draw(&mut self, scene: &Scene) {
-@@ -798,17 +1327,33 @@
+@@ -798,17 +1327,36 @@
          };
          self.command_encoder.init_texture(frame.texture());
  
@@ -798,13 +888,48 @@ diff -x .rox-stamp -ruN base/src/platform/blade/blade_renderer.rs work/src/platf
 +        let main_target_view = intermediate
 +            .map(|(_, view)| view)
 +            .unwrap_or_else(|| frame.texture_view());
-+        // Filled during the batch walk below, so the order the renderer runs
-+        // them in is the order they were painted in.
-+        let mut regions: Vec<&UserShaderRegion> = Vec::new();
++        // `Scene::finish` already sorted these by paint order, which is the
++        // order they run in. Splitting the main pass at the overlay boundary
++        // costs an extra render pass, so only do it when there's a region
++        // sequence to slot in there.
++        let split_at_overlay = !scene.user_shader_regions().is_empty();
++        let mut regions_done = false;
  
          let globals = GlobalParams {
              viewport_size: [
-@@ -1071,31 +1616,31 @@
+@@ -836,6 +1384,31 @@
+ 
+         profiling::scope!("render pass");
+         for batch in scene.batches() {
++            // The overlay boundary. Everything gpui defers - context menus,
++            // tooltips, drag previews - paints after this point, so the region
++            // passes belong here, on the composed content below it. Run them,
++            // then reopen the main pass loading what's there so the overlays
++            // draw over the shaded result.
++            if split_at_overlay && !regions_done && batch.is_overlay() {
++                regions_done = true;
++                if let Some((intermediate_texture, intermediate_view)) = intermediate {
++                    drop(pass);
++                    for region in scene.user_shader_regions() {
++                        self.draw_shader_region(region, intermediate_texture, intermediate_view);
++                    }
++                    pass = self.command_encoder.render(
++                        "main overlay",
++                        gpu::RenderTargetSet {
++                            colors: &[gpu::RenderTarget {
++                                view: main_target_view,
++                                init_op: gpu::InitOp::Load,
++                                finish_op: gpu::FinishOp::Store,
++                            }],
++                            depth_stencil: None,
++                        },
++                    );
++                }
++            }
+             match batch {
+                 PrimitiveBatch::Quads(quads) => {
+                     let instance_buf = unsafe { self.instance_belt.alloc_typed(quads, &self.gpu) };
+@@ -1071,31 +1644,31 @@
                      let Some(entry) = self.user_shaders.get_mut(&first.shader_id) else {
                          continue;
                      };
@@ -846,14 +971,14 @@ diff -x .rox-stamp -ruN base/src/platform/blade/blade_renderer.rs work/src/platf
                              signals: bytemuck::cast(head.params),
                          };
                          let instance_buf =
-@@ -1113,43 +1658,25 @@
+@@ -1113,43 +1686,28 @@
                          start = end;
                      }
                  }
 +                // Regions draw nothing here. They're in the scene so cached
-+                // views replay them, and the renderer runs them at frame end
-+                // once the whole image they post-process exists.
-+                PrimitiveBatch::UserShaderRegions(entries) => regions.extend(entries),
++                // views replay them, and the renderer runs the whole sequence
++                // in one go at the overlay boundary.
++                PrimitiveBatch::UserShaderRegions(_) => {}
              }
          }
          drop(pass);
@@ -894,9 +1019,12 @@ diff -x .rox-stamp -ruN base/src/platform/blade/blade_renderer.rs work/src/platf
 +        if let Some((intermediate_texture, intermediate_view)) = intermediate {
 +            // In paint order, so a later region reads what the earlier ones
 +            // left behind, and a region under the post pass gets
-+            // post-processed like everything else.
-+            for region in regions {
-+                self.draw_shader_region(region, intermediate_texture, intermediate_view);
++            // post-processed like everything else. A frame with no overlay
++            // never hit the boundary above, so the sequence runs here instead.
++            if !regions_done {
++                for region in scene.user_shader_regions() {
++                    self.draw_shader_region(region, intermediate_texture, intermediate_view);
++                }
 +            }
 +            if self.post_shader.is_some() {
 +                self.draw_post_pass(frame.texture_view(), intermediate_view);
@@ -905,7 +1033,7 @@ diff -x .rox-stamp -ruN base/src/platform/blade/blade_renderer.rs work/src/platf
              }
          }
  
-@@ -1216,7 +1743,10 @@
+@@ -1216,7 +1774,10 @@
          mip_level_count: 1,
          sample_count: 1,
          dimension: gpu::TextureDimension::D2,
@@ -917,7 +1045,7 @@ diff -x .rox-stamp -ruN base/src/platform/blade/blade_renderer.rs work/src/platf
          external: None,
      });
      let texture_view = gpu.create_texture_view(
-@@ -1231,19 +1761,27 @@
+@@ -1231,19 +1792,27 @@
      (texture, texture_view)
  }
  
@@ -948,7 +1076,7 @@ diff -x .rox-stamp -ruN base/src/platform/blade/blade_renderer.rs work/src/platf
          vertex: shader.at("vs_post"),
          vertex_fetches: &[],
          primitive: gpu::PrimitiveState {
-@@ -1261,6 +1799,74 @@
+@@ -1261,6 +1830,74 @@
      })
  }
  
@@ -1023,9 +1151,9 @@ diff -x .rox-stamp -ruN base/src/platform/blade/blade_renderer.rs work/src/platf
  fn create_user_shader_pipeline(
      gpu: &gpu::Context,
      surface_info: gpu::SurfaceInfo,
-diff -x .rox-stamp -ruN base/src/platform/linux/wayland/window.rs work/src/platform/linux/wayland/window.rs
---- a/src/platform/linux/wayland/window.rs
-+++ b/src/platform/linux/wayland/window.rs
+diff -x .rox-stamp -ruN a/src/platform/linux/wayland/window.rs b/src/platform/linux/wayland/window.rs
+--- a/src/platform/linux/wayland/window.rs	2026-08-07 11:33:05.947599011 -0600
++++ b/src/platform/linux/wayland/window.rs	2026-08-07 11:29:59.944146234 -0600
 @@ -1102,12 +1102,20 @@
          self.borrow_mut().renderer.register_user_shader(id, source);
      }
@@ -1051,9 +1179,9 @@ diff -x .rox-stamp -ruN base/src/platform/linux/wayland/window.rs work/src/platf
      }
  }
  
-diff -x .rox-stamp -ruN base/src/platform/linux/x11/window.rs work/src/platform/linux/x11/window.rs
---- a/src/platform/linux/x11/window.rs
-+++ b/src/platform/linux/x11/window.rs
+diff -x .rox-stamp -ruN a/src/platform/linux/x11/window.rs b/src/platform/linux/x11/window.rs
+--- a/src/platform/linux/x11/window.rs	2026-08-07 11:33:05.947835773 -0600
++++ b/src/platform/linux/x11/window.rs	2026-08-07 11:29:59.944443087 -0600
 @@ -1676,11 +1676,27 @@
              .register_user_shader(id, source);
      }
@@ -1086,9 +1214,9 @@ diff -x .rox-stamp -ruN base/src/platform/linux/x11/window.rs work/src/platform/
 +            .set_post_signals(signals, meta, mouse);
      }
  }
-diff -x .rox-stamp -ruN base/src/platform/mac/metal_renderer.rs work/src/platform/mac/metal_renderer.rs
---- a/src/platform/mac/metal_renderer.rs
-+++ b/src/platform/mac/metal_renderer.rs
+diff -x .rox-stamp -ruN a/src/platform/mac/metal_renderer.rs b/src/platform/mac/metal_renderer.rs
+--- a/src/platform/mac/metal_renderer.rs	2026-08-07 11:33:05.948130757 -0600
++++ b/src/platform/mac/metal_renderer.rs	2026-08-07 11:29:59.944740471 -0600
 @@ -524,7 +524,7 @@
                  ),
                  // rox patch: user shaders are blade only, the way surfaces
@@ -1098,9 +1226,9 @@ diff -x .rox-stamp -ruN base/src/platform/mac/metal_renderer.rs work/src/platfor
              };
              if !ok {
                  command_encoder.end_encoding();
-diff -x .rox-stamp -ruN base/src/platform/windows/directx_renderer.rs work/src/platform/windows/directx_renderer.rs
---- a/src/platform/windows/directx_renderer.rs
-+++ b/src/platform/windows/directx_renderer.rs
+diff -x .rox-stamp -ruN a/src/platform/windows/directx_renderer.rs b/src/platform/windows/directx_renderer.rs
+--- a/src/platform/windows/directx_renderer.rs	2026-08-07 11:33:05.948909056 -0600
++++ b/src/platform/windows/directx_renderer.rs	2026-08-07 11:29:59.945103495 -0600
 @@ -305,7 +305,7 @@
                  PrimitiveBatch::Surfaces(surfaces) => self.draw_surfaces(surfaces),
                  // rox patch: user shaders are blade only. Skipped rather than
@@ -1110,9 +1238,9 @@ diff -x .rox-stamp -ruN base/src/platform/windows/directx_renderer.rs work/src/p
              }.context(format!("scene too large: {} paths, {} shadows, {} quads, {} underlines, {} mono, {} poly, {} surfaces",
                      scene.paths.len(),
                      scene.shadows.len(),
-diff -x .rox-stamp -ruN base/src/platform.rs work/src/platform.rs
---- a/src/platform.rs
-+++ b/src/platform.rs
+diff -x .rox-stamp -ruN a/src/platform.rs b/src/platform.rs
+--- a/src/platform.rs	2026-08-07 11:33:05.950093001 -0600
++++ b/src/platform.rs	2026-08-07 11:29:59.945424369 -0600
 @@ -548,12 +548,13 @@
      fn set_client_inset(&self, _inset: Pixels) {}
      fn gpu_specs(&self) -> Option<GpuSpecs>;
@@ -1132,10 +1260,35 @@ diff -x .rox-stamp -ruN base/src/platform.rs work/src/platform.rs
  
      fn update_ime_position(&self, _bounds: Bounds<Pixels>);
  
-diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
---- a/src/scene.rs
-+++ b/src/scene.rs
-@@ -34,6 +34,10 @@
+diff -x .rox-stamp -ruN a/src/scene.rs b/src/scene.rs
+--- a/src/scene.rs	2026-08-07 11:33:05.950093001 -0600
++++ b/src/scene.rs	2026-08-07 11:31:08.904984546 -0600
+@@ -20,11 +20,24 @@
+ 
+ pub(crate) type DrawOrder = u32;
+ 
++/// rox patch: added to every draw order recorded while the window is painting
++/// its deferred draws (context menus, tooltips, drag previews). Draw orders
++/// come out of a bounds tree, so they measure overlap depth and say nothing
++/// about when a primitive was painted - two primitives that don't overlap both
++/// get order 1 no matter how far apart their paint calls were. Lifting the
++/// overlay phase into its own range of the order space is what lets the
++/// renderer find the boundary and run region shader passes underneath it.
++/// A window would need 16 million stacked primitives to reach the bias.
++pub(crate) const OVERLAY_ORDER_BIAS: DrawOrder = 1 << 24;
++
+ #[derive(Default)]
+ pub(crate) struct Scene {
+     pub(crate) paint_operations: Vec<PaintOperation>,
+     primitive_bounds: BoundsTree<ScaledPixels>,
+     layer_stack: Vec<DrawOrder>,
++    // rox patch: `OVERLAY_ORDER_BIAS` while the deferred-draw phase is
++    // painting, 0 otherwise.
++    order_bias: DrawOrder,
+     pub(crate) shadows: Vec<Shadow>,
+     pub(crate) quads: Vec<Quad>,
+     pub(crate) paths: Vec<Path<ScaledPixels>>,
+@@ -34,6 +47,10 @@
      pub(crate) surfaces: Vec<PaintSurface>,
      // rox patch: user shader primitives, painted by `Window::paint_user_shader`.
      pub(crate) user_shaders: Vec<UserShader>,
@@ -1146,7 +1299,15 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
  }
  
  impl Scene {
-@@ -49,6 +53,7 @@
+@@ -41,6 +58,7 @@
+         self.paint_operations.clear();
+         self.primitive_bounds.clear();
+         self.layer_stack.clear();
++        self.order_bias = 0;
+         self.paths.clear();
+         self.shadows.clear();
+         self.quads.clear();
+@@ -49,14 +67,37 @@
          self.polychrome_sprites.clear();
          self.surfaces.clear();
          self.user_shaders.clear();
@@ -1154,7 +1315,54 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
      }
  
      pub fn len(&self) -> usize {
-@@ -116,6 +121,10 @@
+         self.paint_operations.len()
+     }
+ 
++    /// rox patch: everything the deferred-draw phase records lands above the
++    /// overlay boundary, so the renderer can slot the region shader passes in
++    /// between and leave menus and tooltips on top of them.
++    ///
++    /// Returns the bias that was in force, which `end_overlay` puts back. The
++    /// phase is a flag rather than a depth: entering it twice is the same as
++    /// entering it once, so an overlay element nested inside a deferred draw
++    /// (or inside another overlay) can't push its primitives past the range.
++    pub(crate) fn begin_overlay(&mut self) -> DrawOrder {
++        let previous = self.order_bias;
++        self.order_bias = OVERLAY_ORDER_BIAS;
++        previous
++    }
++
++    pub(crate) fn end_overlay(&mut self, previous: DrawOrder) {
++        self.order_bias = previous;
++    }
++
++    fn next_order(&mut self, bounds: Bounds<ScaledPixels>) -> DrawOrder {
++        self.primitive_bounds.insert(bounds) + self.order_bias
++    }
++
+     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
+-        let order = self.primitive_bounds.insert(bounds);
++        let order = self.next_order(bounds);
+         self.layer_stack.push(order);
+         self.paint_operations
+             .push(PaintOperation::StartLayer(bounds));
+@@ -77,11 +118,10 @@
+             return;
+         }
+ 
+-        let order = self
+-            .layer_stack
+-            .last()
+-            .copied()
+-            .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
++        let order = match self.layer_stack.last().copied() {
++            Some(order) => order,
++            None => self.next_order(clipped_bounds),
++        };
+         match &mut primitive {
+             Primitive::Shadow(shadow) => {
+                 shadow.order = order;
+@@ -116,6 +156,10 @@
                  user_shader.order = order;
                  self.user_shaders.push(user_shader.clone());
              }
@@ -1165,7 +1373,7 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
          }
          self.paint_operations
              .push(PaintOperation::Primitive(primitive));
-@@ -144,6 +153,9 @@
+@@ -144,6 +188,9 @@
          // Sorted by shader too, so a run of one shader batches into one draw.
          self.user_shaders
              .sort_by_key(|user_shader| (user_shader.order, user_shader.shader_id));
@@ -1175,7 +1383,7 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
      }
  
      #[cfg_attr(
-@@ -179,8 +191,17 @@
+@@ -179,8 +226,17 @@
              user_shaders: &self.user_shaders,
              user_shaders_start: 0,
              user_shaders_iter: self.user_shaders.iter().peekable(),
@@ -1193,7 +1401,7 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
  }
  
  #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
-@@ -201,6 +222,7 @@
+@@ -201,6 +257,7 @@
      PolychromeSprite,
      Surface,
      UserShader,
@@ -1201,7 +1409,7 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
  }
  
  pub(crate) enum PaintOperation {
-@@ -219,6 +241,7 @@
+@@ -219,6 +276,7 @@
      PolychromeSprite(PolychromeSprite),
      Surface(PaintSurface),
      UserShader(UserShader),
@@ -1209,7 +1417,7 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
  }
  
  impl Primitive {
-@@ -232,6 +255,7 @@
+@@ -232,6 +290,7 @@
              Primitive::PolychromeSprite(sprite) => &sprite.bounds,
              Primitive::Surface(surface) => &surface.bounds,
              Primitive::UserShader(user_shader) => &user_shader.bounds,
@@ -1217,7 +1425,7 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
          }
      }
  
-@@ -245,6 +269,7 @@
+@@ -245,6 +304,7 @@
              Primitive::PolychromeSprite(sprite) => &sprite.content_mask,
              Primitive::Surface(surface) => &surface.content_mask,
              Primitive::UserShader(user_shader) => &user_shader.content_mask,
@@ -1225,7 +1433,7 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
          }
      }
  }
-@@ -281,6 +306,9 @@
+@@ -281,6 +341,9 @@
      user_shaders: &'a [UserShader],
      user_shaders_start: usize,
      user_shaders_iter: Peekable<slice::Iter<'a, UserShader>>,
@@ -1235,7 +1443,7 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
  }
  
  impl<'a> Iterator for BatchIterator<'a> {
-@@ -314,6 +342,10 @@
+@@ -314,16 +377,29 @@
                  self.user_shaders_iter.peek().map(|s| s.order),
                  PrimitiveKind::UserShader,
              ),
@@ -1246,7 +1454,29 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
          ];
          orders_and_kinds.sort_by_key(|(order, kind)| (order.unwrap_or(u32::MAX), *kind));
  
-@@ -466,6 +498,25 @@
+         let first = orders_and_kinds[0];
+         let second = orders_and_kinds[1];
+-        let (batch_kind, max_order_and_kind) = if first.0.is_some() {
+-            (first.1, (second.0.unwrap_or(u32::MAX), second.1))
+-        } else {
++        let Some(first_order) = first.0 else {
+             return None;
+         };
++        let batch_kind = first.1;
++        let mut max_order_and_kind = (second.0.unwrap_or(u32::MAX), second.1);
++        // rox patch: a run of one kind would otherwise merge straight across
++        // the overlay boundary, and the renderer needs to split the main pass
++        // there to keep menus and tooltips out of the region shader passes.
++        // `PrimitiveKind::Shadow` is the lowest kind, so this cap excludes the
++        // boundary order itself whatever kind carries it.
++        if first_order < OVERLAY_ORDER_BIAS {
++            max_order_and_kind =
++                max_order_and_kind.min((OVERLAY_ORDER_BIAS, PrimitiveKind::Shadow));
++        }
+ 
+         match batch_kind {
+             PrimitiveKind::Shadow => {
+@@ -466,6 +542,25 @@
                      &self.user_shaders[user_shaders_start..user_shaders_end],
                  ))
              }
@@ -1272,15 +1502,36 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
          }
      }
  }
-@@ -493,6 +544,7 @@
+@@ -493,6 +588,28 @@
      },
      Surfaces(&'a [PaintSurface]),
      UserShaders(&'a [UserShader]),
 +    UserShaderRegions(&'a [UserShaderRegion]),
++}
++
++impl PrimitiveBatch<'_> {
++    /// rox patch: whether this batch was recorded during the window's
++    /// deferred-draw phase. Batches come out of the iterator in order, so the
++    /// first one this is true for is the overlay boundary.
++    #[allow(dead_code)]
++    pub(crate) fn is_overlay(&self) -> bool {
++        let order = match self {
++            PrimitiveBatch::Shadows(primitives) => primitives.first().map(|p| p.order),
++            PrimitiveBatch::Quads(primitives) => primitives.first().map(|p| p.order),
++            PrimitiveBatch::Paths(primitives) => primitives.first().map(|p| p.order),
++            PrimitiveBatch::Underlines(primitives) => primitives.first().map(|p| p.order),
++            PrimitiveBatch::MonochromeSprites { sprites, .. } => sprites.first().map(|p| p.order),
++            PrimitiveBatch::PolychromeSprites { sprites, .. } => sprites.first().map(|p| p.order),
++            PrimitiveBatch::Surfaces(primitives) => primitives.first().map(|p| p.order),
++            PrimitiveBatch::UserShaders(primitives) => primitives.first().map(|p| p.order),
++            PrimitiveBatch::UserShaderRegions(primitives) => primitives.first().map(|p| p.order),
++        };
++        order.is_some_and(|order| order >= OVERLAY_ORDER_BIAS)
++    }
  }
  
  #[derive(Default, Debug, Clone)]
-@@ -730,7 +782,9 @@
+@@ -730,7 +847,9 @@
      pub bounds: Bounds<ScaledPixels>,
      pub content_mask: ContentMask<ScaledPixels>,
      pub pad: [u32; 2],
@@ -1290,7 +1541,7 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
  }
  
  impl From<UserShader> for Primitive {
-@@ -739,6 +793,32 @@
+@@ -739,6 +858,32 @@
      }
  }
  
@@ -1323,9 +1574,157 @@ diff -x .rox-stamp -ruN base/src/scene.rs work/src/scene.rs
  #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
  pub(crate) struct PathId(pub(crate) usize);
  
-diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
---- a/src/window.rs
-+++ b/src/window.rs
+@@ -902,3 +1047,147 @@
+         }
+     }
+ }
++
++// rox patch: coverage for the overlay boundary the region shader passes split
++// the main pass at.
++#[cfg(test)]
++mod overlay_boundary_tests {
++    use super::*;
++    use crate::size;
++
++    fn quad_at(x: f32, y: f32) -> Quad {
++        let bounds = Bounds {
++            origin: point(ScaledPixels(x), ScaledPixels(y)),
++            size: size(ScaledPixels(10.), ScaledPixels(10.)),
++        };
++        Quad {
++            bounds,
++            content_mask: ContentMask { bounds },
++            ..Default::default()
++        }
++    }
++
++    #[test]
++    fn overlay_phase_lifts_draw_orders() {
++        let mut scene = Scene::default();
++        scene.insert_primitive(quad_at(0., 0.));
++        let restore = scene.begin_overlay();
++        scene.insert_primitive(quad_at(0., 0.));
++        scene.end_overlay(restore);
++        scene.insert_primitive(quad_at(0., 0.));
++
++        assert!(scene.quads[0].order < OVERLAY_ORDER_BIAS);
++        assert!(scene.quads[1].order >= OVERLAY_ORDER_BIAS);
++        assert!(scene.quads[2].order < OVERLAY_ORDER_BIAS);
++    }
++
++    #[test]
++    fn overlay_sorts_last_even_when_it_overlaps_nothing() {
++        // The whole reason for the bias: draw order is overlap depth, so a
++        // menu that sits over empty space would otherwise get order 1 and
++        // sort underneath deeply stacked content elsewhere in the window.
++        let mut scene = Scene::default();
++        for _ in 0..8 {
++            scene.insert_primitive(quad_at(0., 0.));
++        }
++        let restore = scene.begin_overlay();
++        scene.insert_primitive(quad_at(500., 500.));
++        scene.end_overlay(restore);
++        scene.finish();
++
++        let overlay = scene.quads.last().unwrap();
++        assert!(overlay.bounds.origin.x == ScaledPixels(500.));
++        assert!(overlay.order >= OVERLAY_ORDER_BIAS);
++    }
++
++    #[test]
++    fn layers_pushed_during_overlay_stay_above_the_boundary() {
++        let mut scene = Scene::default();
++        scene.insert_primitive(quad_at(0., 0.));
++        let restore = scene.begin_overlay();
++        scene.push_layer(Bounds {
++            origin: point(ScaledPixels(500.), ScaledPixels(500.)),
++            size: size(ScaledPixels(10.), ScaledPixels(10.)),
++        });
++        scene.insert_primitive(quad_at(500., 500.));
++        scene.pop_layer();
++        scene.end_overlay(restore);
++
++        assert!(scene.quads[0].order < OVERLAY_ORDER_BIAS);
++        assert!(scene.quads[1].order >= OVERLAY_ORDER_BIAS);
++    }
++
++    #[test]
++    fn batches_report_the_boundary_in_order() {
++        let mut scene = Scene::default();
++        scene.insert_primitive(quad_at(0., 0.));
++        let restore = scene.begin_overlay();
++        scene.insert_primitive(quad_at(500., 500.));
++        scene.end_overlay(restore);
++        scene.finish();
++
++        // Same kind either side of the boundary, so this also covers the
++        // batch iterator refusing to merge a run straight across it.
++        let flags = scene
++            .batches()
++            .map(|batch| batch.is_overlay())
++            .collect::<Vec<_>>();
++        assert_eq!(flags, vec![false, true]);
++    }
++
++    #[test]
++    fn nested_overlay_phases_dont_stack() {
++        // `Window::with_overlay_phase` can land inside the deferred-draw
++        // phase, or inside another one of itself. Entering twice has to mean
++        // the same thing as entering once, and the inner exit has to leave the
++        // outer phase standing.
++        let mut scene = Scene::default();
++        let outer = scene.begin_overlay();
++        scene.insert_primitive(quad_at(0., 0.));
++        let inner = scene.begin_overlay();
++        scene.insert_primitive(quad_at(0., 0.));
++        scene.end_overlay(inner);
++        scene.insert_primitive(quad_at(0., 0.));
++        scene.end_overlay(outer);
++        scene.insert_primitive(quad_at(0., 0.));
++
++        for quad in &scene.quads[..3] {
++            assert!(quad.order >= OVERLAY_ORDER_BIAS);
++            assert!(quad.order < OVERLAY_ORDER_BIAS * 2);
++        }
++        assert!(scene.quads[3].order < OVERLAY_ORDER_BIAS);
++    }
++
++    #[test]
++    fn replay_reassigns_the_phase_it_replays_into() {
++        // Cached views and reused deferred draws go back through
++        // `insert_primitive`, so a primitive's phase is decided by when it is
++        // replayed, not by the order stored last frame.
++        let mut prev = Scene::default();
++        let restore = prev.begin_overlay();
++        prev.insert_primitive(quad_at(0., 0.));
++        prev.end_overlay(restore);
++        assert!(prev.quads[0].order >= OVERLAY_ORDER_BIAS);
++
++        let mut scene = Scene::default();
++        scene.replay(0..prev.len(), &prev);
++        assert!(scene.quads[0].order < OVERLAY_ORDER_BIAS);
++
++        let mut scene = Scene::default();
++        let restore = scene.begin_overlay();
++        scene.replay(0..prev.len(), &prev);
++        scene.end_overlay(restore);
++        assert!(scene.quads[0].order >= OVERLAY_ORDER_BIAS);
++    }
++
++    #[test]
++    fn clear_ends_the_overlay_phase() {
++        let mut scene = Scene::default();
++        let _restore = scene.begin_overlay();
++        scene.insert_primitive(quad_at(0., 0.));
++        scene.clear();
++        scene.insert_primitive(quad_at(0., 0.));
++
++        assert!(scene.quads[0].order < OVERLAY_ORDER_BIAS);
++    }
++}
+diff -x .rox-stamp -ruN a/src/window.rs b/src/window.rs
+--- a/src/window.rs	2026-08-07 11:33:05.950093001 -0600
++++ b/src/window.rs	2026-08-07 11:31:28.953222784 -0600
 @@ -852,6 +852,9 @@
      pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
      default_prevented: bool,
@@ -1344,7 +1743,28 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
              image_cache_stack: Vec::new(),
              #[cfg(any(feature = "inspector", debug_assertions))]
              inspector: None,
-@@ -3286,9 +3290,20 @@
+@@ -2075,6 +2079,12 @@
+         #[cfg(any(feature = "inspector", debug_assertions))]
+         self.paint_inspector(inspector_element, cx);
+ 
++        // rox patch: everything from here down is overlay - deferred draws,
++        // the prompt, the drag preview, the tooltip. The scene tags it so the
++        // renderer can run region shader passes on the content underneath and
++        // still leave this lot painted on top, instead of shading it or
++        // wiping it out.
++        let previous_phase = self.next_frame.scene.begin_overlay();
+         self.paint_deferred_draws(&sorted_deferred_draws, cx);
+ 
+         if let Some(mut prompt_element) = prompt_element {
+@@ -2084,6 +2094,7 @@
+         } else if let Some(mut tooltip_element) = tooltip_element {
+             tooltip_element.paint(self, cx);
+         }
++        self.next_frame.scene.end_overlay(previous_phase);
+ 
+         #[cfg(any(feature = "inspector", debug_assertions))]
+         self.paint_inspector_hitbox(cx);
+@@ -3286,9 +3297,20 @@
          }
      }
  
@@ -1367,7 +1787,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
      ///
      /// This method should only be called as part of the paint phase of
      /// element drawing.
-@@ -3299,6 +3314,7 @@
+@@ -3299,6 +3321,7 @@
          bounds: Bounds<Pixels>,
          shader: UserShaderId,
          signals: [f32; 16],
@@ -1375,7 +1795,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
      ) {
          use crate::UserShader;
  
-@@ -3308,6 +3324,7 @@
+@@ -3308,6 +3331,7 @@
              return;
          }
          let scale_factor = self.scale_factor();
@@ -1383,7 +1803,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
          let bounds = bounds.scale(scale_factor);
          let content_mask = self.content_mask().scale(scale_factor);
          self.next_frame.scene.insert_primitive(UserShader {
-@@ -3316,29 +3333,121 @@
+@@ -3316,29 +3340,143 @@
              bounds,
              content_mask,
              pad: [0; 2],
@@ -1454,6 +1874,28 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
 +        }
 +    }
 +
++    /// Paints everything `f` records in the overlay phase: the same range of
++    /// the draw order the window's own deferred draws, prompts, drag previews
++    /// and tooltips land in, which is above where region shader passes run.
++    ///
++    /// Reach for it when a surface is conceptually an overlay but lives in the
++    /// element tree as an ordinary child, so it would otherwise compose under
++    /// a panel's region shader. The [`crate::overlay_phase`] element wraps this
++    /// for the common case of "one child, painted late".
++    ///
++    /// Nesting is fine, and nesting inside the window's own overlay phase is
++    /// fine: the phase is a flag, so entering twice reads the same as entering
++    /// once, and each exit restores what it found. Hit testing doesn't move -
++    /// hitboxes order by the sequence they were inserted in, not by draw order.
++    ///
++    /// rox patch: part of the user shader surfaces.
++    pub fn with_overlay_phase<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
++        let previous = self.next_frame.scene.begin_overlay();
++        let result = f(self);
++        self.next_frame.scene.end_overlay(previous);
++        result
++    }
++
 +    /// Which `mouse` slot a button drives, if any: z is primary, w secondary,
 +    /// and the rest of the buttons don't reach shaders.
 +    fn shader_mouse_button_slot(button: MouseButton) -> Option<usize> {
@@ -1512,7 +1954,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
      }
  
      /// Add a node to the layout tree for the current frame. Takes the `Style` of the element for which
-@@ -3729,11 +3838,19 @@
+@@ -3729,11 +3867,19 @@
              PlatformInput::MouseDown(mouse_down) => {
                  self.mouse_position = mouse_down.position;
                  self.modifiers = mouse_down.modifiers;
@@ -1532,7 +1974,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
                  PlatformInput::MouseUp(mouse_up)
              }
              PlatformInput::MouseExited(mouse_exited) => {
-@@ -5235,17 +5352,28 @@
+@@ -5235,17 +5381,28 @@
      }
  }
  
@@ -1566,7 +2008,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
  struct PostVarying {
      @builtin(position) position: vec4<f32>,
      @location(0) uv: vec2<f32>,
-@@ -5266,20 +5394,47 @@
+@@ -5266,20 +5423,47 @@
  }
  ";
  
@@ -1625,7 +2067,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
  
  // Blade panics on bad WGSL, so anything user-supplied gets checked up front.
  // The parsed module comes back so the caller can inspect what the source
-@@ -5305,7 +5460,7 @@
+@@ -5305,7 +5489,7 @@
          let user = "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
              return textureSample(screen, samp, uv);
          }";
@@ -1634,7 +2076,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
          validate_shader_source(&decorated).unwrap();
      }
  
-@@ -5317,21 +5472,21 @@
+@@ -5317,21 +5501,21 @@
              let tint = vec4<f32>(bass, 0.0, 0.0, 0.0) * sin(params.time);
              return base + tint * base.a;
          }";
@@ -1659,7 +2101,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
          assert!(validate_shader_source(&decorated).is_err());
      }
  }
-@@ -5346,13 +5501,6 @@
+@@ -5346,13 +5530,6 @@
  // as the post pass, but the vertex stage builds an instanced quad from the
  // scene's `UserShader` primitives and there is no screen texture to read.
  const USER_SHADER_TEMPLATE: &str = "
@@ -1673,7 +2115,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
  struct GlobalParams {
      viewport_size: vec2<f32>,
      premultiplied_alpha: u32,
-@@ -5369,7 +5517,9 @@
+@@ -5369,7 +5546,9 @@
      shader_id: u32,
      bounds: UserShaderBounds,
      content_mask: UserShaderBounds,
@@ -1683,7 +2125,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
  }
  
  struct UserShaderVarying {
-@@ -5421,17 +5571,36 @@
+@@ -5421,17 +5600,36 @@
           var<uniform> params: ShaderParams;\n\
           var<storage, read> b_user_shaders: array<UserShader>;\n"
      };
@@ -1724,7 +2166,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
  }
  
  /// rox patch: this window's user shaders, keyed by source content so the same
-@@ -5447,18 +5616,38 @@
+@@ -5447,18 +5645,38 @@
          self.entries.get(id.0 as usize)
      }
  
@@ -1768,7 +2210,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
      /// Registers `source`, returning its id and whether this call is what
      /// created it. Re-registering the same text is a lookup, not a compile.
      #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-@@ -5472,34 +5661,69 @@
+@@ -5472,34 +5690,69 @@
              return Ok((*id, false));
          }
  
@@ -1848,7 +2290,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
          });
          self.by_hash.insert(hash, id);
          Ok((id, true))
-@@ -5521,7 +5745,7 @@
+@@ -5521,7 +5774,7 @@
          assert_eq!(id, UserShaderId(0));
          assert!(is_new);
          assert!(registry.primitive_source(id).is_some());
@@ -1857,7 +2299,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
      }
  
      #[test]
-@@ -5588,7 +5812,7 @@
+@@ -5588,7 +5841,7 @@
              )
              .unwrap();
          assert!(registry.primitive_source(id).is_none());
@@ -1866,7 +2308,7 @@ diff -x .rox-stamp -ruN base/src/window.rs work/src/window.rs
      }
  
      #[test]
-@@ -5606,4 +5830,130 @@
+@@ -5606,4 +5859,130 @@
          assert!(registry.primitive_source(id).is_some());
          assert!(registry.primitive_source(UserShaderId(42)).is_none());
      }

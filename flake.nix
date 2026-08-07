@@ -173,7 +173,10 @@
                 rust-analyzer
                 pkg-config
               ]
-              ++ lib.optionals stdenv.isLinux (linuxBuildInputs pkgs);
+              # Dev links go through mold (see the gitignored
+              # .cargo/config.toml); CI, release, and the nix package build
+              # keep the stock linker.
+              ++ lib.optionals stdenv.isLinux ([ pkgs.mold ] ++ linuxBuildInputs pkgs);
 
             env = lib.optionalAttrs stdenv.isLinux {
               LD_LIBRARY_PATH = lib.makeLibraryPath (runtimeLibs pkgs);

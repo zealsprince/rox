@@ -6165,12 +6165,9 @@ version = "1.14.0"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
- "candle-core",
- "candle-nn",
  "chrono",
  "dirs 5.0.1",
  "discord-rich-presence",
- "dotenvy",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
@@ -6178,11 +6175,14 @@ dependencies = [
  "ksni",
  "log",
  "lsp-types",
- "md5",
- "notify-debouncer-full",
  "raw-window-handle",
+ "rox-acoustic",
+ "rox-core",
+ "rox-design",
  "rox-dock",
  "rox-library",
+ "rox-net",
+ "rox-panel-kit",
  "rox-playback",
  "rox-viz",
  "rust-embed",
@@ -6198,6 +6198,51 @@ dependencies = [
  "windows-sys 0.61.2",
  "winresource",
  "zbus 5.17.0",
+]
+
+[[package]]
+name = "rox-acoustic"
+version = "1.14.0"
+dependencies = [
+ "candle-core",
+ "candle-nn",
+ "log",
+ "rox-core",
+ "rox-library",
+ "rox-net",
+ "rox-playback",
+ "rox-viz",
+ "sha2 0.10.9",
+ "ureq",
+]
+
+[[package]]
+name = "rox-core"
+version = "1.14.0"
+dependencies = [
+ "chrono",
+ "dirs 5.0.1",
+ "gpui",
+ "log",
+ "rox-design",
+ "rox-dock",
+ "rox-playback",
+ "rox-viz",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rox-design"
+version = "1.14.0"
+dependencies = [
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "rox-library",
+ "rust-embed",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -6217,12 +6262,36 @@ dependencies = [
 name = "rox-library"
 version = "1.14.0"
 dependencies = [
+ "async-channel 2.5.0",
  "image",
  "lofty",
  "log",
  "memchr",
+ "notify-debouncer-full",
  "rayon",
  "rusqlite",
+]
+
+[[package]]
+name = "rox-net"
+version = "1.14.0"
+dependencies = [
+ "dotenvy",
+ "md5",
+ "rox-core",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
+name = "rox-panel-kit"
+version = "1.14.0"
+dependencies = [
+ "gpui",
+ "gpui-component",
+ "rox-design",
+ "serde",
 ]
 
 [[package]]
@@ -6233,7 +6302,10 @@ dependencies = [
  "cpal",
  "ebur128",
  "log",
+ "rox-library",
  "rtrb",
+ "serde",
+ "serde_json",
  "symphonia",
  "windows 0.61.3",
 ]

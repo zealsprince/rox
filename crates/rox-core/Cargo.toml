@@ -1,0 +1,28 @@
+[package]
+name = "rox-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The settings file carries a whole palette, and the live setters push
+# straight through it.
+rox-design = { path = "../rox-design" }
+# The seams toggle writes through to the dock's resizable handles.
+rox-dock = { path = "../rox-dock" }
+# The saved loop mode and the signal routes are these crates' types.
+rox-playback = { path = "../rox-playback" }
+rox-viz = { path = "../rox-viz" }
+# Shallow: app globals for the live setters, plus the appearance and window
+# types the saved frames are written in.
+gpui = { workspace = true }
+# The settings file itself.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Platform data dir, the anchor everything else here hangs off.
+dirs = "5"
+# The logging facade the whole tree writes through; our backend fans each
+# line to stderr, a rolling file, and the console window's ring, and chrono
+# gives it the wall-clock stamp.
+log = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

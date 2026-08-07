@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::settings::Settings;
+use rox_core::settings::Settings;
 
 use super::{agent, net_reason, string, ArtCandidate, ArtProvider, TrackQuery};
 

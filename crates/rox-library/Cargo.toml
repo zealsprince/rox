@@ -19,3 +19,9 @@ image = "0.25"
 # facade costs nothing without a logger behind it, and the alternative is a
 # refusal nobody can see.
 log = "0.4"
+# Filesystem watching for the library roots: notify is the cross-platform
+# layer, the debouncer coalesces a bulk copy's burst into batches and folds a
+# directory deletion into one remove instead of a flood.
+notify-debouncer-full = "0.7"
+# Carries the watcher's batches off the debouncer's thread without a poll.
+async-channel = "2"

@@ -211,7 +211,7 @@ fn linear_to_srgb(c: f32) -> f32 {
 
 /// An sRGB color as (L, C, h); alpha does not participate.
 #[allow(clippy::excessive_precision)]
-pub(crate) fn rgba_to_oklch(color: Rgba) -> (f32, f32, f32) {
+pub fn rgba_to_oklch(color: Rgba) -> (f32, f32, f32) {
     let r = srgb_to_linear(color.r);
     let g = srgb_to_linear(color.g);
     let b = srgb_to_linear(color.b);
@@ -250,7 +250,7 @@ fn in_gamut((r, g, b): (f32, f32, f32)) -> bool {
 /// (a light, vivid blue does not exist); clipping channels there would
 /// shift lightness, so chroma walks down until the color fits instead -
 /// lightness and hue are the promise, chroma is the budget.
-pub(crate) fn oklch_to_rgba(lightness: f32, chroma: f32, hue: f32, a: f32) -> Rgba {
+pub fn oklch_to_rgba(lightness: f32, chroma: f32, hue: f32, a: f32) -> Rgba {
     let mut linear = oklch_to_linear(lightness, chroma, hue);
     if !in_gamut(linear) {
         let (mut lo, mut hi) = (0.0, chroma);

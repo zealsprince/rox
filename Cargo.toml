@@ -2,9 +2,14 @@
 resolver = "2"
 members = [
     "crates/rox",
+    "crates/rox-acoustic",
+    "crates/rox-core",
+    "crates/rox-design",
     "crates/rox-dock",
     "crates/rox-playback",
     "crates/rox-library",
+    "crates/rox-net",
+    "crates/rox-panel-kit",
     "crates/rox-viz",
 ]
 default-members = ["crates/rox"]

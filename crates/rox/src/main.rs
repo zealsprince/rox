@@ -12,7 +12,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod artists;
-mod assets;
 mod backdrop;
 mod catalog;
 mod charts;
@@ -20,8 +19,6 @@ mod composite;
 mod console_window;
 mod continuation;
 mod cover;
-mod design;
-mod discord;
 mod duplicates;
 mod embeddings;
 mod eq_window;
@@ -29,10 +26,8 @@ mod group_head;
 mod history;
 mod integrations;
 mod lastfm;
-mod logging;
 mod lyrics;
 mod matching;
-mod pace;
 mod panel;
 mod panel_catalog;
 mod panel_settings;
@@ -42,7 +37,6 @@ mod peaks;
 mod player;
 mod playlist_create;
 mod portraits;
-mod providers;
 mod query;
 mod quick_play;
 mod rating_ui;
@@ -61,6 +55,19 @@ mod track_ui;
 mod workspace;
 mod workspaces;
 
+// The design system and the embedded assets live in their own crate now.
+// They keep their old paths here so every panel still reaches them through
+// crate::design and crate::assets.
+pub(crate) use rox_design as design;
+pub(crate) use rox_design::assets;
+// The settings model, the log backend, and the pace estimates all live a
+// crate down now; these keep the paths the app already reads through.
+pub(crate) use rox_core::settings::MIN_WINDOW_SIZE;
+pub(crate) use rox_core::{logging, pace};
+// The enrichment providers and the Discord identity moved out with the rest
+// of the outbound HTTP; both answer to the paths they always did.
+pub(crate) use rox_net::{discord, providers};
+
 use gpui::{
     point, px, size, App, AppContext, Application, Bounds, SharedString, TitlebarOptions,
     WindowBounds, WindowOptions,
@@ -78,17 +85,6 @@ use workspace::Workspace;
 /// already-open settings or customize window to the front). Without it the
 /// backend's activate is a no-op.
 pub const APP_ID: &str = "rox";
-
-/// The floor under every rox window. Applying a layout or toggling the
-/// mini-player resizes the window to a preset's stored size, and a bad or
-/// zero size there used to collapse the window to nothing, so you had to go
-/// fish it back out with the window manager. This is the OS-level minimum and
-/// the clamp the programmatic resizes run through, small enough for a compact
-/// mini-player but never zero.
-pub const MIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
-    width: px(240.),
-    height: px(140.),
-};
 
 /// The frame size pinned on the command line: `rox --window-size 1440x900`
 /// opens at exactly that and layout swaps leave it alone for the session. A
@@ -234,6 +230,10 @@ fn open_workspace_window(
 }
 
 fn main() {
+    // The settings model can't reach up into the workspace files it has to
+    // drain on a pre-split launch, so it gets pointed at them first, before
+    // anything reads a setting.
+    settings::set_workspace_migrator(workspaces::migrate_saved);
     // Files handed to us on the command line (`rox song.flac`, or the file
     // manager's Open With). Collected before the app boots so a plausible-file
     // filter runs off the real argv, not gpui's.

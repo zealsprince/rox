@@ -162,7 +162,7 @@ sends a panel dragged out of the window straight into `pop_out_view`.
 ## Workspaces
 
 A layout is one arrangement of panels and their configs. A workspace is the wider
-shareable unit: a `WorkspaceBundle` (`crates/rox/src/settings.rs`) carrying a set of
+shareable unit: a `WorkspaceBundle` (`crates/rox-core/src/settings.rs`) carrying a set of
 named layout presets with their mini-player roles, the palette, and the appearance that
 dress them.
 

@@ -2,7 +2,16 @@
 //! scrub strip, the flick/momentum scroller, glide-to-row animation, and the
 //! slider painting. Self-contained; consumed by panels, not the framework.
 
-use super::*;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use gpui::{
+    fill, point, px, size, Along, App, Axis, Bounds, Context, MouseButton, MouseMoveEvent,
+    MouseUpEvent, Pixels, ScrollHandle, UniformListScrollHandle, Window,
+};
+use rox_design::{palette, tokens};
 
 /// The shared state of a click-and-drag strip: where it painted and
 /// whether a drag is live. Behind Arcs so the panel, its paint closures,

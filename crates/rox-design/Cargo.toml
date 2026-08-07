@@ -1,0 +1,25 @@
+[package]
+name = "rox-design"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# A genre's color keys on the alias-resolved name, so the palette has to
+# fold it the same way the library does.
+rox-library = { path = "../rox-library" }
+gpui = { workspace = true }
+# The palette writes through to the widget theme, and the asset source
+# layers our icons over the bundled set.
+gpui-component = { workspace = true }
+gpui-component-assets = { workspace = true }
+# Panel themes are stored overrides, so they ride the settings file.
+serde = { version = "1", features = ["derive"] }
+# Embeds our own icons over the gpui-component set; the folder stays in
+# crates/rox/assets, which the flake and the release workflow point at.
+rust-embed = "8"
+
+[dev-dependencies]
+# Panel theme overrides are sparse, so the round-trip tests read the JSON
+# they actually ship as.
+serde_json = "1"

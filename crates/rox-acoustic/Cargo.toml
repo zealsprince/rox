@@ -1,0 +1,45 @@
+[package]
+name = "rox-acoustic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The data dir the models land in, and the pace clock the pass reports
+# through.
+rox-core = { path = "../rox-core" }
+# The download's failures are phrased by the same reader every other request
+# in the app uses.
+rox-net = { path = "../rox-net" }
+# The pending list and the vector table the pass walks and fills.
+rox-library = { path = "../rox-library" }
+# Decodes the windows both extractors describe.
+rox-playback = { path = "../rox-playback" }
+# The FFT and the log-band split behind the built-in extractor.
+rox-viz = { path = "../rox-viz" }
+# The model-based extractor: candle runs the downloaded CNN. Pure Rust
+# tensors and ops, so there is no libtorch and no ONNX Runtime to install,
+# ship, or match versions with. It does compile one C library on the way
+# through (candle-core depends unconditionally on tokenizers with the onig
+# feature, which builds vendored oniguruma with cc), so a build needs a C
+# compiler - which rusqlite's bundled SQLite already required, so this asks
+# for no toolchain the tree didn't already have. Metal is switched on for
+# macOS below.
+candle-core = "0.11"
+candle-nn = "0.11"
+# Checks a downloaded model against the checksum in the catalog. Pure Rust,
+# no build script.
+sha2 = "0.10"
+# The weights download runs its own agent: rox-net's caps every request at
+# ten seconds, which a 24 MB file can't finish inside.
+ureq = "2"
+log = "0.4"
+
+# Metal for the embedding model's forward pass. macOS-only because it links
+# Metal.framework; candle's metal kernels compile from their own source at
+# runtime, so nothing is needed at build time beyond the SDK, and the
+# extractor probes the device with a real forward pass and falls back to the
+# CPU if either the claim or the pass fails.
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.11", features = ["metal"] }
+candle-nn = { version = "0.11", features = ["metal"] }

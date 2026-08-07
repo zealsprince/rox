@@ -533,9 +533,9 @@ fn similarity(a: &str, b: &str) -> f32 {
 
 /// Fold a tag down to comparable words: lowercase, every run of
 /// non-alphanumerics to one space, trimmed. Punctuation and accents in
-/// the raw casing stop being the reason two equal titles miss. Crate
-/// visible: the artist store keys its cache files on the same folding.
-pub(crate) fn normalize(s: &str) -> String {
+/// the raw casing stop being the reason two equal titles miss. Public
+/// because the artist store keys its cache files on the same folding.
+pub fn normalize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last_space = true;
     for ch in s.chars() {

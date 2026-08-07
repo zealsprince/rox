@@ -30,3 +30,6 @@ target
 #.idea/
 
 .DS_Store
+
+# Machine-local cargo config (mold linker) and the gc-rooted mold symlink
+/.cargo/

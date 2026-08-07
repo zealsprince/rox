@@ -5,7 +5,7 @@
 //! classes. The 512 values before that final classifier are what rox keeps:
 //! a description of what a piece of audio sounds like, learned from two
 //! million clips, which is a different and much better thing than the
-//! hand-rolled sketch the built-in [`crate::embeddings::MODEL`] produces.
+//! hand-rolled sketch the built-in [`crate::MODEL`] produces.
 //!
 //! ## Why this one
 //!
@@ -36,7 +36,7 @@
 //!
 //! ## The front end
 //!
-//! The spectrogram recipe lives in [`crate::embeddings::models::PANNS_MEL`],
+//! The spectrogram recipe lives in [`crate::models::PANNS_MEL`],
 //! copied from the model's training config. The weights file also ships the
 //! filterbank it was trained with, so [`Cnn10::load`] uses that matrix
 //! directly and compares it against the one the config derives. A
@@ -48,9 +48,9 @@ use std::path::Path;
 use candle_core::{DType, Device, Tensor, D};
 use candle_nn::{BatchNorm, Conv2d, Conv2dConfig, Linear, Module, ModuleT, VarBuilder};
 
-use crate::embeddings::mel::Mel;
-use crate::embeddings::models::{Model, PANNS_MEL};
-use crate::embeddings::resample;
+use crate::mel::Mel;
+use crate::models::{Model, PANNS_MEL};
+use crate::resample;
 
 /// The width of the vector this produces.
 pub const DIM: usize = 512;
@@ -404,14 +404,14 @@ mod tests {
     /// isn't installed rather than failing, and say so, since a silent skip
     /// is how a test stops being run at all.
     fn installed() -> Option<&'static Model> {
-        let model = crate::embeddings::models::find(crate::embeddings::models::PANNS_CNN10)?;
+        let model = crate::models::find(crate::models::PANNS_CNN10)?;
         if model.installed() {
             Some(model)
         } else {
             eprintln!(
                 "skipping: {} is not installed under {}",
                 model.id,
-                crate::embeddings::models::dir().display()
+                crate::models::dir().display()
             );
             None
         }

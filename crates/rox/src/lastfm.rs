@@ -1,5 +1,5 @@
-//! Last.fm scrobbling: the signed audioscrobbler API calls and the
-//! scrobbler entity that watches the player. The scrobbler rides the
+//! Last.fm scrobbling: the scrobbler entity that watches the player and
+//! sends the signed calls rox-net makes. The scrobbler rides the
 //! player's pump ticks, accumulates how much of the playing track has
 //! actually sounded (seeks don't count), sends the now-playing update
 //! when a track starts, and scrobbles once the listened time crosses the
@@ -20,7 +20,6 @@
 //! pushes: nothing here reads Last.fm's loved list back.
 
 use std::collections::{BTreeMap, HashSet};
-use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -33,19 +32,11 @@ use crate::player::Player;
 use crate::settings::{Lastfm, Settings};
 
 pub mod import;
-pub mod keys;
 
-/// Whether this build carries its own api identity; without one the
-/// settings page asks for the user's pair.
-// The pair are consts baked in at compile time, so clippy can const-eval
-// this and calls it a constant condition. That's exactly the question
-// being asked: which build am I?
-#[allow(clippy::const_is_empty)]
-pub fn has_builtin_keys() -> bool {
-    !keys::API_KEY.is_empty() && !keys::API_SECRET.is_empty()
-}
-
-const API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
+// The signing, the call that sends it, and the identity it signs with all
+// live in rox-net now; the scrobbler reaches them through the same paths it
+// always did.
+pub(crate) use rox_net::lastfm::{call, has_builtin_keys, keys, ApiError, AuthPhase};
 
 /// Last.fm refuses scrobbles for tracks this short, so the scrobbler
 /// doesn't try; the listen signal draws the same line, so history and
@@ -88,115 +79,6 @@ const LOVE_BACKOFF: [Duration; 3] = [
     Duration::from_secs(30),
     Duration::from_secs(120),
 ];
-
-/// The api_sig the API requires on every signed call: the parameters
-/// sorted by name, concatenated as name-value, the secret appended, md5
-/// hex over the lot. `format` stays out of the signature per the docs.
-fn sign(params: &BTreeMap<String, String>, secret: &str) -> String {
-    let mut base = String::new();
-    for (name, value) in params {
-        base.push_str(name);
-        base.push_str(value);
-    }
-    base.push_str(secret);
-    format!("{:x}", md5::compute(base.as_bytes()))
-}
-
-/// A call that didn't land: Last.fm's own error code where the service
-/// answered, none where the request never got that far. The message is
-/// the part worth showing; the code is what tells a retry from a waste
-/// of time.
-pub struct ApiError {
-    code: Option<i64>,
-    message: String,
-}
-
-impl fmt::Display for ApiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl ApiError {
-    /// Whether the same call could plausibly work later. A transport
-    /// failure is the offline case, always worth another go. Of Last.fm's
-    /// own codes only the service-side ones qualify: 8 operation failed,
-    /// 11 and 16 service down or busy, 29 rate limit. A rejected session
-    /// or a track it can't name comes back identical every time, so those
-    /// stop where they are rather than burning the backoff.
-    fn retryable(&self) -> bool {
-        match self.code {
-            None => true,
-            Some(code) => matches!(code, 8 | 11 | 16 | 29),
-        }
-    }
-}
-
-/// One signed API call, blocking: POST the parameters, parse the JSON,
-/// surface the API's own error message when it sends one. Runs on the
-/// background executor only.
-fn call(
-    method: &str,
-    secret: &str,
-    mut params: BTreeMap<String, String>,
-) -> Result<serde_json::Value, ApiError> {
-    params.insert("method".into(), method.into());
-    let sig = sign(&params, secret);
-    params.insert("api_sig".into(), sig);
-    params.insert("format".into(), "json".into());
-    let pairs: Vec<(&str, &str)> = params
-        .iter()
-        .map(|(name, value)| (name.as_str(), value.as_str()))
-        .collect();
-    // A request that never reached the service, or a body that won't read
-    // or parse, gets no code: the next try may well go through, so these
-    // land as retryable rather than as a rejection.
-    let transport = |message: String| ApiError {
-        code: None,
-        message,
-    };
-    // An API error still carries a JSON body worth reading, so a status
-    // failure parses like a success. Ride the shared provider agent for its
-    // User-Agent and timeout; a bare ureq::post has neither, so a hung endpoint
-    // parks the connect flow in Confirming forever.
-    let text = match crate::providers::agent().post(API_ROOT).send_form(&pairs) {
-        Ok(response) => response
-            .into_string()
-            .map_err(|e| transport(e.to_string()))?,
-        Err(ureq::Error::Status(_, response)) => response
-            .into_string()
-            .map_err(|e| transport(e.to_string()))?,
-        Err(e) => return Err(transport(crate::providers::net_reason(&e))),
-    };
-    let value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| transport(e.to_string()))?;
-    if let Some(code) = value.get("error") {
-        let message = value
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown api error");
-        return Err(ApiError {
-            code: code.as_i64(),
-            message: message.to_string(),
-        });
-    }
-    Ok(value)
-}
-
-/// Where the connect flow stands, for the settings window's readout.
-/// Connected is not a phase: a filled session key in the config is.
-#[derive(Clone, PartialEq)]
-pub enum AuthPhase {
-    Idle,
-    /// auth.getToken is in flight.
-    Requesting,
-    /// The browser has the authorize page; the token waits for the user
-    /// to come back and finish.
-    Waiting(String),
-    /// auth.getSession is in flight.
-    Confirming,
-    Failed(SharedString),
-}
 
 /// The playing track under watch: its identity, tags, and how much of it
 /// has actually sounded so far.
@@ -554,9 +436,7 @@ impl Scrobbler {
                         ));
                         this.phase = AuthPhase::Waiting(token);
                     }
-                    Err(e) => {
-                        this.phase = AuthPhase::Failed(format!("getting a token: {e}").into())
-                    }
+                    Err(e) => this.phase = AuthPhase::Failed(format!("getting a token: {e}")),
                 }
                 cx.notify();
             })
@@ -610,7 +490,7 @@ impl Scrobbler {
                         // the favourites that were already on the shelf.
                         this.seed_favourites(cx);
                     }
-                    Err(e) => this.phase = AuthPhase::Failed(format!("confirming: {e}").into()),
+                    Err(e) => this.phase = AuthPhase::Failed(format!("confirming: {e}")),
                 }
                 cx.notify();
             })
@@ -1092,24 +972,5 @@ mod tests {
             queue.is_empty(),
             "and the push is dropped, not retried forever"
         );
-    }
-
-    #[test]
-    fn only_service_side_failures_are_worth_another_try() {
-        let api = |code: i64| ApiError {
-            code: Some(code),
-            message: "api said no".to_string(),
-        };
-        // No code at all is the offline case: the request never landed.
-        assert!(ApiError {
-            code: None,
-            message: "no connection".to_string(),
-        }
-        .retryable());
-        assert!(api(11).retryable(), "service offline");
-        assert!(api(16).retryable(), "temporarily unavailable");
-        assert!(api(29).retryable(), "rate limited");
-        assert!(!api(9).retryable(), "invalid session, and it stays invalid");
-        assert!(!api(6).retryable(), "a track Last.fm can't name");
     }
 }

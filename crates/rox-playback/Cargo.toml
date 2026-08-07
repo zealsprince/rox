@@ -5,7 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# The continuation providers (ADR 17) draw their batches straight out of the
+# library's store, listens, and vectors.
+rox-library = { path = "../rox-library" }
 cpal = "0.18"
+# The continuation mode is a settings field, and it reads leniently so one
+# word a newer build wrote can't take the session shard down with it.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # Decode per ADR 2: every symphonia codec and container is pure Rust, so we
 # take the whole audio matrix (all-codecs + all-formats) without pulling a C
 # dependency. No Opus decoder ships in 0.6, so Ogg Opus stays unsupported.

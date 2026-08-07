@@ -10,7 +10,7 @@ use std::sync::RwLock;
 use gpui::{AssetSource, Result, SharedString};
 use rust_embed::RustEmbed;
 
-use crate::design::palette;
+use crate::palette;
 
 /// The active icon pack's folder, or None for the built-in set. A pack is a
 /// flat folder of SVGs named like the built-in icons (play.svg, heart.svg);
@@ -22,7 +22,8 @@ use crate::design::palette;
 static ACTIVE_PACK: RwLock<Option<PathBuf>> = RwLock::new(None);
 
 /// Point the resolver at an icon pack folder, or None for the built-in set.
-/// [`crate::startup::icon_packs`] owns the name-to-folder mapping and calls this.
+/// The app's startup icon_packs module owns the name-to-folder mapping and
+/// calls this.
 pub fn set_active_pack(dir: Option<PathBuf>) {
     *ACTIVE_PACK.write().unwrap() = dir;
 }
@@ -297,7 +298,7 @@ pub mod icons {
 /// Our embedded assets, checked before the bundled widget assets so a
 /// same-named file here wins.
 #[derive(RustEmbed)]
-#[folder = "assets"]
+#[folder = "$CARGO_MANIFEST_DIR/../rox/assets"]
 #[include = "icons/**/*.svg"]
 #[include = "app/rox-music.svg"]
 #[include = "workspaces/**/*.json"]

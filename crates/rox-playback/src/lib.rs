@@ -7,6 +7,7 @@
 
 pub mod analysis;
 pub mod chain;
+pub mod continuation;
 pub mod engine;
 pub mod eq;
 pub mod gain;

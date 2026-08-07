@@ -1497,6 +1497,31 @@ pub fn shuffle_slice<T>(slice: &mut [T]) {
     }
 }
 
+/// Shuffle the first `width` of a slice among themselves, leaving the rest
+/// in place. The radio's band: what comes next is drawn from the nearest
+/// `width` entries, and everything behind them keeps its ranking.
+///
+/// Off the std hasher's per-process keys, the same trick the Random button
+/// uses. Picking a track does not need a rand dependency.
+///
+/// Shared between the player's skip band and the radio continuation
+/// provider (ADR 17), which draws its batch the same way: rank the whole
+/// pool, then shuffle the band at the front of it so two sessions off one
+/// seed don't play the same list.
+pub fn shuffle_head<T>(slice: &mut [T], width: usize) {
+    use std::hash::{BuildHasher, Hasher};
+    let width = width.min(slice.len());
+    if width < 2 {
+        return;
+    }
+    for i in (1..width).rev() {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_usize(i);
+        let j = (hasher.finish() % (i as u64 + 1)) as usize;
+        slice.swap(i, j);
+    }
+}
+
 /// Decode a whole file through the same path playback uses and report
 /// (decoded frames, frames the container claims are playable). Equal numbers
 /// mean the encoder delay/padding trim is exact, i.e. the gapless boundary

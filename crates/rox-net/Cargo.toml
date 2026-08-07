@@ -1,0 +1,29 @@
+[package]
+name = "rox-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The Last.fm artist lookup reads the settings override before falling back
+# to the build's own key.
+rox-core = { path = "../rox-core" }
+# Every outbound request rides one shared blocking agent, and the Last.fm
+# signature is md5 over the sorted parameters.
+ureq = "2"
+md5 = "0.7"
+# Provider payloads: typed where the shape is stable, untyped where the
+# services drift.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Reads the workspace .env so a local build picks up the service identities the
+# release workflow passes as secrets. Zero dependencies of its own, and it gets
+# the quoting and escape rules right so build.rs doesn't hand-roll a parser.
+[build-dependencies]
+dotenvy = "0.15"
+
+[dev-dependencies]
+# tests/build_identities.rs compiles the build script's own module, so the test
+# binary needs what that module uses.
+dotenvy = "0.15"

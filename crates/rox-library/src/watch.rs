@@ -14,7 +14,7 @@ use notify_debouncer_full::notify::event::{ModifyKind, RenameMode};
 use notify_debouncer_full::notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
 
-use rox_library::writer;
+use crate::writer;
 
 /// How long a path has to sit quiet before the debouncer flushes it. Long
 /// enough that a bulk copy's writes fold together, short enough that a single

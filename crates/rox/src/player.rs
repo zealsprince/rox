@@ -16,7 +16,7 @@ use gpui::{App, Context, Entity, Global, SharedString, Subscription, Task};
 
 use rox_library::embeddings;
 use rox_library::store;
-use rox_playback::engine::{self, shuffle_slice, Cmd, LoopMode, StartQueue};
+use rox_playback::engine::{self, shuffle_head, shuffle_slice, Cmd, LoopMode, StartQueue};
 use rox_playback::eq::{Eq, EqParams};
 use rox_playback::gain;
 use rox_playback::output::{self, Mode, Negotiated, Request};
@@ -59,30 +59,6 @@ const SKIP_SETTLE: Duration = Duration::from_secs(30);
 /// nearest.
 const SKIP_BAND_BASE: usize = 4;
 const SKIP_BAND_GROWTH: usize = 4;
-
-/// Shuffle the first `width` of a slice among themselves, leaving the rest
-/// in place. The radio's band: what comes next is drawn from the nearest
-/// `width` entries, and everything behind them keeps its ranking.
-///
-/// Off the std hasher's per-process keys, the same trick the Random button
-/// uses. Picking a track does not need a rand dependency.
-///
-/// Shared with the radio continuation provider (ADR 17), which draws its
-/// batch the same way: rank the whole pool, then shuffle the band at the
-/// front of it so two sessions off one seed don't play the same list.
-pub(crate) fn shuffle_head<T>(slice: &mut [T], width: usize) {
-    use std::hash::{BuildHasher, Hasher};
-    let width = width.min(slice.len());
-    if width < 2 {
-        return;
-    }
-    for i in (1..width).rev() {
-        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-        hasher.write_usize(i);
-        let j = (hasher.finish() % (i as u64 + 1)) as usize;
-        slice.swap(i, j);
-    }
-}
 
 /// A random index below `len`, off the std hasher's per-process random
 /// keys; picking a track does not need a rand dependency.
@@ -1095,7 +1071,7 @@ impl Player {
             let picks = cx
                 .background_executor()
                 .spawn(async move {
-                    let provider = mode.provider(similar)?;
+                    let provider = continuation::provider(mode, similar)?;
                     let conn = store::open(&db_path).ok()?;
                     Some(provider.next(&conn, &seed))
                 })

@@ -1,6 +1,6 @@
 //! Discord rich presence: the "now playing" card rox publishes to the
 //! local Discord client. The build identity lives here ([`keys`]); the
-//! presence client that reads it is [`crate::integrations::discord`].
+//! presence client that reads it lives in rox.
 
 pub mod keys;
 

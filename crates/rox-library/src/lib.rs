@@ -5,6 +5,7 @@
 //! reused these modules for its harness (git history, commit bd22dc1).
 
 pub mod art;
+pub mod duplicates;
 pub mod embeddings;
 pub mod genre;
 pub mod genre_meta;
@@ -14,6 +15,7 @@ pub mod lyrics;
 pub mod m3u;
 pub mod migrate;
 pub mod open_files;
+pub mod peaks;
 pub mod playlists;
 pub mod projection;
 pub mod rating;
@@ -22,6 +24,7 @@ pub mod scanner;
 pub mod store;
 pub mod tag_source;
 pub mod thumbs;
+pub mod watch;
 pub mod writer;
 
 // Embedders hold a Connection for store queries, so its type needs to be

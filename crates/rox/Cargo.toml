@@ -8,8 +8,26 @@ license.workspace = true
 gpui = { workspace = true }
 gpui-component = { workspace = true }
 gpui-component-assets = { workspace = true }
+# The acoustic stack: both extractors, the model catalog, and the pass,
+# re-exported as crate::embeddings so the app's paths into it read the way
+# they always have.
+rox-acoustic = { path = "../rox-acoustic" }
+# The settings model, the log backend, and the pace estimates, re-exported
+# as crate::settings, crate::logging and crate::pace so the app's paths into
+# them read the way they always have.
+rox-core = { path = "../rox-core" }
+# The palette, tokens, and embedded assets, re-exported as crate::design
+# and crate::assets so panels path through them the way they always have.
+rox-design = { path = "../rox-design" }
 rox-dock = { path = "../rox-dock" }
 rox-library = { path = "../rox-library" }
+# The enrichment providers, the signed Last.fm calls, and the baked-in
+# service identities, re-exported as crate::providers and crate::discord.
+rox-net = { path = "../rox-net" }
+# The shared widget layer, re-exported through crate::panel and
+# crate::settings::ui so the panels' paths into it read the way they always
+# have.
+rox-panel-kit = { path = "../rox-panel-kit" }
 rox-playback = { path = "../rox-playback" }
 rox-viz = { path = "../rox-viz" }
 # Platform data dir for the library database.
@@ -23,10 +41,9 @@ serde_json = "1"
 # Embeds our own icons over the gpui-component set; already in the tree
 # through gpui-component-assets.
 rust-embed = "8"
-# Last.fm scrobbling: blocking calls to the audioscrobbler API from
-# background threads, and the md5 its request signatures require.
+# The loved-list import still makes its own blocking calls; the signed
+# Last.fm side moved to rox-net with its md5.
 ureq = "2"
-md5 = "0.7"
 # The logging facade the app and rox-playback write through; our own backend
 # (crate::logging) fans each line to stderr, a rolling file, and the console
 # window's ring. Already in the tree, and chrono for the wall-clock stamp on
@@ -46,10 +63,6 @@ souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] 
 # Carries media-key events from souvlaki's callback thread to the UI without a
 # poll; already in the tree through gpui, same 2.x line.
 async-channel = "2"
-# Filesystem watching for the library roots: notify is the cross-platform
-# layer, the debouncer coalesces a bulk copy's burst into batches and folds a
-# directory deletion into one remove instead of a flood.
-notify-debouncer-full = "0.7"
 # The duplicates window's delete: files go to the OS trash, never unlinked,
 # so a wrong pick comes back.
 trash = "5"
@@ -59,28 +72,9 @@ trash = "5"
 url = "2"
 # Rich Prescence for Discord
 discord-rich-presence = "1.x"
-# The acoustic pass's model-based extractor: candle runs the downloaded CNN.
-# Pure Rust tensors and ops, so there is no libtorch and no ONNX Runtime to
-# install, ship, or match versions with. It does compile one C library on the
-# way through (candle-core depends unconditionally on tokenizers with the onig
-# feature, which builds vendored oniguruma with cc), so a build needs a C
-# compiler - which rusqlite's bundled SQLite already required, so this asks
-# for no toolchain the tree didn't already have. Metal is switched on for
-# macOS below.
-candle-core = "0.11"
-candle-nn = "0.11"
-# Checks a downloaded model against the checksum in the catalog. Pure Rust,
-# no build script.
+# Hashes the shader a workspace carries, so the confirm gate can tell an
+# unchanged one from an edited one. Pure Rust, no build script.
 sha2 = "0.10"
-
-# Metal for the embedding model's forward pass. macOS-only because it links
-# Metal.framework; candle's metal kernels compile from their own source at
-# runtime, so nothing is needed at build time beyond the SDK, and the
-# extractor probes the device with a real forward pass and falls back to the
-# CPU if either the claim or the pass fails.
-[target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { version = "0.11", features = ["metal"] }
-candle-nn = { version = "0.11", features = ["metal"] }
 
 # The quit-to-tray icon: StatusNotifierItem over D-Bus, pure Rust on the
 # same zbus 5 line souvlaki brought in. Runtime-agnostic via async-io
@@ -117,12 +111,6 @@ windows = { version = "0.61", features = [
     "Win32_UI_Shell",
 ] }
 
-# Reads the workspace .env so a local build picks up the service identities the
-# release workflow passes as secrets. Zero dependencies of its own, and it gets
-# the quoting and escape rules right so build.rs doesn't hand-roll a parser.
-[build-dependencies]
-dotenvy = "0.15"
-
 # Embeds assets/app/rox.ico into the exe as the application icon.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
@@ -132,6 +120,3 @@ winresource = "0.1"
 # shared selection can be driven against a real Context<Self> without a
 # display.
 gpui = { workspace = true, features = ["test-support"] }
-# tests/build_identities.rs compiles the build script's own module, so the test
-# binary needs what that module uses.
-dotenvy = "0.15"

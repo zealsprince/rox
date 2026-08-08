@@ -15,13 +15,15 @@
 //! one: set up a workspace, export it from the settings Workspace page, drop
 //! the file in that folder, rebuild.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use gpui::{App, SharedString};
 
-use rox_core::settings::{self, Settings, WorkspaceBundle, WORKSPACE_VERSION};
+use rox_core::settings::{self, NamedShader, Settings, WorkspaceBundle, WORKSPACE_VERSION};
 use rox_design::assets;
 use rox_design::palette::{self, Palette};
+use rox_panel_api::panel::shader;
 
 /// A workspace for the settings list: its name, whether it ships with the app
 /// (read-only) or the user saved it (deletable), and where to read it from.
@@ -33,6 +35,13 @@ pub struct Entry {
     /// The saved file this entry reads from, None for a shipped bundle.
     pub path: Option<PathBuf>,
     pub builtin: bool,
+    /// Who the card says made it, for the lists that credit an author under
+    /// the name. Only shipped entries carry it: their bundles are parsed to
+    /// build the list anyway, so it costs nothing there, while the saved
+    /// list is a directory read and has no bundle in hand. The settings page
+    /// fills the saved side in from [`saved_authors`], which reads them once
+    /// rather than once a frame.
+    pub author: Option<String>,
     /// The asset paths of the preview pictures shipped beside the bundle,
     /// one per theme side (see [`assets::workspace_preview`]), None when
     /// no picture ships or the user saved the bundle. The welcome window's
@@ -96,6 +105,7 @@ pub fn shipped() -> Vec<Entry> {
             // name, so look them up before falling back to the stem for one.
             let preview_dark = assets::workspace_preview(&stem, palette::Mode::Dark);
             let preview_light = assets::workspace_preview(&stem, palette::Mode::Light);
+            let author = Some(bundle.meta.author.clone()).filter(|a| !a.trim().is_empty());
             let name = match bundle.name.trim() {
                 "" => stem,
                 named => named.to_string(),
@@ -106,6 +116,7 @@ pub fn shipped() -> Vec<Entry> {
                 builtin: true,
                 preview_dark,
                 preview_light,
+                author,
             })
         })
         .collect();
@@ -137,11 +148,281 @@ fn saved_in(dir: &Path) -> Vec<Entry> {
                 builtin: false,
                 preview_dark: None,
                 preview_light: None,
+                author: None,
             })
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// Who made each saved workspace, by name. The one place the saved list
+/// does parse its bundles, so a caller that wants authors pays for them
+/// once and holds the answer: the list itself stays a directory read, and
+/// a bundle is a page of layout dumps nobody should reparse per frame.
+/// Workspaces whose card names nobody drop out.
+pub fn saved_authors() -> BTreeMap<String, String> {
+    saved_authors_in(&settings::workspaces_dir())
+}
+
+fn saved_authors_in(dir: &Path) -> BTreeMap<String, String> {
+    saved_in(dir)
+        .into_iter()
+        .filter_map(|entry| {
+            let bundle = read_file(entry.path.as_ref()?)?;
+            let author = bundle.meta.author.trim();
+            (!author.is_empty()).then(|| (entry.name, author.to_string()))
+        })
+        .collect()
+}
+
+/// The current look as a bundle under a name, ready to save: what
+/// [`WorkspaceBundle::from_settings`] snapshots, plus the card of whatever
+/// that name already holds.
+///
+/// A save and an overwrite are the same write here, and an overwrite is a
+/// new snapshot of a workspace that already exists, so the card someone
+/// filled in on it survives (see
+/// [`WorkspaceMeta::carry_forward`](rox_core::settings::WorkspaceMeta::carry_forward)).
+/// Only the user's own saved bundles are looked up: saving under a shipped
+/// name is a fork, and a fork has no business arriving signed by whoever
+/// made the original.
+pub fn snapshot(name: &str, s: &Settings) -> WorkspaceBundle {
+    snapshot_in(&settings::workspaces_dir(), name, s)
+}
+
+fn snapshot_in(dir: &Path, name: &str, s: &Settings) -> WorkspaceBundle {
+    let mut bundle = WorkspaceBundle::from_settings(name.to_string(), s);
+    if let Some(prior) = read_file(&file_of_in(dir, name)) {
+        bundle.meta.carry_forward(&prior.meta);
+    }
+    bundle
+}
+
+/// Trust every shader the build's own workspaces carry, once at startup and
+/// before a window can paint one.
+///
+/// A shader only registers once its hash is approved, and a shipped look's
+/// panels would otherwise come up blank asking the user to agree to code
+/// that arrived with the binary. Same argument the panel presets make for
+/// themselves: installing rox is the agreement. Bundles that don't parse are
+/// skipped the way [`shipped`] skips them, since a shipped file that's
+/// broken is a build problem and there's nobody to tell about it at startup.
+pub fn trust_shipped_shaders() {
+    let prints = assets::shipped_workspaces()
+        .into_iter()
+        .filter_map(|(_, bytes)| serde_json::from_slice::<WorkspaceBundle>(&bytes).ok())
+        .filter(|bundle| bundle.version <= WORKSPACE_VERSION)
+        .flat_map(|bundle| bundle_fingerprints(&bundle));
+    settings::trust_shipped(prints);
+}
+
+/// Every shader source a bundle carries, hashed: the pool it travels with,
+/// the screen shader it wears, and the ones riding its layout dumps as panel
+/// chrome or as a Shader panel's config. Empty sources drop out, since there
+/// is nothing there to trust.
+fn bundle_fingerprints(bundle: &WorkspaceBundle) -> Vec<String> {
+    bundle
+        .shaders
+        .iter()
+        .map(|shader| shader.source.clone())
+        .chain(bundle.post_shader.iter().map(|post| post.source.clone()))
+        .chain(
+            bundle
+                .layouts
+                .iter()
+                .flat_map(|layout| settings::dump_shader_sources(&layout.dump)),
+        )
+        .filter(|source| !source.trim().is_empty())
+        .map(|source| shader::fingerprint(&source))
+        .collect()
+}
+
+/// One shader a bundle carries that this machine has never agreed to run.
+/// The unit the apply confirm lists and an Approve click walks.
+pub struct PendingShader {
+    /// What the dialog calls it: the pool entry's name where the source is
+    /// one the bundle's author named, and the head of its hash where it only
+    /// rides a layout dump and has no name to give.
+    pub label: String,
+    /// The source itself, which is what an approval is over.
+    pub source: String,
+}
+
+/// Every distinct shader a bundle carries that this machine hasn't approved,
+/// in the order a reader would meet them: the pool first, then the screen
+/// shader, then whatever rides the layout dumps.
+///
+/// Distinct by source, so the same WGSL sitting in the pool and inlined on
+/// the panel that wears it counts once, and the pool's pass running first is
+/// what gives that one entry its name. Already-approved and builtin sources
+/// drop out through [`shader::approved`], along with empty ones: there's
+/// nothing there to agree to.
+///
+/// A panel that names a pool entry still carries whatever source it had
+/// inline before the promotion, and the dump walk can't see the name, so a
+/// stale inline copy that matches nothing in the pool is listed. That's the
+/// safe way round: it's code the bundle is carrying, and the approval it
+/// asks for is the one the panel would need if it ever pointed back at it.
+pub fn unapproved_shaders(bundle: &WorkspaceBundle) -> Vec<PendingShader> {
+    let named = bundle
+        .shaders
+        .iter()
+        .map(|shader| (Some(shader.name.clone()), shader.source.clone()));
+    let screen = bundle
+        .post_shader
+        .iter()
+        // A screen shader pointing at a pool entry runs the pool's source,
+        // which the pass above already listed. Only an inline one is code of
+        // its own.
+        .filter(|post| {
+            post.name.as_deref().is_none_or(|name| {
+                !bundle.shaders.iter().any(|shader| shader.name == name)
+            })
+        })
+        .map(|post| (None, post.source.clone()));
+    let dumps = bundle
+        .layouts
+        .iter()
+        .flat_map(|layout| settings::dump_shader_sources(&layout.dump))
+        .map(|source| (None, source));
+
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for (name, source) in named.chain(screen).chain(dumps) {
+        if shader::approved(&source) {
+            continue;
+        }
+        let print = shader::fingerprint(&source);
+        if !seen.insert(print.clone()) {
+            continue;
+        }
+        let label = name
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| print[..8].to_string());
+        out.push(PendingShader { label, source });
+    }
+    out
+}
+
+/// What a confirm says about the workspace behind it: the name it applies
+/// under, the card its author filled in, and the shaders this machine would
+/// have to agree to first.
+///
+/// Built once when the dialog opens rather than read per render. A confirm
+/// paints every frame it's up, and what's behind it is a file read and a
+/// page of JSON.
+pub struct ApplyCard {
+    /// The workspace the apply resolves, which is also the dialog's title.
+    pub name: String,
+    /// Who made it and which version of it this is, as one line. None when
+    /// the card says neither.
+    pub byline: Option<SharedString>,
+    /// The author's own line or two on the look, when they wrote one.
+    pub description: Option<SharedString>,
+    /// The code riding along that nobody here has agreed to run.
+    pub shaders: Vec<PendingShader>,
+}
+
+impl ApplyCard {
+    /// The card for a named workspace. A name that no longer resolves still
+    /// gets a card, bare: the dialog has to render something and the apply
+    /// behind it will find the same nothing.
+    pub fn for_name(name: &str) -> ApplyCard {
+        match resolve(name) {
+            Some(bundle) => ApplyCard::of(&bundle),
+            None => ApplyCard {
+                name: name.to_string(),
+                byline: None,
+                description: None,
+                shaders: Vec::new(),
+            },
+        }
+    }
+
+    /// The card for a bundle in hand, the shape an import has.
+    pub fn of(bundle: &WorkspaceBundle) -> ApplyCard {
+        let meta = &bundle.meta;
+        let mut byline = Vec::new();
+        if !meta.author.trim().is_empty() {
+            byline.push(format!("by {}", meta.author.trim()));
+        }
+        if !meta.version.trim().is_empty() {
+            byline.push(format!("version {}", meta.version.trim()));
+        }
+        ApplyCard {
+            name: bundle.name.clone(),
+            byline: (!byline.is_empty()).then(|| byline.join(", ").into()),
+            description: Some(meta.description.trim())
+                .filter(|d| !d.is_empty())
+                .map(|d| SharedString::from(d.to_string())),
+            shaders: unapproved_shaders(bundle),
+        }
+    }
+
+    /// The line naming what's coming, or None when the bundle brings no code
+    /// this machine hasn't already agreed to. Names the pool entries, since
+    /// those are what an author talks about their look in; a source that only
+    /// rides a dump shows the head of its hash instead.
+    pub fn shader_line(&self) -> Option<SharedString> {
+        if self.shaders.is_empty() {
+            return None;
+        }
+        let names: Vec<&str> = self
+            .shaders
+            .iter()
+            .map(|shader| shader.label.as_str())
+            .collect();
+        Some(
+            format!(
+                "Carries {} shader{}: {}",
+                self.shaders.len(),
+                if self.shaders.len() == 1 { "" } else { "s" },
+                names.join(", ")
+            )
+            .into(),
+        )
+    }
+
+    /// Agree to run every shader the bundle brought. The apply side never
+    /// calls this on its own: it hangs off the dialog's Approve button, which
+    /// is the user saying yes to code that arrived from somewhere else.
+    pub fn approve_shaders(&self) {
+        for shader in &self.shaders {
+            shader::approve(&shader.source);
+        }
+    }
+}
+
+/// Point a freshly applied pool back at the files its shaders were ejected
+/// to. A bundle is scrubbed of local bookmarks on the way out, so a look
+/// saved and reapplied comes back with every entry unlinked and hot reload
+/// dead, even though the working copies are still sitting in the shaders
+/// folder. This finds them again.
+///
+/// The file has to still hold what the entry does, hash for hash. Anything
+/// else and the two have drifted apart, and pointing a reload at a file
+/// that says something different is how somebody else's WGSL ends up
+/// running under a name you trust. Answers whether anything was re-linked,
+/// which is what decides if the pool is worth persisting again.
+pub(crate) fn relink_ejected(workspace: &str, pool: &mut [NamedShader]) -> bool {
+    relink_ejected_in(&settings::shaders_dir(), workspace, pool)
+}
+
+fn relink_ejected_in(root: &Path, workspace: &str, pool: &mut [NamedShader]) -> bool {
+    let mut linked = false;
+    for entry in pool.iter_mut().filter(|entry| entry.path.is_none()) {
+        let path = settings::shader_eject_path_in(root, workspace, &entry.name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if shader::fingerprint(&text) != shader::fingerprint(&entry.source) {
+            continue;
+        }
+        entry.path = Some(path);
+        linked = true;
+    }
+    linked
 }
 
 /// Every workspace for the settings list: shipped first, then the user's own.
@@ -156,23 +437,11 @@ pub fn path_for(name: &str) -> PathBuf {
     settings::workspaces_dir().join(file_name(name))
 }
 
-/// A name as a filename. The name doubles as the file's, so it's stripped of
-/// anything that can't be one: separators, the characters Windows refuses,
-/// and control characters all fold to spaces, then the result is trimmed of
-/// space and the leading dots that would hide the file. A name of pure
-/// punctuation empties out and lands on "workspace".
+/// A name as a filename. The name doubles as the file's, so it goes through
+/// the shared sanitizer that every name-as-path in the data directory does;
+/// a name of pure punctuation empties out and lands on "workspace".
 fn file_name(name: &str) -> String {
-    let folded: String = name
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
-            c if c.is_control() => ' ',
-            c => c,
-        })
-        .collect();
-    let stem = folded.trim().trim_matches('.').trim();
-    let stem = if stem.is_empty() { "workspace" } else { stem };
-    format!("{stem}.json")
+    format!("{}.json", settings::safe_file_stem(name, "workspace"))
 }
 
 /// Write a bundle to its file, the save and overwrite path both. The bundle's
@@ -360,6 +629,275 @@ mod tests {
             files.iter().map(|(stem, _)| stem).collect::<Vec<_>>(),
             parsed.iter().map(|e| &e.name).collect::<Vec<_>>()
         );
+    }
+
+    /// The trust pass has to find every shader a bundle carries, wherever it
+    /// rides: the pool, the screen shader, panel chrome inside a dump, and a
+    /// Shader panel's own config. One missed and that panel comes up blank on
+    /// a shipped look.
+    #[test]
+    fn shipped_trust_collects_every_shader_a_bundle_carries() {
+        let bundle = WorkspaceBundle {
+            shaders: vec![NamedShader {
+                name: "Grain".into(),
+                source: "// the pool entry".into(),
+                path: None,
+            }],
+            post_shader: Some(rox_core::settings::PostShaderConfig {
+                enabled: true,
+                source: "// the screen one".into(),
+                ..Default::default()
+            }),
+            layouts: vec![rox_core::settings::NamedLayout {
+                name: "one".into(),
+                size: None,
+                dump: serde_json::json!({
+                    "panel_name": "StackPanel",
+                    "children": [
+                        {
+                            "panel_name": "shader",
+                            "info": { "panel": { "source": "// the shader panel" }},
+                        },
+                        {
+                            "panel_name": "waveform",
+                            "info": { "panel": {
+                                "shader": { "source": "// the surface one" },
+                            }},
+                        },
+                        // Nothing to trust in a panel with no shader on it.
+                        { "panel_name": "queue", "info": { "panel": { "source": "" }}},
+                    ],
+                }),
+            }],
+            ..WorkspaceBundle::default()
+        };
+
+        let prints = bundle_fingerprints(&bundle);
+        let expected: Vec<String> = [
+            "// the pool entry",
+            "// the screen one",
+            "// the shader panel",
+            "// the surface one",
+        ]
+        .into_iter()
+        .map(shader::fingerprint)
+        .collect();
+        assert_eq!(prints.len(), expected.len(), "{prints:?}");
+        for print in expected {
+            assert!(prints.contains(&print), "{prints:?}");
+        }
+
+        // The shipped bundles go through the same collection, so this also
+        // says the seeding never panics on what the build actually carries.
+        trust_shipped_shaders();
+    }
+
+    /// The review a confirm reads out has to find every shader a bundle
+    /// carries, count each one once, and leave out the ones this machine has
+    /// already agreed to. A miss either way is a dialog that lies: too few
+    /// and code arrives unannounced, too many and the count is noise.
+    #[test]
+    fn the_review_lists_each_unapproved_shader_once() {
+        let agreed = "// this one is already agreed to";
+        let bundle = WorkspaceBundle {
+            shaders: vec![
+                NamedShader {
+                    name: "Grain".into(),
+                    source: "// grain".into(),
+                    path: None,
+                },
+                NamedShader {
+                    name: "Bloom".into(),
+                    source: "// bloom".into(),
+                    path: None,
+                },
+                NamedShader {
+                    name: "Old".into(),
+                    source: agreed.into(),
+                    path: None,
+                },
+            ],
+            post_shader: Some(rox_core::settings::PostShaderConfig {
+                enabled: true,
+                name: Some("Grain".into()),
+                // A screen shader pointing at the pool runs the pool's entry,
+                // so this stale inline copy is not a shader of its own.
+                source: "// a stale copy of grain".into(),
+                ..Default::default()
+            }),
+            layouts: vec![rox_core::settings::NamedLayout {
+                name: "one".into(),
+                size: None,
+                dump: serde_json::json!({
+                    "panel_name": "StackPanel",
+                    "children": [
+                        // The pool's own shader, inlined on the panel wearing
+                        // it: the same code, so one entry.
+                        {
+                            "panel_name": "waveform",
+                            "info": { "panel": { "shader": { "source": "// grain" }}},
+                        },
+                        {
+                            "panel_name": "shader",
+                            "info": { "panel": { "source": "// only in the dump" }},
+                        },
+                        // Nothing to agree to on a panel with no shader.
+                        { "panel_name": "queue", "info": { "panel": { "source": "" }}},
+                    ],
+                }),
+            }],
+            ..WorkspaceBundle::default()
+        };
+
+        settings::note_approved(&shader::fingerprint(agreed));
+        let pending = unapproved_shaders(&bundle);
+        let labels: Vec<&str> = pending.iter().map(|s| s.label.as_str()).collect();
+        // The pool comes first, so its entries carry the names their author
+        // gave them; the dump-only source has none and shows its hash.
+        let hashed = shader::fingerprint("// only in the dump")[..8].to_string();
+        assert_eq!(labels, ["Grain", "Bloom", hashed.as_str()], "{labels:?}");
+
+        let line = ApplyCard::of(&bundle).shader_line().expect("a shader line");
+        assert!(line.starts_with("Carries 3 shaders: Grain, Bloom, "), "{line}");
+
+        // Agreeing to them is what empties the review, so the same bundle
+        // applied twice only asks once.
+        for shader in &pending {
+            settings::note_approved(&shader::fingerprint(&shader.source));
+        }
+        assert!(unapproved_shaders(&bundle).is_empty());
+        assert!(ApplyCard::of(&bundle).shader_line().is_none());
+
+        for source in ["// grain", "// bloom", "// only in the dump", agreed] {
+            settings::forget_approved(&shader::fingerprint(source));
+        }
+        // A look with no code in it asks nothing, which is what keeps the
+        // plain apply exactly the confirm it always was.
+        assert!(unapproved_shaders(&WorkspaceBundle::default()).is_empty());
+    }
+
+    /// The card a bundle carries is what the confirm reads out: who made it
+    /// and what they say it is, folded into a byline the dialog can print.
+    #[test]
+    fn a_card_reads_out_as_a_byline() {
+        let mut bundle = named_bundle("Nightfall");
+        bundle.meta.author = "Nova".into();
+        bundle.meta.version = "2.1".into();
+        bundle.meta.description = "Warm and quiet.".into();
+        let card = ApplyCard::of(&bundle);
+        assert_eq!(card.name, "Nightfall");
+        assert_eq!(
+            card.byline.as_ref().map(|line| line.as_ref()),
+            Some("by Nova, version 2.1")
+        );
+        assert_eq!(
+            card.description.as_ref().map(|line| line.as_ref()),
+            Some("Warm and quiet.")
+        );
+
+        // A look nobody signed says nothing rather than printing an empty
+        // line where the byline goes.
+        let plain = ApplyCard::of(&named_bundle("Plain"));
+        assert!(plain.byline.is_none());
+        assert!(plain.description.is_none());
+    }
+
+    /// Saving over a workspace keeps the card the file already carried, so an
+    /// overwrite from a live look that was never signed doesn't wipe what
+    /// somebody typed in. A name nobody has saved yet takes the fresh card as
+    /// it comes.
+    #[test]
+    fn a_save_over_a_workspace_keeps_its_card() {
+        let dir = scratch("card");
+        let mut first = named_bundle("Nightfall");
+        first.meta.author = "Nova".into();
+        first.meta.description = "Warm and quiet.".into();
+        first.meta.created = "2026-01-02".into();
+        first.meta.updated = "2026-01-02".into();
+        store_in(&dir, &first);
+
+        let again = snapshot_in(&dir, "Nightfall", &Settings::default());
+        assert_eq!(again.meta.author, "Nova");
+        assert_eq!(again.meta.description, "Warm and quiet.");
+        assert_eq!(again.meta.created, "2026-01-02", "the first day survives");
+        assert_ne!(again.meta.updated, "2026-01-02", "today stamps updated");
+
+        // A live look carrying its own card signs the save itself.
+        let mut mine = Settings::default();
+        mine.look.bundle.meta.author = "Juniper".into();
+        assert_eq!(snapshot_in(&dir, "Nightfall", &mine).meta.author, "Juniper");
+
+        // Nothing saved under that name yet: the fresh card stands alone.
+        let fresh = snapshot_in(&dir, "Daybreak", &Settings::default());
+        assert!(fresh.meta.author.is_empty());
+        assert_eq!(fresh.meta.created, fresh.meta.updated);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The authors read is the one place the saved list parses its bundles.
+    /// Workspaces nobody signed stay out of it, so a row only credits an
+    /// author when there is one.
+    #[test]
+    fn saved_authors_reads_the_cards_that_name_somebody() {
+        let dir = scratch("authors");
+        let mut signed = named_bundle("Nightfall");
+        signed.meta.author = "Nova".into();
+        store_in(&dir, &signed);
+        store_in(&dir, &named_bundle("Plain"));
+
+        let authors = saved_authors_in(&dir);
+        assert_eq!(authors.get("Nightfall").map(String::as_str), Some("Nova"));
+        assert!(!authors.contains_key("Plain"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pool entry re-links to its ejected file only when the file still
+    /// says what the entry does. A drifted file, a missing one, and an entry
+    /// that already has a bookmark are all left alone: a reload aimed at
+    /// text nobody approved is exactly what the gate exists to stop.
+    #[test]
+    fn relink_takes_only_a_file_that_still_matches() {
+        let root = scratch("relink");
+        let dir = root.join("Nightfall");
+        std::fs::create_dir_all(&dir).unwrap();
+        // The eject writes with a trailing newline an editor would add
+        // anyway; the hash is over the trimmed text, so it still matches.
+        std::fs::write(dir.join("Grain.wgsl"), "// grain\n").unwrap();
+        std::fs::write(dir.join("Bloom.wgsl"), "// something else").unwrap();
+
+        let mut pool = vec![
+            NamedShader {
+                name: "Grain".into(),
+                source: "// grain".into(),
+                path: None,
+            },
+            NamedShader {
+                name: "Bloom".into(),
+                source: "// bloom".into(),
+                path: None,
+            },
+            NamedShader {
+                name: "Gone".into(),
+                source: "// gone".into(),
+                path: None,
+            },
+        ];
+        assert!(relink_ejected_in(&root, "Nightfall", &mut pool));
+        assert_eq!(pool[0].path, Some(dir.join("Grain.wgsl")));
+        assert!(pool[1].path.is_none(), "a drifted file is not the entry");
+        assert!(pool[2].path.is_none(), "no file, no bookmark");
+
+        // Nothing left to link is not news, so the pool doesn't get written
+        // out again for it.
+        assert!(!relink_ejected_in(&root, "Nightfall", &mut pool[..1]));
+        // Another workspace's folder holds none of this look's shaders.
+        let mut elsewhere = vec![pool[0].clone()];
+        elsewhere[0].path = None;
+        assert!(!relink_ejected_in(&root, "Daybreak", &mut elsewhere));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A free base name comes back as-is; a taken one gets " (2)", then

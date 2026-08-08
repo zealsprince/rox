@@ -17,6 +17,7 @@
 //! share: the slot targets, the `// @slot n: name` convention, and the meta
 //! floats. This one is the panel whose entire point is the shader.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -69,6 +70,13 @@ pub struct ShaderConfig {
     /// shader ride a workspace bundle: a config carrying only an absolute
     /// path would import as a dead panel on anyone else's machine.
     pub source: String,
+    /// A name in the workspace's shader pool. Set, the pool's copy is what
+    /// runs and the inline source above sits unused, so one shader can dress
+    /// several panels and the bundle's author edits it once. The rule is
+    /// [`surface::resolve_source`]'s: a name the pool doesn't hold runs
+    /// nothing rather than falling back to the inline text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Where the source was last read from. A bookmark for Reload and the
     /// file watch, never the thing that runs.
     pub path: Option<PathBuf>,
@@ -93,6 +101,7 @@ impl Default for ShaderConfig {
         ShaderConfig {
             chrome: PanelChrome::default(),
             source: PLASMA.to_string(),
+            name: None,
             path: None,
             routes: Vec::new(),
             manual: Vec::new(),
@@ -152,6 +161,21 @@ struct Compiled {
     error: Option<String>,
 }
 
+/// The last time the config's pool name was resolved: which name, at which
+/// pool generation, and what came back. Kept because this panel re-renders
+/// on every frame the audio moves, and resolution takes a lock and copies a
+/// page of WGSL; the generation is one atomic load to check instead. Shaped
+/// like [`Compiled`] above, down to the `ran` flag, since a name that
+/// resolves to nothing and a name nobody has looked up yet are otherwise
+/// the same thing.
+#[derive(Default)]
+struct Resolved {
+    name: String,
+    rev: u64,
+    source: Option<String>,
+    ran: bool,
+}
+
 fn source_hash(source: &str) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
 
@@ -165,6 +189,10 @@ pub struct ShaderPanel {
     config: ShaderConfig,
     feed: Arc<AudioFeed>,
     compiled: Arc<Mutex<Compiled>>,
+    /// What the config's pool name last resolved to. A cell because every
+    /// reader of the running source is a `&self` render path, and the panel
+    /// is single-threaded like every other view.
+    resolved: RefCell<Resolved>,
     /// The hot-reload watch on the config's path, the same one a panel's
     /// surface shader wears.
     watch: SourceWatch,
@@ -173,6 +201,9 @@ pub struct ShaderPanel {
     routes_ui: RouteEditState,
     /// One scrub per slot row, for the hand-set values on unrouted slots.
     slot_scrubs: Vec<ScrubState>,
+    /// The name a save into the workspace's shaders would land under, while
+    /// it's being typed.
+    shader_name: panel_settings::ShaderNameField,
     /// The one readout being typed into across all the settings sliders.
     value_edit: ValueEdit,
     focus: FocusHandle,
@@ -192,9 +223,11 @@ impl ShaderPanel {
             state,
             config,
             compiled: Arc::new(Mutex::new(Compiled::default())),
+            resolved: RefCell::new(Resolved::default()),
             watch: SourceWatch::default(),
             routes_ui: RouteEditState::default(),
             slot_scrubs: (0..surface::SLOTS).map(|_| ScrubState::default()).collect(),
+            shader_name: panel_settings::ShaderNameField::default(),
             value_edit: ValueEdit::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
@@ -211,9 +244,20 @@ impl ShaderPanel {
     /// with it, and reading a file a bundle chose would be trusting the
     /// bundle by the back door.
     fn poll_reload(&mut self, cx: &mut Context<Self>) {
+        // The pool's watch first, since a named panel has no file of its own
+        // to poll and this is where its edits come from. It's throttled and
+        // app-wide, so several shader panels cost one sweep between them.
+        surface::poll_pool();
         let Some(path) = self.config.path.clone() else {
             return;
         };
+        // A named panel doesn't watch a file. Its text belongs to the
+        // workspace's pool, and the bookmark points at whatever was inlined
+        // before the name went on, so a reload would pull the pool's source
+        // out from under the panel. The pool entry does its own watching.
+        if self.config.name.is_some() {
+            return;
+        }
         if self.pending() {
             return;
         }
@@ -234,10 +278,15 @@ impl ShaderPanel {
     /// Every caller is the user putting the source there - a preset, a file
     /// they picked, a reload, an edit under a file they pointed rox at - so
     /// this is where a source earns its approval.
+    ///
+    /// It's also where a panel comes off a pool shader. Choosing a source is
+    /// choosing it for this panel, and a name left on would keep running the
+    /// workspace's copy over the top of what was just picked.
     fn set_source(&mut self, source: String, path: Option<PathBuf>, cx: &mut Context<Self>) {
         surface::approve(&source);
         let cleared = source.trim().is_empty();
         self.config.source = source;
+        self.config.name = None;
         self.config.path = path.clone();
         self.watch = SourceWatch::seeded(path.as_deref());
         {
@@ -253,11 +302,50 @@ impl ShaderPanel {
         cx.notify();
     }
 
+    /// The WGSL this panel actually runs: the workspace pool's copy when the
+    /// config names one, its own inline source otherwise. Everything that
+    /// reasons about what's on screen goes through here, while the settings
+    /// pages keep editing `config.source`, which is what a nameless panel
+    /// runs and what a named one has waiting if the name comes off.
+    fn running(&self) -> String {
+        self.resolved().unwrap_or_default()
+    }
+
+    /// [`running`](Self::running) before the missing case is flattened
+    /// away: None means the config names a shader this workspace's pool
+    /// doesn't hold, which is a different problem from an empty source and
+    /// gets its own line in the body.
+    fn resolved(&self) -> Option<String> {
+        let Some(name) = self.config.name.as_deref() else {
+            return Some(self.config.source.clone());
+        };
+        let rev = rox_core::settings::shader_pool_rev();
+        let mut cache = self.resolved.borrow_mut();
+        if !cache.ran || cache.rev != rev || cache.name != name {
+            *cache = Resolved {
+                name: name.to_string(),
+                rev,
+                source: surface::resolve_source(Some(name), &self.config.source),
+                ran: true,
+            };
+        }
+        cache.source.clone()
+    }
+
+    /// Whether the panel is wearing a pool shader the workspace doesn't
+    /// hold. Nothing paints in that state and no compile ever ran, so the
+    /// body has to be the one that says why.
+    fn pool_missing(&self) -> bool {
+        self.resolved().is_none()
+    }
+
     /// Whether the source is waiting on approval: it arrived inside a
     /// layout or a workspace bundle and nobody on this machine has agreed
-    /// to run it yet.
+    /// to run it yet. Asked of what runs rather than of the config, so a
+    /// shader pulled from the pool goes through the same gate an inline one
+    /// does instead of riding in behind an empty `source`.
     fn pending(&self) -> bool {
-        !surface::approved(&self.config.source)
+        !surface::approved(&self.running())
     }
 
     /// Agree to run what the config carries. The one button that puts a
@@ -269,7 +357,9 @@ impl ShaderPanel {
     /// watch would pull it straight over the text just approved. Picking a
     /// file again is how an imported shader gets a local one.
     fn approve(&mut self, cx: &mut Context<Self>) {
-        surface::approve(&self.config.source);
+        // What runs, so a panel wearing a pool shader agrees to the text the
+        // pool holds rather than to the inline copy it isn't running.
+        surface::approve(&self.running());
         self.config.path = None;
         self.watch = SourceWatch::default();
         *self.compiled.lock().unwrap() = Compiled::default();
@@ -278,9 +368,87 @@ impl ShaderPanel {
 
     /// Throw the pending source away. The path goes with it: it points at
     /// whatever the bundle pointed at, and keeping it would leave Reload
-    /// aimed there.
+    /// aimed there. A pool name goes too, through `set_source`, so saying no
+    /// to a workspace's shader takes the panel off it instead of clearing an
+    /// inline source it wasn't running.
     fn discard(&mut self, cx: &mut Context<Self>) {
         self.set_source(String::new(), None, cx);
+    }
+
+    /// Write the shader out to a file and hand it to whatever opens `.wgsl`
+    /// on this machine. rox has no editor of its own, so this plus the file
+    /// watch is the authoring loop.
+    ///
+    /// An inline shader keeps the bookmark and watches its own file. A named
+    /// one ejects through its pool entry and the bookmark lands there, since
+    /// the source belongs to the workspace and so do the edits.
+    fn eject(&mut self, cx: &mut Context<Self>) {
+        let ejected = match self.config.name.as_deref() {
+            Some(name) => surface::eject_pool_entry(name),
+            None => {
+                let label = self.config.chrome.title.clone().unwrap_or_default();
+                surface::eject(
+                    &surface::eject_name(&label, &self.config.source),
+                    &self.config.source,
+                )
+            }
+        };
+        match ejected {
+            Ok(path) => {
+                if self.config.name.is_none() {
+                    self.config.path = Some(path.clone());
+                    // Seeded: the file was just written from this source, so
+                    // the next edit is what should wake the watch.
+                    self.watch = SourceWatch::seeded(Some(path.as_path()));
+                }
+                cx.open_with_system(&path);
+                cx.notify();
+            }
+            Err(error) => {
+                *self.compiled.lock().unwrap() = Compiled {
+                    error: Some(format!("ejecting: {error}")),
+                    ..Compiled::default()
+                };
+                cx.notify();
+            }
+        }
+    }
+
+    /// Take a copy of the pool shader this panel is wearing and stop wearing
+    /// it. The text is the one that was already running, so its approval
+    /// carries; no bookmark comes across, since the pool entry's file
+    /// belongs to the pool and a second watcher would drift the two apart.
+    fn detach(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self
+            .config
+            .name
+            .as_deref()
+            .and_then(rox_core::settings::shader_pool_get)
+        else {
+            return;
+        };
+        self.set_source(entry.source, None, cx);
+    }
+
+    /// Promote the panel's source into the workspace's shaders and wear it
+    /// by name from there. The inline copy goes: the pool holds the source
+    /// now, and a second copy on the panel would only be the one that's
+    /// wrong after the next pool edit.
+    fn save_to_pool(&mut self, name: String, cx: &mut Context<Self>) {
+        let name = name.trim().to_string();
+        if name.is_empty() || self.config.source.trim().is_empty() {
+            return;
+        }
+        // The panel's own bookmark rides along, so a shader that was being
+        // edited in a file goes on hot reloading through the pool's watch.
+        surface::save_to_pool(&name, &self.config.source, self.config.path.clone());
+        self.config.name = Some(name);
+        self.config.source = String::new();
+        self.config.path = None;
+        self.watch = SourceWatch::default();
+        // The registration stands: the pool holds the same text that was
+        // running a moment ago, so there's nothing to recompile.
+        cx.notify();
     }
 
     /// Snapshot a file into the panel's source. A file that won't read
@@ -339,7 +507,20 @@ impl ShaderPanel {
     /// What the panel says instead of running: nothing loaded, or what
     /// registration made of what is. None while the shader draws.
     fn body_note(&self) -> Option<Vec<String>> {
-        if self.config.source.trim().is_empty() {
+        // A name the workspace's pool doesn't hold. Nothing paints and
+        // nothing else in the app would say why, so the panel does.
+        if let Some(name) = self.config.name.as_deref().filter(|_| self.pool_missing()) {
+            return Some(vec![
+                format!("{name} isn't in this workspace's shaders."),
+                "The panel is wearing a shader the workspace doesn't carry, so there's \
+                 nothing to run."
+                    .to_string(),
+                "Pick a preset or a .wgsl file on this panel's Source settings page, which \
+                 detaches it and gives it a source of its own."
+                    .to_string(),
+            ]);
+        }
+        if self.running().trim().is_empty() {
             return Some(vec![
                 "No shader loaded.".to_string(),
                 "Pick a preset or a .wgsl file on this panel's Source settings page.".to_string(),
@@ -401,12 +582,12 @@ impl PanelSettings for ShaderPanel {
     fn page(
         &mut self,
         page: &'static str,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match page {
             "Bindings" => self.bindings_page(cx).into_any_element(),
-            _ => self.source_page(cx).into_any_element(),
+            _ => self.source_page(window, cx).into_any_element(),
         }
     }
 }
@@ -414,15 +595,21 @@ impl PanelSettings for ShaderPanel {
 impl ShaderPanel {
     /// The Source page: where the shader comes from, what it said about
     /// itself, and the conventions it can count on.
-    fn source_page(&mut self, cx: &mut Context<Self>) -> Div {
+    fn source_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let source = self.config.source.clone();
         let path = self.config.path.clone();
+        let named = self.config.name.clone();
+        let missing = self.pool_missing();
+        // What runs, which for a named panel is the pool's copy. The
+        // approval block reads it too, so a shader that arrived in a bundle
+        // gets read before it runs whichever way it got here.
+        let running = self.running();
         let error = self.compiled.lock().unwrap().error.clone();
         let run_when_idle = self.config.run_when_idle;
         let pending = self.pending().then(|| {
             panel_settings::pending_shader(
                 "shader-panel-pending",
-                &source,
+                &running,
                 path.as_deref(),
                 cx.listener(|this, _, _, cx| this.approve(cx)),
                 cx.listener(|this, _, _, cx| this.discard(cx)),
@@ -433,7 +620,7 @@ impl ShaderPanel {
         for (index, (label, preset)) in PRESETS.iter().enumerate() {
             presets = presets.child(signal_ui::scope_chip(
                 (*label).to_string(),
-                source == **preset,
+                running == **preset,
                 move |this: &mut Self, cx| this.use_preset(index, cx),
                 cx,
             ));
@@ -447,7 +634,10 @@ impl ShaderPanel {
             .child(settings_ui::small_button(
                 "Reload",
                 icons::REFRESH_CW,
-                path.is_none(),
+                // A named panel's bookmark points at whatever it had inlined
+                // before the name went on, so re-reading it would pull that
+                // back over the pool's shader. The pool entry reloads itself.
+                named.is_some() || path.is_none(),
                 cx.listener(|this, _, _, cx| this.reload(cx)),
             ))
             .child(settings_ui::small_button(
@@ -455,21 +645,37 @@ impl ShaderPanel {
                 icons::FOLDER,
                 false,
                 cx.listener(|this, _, window, cx| this.pick_file(window, cx)),
-            ));
-        let note: SharedString = match (&path, source.trim().is_empty()) {
-            (Some(path), _) => format!(
+            ))
+            // An inline shader ejects to a file from here; a named one ejects
+            // through its pool entry, on the block above.
+            .when(named.is_none(), |file| {
+                file.child(settings_ui::small_button(
+                    "Edit as File",
+                    icons::EXTERNAL_LINK,
+                    source.trim().is_empty(),
+                    cx.listener(|this, _, _, cx| this.eject(cx)),
+                ))
+            });
+        let note: SharedString = match (&named, &path, source.trim().is_empty()) {
+            (Some(name), _, _) => format!(
+                "Choosing a preset or a file detaches this panel from {name} and gives \
+                 it a source of its own"
+            )
+            .into(),
+            (None, Some(path), _) => format!(
                 "{}. Edits reload while the panel is drawing, and the source is copied \
                  into the layout, so the panel keeps its shader on a machine that never \
                  had the file",
                 path.display()
             )
             .into(),
-            (None, true) => "Pick a preset above, or a .wgsl file with a fragment stage \
-                             defining fs_user(uv)"
+            (None, None, true) => "Pick a preset above, or a .wgsl file with a fragment stage \
+                                   defining fs_user(uv)"
                 .into(),
-            (None, false) => {
-                "Running a source that rides the layout, with no file behind it".into()
-            }
+            (None, None, false) => "Running a source that rides the layout, with no file \
+                                    behind it. Edit as File writes it back out and picks \
+                                    the edits up as you save"
+                .into(),
         };
 
         let mut shader = div()
@@ -513,12 +719,40 @@ impl ShaderPanel {
             ),
         ));
 
+        // Wearing a pool shader, or the offer to hand this one over. Never
+        // both: the panel is either pointing at the workspace's copy or
+        // carrying its own.
+        let pool = named.as_ref().map(|name| {
+            panel_settings::pool_shader_block(
+                name,
+                missing,
+                |this: &mut Self, cx| this.eject(cx),
+                |this: &mut Self, cx| this.detach(cx),
+                cx,
+            )
+        });
+        let save = named.is_none().then(|| {
+            let label = self.config.chrome.title.clone().unwrap_or_default();
+            let fallback = surface::eject_name(&label, &source);
+            let empty = source.trim().is_empty();
+            panel_settings::save_to_pool_block(
+                &mut self.shader_name,
+                &fallback,
+                empty,
+                |this: &mut Self, name, cx| this.save_to_pool(name, cx),
+                window,
+                cx,
+            )
+        });
+
         div()
             .flex()
             .flex_col()
             .gap(SECTION_GAP)
             .children(pending.map(|body| section("Awaiting Approval", None, body)))
+            .children(pool.map(|body| section("Workspace Shader", None, body)))
             .child(section("Shader", None, shader))
+            .children(save.map(|body| section("Save to Shaders", None, body)))
             .child(section("Writing One", None, conventions()))
     }
 
@@ -527,7 +761,10 @@ impl ShaderPanel {
     /// over a live readout of all sixteen slots. The names come off the
     /// source's `// @slot n: name` comments where it declares them.
     fn bindings_page(&mut self, cx: &mut Context<Self>) -> Div {
-        let labels = surface::slot_labels(&self.config.source);
+        // Off what runs, so a panel wearing a pool shader reads the pool's
+        // slot names rather than the inline copy it left behind.
+        let running = self.running();
+        let labels = surface::slot_labels(&running);
         // This frame's resolved values, so the readout says what is
         // actually reaching the shader rather than what was set.
         let mut resolved = SlotTargets::default();
@@ -559,7 +796,7 @@ impl ShaderPanel {
         // nothing feeds is a hand-set knob, typed or dragged, which is how
         // a shader's named parameters get exposed without a signal.
         let mut slots = div().flex().flex_col().gap(tokens::SPACE_MD);
-        for (slot, (_, label)) in SlotTargets::labelled(&self.config.source)
+        for (slot, (_, label)) in SlotTargets::labelled(&running)
             .targets()
             .into_iter()
             .enumerate()
@@ -619,7 +856,7 @@ impl ShaderPanel {
                 submenu = submenu.item(panel::check_row(
                     *label,
                     None,
-                    move |this: &Self| this.config.source == PRESETS[index].1,
+                    move |this: &Self| this.running() == PRESETS[index].1,
                     move |this: &mut Self, cx| this.use_preset(index, cx),
                     &panel,
                 ));
@@ -845,7 +1082,7 @@ impl ShaderPanel {
         let source = if self.pending() {
             String::new()
         } else {
-            self.config.source.clone()
+            self.running()
         };
         let routes = self.config.routes.clone();
         let manual = self.config.manual.clone();
@@ -1015,6 +1252,7 @@ mod tests {
             source: "// @slot 0: bass\nfn fs_user(uv: vec2<f32>) -> vec4<f32> \
                      { return vec4<f32>(params.signals[0].x); }"
                 .to_string(),
+            name: None,
             path: Some("/tmp/wall.wgsl".into()),
             routes: vec![
                 Route {
@@ -1089,6 +1327,148 @@ mod tests {
         assert_eq!(targets.slots[0], 1.0);
         assert_eq!(targets.slots[3], 0.75);
         assert_eq!(targets.slots[5], 0.0);
+    }
+
+    /// A panel pointing into the workspace's pool writes the name, and one
+    /// with a source of its own writes no key, so no layout dump written
+    /// before the pool existed grows a line.
+    #[test]
+    fn a_pool_name_rides_the_panel_config() {
+        let config = ShaderConfig {
+            name: Some("Grain".to_string()),
+            ..ShaderConfig::default()
+        };
+        let dumped = serde_json::to_value(config).expect("dump");
+        assert_eq!(dumped["name"], "Grain");
+        let read: ShaderConfig = serde_json::from_value(dumped).expect("read back");
+        assert_eq!(read.name.as_deref(), Some("Grain"));
+
+        let nameless = serde_json::to_value(ShaderConfig::default()).expect("dump");
+        assert!(
+            nameless.get("name").is_none(),
+            "a panel with its own source writes no name: {nameless}"
+        );
+    }
+
+    /// The panel runs what the pool holds under its name, and a name the
+    /// pool doesn't hold runs nothing rather than the inline copy it's
+    /// carrying. The gate reads the resolved text too, so a shader that
+    /// arrived in a bundle can't slip past it behind an empty `source`.
+    #[test]
+    fn a_named_panel_runs_the_pools_copy() {
+        let pool_source = format!("// from the pool\n{ENTRY} {{ return vec4<f32>(1.0); }}");
+        rox_core::settings::note_shader_pool(vec![rox_core::settings::NamedShader {
+            name: "Grain".to_string(),
+            source: pool_source.clone(),
+            path: None,
+        }]);
+
+        assert_eq!(
+            surface::resolve_source(Some("Grain"), "// the panel's own"),
+            Some(pool_source.clone())
+        );
+        assert!(
+            !surface::approved(&pool_source),
+            "a shader out of a bundle waits for this machine to agree"
+        );
+
+        // Nothing under that name is nothing to run, whatever the config
+        // still has inline.
+        rox_core::settings::note_shader_pool(Vec::new());
+        assert_eq!(surface::resolve_source(Some("Grain"), &pool_source), None);
+    }
+
+    /// The export scrub walks layout dumps as raw JSON, well below the crate
+    /// that knows what a panel config looks like, so it gets checked against
+    /// a dump the real serialization produces rather than one written by
+    /// hand to match it.
+    #[test]
+    fn the_export_scrub_finds_both_bookmarks_in_a_real_dump() {
+        use rox_core::settings::{NamedLayout, WorkspaceBundle};
+        use rox_dock::{PanelInfo, PanelState};
+
+        // The Shader panel, whose own config is the shader.
+        let shader_panel = ShaderConfig {
+            source: "// the panel's own".to_string(),
+            path: Some("/home/someone/panel.wgsl".into()),
+            ..ShaderConfig::default()
+        };
+        // Any other panel, wearing a surface shader as chrome.
+        let folder = crate::folder_tree::FolderTreeConfig {
+            chrome: PanelChrome {
+                shader: Some(surface::PanelShader {
+                    source: "// the surface one".to_string(),
+                    path: Some("/home/someone/surface.wgsl".into()),
+                    ..surface::PanelShader::default()
+                }),
+                ..PanelChrome::default()
+            },
+            ..crate::folder_tree::FolderTreeConfig::default()
+        };
+
+        let dump = serde_json::to_value(PanelState {
+            panel_name: "StackPanel".to_string(),
+            children: vec![
+                PanelState {
+                    panel_name: "shader".to_string(),
+                    children: Vec::new(),
+                    info: PanelInfo::panel(serde_json::to_value(shader_panel).expect("dump")),
+                },
+                PanelState {
+                    panel_name: "folder tree".to_string(),
+                    children: Vec::new(),
+                    info: PanelInfo::panel(serde_json::to_value(folder).expect("dump")),
+                },
+            ],
+            info: PanelInfo::stack(Vec::new(), gpui::Axis::Vertical),
+        })
+        .expect("dump the dock state");
+        // The bookmarks are really in there, or the assertions below would
+        // pass over a dump shaped nothing like the walk expects.
+        assert!(dump.to_string().contains("/home/someone/panel.wgsl"));
+        assert!(dump.to_string().contains("/home/someone/surface.wgsl"));
+
+        let mut bundle = WorkspaceBundle {
+            layouts: vec![NamedLayout {
+                name: "one".to_string(),
+                dump,
+                size: None,
+            }],
+            ..WorkspaceBundle::default()
+        };
+        bundle.scrub_paths();
+
+        let scrubbed = bundle.layouts[0].dump.to_string();
+        assert!(
+            !scrubbed.contains("/home/someone/"),
+            "no bookmark should have survived: {scrubbed}"
+        );
+        // The sources are the half that has to travel.
+        assert!(scrubbed.contains("// the panel's own"));
+        assert!(scrubbed.contains("// the surface one"));
+
+        // And they read back as configs, with the bookmarks gone.
+        let read: PanelState =
+            serde_json::from_value(bundle.layouts[0].dump.clone()).expect("read the dock state");
+        let PanelInfo::Panel(shader_config) = &read.children[0].info else {
+            panic!("the shader panel's config should still be a panel dump");
+        };
+        let shader_config: ShaderConfig =
+            serde_json::from_value(shader_config.clone()).expect("read the shader config");
+        assert!(shader_config.path.is_none());
+        assert_eq!(shader_config.source, "// the panel's own");
+
+        let PanelInfo::Panel(folder_config) = &read.children[1].info else {
+            panic!("the folder panel's config should still be a panel dump");
+        };
+        let folder_config: crate::folder_tree::FolderTreeConfig =
+            serde_json::from_value(folder_config.clone()).expect("read the folder config");
+        let worn = folder_config
+            .chrome
+            .shader
+            .expect("the surface shader stays");
+        assert!(worn.path.is_none());
+        assert_eq!(worn.source, "// the surface one");
     }
 
     #[test]

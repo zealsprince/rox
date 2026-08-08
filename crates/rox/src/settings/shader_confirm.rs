@@ -86,6 +86,11 @@ pub fn open(
         Settings::update(move |s| {
             s.post_shader.enabled = prior.enabled;
             s.post_shader.path = prior.path.clone();
+            // The source and the pool name come back too, or a workspace
+            // apply's revert would put the old switch over the new look's
+            // shader and run the very thing it was reverting.
+            s.post_shader.source = prior.source.clone();
+            s.post_shader.name = prior.name.clone();
         });
         crate::workspace::apply_post_shader(cx);
         if let Some(on_reverted) = confirm.on_reverted.take() {
@@ -96,9 +101,11 @@ pub fn open(
 }
 
 struct ShaderConfirm {
-    /// The config from before the apply, what a revert restores. The
-    /// all-windows option rides along untouched; only the enable switch
-    /// and the path are on trial here.
+    /// The config from before the apply, what a revert restores: the enable
+    /// switch and the three ways a source gets picked (the file, the inline
+    /// copy, the pool name). The all-windows option and the routes ride
+    /// along untouched, so a route dragged while the clock runs survives a
+    /// revert.
     prior: PostShaderConfig,
     /// The front workspace's player, for the window tint.
     player: EntityId,

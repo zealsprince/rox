@@ -1446,6 +1446,7 @@ mod chrome_tests {
         chrome.shader = Some(PanelShader {
             enabled: true,
             source: "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }".to_string(),
+            name: None,
             path: Some("/tmp/smudge.wgsl".into()),
             routes: vec![rox_viz::signal::Route {
                 enabled: true,

@@ -293,6 +293,11 @@ fn main() {
         // Whether this launch found a settings file decides the welcome
         // window later; recorded before anything can write one.
         note_first_run();
+        // The shaders inside the shipped workspaces count as agreed to,
+        // since they came with the binary. Seeded before any window opens,
+        // or a shipped look's first frame paints its panels bare while the
+        // gate waits for an approval nobody should have to give.
+        workspaces::trust_shipped_shaders();
         gpui_component::init(cx);
         rox_dock::init(cx);
         workspace::init(cx);

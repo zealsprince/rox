@@ -11,6 +11,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::AppState;
+use rox_panel_kit::ui::{kbd_line, Seg};
 use rox_services::backdrop::WindowBackdrop;
 
 /// What the modal commits on Enter.
@@ -133,10 +134,12 @@ impl Render for PlaylistNameWindow {
             .children(self.backdrop.layer(&self.state.now_art, window, cx))
             .child(Input::new(&self.input).w_full())
             .child(
-                div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child("Press Enter to create"),
+                kbd_line([
+                    Seg::Text("Press".into()),
+                    Seg::Key("Enter".into()),
+                    Seg::Text("to create".into()),
+                ])
+                .text_xs(),
             )
     }
 }

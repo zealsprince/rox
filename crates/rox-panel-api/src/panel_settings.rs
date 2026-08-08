@@ -192,6 +192,177 @@ pub fn pending_shader(
         )
 }
 
+/// The block a surface wearing a pool shader shows: which shader it's on,
+/// that the file behind it is shared, and the two ways off it. Both shader
+/// surfaces wear this, the way they share the approval block above.
+///
+/// A name the pool doesn't hold says so outright. The surface paints
+/// nothing in that state and there's no error to read anywhere else, so
+/// without this the panel is just blank for no stated reason.
+pub fn pool_shader_block<P: 'static>(
+    name: &str,
+    missing: bool,
+    edit: impl Fn(&mut P, &mut Context<P>) + 'static,
+    detach: impl Fn(&mut P, &mut Context<P>) + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    let note: SharedString = if missing {
+        format!(
+            "{name} isn't in this workspace's shaders, so nothing paints. Choosing a \
+             file or a preset detaches this panel and gives it a source of its own."
+        )
+        .into()
+    } else {
+        format!(
+            "Wearing {name} from this workspace's shaders. The source is shared, so an \
+             edit lands on every panel wearing the name."
+        )
+        .into()
+    };
+    let controls = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_SM)
+        .child(small_button(
+            "Edit as File",
+            icons::EXTERNAL_LINK,
+            missing,
+            cx.listener(move |this, _, _, cx| edit(this, cx)),
+        ))
+        .child(small_button(
+            "Detach Copy",
+            icons::COPY,
+            missing,
+            cx.listener(move |this, _, _, cx| detach(this, cx)),
+        ));
+    div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_MD)
+        .child(panel::setting_row_dyn("Pool Shader", Some(note), controls))
+}
+
+/// The name field behind "Save to Shaders", on whichever surface is wearing
+/// it. The input builds the first time the block renders rather than when
+/// the surface is constructed: a panel has a `Window` at render and not
+/// before. It lives on the surface from then on, so a half-typed name
+/// survives the repaint a recompile brings.
+#[derive(Default)]
+pub struct ShaderNameField {
+    input: Option<Entity<InputState>>,
+    /// The placeholder the input was last given. Kept so the field can
+    /// follow a rename without writing one every render, which would notify
+    /// the input into a frame of its own each time.
+    placeholder: String,
+}
+
+impl ShaderNameField {
+    /// The input, built on first ask against the window it renders in. The
+    /// placeholder is the name a save would land on with the field left
+    /// empty, so an untouched field already says what it will do.
+    fn input(
+        &mut self,
+        placeholder: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<InputState> {
+        if let Some(input) = self.input.clone() {
+            if self.placeholder != placeholder {
+                self.placeholder = placeholder.to_string();
+                let text = SharedString::from(placeholder.to_string());
+                input.update(cx, |input, cx| input.set_placeholder(text, window, cx));
+            }
+            return input;
+        }
+        self.placeholder = placeholder.to_string();
+        let text = SharedString::from(placeholder.to_string());
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(text));
+        self.input = Some(input.clone());
+        input
+    }
+
+    /// What's typed in, trimmed. Empty is the caller's fallback name.
+    fn value(&self, cx: &App) -> String {
+        self.input
+            .as_ref()
+            .map(|input| input.read(cx).value().trim().to_string())
+            .unwrap_or_default()
+    }
+}
+
+/// The save-to-pool block both shader surfaces wear: a name, and the button
+/// that puts this surface's inline shader into the workspace's shaders
+/// under it. Promotion is how a shader stops belonging to one panel: from
+/// here the pool holds the source, any other panel can wear the same name,
+/// and one edit reaches all of them.
+pub fn save_to_pool_block<P: 'static>(
+    field: &mut ShaderNameField,
+    fallback: &str,
+    inert: bool,
+    save: impl Fn(&mut P, String, &mut Context<P>) + 'static,
+    window: &mut Window,
+    cx: &mut Context<P>,
+) -> Div {
+    let input = field.input(fallback, window, cx);
+    let typed = field.value(cx);
+    let name = if typed.is_empty() {
+        fallback.to_string()
+    } else {
+        typed
+    };
+    let replaces = settings::shader_pool_get(&name).is_some();
+    let note: SharedString = if inert {
+        "Nothing to save yet: pick a preset or a file first".into()
+    } else if replaces {
+        format!(
+            "Saving replaces the shader this workspace already calls {name}, so every \
+             panel wearing that name changes with it"
+        )
+        .into()
+    } else {
+        format!(
+            "Hands the source to the workspace as {name}. The panel wears it by name \
+             from then on, and so can any other panel"
+        )
+        .into()
+    };
+    let button = {
+        let input = input.clone();
+        let fallback = fallback.to_string();
+        small_button(
+            if replaces { "Replace" } else { "Save" },
+            icons::PLUS,
+            inert,
+            cx.listener(move |this, _, _, cx| {
+                let typed = input.read(cx).value().trim().to_string();
+                let name = if typed.is_empty() {
+                    fallback.clone()
+                } else {
+                    typed
+                };
+                if name.is_empty() {
+                    return;
+                }
+                save(this, name, cx);
+            }),
+        )
+    };
+    let row = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_SM)
+        .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
+        .child(button);
+    div().flex().flex_col().gap(px(2.)).child(row).child(
+        div()
+            .text_xs()
+            .text_color(palette::text_muted())
+            .child(note),
+    )
+}
+
 /// The open rename windows, keyed by the panel they rename; the same
 /// replace-a-stale-handle story as [`OpenPanelSettings`].
 #[derive(Default)]
@@ -368,6 +539,8 @@ struct PanelSettingsWindow<P: PanelSettings> {
     /// stand open, kept in step with the panel's route list. Ephemeral on
     /// purpose - a fold is where you are, not what you set.
     shader_routes: RouteEditState,
+    /// The name a save-to-pool would land under, while it's being typed.
+    shader_name: ShaderNameField,
     /// The size limit fields, typed in px; empty means no limit.
     min_width_input: Entity<InputState>,
     min_height_input: Entity<InputState>,
@@ -490,6 +663,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             border_scrub: ScrubState::default(),
             font_scale_scrub: ScrubState::default(),
             shader_routes: RouteEditState::default(),
+            shader_name: ShaderNameField::default(),
             min_width_input,
             min_height_input,
             max_width_input,
@@ -1068,7 +1242,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     /// one exists because a hostile whole-window shader can bury the very
     /// control that would undo it; a panel shader leaves this window, the
     /// menus, and every other panel exactly where they were.
-    fn shader_page(&mut self, cx: &mut Context<Self>) -> Div {
+    fn shader_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let Some(panel) = self.panel.upgrade() else {
             return div();
         };
@@ -1082,27 +1256,40 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         // the default a fresh config would carry.
         let enabled = configured.as_ref().is_some_and(|shader| shader.enabled);
         let shader = configured.unwrap_or_default();
+        // What actually runs, which for a named panel is the pool's copy
+        // rather than the inline text. The gate and the approval block both
+        // read this, so a shader that arrived in a bundle can't slip past
+        // them by riding in under a name with an empty source behind it.
+        let running = shader::resolve_source(shader.name.as_deref(), &shader.source);
+        let missing = shader.name.is_some() && running.is_none();
+        let running = running.unwrap_or_default();
         // A source that arrived inside a layout or a bundle doesn't run
         // until it's read and approved here.
-        let pending = (!shader.source.trim().is_empty()
-            && !crate::panel::shader::approved(&shader.source))
-        .then(|| {
-            let source = shader.source.clone();
+        let pending = (!running.trim().is_empty() && !shader::approved(&running)).then(|| {
+            let approving = running.clone();
+            let named = shader.name.is_some();
             pending_shader(
                 "panel-shader-pending",
-                &shader.source,
+                &running,
                 shader.path.as_deref(),
                 cx.listener(move |this, _, _, cx| {
-                    crate::panel::shader::approve(&source);
+                    shader::approve(&approving);
                     // The path named a file on whichever machine wrote the
                     // bundle. If this one happens to have something there,
                     // the watch would pull it over the text just approved,
                     // so an imported shader keeps no bookmark.
                     this.edit_shader(|shader| shader.path = None, cx);
                 }),
-                cx.listener(|this, _, _, cx| {
+                cx.listener(move |this, _, _, cx| {
                     this.edit_shader(
-                        |shader| {
+                        move |shader| {
+                            // Saying no to a pool shader takes the panel off
+                            // it rather than emptying an inline source it
+                            // wasn't running anyway. The entry stays in the
+                            // workspace for whatever else wears it.
+                            if named {
+                                shader.name = None;
+                            }
                             shader.source = String::new();
                             shader.path = None;
                         },
@@ -1116,9 +1303,13 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         let error = (enabled && shader.runnable())
             .then(|| shader::error(panel.entity_id()))
             .flatten();
-        let labels = shader::slot_labels(&shader.source);
+        // The slot names come off what runs, so a named panel reads the
+        // pool's `// @slot n:` comments rather than the inline copy it left
+        // behind when the name went on.
+        let labels = shader::slot_labels(&running);
         self.shader_routes.sync(shader.routes.len());
 
+        let named = shader.name.clone();
         let controls = div()
             .flex()
             .flex_row()
@@ -1127,7 +1318,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .child(small_button(
                 "Reload",
                 icons::REFRESH_CW,
-                shader.path.is_none(),
+                // A named panel's bookmark points at whatever it had inlined
+                // before the name went on, so re-reading it would pull that
+                // back over the pool's shader. The pool entry reloads itself.
+                named.is_some() || shader.path.is_none(),
                 cx.listener(|this, _, _, cx| this.reload_shader(cx)),
             ))
             .child(small_button(
@@ -1135,20 +1329,36 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 icons::FOLDER,
                 false,
                 cx.listener(|this, _, window, cx| this.pick_shader_file(window, cx)),
-            ));
-        let source_note: SharedString = match (&shader.path, shader.source.is_empty()) {
-            (Some(path), _) => format!(
+            ))
+            // An inline shader ejects to a file from here; a named one ejects
+            // through its pool entry, on the block above.
+            .when(named.is_none(), |controls| {
+                controls.child(small_button(
+                    "Edit as File",
+                    icons::EXTERNAL_LINK,
+                    shader.source.trim().is_empty(),
+                    cx.listener(|this, _, _, cx| this.eject_shader(cx)),
+                ))
+            });
+        let source_note: SharedString = match (&named, &shader.path, shader.source.is_empty()) {
+            (Some(name), _, _) => format!(
+                "Choosing a file detaches this panel from {name} and gives it a source \
+                 of its own"
+            )
+            .into(),
+            (None, Some(path), _) => format!(
                 "{}. The source is copied into the layout, so the panel keeps its \
                  shader on a machine that never had the file; Reload picks up edits",
                 path.display()
             )
             .into(),
-            (None, false) => "Loaded from a file that is no longer recorded; the source \
-                              rides the layout"
+            (None, None, false) => "Loaded from a file that is no longer recorded; the source \
+                                    rides the layout. Edit as File writes it back out and \
+                                    picks the edits up as you save"
                 .into(),
-            (None, true) => "Pick a WGSL file with a fragment stage defining fs_user(uv). \
-                             Reading `screen` shades what the panel drew, `prev` gives it \
-                             a frame of feedback, and neither draws a plain quad"
+            (None, None, true) => "Pick a WGSL file with a fragment stage defining fs_user(uv). \
+                                   Reading `screen` shades what the panel drew, `prev` gives it \
+                                   a frame of feedback, and neither draws a plain quad"
                 .into(),
         };
         let mut source = div()
@@ -1194,6 +1404,36 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             ),
         ));
 
+        // Wearing a pool shader, or the offer to hand this one over. Never
+        // both: a panel is either pointing at the workspace's copy or
+        // carrying its own.
+        let pool = named.as_ref().map(|name| {
+            pool_shader_block(
+                name,
+                missing,
+                |this: &mut Self, cx| this.eject_shader(cx),
+                |this: &mut Self, cx| this.detach_shader(cx),
+                cx,
+            )
+        });
+        let save = named.is_none().then(|| {
+            let label = panel
+                .read(cx)
+                .custom_title()
+                .map(str::to_string)
+                .unwrap_or_else(|| panel::display_name(panel.read(cx).panel_name()));
+            let fallback = shader::eject_name(&label, &shader.source);
+            let empty = shader.source.trim().is_empty();
+            save_to_pool_block(
+                &mut self.shader_name,
+                &fallback,
+                empty,
+                |this: &mut Self, name, cx| this.save_shader_to_pool(name, cx),
+                window,
+                cx,
+            )
+        });
+
         // The one route editor every shader surface wears, over this
         // panel's own list: the write goes back through `edit_shader`, so
         // the panel's config stays the only copy.
@@ -1219,7 +1459,9 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex_col()
             .gap(SECTION_GAP)
             .children(pending.map(|body| section("Awaiting Approval", None, body)))
+            .children(pool.map(|body| section("Workspace Shader", None, body)))
             .child(section("Shader", None, source))
+            .children(save.map(|body| section("Save to Shaders", None, body)))
             .child(section(
                 "Signals",
                 Some(add.into_any_element()),
@@ -1321,18 +1563,119 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         }
     }
 
+    /// Write the panel's shader out to a file and hand it to whatever opens
+    /// `.wgsl` on this machine. rox has no editor of its own, so this plus
+    /// the file watch is the authoring loop.
+    ///
+    /// An inline shader keeps the bookmark, which is what puts its file
+    /// under the panel's own watch. A named one ejects through its pool
+    /// entry instead, and the bookmark lands there: the panel is wearing the
+    /// workspace's shader, so the edits belong to every panel that is.
+    fn eject_shader(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = self.panel.upgrade() else {
+            return;
+        };
+        let shader = panel.read(cx).chrome().shader.clone().unwrap_or_default();
+        let ejected = match shader.name.as_deref() {
+            Some(name) => shader::eject_pool_entry(name),
+            None => {
+                let label = panel
+                    .read(cx)
+                    .custom_title()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| panel::display_name(panel.read(cx).panel_name()));
+                shader::eject(&shader::eject_name(&label, &shader.source), &shader.source)
+            }
+        };
+        match ejected {
+            Ok(path) => {
+                if shader.name.is_none() {
+                    let bookmark = path.clone();
+                    self.edit_shader(move |shader| shader.path = Some(bookmark), cx);
+                }
+                cx.open_with_system(&path);
+            }
+            Err(error) => {
+                shader::note_error(panel.entity_id(), Some(format!("ejecting: {error}")));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Take a copy of the pool shader this panel is wearing and stop
+    /// wearing it. The text is the same one that was already running, so
+    /// its approval carries and nothing has to be agreed to twice.
+    ///
+    /// No bookmark comes across. The pool entry's file belongs to the pool,
+    /// and a second watcher on it would have this panel and the workspace's
+    /// shader drift apart on the next save.
+    fn detach_shader(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = self.panel.upgrade() else {
+            return;
+        };
+        let name = panel
+            .read(cx)
+            .chrome()
+            .shader
+            .as_ref()
+            .and_then(|shader| shader.name.clone());
+        let Some(entry) = name.as_deref().and_then(settings::shader_pool_get) else {
+            return;
+        };
+        self.edit_shader(
+            move |shader| {
+                shader.source = entry.source;
+                shader.name = None;
+                shader.path = None;
+            },
+            cx,
+        );
+    }
+
+    /// Promote the panel's inline shader into the workspace's shaders and
+    /// wear it by name from there. The inline copy goes: the pool holds the
+    /// source now, and a second copy sitting in the panel would only be the
+    /// one that's wrong after the next pool edit.
+    fn save_shader_to_pool(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(panel) = self.panel.upgrade() else {
+            return;
+        };
+        let Some(shader) = panel.read(cx).chrome().shader.clone() else {
+            return;
+        };
+        let name = name.trim().to_string();
+        if name.is_empty() || shader.source.trim().is_empty() {
+            return;
+        }
+        // The panel's own bookmark rides along, so a shader that was being
+        // edited in a file goes on hot reloading through the pool's watch.
+        crate::panel::shader::save_to_pool(&name, &shader.source, shader.path.clone());
+        self.edit_shader(
+            move |shader| {
+                shader.name = Some(name);
+                shader.source = String::new();
+                shader.path = None;
+            },
+            cx,
+        );
+    }
+
     /// Snapshot a file into the panel's shader source. A file that won't
     /// read lands in the same readout a failed compile does.
     ///
     /// Picking a file is the user putting the source there, so it approves
     /// itself on the way in; the gate is for sources that arrive inside a
-    /// layout or a workspace bundle without anyone choosing them.
+    /// layout or a workspace bundle without anyone choosing them. It's also
+    /// how a panel comes off a pool shader by picking a different one: you
+    /// asked for this file, so the name goes and the panel carries its own
+    /// source from here.
     fn load_shader_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match std::fs::read_to_string(&path) {
             Ok(source) => self.edit_shader(
                 move |shader| {
                     crate::panel::shader::approve(&source);
                     shader.source = source;
+                    shader.name = None;
                     shader.path = Some(path);
                 },
                 cx,
@@ -1780,7 +2123,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                             )
                             .into_any_element()
                         }
-                        2 => self.shader_page(cx).into_any_element(),
+                        2 => self.shader_page(window, cx).into_any_element(),
                         _ => panel
                             .update(cx, |panel, cx| panel.page(pages[picked - 3].0, window, cx)),
                     };

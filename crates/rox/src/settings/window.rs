@@ -39,7 +39,7 @@ use crate::workspace::Workspace;
 use rox_core::settings::layouts::Preset;
 use rox_core::settings::{
     self, data_dir, settings_path, Frame, GainModeSetting, LayoutSize, LyricsSave, NamedLayout,
-    Providers, RatingStyle, ReplayGainSave, Settings, ShuffleMode, Theme, WorkspaceBundle,
+    Providers, RatingStyle, ReplayGainSave, Settings, ShuffleMode, Theme, WorkspaceMeta,
     BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
 };
 use rox_design::assets::icons;
@@ -273,8 +273,16 @@ enum Pending {
     OverwritePreset(String),
     /// Replace a saved workspace with the current state.
     OverwriteWorkspace(String),
-    /// Replace the whole live look with a workspace bundle's.
-    ApplyWorkspace(String),
+    /// Replace the whole live look with a workspace bundle's. Carries the
+    /// card the dialog reads out, built when the dialog opens so the bundle
+    /// behind it isn't reparsed every frame the dialog is up.
+    ApplyWorkspace {
+        card: crate::workspaces::ApplyCard,
+        /// Whether the bundle just arrived from a file, which changes what
+        /// the dialog says: an import has already saved it, so the offer is
+        /// to wear it now rather than to replace what's there.
+        imported: bool,
+    },
 }
 
 struct SettingsWindow {
@@ -419,6 +427,16 @@ struct SettingsWindow {
     layout_name: Entity<InputState>,
     /// The Workspace page's save-current-as-workspace name field.
     workspace_name: Entity<InputState>,
+    /// The workspace whose card is open on the Workspace page, with an input
+    /// per editable line. None while every row sits collapsed, which is how
+    /// the page opens.
+    workspace_card: Option<workspace_page::CardEditor>,
+    /// Who made each saved workspace, by name, for the credit line under a
+    /// list row. Read once here rather than per render: the saved list is a
+    /// directory read by design, and pulling an author out means parsing a
+    /// bundle's worth of layout dumps. Refreshed by the page's own writes,
+    /// which are the only thing that moves it while the window is up.
+    workspace_authors: BTreeMap<String, String>,
     /// The Appearance page's new-icon-pack name field.
     pack_name: Entity<InputState>,
     /// The mini-player roles the Layout page assigns, by preset name, kept
@@ -777,6 +795,8 @@ impl SettingsWindow {
             rg_job,
             layout_name: cx.new(|cx| InputState::new(window, cx).placeholder("Layout name")),
             workspace_name: cx.new(|cx| InputState::new(window, cx).placeholder("Workspace name")),
+            workspace_card: None,
+            workspace_authors: crate::workspaces::saved_authors(),
             pack_name: cx.new(|cx| InputState::new(window, cx).placeholder("Pack name")),
             primary_layout: settings.look.bundle.primary_layout.clone(),
             mini_layout: settings.look.bundle.mini_layout.clone(),
@@ -1644,7 +1664,15 @@ impl SettingsWindow {
         let prior = Settings::load().post_shader;
         Settings::update(move |s| s.post_shader.enabled = on);
         crate::workspace::apply_post_shader(cx);
-        if on && prior.path.is_some() {
+        // Anything that resolves to a source is worth proving, whether it
+        // came from a file, from a bundle's inline copy, or from the
+        // workspace's pool. Nothing to run needs no countdown.
+        if on
+            && crate::workspace::post_shader_source(&prior)
+                .ok()
+                .flatten()
+                .is_some()
+        {
             self.confirm_post_shader(prior, cx);
         }
         cx.notify();

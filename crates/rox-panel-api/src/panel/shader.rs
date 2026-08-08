@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use gpui::{App, Bounds, EntityId, Global, Pixels, UserShaderId, WeakEntity, Window, WindowId};
@@ -58,6 +58,12 @@ pub struct PanelShader {
     /// The fragment stage: a `fs_user(uv)` definition, plus whatever it
     /// calls. Empty means nothing to run.
     pub source: String,
+    /// A name in the workspace's shader pool. Set, the pool's copy is what
+    /// runs and the inline source is ignored, which is how several panels
+    /// wear one shader that the bundle's author edits in one place. See
+    /// [`resolve_source`] for what a name that resolves to nothing does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Where the source was last read from, for the reload button. None
     /// once a bundle travels to a machine that never had the file.
     pub path: Option<PathBuf>,
@@ -73,6 +79,7 @@ impl Default for PanelShader {
         PanelShader {
             enabled: true,
             source: String::new(),
+            name: None,
             path: None,
             routes: Vec::new(),
             run_when_idle: false,
@@ -81,9 +88,39 @@ impl Default for PanelShader {
 }
 
 impl PanelShader {
-    /// Whether there is anything to paint: switched on with source text.
+    /// Whether there is anything to paint: switched on, with either a pool
+    /// name or source text of its own. A name that turns out to resolve to
+    /// nothing still counts here, since whether the pool holds it is a
+    /// question for [`resolve_source`] at registration and not for a config
+    /// that has been asked what it wants.
     pub fn runnable(&self) -> bool {
-        self.enabled && !self.source.trim().is_empty()
+        self.enabled && (self.name.is_some() || !self.source.trim().is_empty())
+    }
+}
+
+/// The WGSL a shader config actually runs, given its optional pool name and
+/// its inline source. Shared by both shader surfaces, since both grew the
+/// same pair of fields.
+///
+/// A name wins outright: a hit hands back the pool's source, and a miss
+/// hands back None so the surface paints nothing. A miss deliberately
+/// doesn't fall through to the inline copy. A name says "whatever the
+/// workspace calls this", and quietly running some stale text under that
+/// name would be worse than a blank panel. It's the same read as a route
+/// pointing at a signal that's gone, which holds its slot at zero rather
+/// than picking a different signal.
+///
+/// Without a name, the inline source runs, and empty text is nothing to run.
+///
+/// Call this where source changes are already detected, which is
+/// registration time, and never once a frame: it takes a lock and copies a
+/// page of text. A cached answer goes stale when
+/// [`shader_pool_rev`](rox_core::settings::shader_pool_rev) moves, which is
+/// one atomic load to check.
+pub fn resolve_source(name: Option<&str>, inline: &str) -> Option<String> {
+    match name {
+        Some(name) => rox_core::settings::shader_pool_get(name).map(|shader| shader.source),
+        None => (!inline.trim().is_empty()).then(|| inline.to_string()),
     }
 }
 
@@ -129,6 +166,232 @@ pub fn approve(source: &str) {
         return;
     }
     rox_core::settings::approve_shader(&fingerprint(source));
+}
+
+/// How many numbered variants an eject will try before it gives up. A
+/// folder with a hundred diverged copies of one shader in it is somebody
+/// who wanted a file manager, not another write.
+const EJECT_VARIANTS: u32 = 99;
+
+/// The name of the look the app is wearing, which is the folder ejected
+/// shaders land in. A look that was never saved has no name, and the path
+/// helper is the one that turns that into `_local`, so this hands the name
+/// over exactly as it found it.
+pub fn live_workspace() -> String {
+    rox_core::settings::Settings::load().look.bundle.name
+}
+
+/// Write a shader out to a file an editor can open, under the live
+/// workspace's folder. This is the authoring loop's front door: rox has no
+/// text editor of its own, so a shader that arrived inside a bundle gets a
+/// working copy here and the file watch carries the edits back.
+///
+/// A file already at that name is only written over when it still holds the
+/// same shader, hash for hash. Anything else has diverged, whether somebody
+/// edited it or another shader took the name first, and clobbering it would
+/// throw away work nobody asked to lose. The eject slides down to `name-2`
+/// and keeps going instead.
+pub fn eject(name: &str, source: &str) -> std::io::Result<PathBuf> {
+    eject_in(
+        &rox_core::settings::shaders_dir(),
+        &live_workspace(),
+        name,
+        source,
+    )
+}
+
+/// [`eject`] under a given root, which is what the tests write into rather
+/// than the folder the running app ejects to.
+pub fn eject_in(
+    root: &Path,
+    workspace: &str,
+    name: &str,
+    source: &str,
+) -> std::io::Result<PathBuf> {
+    let print = fingerprint(source);
+    for variant in 1..=EJECT_VARIANTS {
+        let stem = if variant == 1 {
+            name.to_string()
+        } else {
+            format!("{name}-{variant}")
+        };
+        let path = rox_core::settings::shader_eject_path_in(root, workspace, &stem);
+        // A file that reads as a different shader keeps its name; anything
+        // else (the same shader, or nothing there at all) takes the write.
+        // A read that fails for some other reason falls through to the write
+        // below, which is where the real error comes from.
+        if std::fs::read_to_string(&path).is_ok_and(|text| fingerprint(&text) != print) {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, source)?;
+        return Ok(path);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("{name} already has {EJECT_VARIANTS} files in this workspace's shaders"),
+    ))
+}
+
+/// Eject a pool entry and bookmark the file on the entry, so [`poll_pool`]
+/// watches it from then on and every panel wearing the name picks up the
+/// edits. Answers the file it wrote.
+pub fn eject_pool_entry(name: &str) -> std::io::Result<PathBuf> {
+    let Some(entry) = rox_core::settings::shader_pool_get(name) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{name} isn't in this workspace's shaders"),
+        ));
+    };
+    let path = eject(name, &entry.source)?;
+    let mut pool = rox_core::settings::shader_pool();
+    if let Some(entry) = pool.iter_mut().find(|entry| entry.name == name) {
+        entry.path = Some(path.clone());
+    }
+    rox_core::settings::set_shader_pool(pool);
+    Ok(path)
+}
+
+/// The file name an inline shader ejects under: what its panel is called,
+/// or a short hash of the source when the panel has nothing worth using as
+/// a name.
+pub fn eject_name(label: &str, source: &str) -> String {
+    let label = label.trim();
+    if label.is_empty() {
+        format!("shader-{}", &fingerprint(source)[..8])
+    } else {
+        label.to_string()
+    }
+}
+
+/// Put an inline shader into the workspace's pool under `name`, answering
+/// whether it replaced an entry that was already there. The source approves
+/// on the way in, since promoting a shader is the user vouching for it as
+/// much as picking its file was.
+///
+/// `path` is the working copy the source came from, carried over so a panel
+/// that was already being edited in a file keeps its hot reload after the
+/// promotion. It's the incoming shader's file either way: a replaced entry
+/// drops the bookmark it had, because that file still holds the old shader
+/// and leaving the two linked would have the pool watch pull it straight
+/// back over what was just saved.
+pub fn save_to_pool(name: &str, source: &str, path: Option<PathBuf>) -> bool {
+    approve(source);
+    let mut pool = rox_core::settings::shader_pool();
+    let replaced = match pool.iter_mut().find(|entry| entry.name == name) {
+        Some(entry) => {
+            entry.source = source.to_string();
+            entry.path = path;
+            true
+        }
+        None => {
+            pool.push(rox_core::settings::NamedShader {
+                name: name.to_string(),
+                source: source.to_string(),
+                path,
+            });
+            false
+        }
+    };
+    rox_core::settings::set_shader_pool(pool);
+    replaced
+}
+
+/// The pool's own hot reload, and the app's only copy of it.
+///
+/// A pool entry that has been ejected carries a bookmark, and every panel
+/// wearing that name runs its text, so the watch belongs to the pool rather
+/// than to any one of them: a per-panel watch would stat the same file once
+/// per wearer and race itself writing the answer back. The lock is a
+/// `try_lock` for the same reason [`SourceWatch`] throttles: this is called
+/// from paint, and the second panel through in a frame has nothing to add.
+static POOL_WATCH: LazyLock<Mutex<PoolWatch>> = LazyLock::new(|| Mutex::new(PoolWatch::default()));
+
+#[derive(Default)]
+struct PoolWatch {
+    /// The last sweep, so the whole thing costs an elapsed check per frame
+    /// rather than a stat per bookmarked entry.
+    checked: Option<Instant>,
+    /// Each bookmarked entry's last size and mtime, by name. An entry with
+    /// no stamp yet reads its file once, the same rule the per-panel watch
+    /// keeps: an edit made while rox was closed should land on open rather
+    /// than on the edit after it.
+    stamps: HashMap<String, (u64, i64)>,
+}
+
+/// Stat the pool's bookmarked files and pull any edits into their entries.
+/// Called from where the surfaces already tick their own watches, so an
+/// authoring loop over a pool shader feels the same as one over a panel's
+/// own file.
+///
+/// A source that came back changed is approved, because a reload is a user
+/// action: they pointed rox at the file and then edited it. Writing the pool
+/// bumps its generation, which is what re-registers every wearer.
+pub fn poll_pool() {
+    let Ok(mut watch) = POOL_WATCH.try_lock() else {
+        return;
+    };
+    let now = Instant::now();
+    if watch
+        .checked
+        .is_some_and(|last| now.duration_since(last) < RELOAD_EVERY)
+    {
+        return;
+    }
+    watch.checked = Some(now);
+    let mut pool = rox_core::settings::shader_pool();
+    let fresh = pool_reload(&mut watch.stamps, &mut pool);
+    // Outside the lock: approving and writing the pool both touch the
+    // settings files, and no other panel's paint should wait on that.
+    drop(watch);
+    if fresh.is_empty() {
+        return;
+    }
+    for source in &fresh {
+        approve(source);
+    }
+    rox_core::settings::set_shader_pool(pool);
+}
+
+/// The stat-and-read half of the pool watch, over a pool handed in so a
+/// test can point it at files of its own. Writes what moved into `pool` and
+/// answers with those sources, so the caller can approve them; an empty
+/// answer means nothing needs writing back.
+fn pool_reload(
+    stamps: &mut HashMap<String, (u64, i64)>,
+    pool: &mut [rox_core::settings::NamedShader],
+) -> Vec<String> {
+    let mut fresh = Vec::new();
+    for entry in pool.iter_mut() {
+        let Some(path) = entry.path.clone() else {
+            continue;
+        };
+        // A file that has gone leaves the entry alone, since the source is
+        // what runs and the file is only the working copy. The stamp stays
+        // put, so the file coming back reads as news.
+        let Some(stamp) = rox_core::settings::file_stamp(&path) else {
+            continue;
+        };
+        if stamps.get(&entry.name) == Some(&stamp) {
+            continue;
+        }
+        stamps.insert(entry.name.clone(), stamp);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if text.trim() == entry.source.trim() {
+            continue;
+        }
+        entry.source = text.clone();
+        fresh.push(text);
+    }
+    // Entries that left the pool (a workspace switch, a renamed shader)
+    // shouldn't hold a stamp that would make their file's next edit look
+    // like old news if the name comes back.
+    stamps.retain(|name, _| pool.iter().any(|entry| entry.name == *name));
+    fresh
 }
 
 /// The mtime watch behind hot reload, worn by both shader surfaces: the
@@ -414,14 +677,27 @@ impl PanelSurface {
     /// source builds no surface at all, so the panel renders exactly as it
     /// would with the shader switched off, and the Shader page is where the
     /// pending source and its Approve button live.
+    ///
+    /// This is where a pool name resolves. A surface is built once per
+    /// render rather than once per frame, and the source it lands on is what
+    /// the paint path registers and watches, so resolving here keeps the
+    /// lookup off the frame loop and puts the pool's copy through the same
+    /// approval gate as an inline one. A name the pool doesn't hold builds
+    /// no surface at all.
     pub fn build(chrome: &PanelChrome, margin: f32) -> Option<PanelSurface> {
         let shader = chrome.shader.as_ref().filter(|s| s.runnable())?;
-        if !approved(&shader.source) {
+        let source = resolve_source(shader.name.as_deref(), &shader.source)?;
+        if !approved(&source) {
             return None;
         }
         Some(PanelSurface {
-            source: shader.source.clone(),
-            path: shader.path.clone(),
+            source,
+            // A named surface doesn't watch a file. Its text belongs to the
+            // pool, and the panel's own bookmark points at whatever was
+            // inlined before the name went on, so reloading it would pull
+            // the pool's source back out from under the panel. The pool
+            // entry keeps its own bookmark for that.
+            path: shader.name.is_none().then(|| shader.path.clone()).flatten(),
             routes: shader.routes.clone(),
             run_when_idle: shader.run_when_idle,
             inset: gpui::px(margin.max(0.0)),
@@ -498,6 +774,11 @@ impl PanelSurface {
     /// means already approved. A pending source never gets here, so a bundle
     /// can't have rox read a path of its choosing and trust what comes back.
     fn current(&self, window: u64, panel: EntityId) -> (String, Option<UserShaderId>) {
+        // The pool's watch rides along here: it's throttled and app-wide, so
+        // whichever surface paints first in a frame pays for it and the rest
+        // cost an elapsed check. A named surface doesn't watch a file of its
+        // own, and this is what gives it hot reload anyway.
+        poll_pool();
         let config = source_hash(&self.source);
         let mut fresh = None;
         let (source, good) = {
@@ -647,6 +928,91 @@ mod tests {
         assert_eq!(target_slot("slot16"), None);
         assert_eq!(target_slot("bass"), None);
         assert_eq!(target_slot(""), None);
+    }
+
+    /// The name wins where it resolves, and where it doesn't the surface
+    /// gets nothing rather than the stale inline copy: a name says "whatever
+    /// the workspace calls this", and running something else under it would
+    /// be worse than a blank panel.
+    #[test]
+    fn resolve_source_reads_the_pool_before_the_inline_copy() {
+        rox_core::settings::note_shader_pool(vec![rox_core::settings::NamedShader {
+            name: "Grain".to_string(),
+            source: "// the pool's grain".to_string(),
+            path: None,
+        }]);
+
+        assert_eq!(
+            resolve_source(Some("Grain"), "// the panel's own"),
+            Some("// the pool's grain".to_string())
+        );
+        assert_eq!(resolve_source(Some("Bloom"), "// the panel's own"), None);
+        assert_eq!(
+            resolve_source(None, "// the panel's own"),
+            Some("// the panel's own".to_string())
+        );
+        assert_eq!(resolve_source(None, "   \n "), None);
+        assert_eq!(resolve_source(None, ""), None);
+
+        // Leave the pool as it was found, since it's app-global and the
+        // other tests in this binary share it.
+        rox_core::settings::note_shader_pool(Vec::new());
+        assert_eq!(resolve_source(Some("Grain"), "// the panel's own"), None);
+    }
+
+    /// A config with a name has something to run even with no source of its
+    /// own, which is the whole point of pointing at the pool. Whether the
+    /// pool actually holds it is registration's question, not the config's.
+    #[test]
+    fn a_named_shader_is_runnable_without_its_own_source() {
+        let named = PanelShader {
+            name: Some("Grain".to_string()),
+            source: String::new(),
+            ..PanelShader::default()
+        };
+        assert!(named.runnable());
+
+        let off = PanelShader {
+            enabled: false,
+            ..named.clone()
+        };
+        assert!(!off.runnable(), "the switch still wins");
+
+        let bare = PanelShader {
+            source: "  \n".to_string(),
+            ..PanelShader::default()
+        };
+        assert!(!bare.runnable(), "no name and no text is nothing to run");
+    }
+
+    /// A shader that names the pool writes the name, and one that doesn't
+    /// writes no key, so no layout dump written before the pool existed
+    /// grows a line.
+    #[test]
+    fn a_pool_name_rides_the_shader_config() {
+        let shader = PanelShader {
+            name: Some("Grain".to_string()),
+            ..PanelShader::default()
+        };
+        let dumped = serde_json::to_value(&shader).expect("dump");
+        assert_eq!(dumped["name"], "Grain");
+        let read: PanelShader = serde_json::from_value(dumped).expect("read back");
+        assert_eq!(read.name.as_deref(), Some("Grain"));
+
+        let nameless = serde_json::to_value(PanelShader::default()).expect("dump");
+        assert!(
+            nameless.get("name").is_none(),
+            "an unnamed shader writes no key: {nameless}"
+        );
+
+        // A dump from before names existed reads as an inline shader.
+        let older: PanelShader = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "source": "// mine",
+        }))
+        .expect("older dumps still load");
+        assert!(older.name.is_none());
+        assert_eq!(older.source, "// mine");
     }
 
     #[test]
@@ -874,6 +1240,107 @@ mod tests {
         let watch = SourceWatch::seeded(None);
         assert!(!watch.seeded);
         assert!(watch.stamp.is_none());
+    }
+
+    /// The eject folder this test writes into, emptied first so a rerun
+    /// starts from nothing.
+    fn eject_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("rox-shader-eject-{name}"));
+        std::fs::remove_dir_all(&root).ok();
+        root
+    }
+
+    /// The collision rule: the same shader keeps its file, a different one
+    /// under a taken name slides down to a numbered variant rather than
+    /// writing over somebody's edits.
+    #[test]
+    fn ejecting_over_a_diverged_file_takes_the_next_name() {
+        let root = eject_root("collision");
+        let named = |stem: &str| rox_core::settings::shader_eject_path_in(&root, "Nightfall", stem);
+
+        let first = eject_in(&root, "Nightfall", "Grain", "// one").expect("eject");
+        assert_eq!(first, named("Grain"));
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "// one");
+
+        // The same shader, give or take the newline an editor leaves: the
+        // file already says it, so it keeps its name.
+        let again = eject_in(&root, "Nightfall", "Grain", "\n// one\n").expect("eject");
+        assert_eq!(again, first);
+
+        // A different shader under a taken name gets its own file, and the
+        // one that was there is left exactly as it was.
+        let second = eject_in(&root, "Nightfall", "Grain", "// two").expect("eject");
+        assert_eq!(second, named("Grain-2"));
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "\n// one\n");
+
+        let third = eject_in(&root, "Nightfall", "Grain", "// three").expect("eject");
+        assert_eq!(third, named("Grain-3"));
+        // And the one that already has a numbered file lands back on it
+        // rather than walking further down every time.
+        assert_eq!(
+            eject_in(&root, "Nightfall", "Grain", "// two").expect("eject"),
+            named("Grain-2")
+        );
+
+        // Names double as path components, so a name that can't be one
+        // folds through the shared sanitizer.
+        let awkward = eject_in(&root, "Nightfall", "a/b", "// slashed").expect("eject");
+        assert_eq!(awkward, named("a b"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A bookmarked pool entry follows its file, and one without a bookmark
+    /// is never read for.
+    #[test]
+    fn the_pool_watch_pulls_an_edit_into_its_entry() {
+        let dir = eject_root("pool-watch");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("grain.wgsl");
+        std::fs::write(&path, "// one").expect("write");
+
+        let entry =
+            |name: &str, source: &str, path: Option<PathBuf>| rox_core::settings::NamedShader {
+                name: name.to_string(),
+                source: source.to_string(),
+                path,
+            };
+        let mut pool = vec![
+            entry("Grain", "// one", Some(path.clone())),
+            entry("Bloom", "// bloom", None),
+        ];
+        let mut stamps = HashMap::new();
+
+        // The first sweep reads the file whatever the stamp says, and it
+        // holds what the entry does, so nothing moves.
+        assert!(pool_reload(&mut stamps, &mut pool).is_empty());
+
+        std::fs::write(&path, "// one, and then some more").expect("rewrite");
+        assert_eq!(
+            pool_reload(&mut stamps, &mut pool),
+            vec!["// one, and then some more".to_string()]
+        );
+        assert_eq!(pool[0].source, "// one, and then some more");
+        // Quiet again once the stamp has caught up, and the entry with no
+        // file behind it was never in play.
+        assert!(pool_reload(&mut stamps, &mut pool).is_empty());
+        assert_eq!(pool[1].source, "// bloom");
+
+        // An entry that leaves the pool drops its stamp, so the same file
+        // coming back under that name reads as news rather than old.
+        assert!(pool_reload(&mut stamps, &mut Vec::new()).is_empty());
+        assert!(stamps.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An inline shader ejects under its panel's name, and a panel with
+    /// nothing to call it by falls back to the source's own hash.
+    #[test]
+    fn an_ejected_name_falls_back_to_the_source() {
+        assert_eq!(eject_name("  Wall  ", "// mine"), "Wall");
+        let hashed = eject_name("", "// mine");
+        assert!(hashed.starts_with("shader-"), "{hashed}");
+        assert_eq!(hashed.len(), "shader-".len() + 8);
+        assert_ne!(hashed, eject_name("", "// somebody else's"));
     }
 
     #[test]

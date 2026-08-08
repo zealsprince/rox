@@ -43,8 +43,8 @@ use crate::panels::slide::SlidePanel;
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
 use crate::quick_play::QuickPlay;
 use rox_core::settings::{
-    self, LastTrack, LayoutEdit, LayoutSize, NamedLayout, QueueState, QueuedTrack, Settings,
-    WindowState, WorkspaceBundle,
+    self, LastTrack, LayoutEdit, LayoutSize, NamedLayout, PostShaderConfig, QueueState,
+    QueuedTrack, Settings, WindowState,
 };
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
@@ -222,6 +222,64 @@ pub(crate) fn note_confirm_window(handle: Option<AnyWindowHandle>, cx: &mut App)
     cx.default_global::<PostShaderConfirmWindow>().0 = handle;
 }
 
+/// What a screen shader that arrived inside a look says while it waits for
+/// an agreement. Lands in the settings page's readout beside the compile
+/// errors, since from where the user sits it's the same question: why is
+/// nothing painting?
+const UNAPPROVED_POST_SHADER: &str =
+    "this shader arrived with a workspace and hasn't been approved on this machine";
+
+/// The WGSL the screen shader actually runs, resolved the way a panel
+/// surface resolves its own.
+///
+/// A pool name wins outright: a hit runs the pool's copy, and a miss runs
+/// nothing rather than falling through to whatever inline text happens to
+/// be sitting beside it. Then the inline source, which is how a shader
+/// travels inside a bundle. Then the file the config points at, the way it
+/// worked before either of the other two existed.
+///
+/// The first two go through the approval gate, because a bundle apply is
+/// exactly the "somebody else's code" path the gate exists for. The file
+/// read doesn't: picking a file is the agreement, and the pick already
+/// recorded it.
+///
+/// `Ok(None)` is nothing to run, `Err` a line for the settings page's
+/// readout.
+pub(crate) fn post_shader_source(config: &PostShaderConfig) -> Result<Option<String>, String> {
+    // Empty text is nothing to run, whichever way in it arrived, and the
+    // gate reads it as approved for the same reason.
+    let gated = |source: String| match panel::shader::approved(&source) {
+        true => Ok((!source.trim().is_empty()).then_some(source)),
+        false => Err(UNAPPROVED_POST_SHADER.to_string()),
+    };
+    if let Some(name) = config.name.as_deref() {
+        return match settings::shader_pool_get(name) {
+            Some(entry) => gated(entry.source),
+            None => Ok(None),
+        };
+    }
+    if !config.source.trim().is_empty() {
+        return gated(config.source.clone());
+    }
+    let Some(path) = config.path.as_ref() else {
+        return Ok(None);
+    };
+    std::fs::read_to_string(path)
+        .map(Some)
+        .map_err(|e| format!("reading {}: {e}", path.display()))
+}
+
+/// The file behind the screen shader, which is the only source hot reload
+/// can watch. Set only when the file is what [`post_shader_source`] reads:
+/// a pool entry or an inline source changes through an apply, never behind
+/// rox's back, so there is nothing to stat for either of those.
+fn post_shader_watch(config: &PostShaderConfig) -> Option<PathBuf> {
+    if config.name.is_some() || !config.source.trim().is_empty() {
+        return None;
+    }
+    config.path.clone()
+}
+
 /// Reapply the configured post shader everywhere. The Shader settings page's
 /// controls, the toggle action, the confirm dialog's revert, and the hot
 /// reload all land here; each workspace window re-reads the file and
@@ -246,15 +304,12 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
                 .ok();
         }
         // The child pass: cache the source and shade every eligible window,
-        // or strip the ones shaded before. Read errors fall through as None
-        // here; the workspace pass above already surfaced them.
+        // or strip the ones shaded before. Resolved through the same order
+        // the workspace windows use, so a child never wears something the
+        // workspace isn't wearing. Errors fall through as None here; the
+        // workspace pass above already surfaced them.
         let source = (config.enabled && config.all_windows)
-            .then(|| {
-                config
-                    .path
-                    .as_ref()
-                    .and_then(|p| std::fs::read_to_string(p).ok())
-            })
+            .then(|| post_shader_source(&config).ok().flatten())
             .flatten();
         let previous = std::mem::take(&mut cx.default_global::<ShadedChildren>().windows);
         cx.default_global::<ShadedChildren>().source = source.clone();
@@ -371,7 +426,11 @@ fn post_shader_signals(hub: &SignalHub) -> [f32; panel::shader::SLOTS] {
 /// Shader section): which file this window wears and its stamp, for the
 /// render loop's hot reload.
 struct PostShaderDriver {
-    path: PathBuf,
+    /// The file the shader was read from, None when it came from the pool
+    /// or from a bundle's inline copy. Those have nothing to watch, but the
+    /// driver still exists for them: it's also what feeds the shader its
+    /// signals and keeps the frames coming.
+    path: Option<PathBuf>,
     /// The file's stamp when it was last read, [`settings::file_stamp`]'s
     /// size and mtime. A change re-reads; None (unreadable) counts as a
     /// change too, so a file swapped back into place reloads.
@@ -1572,7 +1631,15 @@ enum LayoutDialog {
     /// Replacing a saved workspace of the same name with the current look.
     ConfirmOverwriteWorkspace(String),
     /// Applying a saved or shipped workspace, which replaces the whole look.
-    ConfirmApplyWorkspace(String),
+    /// Carries the card the confirm reads out, built when the dialog opens so
+    /// the bundle behind it isn't reparsed every frame the dialog is up.
+    ConfirmApplyWorkspace {
+        card: crate::workspaces::ApplyCard,
+        /// Whether the bundle just arrived from a file, which changes what
+        /// the dialog says: an import has already saved it, so the offer is
+        /// to wear it now rather than to replace what's there.
+        imported: bool,
+    },
     /// Taking a pinned panel out of the layout. Carries what to close so the
     /// confirm can do it without going looking again.
     ConfirmCloseLocked {
@@ -2122,41 +2189,51 @@ impl Workspace {
     }
 
     /// Install or clear this window's post shader from the settings file.
-    /// The read and compile happen here, synchronously: a failure logs, lands
-    /// its message in the shared readout, and leaves whatever compiled last
-    /// still running, so a broken edit never blanks the effect.
+    /// The resolve and compile happen here, synchronously: a failure logs,
+    /// lands its message in the shared readout, and leaves whatever compiled
+    /// last still running, so a broken edit never blanks the effect.
     fn apply_post_shader(&mut self, window: &mut Window) {
         let config = Settings::load().post_shader;
         // Keep the live switch and the route feed in step; the startup path
         // lands here before any app-level apply has run.
         POST_SHADER_ON.store(config.enabled, Ordering::Relaxed);
-        set_post_shader_routes(config.routes);
-        let (true, Some(path)) = (config.enabled, config.path) else {
-            if self.post_shader.take().is_some_and(|driver| driver.active) {
-                window.set_post_shader(None);
-            }
-            *POST_SHADER_ERROR.write().unwrap() = None;
-            *POST_SHADER_LABELS.write().unwrap() = Vec::new();
+        set_post_shader_routes(config.routes.clone());
+        if !config.enabled {
+            self.clear_post_shader(window);
             return;
-        };
+        }
         let mut driver = PostShaderDriver {
-            stamp: settings::file_stamp(&path),
+            path: post_shader_watch(&config),
+            stamp: None,
             checked: Instant::now(),
             active: self
                 .post_shader
                 .as_ref()
                 .is_some_and(|driver| driver.active),
-            path,
         };
-        let result = std::fs::read_to_string(&driver.path)
-            .map_err(|e| format!("reading {}: {e}", driver.path.display()))
-            .and_then(|source| {
-                // The slot names travel with the source, so the settings
-                // window's route editor names them the way a panel's does.
-                *POST_SHADER_LABELS.write().unwrap() = panel::shader::slot_labels(&source);
-                window.register_user_shader(&source)
-            });
-        match result {
+        driver.stamp = driver.path.as_deref().and_then(settings::file_stamp);
+        let source = match post_shader_source(&config) {
+            Ok(Some(source)) => source,
+            // A pool name nothing answers to, or a config pointing nowhere.
+            // Same teardown as the switch being off: there is nothing to
+            // run, and leaving the last one up would be running something
+            // this look never asked for.
+            Ok(None) => {
+                self.clear_post_shader(window);
+                return;
+            }
+            // The stamp still moves on, so fixing the file reloads it.
+            Err(error) => {
+                log::warn!("post shader: {error}");
+                *POST_SHADER_ERROR.write().unwrap() = Some(error);
+                self.post_shader = Some(driver);
+                return;
+            }
+        };
+        // The slot names travel with the source, so the settings window's
+        // route editor names them the way a panel's does.
+        *POST_SHADER_LABELS.write().unwrap() = panel::shader::slot_labels(&source);
+        match window.register_user_shader(&source) {
             Ok(id) => {
                 window.set_post_shader(Some(id));
                 driver.active = true;
@@ -2168,6 +2245,17 @@ impl Workspace {
             }
         }
         self.post_shader = Some(driver);
+    }
+
+    /// Take the shader off this window and clear the shared readouts: the
+    /// state before anything is configured, which is also where a switched
+    /// off or unresolvable one lands.
+    fn clear_post_shader(&mut self, window: &mut Window) {
+        if self.post_shader.take().is_some_and(|driver| driver.active) {
+            window.set_post_shader(None);
+        }
+        *POST_SHADER_ERROR.write().unwrap() = None;
+        *POST_SHADER_LABELS.write().unwrap() = Vec::new();
     }
 
     /// The screen shader's frame loop, run from render: re-read the file
@@ -2194,7 +2282,13 @@ impl Workspace {
             .is_some_and(|w| w.handle == window.window_handle());
         if driver.checked.elapsed().as_secs_f32() > 1.0 {
             driver.checked = Instant::now();
-            if settings::file_stamp(&driver.path) != driver.stamp {
+            // Only a shader read from a file can change without an apply;
+            // the pool and the inline copies come round through one.
+            let moved = driver
+                .path
+                .as_deref()
+                .is_some_and(|path| settings::file_stamp(path) != driver.stamp);
+            if moved {
                 // Through the app-level apply, so every shaded window
                 // follows the edit rather than just this one. Never
                 // prompts: the hot reload is the authoring loop.
@@ -2429,10 +2523,53 @@ impl Workspace {
         let Some(bundle) = crate::workspaces::resolve(name) else {
             return;
         };
+        // What the screen shader is running right now, read before anything
+        // moves: it's both the revert target for the countdown below and the
+        // thing the incoming one is compared against. Resolved against the
+        // pool that's still live, since that's what's actually on screen.
+        let prior = Settings::load().post_shader;
+        let prior_source = prior
+            .enabled
+            .then(|| post_shader_source(&prior).ok().flatten())
+            .flatten();
         crate::workspaces::apply_look(&bundle, cx);
         // The look's signal pool replaces the live one the same wholesale
         // way; apply_look already persisted it into settings.
         self.state.signals.set_pool(bundle.signals.clone());
+        // The shader pool goes over the live one exactly the same way, and
+        // apply_look persisted it in the same write. A saved bundle arrives
+        // with its file bookmarks scrubbed, so anything still sitting in the
+        // shaders folder gets linked back up first; that's what keeps hot
+        // reload alive across a save and reapply, and it's the one part
+        // worth a second write.
+        let mut pool = bundle.shaders.clone();
+        if crate::workspaces::relink_ejected(&bundle.name, &mut pool) {
+            settings::set_shader_pool(pool);
+        } else {
+            settings::note_shader_pool(pool);
+        }
+        // The screen shader belongs to the look too, but it lives in the
+        // machine settings rather than in the bundle apply_look wrote, so it
+        // goes in here. A bundle carrying none applies as the disabled
+        // default: an apply replaces the look wholesale, and leaving the old
+        // shader running over a new look isn't that.
+        let incoming = bundle.post_shader.clone().unwrap_or_default();
+        let persist = incoming.clone();
+        Settings::update(move |s| s.post_shader = persist);
+        apply_post_shader(cx);
+        // A shader that came in with the look gets the same countdown a
+        // risky apply from the settings page does, since it can bury the
+        // controls that would undo it. Only a change worth proving: an apply
+        // that turns the shader off, or lands the same source that was
+        // already running, prompts nothing.
+        let landed = incoming
+            .enabled
+            .then(|| post_shader_source(&incoming).ok().flatten())
+            .flatten();
+        if landed.is_some() && landed != prior_source {
+            let player = self.state.player.entity_id();
+            crate::settings::shader_confirm::open(prior, player, |_| {}, cx);
+        }
         // A whole-look swap drops the previous layout's unsaved edits along
         // with the rest of the old look (apply_look cleared the store); forget
         // the old active name too, so the apply below doesn't stash a stale
@@ -2510,7 +2647,10 @@ impl Workspace {
     ) {
         self.layout_dialog = Some(match target {
             WorkspaceTarget::Overwrite => LayoutDialog::ConfirmOverwriteWorkspace(name),
-            WorkspaceTarget::Apply => LayoutDialog::ConfirmApplyWorkspace(name),
+            WorkspaceTarget::Apply => LayoutDialog::ConfirmApplyWorkspace {
+                card: crate::workspaces::ApplyCard::for_name(&name),
+                imported: false,
+            },
         });
         cx.notify();
     }
@@ -2560,7 +2700,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        crate::workspaces::store(&WorkspaceBundle::from_settings(name, &Settings::load()));
+        crate::workspaces::store(&crate::workspaces::snapshot(&name, &Settings::load()));
         self.close_layout_dialog(window, cx);
     }
 
@@ -2577,15 +2717,31 @@ impl Workspace {
         // not the stale disk copy. See commit_save_workspace.
         self.persist(window, cx);
         // The bundle's name picks its file, so an overwrite lands back on the
-        // same one a first save wrote: both are the one write.
-        crate::workspaces::store(&WorkspaceBundle::from_settings(name, &Settings::load()));
+        // same one a first save wrote: both are the one write, and the card
+        // the old file carried comes along through the snapshot.
+        crate::workspaces::store(&crate::workspaces::snapshot(&name, &Settings::load()));
         self.close_layout_dialog(window, cx);
     }
 
     /// Apply the pending workspace to this window, the confirm dialog's yes.
-    fn apply_workspace_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// `approve` is the difference between the dialog's two yes buttons: it
+    /// agrees to the shaders the bundle brought, which is the one click on
+    /// this whole path that may write the approved list. Applying without it
+    /// still lands the look, the surfaces wearing unapproved code just paint
+    /// nothing until somebody approves them one at a time.
+    fn apply_workspace_confirmed(
+        &mut self,
+        approve: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let name = match &self.layout_dialog {
-            Some(LayoutDialog::ConfirmApplyWorkspace(name)) => name.clone(),
+            Some(LayoutDialog::ConfirmApplyWorkspace { card, .. }) => {
+                if approve {
+                    card.approve_shaders();
+                }
+                card.name.clone()
+            }
             _ => return,
         };
         self.apply_workspace(&name, window, cx);
@@ -2594,6 +2750,12 @@ impl Workspace {
 
     /// Pick a workspace file and add it to the collection, the settings
     /// window's Import path from the menu.
+    ///
+    /// A bundle carrying shaders this machine has never agreed to run opens
+    /// the apply confirm on the way in, so what arrived gets read out at the
+    /// moment it lands rather than a week later when somebody applies it.
+    /// Backing out of that dialog is exactly the old behaviour: the file is
+    /// saved, nothing is approved, and nothing is wearing it.
     fn import_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -2612,7 +2774,14 @@ impl Workspace {
                 return;
             };
             crate::workspaces::store(&bundle);
-            this.update(cx, |_, cx| {
+            let card = crate::workspaces::ApplyCard::of(&bundle);
+            this.update(cx, |this, cx| {
+                if !card.shaders.is_empty() {
+                    this.layout_dialog = Some(LayoutDialog::ConfirmApplyWorkspace {
+                        card,
+                        imported: true,
+                    });
+                }
                 cx.notify();
                 native_menu::rebuild(cx);
             })
@@ -3531,33 +3700,81 @@ impl Workspace {
                             }),
                         )),
                 ),
-            LayoutDialog::ConfirmApplyWorkspace(name) => card
-                .child(div().child(SharedString::from(format!("Apply \"{name}\"?"))))
-                .child(
+            LayoutDialog::ConfirmApplyWorkspace {
+                card: bundle_card,
+                imported,
+            } => {
+                let shaders = bundle_card.shader_line();
+                let line = |text: SharedString| {
                     div()
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child("This replaces the whole look - layouts, palette, appearance."),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .gap(tokens::SPACE_SM)
-                        .child(dialog_button(
-                            "Cancel",
-                            false,
-                            cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
-                        ))
-                        .child(dialog_button(
-                            "Apply",
-                            true,
-                            cx.listener(|this, _, window, cx| {
-                                this.apply_workspace_confirmed(window, cx)
-                            }),
-                        )),
-                ),
+                        .child(text)
+                };
+                card
+                    // The shader list needs the room; a plain apply keeps the
+                    // dialogs' shared width.
+                    .when(shaders.is_some(), |d| d.w(px(380.)))
+                    .child(div().child(SharedString::from(if *imported {
+                        format!("Imported \"{}\"", bundle_card.name)
+                    } else {
+                        format!("Apply \"{}\"?", bundle_card.name)
+                    })))
+                    .children(bundle_card.byline.clone().map(line))
+                    .children(bundle_card.description.clone().map(line))
+                    .child(line(if *imported {
+                        "It's saved to your workspaces. Applying it now replaces the whole \
+                         look: layouts, palette, appearance."
+                            .into()
+                    } else {
+                        "This replaces the whole look: layouts, palette, appearance.".into()
+                    }))
+                    .children(shaders.clone().map(line))
+                    // Shaders that came with a look are somebody else's code,
+                    // so the yes that runs them says so, and the yes that
+                    // doesn't is right beside it.
+                    .children(shaders.is_some().then(|| {
+                        line(
+                            "Approving lets them run on this machine. Applying without them \
+                             leaves the surfaces wearing them blank."
+                                .into(),
+                        )
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap(tokens::SPACE_SM)
+                            .child(dialog_button(
+                                if *imported { "Not Now" } else { "Cancel" },
+                                false,
+                                cx.listener(|this, _, window, cx| {
+                                    this.close_layout_dialog(window, cx)
+                                }),
+                            ))
+                            .child(dialog_button(
+                                if shaders.is_some() {
+                                    "Without Shaders"
+                                } else {
+                                    "Apply"
+                                },
+                                shaders.is_none(),
+                                cx.listener(|this, _, window, cx| {
+                                    this.apply_workspace_confirmed(false, window, cx)
+                                }),
+                            ))
+                            .children(shaders.is_some().then(|| {
+                                dialog_button(
+                                    "Approve and Apply",
+                                    true,
+                                    cx.listener(|this, _, window, cx| {
+                                        this.apply_workspace_confirmed(true, window, cx)
+                                    }),
+                                )
+                            })),
+                    )
+            }
             LayoutDialog::ConfirmCloseLocked { name, .. } => card
                 .child(div().child(SharedString::from(format!("Close \"{name}\"?"))))
                 .child(

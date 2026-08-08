@@ -350,12 +350,7 @@ impl Render for LyricsEdit {
                             // cancel pushed to the right.
                             .child(stamp)
                             .when(ready && position.is_some(), |d| {
-                                d.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette::text_faint())
-                                        .child("Shift + Enter"),
-                                )
+                                d.child(settings_ui::kbd("Shift+Enter".into()))
                             })
                             .child(div().flex_1())
                             .child(settings_ui::small_button(

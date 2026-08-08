@@ -56,12 +56,12 @@ struct WelcomeWindow {
     /// the art bake the backdrop paints from.
     state: AppState,
     backdrop: WindowBackdrop,
-    /// The shipped workspaces as the quick-start tiles show them: name
-    /// and, when previews ship, their asset paths and aspect ratios per
-    /// theme side. Read once on open; the render loop must not reparse the
-    /// embedded bundles per frame. Render picks the live theme's side, so
-    /// the tiles follow a flip while the window is up.
-    workspaces: Vec<(SharedString, TilePreviews)>,
+    /// The shipped workspaces as the quick-start tiles show them: name, the
+    /// author their card credits, and when previews ship, their asset paths
+    /// and aspect ratios per theme side. Read once on open; the render loop
+    /// must not reparse the embedded bundles per frame. Render picks the
+    /// live theme's side, so the tiles follow a flip while the window is up.
+    workspaces: Vec<Tile>,
     /// The tile the pointer is over, if any: its preview shows in color
     /// while the rest sit desaturated.
     hovered_tile: Option<usize>,
@@ -86,12 +86,15 @@ impl WelcomeWindow {
         }
         let workspaces = crate::workspaces::shipped()
             .into_iter()
-            .map(|entry| {
-                let previews = TilePreviews {
+            .map(|entry| Tile {
+                name: SharedString::from(entry.name.clone()),
+                // The list already parsed the bundle to build itself, so the
+                // credit costs nothing on top.
+                author: entry.author.map(SharedString::from),
+                previews: TilePreviews {
                     dark: entry.preview_dark.map(sized),
                     light: entry.preview_light.map(sized),
-                };
-                (SharedString::from(entry.name.clone()), previews)
+                },
             })
             .collect();
         WelcomeWindow {
@@ -108,6 +111,14 @@ impl WelcomeWindow {
 /// A section's body line, the pages' muted copy register.
 fn line(text: impl Into<SharedString>) -> Div {
     div().text_color(palette::text_muted()).child(text.into())
+}
+
+/// One quick-start tile as the window holds it: what the workspace is
+/// called, who made it when their card says, and the pictures it shows.
+struct Tile {
+    name: SharedString,
+    author: Option<SharedString>,
+    previews: TilePreviews,
 }
 
 /// One tile's preview pair: the asset path and aspect ratio per theme
@@ -141,6 +152,7 @@ const FRAME_ASPECT: f32 = 16. / 9.;
 /// tile's shape with a quiet placeholder block.
 fn workspace_tile(
     name: SharedString,
+    author: Option<SharedString>,
     preview: Option<(SharedString, f32)>,
     hovered: bool,
     width: f32,
@@ -226,6 +238,16 @@ fn workspace_tile(
         .on_mouse_down(MouseButton::Left, on_click)
         .child(picture)
         .child(div().text_color(palette::text_muted()).child(name))
+        // Somebody made this look; their name rides under it wherever it
+        // shows, quieter than the workspace's own.
+        .when_some(author, |d, author| {
+            d.child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_faint())
+                    .child(SharedString::from(format!("by {author}"))),
+            )
+        })
 }
 
 impl Render for WelcomeWindow {
@@ -415,11 +437,12 @@ impl Render for WelcomeWindow {
                     self.workspaces
                         .iter()
                         .enumerate()
-                        .map(|(i, (name, previews))| {
-                            let apply = name.clone();
+                        .map(|(i, tile)| {
+                            let apply = tile.name.clone();
                             workspace_tile(
-                                name.clone(),
-                                previews.pick(palette::mode()),
+                                tile.name.clone(),
+                                tile.author.clone(),
+                                tile.previews.pick(palette::mode()),
                                 self.hovered_tile == Some(i),
                                 tile_width,
                                 cx.listener(move |_, _, window, cx| {

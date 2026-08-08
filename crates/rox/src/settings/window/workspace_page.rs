@@ -5,6 +5,56 @@
 
 use super::*;
 
+/// The card open under a workspace row: which workspace it belongs to, the
+/// card as the file carries it, and an input per line somebody can type in.
+/// Built when a row's details open and dropped when they close, so nothing
+/// here outlives the workspace it describes.
+pub(crate) struct CardEditor {
+    /// The workspace the card belongs to, which is also the name its file is
+    /// under.
+    name: String,
+    /// The card the bundle arrived with. What the dates read out, and the
+    /// whole readout for a shipped bundle.
+    meta: WorkspaceMeta,
+    /// One input per line of [`CARD_FIELDS`], in that order. None for a
+    /// shipped bundle: its file lives in the app's assets, where there's
+    /// nothing to write back to, so its card is a readout.
+    fields: Option<Vec<Entity<InputState>>>,
+}
+
+/// The card's editable lines: what each one is called, what an empty one
+/// hints at, and the field it reads and writes. Created and updated stay
+/// out of this list because nobody types a date; a save stamps them.
+type CardField = (&'static str, &'static str, fn(&mut WorkspaceMeta) -> &mut String);
+const CARD_FIELDS: [CardField; 5] = [
+    ("Author", "Who made it", |meta| &mut meta.author),
+    ("Description", "What the look is going for", |meta| {
+        &mut meta.description
+    }),
+    ("Website", "Where it lives", |meta| &mut meta.website),
+    ("Version", "Your own version, whatever you count in", |meta| {
+        &mut meta.version
+    }),
+    ("License", "The terms you share it under", |meta| {
+        &mut meta.license
+    }),
+];
+
+impl CardEditor {
+    /// What's typed in, as a card. The dates ride through untouched: they
+    /// belong to the bundle's history, not to this form.
+    fn typed(&self, cx: &App) -> WorkspaceMeta {
+        let mut meta = self.meta.clone();
+        let Some(fields) = self.fields.as_ref() else {
+            return meta;
+        };
+        for ((_, _, field), input) in CARD_FIELDS.iter().zip(fields) {
+            *field(&mut meta) = input.read(cx).value().trim().to_string();
+        }
+        meta
+    }
+}
+
 impl SettingsWindow {
     /// The Workspace page: the sharing hub. A workspace is a whole look -
     /// layout presets, palette, appearance - traded as one file; presets are
@@ -108,13 +158,19 @@ impl SettingsWindow {
                                     .child("No workspaces yet"),
                             );
                         } else {
-                            list = list.child(
-                                div().flex().flex_col().children(
-                                    entries
-                                        .into_iter()
-                                        .map(|entry| self.workspace_row(entry, live, cx)),
-                                ),
-                            );
+                            // A row and, for the one whose details are open,
+                            // its card right under it, so the fields sit with
+                            // the workspace they belong to.
+                            list = list.child(div().flex().flex_col().children(
+                                entries.into_iter().flat_map(|entry| {
+                                    let open = self
+                                        .workspace_card
+                                        .as_ref()
+                                        .is_some_and(|card| card.name == entry.name);
+                                    let row = self.workspace_row(entry, live, cx);
+                                    [Some(row), open.then(|| self.workspace_card_body(cx))]
+                                }).flatten(),
+                            ));
                         }
                         list.into_any_element()
                     },
@@ -123,8 +179,9 @@ impl SettingsWindow {
         )
     }
 
-    /// One workspace's row: its name, a shipped tag when it comes from the
-    /// app's assets, apply, and for the user's own, export, overwrite and
+    /// One workspace's row: its name with the author under it when the card
+    /// names one, a shipped tag when it comes from the app's assets, the
+    /// details toggle, apply, and for the user's own, export, overwrite and
     /// delete.
     fn workspace_row(
         &self,
@@ -133,6 +190,16 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let name = entry.name.clone();
+        // A shipped entry carries its author from the parse that built the
+        // list; a saved one comes out of the authors read this window holds.
+        let author = entry
+            .author
+            .clone()
+            .or_else(|| self.workspace_authors.get(&name).cloned());
+        let open = self
+            .workspace_card
+            .as_ref()
+            .is_some_and(|card| card.name == name);
         div()
             .flex()
             .flex_row()
@@ -143,16 +210,47 @@ impl SettingsWindow {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .truncate()
-                    .child(SharedString::from(name.clone())),
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().child(SharedString::from(name.clone())))
+                    .when_some(author, |d, author| {
+                        d.child(
+                            div()
+                                .truncate()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(SharedString::from(format!("by {author}"))),
+                        )
+                    }),
             )
             .when(entry.builtin, |d| d.child(shipped_tag()))
+            // The card hangs under the row rather than in a window of its
+            // own: it's a handful of lines about the workspace right there,
+            // and only one is open at a time.
+            .child(icon_button(
+                if open {
+                    icons::CHEVRON_DOWN
+                } else {
+                    icons::CHEVRON_RIGHT
+                },
+                false,
+                {
+                    let name = name.clone();
+                    let builtin = entry.builtin;
+                    cx.listener(move |this, _, window, cx| {
+                        this.toggle_workspace_card(&name, builtin, window, cx)
+                    })
+                },
+            ))
             // Applying replaces the whole look, so it routes through the
             // confirm dialog rather than acting straight off the click.
             .child(small_button("Apply", icons::CHECK, !live, {
                 let name = name.clone();
                 cx.listener(move |this, _, _, cx| {
-                    this.pending = Some(Pending::ApplyWorkspace(name.clone()));
+                    this.pending = Some(Pending::ApplyWorkspace {
+                        card: crate::workspaces::ApplyCard::for_name(&name),
+                        imported: false,
+                    });
                     cx.notify();
                 })
             }))
@@ -179,6 +277,163 @@ impl SettingsWindow {
                 }))
             })
             .into_any_element()
+    }
+
+    /// The open workspace's card, hanging under its row: the author's own
+    /// lines about the look, editable for a saved workspace and a readout
+    /// for a shipped one, over the dates a save stamped.
+    fn workspace_card_body(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(card) = self.workspace_card.as_ref() else {
+            return div().into_any_element();
+        };
+        let muted = |text: SharedString| {
+            div()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(text)
+        };
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_SM)
+            .pb(tokens::SPACE_SM)
+            .pl(tokens::SPACE_MD);
+        match card.fields.as_ref() {
+            Some(fields) => {
+                body = body.child(muted(
+                    "The card travels inside the file, so whoever you share this look \
+                     with sees it"
+                        .into(),
+                ));
+                for ((label, _, _), input) in CARD_FIELDS.iter().zip(fields) {
+                    body = body.child(panel::setting_row(
+                        label,
+                        None,
+                        Input::new(input).small().w(px(240.)),
+                    ));
+                }
+                body = body.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .child(small_button(
+                            "Save Card",
+                            icons::CHECK,
+                            false,
+                            cx.listener(|this, _, _, cx| this.save_workspace_card(cx)),
+                        )),
+                );
+            }
+            // A shipped bundle's file is in the app's assets, so there's
+            // nothing to write back to. Fork it with Save Current under a
+            // name of your own and the copy's card is yours to fill in.
+            None if card.meta.is_empty() => {
+                body = body.child(muted("This workspace carries no card".into()));
+            }
+            None => {
+                for (label, _, field) in CARD_FIELDS {
+                    let mut meta = card.meta.clone();
+                    let value = field(&mut meta).clone();
+                    if value.trim().is_empty() {
+                        continue;
+                    }
+                    body = body.child(panel::setting_row_dyn(
+                        label,
+                        None,
+                        div().text_xs().child(SharedString::from(value)),
+                    ));
+                }
+            }
+        }
+        // The dates are the bundle's own history: a save stamps them, so
+        // they read out rather than open up, on both sides of the split
+        // above.
+        let dates = match (card.meta.created.trim(), card.meta.updated.trim()) {
+            ("", "") => None,
+            ("", updated) => Some(format!("Updated {updated}")),
+            (created, "") => Some(format!("Created {created}")),
+            (created, updated) => Some(format!("Created {created}, updated {updated}")),
+        };
+        body.children(dates.map(|dates| muted(dates.into())))
+            .into_any_element()
+    }
+
+    /// Open a workspace's card, or close it when it's the one already open.
+    /// Opening reads the bundle once and seeds the inputs from it, so the
+    /// fields show what's in the file rather than what was there the last
+    /// time this window looked.
+    fn toggle_workspace_card(
+        &mut self,
+        name: &str,
+        builtin: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .workspace_card
+            .as_ref()
+            .is_some_and(|card| card.name == name)
+        {
+            self.workspace_card = None;
+            cx.notify();
+            return;
+        }
+        let Some(bundle) = crate::workspaces::resolve(name) else {
+            return;
+        };
+        let meta = bundle.meta.clone();
+        let fields = (!builtin).then(|| {
+            CARD_FIELDS
+                .iter()
+                .map(|(_, placeholder, field)| {
+                    let mut seed = meta.clone();
+                    let value = field(&mut seed).clone();
+                    cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder(*placeholder)
+                            .default_value(value)
+                    })
+                })
+                .collect()
+        });
+        self.workspace_card = Some(CardEditor {
+            name: name.to_string(),
+            meta,
+            fields,
+        });
+        cx.notify();
+    }
+
+    /// Write the open card back into its workspace file. Reads the bundle
+    /// fresh and replaces only its card, so a save here never touches the
+    /// layouts, palette, or shaders sitting beside it.
+    ///
+    /// Resolving by name rather than reading the file directly is deliberate:
+    /// `read_bundle` is the import path and dedupes against the workspaces
+    /// already saved, which for a workspace that is one of them would rename
+    /// it out from under the edit.
+    fn save_workspace_card(&mut self, cx: &mut Context<Self>) {
+        let Some(card) = self.workspace_card.as_ref() else {
+            return;
+        };
+        if card.fields.is_none() {
+            return;
+        }
+        let Some(mut bundle) = crate::workspaces::resolve(&card.name) else {
+            return;
+        };
+        bundle.meta = card.typed(cx);
+        // The list names a saved workspace after its file, so the write goes
+        // back under that name: a hand-dropped file whose bundle says
+        // something else would otherwise save to a second file beside it.
+        bundle.name = card.name.clone();
+        crate::workspaces::store(&bundle);
+        if let Some(card) = self.workspace_card.as_mut() {
+            card.meta = bundle.meta;
+        }
+        self.workspace_authors = crate::workspaces::saved_authors();
+        cx.notify();
     }
 
     /// The presets section: the saved and shipped layouts as a list, each
@@ -454,24 +709,46 @@ impl SettingsWindow {
     /// occludes the page under it; the buttons are the only way out, no
     /// click-away, so the action is deliberate.
     pub(crate) fn confirm_overlay(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let (title, body, confirm): (String, &'static str, &'static str) =
+        // A workspace apply reads out what's coming before it lands: who made
+        // it, what they say it is, and any shader code riding along that this
+        // machine has never agreed to run.
+        let card = match self.pending.as_ref()? {
+            Pending::ApplyWorkspace { card, .. } => Some(card),
+            _ => None,
+        };
+        let shaders = card.and_then(|card| card.shader_line());
+        let (title, body, confirm): (String, SharedString, &'static str) =
             match self.pending.as_ref()? {
                 Pending::OverwritePreset(name) => (
                     format!("Overwrite \"{name}\"?"),
-                    "This replaces the saved layout with the current one.",
+                    "This replaces the saved layout with the current one.".into(),
                     "Overwrite",
                 ),
                 Pending::OverwriteWorkspace(name) => (
                     format!("Overwrite workspace \"{name}\"?"),
-                    "This replaces the saved workspace with the current state.",
+                    "This replaces the saved workspace with the current state.".into(),
                     "Overwrite",
                 ),
-                Pending::ApplyWorkspace(name) => (
-                    format!("Apply \"{name}\"?"),
-                    "This replaces your layouts, palette, and appearance with the workspace's.",
+                Pending::ApplyWorkspace { card, imported: true } => (
+                    format!("Imported \"{}\"", card.name),
+                    "It's saved to your workspaces. Applying it now replaces your layouts, \
+                     palette, and appearance with the workspace's."
+                        .into(),
+                    "Apply",
+                ),
+                Pending::ApplyWorkspace { card, .. } => (
+                    format!("Apply \"{}\"?", card.name),
+                    "This replaces your layouts, palette, and appearance with the workspace's."
+                        .into(),
                     "Apply",
                 ),
             };
+        let line = |text: SharedString| {
+            div()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(text)
+        };
         Some(
             div()
                 .absolute()
@@ -486,7 +763,9 @@ impl SettingsWindow {
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
-                        .w(px(320.))
+                        // The shader list needs the room; every other confirm
+                        // keeps the dialogs' shared width.
+                        .w(px(if shaders.is_some() { 380. } else { 320. }))
                         .p(tokens::SPACE_MD)
                         .rounded(tokens::RADIUS)
                         .bg(palette::bg_menu_opaque())
@@ -494,12 +773,20 @@ impl SettingsWindow {
                         .border_color(palette::border_light())
                         .shadow_md()
                         .child(div().child(SharedString::from(title)))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(palette::text_muted())
-                                .child(body),
-                        )
+                        .children(card.and_then(|card| card.byline.clone()).map(line))
+                        .children(card.and_then(|card| card.description.clone()).map(line))
+                        .child(line(body))
+                        .children(shaders.clone().map(line))
+                        // Shaders that came with a look are somebody else's
+                        // code, so the yes that runs them says so, and the yes
+                        // that doesn't is right beside it.
+                        .children(shaders.is_some().then(|| {
+                            line(
+                                "Approving lets them run on this machine. Applying without \
+                                 them leaves the surfaces wearing them blank."
+                                    .into(),
+                            )
+                        }))
                         .child(
                             div()
                                 .flex()
@@ -515,23 +802,44 @@ impl SettingsWindow {
                                     }),
                                 ))
                                 .child(dialog_button(
-                                    confirm,
-                                    true,
+                                    if shaders.is_some() {
+                                        "Without Shaders"
+                                    } else {
+                                        confirm
+                                    },
+                                    shaders.is_none(),
                                     cx.listener(|this, _, window, cx| {
-                                        this.confirm_pending(window, cx)
+                                        this.confirm_pending(false, window, cx)
                                     }),
-                                )),
+                                ))
+                                .children(shaders.is_some().then(|| {
+                                    dialog_button(
+                                        "Approve and Apply",
+                                        true,
+                                        cx.listener(|this, _, window, cx| {
+                                            this.confirm_pending(true, window, cx)
+                                        }),
+                                    )
+                                })),
                         ),
                 ),
         )
     }
 
     /// Carry out the pending action, the confirm dialog's yes, and clear it.
-    fn confirm_pending(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// `approve` separates the apply dialog's two yes buttons: it agrees to
+    /// the shaders the bundle brought, and it's the only thing on this path
+    /// that ever writes the approved list.
+    fn confirm_pending(&mut self, approve: bool, window: &mut Window, cx: &mut Context<Self>) {
         match self.pending.take() {
             Some(Pending::OverwritePreset(name)) => self.overwrite_preset(name, window, cx),
             Some(Pending::OverwriteWorkspace(name)) => self.overwrite_workspace(name, window, cx),
-            Some(Pending::ApplyWorkspace(name)) => self.apply_workspace(&name, window, cx),
+            Some(Pending::ApplyWorkspace { card, .. }) => {
+                if approve {
+                    card.approve_shaders();
+                }
+                self.apply_workspace(&card.name, window, cx);
+            }
             None => {}
         }
     }
@@ -906,9 +1214,10 @@ impl SettingsWindow {
             cx.notify();
             return;
         }
-        crate::workspaces::store(&WorkspaceBundle::from_settings(name, &Settings::load()));
+        crate::workspaces::store(&crate::workspaces::snapshot(&name, &Settings::load()));
         self.workspace_name
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.workspace_authors = crate::workspaces::saved_authors();
         cx.notify();
     }
 
@@ -917,16 +1226,38 @@ impl SettingsWindow {
     fn overwrite_workspace(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         self.flush_workspace_layout(cx);
         // The bundle's name picks its file, so the overwrite lands back on the
-        // one the first save wrote.
-        crate::workspaces::store(&WorkspaceBundle::from_settings(name, &Settings::load()));
+        // one the first save wrote, and the snapshot carries the card that
+        // file already had rather than blanking it.
+        crate::workspaces::store(&crate::workspaces::snapshot(&name, &Settings::load()));
         self.workspace_name
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.workspace_authors = crate::workspaces::saved_authors();
+        // A card open on the workspace that just got replaced came out of the
+        // old file; re-read it so the fields show what the overwrite wrote.
+        // Any other workspace's card is untouched by this write.
+        let reopen = self
+            .workspace_card
+            .as_ref()
+            .filter(|card| card.name == name)
+            .map(|card| card.name.clone());
+        if let Some(name) = reopen {
+            self.workspace_card = None;
+            self.toggle_workspace_card(&name, false, window, cx);
+        }
         cx.notify();
     }
 
     /// Delete a user workspace. Shipped ones carry no delete.
     fn delete_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
         crate::workspaces::remove(name);
+        if self
+            .workspace_card
+            .as_ref()
+            .is_some_and(|card| card.name == name)
+        {
+            self.workspace_card = None;
+        }
+        self.workspace_authors = crate::workspaces::saved_authors();
         cx.notify();
     }
 
@@ -960,6 +1291,12 @@ impl SettingsWindow {
     /// file when the bundle carries no name of its own and deduped so an
     /// import never shadows an existing workspace. A bundle from a newer
     /// format, or a file that isn't a bundle, is ignored.
+    ///
+    /// A bundle carrying shaders this machine has never agreed to run opens
+    /// the apply confirm on the way in, so what arrived gets read out at the
+    /// moment it lands rather than a week later when somebody applies it.
+    /// Backing out of that dialog is exactly the old behaviour: the file is
+    /// saved, nothing is approved, and nothing is wearing it.
     fn import_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -978,7 +1315,18 @@ impl SettingsWindow {
                 return;
             };
             crate::workspaces::store(&bundle);
-            this.update(cx, |_, cx| cx.notify()).ok();
+            let card = crate::workspaces::ApplyCard::of(&bundle);
+            this.update(cx, |this, cx| {
+                if !card.shaders.is_empty() {
+                    this.pending = Some(Pending::ApplyWorkspace {
+                        card,
+                        imported: true,
+                    });
+                }
+                this.workspace_authors = crate::workspaces::saved_authors();
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
     }

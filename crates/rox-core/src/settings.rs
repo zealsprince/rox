@@ -19,7 +19,7 @@ pub mod layouts;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{LazyLock, OnceLock, RwLock};
 
 use gpui::{px, App, SharedString, WindowAppearance, WindowDecorations};
@@ -193,6 +193,56 @@ pub fn accounts_path() -> PathBuf {
 /// and it joins the list, delete one and it's gone.
 pub fn workspaces_dir() -> PathBuf {
     data_dir().join("workspaces")
+}
+
+/// The folder the ejected shaders live in, one subfolder per workspace and
+/// one `.wgsl` per pool entry. Ejecting is how a shader that arrived inside
+/// a bundle gets a file an editor can open, and the file is what hot reload
+/// watches from then on. Nothing is created here; the first eject makes the
+/// folders, the same rule the lyrics and artist stores keep.
+pub fn shaders_dir() -> PathBuf {
+    data_dir().join("shaders")
+}
+
+/// Where a workspace's shader ejects to. Both halves of the name double as
+/// path components, so both go through [`safe_file_stem`]; a look that was
+/// never saved under a name (the live one you're editing) lands under
+/// `_local`. A workspace someone actually calls "_local" shares that folder,
+/// which is a name collision like any other here, and the re-link only takes
+/// a file whose contents still hash to the entry's, so the worst it costs is
+/// a bookmark that doesn't attach.
+pub fn shader_eject_path(workspace: &str, shader: &str) -> PathBuf {
+    shader_eject_path_in(&shaders_dir(), workspace, shader)
+}
+
+/// The eject path under a given root. What the tests and the re-link up in
+/// rox exercise without writing into the folder the running app ejects to.
+pub fn shader_eject_path_in(root: &Path, workspace: &str, shader: &str) -> PathBuf {
+    root.join(safe_file_stem(workspace, "_local"))
+        .join(format!("{}.wgsl", safe_file_stem(shader, "shader")))
+}
+
+/// A name as a file or folder name. Names double as filenames all over the
+/// data directory, so anything that can't be one is stripped: separators,
+/// the characters Windows refuses, and control characters all fold to
+/// spaces, then the result is trimmed of space and of the leading dots that
+/// would hide the file. A name of pure punctuation empties out and lands on
+/// `fallback`.
+pub fn safe_file_stem(name: &str, fallback: &str) -> String {
+    let folded: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect();
+    let stem = folded.trim().trim_matches('.').trim();
+    if stem.is_empty() {
+        fallback.to_string()
+    } else {
+        stem.to_string()
+    }
 }
 
 /// Write pretty JSON through a sibling temp file, then rename over the real
@@ -1258,6 +1308,36 @@ impl Default for QuickPlayConfig {
     }
 }
 
+/// One shader in a workspace's pool: a name, the WGSL behind it, and
+/// optionally the file it's being edited in.
+///
+/// The inline source is canonical. It's what compiles and what runs, and
+/// it's the only half that survives the trip to another machine, so a
+/// bundle that travelled carries working shaders rather than paths into
+/// somebody else's home directory.
+///
+/// The path is a local bookmark: eject a pool entry to a file and the
+/// bookmark links the two, so the hot reload watch can pull edits back into
+/// the entry while you work. Export scrubs it ([`WorkspaceBundle::scrub_paths`])
+/// because it's dead weight anywhere but the machine that wrote it, and a
+/// path riding along would only aim a reload at a file that either isn't
+/// there or, worse, is somebody else's.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NamedShader {
+    /// What the look's panels point at this entry by. Unique within a pool;
+    /// the last entry with a name wins if a hand-edited file repeats one.
+    pub name: String,
+    /// The fragment stage itself: a `fs_user(uv)` definition and whatever it
+    /// calls. This is what runs.
+    pub source: String,
+    /// The working copy this entry was ejected to, for hot reload. None for
+    /// an entry that has never been ejected, and None on every entry in an
+    /// exported bundle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+}
+
 /// The whole-window post-process shader: whether it runs and which WGSL
 /// file it reads. The source lives in a file rather than here because the
 /// app has no multi-line editor, and a file gives shader authors hot reload
@@ -1270,6 +1350,20 @@ pub struct PostShaderConfig {
     /// The user's WGSL fragment source file, absolute. None until picked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
+    /// The fragment stage inline, the same way a panel shader stores it.
+    /// Empty is the older behaviour, where the path above is read at
+    /// startup; anything else is what actually runs. Storing it here is what
+    /// lets the screen shader travel inside a bundle, since a path alone
+    /// imports as a dead pass on anyone else's machine.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// A reference into the workspace's shader pool by name. When it's set
+    /// and it resolves, the pool's source wins over the inline copy: the
+    /// pool is the one place a bundle's author edits a shader that several
+    /// surfaces share. A name that resolves to nothing runs nothing, the
+    /// same way a route to a signal that's gone reads zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Whether child windows (settings, stats, equalizer, popped-out
     /// panels) wear the shader too. Off shades only the workspace
     /// windows; meaningless while the switch above is off. The confirm
@@ -1285,6 +1379,16 @@ pub struct PostShaderConfig {
     pub routes: Vec<Route>,
 }
 
+impl PostShaderConfig {
+    /// Whether anybody has set this up at all: it runs, or it points at
+    /// something that could. An untouched default answers false, which is
+    /// what keeps a screen shader nobody asked for out of an exported
+    /// bundle.
+    pub fn configured(&self) -> bool {
+        self.enabled || !self.source.is_empty() || self.name.is_some() || self.path.is_some()
+    }
+}
+
 /// The approved shader hashes, cached out of the session file. The gate is
 /// read where a shader is about to register, which is a paint path with no
 /// business touching the disk, so the file is read once on the first look
@@ -1293,9 +1397,27 @@ pub struct PostShaderConfig {
 static APPROVED_SHADERS: LazyLock<RwLock<BTreeSet<String>>> =
     LazyLock::new(|| RwLock::new(Settings::load().session.approved_shaders));
 
-/// Whether this machine has agreed to run the source behind this hash.
+/// The hashes of the shaders inside the bundles this build ships in its own
+/// assets. Trusted by construction, the same argument the panel side's
+/// `builtin()` makes for the presets: they came with the binary, so asking
+/// for a second agreement would only be re-confirming the decision that
+/// installing rox already made. Seeded once at startup by the app, which is
+/// the only thing that can read its own assets, and never persisted: a
+/// shipped set that changes with the build has no business outliving it in
+/// somebody's session file.
+static SHIPPED_SHADERS: LazyLock<RwLock<BTreeSet<String>>> =
+    LazyLock::new(|| RwLock::new(BTreeSet::new()));
+
+/// Record the hashes of every shader the build ships, at startup.
+pub fn trust_shipped(fingerprints: impl IntoIterator<Item = String>) {
+    SHIPPED_SHADERS.write().unwrap().extend(fingerprints);
+}
+
+/// Whether this machine has agreed to run the source behind this hash, or
+/// never had to because the build ships it.
 pub fn shader_approved(fingerprint: &str) -> bool {
     APPROVED_SHADERS.read().unwrap().contains(fingerprint)
+        || SHIPPED_SHADERS.read().unwrap().contains(fingerprint)
 }
 
 /// Put a hash in the live list, answering whether it wasn't there already.
@@ -1327,6 +1449,64 @@ pub fn approve_shader(fingerprint: &str) {
 /// with.
 pub fn forget_approved(fingerprint: &str) {
     APPROVED_SHADERS.write().unwrap().remove(fingerprint);
+}
+
+/// The live shader pool, cached out of the look the app is wearing. Read
+/// where a shader is about to register, which is a render path with no
+/// business touching the disk, so the file is read once on the first look
+/// and every write goes through [`set_shader_pool`], which keeps the cache
+/// and the file in step. The same shape as [`APPROVED_SHADERS`] above, for
+/// the same reason.
+static SHADER_POOL: LazyLock<RwLock<Vec<NamedShader>>> =
+    LazyLock::new(|| RwLock::new(Settings::load().look.bundle.shaders));
+
+/// How many times the pool has been replaced. A surface resolves its name
+/// once and holds the answer; this is what tells it the answer went stale
+/// without diffing a few kilobytes of WGSL every frame.
+static SHADER_POOL_REV: AtomicU64 = AtomicU64::new(0);
+
+/// Everything in the pool. Cloned out rather than handed a guard: entries
+/// are a name and a page of text, and holding the lock across a render would
+/// mean a shader edit blocking paint.
+pub fn shader_pool() -> Vec<NamedShader> {
+    SHADER_POOL.read().unwrap().clone()
+}
+
+/// One pool entry by name, or None when the look doesn't carry it.
+pub fn shader_pool_get(name: &str) -> Option<NamedShader> {
+    SHADER_POOL
+        .read()
+        .unwrap()
+        .iter()
+        .find(|shader| shader.name == name)
+        .cloned()
+}
+
+/// Replace the pool, here and on disk. The pool belongs to the look, so it
+/// persists into the bundle the app is wearing and travels with the next
+/// export.
+pub fn set_shader_pool(shaders: Vec<NamedShader>) {
+    note_shader_pool(shaders.clone());
+    Settings::update(move |s| {
+        s.look.bundle.shaders = shaders;
+    });
+}
+
+/// Replace the pool in the cache alone. The half of a pool write that costs
+/// nothing, split out the way [`note_approved`] is: the tests use it to
+/// exercise resolution without a settings file underneath them, and a
+/// workspace apply uses it because it has already written the whole bundle
+/// in one go and a second write would only rewrite the same field.
+pub fn note_shader_pool(shaders: Vec<NamedShader>) {
+    *SHADER_POOL.write().unwrap() = shaders;
+    SHADER_POOL_REV.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The pool's generation. Bumped on every replacement, so a cached
+/// resolution can be checked with one atomic load instead of a comparison
+/// against the source it came from.
+pub fn shader_pool_rev() -> u64 {
+    SHADER_POOL_REV.load(Ordering::Relaxed)
 }
 
 /// The Last.fm account and how scrobbling behaves. The key and secret
@@ -1705,6 +1885,28 @@ pub struct WorkspaceBundle {
         deserialize_with = "lenient::vec"
     )]
     pub signals: Vec<Signal>,
+    /// The shader pool the workspace's looks point into: every named WGSL
+    /// the bundle carries, in one place. A panel that names "Grain" is
+    /// meaningless without it, so the pool travels with the look exactly the
+    /// way the signal pool above does, and an apply replaces it wholesale.
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient::vec"
+    )]
+    pub shaders: Vec<NamedShader>,
+    /// Who made this workspace and what it is. Empty on a look nobody has
+    /// filled in, which is every look until it's exported with a card.
+    #[serde(skip_serializing_if = "WorkspaceMeta::is_empty")]
+    pub meta: WorkspaceMeta,
+    /// The whole-window shader the workspace wears, the screen-sized twin of
+    /// the per-panel ones its layouts carry.
+    ///
+    /// None applies as the disabled default rather than as "leave what's
+    /// there". An apply replaces the look wholesale, and a workspace that
+    /// says nothing about a screen shader means a look without one, so
+    /// switching to it can't leave the last look's shader running over it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post_shader: Option<PostShaderConfig>,
     /// The appearance knobs the workspace dresses the app with.
     pub appearance: AppearanceBundle,
 }
@@ -1720,9 +1922,103 @@ impl Default for WorkspaceBundle {
             palette_dark: BTreeMap::new(),
             palette_light: BTreeMap::new(),
             signals: Vec::new(),
+            shaders: Vec::new(),
+            meta: WorkspaceMeta::default(),
+            post_shader: None,
             appearance: AppearanceBundle::default(),
         }
     }
+}
+
+/// The card on a workspace: who made it, what it is, and where it came from.
+/// Every field is free text and empty means unset, because this is the half
+/// of a bundle nothing reads but a person. It exists so a shared workspace
+/// arrives with an author's name on it instead of a filename.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceMeta {
+    /// Who made it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    /// A line or two on what the look is going for.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Where it lives: the author's page, a repo, a forum thread.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub website: String,
+    /// The author's own version string, whatever they count in. Nothing to
+    /// do with [`WORKSPACE_VERSION`], which is the file format's.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub version: String,
+    /// The terms it's shared under, if the author says.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub license: String,
+    /// When it was first exported, ISO `YYYY-MM-DD`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub created: String,
+    /// When it was last exported, same shape.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub updated: String,
+}
+
+impl WorkspaceMeta {
+    /// Whether anybody has filled in anything at all, which is what keeps an
+    /// empty card out of the file.
+    pub fn is_empty(&self) -> bool {
+        self.author.is_empty()
+            && self.description.is_empty()
+            && self.website.is_empty()
+            && self.version.is_empty()
+            && self.license.is_empty()
+            && self.created.is_empty()
+            && self.updated.is_empty()
+    }
+
+    /// Date the card for an export. `updated` always moves; `created` is
+    /// written once and then left alone, since it's the day the workspace
+    /// first existed and every export after that would only overwrite it
+    /// with today.
+    pub fn stamp(&mut self, today: &str) {
+        if self.created.is_empty() {
+            self.created = today.to_string();
+        }
+        self.updated = today.to_string();
+    }
+
+    /// Take what the card being replaced said wherever this one says
+    /// nothing. Saving over a workspace is a fresh snapshot of the same
+    /// look, so the card somebody filled in belongs to it just as much as
+    /// the layouts do; wiping it because the live look never carried one
+    /// would throw away work nobody asked to lose.
+    ///
+    /// `created` always comes back, since it's the day the workspace first
+    /// existed and the replacement has no way to know it. `updated` is left
+    /// alone, so whatever stamped this card keeps today's date. Everything
+    /// else only fills a gap, which is what lets a live look that carries
+    /// its own author keep it.
+    pub fn carry_forward(&mut self, prior: &WorkspaceMeta) {
+        for (mine, theirs) in [
+            (&mut self.author, &prior.author),
+            (&mut self.description, &prior.description),
+            (&mut self.website, &prior.website),
+            (&mut self.version, &prior.version),
+            (&mut self.license, &prior.license),
+        ] {
+            if mine.is_empty() {
+                mine.clone_from(theirs);
+            }
+        }
+        if !prior.created.is_empty() {
+            self.created.clone_from(&prior.created);
+        }
+    }
+}
+
+/// Today's date in UTC as `YYYY-MM-DD`, the stamp on an exported bundle.
+/// UTC rather than local because the date on a shared file shouldn't depend
+/// on which side of midnight the exporter's timezone happens to be.
+fn utc_today() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
 }
 
 /// The appearance a workspace carries: the visual knobs it dresses the app
@@ -1872,6 +2168,83 @@ impl LookState {
     }
 }
 
+/// The Shader panel's dock name, the one panel whose own config carries a
+/// source and a file bookmark instead of wearing one as chrome. Spelled here
+/// because the scrub walks dumps as raw JSON, well below the crate that
+/// defines the panel.
+const SHADER_PANEL: &str = "shader";
+
+/// Walk a dock dump and take the shader file bookmarks out of it. Recursive
+/// because a dump is a tree of dock nodes and a panel can be at any depth.
+fn scrub_dump_paths(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            // Any panel's surface shader, flattened onto its config.
+            if let Some(serde_json::Value::Object(shader)) = map.get_mut("shader") {
+                shader.remove("path");
+            }
+            // The Shader panel, whose config is the shader.
+            if map.get("panel_name").and_then(|name| name.as_str()) == Some(SHADER_PANEL) {
+                if let Some(serde_json::Value::Object(config)) =
+                    map.get_mut("info").and_then(|info| info.get_mut("panel"))
+                {
+                    config.remove("path");
+                }
+            }
+            for child in map.values_mut() {
+                scrub_dump_paths(child);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(scrub_dump_paths),
+        _ => {}
+    }
+}
+
+/// Every shader source a dock dump carries, in whatever order the walk finds
+/// them. The read-only twin of [`scrub_dump_paths`] over the same two shapes,
+/// separate because one takes the tree by `&mut` and the other can't, and
+/// Rust has no way to write one walk over both. Whatever gets added to one
+/// belongs in the other.
+///
+/// This is what the startup trust pass hands [`trust_shipped`], so a shipped
+/// look's panels paint without asking anyone to agree to code that came with
+/// the binary.
+pub fn dump_shader_sources(value: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_dump_shader_sources(value, &mut out);
+    out
+}
+
+fn collect_dump_shader_sources(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            // Any panel's surface shader, flattened onto its config.
+            if let Some(serde_json::Value::Object(shader)) = map.get("shader") {
+                if let Some(source) = shader.get("source").and_then(|s| s.as_str()) {
+                    out.push(source.to_string());
+                }
+            }
+            // The Shader panel, whose config is the shader.
+            if map.get("panel_name").and_then(|name| name.as_str()) == Some(SHADER_PANEL) {
+                if let Some(serde_json::Value::Object(config)) =
+                    map.get("info").and_then(|info| info.get("panel"))
+                {
+                    if let Some(source) = config.get("source").and_then(|s| s.as_str()) {
+                        out.push(source.to_string());
+                    }
+                }
+            }
+            for child in map.values() {
+                collect_dump_shader_sources(child, out);
+            }
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .for_each(|item| collect_dump_shader_sources(item, out)),
+        _ => {}
+    }
+}
+
 impl WorkspaceBundle {
     /// Snapshot the current shareable state into a named bundle: the layouts
     /// and their roles, the palette, and the appearance. Reads the persisted
@@ -1912,7 +2285,62 @@ impl WorkspaceBundle {
                 bundle.primary_layout = Some(active);
             }
         }
+        // The screen shader sits in the machine settings rather than in the
+        // look, since what it reads is a local path, so it gets copied in by
+        // hand here. It rides in before the two passes below, which are what
+        // turn that local path into something that travels.
+        if s.post_shader.configured() {
+            bundle.post_shader = Some(s.post_shader.clone());
+        }
+        bundle.inline_post_shader();
+        bundle.scrub_paths();
+        bundle.meta.stamp(&utc_today());
         bundle
+    }
+
+    /// Pull the screen shader's file into the bundle, so it travels. A
+    /// pass configured the old way points at a path and nothing else, and a
+    /// path is the one thing that means nothing on the machine this lands
+    /// on. Best effort: a file that's gone or unreadable leaves the source
+    /// empty, which is the same dead pass the bundle would have carried
+    /// anyway, and there's nobody to tell at export time.
+    pub fn inline_post_shader(&mut self) {
+        let Some(post) = self.post_shader.as_mut() else {
+            return;
+        };
+        if !post.source.is_empty() {
+            return;
+        }
+        if let Some(path) = post.path.as_ref() {
+            if let Ok(source) = std::fs::read_to_string(path) {
+                post.source = source;
+            }
+        }
+    }
+
+    /// Drop every local file bookmark on the way out. Paths are the one part
+    /// of a shader that can't travel: at best they point at nothing on the
+    /// machine that imports the bundle, and at worst they aim a hot reload
+    /// at a file that happens to exist there and belongs to somebody else.
+    /// The sources came along inline, so nothing is lost.
+    ///
+    /// The dumps get walked rather than reserialized, since this layer has
+    /// no idea what a panel config looks like. Two shapes carry a bookmark:
+    /// any panel's surface shader, which rides its config flattened under
+    /// `shader`, and the Shader panel's own config, which keeps its source
+    /// and path at the top level of the dock node's panel info. Both are
+    /// targeted by name rather than by stripping every `path` key in sight,
+    /// which would take a folder panel's root with it.
+    pub fn scrub_paths(&mut self) {
+        for shader in &mut self.shaders {
+            shader.path = None;
+        }
+        if let Some(post) = self.post_shader.as_mut() {
+            post.path = None;
+        }
+        for layout in &mut self.layouts {
+            scrub_dump_paths(&mut layout.dump);
+        }
     }
 
     /// Replace the settings' shareable state with this bundle's, the apply's
@@ -2399,6 +2827,457 @@ mod tests {
         assert!(!json.contains("lastfm"));
         assert!(!json.contains("session_key"));
         assert!(!json.contains("last_track"));
+    }
+
+    /// The pool is what makes a named shader mean anything, so it has to
+    /// survive the file trip with its sources intact. The bookmarks don't
+    /// travel: they're the one part that means nothing on the machine this
+    /// lands on.
+    #[test]
+    fn workspace_bundle_carries_its_shader_pool() {
+        let mut bundle = WorkspaceBundle {
+            shaders: vec![
+                NamedShader {
+                    name: "Grain".to_string(),
+                    source: "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }"
+                        .to_string(),
+                    path: Some(PathBuf::from("/home/someone/grain.wgsl")),
+                },
+                NamedShader {
+                    name: "Bloom".to_string(),
+                    source: "// bloom".to_string(),
+                    path: None,
+                },
+            ],
+            ..WorkspaceBundle::default()
+        };
+
+        // A pool entry keeps its bookmark while it's the live look; only the
+        // export scrub takes it off.
+        let live = serde_json::to_value(&bundle).unwrap();
+        assert_eq!(live["shaders"][0]["path"], "/home/someone/grain.wgsl");
+        assert!(
+            live["shaders"][1].get("path").is_none(),
+            "an unejected entry writes no bookmark: {live}"
+        );
+
+        bundle.scrub_paths();
+        let json = serde_json::to_string(&bundle).unwrap();
+        let back: WorkspaceBundle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.shaders.len(), 2);
+        assert_eq!(back.shaders[0].name, "Grain");
+        assert!(back.shaders[0].source.contains("fs_user"));
+        assert!(
+            back.shaders[0].path.is_none(),
+            "the bookmark shouldn't have travelled"
+        );
+        assert_eq!(back.shaders[1].name, "Bloom");
+    }
+
+    /// A pool entry that no longer parses costs that entry and nothing else,
+    /// the lenient rule every other list in the bundle follows.
+    #[test]
+    fn a_broken_pool_entry_costs_only_itself() {
+        let json = serde_json::json!({
+            "shaders": [
+                { "name": "Grain", "source": "// grain" },
+                { "name": "Bloom", "source": 7 },
+            ],
+        });
+        let bundle: WorkspaceBundle = serde_json::from_value(json).unwrap();
+        assert_eq!(bundle.shaders.len(), 1);
+        assert_eq!(bundle.shaders[0].name, "Grain");
+    }
+
+    /// The card and the screen shader ride the bundle, and a look that has
+    /// neither writes neither key, so no existing workspace file grows a
+    /// line it didn't have.
+    #[test]
+    fn workspace_meta_and_post_shader_ride_the_bundle() {
+        let plain = serde_json::to_value(WorkspaceBundle::default()).unwrap();
+        assert!(plain.get("meta").is_none(), "an empty card writes no key");
+        assert!(
+            plain.get("post_shader").is_none(),
+            "no screen shader writes no key"
+        );
+        assert!(plain.get("shaders").is_none(), "an empty pool writes no key");
+
+        let bundle = WorkspaceBundle {
+            meta: WorkspaceMeta {
+                author: "Andrew".to_string(),
+                description: "Warm and quiet.".to_string(),
+                website: "https://zealsprince.com".to_string(),
+                version: "2".to_string(),
+                license: "CC BY 4.0".to_string(),
+                created: "2026-01-02".to_string(),
+                updated: "2026-08-07".to_string(),
+            },
+            post_shader: Some(PostShaderConfig {
+                enabled: true,
+                source: "// crt".to_string(),
+                name: Some("Grain".to_string()),
+                all_windows: true,
+                ..PostShaderConfig::default()
+            }),
+            ..WorkspaceBundle::default()
+        };
+        let json = serde_json::to_string(&bundle).unwrap();
+        let back: WorkspaceBundle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.meta.author, "Andrew");
+        assert_eq!(back.meta.website, "https://zealsprince.com");
+        assert_eq!(back.meta.license, "CC BY 4.0");
+        assert_eq!(back.meta.created, "2026-01-02");
+        assert_eq!(back.meta.updated, "2026-08-07");
+        let post = back.post_shader.expect("the screen shader travels");
+        assert!(post.enabled);
+        assert!(post.all_windows);
+        assert_eq!(post.source, "// crt");
+        assert_eq!(post.name.as_deref(), Some("Grain"));
+
+        // A bundle file written before any of this parses as a look with no
+        // pool, no card, and no screen shader, which is what it was.
+        let older: WorkspaceBundle =
+            serde_json::from_value(serde_json::json!({ "version": 1, "name": "old" })).unwrap();
+        assert!(older.shaders.is_empty());
+        assert!(older.meta.is_empty());
+        assert!(older.post_shader.is_none());
+    }
+
+    /// `created` is the day the workspace first existed, so it's written once
+    /// and left alone; `updated` moves on every export.
+    #[test]
+    fn a_card_is_created_once_and_updated_always() {
+        let mut meta = WorkspaceMeta::default();
+        assert!(meta.is_empty());
+
+        meta.stamp("2026-01-02");
+        assert_eq!(meta.created, "2026-01-02");
+        assert_eq!(meta.updated, "2026-01-02");
+        assert!(!meta.is_empty(), "a stamped card is a card");
+
+        meta.stamp("2026-08-07");
+        assert_eq!(meta.created, "2026-01-02");
+        assert_eq!(meta.updated, "2026-08-07");
+
+        // A card is only empty while every field is, so one filled line keeps
+        // the whole thing in the file.
+        let described = WorkspaceMeta {
+            description: "Warm and quiet.".to_string(),
+            ..WorkspaceMeta::default()
+        };
+        assert!(!described.is_empty());
+    }
+
+    /// Saving over a workspace keeps the card the old one carried: the
+    /// author's name and their notes survive, the day it was first made
+    /// survives, and today's stamp stays on `updated`. A live look that
+    /// carries its own card wins field by field, so a fork doesn't come out
+    /// signed by the person you forked from.
+    #[test]
+    fn carry_forward_keeps_a_card_through_an_overwrite() {
+        let prior = WorkspaceMeta {
+            author: "Nova".into(),
+            description: "Warm and quiet.".into(),
+            website: "example.com".into(),
+            version: "1.0".into(),
+            license: "CC BY".into(),
+            created: "2026-01-02".into(),
+            updated: "2026-03-04".into(),
+        };
+
+        // The everyday overwrite: the live look carries nothing but today's
+        // stamp, so the whole card comes back.
+        let mut fresh = WorkspaceMeta::default();
+        fresh.stamp("2026-08-07");
+        fresh.carry_forward(&prior);
+        assert_eq!(fresh.author, "Nova");
+        assert_eq!(fresh.description, "Warm and quiet.");
+        assert_eq!(fresh.website, "example.com");
+        assert_eq!(fresh.version, "1.0");
+        assert_eq!(fresh.license, "CC BY");
+        assert_eq!(fresh.created, "2026-01-02", "the first day survives");
+        assert_eq!(fresh.updated, "2026-08-07", "today stays on updated");
+
+        // A look with its own card only fills the gaps.
+        let mut mine = WorkspaceMeta {
+            author: "Juniper".into(),
+            version: "2".into(),
+            ..WorkspaceMeta::default()
+        };
+        mine.stamp("2026-08-07");
+        mine.carry_forward(&prior);
+        assert_eq!(mine.author, "Juniper");
+        assert_eq!(mine.version, "2");
+        assert_eq!(mine.license, "CC BY");
+
+        // Nothing to carry leaves the fresh card exactly as it was.
+        let mut alone = WorkspaceMeta::default();
+        alone.stamp("2026-08-07");
+        alone.carry_forward(&WorkspaceMeta::default());
+        assert_eq!(alone.created, "2026-08-07");
+        assert!(alone.author.is_empty());
+    }
+
+    /// An export dates itself, so a shared file says when it was made
+    /// without the author having to type it.
+    #[test]
+    fn from_settings_stamps_the_card() {
+        let bundle = WorkspaceBundle::from_settings("mine".into(), &Settings::default());
+        let today = utc_today();
+        assert_eq!(bundle.meta.created, today);
+        assert_eq!(bundle.meta.updated, today);
+        // Ten characters of digits and hyphens, since a reader elsewhere
+        // parses this as a date.
+        assert_eq!(today.len(), 10);
+        assert!(today.chars().all(|c| c.is_ascii_digit() || c == '-'));
+    }
+
+    /// The screen shader an export captures is the one the machine is
+    /// wearing, since it lives in the settings rather than in the look. It
+    /// arrives inlined and with its bookmark gone, the same way a pool entry
+    /// does, and a machine that has never set one up exports no shader at
+    /// all rather than a disabled placeholder.
+    #[test]
+    fn from_settings_takes_the_screen_shader_along() {
+        let file = std::env::temp_dir().join("rox-test-from-settings-shader.wgsl");
+        std::fs::write(&file, "// scanlines\n").expect("write the working copy");
+
+        let mut src = Settings::default();
+        src.post_shader = PostShaderConfig {
+            enabled: true,
+            path: Some(file.clone()),
+            all_windows: true,
+            ..PostShaderConfig::default()
+        };
+        let post = WorkspaceBundle::from_settings("mine".into(), &src)
+            .post_shader
+            .expect("the screen shader travels");
+        assert_eq!(post.source, "// scanlines\n");
+        assert!(post.path.is_none(), "the bookmark doesn't travel");
+        assert!(post.enabled);
+        assert!(post.all_windows);
+
+        // A pass that's off but points somewhere still travels: it's set up,
+        // and the look it belongs to is the one that decides when it runs.
+        let mut parked = Settings::default();
+        parked.post_shader = PostShaderConfig {
+            path: Some(file.clone()),
+            ..PostShaderConfig::default()
+        };
+        assert!(WorkspaceBundle::from_settings("mine".into(), &parked)
+            .post_shader
+            .is_some());
+
+        assert!(
+            WorkspaceBundle::from_settings("mine".into(), &Settings::default())
+                .post_shader
+                .is_none(),
+            "an untouched default is nothing to carry"
+        );
+
+        std::fs::remove_file(&file).ok();
+    }
+
+    /// A shader ejects to a file named after the workspace and the entry,
+    /// both folded through the filename sanitizer, so a pool entry called
+    /// "Grain / Fine" lands somewhere instead of writing into a folder
+    /// nobody asked for. A look with no name of its own is the one you're
+    /// editing, which ejects under `_local`.
+    #[test]
+    fn shader_ejects_under_its_workspace() {
+        let root = Path::new("/tmp/rox-shaders");
+        assert_eq!(
+            shader_eject_path_in(root, "Nightfall", "Grain"),
+            root.join("Nightfall").join("Grain.wgsl")
+        );
+        assert_eq!(
+            shader_eject_path_in(root, "Live/Studio", "Grain / Fine"),
+            root.join("Live Studio").join("Grain   Fine.wgsl")
+        );
+        assert_eq!(
+            shader_eject_path_in(root, "", "Grain"),
+            root.join("_local").join("Grain.wgsl")
+        );
+        // Pure punctuation empties out on both halves rather than writing a
+        // hidden folder or a file with no name.
+        assert_eq!(
+            shader_eject_path_in(root, "...", "..."),
+            root.join("_local").join("shader.wgsl")
+        );
+        assert_eq!(safe_file_stem("  padded  ", "fallback"), "padded");
+        assert_eq!(safe_file_stem(".hidden", "fallback"), "hidden");
+    }
+
+    /// The trust pass reads sources out of a dump the same two places the
+    /// scrub takes bookmarks out of, or a shipped look's panels would come
+    /// up blank waiting for an approval nobody can give.
+    #[test]
+    fn dump_shader_sources_finds_both_shapes() {
+        let dump = serde_json::json!({
+            "panel_name": "StackPanel",
+            "children": [
+                {
+                    "panel_name": "shader",
+                    "info": { "panel": {
+                        "source": "// the shader panel",
+                        "path": "/home/someone/panel.wgsl",
+                    }},
+                },
+                {
+                    "panel_name": "folder tree",
+                    "info": { "panel": {
+                        "path": "/home/someone/Music",
+                        "shader": { "enabled": true, "source": "// the surface one" },
+                    }},
+                },
+            ],
+        });
+        let mut found = dump_shader_sources(&dump);
+        found.sort();
+        assert_eq!(found, ["// the shader panel", "// the surface one"]);
+    }
+
+    /// The screen shader's file gets pulled inline on the way out, since a
+    /// path alone imports as a dead pass. A path that reads nothing leaves
+    /// the source empty rather than failing the export.
+    #[test]
+    fn an_export_inlines_the_screen_shader() {
+        let file = std::env::temp_dir().join("rox-test-export-shader.wgsl");
+        std::fs::write(&file, "// crt\n").expect("write the working copy");
+
+        let mut bundle = WorkspaceBundle {
+            post_shader: Some(PostShaderConfig {
+                enabled: true,
+                path: Some(file.clone()),
+                ..PostShaderConfig::default()
+            }),
+            ..WorkspaceBundle::default()
+        };
+        bundle.inline_post_shader();
+        bundle.scrub_paths();
+        let post = bundle.post_shader.clone().expect("still there");
+        assert_eq!(post.source, "// crt\n");
+        assert!(post.path.is_none(), "the bookmark doesn't travel");
+
+        // An inline source already in hand is never overwritten by the file.
+        let mut kept = WorkspaceBundle {
+            post_shader: Some(PostShaderConfig {
+                source: "// what runs".to_string(),
+                path: Some(file.clone()),
+                ..PostShaderConfig::default()
+            }),
+            ..WorkspaceBundle::default()
+        };
+        kept.inline_post_shader();
+        assert_eq!(kept.post_shader.unwrap().source, "// what runs");
+
+        std::fs::remove_file(&file).ok();
+
+        // A file that's gone leaves an empty source, which is the same dead
+        // pass the bundle would have carried anyway.
+        let mut missing = WorkspaceBundle {
+            post_shader: Some(PostShaderConfig {
+                path: Some(file),
+                ..PostShaderConfig::default()
+            }),
+            ..WorkspaceBundle::default()
+        };
+        missing.inline_post_shader();
+        assert!(missing.post_shader.unwrap().source.is_empty());
+    }
+
+    /// The scrub targets the two shapes that carry a shader bookmark and
+    /// leaves every other `path` in a dump alone, since a folder panel's
+    /// root is a path too and it's none of the scrub's business.
+    #[test]
+    fn scrub_paths_takes_only_the_shader_bookmarks() {
+        let mut bundle = WorkspaceBundle {
+            layouts: vec![NamedLayout {
+                name: "one".to_string(),
+                size: None,
+                dump: serde_json::json!({
+                    "panel_name": "StackPanel",
+                    "children": [
+                        {
+                            "panel_name": "shader",
+                            "children": [],
+                            "info": { "panel": {
+                                "source": "// the panel's own",
+                                "path": "/home/someone/panel.wgsl",
+                                "routes": [],
+                            }},
+                        },
+                        {
+                            "panel_name": "folder tree",
+                            "children": [],
+                            "info": { "panel": {
+                                "path": "/home/someone/Music",
+                                "shader": {
+                                    "enabled": true,
+                                    "source": "// the surface one",
+                                    "path": "/home/someone/surface.wgsl",
+                                },
+                            }},
+                        },
+                    ],
+                    "info": { "stack": { "sizes": [], "axis": 0 } },
+                }),
+            }],
+            ..WorkspaceBundle::default()
+        };
+        bundle.scrub_paths();
+
+        let dump = &bundle.layouts[0].dump;
+        let shader_panel = &dump["children"][0]["info"]["panel"];
+        assert!(shader_panel.get("path").is_none(), "{dump}");
+        assert_eq!(shader_panel["source"], "// the panel's own");
+
+        let folder = &dump["children"][1]["info"]["panel"];
+        assert_eq!(
+            folder["path"], "/home/someone/Music",
+            "a folder panel's root is not a shader bookmark: {dump}"
+        );
+        assert!(folder["shader"].get("path").is_none(), "{dump}");
+        assert_eq!(folder["shader"]["source"], "// the surface one");
+    }
+
+    /// The pool cache is what a render path reads, so it answers by name and
+    /// says when it moved. The rev is the whole point: a surface holds its
+    /// resolution and checks one atomic instead of diffing a page of WGSL.
+    #[test]
+    fn the_shader_pool_answers_by_name_and_bumps_its_rev() {
+        let before = shader_pool_rev();
+        note_shader_pool(vec![NamedShader {
+            name: "Grain".to_string(),
+            source: "// grain".to_string(),
+            path: None,
+        }]);
+        assert!(shader_pool_rev() > before, "a replacement is news");
+        assert_eq!(shader_pool().len(), 1);
+        assert_eq!(
+            shader_pool_get("Grain").map(|s| s.source),
+            Some("// grain".to_string())
+        );
+        assert!(shader_pool_get("Bloom").is_none());
+
+        let between = shader_pool_rev();
+        note_shader_pool(Vec::new());
+        assert!(shader_pool_rev() > between);
+        assert!(shader_pool().is_empty());
+        assert!(shader_pool_get("Grain").is_none(), "an apply replaces it");
+    }
+
+    /// What the build ships runs without anyone agreeing to it a second
+    /// time, and that trust lives beside the machine's own list rather than
+    /// in it, so it never lands in a session file.
+    #[test]
+    fn shader_approved_trusts_what_the_build_ships() {
+        let print = "shipped-with-the-binary-not-a-real-hash";
+        assert!(!shader_approved(print));
+        trust_shipped([print.to_string()]);
+        assert!(shader_approved(print));
+        // The session's own list never learned it, so nothing persists.
+        assert!(!APPROVED_SHADERS.read().unwrap().contains(print));
     }
 
     /// The frame knobs feed div sizes straight, so `clamped` holds each to its

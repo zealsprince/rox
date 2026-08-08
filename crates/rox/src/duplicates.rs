@@ -34,12 +34,12 @@ use gpui_component::{Root, Sizable, Size};
 use rox_core::fmt::fmt_ms;
 use rox_library::duplicates::match_duplicates;
 
-use crate::assets::icons;
-use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::catalog::Library;
-use crate::design::{palette, tokens};
-use crate::settings::ui::{checkbox, small_button, MIN_SIZE};
-use crate::thumbs::{Thumb, Thumbs};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_kit::ui::{checkbox, small_button, MIN_SIZE};
+use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
+use rox_services::catalog::Library;
+use rox_services::thumbs::{Thumb, Thumbs};
 
 /// One row's height. The list is a uniform_list, so headers and members
 /// agree; two lines and a cover fit either way.
@@ -134,7 +134,7 @@ pub fn open(
         }
     }
     let bounds = Bounds::centered(None, size(px(760.), px(600.)), cx);
-    let handle = crate::panel::open_child_window(
+    let handle = rox_panel_api::panel::open_child_window(
         cx,
         "rox - Duplicates",
         bounds,

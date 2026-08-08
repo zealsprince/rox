@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use gpui::{App, Entity, Global};
 
-use crate::catalog::{Library, LibraryJob};
+use rox_services::catalog::{Library, LibraryJob};
 
 /// How often the sampler reads the running jobs. The tasks window's own
 /// tick, for the same reason: a bar this coarse has nothing to say more
@@ -233,7 +233,7 @@ fn publish(percent: Option<u8>, cx: &mut App) {
     // The bar belongs to a window, so it goes on whichever workspace is in
     // front, the same one the tasks window reads its scan off. Asked for
     // before the COM object so a windowless run never creates one.
-    let Some((handle, _)) = crate::workspace::front_workspace(cx) else {
+    let Some((handle, _)) = rox_panel_api::windows::front_workspace(cx) else {
         return;
     };
     let hwnd = handle

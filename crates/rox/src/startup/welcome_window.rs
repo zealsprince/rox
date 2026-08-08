@@ -14,12 +14,12 @@ use gpui::{
 };
 use gpui_component::Root;
 
-use crate::assets::icons;
-use crate::backdrop::WindowBackdrop;
-use crate::design::{palette, tokens};
-use crate::panel::{self, AppState};
-use crate::settings;
-use crate::settings::ui::{section, small_button, SECTION_GAP};
+use rox_core::settings::app_font;
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{self, AppState};
+use rox_panel_kit::ui::{section, small_button, SECTION_GAP};
+use rox_services::backdrop::WindowBackdrop;
 
 /// The open welcome window, if any: opening again focuses it instead of
 /// stacking a second one, same as the settings window.
@@ -41,7 +41,7 @@ pub fn open(state: AppState, cx: &mut App) {
         }
     }
     let bounds = Bounds::centered(None, size(px(1160.), px(740.)), cx);
-    let handle = crate::panel::open_child_window(
+    let handle = rox_panel_api::panel::open_child_window(
         cx,
         "rox - Welcome",
         bounds,
@@ -90,7 +90,7 @@ impl WelcomeWindow {
         // A header that doesn't parse falls back to the frame's own
         // aspect, which renders the picture static.
         fn sized(path: SharedString) -> (SharedString, f32) {
-            let aspect = crate::assets::png_aspect(&path).unwrap_or(FRAME_ASPECT);
+            let aspect = rox_design::assets::png_aspect(&path).unwrap_or(FRAME_ASPECT);
             (path, aspect)
         }
         let workspaces = crate::workspaces::shipped()
@@ -293,7 +293,7 @@ impl Render for WelcomeWindow {
                 icons::FOLDER_PLUS,
                 false,
                 cx.listener(|this, _, _, cx| {
-                    crate::catalog::browse(&this.state.library, cx);
+                    rox_services::catalog::browse(&this.state.library, cx);
                 }),
             );
 
@@ -528,7 +528,7 @@ impl Render for WelcomeWindow {
                 .bg(palette::bg_elevated())
                 .text_color(palette::text_bright())
                 .text_sm()
-                .when_some(settings::app_font(), |d, font| d.font_family(font))
+                .when_some(app_font(), |d, font| d.font_family(font))
                 // The backdrop paints first, under the page; without it
                 // translucent surfaces would sink into the window's own
                 // black instead of the playing track's art.

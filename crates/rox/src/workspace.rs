@@ -28,67 +28,67 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::PopupMenu;
 use gpui_component::Icon;
 
-use crate::assets::icons;
-use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::catalog::Library;
 use crate::composite;
-use crate::design::{palette, tokens};
-use crate::history::{History, HistoryEvent};
-use crate::integrations::discord::DiscordPresence;
 use crate::integrations::media_controls::MediaSession;
 use crate::integrations::tray;
-use crate::lastfm::Scrobbler;
-use crate::panel::{self, AppState, TabHosts};
 use crate::panel_catalog::{self as catalog, PanelDef, PanelPlacement, PanelSection};
-use crate::panels::art::{ArtConfig, ArtPanel};
-use crate::panels::artist_grid::{ArtistGridConfig, ArtistGridPanel};
-use crate::panels::biography::BiographyPanel;
-use crate::panels::cover::CoverArtPanel;
-use crate::panels::drag_anchor::DragAnchorPanel;
 use crate::panels::drawer::DrawerPanel;
-use crate::panels::eq_widget::EqWidgetPanel;
-use crate::panels::favourite::FavouritePanel;
-use crate::panels::filter::{FilterConfig, FilterPanel};
-use crate::panels::folder_tree::FolderTreePanel;
-use crate::panels::genre_grid::{GenreGridConfig, GenreGridPanel};
-use crate::panels::grid::{GridConfig, GridPanel};
 use crate::panels::group::GroupPanel;
-use crate::panels::history::HistoryPanel;
-use crate::panels::library::{LibraryConfig, LibraryPanel};
-use crate::panels::lyrics::{LyricsPanel, StampLine};
 use crate::panels::menu::{MenuConfig, MenuPanel};
-use crate::panels::metadata::MetadataPanel;
 use crate::panels::mini::{MiniToggleConfig, MiniTogglePanel};
-use crate::panels::output::OutputPanel;
 use crate::panels::overlay::OverlayPanel;
-use crate::panels::particles::ParticlesPanel;
-use crate::panels::playlists::PlaylistsPanel;
-use crate::panels::queue::QueuePanel;
 use crate::panels::queue_widget::QueueWidgetPanel;
-use crate::panels::rating::RatingPanel;
-use crate::panels::search::{SearchConfig, SearchPanel};
-use crate::panels::shader::ShaderPanel;
 use crate::panels::slide::SlidePanel;
-use crate::panels::spacer::SpacerPanel;
-use crate::panels::spectrum::SpectrumPanel;
-use crate::panels::stats_widget::StatsWidgetPanel;
-use crate::panels::status::StatusPanel;
-use crate::panels::theme_toggle::ThemeTogglePanel;
-use crate::panels::transport::{SeekStripPanel, TrackInfoPanel, TransportPanel, VolumePanel};
-use crate::panels::vu::VuPanel;
-use crate::panels::waveform::WaveformPanel;
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
-use crate::player::Player;
-use crate::portraits::Portraits;
-use crate::query::shared_query::SharedQuery;
 use crate::quick_play::QuickPlay;
-use crate::selection::Selection;
-use crate::settings::{
+use rox_core::settings::{
     self, LastTrack, LayoutEdit, LayoutSize, NamedLayout, QueueState, QueuedTrack, Settings,
     WindowState, WorkspaceBundle,
 };
-use crate::thumbs::Thumbs;
-use crate::track_ui::track_drag::PlayDrag;
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{self, AppState, TabHosts};
+use rox_panel_api::query::shared_query::SharedQuery;
+use rox_panel_api::track_ui::track_drag::PlayDrag;
+use rox_panels::art::{ArtConfig, ArtPanel};
+use rox_panels::artist_grid::{ArtistGridConfig, ArtistGridPanel};
+use rox_panels::biography::BiographyPanel;
+use rox_panels::cover::CoverArtPanel;
+use rox_panels::drag_anchor::DragAnchorPanel;
+use rox_panels::eq_widget::EqWidgetPanel;
+use rox_panels::favourite::FavouritePanel;
+use rox_panels::filter::{FilterConfig, FilterPanel};
+use rox_panels::folder_tree::FolderTreePanel;
+use rox_panels::genre_grid::{GenreGridConfig, GenreGridPanel};
+use rox_panels::grid::{GridConfig, GridPanel};
+use rox_panels::history::HistoryPanel;
+use rox_panels::library::{LibraryConfig, LibraryPanel};
+use rox_panels::lyrics::{LyricsPanel, StampLine};
+use rox_panels::metadata::MetadataPanel;
+use rox_panels::output::OutputPanel;
+use rox_panels::particles::ParticlesPanel;
+use rox_panels::playlists::PlaylistsPanel;
+use rox_panels::queue::QueuePanel;
+use rox_panels::rating::RatingPanel;
+use rox_panels::search::{SearchConfig, SearchPanel};
+use rox_panels::shader::ShaderPanel;
+use rox_panels::spacer::SpacerPanel;
+use rox_panels::spectrum::SpectrumPanel;
+use rox_panels::stats_widget::StatsWidgetPanel;
+use rox_panels::status::StatusPanel;
+use rox_panels::theme_toggle::ThemeTogglePanel;
+use rox_panels::transport::{SeekStripPanel, TrackInfoPanel, TransportPanel, VolumePanel};
+use rox_panels::vu::VuPanel;
+use rox_panels::waveform::WaveformPanel;
+use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
+use rox_services::catalog::Library;
+use rox_services::discord_presence::DiscordPresence;
+use rox_services::history::{History, HistoryEvent};
+use rox_services::lastfm::Scrobbler;
+use rox_services::player::Player;
+use rox_services::portraits::Portraits;
+use rox_services::selection::Selection;
+use rox_services::thumbs::Thumbs;
 use rox_viz::signal::{Route, SignalHub};
 
 mod menubar;
@@ -103,7 +103,7 @@ const MENU_BAR_H: f32 = 30.0;
 // which is all its callers (the tray, the taskbar, the tasks/EQ/signals/
 // console windows, the single-instance guard) ever wanted.
 use rox_panel_api::windows::OpenWorkspace;
-pub(crate) use rox_panel_api::windows::{front_workspace, note_activated, WorkspaceWindows};
+use rox_panel_api::windows::{note_activated, WorkspaceWindows};
 
 /// The workspace behind a registry entry, or None once its entity has
 /// gone. The registry stores it type-erased so nothing below the binary
@@ -362,7 +362,7 @@ fn post_shader_signals(hub: &SignalHub) -> [f32; panel::shader::SLOTS] {
         return signals;
     }
     let mut targets = panel::shader::SlotTargets::default();
-    crate::signal_ui::apply_routes(&routes, hub, &mut targets);
+    rox_panel_api::signal_ui::apply_routes(&routes, hub, &mut targets);
     targets.slots
 }
 
@@ -558,7 +558,7 @@ pub(crate) fn workspace_for_window(window: &Window, cx: &App) -> Option<WeakEnti
 /// pick
 /// opens the panel as a new tab of `tab_panel`, that very group, skipping
 /// the placement rules the menubar routes follow. Built as a real submenu
-/// the way [`crate::query::shared_query::search_flyout`] builds its Search flyout -
+/// the way [`rox_panel_api::query::shared_query::search_flyout`] builds its Search flyout -
 /// a hand-built menu entity behind a submenu item - so it works from every
 /// host of the panel menu, the content context menus included. Leads with a
 /// divider so it reads as its own band rather than the tail of whatever
@@ -684,7 +684,7 @@ const SEARCH_BAR_H: f32 = 52.0;
 // The three playback actions panels bind against live in rox-panel-api, so
 // a panel's transport button and this window's keymap name the same type.
 // Registration and the handlers stay here.
-pub(crate) use rox_panel_api::actions::{SeekBackward, SeekForward, TogglePlayback};
+use rox_panel_api::actions::{SeekBackward, SeekForward, TogglePlayback};
 
 actions!(
     rox,
@@ -1904,7 +1904,7 @@ impl Workspace {
         let source = match &start {
             WorkspaceStart::Restore => settings.look.layout.clone(),
             WorkspaceStart::Preset(name) => {
-                crate::settings::layouts::resolve(&settings, name).map(|preset| preset.dump)
+                rox_core::settings::layouts::resolve(&settings, name).map(|preset| preset.dump)
             }
             WorkspaceStart::Empty => None,
         };
@@ -2034,7 +2034,7 @@ impl Workspace {
             // into its own OS window, same as the menu's Pop Out.
             let state = state.clone();
             dock.on_middle_drag_out(move |panel, _, _, cx| {
-                crate::panel::pop_out_view(panel, state.clone(), cx);
+                rox_panel_api::panel::pop_out_view(panel, state.clone(), cx);
             });
         });
 
@@ -2330,7 +2330,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> bool {
         let settings = Settings::load();
-        let Some(preset) = crate::settings::layouts::resolve(&settings, name) else {
+        let Some(preset) = rox_core::settings::layouts::resolve(&settings, name) else {
             return false;
         };
         // Size to the preset by default; a working copy with its own size
@@ -3639,8 +3639,8 @@ pub(crate) fn denoise_f32(value: &mut serde_json::Value) {
 /// window to nothing on a layout swap or mini toggle.
 fn resize_clamped(window: &mut Window, size: LayoutSize) {
     window.resize(gpui::size(
-        px(size.width).max(crate::MIN_WINDOW_SIZE.width),
-        px(size.height).max(crate::MIN_WINDOW_SIZE.height),
+        px(size.width).max(rox_core::settings::MIN_WINDOW_SIZE.width),
+        px(size.height).max(rox_core::settings::MIN_WINDOW_SIZE.height),
     ));
 }
 

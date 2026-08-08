@@ -21,17 +21,18 @@ use gpui_component::Root;
 use rox_core::fmt::fmt_ms;
 use rox_library::lyrics;
 
-use crate::assets::icons;
-use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::design::{palette, tokens};
 use crate::matching::{
     confidence_badge, confidence_bar, note, open_or_focus, Phase, WindowRegistry,
 };
-use crate::panel::AppState;
-use crate::player::fmt_time;
-use crate::providers::{self, LyricsCandidate, TrackQuery};
-use crate::settings::lyrics_dir;
-use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
+use rox_core::settings::lyrics_dir;
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_net::providers::{self, LyricsCandidate, TrackQuery};
+use rox_panel_api::panel::AppState;
+use rox_panel_kit::ui::{self as settings_ui, section, SECTION_GAP};
+use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
+use rox_services::lyrics::{query_for, save_target};
+use rox_services::player::fmt_time;
 
 /// The default window size: room for the candidate list beside a preview
 /// that reads a verse or two without scrolling.
@@ -59,7 +60,7 @@ pub fn open(state: AppState, path: PathBuf, cx: &mut App) {
         path.clone(),
         move |cx| {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-            crate::panel::open_child_window(
+            rox_panel_api::panel::open_child_window(
                 cx,
                 "rox - Find Lyrics",
                 bounds,
@@ -355,11 +356,6 @@ impl LyricsMatch {
             .child(body)
     }
 }
-
-/// The query a provider gets asked with, and where a found sheet lands,
-/// both live down in the service layer now: the panel needs them too, and
-/// neither one draws anything.
-pub use rox_services::lyrics::{query_for, save_target};
 
 impl Render for LyricsMatch {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

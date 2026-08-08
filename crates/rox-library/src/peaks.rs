@@ -12,7 +12,9 @@
 //!
 //! Entry layout, little-endian throughout: the magic, source size (u64),
 //! source mtime in unix seconds (u64), path length (u32) and the path's
-//! bytes, pair count (u32), then count (min, max) f32 pairs.
+//! bytes, lane count (u32), then per lane a pair count (u32) followed by
+//! that many (min, max) f32 pairs. Lane 0 is the mono mix, further lanes
+//! are per-channel.
 
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -21,7 +23,7 @@ use crate::hash::fnv1a;
 
 /// Identifies the layout; bump it when the format changes and old entries
 /// read as misses and get rewritten.
-const MAGIC: &[u8; 8] = b"roxwave1";
+const MAGIC: &[u8; 8] = b"roxwave2";
 
 /// Drop every entry; strips re-decode and re-store on their next play.
 /// Blocking on the directory walk; run off the UI thread.
@@ -70,10 +72,10 @@ fn take_u64(data: &mut &[u8]) -> Option<u64> {
     Some(u64::from_le_bytes(take(data, 8)?.try_into().ok()?))
 }
 
-/// The cached peaks for a track, or None on any kind of miss: no entry, a
-/// stale one (the file changed since it was written), an old format, or a
-/// filename collision with another track.
-pub fn load(dir: &Path, track: &Path) -> Option<Vec<(f32, f32)>> {
+/// The cached peak lanes for a track, or None on any kind of miss: no
+/// entry, a stale one (the file changed since it was written), an old
+/// format, or a filename collision with another track.
+pub fn load(dir: &Path, track: &Path) -> Option<Vec<Vec<(f32, f32)>>> {
     let (size, mtime) = identity(track)?;
     let data = std::fs::read(entry_path(dir, track)).ok()?;
     let mut rest = data.as_slice();
@@ -87,19 +89,26 @@ pub fn load(dir: &Path, track: &Path) -> Option<Vec<(f32, f32)>> {
     if take(&mut rest, path_len)? != track.as_os_str().as_encoded_bytes() {
         return None;
     }
-    let count = take_u32(&mut rest)? as usize;
-    let pairs = take(&mut rest, count.checked_mul(8)?)?;
-    Some(
-        pairs
-            .chunks_exact(8)
-            .map(|pair| {
-                (
-                    f32::from_le_bytes(pair[0..4].try_into().unwrap()),
-                    f32::from_le_bytes(pair[4..8].try_into().unwrap()),
-                )
-            })
-            .collect(),
-    )
+    let lane_count = take_u32(&mut rest)? as usize;
+    // The capacity clamp keeps a garbage lane count from reserving the
+    // moon; the takes below run out of data long before the loop does.
+    let mut lanes = Vec::with_capacity(lane_count.min(8));
+    for _ in 0..lane_count {
+        let count = take_u32(&mut rest)? as usize;
+        let pairs = take(&mut rest, count.checked_mul(8)?)?;
+        lanes.push(
+            pairs
+                .chunks_exact(8)
+                .map(|pair| {
+                    (
+                        f32::from_le_bytes(pair[0..4].try_into().unwrap()),
+                        f32::from_le_bytes(pair[4..8].try_into().unwrap()),
+                    )
+                })
+                .collect(),
+        );
+    }
+    Some(lanes)
 }
 
 /// Write a track's entry against `stamped`, the identity the file carried
@@ -108,22 +117,26 @@ pub fn load(dir: &Path, track: &Path) -> Option<Vec<(f32, f32)>> {
 /// decodes fresh instead of wearing a waveform of the half that existed.
 /// Failures log and move on, same stance as the settings file: a lost
 /// cache entry only costs a re-decode next time.
-pub fn store(dir: &Path, track: &Path, stamped: Option<(u64, u64)>, peaks: &[(f32, f32)]) {
+pub fn store(dir: &Path, track: &Path, stamped: Option<(u64, u64)>, lanes: &[Vec<(f32, f32)>]) {
     let Some((size, mtime)) = stamped.filter(|id| identity(track) == Some(*id)) else {
         return;
     };
     let _ = std::fs::create_dir_all(dir);
     let path_bytes = track.as_os_str().as_encoded_bytes();
-    let mut data = Vec::with_capacity(32 + path_bytes.len() + peaks.len() * 8);
+    let pairs: usize = lanes.iter().map(Vec::len).sum();
+    let mut data = Vec::with_capacity(32 + path_bytes.len() + lanes.len() * 4 + pairs * 8);
     data.extend_from_slice(MAGIC);
     data.extend_from_slice(&size.to_le_bytes());
     data.extend_from_slice(&mtime.to_le_bytes());
     data.extend_from_slice(&(path_bytes.len() as u32).to_le_bytes());
     data.extend_from_slice(path_bytes);
-    data.extend_from_slice(&(peaks.len() as u32).to_le_bytes());
-    for &(lo, hi) in peaks {
-        data.extend_from_slice(&lo.to_le_bytes());
-        data.extend_from_slice(&hi.to_le_bytes());
+    data.extend_from_slice(&(lanes.len() as u32).to_le_bytes());
+    for lane in lanes {
+        data.extend_from_slice(&(lane.len() as u32).to_le_bytes());
+        for &(lo, hi) in lane {
+            data.extend_from_slice(&lo.to_le_bytes());
+            data.extend_from_slice(&hi.to_le_bytes());
+        }
     }
     let path = entry_path(dir, track);
     if let Err(e) = std::fs::write(&path, data) {
@@ -157,8 +170,8 @@ mod tests {
         }
 
         /// Store the way the panel does: stamp the track, then write.
-        fn store(&self, track: &Path, peaks: &[(f32, f32)]) {
-            store(&self.cache(), track, identity(track), peaks);
+        fn store(&self, track: &Path, lanes: &[Vec<(f32, f32)>]) {
+            store(&self.cache(), track, identity(track), lanes);
         }
     }
 
@@ -172,16 +185,22 @@ mod tests {
     fn round_trip() {
         let scratch = Scratch::new("round-trip");
         let track = scratch.track("pcm");
-        let peaks = vec![(-0.5, 0.5), (-1.0, 1.0), (0.0, 0.25)];
-        scratch.store(&track, &peaks);
-        assert_eq!(load(&scratch.cache(), &track), Some(peaks));
+        // Three lanes the way the decoder hands them over: the mono mix,
+        // then left and right.
+        let lanes = vec![
+            vec![(-0.5, 0.5), (-1.0, 1.0), (0.0, 0.25)],
+            vec![(-0.25, 0.75), (-1.0, 0.5), (0.0, 0.5)],
+            vec![(-0.75, 0.25), (-0.5, 1.0), (0.0, 0.125)],
+        ];
+        scratch.store(&track, &lanes);
+        assert_eq!(load(&scratch.cache(), &track), Some(lanes));
     }
 
     #[test]
     fn changed_file_misses() {
         let scratch = Scratch::new("changed");
         let track = scratch.track("pcm");
-        scratch.store(&track, &[(-1.0, 1.0)]);
+        scratch.store(&track, &[vec![(-1.0, 1.0)]]);
         // Same path, different size: the identity check has to fail.
         std::fs::write(&track, "different contents").unwrap();
         assert_eq!(load(&scratch.cache(), &track), None);
@@ -197,7 +216,7 @@ mod tests {
         let track = scratch.track("half the pcm");
         let stamp = identity(&track);
         std::fs::write(&track, "half the pcm and then the rest").unwrap();
-        store(&scratch.cache(), &track, stamp, &[(-1.0, 1.0)]);
+        store(&scratch.cache(), &track, stamp, &[vec![(-1.0, 1.0)]]);
         assert!(!entry_path(&scratch.cache(), &track).exists());
         assert_eq!(load(&scratch.cache(), &track), None);
     }
@@ -219,15 +238,30 @@ mod tests {
         assert_eq!(load(&scratch.cache(), &track), None);
     }
 
-    /// An empty peak buffer stores and loads as empty, not a miss: the strip
-    /// for a zero-length file is legitimately empty and should cache like any
-    /// other.
+    /// An empty lane set stores and loads as empty, not a miss: the strip
+    /// for a zero-length file is legitimately empty and should cache like
+    /// any other.
     #[test]
     fn empty_peaks_round_trip() {
         let scratch = Scratch::new("empty");
         let track = scratch.track("pcm");
         scratch.store(&track, &[]);
         assert_eq!(load(&scratch.cache(), &track), Some(Vec::new()));
+    }
+
+    /// An entry from before the lane format reads as a miss off its magic,
+    /// so the track re-decodes and rewrites instead of erroring.
+    #[test]
+    fn old_format_misses() {
+        let scratch = Scratch::new("old-format");
+        let track = scratch.track("pcm");
+        let cache = scratch.cache();
+        scratch.store(&track, &[vec![(-1.0, 1.0)]]);
+        let entry = entry_path(&cache, &track);
+        let mut data = std::fs::read(&entry).unwrap();
+        data[..8].copy_from_slice(b"roxwave1");
+        std::fs::write(&entry, data).unwrap();
+        assert_eq!(load(&cache, &track), None);
     }
 
     /// The stored path disambiguates a hash collision: an entry written for
@@ -248,11 +282,11 @@ mod tests {
         std::fs::write(&b, "same-bytes").unwrap();
 
         // Write a's entry, then drop it at b's entry path to fake the clash.
-        scratch.store(&a, &[(-1.0, 1.0)]);
+        scratch.store(&a, &[vec![(-1.0, 1.0)]]);
         std::fs::copy(entry_path(&cache, &a), entry_path(&cache, &b)).unwrap();
         // The entry stores a's path, not b's, so b reads a miss.
         assert_eq!(load(&cache, &b), None);
         // And a itself still loads from its own entry.
-        assert_eq!(load(&cache, &a), Some(vec![(-1.0, 1.0)]));
+        assert_eq!(load(&cache, &a), Some(vec![vec![(-1.0, 1.0)]]));
     }
 }

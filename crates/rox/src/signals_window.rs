@@ -27,12 +27,13 @@ use gpui_component::Root;
 
 use rox_viz::signal::SignalHub;
 
-use crate::assets::icons;
-use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, ValueEdit};
-use crate::panels::spectrum::{self, Labels, SpectrumConfig, SpectrumPanel};
-use crate::settings::{Settings, SignalsWindowState};
-use crate::signal_ui::{self, SignalHost, SignalUi};
+use rox_core::settings::{Settings, SignalsWindowState};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{self, AppState};
+use rox_panel_api::signal_ui::{self, SignalHost, SignalUi};
+use rox_panel_kit::ValueEdit;
+use rox_panels::spectrum::{self, Labels, SpectrumConfig, SpectrumPanel};
 
 /// Wide enough for the spectrum to be worth reading a band off, since the
 /// tuning rows sit under it and a bound is picked against what's on screen.
@@ -75,7 +76,7 @@ fn open_now(cx: &mut App) {
     // the same place the tint does. With no workspace up there's no hub to
     // borrow, so it builds one over the saved pool: the signals can still be
     // edited and persisted, they just have no audio to read.
-    let state = crate::workspace::front_workspace(cx).map(|(_, state)| state);
+    let state = rox_panel_api::windows::front_workspace(cx).map(|(_, state)| state);
     let saved = Settings::load().windows.signals;
     let (width, height) = saved
         .filter(|s| s.width >= f32::from(MIN.width) && s.height >= f32::from(MIN.height))

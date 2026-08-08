@@ -188,7 +188,7 @@ fn adopt(launch: Launch, cx: &mut App) {
     // Filtered again on this side: what arrives is only as trustworthy as the
     // socket, and re-running the resolve costs nothing.
     let paths = rox_library::open_files::resolve_audio_paths(launch.files);
-    match crate::workspace::front_workspace(cx) {
+    match rox_panel_api::windows::front_workspace(cx) {
         // Best effort on Wayland: raising takes an activation token the
         // compositor can refuse, and the launcher's token died with the
         // process that handed us the files.
@@ -199,7 +199,7 @@ fn adopt(launch: Launch, cx: &mut App) {
         }
         None => crate::integrations::tray::reopen(cx),
     }
-    if let Some((_, state)) = crate::workspace::front_workspace(cx) {
+    if let Some((_, state)) = rox_panel_api::windows::front_workspace(cx) {
         crate::workspace::play_launch_paths(&state, mode, paths, cx);
     }
 }
@@ -215,7 +215,7 @@ fn socket_path() -> PathBuf {
     use std::hash::{Hash as _, Hasher as _};
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    crate::settings::data_dir().hash(&mut hasher);
-    let dir = dirs::runtime_dir().unwrap_or_else(crate::settings::data_dir);
+    rox_core::settings::data_dir().hash(&mut hasher);
+    let dir = dirs::runtime_dir().unwrap_or_else(rox_core::settings::data_dir);
     dir.join(format!("rox-{:016x}.sock", hasher.finish()))
 }

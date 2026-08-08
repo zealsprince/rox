@@ -11,10 +11,8 @@
 // debug builds so stdout/stderr logging stays visible.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod charts;
 mod composite;
 mod console_window;
-mod continuation;
 mod cover;
 mod duplicates;
 mod embeddings;
@@ -23,47 +21,21 @@ mod integrations;
 mod lastfm;
 mod lyrics;
 mod matching;
-mod panel;
 mod panel_catalog;
 mod panel_settings;
 mod panels;
 mod pass_prompt;
 mod playlist_create;
-mod query;
 mod quick_play;
-mod rating_ui;
 mod replaygain_job;
 mod settings;
-mod signal_ui;
 mod signals_window;
 mod startup;
 mod stats_window;
 mod tags;
 mod tasks_window;
-mod track_ui;
 mod workspace;
 mod workspaces;
-
-// The design system and the embedded assets live in their own crate now.
-// They keep their old paths here so every panel still reaches them through
-// crate::design and crate::assets.
-pub(crate) use rox_design as design;
-pub(crate) use rox_design::assets;
-// The settings model, the log backend, and the pace estimates all live a
-// crate down now; these keep the paths the app already reads through.
-pub(crate) use rox_core::settings::MIN_WINDOW_SIZE;
-pub(crate) use rox_core::{logging, pace};
-// The enrichment providers moved out with the rest of the outbound HTTP and
-// answer to the path they always did.
-pub(crate) use rox_net::providers;
-// The headless services the shared state is made of. They render nothing and
-// know nothing about panels, so they sit a crate down; the app still reaches
-// each one at the module path it always had. The scrobbler keeps a file
-// here, since it still has a binary-side piece hanging off it (the
-// loved-list import).
-pub(crate) use rox_services::{
-    backdrop, catalog, history, peaks, player, portraits, selection, thumbs,
-};
 
 use gpui::{
     point, px, size, App, AppContext, Application, Bounds, SharedString, TitlebarOptions,
@@ -71,14 +43,19 @@ use gpui::{
 };
 use gpui_component::Root;
 
-use assets::Assets;
-use design::palette;
-use settings::Settings;
+use rox_core::settings::{
+    layouts, note_first_run, note_os_appearance, os_decorations, seed_os_appearance,
+    set_acoustic_analysis, set_app_font, set_app_frame, set_experimental, set_fold_case,
+    set_gain_mode, set_hide_menubar, set_os_decorations, set_quit_to_tray, set_rating_dots,
+    set_rating_style, set_seams, set_theme, set_workspace_migrator, window_decorations, Settings,
+    MIN_WINDOW_SIZE,
+};
+use rox_core::{logging, APP_ID};
+use rox_design::assets::Assets;
+use rox_design::palette;
+use rox_net::providers;
+use rox_services::acoustic::set_acoustic_model;
 use workspace::Workspace;
-
-// The app id every window carries lives with the rest of the floor now; the
-// tray and the media controls still reach it here.
-pub(crate) use rox_core::APP_ID;
 
 /// The frame size pinned on the command line: `rox --window-size 1440x900`
 /// opens at exactly that and layout swaps leave it alone for the session. A
@@ -157,7 +134,7 @@ fn open_workspace_window(
     // keeping the restored position; a preset without a size opens like any
     // other window.
     if let workspace::WorkspaceStart::Preset(name) = &start {
-        if let Some(s) = settings::layouts::resolve(&Settings::load(), name).and_then(|p| p.size) {
+        if let Some(s) = layouts::resolve(&Settings::load(), name).and_then(|p| p.size) {
             window_bounds = WindowBounds::Windowed(Bounds {
                 origin: window_bounds.get_bounds().origin,
                 size: size(
@@ -178,7 +155,7 @@ fn open_workspace_window(
     let options = WindowOptions {
         window_bounds: Some(window_bounds),
         window_min_size: Some(MIN_WINDOW_SIZE),
-        window_decorations: Some(settings::window_decorations()),
+        window_decorations: Some(window_decorations()),
         titlebar: Some(TitlebarOptions {
             title: Some(SharedString::from("rox")),
             // On Windows and macOS the caption is driven by this creation-time
@@ -188,7 +165,7 @@ fn open_workspace_window(
             // hidden-decorations window. Linux ignores appears_transparent, so
             // scope the derived value to the two platforms that read it.
             appears_transparent: cfg!(any(target_os = "windows", target_os = "macos"))
-                && !settings::os_decorations(),
+                && !os_decorations(),
             ..Default::default()
         }),
         app_id: Some(APP_ID.into()),
@@ -204,10 +181,10 @@ fn open_workspace_window(
         // Wayland client, which is already borrowed here. The immediate
         // note covers a flip that happened while no window was up (tray
         // residency); the setter dedupes, so repeats cost nothing.
-        settings::note_os_appearance(window.appearance(), cx);
+        note_os_appearance(window.appearance(), cx);
         window
             .observe_window_appearance(|window, cx| {
-                settings::note_os_appearance(window.appearance(), cx);
+                note_os_appearance(window.appearance(), cx);
             })
             .detach();
         let workspace = cx.new(|cx| Workspace::new(start, adopt, window, cx));
@@ -254,7 +231,7 @@ fn install_openers() {
 fn watch_lyrics_panel(panel: gpui::AnyWeakEntity, cx: &mut App) {
     let Some(panel) = panel
         .upgrade()
-        .and_then(|panel| panel.downcast::<panels::lyrics::LyricsPanel>().ok())
+        .and_then(|panel| panel.downcast::<rox_panels::lyrics::LyricsPanel>().ok())
     else {
         return;
     };
@@ -282,7 +259,7 @@ fn main() {
     // The settings model can't reach up into the workspace files it has to
     // drain on a pre-split launch, so it gets pointed at them first, before
     // anything reads a setting.
-    settings::set_workspace_migrator(workspaces::migrate_saved);
+    set_workspace_migrator(workspaces::migrate_saved);
     // The windows panels open live up here; the table goes in before any of
     // them can be reached.
     install_openers();
@@ -301,7 +278,7 @@ fn main() {
     // brings a workspace back - the platform's own quit-to-tray. Only the
     // mac backend ever fires this.
     app.on_reopen(|cx| {
-        if workspace::front_workspace(cx).is_none() {
+        if rox_panel_api::windows::front_workspace(cx).is_none() {
             integrations::tray::reopen(cx);
         }
     });
@@ -315,7 +292,7 @@ fn main() {
         startup::single_instance::serve(instance, cx);
         // Whether this launch found a settings file decides the welcome
         // window later; recorded before anything can write one.
-        settings::note_first_run();
+        note_first_run();
         gpui_component::init(cx);
         rox_dock::init(cx);
         workspace::init(cx);
@@ -325,30 +302,30 @@ fn main() {
         // setters set the dark baseline and feed the widget theme tokens.
         let settings = Settings::load();
         palette::set_palettes(settings.palette_dark(), settings.palette_light(), cx);
-        settings::seed_os_appearance(cx);
-        settings::set_theme(settings.theme, cx);
+        seed_os_appearance(cx);
+        set_theme(settings.theme, cx);
         palette::set_scalars(
             settings.look.bundle.appearance.surface_opacity,
             settings.look.bundle.appearance.backdrop_strength,
             cx,
         );
-        settings::set_app_frame(settings.look.bundle.appearance.frame, cx);
-        settings::set_seams(settings.look.bundle.appearance.seams, cx);
+        set_app_frame(settings.look.bundle.appearance.frame, cx);
+        set_seams(settings.look.bundle.appearance.seams, cx);
         palette::set_keep_theme(settings.look.bundle.appearance.keep_theme, cx);
         palette::set_art_theming(settings.look.bundle.appearance.art_theming, cx);
-        settings::set_app_font(settings.look.bundle.appearance.app_font.clone(), cx);
+        set_app_font(settings.look.bundle.appearance.app_font.clone(), cx);
         palette::set_app_font_size(settings.app_font_size, cx);
-        settings::set_rating_style(settings.look.bundle.appearance.rating_style, cx);
-        settings::set_rating_dots(settings.look.bundle.appearance.rating_dots, cx);
-        settings::set_hide_menubar(settings.look.bundle.appearance.hide_menubar, cx);
-        settings::set_os_decorations(settings.look.bundle.appearance.os_decorations);
-        settings::set_fold_case(settings.fold_case);
+        set_rating_style(settings.look.bundle.appearance.rating_style, cx);
+        set_rating_dots(settings.look.bundle.appearance.rating_dots, cx);
+        set_hide_menubar(settings.look.bundle.appearance.hide_menubar, cx);
+        set_os_decorations(settings.look.bundle.appearance.os_decorations);
+        set_fold_case(settings.fold_case);
         rox_library::genre::set_split_compounds(settings.split_genre_compounds);
-        settings::set_quit_to_tray(settings.quit_to_tray);
-        settings::set_experimental(settings.experimental, cx);
-        settings::set_acoustic_analysis(settings.acoustic_analysis, cx);
-        settings::set_gain_mode(settings.replay_gain.mode, cx);
-        settings::set_acoustic_model(&settings.acoustic_model, cx);
+        set_quit_to_tray(settings.quit_to_tray);
+        set_experimental(settings.experimental, cx);
+        set_acoustic_analysis(settings.acoustic_analysis, cx);
+        set_gain_mode(settings.replay_gain.mode, cx);
+        set_acoustic_model(&settings.acoustic_model, cx);
         integrations::tray::sync(cx);
         // Point the icon resolver at the chosen pack before any window
         // opens, so the first frame already draws it.

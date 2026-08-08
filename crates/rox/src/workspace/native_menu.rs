@@ -184,7 +184,7 @@ fn layout_items(target: LayoutTarget, with_new: bool) -> Vec<gpui::MenuItem> {
         LayoutTarget::Overwrite => "layout-save",
         LayoutTarget::Apply => "layout-apply",
     };
-    let presets = crate::settings::layouts::all(&Settings::load());
+    let presets = rox_core::settings::layouts::all(&Settings::load());
     let mut items = Vec::new();
     if with_new {
         items.push(gpui::MenuItem::action(

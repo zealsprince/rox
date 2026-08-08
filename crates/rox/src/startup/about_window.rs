@@ -12,13 +12,13 @@ use gpui::{
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::Root;
 
-use crate::assets::icons;
-use crate::backdrop::WindowBackdrop;
-use crate::design::{palette, tokens};
-use crate::panel::{self, AppState};
-use crate::settings::ui::{small_button, SECTION_GAP};
-use crate::settings::{self, Settings};
 use crate::startup::updates;
+use rox_core::settings::{self, Settings};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{self, AppState};
+use rox_panel_kit::ui::{small_button, SECTION_GAP};
+use rox_services::backdrop::WindowBackdrop;
 
 /// The project's home, where the source and the releases live.
 const REPO: &str = "https://github.com/zealsprince/rox";
@@ -53,9 +53,10 @@ pub fn open(state: AppState, cx: &mut App) {
     // offscreen. Growing the bounds with the text keeps the whole page in view.
     let scale = palette::font_scale();
     let bounds = Bounds::centered(None, size(px(820. * scale), px(240. * scale)), cx);
-    let handle = crate::panel::open_fixed_window(cx, "rox - About", bounds, move |_window, cx| {
-        cx.new(|cx| AboutWindow::new(state, cx))
-    });
+    let handle =
+        rox_panel_api::panel::open_fixed_window(cx, "rox - About", bounds, move |_window, cx| {
+            cx.new(|cx| AboutWindow::new(state, cx))
+        });
     cx.set_global(OpenAbout(handle));
 }
 

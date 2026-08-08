@@ -26,12 +26,12 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Sizable as _};
 use rox_dock::{DockArea, Panel, PanelRegistry, PanelState, PanelView};
 
-use crate::assets::icons;
-use crate::design::{palette, tokens};
-use crate::panel::{AppState, PanelSettings};
 use crate::panel_catalog::{self as catalog, PanelDef};
 use crate::panel_settings;
 use crate::workspace::Workspace;
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{AppState, PanelSettings};
 
 /// One hosted slot: a live child panel, or empty and showing the add
 /// affordance.
@@ -86,7 +86,7 @@ pub fn report_hosted<'a, P: PanelSettings>(
     let weak = cx.entity().downgrade();
     let open: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
         if let Some(host) = weak.upgrade() {
-            panel_settings::open(host, cx);
+            rox_panel_api::panel_settings::open(host, cx);
         }
     });
     let label = SharedString::from(label.to_string());
@@ -464,7 +464,7 @@ pub fn slot_button<P: 'static>(
 
 /// A group divider's live drag: where the slots container painted and
 /// whether a drag is on, behind Arcs so the panel, its paint closure, and
-/// the window-level handlers can all hold it. The [`crate::panel::ScrubState`]
+/// the window-level handlers can all hold it. The [`rox_panel_kit::ScrubState`]
 /// idiom, made axis-generic for the vertical split.
 #[derive(Clone, Default)]
 pub struct DividerState {
@@ -507,7 +507,7 @@ impl DividerState {
 /// Keep a live divider drag following the pointer along `axis`: apply the
 /// container fraction on every move, end the drag on release. Call from
 /// the host's paint pass - window handlers only live one frame, the
-/// [`crate::panel::scrub_on_paint`] idiom. Applying must notify the
+/// [`rox_panel_kit::scrub_on_paint`] idiom. Applying must notify the
 /// entity so the next frame re-arms the handlers.
 pub fn divider_on_paint(
     divider: &DividerState,

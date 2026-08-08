@@ -35,16 +35,17 @@ use rox_library::projection::Projection;
 use rox_library::rating;
 use rox_library::writer::{self, Change, Edit, Field};
 
-use crate::assets::icons;
-use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::catalog::Library;
-use crate::design::{palette, tokens};
 use crate::matching::{open_or_focus, WindowRegistry};
-use crate::panel::AppState;
-use crate::providers;
-use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
-use crate::settings::{rating_style, RatingStyle, Settings};
-use crate::tags::{guess, suggest};
+use crate::tags::guess;
+use rox_core::settings::{rating_style, RatingStyle, Settings};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_net::providers;
+use rox_panel_api::panel::AppState;
+use rox_panel_api::suggest;
+use rox_panel_kit::ui::{self as settings_ui, section, SECTION_GAP};
+use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
+use rox_services::catalog::Library;
 
 /// The form's fields in sheet order: the label each row wears, and
 /// whether the field is per-track by nature. Per-track fields only edit
@@ -84,7 +85,7 @@ fn rating_field(input: &Entity<InputState>, cx: &App) -> Div {
     // The input's entity id keys the hover preview; unlike a track id it
     // is unique per editor row.
     let key = input.entity_id().as_u64();
-    crate::rating_ui::control(key, current, move |value, window, cx| {
+    rox_panel_api::rating_ui::control(key, current, move |value, window, cx| {
         let text = if value == 0 {
             String::new()
         } else {
@@ -172,7 +173,7 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
                 .map(|s| (s.width, s.height))
                 .unwrap_or((1400., 680.));
             let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-            crate::panel::open_child_window(
+            rox_panel_api::panel::open_child_window(
                 cx,
                 "rox - Tag Editor",
                 bounds,

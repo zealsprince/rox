@@ -32,10 +32,10 @@ use gpui::{App, Entity, Global, SharedString};
 
 use rox_library::store;
 
-use crate::catalog::Library;
-use crate::lastfm::Scrobbler;
-use crate::providers::{agent, net_reason, normalize};
-use crate::settings::Settings;
+use rox_core::settings::Settings;
+use rox_net::providers::{agent, net_reason, normalize};
+use rox_services::catalog::Library;
+use rox_services::lastfm::Scrobbler;
 
 const API: &str = "https://ws.audioscrobbler.com/2.0/";
 
@@ -68,7 +68,7 @@ pub struct Progress {
     /// it's doing something the names don't describe.
     current: Mutex<String>,
     cancel: AtomicBool,
-    pace: crate::pace::Pace,
+    pace: rox_core::pace::Pace,
 }
 
 impl Progress {
@@ -202,7 +202,7 @@ pub fn blocked_reason(cx: &App) -> Option<&'static str> {
 fn api_key() -> String {
     let key = Settings::load().accounts.lastfm.api_key;
     if key.is_empty() {
-        super::keys::API_KEY.to_string()
+        rox_net::lastfm::keys::API_KEY.to_string()
     } else {
         key
     }

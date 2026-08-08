@@ -20,12 +20,13 @@ use gpui_component::{Icon, Sizable as _};
 use rox_dock::{Panel, PanelEvent, PanelView, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use crate::assets::icons;
 use crate::composite::{self, Slot};
-use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings, ScrubState};
-use crate::panel_settings;
 use crate::workspace::Workspace;
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel_settings;
+use rox_panel_kit::ScrubState;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -614,7 +615,7 @@ fn edge_scrim(right: bool) -> Div {
 
 /// Keep a live rail drag following the pointer: pull the deck on every
 /// move, snap on release. Called from the rail's paint pass - window
-/// handlers only live one frame, the [`crate::panel::scrub_on_paint`]
+/// handlers only live one frame, the [`rox_panel_kit::scrub_on_paint`]
 /// idiom; the drag's notify repaints and re-arms them.
 fn rail_on_paint(rail: &ScrubState, weak: &WeakEntity<SlidePanel>, window: &mut Window) {
     if !rail.is_dragging() {
@@ -719,7 +720,7 @@ impl Panel for SlidePanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
-        crate::panel::chrome_min_size(
+        rox_panel_api::panel::chrome_min_size(
             &self.config.chrome,
             gpui::size(
                 rox_dock::resizable::PANEL_MIN_SIZE,
@@ -729,7 +730,7 @@ impl Panel for SlidePanel {
     }
 
     fn max_size(&self, cx: &App) -> gpui::Size<gpui::Pixels> {
-        crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
+        rox_panel_api::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
     fn dump(&self, cx: &App) -> rox_dock::PanelState {

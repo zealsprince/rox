@@ -22,17 +22,17 @@ use gpui_component::{Root, Sizable as _};
 
 use rox_library::writer::{self, Change, Edit, Field};
 
-use crate::assets::icons;
-use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::catalog::Library;
-use crate::design::{palette, tokens};
 use crate::matching::{
     confidence_badge, confidence_bar, note, open_or_focus, Phase, WindowRegistry,
 };
-use crate::player::fmt_time;
-use crate::providers::{self, MetadataCandidate, TrackQuery};
-use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
 use crate::tags::editor::TagEditor;
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_net::providers::{self, MetadataCandidate, TrackQuery};
+use rox_panel_kit::ui::{self as settings_ui, section, SECTION_GAP};
+use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
+use rox_services::catalog::Library;
+use rox_services::player::fmt_time;
 
 /// What Apply does with the picked fields: write them to the file, or hand
 /// them to a tag editor's form. The fill keeps the editor the single
@@ -134,7 +134,7 @@ fn open_with(
         (path.clone(), opener),
         move |cx| {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-            crate::panel::open_child_window(
+            rox_panel_api::panel::open_child_window(
                 cx,
                 "rox - Find Metadata",
                 bounds,

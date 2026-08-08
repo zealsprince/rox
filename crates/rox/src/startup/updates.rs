@@ -9,8 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use crate::providers::agent;
-use crate::settings::{Settings, UpdateCache};
+use rox_core::settings::{Settings, UpdateCache};
+use rox_net::providers::agent;
 
 /// The build's own version, the left side of every comparison.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");

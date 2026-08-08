@@ -5,8 +5,7 @@
 //! app-global bookkeeping around a running pass: the `Arc<Progress>` the
 //! tasks window and the settings page sample on a timer, the failure the
 //! last pass left behind, and the spawn that keeps the blocking half off the
-//! main thread. Everything else is re-exported below, so every
-//! `crate::embeddings::` path in the app reads the way it always did.
+//! main thread. Everything else answers to [`rox_acoustic`] directly.
 //!
 //! The shape is the ReplayGain measurement's ([`crate::replaygain_job`]):
 //! app-global rather than owned by a window, blocking work on the background
@@ -19,14 +18,9 @@ use std::sync::Arc;
 
 use gpui::{App, Entity, Global};
 
-use crate::catalog::{Library, LibraryJob};
-use crate::settings::Settings;
-
-// Glob rather than a list: the shim's job is that every name the app already
-// pathed through here still resolves, and a list would quietly drop the ones
-// nothing happens to reference today. The `models` module declared above
-// shadows the one this brings in, which is the point of it.
-pub use rox_acoustic::*;
+use rox_acoustic::Progress;
+use rox_core::settings::Settings;
+use rox_services::catalog::{Library, LibraryJob};
 
 /// The running pass, or nothing. App-global so it outlives the settings
 /// window that started it.
@@ -66,7 +60,7 @@ pub fn stop(cx: &mut App) {
 /// Analyze every track with no vector for the selected model. A no-op while
 /// a pass is already running, and while the feature is switched off.
 ///
-/// Which model runs is [`crate::settings::acoustic_source`], resolved here
+/// Which model runs is [`rox_services::acoustic::acoustic_source`], resolved here
 /// rather than passed in: it's the same pick the similarity queries read, and
 /// a caller that could hand in a different one would be able to fill the
 /// table under a name nothing reads.
@@ -81,7 +75,7 @@ pub fn start(db_path: PathBuf, cx: &mut App) {
     // Read once here rather than inside the pass: a pass keeps the worker
     // count it started with, and the next one picks up a changed setting.
     let workers = settings.acoustic_workers.max(1);
-    let source = crate::settings::acoustic_source();
+    let source = rox_services::acoustic::acoustic_source();
     let progress = Arc::new(Progress::new(source.id()));
     cx.set_global(Running(Some(progress.clone())));
     cx.set_global(LastFailure(None));
@@ -127,7 +121,7 @@ pub fn start(db_path: PathBuf, cx: &mut App) {
                     // The surfaces that offer ordering by sound are gated on
                     // there being vectors, and this is the moment there are.
                     if written > 0 {
-                        crate::settings::set_acoustic_described(true, cx);
+                        rox_core::settings::set_acoustic_described(true, cx);
                     }
                     log::info!("acoustic: {written} tracks analyzed with {name}");
                 }

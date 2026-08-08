@@ -15,12 +15,13 @@ use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use crate::assets::icons;
-use crate::design::{palette, tokens};
-use crate::panel::{self, setting_row, toggle, AppState, PanelChrome, PanelSettings};
-use crate::panel_settings;
-use crate::panels::queue::QueuePanel;
-use crate::settings::ui as settings_ui;
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel_settings;
+use rox_panel_kit::ui as settings_ui;
+use rox_panel_kit::{setting_row, toggle};
+use rox_panels::queue::QueuePanel;
 
 /// How many titles the hover tooltip lists before summarizing the rest.
 const TOOLTIP_ROWS: usize = 12;
@@ -278,7 +279,7 @@ impl Panel for QueueWidgetPanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
-        crate::panel::chrome_min_size(
+        rox_panel_api::panel::chrome_min_size(
             &self.config.chrome,
             gpui::size(
                 rox_dock::resizable::PANEL_MIN_SIZE,
@@ -288,7 +289,7 @@ impl Panel for QueueWidgetPanel {
     }
 
     fn max_size(&self, cx: &App) -> gpui::Size<gpui::Pixels> {
-        crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
+        rox_panel_api::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
     fn dump(&self, _cx: &App) -> rox_dock::PanelState {

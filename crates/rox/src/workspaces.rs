@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 
 use gpui::{App, SharedString};
 
-use crate::assets;
-use crate::design::palette::{self, Palette};
-use crate::settings::{self, Settings, WorkspaceBundle, WORKSPACE_VERSION};
+use rox_core::settings::{self, Settings, WorkspaceBundle, WORKSPACE_VERSION};
+use rox_design::assets;
+use rox_design::palette::{self, Palette};
 
 /// A workspace for the settings list: its name, whether it ships with the app
 /// (read-only) or the user saved it (deletable), and where to read it from.
@@ -350,7 +350,7 @@ mod tests {
     /// without this a typo in a shipped file just vanishes from the list.
     #[test]
     fn every_shipped_asset_parses() {
-        let files = crate::assets::shipped_workspaces();
+        let files = rox_design::assets::shipped_workspaces();
         assert!(!files.is_empty());
         let parsed = shipped();
         assert_eq!(

@@ -1,7 +1,9 @@
 //! The waveform panel: the whole track's amplitude shape as mirrored bars
 //! around a center line, played bars in the accent, the rest as a dim ghost,
 //! with a playhead tracking the position clock. Click or drag the strip to
-//! seek. Peaks come from the disk cache ([`crate::peaks`]) when the track
+//! seek. A split toggle stacks one row per channel instead of the mono
+//! mix, the way Foobar draws it. Peaks come from the disk cache
+//! ([`crate::peaks`]) when the track
 //! has played before, otherwise from a full decode on a background thread
 //! that then fills the cache; while a decode runs the strip shows a gray
 //! pulsing stand-in shape. Every change of what the strip shows - stand-in
@@ -60,6 +62,9 @@ pub struct WaveformConfig {
     /// Trace the bars as outlines instead of filling them; with the gap
     /// at zero the strip reads as one outlined shape.
     pub outline: bool,
+    /// Stack one row per channel instead of the mono mix, left above
+    /// right. Mono tracks stay a single row either way.
+    pub split_channels: bool,
     /// A thin line at the scrobble threshold, where the playing track
     /// counts as listened for Last.fm. Only draws while scrobbling is
     /// connected and on.
@@ -73,6 +78,7 @@ impl Default for WaveformConfig {
             bar_width: tokens::BAR_W,
             bar_gap: tokens::BAR_GAP,
             outline: false,
+            split_channels: false,
             scrobble_marker: false,
         }
     }
@@ -95,12 +101,26 @@ impl WaveformConfig {
 /// The shortest a bar draws, so quiet passages stay visible.
 const MIN_BAR: f32 = 2.0;
 
+/// A track's decoded peak lanes: the mono mix at 0, then a left and a
+/// right lane when the source has more than one channel.
+type PeakSet = Vec<Vec<(f32, f32)>>;
+
 enum Peaks {
     /// No track has been seen yet.
     None,
     Decoding,
-    Ready(Arc<Vec<(f32, f32)>>),
+    Ready(Arc<PeakSet>),
     Failed,
+}
+
+/// The lanes a peak set draws: the per-channel lanes when the split is on
+/// and the set has them, the mono mix otherwise.
+fn display_lanes(set: &[Vec<(f32, f32)>], split: bool) -> &[Vec<(f32, f32)>] {
+    if split && set.len() > 1 {
+        &set[1..]
+    } else {
+        &set[..set.len().min(1)]
+    }
 }
 
 /// One thing the strip can show. The morph runs between two of these,
@@ -111,19 +131,29 @@ enum Shape {
     Blank,
     /// The gray generating stand-in, animated off the panel's clock.
     Placeholder,
-    /// A track's decoded pairs and its playhead position: live while the
-    /// shape is the target, frozen where it last painted once retired.
-    Peaks(Arc<Vec<(f32, f32)>>, f32),
+    /// A track's decoded lanes, whether they draw split, and the playhead
+    /// position: live while the shape is the target, frozen where it last
+    /// painted once retired.
+    Peaks(Arc<PeakSet>, bool, f32),
 }
 
 impl Shape {
     /// Same visual target: the playhead moving or the stand-in animating
-    /// doesn't count, a different peaks buffer does.
+    /// doesn't count, a different peaks buffer or a flipped split does.
     fn same(&self, other: &Shape) -> bool {
         match (self, other) {
             (Shape::Blank, Shape::Blank) | (Shape::Placeholder, Shape::Placeholder) => true,
-            (Shape::Peaks(a, _), Shape::Peaks(b, _)) => Arc::ptr_eq(a, b),
+            (Shape::Peaks(a, sa, _), Shape::Peaks(b, sb, _)) => Arc::ptr_eq(a, b) && sa == sb,
             _ => false,
+        }
+    }
+
+    /// How many rows this shape wants, or None where it adapts to
+    /// whatever layout the other shape sets (blank and the stand-in).
+    fn lanes(&self) -> Option<usize> {
+        match self {
+            Shape::Peaks(set, split, _) => Some(display_lanes(set, *split).len().max(1)),
+            _ => None,
         }
     }
 }
@@ -293,23 +323,49 @@ fn placeholder_tint() -> Rgba {
     palette::alpha(palette::text_muted(), 0x33)
 }
 
-/// The stand-in's mirrored half-height for bar `i` of `count` at time `t`:
-/// a stable pseudo-random profile per slot so the strip reads as audio,
-/// swelling under two pulse crests that travel left to right.
-fn placeholder_bar(i: usize, count: usize, t: f32, max_bar: f32) -> f32 {
+/// The stand-in's mirrored half-height for bar `i` of `count` in `lane` at
+/// time `t`: a stable pseudo-random profile per slot so the strip reads as
+/// audio, swelling under two pulse crests that travel left to right. Each
+/// lane gets its own profile, the crests travel in step across them.
+fn placeholder_bar(i: usize, lane: usize, count: usize, t: f32, max_bar: f32) -> f32 {
     // The classic one-liner hash: a fixed jagged profile per slot.
-    let seed = ((i as f32 * 12.9898).sin() * 43758.547).fract().abs();
+    let seed = (((i + lane * count) as f32 * 12.9898).sin() * 43758.547)
+        .fract()
+        .abs();
     let phase = i as f32 / count as f32 * std::f32::consts::TAU * 2.0 - t * 4.0;
     let pulse = phase.sin() * 0.5 + 0.5;
     ((0.2 + 0.8 * seed) * (0.25 + 0.75 * pulse) * max_bar).max(MIN_BAR / 2.0)
 }
 
-/// A shape's bar `i` of `count`: top and bottom in strip-local y, and the
-/// bar's color. `x_mid` and `w` place the bar against the shape's playhead
-/// for the played/ghost split.
+/// A lane's extremes over display bar `i` of `count`, so transients survive
+/// the downsample. None for a lane with no pairs to bucket.
+fn bucket(lane: &[(f32, f32)], i: usize, count: usize) -> Option<(f32, f32)> {
+    if lane.is_empty() {
+        return None;
+    }
+    let per = lane.len() as f32 / count as f32;
+    let from = (i as f32 * per) as usize;
+    let to = (((i + 1) as f32 * per) as usize).clamp(from + 1, lane.len());
+    Some(
+        lane[from..to]
+            .iter()
+            .fold((0.0f32, 0.0f32), |(lo, hi), &(bl, bh)| {
+                (lo.min(bl), hi.max(bh))
+            }),
+    )
+}
+
+/// A shape's bar `i` of `count` in display lane `lane` of `lanes`: top and
+/// bottom in strip-local y, and the bar's color. `center` and `max_bar` are
+/// the display lane's geometry; a shape whose own lane layout differs maps
+/// into it - a single lane feeds every row, a wider set folds together.
+/// `x_mid` and `w` place the bar against the shape's playhead for the
+/// played/ghost split.
 #[allow(clippy::too_many_arguments)]
 fn sample(
     shape: &Shape,
+    lane: usize,
+    lanes: usize,
     i: usize,
     count: usize,
     x_mid: f32,
@@ -321,23 +377,26 @@ fn sample(
     match shape {
         Shape::Blank => (center, center, palette::alpha(palette::text_muted(), 0)),
         Shape::Placeholder => {
-            let bar = placeholder_bar(i, count, t, max_bar);
+            let bar = placeholder_bar(i, lane, count, t, max_bar);
             (center - bar, center + bar, placeholder_tint())
         }
-        Shape::Peaks(peaks, progress) => {
-            if peaks.is_empty() {
+        Shape::Peaks(set, split, progress) => {
+            let data = display_lanes(set, *split);
+            let extremes = match data.len() {
+                0 => None,
+                1 => bucket(&data[0], i, count),
+                n if n == lanes => bucket(&data[lane], i, count),
+                // This shape's layout differs from the display's (a morph
+                // across a split flip or a channel-count change): fold its
+                // lanes into one silhouette for every row.
+                _ => data
+                    .iter()
+                    .filter_map(|lane| bucket(lane, i, count))
+                    .reduce(|(alo, ahi), (blo, bhi)| (alo.min(blo), ahi.max(bhi))),
+            };
+            let Some((lo, hi)) = extremes else {
                 return (center, center, palette::alpha(palette::accent(), 0));
-            }
-            // Each display bar takes its bucket's extremes so transients
-            // survive the downsample.
-            let per = peaks.len() as f32 / count as f32;
-            let from = (i as f32 * per) as usize;
-            let to = (((i + 1) as f32 * per) as usize).clamp(from + 1, peaks.len());
-            let (lo, hi) = peaks[from..to]
-                .iter()
-                .fold((0.0f32, 0.0f32), |(lo, hi), &(bl, bh)| {
-                    (lo.min(bl), hi.max(bh))
-                });
+            };
             let top = center - (hi * max_bar).max(MIN_BAR / 2.0);
             let bottom = center - (lo * max_bar).min(-MIN_BAR / 2.0);
             let played = x_mid <= progress.clamp(0.0, 1.0) * w;
@@ -353,9 +412,10 @@ fn sample(
 
 /// The strip: `to`'s bars, blended per bar from wherever `from` had them
 /// while the morph runs, geometry and color both, so shape changes flow
-/// instead of popping. Each shape that has a playhead draws it, the
-/// retiring one fading out as the incoming one fades in; the scrobble
-/// marker, when asked for, rides the same fade.
+/// instead of popping. Split shapes repeat the same blend per row, the
+/// lane layout following the incoming shape. Each shape that has a
+/// playhead draws it, the retiring one fading out as the incoming one
+/// fades in; the scrobble marker, when asked for, rides the same fade.
 #[allow(clippy::too_many_arguments)]
 fn paint_morph(
     from: &Shape,
@@ -379,73 +439,80 @@ fn paint_morph(
     // Bars fill the step minus the gap, so a zero gap tiles them into a
     // solid shape with no seams.
     let draw_w = (step - gap).max(1.0);
-    let center = h / 2.0;
-    let max_bar = h * 0.46;
+
+    // The row layout: the incoming shape's when it cares, the retiring
+    // one's through a fade to blank, one row when neither does.
+    let lanes = to.lanes().or(from.lanes()).unwrap_or(1);
+    let lane_h = h / lanes as f32;
 
     // Smoothstepped so the morph eases out instead of stopping dead.
     let u = u.clamp(0.0, 1.0);
     let u = u * u * (3.0 - 2.0 * u);
 
-    // The silhouette's neighbor edges, for the merged-outline risers.
-    let mut prev = (center, center);
-    for i in 0..count {
-        let x = i as f32 * step;
-        let x_mid = x + step * 0.5;
-        let (top, bottom, color) = {
-            let b = sample(to, i, count, x_mid, w, t, center, max_bar);
-            if u < 1.0 {
-                let a = sample(from, i, count, x_mid, w, t, center, max_bar);
-                (
-                    a.0 + (b.0 - a.0) * u,
-                    a.1 + (b.1 - a.1) * u,
-                    palette::mix(a.2, b.2, u),
-                )
+    for lane in 0..lanes {
+        let center = lane_h * lane as f32 + lane_h / 2.0;
+        let max_bar = lane_h * 0.46;
+        // The silhouette's neighbor edges, for the merged-outline risers.
+        let mut prev = (center, center);
+        for i in 0..count {
+            let x = i as f32 * step;
+            let x_mid = x + step * 0.5;
+            let (top, bottom, color) = {
+                let b = sample(to, lane, lanes, i, count, x_mid, w, t, center, max_bar);
+                if u < 1.0 {
+                    let a = sample(from, lane, lanes, i, count, x_mid, w, t, center, max_bar);
+                    (
+                        a.0 + (b.0 - a.0) * u,
+                        a.1 + (b.1 - a.1) * u,
+                        palette::mix(a.2, b.2, u),
+                    )
+                } else {
+                    b
+                }
+            };
+            let x0 = bounds.origin.x + px(x);
+            let bar = Bounds::new(
+                point(x0, bounds.origin.y + px(top)),
+                size(px(draw_w), px(bottom - top)),
+            );
+            if !config.outline {
+                window.paint_quad(fill(bar, color));
+            } else if gap > 0.0 {
+                // Separate bars: each its own hollow frame, the spectrum's
+                // outline look.
+                window.paint_quad(gpui::outline(bar, color, BorderStyle::default()));
             } else {
-                b
-            }
-        };
-        let x0 = bounds.origin.x + px(x);
-        let bar = Bounds::new(
-            point(x0, bounds.origin.y + px(top)),
-            size(px(draw_w), px(bottom - top)),
-        );
-        if !config.outline {
-            window.paint_quad(fill(bar, color));
-        } else if gap > 0.0 {
-            // Separate bars: each its own hollow frame, the spectrum's
-            // outline look.
-            window.paint_quad(gpui::outline(bar, color, BorderStyle::default()));
-        } else {
-            // Merged bars: trace the silhouette instead - 1px top and
-            // bottom edges plus risers spanning the jump to the neighbor,
-            // one continuous outlined shape.
-            for y in [top, bottom - 1.0] {
-                window.paint_quad(fill(
-                    Bounds::new(
-                        point(x0, bounds.origin.y + px(y)),
-                        size(px(draw_w), px(1.0)),
-                    ),
-                    color,
-                ));
-            }
-            for (a, b) in [(prev.0, top), (prev.1, bottom)] {
-                let rise = (b - a).abs();
-                if rise >= 1.0 {
+                // Merged bars: trace the silhouette instead - 1px top and
+                // bottom edges plus risers spanning the jump to the neighbor,
+                // one continuous outlined shape.
+                for y in [top, bottom - 1.0] {
                     window.paint_quad(fill(
                         Bounds::new(
-                            point(x0, bounds.origin.y + px(a.min(b))),
-                            size(px(1.0), px(rise)),
+                            point(x0, bounds.origin.y + px(y)),
+                            size(px(draw_w), px(1.0)),
                         ),
                         color,
                     ));
                 }
+                for (a, b) in [(prev.0, top), (prev.1, bottom)] {
+                    let rise = (b - a).abs();
+                    if rise >= 1.0 {
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                point(x0, bounds.origin.y + px(a.min(b))),
+                                size(px(1.0), px(rise)),
+                            ),
+                            color,
+                        ));
+                    }
+                }
             }
+            prev = (top, bottom);
         }
-        prev = (top, bottom);
     }
 
     for (shape, weight) in [(from, 1.0 - u), (to, u)] {
-        let Shape::Peaks(_, progress) = shape else {
+        let Shape::Peaks(_, _, progress) = shape else {
             continue;
         };
         if let Some(marker) = marker {
@@ -552,6 +619,18 @@ impl PanelSettings for WaveformPanel {
                 ),
             ))
             .child(setting_row(
+                "Split Channels",
+                Some("One row per channel, left above right; mono tracks stay a single row"),
+                toggle(
+                    self.config.split_channels,
+                    |this: &mut Self, on, cx| {
+                        this.config.split_channels = on;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(setting_row(
                 "Scrobble Marker",
                 Some("A thin line where the track counts as scrobbled to Last.fm"),
                 toggle(
@@ -644,6 +723,18 @@ impl Panel for WaveformPanel {
     ) -> PopupMenu {
         // The config block: the panel's quick entries above the core panel
         // items, like the transport panels'.
+        let weak = cx.entity().downgrade();
+        let menu = menu.item(
+            PopupMenuItem::new("Split Channels")
+                .checked(self.config.split_channels)
+                .on_click(move |_, _, cx| {
+                    let Some(this) = weak.upgrade() else { return };
+                    this.update(cx, |this, cx| {
+                        this.config.split_channels = !this.config.split_channels;
+                        cx.notify();
+                    });
+                }),
+        );
         let weak = cx.entity().downgrade();
         let menu = menu.item(
             PopupMenuItem::new("Scrobble Marker")
@@ -751,7 +842,11 @@ impl WaveformPanel {
                     .map(|d| (now.position_secs / d) as f32)
                     .unwrap_or(0.0);
                 hover_duration = now.duration_secs.filter(|d| *d > 0.0);
-                self.retarget(Shape::Peaks(peaks.clone(), progress));
+                self.retarget(Shape::Peaks(
+                    peaks.clone(),
+                    self.config.split_channels,
+                    progress,
+                ));
                 self.strip(marker).into_any_element()
             }
         };

@@ -16,16 +16,17 @@ use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use crate::assets::icons;
-use crate::design::{palette, tokens};
-use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
 use crate::panel_catalog::PanelDef;
-use crate::panel_settings;
-use crate::settings::{self, Settings};
 use crate::workspace::{
     menu_item_display, menu_section, panel_menu_item, section_shows, shortcut_for, signal_marked,
     LayoutTarget, Menu, MenuAction, MenuEntry, MenuItem, Workspace, WorkspaceTarget, MENUS,
 };
+use rox_core::settings::{self, Settings};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel_settings;
+use rox_panel_kit::{align_row, justify, Align};
 
 /// The menu panel's per-view config: what a saved layout restores, and
 /// what the settings window edits.
@@ -324,7 +325,7 @@ impl MenuPanel {
             .child(chevron())
             .when(open, |d| {
                 // Read the presets only once the flyout opens.
-                let presets = crate::settings::layouts::all(&Settings::load());
+                let presets = rox_core::settings::layouts::all(&Settings::load());
                 let mut flyout = dropdown(px(180.)).absolute().left_full().top(px(-5.));
                 if with_new {
                     flyout = flyout.child(self.new_row(cx));
@@ -710,14 +711,14 @@ impl Panel for MenuPanel {
 
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
         // The one button plus the strip's padding, raised by any user floor.
-        crate::panel::chrome_min_size(
+        rox_panel_api::panel::chrome_min_size(
             &self.config.chrome,
             gpui::size(px(48.), rox_dock::resizable::PANEL_MIN_SIZE),
         )
     }
 
     fn max_size(&self, cx: &App) -> gpui::Size<Pixels> {
-        crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
+        rox_panel_api::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
     /// The layout dump carries the panel's config; the builder registered

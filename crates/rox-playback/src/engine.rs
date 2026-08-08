@@ -1550,24 +1550,29 @@ pub fn count_frames(path: &PathBuf) -> Result<(u64, Option<u64>), String> {
 }
 
 /// Decode a whole file through the same path playback uses and reduce it to
-/// at most `bins` (min, max) mono sample pairs spanning the track, the data
-/// behind a waveform strip. Pairs are normalized so the loudest bin hits 1,
+/// peak lanes of at most `bins` (min, max) sample pairs spanning the track,
+/// the data behind a waveform strip. Lane 0 is the mono mix; a source with
+/// more channels adds a left and a right lane after it (the decode path
+/// folds wider layouts to front left/right, so two is as many as come out).
+/// Pairs are normalized so the loudest bin hits 1 - the channel lanes
+/// against a shared loudest, so the balance between them stays honest -
 /// with a gentle perceptual curve so quiet passages stay visible. No audio
 /// device involved; run it on a background thread, a long track is a full
 /// decode.
-pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<(f32, f32)>, String> {
+pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<Vec<(f32, f32)>>, String> {
     // Probe once for the source rate, then open for real with the device
     // rate equal to it, so the resampler is a passthrough.
     let (probe, info) = Source::open(path, 48000)?;
     drop(probe);
     let (mut src, info) = Source::open(path, info.sample_rate)?;
 
-    // Coarse pass: one pair per fixed block of frames, so memory stays a few
-    // thousand pairs whatever the track length, then fold down to `bins`.
+    // Coarse pass: one pair per lane per fixed block of frames, so memory
+    // stays a few thousand pairs whatever the track length, then fold down
+    // to `bins`. The lanes ride the loop in mono, left, right order.
     const BLOCK_FRAMES: usize = 2048;
-    let mut coarse: Vec<(f32, f32)> = Vec::new();
-    let mut lo = f32::MAX;
-    let mut hi = f32::MIN;
+    let mut coarse: [Vec<(f32, f32)>; 3] = Default::default();
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
     let mut in_block = 0usize;
     let mut chunk = Vec::new();
     loop {
@@ -1576,14 +1581,18 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<(f32, f32)>, Stri
         // fold it in before honouring the end signal.
         let more = src.next_chunk(info.sample_rate, &mut chunk);
         for frame in chunk.chunks_exact(2) {
-            let s = (frame[0] + frame[1]) * 0.5;
-            lo = lo.min(s);
-            hi = hi.max(s);
+            let s = [(frame[0] + frame[1]) * 0.5, frame[0], frame[1]];
+            for lane in 0..3 {
+                lo[lane] = lo[lane].min(s[lane]);
+                hi[lane] = hi[lane].max(s[lane]);
+            }
             in_block += 1;
             if in_block == BLOCK_FRAMES {
-                coarse.push((lo, hi));
-                lo = f32::MAX;
-                hi = f32::MIN;
+                for lane in 0..3 {
+                    coarse[lane].push((lo[lane], hi[lane]));
+                }
+                lo = [f32::MAX; 3];
+                hi = [f32::MIN; 3];
                 in_block = 0;
             }
         }
@@ -1592,41 +1601,63 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<(f32, f32)>, Stri
         }
     }
     if in_block > 0 {
-        coarse.push((lo, hi));
+        for lane in 0..3 {
+            coarse[lane].push((lo[lane], hi[lane]));
+        }
     }
-    if coarse.is_empty() {
+    if coarse[0].is_empty() {
         return Err("no decodable audio".into());
     }
 
-    // Fold the coarse pairs into the requested resolution, keeping each
-    // bucket's extremes so transients survive the downsample.
-    let mut peaks: Vec<(f32, f32)> = if coarse.len() <= bins.max(1) {
-        coarse
-    } else {
-        let per = coarse.len() as f64 / bins as f64;
-        (0..bins)
-            .map(|i| {
-                let from = (i as f64 * per) as usize;
-                let to = (((i + 1) as f64 * per) as usize).clamp(from + 1, coarse.len());
-                coarse[from..to]
-                    .iter()
-                    .fold((f32::MAX, f32::MIN), |(lo, hi), &(bl, bh)| {
-                        (lo.min(bl), hi.max(bh))
-                    })
-            })
-            .collect()
-    };
+    // A mono source's channel lanes would duplicate the mix; drop them at
+    // the door so the strip knows there's nothing to split.
+    let keep = if info.channels >= 2 { 3 } else { 1 };
+    let mut lanes: Vec<Vec<(f32, f32)>> = coarse
+        .into_iter()
+        .take(keep)
+        .map(|lane| fold_bins(lane, bins))
+        .collect();
 
-    let loudest = peaks
-        .iter()
-        .fold(0.0f32, |m, &(lo, hi)| m.max(lo.abs()).max(hi.abs()));
-    if loudest > 0.0 {
-        for (lo, hi) in peaks.iter_mut() {
-            *lo = (lo.abs() / loudest).powf(0.7).copysign(*lo);
-            *hi = (hi.abs() / loudest).powf(0.7).copysign(*hi);
-        }
+    normalize_peaks(&mut lanes[..1]);
+    normalize_peaks(&mut lanes[1..]);
+    Ok(lanes)
+}
+
+/// Fold coarse pairs into the requested resolution, keeping each bucket's
+/// extremes so transients survive the downsample.
+fn fold_bins(coarse: Vec<(f32, f32)>, bins: usize) -> Vec<(f32, f32)> {
+    if coarse.len() <= bins.max(1) {
+        return coarse;
     }
-    Ok(peaks)
+    let per = coarse.len() as f64 / bins as f64;
+    (0..bins)
+        .map(|i| {
+            let from = (i as f64 * per) as usize;
+            let to = (((i + 1) as f64 * per) as usize).clamp(from + 1, coarse.len());
+            coarse[from..to]
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(lo, hi), &(bl, bh)| {
+                    (lo.min(bl), hi.max(bh))
+                })
+        })
+        .collect()
+}
+
+/// Scale the lanes so the loudest bin among them hits 1, with the
+/// perceptual curve that keeps quiet passages visible. Lanes normalized
+/// together keep their relative loudness.
+fn normalize_peaks(lanes: &mut [Vec<(f32, f32)>]) {
+    let loudest = lanes
+        .iter()
+        .flatten()
+        .fold(0.0f32, |m, &(lo, hi)| m.max(lo.abs()).max(hi.abs()));
+    if loudest <= 0.0 {
+        return;
+    }
+    for (lo, hi) in lanes.iter_mut().flatten() {
+        *lo = (lo.abs() / loudest).powf(0.7).copysign(*lo);
+        *hi = (hi.abs() / loudest).powf(0.7).copysign(*hi);
+    }
 }
 
 /// Decode one window of audio starting at `position_secs`, resampled to

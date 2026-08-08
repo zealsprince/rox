@@ -35,13 +35,14 @@ use gpui::{
 use gpui_component::scroll::Scrollbar;
 use gpui_component::Root;
 
-use crate::assets::icons;
-use crate::catalog::{Library, LibraryEvent, ScanStatus};
-use crate::design::{palette, tokens};
 use crate::lastfm::import;
-use crate::settings::ui as settings_ui;
-use crate::settings::{LayoutSize, Settings};
-use crate::{embeddings, panel, pass_prompt, replaygain_job};
+use crate::{embeddings, pass_prompt, replaygain_job};
+use rox_core::settings::{LayoutSize, Settings};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel;
+use rox_panel_kit::ui as settings_ui;
+use rox_services::catalog::{Library, LibraryEvent, ScanStatus};
 
 /// How often a running pass repaints the surfaces watching it. Slower than
 /// the settings page's own poll on purpose: this one redraws every window,
@@ -179,10 +180,10 @@ pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
 /// the estimate means nothing without it: the same library is four hours or
 /// one depending on what it's allowed to use.
 fn priced(pace: f32, missing: u64, workers: usize) -> Option<String> {
-    let estimate = crate::pace::estimate(pace, missing, workers)?;
+    let estimate = rox_core::pace::estimate(pace, missing, workers)?;
     Some(format!(
         "{estimate} at {}",
-        crate::pace::workers_phrase(workers)
+        rox_core::pace::workers_phrase(workers)
     ))
 }
 
@@ -232,7 +233,7 @@ fn open_now(cx: &mut App) {
     // whichever workspace is in front when the window opens, the same place
     // the tint does. It's held weakly from there on: a window that outlives
     // its workspace should go inert, not keep a dead one's library alive.
-    let front = crate::workspace::front_workspace(cx).map(|(_, state)| state);
+    let front = rox_panel_api::windows::front_workspace(cx).map(|(_, state)| state);
     let player = front.as_ref().map(|state| state.player.entity_id());
     let library = front.map(|state| state.library);
     let (width, height) = Settings::load()
@@ -335,7 +336,7 @@ struct Snapshot {
 }
 
 impl Snapshot {
-    fn acoustic(job: &embeddings::Progress) -> Snapshot {
+    fn acoustic(job: &rox_acoustic::Progress) -> Snapshot {
         Snapshot {
             done: job.done(),
             total: job.total(),
@@ -405,7 +406,7 @@ pub(crate) fn aggregate(cx: &mut App) -> Option<(usize, usize)> {
     // The scan belongs to a catalog rather than the app, so it comes off
     // whichever workspace is in front, the same place this window takes it
     // from when it opens.
-    let library = crate::workspace::front_workspace(cx).map(|(_, state)| state.library);
+    let library = rox_panel_api::windows::front_workspace(cx).map(|(_, state)| state.library);
     let scan = library.and_then(|library| library.read(cx).scan_status());
     let mut running: Vec<Snapshot> = Vec::new();
     running.extend(scan.map(Snapshot::scan));
@@ -458,7 +459,7 @@ struct Blocked(Option<&'static str>);
 /// it lives in the catalog, which is asked for it when a row is drawn.
 #[derive(Default)]
 struct Live {
-    acoustic: Option<Arc<embeddings::Progress>>,
+    acoustic: Option<Arc<rox_acoustic::Progress>>,
     replaygain: Option<Arc<replaygain_job::Progress>>,
 }
 
@@ -608,7 +609,7 @@ impl TasksWindow {
             return;
         };
         let settings = Settings::load();
-        let source = crate::settings::acoustic_source();
+        let source = rox_services::acoustic::acoustic_source();
         let library = library.read(cx);
         let acoustic = library.acoustic_coverage(source.id());
         let gains = library.replaygain_breakdown();
@@ -815,7 +816,7 @@ impl TasksWindow {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        Some(crate::pace::human(
+        Some(rox_core::pace::human(
             now.saturating_sub(self.facts.last_scan).max(0) as f64,
         ))
     }
@@ -904,7 +905,7 @@ impl TasksWindow {
             format!("{counted} of {}", snapshot.total)
         };
         if let Some(eta) = snapshot.eta {
-            line.push_str(&format!(", {} left", crate::pace::human(eta)));
+            line.push_str(&format!(", {} left", rox_core::pace::human(eta)));
         }
         if snapshot.failed > 0 {
             line.push_str(&format!(" ({} skipped)", snapshot.failed));

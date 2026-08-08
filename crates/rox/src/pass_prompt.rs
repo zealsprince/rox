@@ -20,13 +20,14 @@ use std::time::Duration;
 
 use gpui::{div, prelude::*, px, Context, Div, Entity, SharedString};
 
-use crate::assets::icons;
-use crate::catalog::Library;
-use crate::design::{palette, tokens};
-use crate::panel::{self, ScrubState};
-use crate::settings::ui::{self as settings_ui, dialog_button, small_button};
-use crate::settings::{ReplayGainSave, Settings};
 use crate::{embeddings, replaygain_job};
+use rox_core::settings::{ReplayGainSave, Settings};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel;
+use rox_panel_kit::ui::{self as settings_ui, dialog_button, small_button};
+use rox_panel_kit::ScrubState;
+use rox_services::catalog::Library;
 
 /// How long a worker drag settles before the count is written. A scrub
 /// applies per frame, and writing through on every tick means reading,
@@ -90,7 +91,7 @@ impl Prompt {
     /// What the rest of the pass should take at the current count, or None
     /// with nothing measured on this machine yet.
     fn estimate(&self) -> Option<String> {
-        crate::pace::estimate(self.pace, self.missing, self.workers)
+        rox_core::pace::estimate(self.pace, self.missing, self.workers)
     }
 
     /// Write the worker count where the pass will read it.
@@ -117,7 +118,7 @@ pub fn cores() -> usize {
 /// say, so a failure from one visit doesn't greet the next.
 pub fn raise<V: Host>(this: &mut V, pass: Pass, library: Entity<Library>, cx: &mut Context<V>) {
     let settings = Settings::load();
-    let source = crate::settings::acoustic_source();
+    let source = rox_services::acoustic::acoustic_source();
     let (missing, pace, workers) = match pass {
         Pass::Acoustic => (
             library.read(cx).acoustic_coverage(source.id()).missing() as u64,
@@ -204,13 +205,13 @@ fn probe<V: Host>(this: &mut V, cx: &mut Context<V>) {
     cx.notify();
     // Resolved here, on the UI thread, so the probe measures the model the
     // prompt is talking about.
-    let source = matches!(pass, Pass::Acoustic).then(crate::settings::acoustic_source);
+    let source = matches!(pass, Pass::Acoustic).then(rox_services::acoustic::acoustic_source);
     cx.spawn(async move |this, cx| {
         let measured = cx
             .background_executor()
             .spawn(async move {
                 match &source {
-                    Some(source) => embeddings::measure_pace(source, &db_path)
+                    Some(source) => rox_acoustic::measure_pace(source, &db_path)
                         .map(|pace| (Some(source.id().to_string()), pace)),
                     None => replaygain_job::measure_pace(&db_path).map(|pace| (None, pace)),
                 }
@@ -231,7 +232,7 @@ fn probe<V: Host>(this: &mut V, cx: &mut Context<V>) {
                     // The probe kept whatever it built, so the count the
                     // estimate multiplies has moved.
                     if matches!(prompt.pass, Pass::Acoustic) {
-                        let source = crate::settings::acoustic_source();
+                        let source = rox_services::acoustic::acoustic_source();
                         prompt.missing = prompt
                             .library
                             .read(cx)
@@ -331,7 +332,7 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
         (_, true, _) => "Timing a few tracks...".to_string(),
         (Some(estimate), _, _) => format!(
             "{estimate} at {}.",
-            crate::pace::workers_phrase(prompt.workers)
+            rox_core::pace::workers_phrase(prompt.workers)
         ),
         (None, _, Some(error)) => format!("Couldn't time this library: {error}"),
         (None, _, None) => "Nothing has run on this machine yet, so there's no estimate. \

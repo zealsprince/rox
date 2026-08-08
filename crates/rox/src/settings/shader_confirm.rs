@@ -15,11 +15,11 @@ use gpui::{
 };
 use gpui_component::Root;
 
-use crate::assets::icons;
-use crate::design::{palette, tokens};
-use crate::panel;
-use crate::settings::ui::small_button;
-use crate::settings::{PostShaderConfig, Settings};
+use rox_core::settings::{PostShaderConfig, Settings};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel;
+use rox_panel_kit::ui::small_button;
 
 /// How long the shader stays on trial before it reverts on its own.
 const COUNTDOWN_SECS: u32 = 12;
@@ -62,7 +62,7 @@ pub fn open(
     let view = std::rc::Rc::new(std::cell::RefCell::new(None));
     let handle = {
         let view = view.clone();
-        crate::panel::open_fixed_window(cx, "rox - Screen Shader", bounds, move |_, cx| {
+        rox_panel_api::panel::open_fixed_window(cx, "rox - Screen Shader", bounds, move |_, cx| {
             let entity = cx.new(|cx| ShaderConfirm::new(prior, player, on_reverted, cx));
             *view.borrow_mut() = Some(entity.clone());
             entity
@@ -181,7 +181,9 @@ impl Render for ShaderConfirm {
                 .bg(palette::bg_elevated())
                 .text_color(palette::text_bright())
                 .text_sm()
-                .when_some(crate::settings::app_font(), |d, font| d.font_family(font))
+                .when_some(rox_core::settings::app_font(), |d, font| {
+                    d.font_family(font)
+                })
                 .child("Keep this screen shader?")
                 .child(
                     div()

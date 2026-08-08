@@ -1,6 +1,6 @@
 //! The console window: one OS window opened from the Application menu that
 //! shows the app's log live - the same lines the backend writes to stderr
-//! and the rolling file on disk (see [`crate::logging`]). Standalone rather
+//! and the rolling file on disk (see [`rox_core::logging`]). Standalone rather
 //! than a dock panel so it's one click from the menu whatever the layout,
 //! and reachable from a panel or a match window that hit an error without
 //! rearranging the workspace. It reads the in-memory ring; Reveal opens the
@@ -24,12 +24,12 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{Icon, Root, Sizable as _};
 use log::Level;
 
-use crate::assets::icons;
-use crate::design::{palette, tokens};
-use crate::logging;
-use crate::panel;
-use crate::settings::ui as settings_ui;
-use crate::settings::{LayoutSize, Settings};
+use rox_core::logging;
+use rox_core::settings::{LayoutSize, Settings};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel;
+use rox_panel_kit::ui as settings_ui;
 
 /// How often the open window checks the ring for new lines. Fast enough to
 /// read live, slow enough that an idle console never shows up in a profile.
@@ -65,7 +65,8 @@ fn open_now(cx: &mut App) {
     // Theme to the front workspace's player if one is up; the console is a
     // global window, so it borrows whatever song tint is showing rather than
     // owning one.
-    let player = crate::workspace::front_workspace(cx).map(|(_, state)| state.player.entity_id());
+    let player =
+        rox_panel_api::windows::front_workspace(cx).map(|(_, state)| state.player.entity_id());
     let min = settings_ui::MIN_SIZE;
     let (width, height) = Settings::load()
         .windows
@@ -74,7 +75,7 @@ fn open_now(cx: &mut App) {
         .map(|s| (s.width, s.height))
         .unwrap_or((720., 480.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let handle = crate::panel::open_child_window(
+    let handle = rox_panel_api::panel::open_child_window(
         cx,
         "rox - Console",
         bounds,
@@ -98,7 +99,7 @@ pub fn open_button() -> impl IntoElement {
 
 /// A failed-lookup state every online surface shares: the plain reason (no
 /// URL, no key - the provider sanitizes those, see
-/// [`crate::providers::net_reason`]) centered over a button into the console,
+/// [`rox_net::providers::net_reason`]) centered over a button into the console,
 /// where the same line and the rest of the session's log sit for a report.
 pub fn notice(message: impl Into<SharedString>) -> Div {
     div()

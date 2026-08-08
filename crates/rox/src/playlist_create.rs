@@ -9,9 +9,9 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
-use crate::backdrop::WindowBackdrop;
-use crate::design::{palette, tokens};
-use crate::panel::AppState;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::AppState;
+use rox_services::backdrop::WindowBackdrop;
 
 /// What the modal commits on Enter.
 enum Action {
@@ -40,7 +40,7 @@ pub fn open_rename(state: AppState, id: i64, current: String, cx: &mut App) {
 fn open_modal(state: AppState, action: Action, verb: &str, current: String, cx: &mut App) {
     let title = SharedString::from(format!("rox - {verb}"));
     let bounds = Bounds::centered(None, size(px(380.), px(116.)), cx);
-    crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
+    rox_panel_api::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
         cx.new(|cx| PlaylistNameWindow::new(state, action, current, window, cx))
     });
 }

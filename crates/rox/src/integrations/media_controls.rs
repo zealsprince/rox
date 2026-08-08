@@ -29,10 +29,10 @@ use souvlaki::{
     SeekDirection,
 };
 
-use crate::panel::AppState;
-use crate::player::NowPlaying;
-use crate::APP_ID;
+use rox_core::APP_ID;
 use rox_library::hash::fnv1a;
+use rox_panel_api::panel::AppState;
+use rox_services::player::NowPlaying;
 
 /// A media-key press mapped off souvlaki's own event vocabulary onto the
 /// transport verbs the player already speaks. Play and Pause stay distinct
@@ -451,7 +451,7 @@ fn window_hwnd(_window: &Window) -> Option<*mut std::ffi::c_void> {
 /// up, and every other file in the directory is pruned on write, so the
 /// scratch dir never holds more than the current cover.
 pub fn cache_now_playing_art(track: &Path, bytes: &[u8], mime: &str) -> Option<String> {
-    let dir = crate::settings::data_dir().join("nowplaying");
+    let dir = rox_core::settings::data_dir().join("nowplaying");
     std::fs::create_dir_all(&dir).ok()?;
     let name = format!(
         "{:016x}.{}",

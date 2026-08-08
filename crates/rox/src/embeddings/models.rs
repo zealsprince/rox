@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use gpui::{App, Global};
 
-pub use rox_acoustic::models::*;
+use rox_acoustic::models::{fetch, Model, Progress};
 
 /// The running download, or nothing. App-global so it outlives the settings
 /// window that started it.

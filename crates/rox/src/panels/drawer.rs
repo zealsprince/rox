@@ -29,14 +29,15 @@ use gpui_component::{Icon, Sizable as _};
 use rox_dock::{Panel, PanelEvent, PanelView, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use crate::assets::icons;
 use crate::composite::{self, Slot};
-use crate::design::{palette, tokens};
-use crate::panel::{self, choices, setting_row, AppState, PanelChrome, PanelSettings, ScrubState};
-use crate::panel_settings;
-use crate::selection::SelectionEvent;
-use crate::settings::ui as settings_ui;
 use crate::workspace::Workspace;
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel_settings;
+use rox_panel_kit::ui as settings_ui;
+use rox_panel_kit::{choices, setting_row, ScrubState};
+use rox_services::selection::SelectionEvent;
 
 /// The handle strip's thickness: enough for the grip and label to read,
 /// thin enough to stay a hint over the main.
@@ -311,7 +312,7 @@ impl DrawerPanel {
     /// state needs.
     fn on_selection(
         &mut self,
-        selection: &Entity<crate::selection::Selection>,
+        selection: &Entity<rox_services::selection::Selection>,
         source: EntityId,
         cx: &mut Context<Self>,
     ) {
@@ -936,7 +937,7 @@ impl Panel for DrawerPanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
-        crate::panel::chrome_min_size(
+        rox_panel_api::panel::chrome_min_size(
             &self.config.chrome,
             gpui::size(
                 rox_dock::resizable::PANEL_MIN_SIZE,
@@ -946,7 +947,7 @@ impl Panel for DrawerPanel {
     }
 
     fn max_size(&self, cx: &App) -> gpui::Size<gpui::Pixels> {
-        crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
+        rox_panel_api::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
     fn dump(&self, cx: &App) -> rox_dock::PanelState {
@@ -1177,7 +1178,7 @@ mod tests {
     /// wire name has to survive too.
     #[test]
     fn selection_query_source_round_trips() {
-        use crate::query::shared_query::QuerySource;
+        use rox_panel_api::query::shared_query::QuerySource;
         let value = serde_json::to_value(QuerySource::Selection).unwrap();
         assert_eq!(value, "selection");
         let back: QuerySource = serde_json::from_value(value).unwrap();

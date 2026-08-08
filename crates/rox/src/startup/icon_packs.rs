@@ -2,8 +2,8 @@
 //! Each pack is a subfolder under [`packs_dir`] holding flat SVG files named
 //! like the built-in icons (play.svg, heart.svg); a file present there wins
 //! over our own embedded icon and the bundled widget set, a missing one
-//! falls through. The active pack rides in [`crate::settings::Settings`] by
-//! name and the resolver in [`crate::assets`] reads its folder.
+//! falls through. The active pack rides in [`rox_core::settings::Settings`] by
+//! name and the resolver in [`rox_design::assets`] reads its folder.
 //!
 //! Switching packs takes effect on the next launch: gpui's sprite atlas keys
 //! on the icon's path and only reads its bytes on a cache miss, so icons
@@ -12,8 +12,8 @@
 
 use std::path::PathBuf;
 
-use crate::assets::{self, icons};
-use crate::settings::data_dir;
+use rox_core::settings::data_dir;
+use rox_design::assets::{self, icons};
 
 /// The folder holding every icon pack, one subfolder per pack, beside the
 /// library database. Not created here: the first pack makes it, so an unused

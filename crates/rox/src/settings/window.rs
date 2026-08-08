@@ -29,40 +29,43 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{Root, Sizable as _};
 
-use crate::assets::icons;
-use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::catalog::{Library, LibraryEvent};
-use crate::continuation;
-use crate::design::palette::{self, Palette, Role, ROLES};
-use crate::design::tokens;
 use crate::embeddings;
-use crate::integrations::discord::DiscordPresence;
 use crate::integrations::tray;
-use crate::lastfm::{self, import, AuthPhase, Scrobbler};
-use crate::panel::{self, AppState, ScrubState};
+use crate::lastfm::import;
 use crate::panel_settings;
 use crate::pass_prompt;
-use crate::player::Player;
-use crate::providers;
-use crate::query::search::{SearchBox, SearchEvent};
 use crate::replaygain_job;
-use crate::settings::layouts::Preset;
-use crate::settings::ui::{
-    self as settings_ui, dialog_button, grid_columns, icon_button, sidebar, small_button, PageBody,
-    Query, Rows, Section, SECTION_GAP,
-};
-use crate::settings::{
+use crate::workspace::Workspace;
+use rox_core::settings::layouts::Preset;
+use rox_core::settings::{
     self, data_dir, settings_path, Frame, GainModeSetting, LayoutSize, LyricsSave, NamedLayout,
     Providers, RatingStyle, ReplayGainSave, Settings, ShuffleMode, Theme, WorkspaceBundle,
     BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
 };
-use crate::signal_ui::{self, routes::RouteEditState};
-use crate::thumbs::Thumbs;
-use crate::workspace::Workspace;
+use rox_design::assets::icons;
+use rox_design::palette::{self, Palette, Role, ROLES};
+use rox_design::tokens;
 use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
 use rox_library::store::{GainCoverage, Stats};
+use rox_net::lastfm::{has_builtin_keys, AuthPhase};
+use rox_net::providers;
+use rox_panel_api::panel::{self, AppState};
+use rox_panel_api::query::search::{SearchBox, SearchEvent};
+use rox_panel_api::signal_ui::{self, routes::RouteEditState};
+use rox_panel_kit::ui::{
+    self as settings_ui, dialog_button, grid_columns, icon_button, sidebar, small_button, PageBody,
+    Query, Rows, Section, SECTION_GAP,
+};
+use rox_panel_kit::ScrubState;
+use rox_playback::continuation;
 use rox_playback::engine;
 use rox_playback::output;
+use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
+use rox_services::catalog::{Library, LibraryEvent};
+use rox_services::discord_presence::DiscordPresence;
+use rox_services::lastfm::Scrobbler;
+use rox_services::player::Player;
+use rox_services::thumbs::Thumbs;
 use rox_viz::signal::Route;
 
 /// The folder table's fixed columns: the rollup numbers and the remove
@@ -128,7 +131,7 @@ pub fn open(
         .map(|s| (s.width, s.height))
         .unwrap_or((720., 520.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let handle = crate::panel::open_child_window(
+    let handle = rox_panel_api::panel::open_child_window(
         cx,
         "rox - Settings",
         bounds,
@@ -456,16 +459,16 @@ struct SettingsWindow {
     acoustic_coverage: rox_library::embeddings::Coverage,
     /// The running acoustic pass, while one runs. Polled like `rg_job`, and
     /// app-global for the same reason: closing this window leaves it going.
-    acoustic_job: Option<Arc<embeddings::Progress>>,
+    acoustic_job: Option<Arc<rox_acoustic::Progress>>,
     /// Which extractor the pass runs and the similarity queries read, the
     /// Library page's switch. Mirrors the live pick; the coverage above is
     /// counted against whatever this names.
-    acoustic_source: embeddings::Source,
+    acoustic_source: rox_acoustic::Source,
     /// The model the ML Models page has marked as the one to use, which the
     /// Library page's extractor switch turns on. Separate from the field
     /// above because that one is what the library is running right now: the
     /// two differ whenever the switch is sitting on the built-in extractor.
-    acoustic_ml_source: embeddings::Source,
+    acoustic_ml_source: rox_acoustic::Source,
     /// Which half of a model category is showing: the ones rox recommends
     /// and can fetch, or the file the user supplies. A view state rather
     /// than a setting, so flipping it to look at the other half doesn't
@@ -484,7 +487,7 @@ struct SettingsWindow {
     acoustic_local_checking: bool,
     /// The running model download, while one runs. Polled on the same timer
     /// as the pass, and app-global for the same reason.
-    model_job: Option<Arc<embeddings::models::Progress>>,
+    model_job: Option<Arc<rox_acoustic::models::Progress>>,
     /// What each catalog model weighs on disk, and whether it's installed at
     /// all. Measured entering the page and after a download or a delete
     /// rather than per frame: a stat per model per paint is a syscall per
@@ -550,7 +553,7 @@ struct SettingsWindow {
     _player_changed: Subscription,
     /// The mode rows follow the transport buttons: shuffle, continuation and
     /// the crossfade length are all things this window draws and the strip
-    /// can change underneath it. Gated on [`crate::player::PlayerView`], so
+    /// can change underneath it. Gated on [`rox_services::player::PlayerView`], so
     /// it wakes on the press and not on the position clock.
     _player_view: Subscription,
 }
@@ -566,8 +569,8 @@ impl SettingsWindow {
     ) -> Self {
         let player = state.player.entity_id();
         let playback = state.player;
-        let _player_changed = crate::player::observe_output(&playback, cx);
-        let _player_view = crate::player::observe_view(&playback, cx);
+        let _player_changed = rox_services::player::observe_output(&playback, cx);
+        let _player_view = rox_services::player::observe_view(&playback, cx);
         // Off the player rather than the file: it holds the live copy, and a
         // toggle flipped here has to agree with the session it rebuilds.
         let output_exclusive = playback.read(cx).exclusive_output();
@@ -587,8 +590,8 @@ impl SettingsWindow {
         if rg_job.is_some() {
             Self::poll_measuring(cx);
         }
-        let acoustic_source = settings::acoustic_source();
-        let acoustic_ml_source = settings::acoustic_ml_source();
+        let acoustic_source = rox_services::acoustic::acoustic_source();
+        let acoustic_ml_source = rox_services::acoustic::acoustic_ml_source();
         let acoustic_coverage = library.read(cx).acoustic_coverage(acoustic_source.id());
         let acoustic_job = embeddings::progress(cx);
         let model_job = embeddings::models::progress(cx);
@@ -2227,10 +2230,10 @@ impl SettingsWindow {
     /// average, so it prices these files on this disk rather than an
     /// imagined library.
     fn rg_estimate_suffix(&self, missing: u64) -> String {
-        match crate::pace::estimate(self.rg_pace, missing, self.rg_workers) {
+        match rox_core::pace::estimate(self.rg_pace, missing, self.rg_workers) {
             Some(estimate) => format!(
                 " ({estimate} at {})",
-                crate::pace::workers_phrase(self.rg_workers)
+                rox_core::pace::workers_phrase(self.rg_workers)
             ),
             None => String::new(),
         }
@@ -2243,7 +2246,7 @@ impl SettingsWindow {
         }
         let mut line = format!("Measuring {} of {total}", job.done().min(total));
         if let Some(eta) = job.eta_secs() {
-            line.push_str(&format!(", {} left", crate::pace::human(eta)));
+            line.push_str(&format!(", {} left", rox_core::pace::human(eta)));
         }
         let current = job.current();
         if let Some(name) = Path::new(&current).file_name() {
@@ -2882,7 +2885,7 @@ impl SettingsWindow {
         let connected = !config.session_key.is_empty();
         // A build with its own api identity connects in one click; only
         // one without asks for the user's pair.
-        let builtin = lastfm::has_builtin_keys();
+        let builtin = has_builtin_keys();
         let keys_ready = builtin || (!config.api_key.is_empty() && !config.api_secret.is_empty());
 
         // The connect strip: where the connection stands, and the one
@@ -3393,7 +3396,7 @@ impl SettingsWindow {
         // nest, so nothing counts twice. Matched to the catalog's own limit,
         // which is None where the platform prices watching flat.
         let dirs = self.root_stats.iter().map(|(_, s)| s.dirs).sum::<u64>();
-        let over_limit = crate::catalog::watch_limit_dirs().filter(|limit| dirs > *limit);
+        let over_limit = rox_services::catalog::watch_limit_dirs().filter(|limit| dirs > *limit);
         let lead_in = div().text_xs().text_color(palette::text_muted()).child(
             "Folders scanned into the library; removing one drops its \
              tracks from the catalog and leaves the files alone",
@@ -3457,7 +3460,7 @@ impl SettingsWindow {
             icons::PLUS,
             scanning,
             cx.listener(|this, _, _, cx| {
-                crate::catalog::browse(&this.library, cx);
+                rox_services::catalog::browse(&this.library, cx);
             }),
         )));
         // The library's badge and the file under the scan cursor, or the
@@ -3498,7 +3501,7 @@ impl SettingsWindow {
                 icons::FOLDER_PLUS,
                 scanning,
                 cx.listener(|this, _, _, cx| {
-                    crate::catalog::browse(&this.library, cx);
+                    rox_services::catalog::browse(&this.library, cx);
                 }),
             ))
             .child(small_button(
@@ -3617,7 +3620,7 @@ impl SettingsWindow {
             music: self.library.read(cx).stats(),
             catalog: db_size(&data.join("library.db")),
             thumbs: db_size(&data.join("thumbs.db")),
-            waveforms: dir_size(&crate::peaks::cache_dir()),
+            waveforms: dir_size(&rox_services::peaks::cache_dir()),
             lyrics: dir_size(&settings::lyrics_dir()),
             logs: dir_size(&data.join("logs")),
         });
@@ -3644,7 +3647,7 @@ impl SettingsWindow {
     fn clear_waveforms(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             cx.background_executor()
-                .spawn(async move { crate::peaks::clear() })
+                .spawn(async move { rox_services::peaks::clear() })
                 .await;
             this.update(cx, |this, cx| this.refresh_storage(cx)).ok();
         })
@@ -3732,7 +3735,7 @@ impl SettingsWindow {
                             icons::FILE_TEXT,
                             false,
                             cx.listener(|_, _, _, cx| {
-                                cx.reveal_path(&crate::logging::log_path());
+                                cx.reveal_path(&rox_core::logging::log_path());
                             }),
                         )),
                 )
@@ -3870,7 +3873,7 @@ impl SettingsWindow {
         // code rather than a model, and it belongs on the Library page as
         // the other side of the extractor switch, not on a shelf of
         // downloads.
-        for model in embeddings::models::CATALOG
+        for model in rox_acoustic::models::CATALOG
             .iter()
             .filter(|model| model.weights.is_some())
         {
@@ -3907,7 +3910,7 @@ impl SettingsWindow {
                 "{}. {} values per track, stored under {}, so its vectors never mix with \
                  the catalog's",
                 local.path.display(),
-                embeddings::panns::DIM,
+                rox_acoustic::panns::DIM,
                 local.id
             ),
             None => "Point rox at a PANNs CNN10 checkpoint of your own, as safetensors. It's \
@@ -4014,9 +4017,9 @@ impl SettingsWindow {
                         // again, instead of one that vouches for bytes nobody
                         // ever hashed.
                         let stamp = settings::file_stamp(&path).unwrap_or_default();
-                        let digest = embeddings::models::hash_file(&path)?;
-                        embeddings::panns::Cnn10::load_from(&path)?;
-                        Ok::<_, String>((embeddings::local_id(&digest), stamp))
+                        let digest = rox_acoustic::models::hash_file(&path)?;
+                        rox_acoustic::panns::Cnn10::load_from(&path)?;
+                        Ok::<_, String>((rox_acoustic::local_id(&digest), stamp))
                     }
                 })
                 .await;
@@ -4051,7 +4054,7 @@ impl SettingsWindow {
         // the settings file.
         Settings::update(move |s| s.acoustic_local_model = Some(stored.clone()));
         self.set_acoustic_model(
-            embeddings::Source::Local(Arc::new(embeddings::Local {
+            rox_acoustic::Source::Local(Arc::new(rox_acoustic::Local {
                 path: local.path,
                 id: local.id,
             })),
@@ -4074,7 +4077,7 @@ impl SettingsWindow {
             return;
         }
         self.set_acoustic_model(
-            embeddings::Source::Local(Arc::new(embeddings::Local {
+            rox_acoustic::Source::Local(Arc::new(rox_acoustic::Local {
                 path: local.path,
                 id: local.id,
             })),
@@ -4093,16 +4096,16 @@ impl SettingsWindow {
         // file that just went away moves off it rather than failing at the
         // next pass.
         if was.is_some_and(|local| self.acoustic_source.id() == local.id) {
-            self.use_extractor(embeddings::MODEL, cx);
+            self.use_extractor(rox_acoustic::MODEL, cx);
         }
-        self.acoustic_ml_source = settings::acoustic_ml_source();
+        self.acoustic_ml_source = rox_services::acoustic::acoustic_ml_source();
         cx.notify();
     }
 
     /// What each catalog model weighs on disk right now. Walked entering the
     /// page and after anything that changes it, never in a paint.
     fn measure_models() -> Vec<(&'static str, u64)> {
-        embeddings::models::CATALOG
+        rox_acoustic::models::CATALOG
             .iter()
             .map(|model| (model.id, model.size_on_disk()))
             .collect()
@@ -4123,7 +4126,7 @@ impl SettingsWindow {
     /// row that caused it.
     fn model_controls(
         &self,
-        model: &'static embeddings::models::Model,
+        model: &'static rox_acoustic::models::Model,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // Deleting the running model would leave the pass with nothing to
@@ -4190,7 +4193,7 @@ impl SettingsWindow {
                 icons::CHECK,
                 !installed || busy,
                 cx.listener(move |this, _, _, cx| {
-                    this.set_acoustic_model(embeddings::Source::Catalog(model), cx)
+                    this.set_acoustic_model(rox_acoustic::Source::Catalog(model), cx)
                 }),
             )
             .into_any_element()
@@ -4229,7 +4232,7 @@ impl SettingsWindow {
     /// app. When the library is already running a model rather than the
     /// built-in extractor, the switch follows the new pick straight away;
     /// when it's on Built-in this only changes what Model would mean.
-    fn set_acoustic_model(&mut self, source: embeddings::Source, cx: &mut Context<Self>) {
+    fn set_acoustic_model(&mut self, source: rox_acoustic::Source, cx: &mut Context<Self>) {
         let id = source.id().to_string();
         self.acoustic_ml_source = source;
         let stored = id.clone();
@@ -4246,7 +4249,7 @@ impl SettingsWindow {
         let id = if on {
             self.acoustic_ml_source.id().to_string()
         } else {
-            embeddings::MODEL.to_string()
+            rox_acoustic::MODEL.to_string()
         };
         self.use_extractor(&id, cx);
         cx.notify();
@@ -4262,8 +4265,8 @@ impl SettingsWindow {
     fn use_extractor(&mut self, id: &str, cx: &mut Context<Self>) {
         let owned = id.to_string();
         Settings::update(move |s| s.acoustic_model = owned.clone());
-        settings::set_acoustic_model(id, cx);
-        self.acoustic_source = settings::acoustic_source();
+        rox_services::acoustic::set_acoustic_model(id, cx);
+        self.acoustic_source = rox_services::acoustic::acoustic_source();
         self.acoustic_coverage = self
             .library
             .read(cx)
@@ -4276,7 +4279,7 @@ impl SettingsWindow {
 
     fn download_model(
         &mut self,
-        model: &'static embeddings::models::Model,
+        model: &'static rox_acoustic::models::Model,
         cx: &mut Context<Self>,
     ) {
         embeddings::models::start(model, cx);
@@ -4288,7 +4291,11 @@ impl SettingsWindow {
     /// Drop a model's weights. The vectors it already wrote stay: they're
     /// still valid, and making a delete cost a full re-analysis would turn a
     /// reclaim-some-disk into an afternoon.
-    fn delete_model(&mut self, model: &'static embeddings::models::Model, cx: &mut Context<Self>) {
+    fn delete_model(
+        &mut self,
+        model: &'static rox_acoustic::models::Model,
+        cx: &mut Context<Self>,
+    ) {
         if let Err(e) = model.delete() {
             log::error!("deleting {}: {e}", model.id);
         }
@@ -4374,7 +4381,7 @@ impl SettingsWindow {
     /// the file behind a local pick. Ids from a newer build, and local ones
     /// that have since been replaced, land on the fallback.
     fn label_for(&self, id: &str, fallback: &str) -> String {
-        if let Some(model) = embeddings::models::find(id) {
+        if let Some(model) = rox_acoustic::models::find(id) {
             return model.label.to_string();
         }
         self.acoustic_local
@@ -4399,7 +4406,7 @@ impl SettingsWindow {
             // The pass's own measured rate, which prices whatever worker
             // count it's actually running with.
             if let Some(eta) = job.eta_secs() {
-                line.push_str(&format!(", {} left", crate::pace::human(eta)));
+                line.push_str(&format!(", {} left", rox_core::pace::human(eta)));
             }
             let current = job.current();
             if let Some(name) = Path::new(&current).file_name() {
@@ -4436,7 +4443,7 @@ impl SettingsWindow {
         if let Some(estimate) = self.acoustic_estimate(coverage.missing()) {
             line.push_str(&format!(
                 " ({estimate} at {})",
-                crate::pace::workers_phrase(self.acoustic_workers)
+                rox_core::pace::workers_phrase(self.acoustic_workers)
             ));
         }
         line
@@ -4447,7 +4454,7 @@ impl SettingsWindow {
     /// None until one has.
     fn acoustic_estimate(&self, missing: usize) -> Option<String> {
         let pace = *self.acoustic_pace.get(self.acoustic_source.id())?;
-        crate::pace::estimate(pace, missing as u64, self.acoustic_workers)
+        rox_core::pace::estimate(pace, missing as u64, self.acoustic_workers)
     }
 
     /// Start the pass, or stop the one running. Inert with nothing missing,
@@ -5095,7 +5102,7 @@ impl Render for SettingsWindow {
 #[cfg(test)]
 mod tests {
     use super::{Page, PAGES};
-    use crate::assets::icons;
+    use rox_design::assets::icons;
 
     /// The label each page wears in the sidebar. Exhaustive on purpose:
     /// a new variant doesn't compile until it's named here, and the

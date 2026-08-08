@@ -187,7 +187,7 @@ impl SettingsWindow {
     /// preset rides the header.
     fn presets_section(&self, q: &Query, live: bool, cx: &mut Context<Self>) -> Section {
         let settings = Settings::load();
-        let presets = crate::settings::layouts::all(&settings);
+        let presets = rox_core::settings::layouts::all(&settings);
 
         // Save-current-as and import ride the header, so a preset is one
         // arrangement plus a name away, or one shared file away.
@@ -810,7 +810,7 @@ impl SettingsWindow {
     /// included, so a single layout can leave as a shareable artifact. Works
     /// for shipped presets too, which are dumps like any other.
     fn export_preset(&mut self, name: &str, cx: &mut Context<Self>) {
-        let Some(preset) = crate::settings::layouts::resolve(&Settings::load(), name) else {
+        let Some(preset) = rox_core::settings::layouts::resolve(&Settings::load(), name) else {
             return;
         };
         // Denoise on the way out too, not just at save: a preset saved before
@@ -862,7 +862,7 @@ impl SettingsWindow {
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| "imported".to_string());
             let name = crate::workspaces::unique_name(&stem, |candidate| {
-                crate::settings::layouts::all(&Settings::load())
+                rox_core::settings::layouts::all(&Settings::load())
                     .iter()
                     .any(|p| p.name == candidate)
             });

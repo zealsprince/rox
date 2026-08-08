@@ -10,50 +10,50 @@ use std::sync::Arc;
 use gpui::{App, AppContext as _, WeakEntity, Window};
 use rox_dock::PanelView;
 
-use crate::assets::icons;
-use crate::panel::AppState;
-use crate::panels::art::{ArtConfig, ArtPanel};
-use crate::panels::artist_grid::{ArtistGridConfig, ArtistGridPanel};
-use crate::panels::biography::{BiographyConfig, BiographyPanel};
-use crate::panels::cover::{CoverArtPanel, CoverConfig};
-use crate::panels::drag_anchor::{DragAnchorConfig, DragAnchorPanel};
 use crate::panels::drawer::{DrawerConfig, DrawerPanel};
-use crate::panels::eq_widget::{EqWidgetConfig, EqWidgetPanel};
-use crate::panels::favourite::{FavouriteConfig, FavouritePanel};
-use crate::panels::filter::{FilterConfig, FilterPanel};
-use crate::panels::folder_tree::{FolderTreeConfig, FolderTreePanel};
-use crate::panels::genre_grid::{GenreGridConfig, GenreGridPanel};
-use crate::panels::grid::{GridConfig, GridPanel};
 use crate::panels::group::{GroupConfig, GroupPanel};
-use crate::panels::history::{HistoryConfig, HistoryPanel};
-use crate::panels::library::{LibraryConfig, LibraryPanel};
-use crate::panels::lyrics::{LyricsConfig, LyricsPanel};
 use crate::panels::menu::{MenuConfig, MenuPanel};
-use crate::panels::metadata::{MetadataConfig, MetadataPanel};
 use crate::panels::mini::{MiniToggleConfig, MiniTogglePanel};
-use crate::panels::output::{OutputConfig, OutputPanel};
 use crate::panels::overlay::{OverlayConfig, OverlayPanel};
-use crate::panels::particles::{ParticlesConfig, ParticlesPanel};
-use crate::panels::playlists::{PlaylistsConfig, PlaylistsPanel};
-use crate::panels::queue::{QueueConfig, QueuePanel};
 use crate::panels::queue_widget::{QueueWidgetConfig, QueueWidgetPanel};
-use crate::panels::rating::{RatingConfig, RatingPanel};
-use crate::panels::search::{SearchConfig, SearchPanel};
-use crate::panels::shader::{ShaderConfig, ShaderPanel};
 use crate::panels::slide::{SlideConfig, SlidePanel};
-use crate::panels::spacer::{SpacerConfig, SpacerPanel};
-use crate::panels::spectrum::{SpectrumConfig, SpectrumPanel};
-use crate::panels::stats_widget::{StatsWidgetConfig, StatsWidgetPanel};
-use crate::panels::status::{StatusConfig, StatusPanel};
-use crate::panels::theme_toggle::{ThemeToggleConfig, ThemeTogglePanel};
-use crate::panels::transport::{
+use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
+use crate::workspace::Workspace;
+use rox_design::assets::icons;
+use rox_panel_api::panel::AppState;
+use rox_panels::art::{ArtConfig, ArtPanel};
+use rox_panels::artist_grid::{ArtistGridConfig, ArtistGridPanel};
+use rox_panels::biography::{BiographyConfig, BiographyPanel};
+use rox_panels::cover::{CoverArtPanel, CoverConfig};
+use rox_panels::drag_anchor::{DragAnchorConfig, DragAnchorPanel};
+use rox_panels::eq_widget::{EqWidgetConfig, EqWidgetPanel};
+use rox_panels::favourite::{FavouriteConfig, FavouritePanel};
+use rox_panels::filter::{FilterConfig, FilterPanel};
+use rox_panels::folder_tree::{FolderTreeConfig, FolderTreePanel};
+use rox_panels::genre_grid::{GenreGridConfig, GenreGridPanel};
+use rox_panels::grid::{GridConfig, GridPanel};
+use rox_panels::history::{HistoryConfig, HistoryPanel};
+use rox_panels::library::{LibraryConfig, LibraryPanel};
+use rox_panels::lyrics::{LyricsConfig, LyricsPanel};
+use rox_panels::metadata::{MetadataConfig, MetadataPanel};
+use rox_panels::output::{OutputConfig, OutputPanel};
+use rox_panels::particles::{ParticlesConfig, ParticlesPanel};
+use rox_panels::playlists::{PlaylistsConfig, PlaylistsPanel};
+use rox_panels::queue::{QueueConfig, QueuePanel};
+use rox_panels::rating::{RatingConfig, RatingPanel};
+use rox_panels::search::{SearchConfig, SearchPanel};
+use rox_panels::shader::{ShaderConfig, ShaderPanel};
+use rox_panels::spacer::{SpacerConfig, SpacerPanel};
+use rox_panels::spectrum::{SpectrumConfig, SpectrumPanel};
+use rox_panels::stats_widget::{StatsWidgetConfig, StatsWidgetPanel};
+use rox_panels::status::{StatusConfig, StatusPanel};
+use rox_panels::theme_toggle::{ThemeToggleConfig, ThemeTogglePanel};
+use rox_panels::transport::{
     SeekConfig, SeekStripPanel, TrackInfoConfig, TrackInfoPanel, TransportConfig, TransportPanel,
     VolumeConfig, VolumePanel,
 };
-use crate::panels::vu::{VuConfig, VuPanel};
-use crate::panels::waveform::{WaveformConfig, WaveformPanel};
-use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
-use crate::workspace::Workspace;
+use rox_panels::vu::{VuConfig, VuPanel};
+use rox_panels::waveform::{WaveformConfig, WaveformPanel};
 
 /// Where a fresh panel of this kind joins the layout: the center tab
 /// group, the transport row along the bottom, or a thin strip across the
@@ -551,9 +551,9 @@ pub(crate) fn is_experimental(section: &PanelSection) -> bool {
 /// from the menus rather than found by opening panels until a bindable row
 /// turns up.
 ///
-/// A panel joins the list by implementing [`crate::signal_ui::RouteHost`]
+/// A panel joins the list by implementing [`rox_panel_api::signal_ui::RouteHost`]
 /// and wrapping the rows it wants bindable in
-/// [`crate::signal_ui::bindable_row`].
+/// [`rox_panel_api::signal_ui::bindable_row`].
 const SIGNAL_PANELS: &[&str] = &["Particles", "Shader"];
 
 pub(crate) fn supports_signals(def: &PanelDef) -> bool {
@@ -580,7 +580,7 @@ static CATALOG: &[&PanelSection] = &[
 /// way, so a layout holding an experimental panel keeps it after the flag
 /// goes back off.
 pub(crate) fn sections() -> impl Iterator<Item = &'static &'static PanelSection> {
-    let experimental = crate::settings::experimental();
+    let experimental = rox_core::settings::experimental();
     CATALOG
         .iter()
         .filter(move |section| experimental || !is_experimental(section))

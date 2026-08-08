@@ -22,15 +22,15 @@ use gpui_component::{Root, Sizable};
 
 use rox_library::lyrics::{self, Source};
 
-use crate::assets::icons;
-use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::design::{palette, tokens};
 use crate::matching::{open_or_focus, WindowRegistry};
-use crate::panel::AppState;
-use crate::panels::lyrics::StampLine;
-use crate::player::fmt_time;
-use crate::settings::lyrics_dir;
-use crate::settings::ui as settings_ui;
+use rox_core::settings::lyrics_dir;
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::AppState;
+use rox_panel_kit::ui as settings_ui;
+use rox_panels::lyrics::StampLine;
+use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
+use rox_services::player::fmt_time;
 
 /// The default window size: tall enough for a verse or two at a glance,
 /// narrow since the sheet reads one line to a row.
@@ -58,7 +58,7 @@ pub fn open(state: AppState, path: PathBuf, cx: &mut App) {
         path.clone(),
         move |cx| {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-            crate::panel::open_child_window(
+            rox_panel_api::panel::open_child_window(
                 cx,
                 "rox - Edit Lyrics",
                 bounds,
@@ -98,7 +98,7 @@ impl LyricsEdit {
         window.focus(&input.read(cx).focus_handle(cx));
         // The header names the track off its library tags, so the window
         // says what it is even before the file read lands.
-        let query = crate::lyrics::matcher::query_for(&state.library, &path, cx);
+        let query = rox_services::lyrics::query_for(&state.library, &path, cx);
         let line = if query.artist.is_empty() {
             query.title.clone()
         } else {

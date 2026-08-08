@@ -19,15 +19,15 @@ use rox_core::fmt::fmt_ms;
 use rox_core::QUEUE_CAP;
 use rox_library::projection::{Projection, QUERY_FIELDS};
 
-use crate::assets::icons;
-use crate::catalog::LibraryEvent;
-use crate::design::{palette, tokens};
-use crate::panel::{self, AppState};
-use crate::query::search::{SearchBox, SearchEvent};
-use crate::settings::{QuickPlayConfig, Settings};
-use crate::tags::suggest;
-use crate::thumbs::Thumb;
-use crate::track_ui::track_columns;
+use rox_core::settings::{QuickPlayConfig, Settings};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{self, AppState};
+use rox_panel_api::query::search::{SearchBox, SearchEvent};
+use rox_panel_api::suggest;
+use rox_panel_api::track_ui::track_columns;
+use rox_services::catalog::LibraryEvent;
+use rox_services::thumbs::Thumb;
 
 /// One result row's height; the list is a uniform_list, so every row must
 /// agree on it. Comfortable rows run taller.

@@ -31,16 +31,16 @@ use rox_core::QUEUE_CAP;
 use rox_library::listens::{NamePlays, Rollup, TrackPlays};
 use rox_panel_kit::motif;
 
-use crate::assets::icons;
-use crate::backdrop::WindowBackdrop;
-use crate::catalog::LibraryEvent;
-use crate::charts;
-use crate::design::{palette, tokens};
-use crate::history::HistoryEvent;
-use crate::panel::{self, AppState};
-use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
-use crate::settings::{Settings, StatsWindowState};
-use crate::thumbs::Thumb;
+use rox_core::settings::{Settings, StatsWindowState};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::charts;
+use rox_panel_api::panel::{self, AppState};
+use rox_panel_kit::ui::{self as settings_ui, section, SECTION_GAP};
+use rox_services::backdrop::WindowBackdrop;
+use rox_services::catalog::LibraryEvent;
+use rox_services::history::HistoryEvent;
+use rox_services::thumbs::Thumb;
 
 /// How many rows the artist and album rollups show, how many cards the
 /// genres get, and how far back the recents run. Ten is the natural unit
@@ -182,7 +182,7 @@ pub fn open(state: AppState, cx: &mut App) {
         .map(|s| (s.width, s.height))
         .unwrap_or((640., 720.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let handle = crate::panel::open_child_window(
+    let handle = rox_panel_api::panel::open_child_window(
         cx,
         "rox - Stats",
         bounds,

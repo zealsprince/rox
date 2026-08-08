@@ -13,11 +13,12 @@ use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use crate::assets::icons;
-use crate::design::{palette, tokens};
-use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
-use crate::panel_settings;
 use crate::workspace::Workspace;
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel_settings;
+use rox_panel_kit::{align_row, justify, Align};
 
 /// The mini toggle panel's per-view config: what a saved layout restores,
 /// and what the settings window edits.
@@ -219,14 +220,14 @@ impl Panel for MiniTogglePanel {
 
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
         // The button plus the strip's padding, raised by any user floor.
-        crate::panel::chrome_min_size(
+        rox_panel_api::panel::chrome_min_size(
             &self.config.chrome,
             gpui::size(px(40.), rox_dock::resizable::PANEL_MIN_SIZE),
         )
     }
 
     fn max_size(&self, cx: &App) -> gpui::Size<Pixels> {
-        crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
+        rox_panel_api::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
     /// The layout dump carries the panel's config; the builder registered

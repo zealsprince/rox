@@ -9,7 +9,7 @@ use std::path::Path;
 
 use gpui::{App, Global, WeakEntity};
 
-use crate::panels::lyrics::LyricsPanel;
+use rox_panels::lyrics::LyricsPanel;
 
 /// Every live lyrics panel. Lyrics do not ride the library projection, so
 /// a sheet written by the editor or the matcher has no other way to reach

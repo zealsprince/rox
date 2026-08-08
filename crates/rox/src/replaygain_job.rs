@@ -23,8 +23,8 @@ use rox_library::rusqlite::Connection;
 use rox_library::{replaygain, store, writer};
 use rox_playback::analysis::{self, AlbumAnalysis};
 
-use crate::catalog::Library;
-use crate::settings::{ReplayGainSave, Settings};
+use rox_core::settings::{ReplayGainSave, Settings};
+use rox_services::catalog::Library;
 
 /// Files a pass must get through before its rate is worth remembering as
 /// this machine's pace, the acoustic pass's `PACE_FLOOR`'s twin.
@@ -48,7 +48,7 @@ pub struct Progress {
     /// The pass's clock, for the "about 2 hours left" half of the readout.
     /// Started once the work list is built, so the album walk doesn't bill
     /// the first file.
-    pace: crate::pace::Pace,
+    pace: rox_core::pace::Pace,
 }
 
 impl Progress {
@@ -197,7 +197,7 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
 
 /// Time a few files to learn what this machine costs per file, so a first
 /// pass can be priced before anyone commits an afternoon to it. Returns
-/// worker-seconds per file, the unit [`crate::pace::estimate`] divides.
+/// worker-seconds per file, the unit [`rox_core::pace::estimate`] divides.
 ///
 /// Nothing is written. Measurement is only sound over a whole album, and a
 /// probe deliberately samples across the library rather than working through
@@ -216,7 +216,7 @@ pub fn measure_pace(db_path: &Path) -> Result<f32, String> {
     // Flattened back to files: albums vary from a single to a box set, so
     // sampling albums would let one long record stand for the library.
     let paths: Vec<&String> = albums.iter().flat_map(|a| &a.paths).collect();
-    let picked = crate::pace::sample_indices(paths.len(), crate::pace::PROBE_TRACKS);
+    let picked = rox_core::pace::sample_indices(paths.len(), rox_core::pace::PROBE_TRACKS);
     if picked.is_empty() {
         return Err("there's nothing left to measure".into());
     }

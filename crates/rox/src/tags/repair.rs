@@ -34,11 +34,11 @@ use gpui_component::{Root, Sizable, Size};
 
 use rox_library::writer::{self, Edit};
 
-use crate::assets::icons;
-use crate::backdrop::{NowPlayingArt, WindowBackdrop};
-use crate::catalog::Library;
-use crate::design::{palette, tokens};
-use crate::settings::ui::{small_button, MIN_SIZE};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_kit::ui::{small_button, MIN_SIZE};
+use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
+use rox_services::catalog::Library;
 
 /// How many files each detection hop reads before the count moves. Big
 /// enough that the UI thread is not woken per file on a large library,
@@ -115,7 +115,7 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut A
         }
     }
     let bounds = Bounds::centered(None, size(px(720.), px(600.)), cx);
-    let handle = crate::panel::open_child_window(
+    let handle = rox_panel_api::panel::open_child_window(
         cx,
         "rox - Tag Repair",
         bounds,

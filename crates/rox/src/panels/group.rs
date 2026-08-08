@@ -13,12 +13,12 @@ use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
-use crate::assets::icons;
 use crate::composite::{self, DividerState, Slot};
-use crate::design::palette;
-use crate::panel::{self, AppState, PanelChrome, PanelSettings};
-use crate::panel_settings;
 use crate::workspace::Workspace;
+use rox_design::assets::icons;
+use rox_design::palette;
+use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
+use rox_panel_api::panel_settings;
 
 /// The divider's hit strip, wide enough to grab without reading as a gap.
 const DIVIDER_W: f32 = 5.0;
@@ -232,7 +232,7 @@ impl GroupPanel {
             .chrome
             .theme
             .border
-            .unwrap_or_else(|| crate::settings::app_frame().border)
+            .unwrap_or_else(|| rox_core::settings::app_frame().border)
             .clamp(1.0, DIVIDER_W);
         let divider_line = div()
             .flex_none()
@@ -366,7 +366,7 @@ impl Panel for GroupPanel {
     }
 
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
-        crate::panel::chrome_min_size(
+        rox_panel_api::panel::chrome_min_size(
             &self.config.chrome,
             gpui::size(
                 rox_dock::resizable::PANEL_MIN_SIZE,
@@ -376,7 +376,7 @@ impl Panel for GroupPanel {
     }
 
     fn max_size(&self, cx: &App) -> gpui::Size<gpui::Pixels> {
-        crate::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
+        rox_panel_api::panel::chrome_max_size(&self.config.chrome, self.min_size(cx))
     }
 
     fn dump(&self, cx: &App) -> rox_dock::PanelState {

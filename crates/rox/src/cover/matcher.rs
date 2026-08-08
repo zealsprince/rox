@@ -19,13 +19,13 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Root, Sizable as _};
 
-use crate::assets::icons;
-use crate::backdrop::{NowPlayingArt, WindowBackdrop};
 use crate::cover::editor::{decode, sniff_mime, CoverEditor};
-use crate::design::{palette, tokens};
 use crate::matching::{note, open_or_focus, Phase, WindowRegistry};
-use crate::providers::{self, ArtCandidate, TrackQuery};
-use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_net::providers::{self, ArtCandidate, TrackQuery};
+use rox_panel_kit::ui::{self as settings_ui, section, SECTION_GAP};
+use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 
 /// The default window size: room for a few rows of preview tiles beside
 /// the query.
@@ -67,7 +67,7 @@ pub fn open(
         key,
         move |cx| {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
-            crate::panel::open_child_window(
+            rox_panel_api::panel::open_child_window(
                 cx,
                 "rox - Find Cover Art",
                 bounds,

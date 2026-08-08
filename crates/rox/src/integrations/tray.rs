@@ -21,8 +21,8 @@
 use gpui::{App, Entity, Global, Subscription};
 
 use crate::integrations::media_controls::MediaSession;
-use crate::panel::AppState;
 use crate::workspace::Adopted;
+use rox_panel_api::panel::AppState;
 
 /// The tray's app-side state. The hold exists on every platform; the icon
 /// handle and its push gate exist where there is a real icon to talk to,
@@ -175,7 +175,7 @@ struct RoxTray {
 #[cfg(target_os = "linux")]
 impl ksni::Tray for RoxTray {
     fn id(&self) -> String {
-        crate::APP_ID.into()
+        rox_core::APP_ID.into()
     }
 
     fn title(&self) -> String {
@@ -242,7 +242,7 @@ impl ksni::Tray for RoxTray {
 #[cfg(target_os = "linux")]
 pub(crate) fn sync(cx: &mut App) {
     use ksni::blocking::TrayMethods as _;
-    let on = crate::settings::quit_to_tray();
+    let on = rox_core::settings::quit_to_tray();
     let has = cx.default_global::<TrayService>().handle.is_some();
     if on && !has {
         let (tx, events) = async_channel::unbounded();
@@ -379,7 +379,7 @@ fn windows_tray_thread(
     }
 
     let built = TrayIconBuilder::new()
-        .with_id(crate::APP_ID)
+        .with_id(rox_core::APP_ID)
         .with_title("rox")
         .with_tooltip("rox")
         .with_icon(icon)
@@ -459,7 +459,7 @@ fn windows_tray_thread(
 /// the close path quitting as if the setting were off.
 #[cfg(target_os = "windows")]
 pub(crate) fn sync(cx: &mut App) {
-    let on = crate::settings::quit_to_tray();
+    let on = rox_core::settings::quit_to_tray();
     let has = cx.default_global::<TrayService>().icon.is_some();
     if on && !has {
         let (tx, events) = async_channel::unbounded();
@@ -505,7 +505,7 @@ fn shutdown(cx: &mut App) {
 fn apply(command: TrayCommand, cx: &mut App) -> bool {
     match command {
         TrayCommand::Open => {
-            if let Some((window, _)) = crate::workspace::front_workspace(cx) {
+            if let Some((window, _)) = rox_panel_api::windows::front_workspace(cx) {
                 window
                     .update(cx, |_, window, _| window.activate_window())
                     .ok();
@@ -516,7 +516,7 @@ fn apply(command: TrayCommand, cx: &mut App) -> bool {
         }
         TrayCommand::Toggle => {
             // A window's state when one is open, the hold's when resident.
-            let state = crate::workspace::front_workspace(cx)
+            let state = rox_panel_api::windows::front_workspace(cx)
                 .map(|(_, state)| state)
                 .or_else(|| {
                     cx.default_global::<TrayService>()

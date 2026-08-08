@@ -73,9 +73,15 @@ fn main() {
 
         let start = Instant::now();
         match rox_playback::engine::decode_peaks(&path, 2048) {
-            Ok(peaks) => {
+            Ok(lanes) => {
                 let elapsed = start.elapsed();
-                println!("decode_peaks {} bins in {:.2?}", peaks.len(), elapsed);
+                let bins = lanes.first().map(Vec::len).unwrap_or(0);
+                println!(
+                    "decode_peaks {} lanes x {} bins in {:.2?}",
+                    lanes.len(),
+                    bins,
+                    elapsed
+                );
             }
             Err(e) => {
                 println!("decode_peaks failed: {e}");

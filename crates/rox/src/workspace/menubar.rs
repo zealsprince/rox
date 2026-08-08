@@ -578,7 +578,7 @@ impl Workspace {
             .when(open, |d| {
                 // Read the presets only once the flyout opens, not on every
                 // parent-menu paint.
-                let presets = crate::settings::layouts::all(&Settings::load());
+                let presets = rox_core::settings::layouts::all(&Settings::load());
                 let mut flyout = div()
                     .absolute()
                     .left_full()

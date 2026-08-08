@@ -7,7 +7,7 @@
 use gpui::{div, prelude::*, px, App, Div, Global, SharedString, WindowHandle};
 use gpui_component::Root;
 
-use crate::design::palette;
+use rox_design::palette;
 
 /// Where a match window is in its lookup: waiting on the network, holding a
 /// ranked set of candidates, or showing why the search came back empty. The

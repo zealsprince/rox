@@ -20,12 +20,12 @@ pub fn clear() {
     rox_library::peaks::clear(&cache_dir());
 }
 
-/// The cached peaks for a track, or None on any kind of miss.
-pub fn load(track: &Path) -> Option<Vec<(f32, f32)>> {
+/// The cached peak lanes for a track, or None on any kind of miss.
+pub fn load(track: &Path) -> Option<Vec<Vec<(f32, f32)>>> {
     rox_library::peaks::load(&cache_dir(), track)
 }
 
 /// Write a track's entry against the identity it carried into the decode.
-pub fn store(track: &Path, stamped: Option<(u64, u64)>, peaks: &[(f32, f32)]) {
-    rox_library::peaks::store(&cache_dir(), track, stamped, peaks);
+pub fn store(track: &Path, stamped: Option<(u64, u64)>, lanes: &[Vec<(f32, f32)>]) {
+    rox_library::peaks::store(&cache_dir(), track, stamped, lanes);
 }

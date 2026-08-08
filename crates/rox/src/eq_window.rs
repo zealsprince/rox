@@ -4,7 +4,7 @@
 //! work while the music plays, not a preference you set and close.
 //!
 //! Global, so it takes no state of its own. The curve is one set of live
-//! atomics for the whole process (see [`crate::player::eq_gain`] and ADR 19),
+//! atomics for the whole process (see [`rox_services::player::eq_gain`] and ADR 19),
 //! which is what lets a band move under whatever is playing without the
 //! window holding a player: every workspace builds its own world, and the EQ
 //! is meant to sit across all of them. It borrows the front workspace's art
@@ -25,12 +25,13 @@ use rox_playback::eq::{BANDS, FREQ_MAX, FREQ_MIN, GAIN_MAX_DB, Q_MAX, Q_MIN};
 use rox_playback::latency::{self, LatencyHold};
 use rox_viz::analysis::{self, Analyzer};
 
-use crate::assets::icons;
-use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, ScrubState};
-use crate::player;
-use crate::settings::ui::{self as settings_ui, small_button};
-use crate::settings::{AnalyzerStyle, LayoutSize, Settings};
+use rox_core::settings::{AnalyzerStyle, LayoutSize, Settings};
+use rox_design::assets::icons;
+use rox_design::{palette, tokens};
+use rox_panel_api::panel::{self, AppState};
+use rox_panel_kit::ui::{self as settings_ui, small_button};
+use rox_panel_kit::ScrubState;
+use rox_services::player;
 
 /// The plot's dB range either side of flat. Wider than a single band's
 /// ceiling on purpose: a stack of overlapping boosts sums past 12 dB, and a
@@ -182,7 +183,7 @@ fn open_now(cx: &mut App) {
             return;
         }
     }
-    let state = crate::workspace::front_workspace(cx).map(|(_, state)| state);
+    let state = rox_panel_api::windows::front_workspace(cx).map(|(_, state)| state);
     let min = settings_ui::MIN_SIZE;
     let (width, height) = Settings::load()
         .windows
@@ -194,7 +195,7 @@ fn open_now(cx: &mut App) {
         // when this was ten slider rows.
         .unwrap_or((620., 660.));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    let handle = crate::panel::open_child_window(
+    let handle = rox_panel_api::panel::open_child_window(
         cx,
         "rox - Equalizer",
         bounds,

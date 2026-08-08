@@ -177,6 +177,17 @@ pub(crate) fn set_post_shader_routes(routes: Vec<Route>) {
     *POST_SHADER_ROUTES.write().unwrap() = routes;
 }
 
+/// The hand-set slot values next to the routes above, live for the same
+/// reason: a slider drag on the Shader page must reach the next frame
+/// without buying a settings reload.
+static POST_SHADER_MANUAL: RwLock<Vec<(u8, f32)>> = RwLock::new(Vec::new());
+
+/// Point the screen shader at a new hand-set list. Same callers as the
+/// routes setter: the settings window as it edits, the apply from the file.
+pub(crate) fn set_post_shader_manual(manual: Vec<(u8, f32)>) {
+    *POST_SHADER_MANUAL.write().unwrap() = manual;
+}
+
 /// The slot names the screen shader's source declares, from its `// @slot
 /// n: name` comments. Read where the file is, published here so the
 /// settings window's route editor can name slots without opening the file
@@ -380,13 +391,12 @@ fn sweep_shaded_children(cx: &mut App) {
 /// across a few open windows that saturated the main thread and stalled
 /// the shader clock everywhere. Each push notifies again, so the cadence
 /// rides the workspace loop.
-fn push_child_signals(signals: [f32; 16], cx: &mut App) {
+fn push_child_signals(signals: [f32; 16], meta: [f32; 8], cx: &mut App) {
     let shaded = cx.default_global::<ShadedChildren>().windows.clone();
     for handle in shaded {
         let alive = handle
             .update(cx, |root, window, cx| {
-                // Zeroed meta until a later unit assigns the eight slots.
-                window.set_post_signals(signals, [0.0; 8]);
+                window.set_post_signals(signals, meta);
                 cx.notify(root.entity_id());
             })
             .is_ok();
@@ -409,15 +419,28 @@ fn push_child_signals(signals: [f32; 16], cx: &mut App) {
 /// over the whole feed, which is the only reading that doesn't have two
 /// things writing the same slot.
 fn post_shader_signals(hub: &SignalHub) -> [f32; panel::shader::SLOTS] {
+    // Hand-set values go down first and whatever feeds a slot writes over
+    // them, which is exactly the panel rule: a route wins while it's
+    // there, the hand-set value comes back when it goes. The legacy pool
+    // feed steps around hand-set slots for the same reason a route list
+    // doesn't: both are somebody explicitly claiming the slot.
+    let manual = POST_SHADER_MANUAL.read().unwrap().clone();
+    let mut targets = panel::shader::SlotTargets::default();
+    for (slot, value) in &manual {
+        if let Some(entry) = targets.slots.get_mut(*slot as usize) {
+            *entry = *value;
+        }
+    }
     let routes = POST_SHADER_ROUTES.read().unwrap();
     if routes.is_empty() {
-        let mut signals = [0.0f32; panel::shader::SLOTS];
-        for (slot, signal) in hub.pool().iter().take(signals.len()).enumerate() {
-            signals[slot] = hub.value(signal.id).unwrap_or(0.0);
+        for (slot, signal) in hub.pool().iter().take(targets.slots.len()).enumerate() {
+            if manual.iter().any(|(at, _)| *at as usize == slot) {
+                continue;
+            }
+            targets.slots[slot] = hub.value(signal.id).unwrap_or(0.0);
         }
-        return signals;
+        return targets.slots;
     }
-    let mut targets = panel::shader::SlotTargets::default();
     rox_panel_api::signal_ui::apply_routes(&routes, hub, &mut targets);
     targets.slots
 }
@@ -442,6 +465,16 @@ struct PostShaderDriver {
     /// compile error leaves the last good shader running, so this stays
     /// true through a broken edit and false only until the first success.
     active: bool,
+    /// Whether the hub was live on the last look, so the frame after the
+    /// music stops pushes one final update instead of freezing the
+    /// uniforms mid-song. Starts true: the first update after an apply
+    /// delivers signals and meta once even into a silent app.
+    was_live: bool,
+    /// The config's idle switch, held here so the frame loop doesn't read
+    /// the settings file per frame. Frames keep coming while the audio is
+    /// silent; the uniforms don't move, so only per-draw state (the mouse)
+    /// follows along.
+    run_when_idle: bool,
 }
 
 /// Tear down a workspace window's app-level state: persist its layout, drop
@@ -2194,10 +2227,11 @@ impl Workspace {
     /// last still running, so a broken edit never blanks the effect.
     fn apply_post_shader(&mut self, window: &mut Window) {
         let config = Settings::load().post_shader;
-        // Keep the live switch and the route feed in step; the startup path
+        // Keep the live switch and the slot feeds in step; the startup path
         // lands here before any app-level apply has run.
         POST_SHADER_ON.store(config.enabled, Ordering::Relaxed);
         set_post_shader_routes(config.routes.clone());
+        set_post_shader_manual(config.manual.clone());
         if !config.enabled {
             self.clear_post_shader(window);
             return;
@@ -2210,6 +2244,8 @@ impl Workspace {
                 .post_shader
                 .as_ref()
                 .is_some_and(|driver| driver.active),
+            was_live: true,
+            run_when_idle: config.run_when_idle,
         };
         driver.stamp = driver.path.as_deref().and_then(settings::file_stamp);
         let source = match post_shader_source(&config) {
@@ -2298,31 +2334,56 @@ impl Workspace {
                 cx.defer(sweep_shaded_children);
             }
         }
-        let Some(driver) = &self.post_shader else {
-            return;
-        };
-        if !driver.active {
+        if !self
+            .post_shader
+            .as_ref()
+            .is_some_and(|driver| driver.active)
+        {
             return;
         }
-        let hub = &self.state.signals;
+        let run_when_idle = self
+            .post_shader
+            .as_ref()
+            .is_some_and(|driver| driver.run_when_idle);
+        let hub = self.state.signals.clone();
         // Tick before the live check. Live only goes true once a tick has
         // seen the feed move, and on a workspace without a particles panel
         // or the signals window this loop is the hub's only ticker, so
         // checking first parked the shader for good: no signals, frozen
         // clock. The tick itself is cheap and TICK_MIN-deduped.
-        let player = self.state.player.read(cx);
-        hub.tick(&player.feed(), player.playing_entry());
-        if !hub.live() {
+        {
+            let player = self.state.player.read(cx);
+            hub.tick(&player.feed(), player.playing_entry());
+        }
+        let live = hub.live();
+        let was_live = std::mem::replace(
+            &mut self.post_shader.as_mut().expect("checked above").was_live,
+            live,
+        );
+        // A hub gone quiet still owes the shader one last word: without it
+        // the uniforms freeze mid-song, and a paused window keeps wearing
+        // the play state on every repaint. The push after the last live
+        // frame carries the parked signals and a meta that says stopped.
+        // After that the pass sleeps until the music moves again, unless
+        // the idle switch keeps its frames coming: the uniforms hold
+        // still, and the frames are for the state that updates per draw,
+        // which is the mouse.
+        if !live && !was_live {
+            if run_when_idle {
+                window.request_animation_frame();
+            }
             return;
         }
-        let signals = post_shader_signals(hub);
-        // Zeroed meta until a later unit assigns the eight slots.
-        window.set_post_signals(signals, [0.0; 8]);
-        window.request_animation_frame();
+        let signals = post_shader_signals(&hub);
+        let meta = panel::shader::meta_slots(window, cx);
+        window.set_post_signals(signals, meta);
+        if live || run_when_idle {
+            window.request_animation_frame();
+        }
         if primary {
             // Deferred: a window can't update its siblings from inside its
             // own render.
-            cx.defer(move |cx| push_child_signals(signals, cx));
+            cx.defer(move |cx| push_child_signals(signals, meta, cx));
         }
     }
 
@@ -4330,6 +4391,41 @@ mod shader_feed_tests {
             to: 1.0,
         }]);
         assert_eq!(post_shader_signals(&hub), [0.0; panel::shader::SLOTS]);
+
+        // Hand-set values, the panel rule on the app-wide list: they stand
+        // where nothing feeds the slot, and a route wins while it's there.
+        set_post_shader_manual(vec![(5, 0.75), (3, 0.2)]);
+        set_post_shader_routes(vec![Route {
+            enabled: true,
+            signal: id,
+            target: panel::shader::slot_target(3),
+            from: 0.5,
+            to: 1.0,
+        }]);
+        let signals = post_shader_signals(&hub);
+        assert!(
+            (signals[5] - 0.75).abs() < 1e-4,
+            "an unrouted hand-set slot reads its value, got {}",
+            signals[5]
+        );
+        assert!(
+            (signals[3] - 0.5).abs() < 1e-4,
+            "the route wins over the hand-set value, got {}",
+            signals[3]
+        );
+
+        // And the legacy pool-order feed steps around a hand-set slot:
+        // pool signal 0 reads silent zero, which would overwrite the knob
+        // without the skip.
+        set_post_shader_routes(Vec::new());
+        set_post_shader_manual(vec![(0, 0.9)]);
+        let signals = post_shader_signals(&hub);
+        assert!(
+            (signals[0] - 0.9).abs() < 1e-4,
+            "the pool feed steps around a hand-set slot, got {}",
+            signals[0]
+        );
+        set_post_shader_manual(Vec::new());
         set_post_shader_routes(Vec::new());
     }
 }

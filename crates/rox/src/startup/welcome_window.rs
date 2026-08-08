@@ -433,38 +433,33 @@ impl Render for WelcomeWindow {
                 .overflow_y_scroll()
                 .gap(tokens::SPACE_SM)
                 .child(probe)
-                .children(
-                    self.workspaces
-                        .iter()
-                        .enumerate()
-                        .map(|(i, tile)| {
-                            let apply = tile.name.clone();
-                            workspace_tile(
-                                tile.name.clone(),
-                                tile.author.clone(),
-                                tile.previews.pick(palette::mode()),
-                                self.hovered_tile == Some(i),
-                                tile_width,
-                                cx.listener(move |_, _, window, cx| {
-                                    crate::workspace::apply_workspace_to_front(&apply, cx);
-                                    // Picking a look is the end of the tour, so close
-                                    // out to the freshly dressed main window.
-                                    window.remove_window();
-                                }),
-                            )
-                            .id(("welcome-tile", i))
-                            .on_hover(cx.listener(
-                                move |this, hovered: &bool, _, cx| {
-                                    if *hovered {
-                                        this.hovered_tile = Some(i);
-                                    } else if this.hovered_tile == Some(i) {
-                                        this.hovered_tile = None;
-                                    }
-                                    cx.notify();
-                                },
-                            ))
+                .children(self.workspaces.iter().enumerate().map(|(i, tile)| {
+                    let apply = tile.name.clone();
+                    workspace_tile(
+                        tile.name.clone(),
+                        tile.author.clone(),
+                        tile.previews.pick(palette::mode()),
+                        self.hovered_tile == Some(i),
+                        tile_width,
+                        cx.listener(move |_, _, window, cx| {
+                            crate::workspace::apply_workspace_to_front(&apply, cx);
+                            // Picking a look is the end of the tour, so close
+                            // out to the freshly dressed main window.
+                            window.remove_window();
                         }),
-                );
+                    )
+                    .id(("welcome-tile", i))
+                    .on_hover(cx.listener(
+                        move |this, hovered: &bool, _, cx| {
+                            if *hovered {
+                                this.hovered_tile = Some(i);
+                            } else if this.hovered_tile == Some(i) {
+                                this.hovered_tile = None;
+                            }
+                            cx.notify();
+                        },
+                    ))
+                }));
 
             let body = div()
                 .flex()

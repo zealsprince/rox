@@ -43,7 +43,7 @@ use crate::panel::{
     self, setting_row, toggle, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit,
 };
 use crate::panel_settings;
-use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
+use crate::settings::ui::{section, SECTION_GAP};
 use crate::signal_ui::{self, routes::RouteEditState, RouteTargets};
 
 /// The builtin shaders, so a fresh panel draws something before anyone has
@@ -430,6 +430,24 @@ impl ShaderPanel {
         self.set_source(entry.source, None, cx);
     }
 
+    /// Point the panel at one of the workspace's shaders. The mirror of
+    /// [`detach`](Self::detach), and it sits here for the same reason: the
+    /// inline source and the bookmark both go, because the workspace holds
+    /// what runs from here and a second copy on the panel would only be the
+    /// one that's wrong after the next edit to the shared entry.
+    ///
+    /// Nothing is approved on the way through. A workspace shader that came
+    /// in with a bundle still has to be read before it runs, which is the
+    /// same gate a bundle-applied name goes through.
+    fn use_pool_name(&mut self, name: String, cx: &mut Context<Self>) {
+        self.config.name = Some(name);
+        self.config.source = String::new();
+        self.config.path = None;
+        self.watch = SourceWatch::default();
+        *self.compiled.lock().unwrap() = Compiled::default();
+        cx.notify();
+    }
+
     /// Promote the panel's source into the workspace's shaders and wear it
     /// by name from there. The inline copy goes: the pool holds the source
     /// now, and a second copy on the panel would only be the one that's
@@ -495,12 +513,12 @@ impl ShaderPanel {
         }
     }
 
-    /// Load a builtin. The path goes with it: a preset has no file behind
-    /// it, and leaving the old one recorded would have the watch overwrite
-    /// the preset a second later.
+    /// Load one of the shipped examples. The path goes with it: an example
+    /// has no file behind it, and leaving the old one recorded would have
+    /// the watch overwrite it a second later.
     fn use_preset(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some((_, source)) = PRESETS.get(index) {
-            self.set_source((*source).to_string(), None, cx);
+        if let Some(preset) = PRESETS.get(index) {
+            self.set_source(preset.source.to_string(), None, cx);
         }
     }
 
@@ -512,18 +530,18 @@ impl ShaderPanel {
         if let Some(name) = self.config.name.as_deref().filter(|_| self.pool_missing()) {
             return Some(vec![
                 format!("{name} isn't in this workspace's shaders."),
-                "The panel is wearing a shader the workspace doesn't carry, so there's \
+                "This panel is using a shader the workspace doesn't carry, so there's \
                  nothing to run."
                     .to_string(),
-                "Pick a preset or a .wgsl file on this panel's Source settings page, which \
-                 detaches it and gives it a source of its own."
-                    .to_string(),
+                "Pick another one on this panel's Source settings page.".to_string(),
             ]);
         }
         if self.running().trim().is_empty() {
             return Some(vec![
                 "No shader loaded.".to_string(),
-                "Pick a preset or a .wgsl file on this panel's Source settings page.".to_string(),
+                "Pick an example on this panel's Source settings page, or point it at a \
+                 .wgsl file defining fs_user(uv)."
+                    .to_string(),
             ]);
         }
         if self.pending() {
@@ -593,17 +611,17 @@ impl PanelSettings for ShaderPanel {
 }
 
 impl ShaderPanel {
-    /// The Source page: where the shader comes from, what it said about
-    /// itself, and the conventions it can count on.
+    /// The Source page: one picker for where the shader comes from, the
+    /// rows that selection needs under it, and what registration made of
+    /// the result.
     fn source_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let source = self.config.source.clone();
         let path = self.config.path.clone();
         let named = self.config.name.clone();
-        let missing = self.pool_missing();
-        // What runs, which for a named panel is the pool's copy. The
+        // What runs, which for a named panel is the workspace's copy. The
         // approval block reads it too, so a shader that arrived in a bundle
         // gets read before it runs whichever way it got here.
-        let running = self.running();
+        let resolved = self.resolved();
+        let running = resolved.clone().unwrap_or_default();
         let error = self.compiled.lock().unwrap().error.clone();
         let run_when_idle = self.config.run_when_idle;
         let pending = self.pending().then(|| {
@@ -616,82 +634,33 @@ impl ShaderPanel {
             )
         });
 
-        let mut presets = div().flex().flex_row().flex_wrap().gap(px(1.));
-        for (index, (label, preset)) in PRESETS.iter().enumerate() {
-            presets = presets.child(signal_ui::scope_chip(
-                (*label).to_string(),
-                running == **preset,
-                move |this: &mut Self, cx| this.use_preset(index, cx),
-                cx,
-            ));
-        }
-
-        let file = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_SM)
-            .child(settings_ui::small_button(
-                "Reload",
-                icons::REFRESH_CW,
-                // A named panel's bookmark points at whatever it had inlined
-                // before the name went on, so re-reading it would pull that
-                // back over the pool's shader. The pool entry reloads itself.
-                named.is_some() || path.is_none(),
-                cx.listener(|this, _, _, cx| this.reload(cx)),
-            ))
-            .child(settings_ui::small_button(
-                "Choose File",
-                icons::FOLDER,
-                false,
-                cx.listener(|this, _, window, cx| this.pick_file(window, cx)),
-            ))
-            // An inline shader ejects to a file from here; a named one ejects
-            // through its pool entry, on the block above.
-            .when(named.is_none(), |file| {
-                file.child(settings_ui::small_button(
-                    "Edit as File",
-                    icons::EXTERNAL_LINK,
-                    source.trim().is_empty(),
-                    cx.listener(|this, _, _, cx| this.eject(cx)),
-                ))
-            });
-        let note: SharedString = match (&named, &path, source.trim().is_empty()) {
-            (Some(name), _, _) => format!(
-                "Choosing a preset or a file detaches this panel from {name} and gives \
-                 it a source of its own"
-            )
-            .into(),
-            (None, Some(path), _) => format!(
-                "{}. Edits reload while the panel is drawing, and the source is copied \
-                 into the layout, so the panel keeps its shader on a machine that never \
-                 had the file",
-                path.display()
-            )
-            .into(),
-            (None, None, true) => "Pick a preset above, or a .wgsl file with a fragment stage \
-                                   defining fs_user(uv)"
-                .into(),
-            (None, None, false) => "Running a source that rides the layout, with no file \
-                                    behind it. Edit as File writes it back out and picks \
-                                    the edits up as you save"
-                .into(),
+        // The name a save would land under, read before the field goes out
+        // on loan to the picker block.
+        let fallback = {
+            let label = self.config.chrome.title.clone().unwrap_or_default();
+            surface::eject_name(&label, &self.config.source)
         };
+        let picked = panel_settings::ShaderSource {
+            id: "shader-panel",
+            name: named.as_deref(),
+            path: path.as_deref(),
+            resolved: resolved.as_deref(),
+            // No None entry here: this panel's whole body is the shader, so
+            // an empty one is a mistake rather than a state to pick.
+            clear: None,
+            use_example: |this: &mut Self, index, cx| this.use_preset(index, cx),
+            use_named: |this: &mut Self, name, cx| this.use_pool_name(name, cx),
+            choose_file: |this: &mut Self, window, cx| this.pick_file(window, cx),
+            eject: |this: &mut Self, cx| this.eject(cx),
+            detach: |this: &mut Self, cx| this.detach(cx),
+            reload: |this: &mut Self, cx| this.reload(cx),
+            save: |this: &mut Self, name, cx| this.save_to_pool(name, cx),
+            field: &mut self.shader_name,
+            fallback: &fallback,
+        }
+        .render(window, cx);
 
-        let mut shader = div()
-            .flex()
-            .flex_col()
-            .gap(tokens::SPACE_MD)
-            .child(panel::setting_block(
-                "Preset",
-                Some(
-                    "The builtins. Plasma draws from its uniforms alone; Trails reads its \
-                     own last frame, which puts it on the screen pass",
-                ),
-                None,
-                presets,
-            ))
-            .child(panel::setting_row_dyn("Shader File", Some(note), file));
+        let mut shader = div().flex().flex_col().gap(tokens::SPACE_MD).child(picked);
         if let Some(error) = error {
             shader = shader.child(
                 div()
@@ -719,41 +688,12 @@ impl ShaderPanel {
             ),
         ));
 
-        // Wearing a pool shader, or the offer to hand this one over. Never
-        // both: the panel is either pointing at the workspace's copy or
-        // carrying its own.
-        let pool = named.as_ref().map(|name| {
-            panel_settings::pool_shader_block(
-                name,
-                missing,
-                |this: &mut Self, cx| this.eject(cx),
-                |this: &mut Self, cx| this.detach(cx),
-                cx,
-            )
-        });
-        let save = named.is_none().then(|| {
-            let label = self.config.chrome.title.clone().unwrap_or_default();
-            let fallback = surface::eject_name(&label, &source);
-            let empty = source.trim().is_empty();
-            panel_settings::save_to_pool_block(
-                &mut self.shader_name,
-                &fallback,
-                empty,
-                |this: &mut Self, name, cx| this.save_to_pool(name, cx),
-                window,
-                cx,
-            )
-        });
-
         div()
             .flex()
             .flex_col()
             .gap(SECTION_GAP)
             .children(pending.map(|body| section("Awaiting Approval", None, body)))
-            .children(pool.map(|body| section("Workspace Shader", None, body)))
             .child(section("Shader", None, shader))
-            .children(save.map(|body| section("Save to Shaders", None, body)))
-            .child(section("Writing One", None, conventions()))
     }
 
     /// The Bindings page: the routes filling the shader's slots, in the
@@ -852,18 +792,18 @@ impl ShaderPanel {
         let panel = cx.entity();
         let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
             panel::follow_panel(&panel, cx);
-            for (index, (label, _)) in PRESETS.iter().enumerate() {
+            for (index, preset) in PRESETS.iter().enumerate() {
                 submenu = submenu.item(panel::check_row(
-                    *label,
+                    preset.label,
                     None,
-                    move |this: &Self| this.running() == PRESETS[index].1,
+                    move |this: &Self| this.running() == PRESETS[index].source,
                     move |this: &mut Self, cx| this.use_preset(index, cx),
                     &panel,
                 ));
             }
             submenu
         });
-        menu.item(PopupMenuItem::submenu("Preset", submenu))
+        menu.item(PopupMenuItem::submenu("Example", submenu))
     }
 }
 
@@ -914,41 +854,6 @@ fn slot_readout(value: f32) -> Div {
                         .bg(palette::accent()),
                 ),
         )
-}
-
-/// What a shader author can count on, spelled out where they'd look for it.
-/// The uniform block is gpui's, pinned by the shaders contract; the meta
-/// floats are rox's own convention and live nowhere else in the UI.
-fn conventions() -> Div {
-    let line = |text: &'static str| {
-        div()
-            .text_xs()
-            .text_color(palette::text_muted())
-            .child(text)
-    };
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(3.))
-        .child(line(
-            "Define fn fs_user(uv: vec2<f32>) -> vec4<f32>. Output is premultiplied alpha.",
-        ))
-        .child(line(
-            "In scope: params.time, params.delta, params.resolution, params.mouse, \
-             params.signals (16 slots) and params.user_meta (8 floats).",
-        ))
-        .child(line(
-            "Reading `screen` shades what sits under the panel; reading `prev` gives the \
-             shader its own last frame. Either one moves it to the screen pass.",
-        ))
-        .child(line(
-            "user_meta[0] is volume, track position 0..1, 1 while playing, and track \
-             length in seconds. user_meta[1] is reserved and reads zero.",
-        ))
-        .child(line(
-            "Module-scope declarations of your own are rejected: the template already \
-             binds everything there is.",
-        ))
 }
 
 impl EventEmitter<PanelEvent> for ShaderPanel {}
@@ -1500,7 +1405,7 @@ mod tests {
     /// here; what's checkable from this side is the shape.
     #[test]
     fn presets_are_shaped_like_the_contract() {
-        for (label, source) in PRESETS {
+        for surface::Preset { label, source, .. } in PRESETS {
             assert!(
                 source.contains(ENTRY),
                 "{label} has to define the entry point the template calls"
@@ -1546,7 +1451,7 @@ mod tests {
     /// preset nobody can read the bindings of.
     #[test]
     fn presets_name_their_slots() {
-        for (label, source) in PRESETS {
+        for surface::Preset { label, source, .. } in PRESETS {
             let labels = surface::slot_labels(source);
             assert!(
                 labels[0].is_some(),

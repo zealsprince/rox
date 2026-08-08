@@ -35,7 +35,30 @@ pub const SLOTS: usize = 16;
 pub const PLASMA: &str = include_str!("shader/plasma.wgsl");
 pub const TRAILS: &str = include_str!("shader/trails.wgsl");
 
-pub const PRESETS: &[(&str, &str)] = &[("Plasma", PLASMA), ("Trails", TRAILS)];
+/// One shipped example: what to call it, the one line the settings pages
+/// print under it once it's picked, and the WGSL itself.
+///
+/// The blurb rides the entry rather than sitting in a section note, so
+/// adding an example stays a file plus a line here instead of a file, a
+/// line, and a sentence somebody has to remember to edit somewhere else.
+pub struct Preset {
+    pub label: &'static str,
+    pub blurb: &'static str,
+    pub source: &'static str,
+}
+
+pub const PRESETS: &[Preset] = &[
+    Preset {
+        label: "Plasma",
+        blurb: "Drifting colour drawn from its uniforms alone, so it costs a plain quad.",
+        source: PLASMA,
+    },
+    Preset {
+        label: "Trails",
+        blurb: "Smears its own last frame, which puts it on the screen pass.",
+        source: TRAILS,
+    },
+];
 
 /// How often a watched source file gets stat'd while its surface draws.
 /// Twice a second: fast enough that a save in the editor lands before the
@@ -124,6 +147,93 @@ pub fn resolve_source(name: Option<&str>, inline: &str) -> Option<String> {
     }
 }
 
+/// Which entry of a shader picker a config currently sits on.
+///
+/// Both shader surfaces grew the same handful of ways to end up with a
+/// shader, and the picker's closed label, the note under it, and which
+/// buttons follow all come off this one read rather than off four
+/// scattered matches on the config fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// Nothing to run.
+    Empty,
+    /// One of this workspace's shaders. `missing` when the workspace
+    /// doesn't hold that name anymore, which paints nothing at all.
+    Named { name: String, missing: bool },
+    /// A file on this machine, watched for saves.
+    File(PathBuf),
+    /// One of the shipped examples, by its index in [`PRESETS`].
+    Example(usize),
+    /// A source of its own that matches nothing else, usually one that
+    /// arrived inside a layout or a bundle.
+    Custom,
+}
+
+/// Work out which picker entry a config is on. `resolved` is what actually
+/// runs, so a name this workspace doesn't hold arrives as None and reads as
+/// missing rather than as empty.
+///
+/// A file bookmark beats an example match on purpose. Editing an example as
+/// a file leaves the text identical for as long as it takes to make the
+/// first change, and from the moment the file exists it's the thing being
+/// edited, so the rows under the picker have to offer Reload rather than a
+/// second eject.
+pub fn pick(name: Option<&str>, path: Option<&Path>, resolved: Option<&str>) -> Pick {
+    if let Some(name) = name {
+        return Pick::Named {
+            name: name.to_string(),
+            missing: resolved.is_none(),
+        };
+    }
+    let source = resolved.unwrap_or_default().trim();
+    if source.is_empty() {
+        return Pick::Empty;
+    }
+    if let Some(path) = path {
+        return Pick::File(path.to_path_buf());
+    }
+    match PRESETS
+        .iter()
+        .position(|preset| preset.source.trim() == source)
+    {
+        Some(index) => Pick::Example(index),
+        None => Pick::Custom,
+    }
+}
+
+/// What the picker's closed state reads. A file shows its stem: the whole
+/// path is already spelled out in the note under the row, and a control
+/// wide enough to hold one would push everything else off it.
+pub fn pick_label(pick: &Pick) -> String {
+    match pick {
+        Pick::Empty => "None".to_string(),
+        Pick::Named {
+            name,
+            missing: true,
+        } => format!("{name} (missing)"),
+        Pick::Named { name, .. } => name.clone(),
+        Pick::File(path) => path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_string())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or_else(|| path.display().to_string()),
+        Pick::Example(index) => PRESETS
+            .get(*index)
+            .map(|preset| preset.label.to_string())
+            .unwrap_or_else(|| "Custom".to_string()),
+        Pick::Custom => "Custom".to_string(),
+    }
+}
+
+/// The one line a picked example prints under the picker, empty for
+/// anything the table doesn't hold.
+pub fn pick_blurb(index: usize) -> &'static str {
+    PRESETS
+        .get(index)
+        .map(|preset| preset.blurb)
+        .unwrap_or_default()
+}
+
 /// A source's identity in the approved list: hex SHA-256 of the trimmed
 /// text. Trimmed so an editor's trailing newline isn't a different program,
 /// and hashed rather than stored so the list stays a few lines whatever the
@@ -141,7 +251,7 @@ pub fn fingerprint(source: &str) -> String {
 /// second copy of a decision already made by installing rox.
 pub fn builtin(source: &str) -> bool {
     let source = source.trim();
-    PRESETS.iter().any(|(_, preset)| preset.trim() == source)
+    PRESETS.iter().any(|preset| preset.source.trim() == source)
 }
 
 /// Whether this source may run on this machine.
@@ -887,11 +997,17 @@ fn window_feed(window: &Window, cx: &App) -> Option<(Arc<SignalHub>, gpui::Entit
 
 /// The eight `meta` floats every rox shader can count on, the convention
 /// the Shader panel shares: volume, where the track sits, whether audio is
-/// moving, and how long the track runs. The last four are reserved and
-/// read zero, so a shader written against them today keeps working when
-/// they fill in.
+/// moving, how long the track runs, and how dark the theme is. The last
+/// three are reserved and read zero, so a shader written against them
+/// today keeps working when they fill in.
 pub fn meta_slots(window: &Window, cx: &App) -> [f32; 8] {
     let mut meta = [0.0f32; 8];
+    // The active palette's root background as luma, 0 pitch black to 1
+    // paper white, so one shader can tune itself to both themes instead of
+    // shipping for the one it was written against. Set before the feed
+    // check: the theme is known even in a window no player registered.
+    let bg = rox_design::palette::bg_root_opaque();
+    meta[4] = (0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b).clamp(0.0, 1.0);
     let Some((_, player)) = window_feed(window, cx) else {
         return meta;
     };
@@ -928,6 +1044,99 @@ mod tests {
         assert_eq!(target_slot("slot16"), None);
         assert_eq!(target_slot("bass"), None);
         assert_eq!(target_slot(""), None);
+    }
+
+    /// Every way a config can arrive at a shader, and what the picker's
+    /// closed state calls it. This is the read both settings pages hang
+    /// their whole layout off, so it gets checked here rather than left to
+    /// whichever page someone happens to open.
+    #[test]
+    fn a_config_lands_on_the_picker_entry_it_came_from() {
+        // Nothing at all, and a source that's only whitespace, which is
+        // what a cleared panel leaves behind.
+        assert_eq!(pick(None, None, None), Pick::Empty);
+        assert_eq!(pick(None, None, Some("  \n ")), Pick::Empty);
+        assert_eq!(pick_label(&Pick::Empty), "None");
+
+        // A shipped example, matched on the text the way the old chips did.
+        assert_eq!(pick(None, None, Some(PLASMA)), Pick::Example(0));
+        assert_eq!(pick(None, None, Some(TRAILS)), Pick::Example(1));
+        // Trailing whitespace is an editor's doing, not a different shader.
+        assert_eq!(
+            pick(None, None, Some(&format!("{PLASMA}\n\n"))),
+            Pick::Example(0)
+        );
+        assert_eq!(pick_label(&Pick::Example(0)), "Plasma");
+        assert_eq!(pick_label(&Pick::Example(1)), "Trails");
+
+        // A file, which beats the example match: ejecting Plasma to a file
+        // leaves the text identical, and from there the file is what's
+        // being edited.
+        let path = PathBuf::from("/home/someone/shaders/grain.wgsl");
+        assert_eq!(pick(None, Some(&path), Some(PLASMA)), Pick::File(path));
+        assert_eq!(
+            pick_label(&Pick::File("/home/someone/shaders/grain.wgsl".into())),
+            "grain"
+        );
+        // No stem to show falls back to the whole path rather than to
+        // nothing at all.
+        assert_eq!(pick_label(&Pick::File("/".into())), "/");
+
+        // Source of its own that matches nothing, which is what arrives
+        // inside a layout or a bundle.
+        assert_eq!(pick(None, None, Some("// mine")), Pick::Custom);
+        assert_eq!(pick_label(&Pick::Custom), "Custom");
+
+        // A workspace shader. The name wins over everything the config
+        // still carries inline, and a name that resolves to nothing reads
+        // as missing rather than as empty.
+        assert_eq!(
+            pick(
+                Some("Grain"),
+                Some(&PathBuf::from("/tmp/x.wgsl")),
+                Some("// mine")
+            ),
+            Pick::Named {
+                name: "Grain".to_string(),
+                missing: false,
+            }
+        );
+        assert_eq!(
+            pick(Some("Grain"), None, None),
+            Pick::Named {
+                name: "Grain".to_string(),
+                missing: true,
+            }
+        );
+        assert_eq!(
+            pick_label(&Pick::Named {
+                name: "Grain".to_string(),
+                missing: false,
+            }),
+            "Grain"
+        );
+        assert_eq!(
+            pick_label(&Pick::Named {
+                name: "Grain".to_string(),
+                missing: true,
+            }),
+            "Grain (missing)"
+        );
+    }
+
+    /// Every example carries its own line for the page to print, so adding
+    /// one stays a file plus a row in the table.
+    #[test]
+    fn every_example_brings_its_own_blurb() {
+        for (index, preset) in PRESETS.iter().enumerate() {
+            assert!(
+                !preset.blurb.trim().is_empty(),
+                "{} ships without a line to print under it",
+                preset.label
+            );
+            assert_eq!(pick_blurb(index), preset.blurb);
+        }
+        assert_eq!(pick_blurb(PRESETS.len()), "");
     }
 
     /// The name wins where it resolves, and where it doesn't the surface
@@ -1141,11 +1350,11 @@ mod tests {
 
     #[test]
     fn the_builtins_need_no_list() {
-        for (label, preset) in PRESETS {
-            assert!(builtin(preset), "{label} is one of ours");
-            assert!(approved(preset), "{label} ships with the binary");
+        for Preset { label, source, .. } in PRESETS {
+            assert!(builtin(source), "{label} is one of ours");
+            assert!(approved(source), "{label} ships with the binary");
             assert!(
-                !rox_core::settings::shader_approved(&fingerprint(preset)),
+                !rox_core::settings::shader_approved(&fingerprint(source)),
                 "{label} shouldn't need a list entry to pass the gate"
             );
         }

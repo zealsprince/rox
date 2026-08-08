@@ -276,9 +276,9 @@ pub fn unapproved_shaders(bundle: &WorkspaceBundle) -> Vec<PendingShader> {
         // which the pass above already listed. Only an inline one is code of
         // its own.
         .filter(|post| {
-            post.name.as_deref().is_none_or(|name| {
-                !bundle.shaders.iter().any(|shader| shader.name == name)
-            })
+            post.name
+                .as_deref()
+                .is_none_or(|name| !bundle.shaders.iter().any(|shader| shader.name == name))
         })
         .map(|post| (None, post.source.clone()));
     let dumps = bundle
@@ -758,7 +758,10 @@ mod tests {
         assert_eq!(labels, ["Grain", "Bloom", hashed.as_str()], "{labels:?}");
 
         let line = ApplyCard::of(&bundle).shader_line().expect("a shader line");
-        assert!(line.starts_with("Carries 3 shaders: Grain, Bloom, "), "{line}");
+        assert!(
+            line.starts_with("Carries 3 shaders: Grain, Bloom, "),
+            "{line}"
+        );
 
         // Agreeing to them is what empties the review, so the same bundle
         // applied twice only asks once.

@@ -528,6 +528,7 @@ struct SettingsWindow {
     /// rewrites it without this window hearing about it.
     post_shader_path: Option<PathBuf>,
     post_shader_all_windows: bool,
+    post_shader_run_idle: bool,
     /// The screen shader's routes, mirrored for the same reason the path
     /// is: the section renders per keystroke under search and the settings
     /// file carries the dock dumps. Edits write here, into the workspace's
@@ -536,9 +537,17 @@ struct SettingsWindow {
     /// The route editor's span sliders and fold state, kept in step with
     /// the list above on every render.
     post_shader_route_ui: RouteEditState,
+    /// The screen shader's hand-set slot values, mirrored like the routes
+    /// and written through the same three layers: this mirror, the
+    /// workspace's live feed, the file on a debounce.
+    post_shader_manual: Vec<(u8, f32)>,
+    /// One scrub state per slot for the hand-set sliders.
+    post_shader_slot_scrubs: Vec<panel::ScrubState>,
     /// The route write's own debounce generation, kept apart from the
     /// appearance one so neither burst cancels the other's write.
     route_persist_gen: u64,
+    /// And the hand-set write's own, apart from both for the same reason.
+    manual_persist_gen: u64,
     /// Bumped on every appearance-slider tick; a debounced writer flushes the
     /// current values once the scrub settles instead of rewriting the whole
     /// settings file per tick.
@@ -829,9 +838,15 @@ impl SettingsWindow {
             icon_packs: crate::startup::icon_packs::all(),
             post_shader_path: settings.post_shader.path.clone(),
             post_shader_all_windows: settings.post_shader.all_windows,
+            post_shader_run_idle: settings.post_shader.run_when_idle,
             post_shader_routes: settings.post_shader.routes.clone(),
             post_shader_route_ui: RouteEditState::default(),
+            post_shader_manual: settings.post_shader.manual.clone(),
+            post_shader_slot_scrubs: (0..panel::shader::SLOTS)
+                .map(|_| panel::ScrubState::default())
+                .collect(),
             route_persist_gen: 0,
+            manual_persist_gen: 0,
             persist_gen: 0,
             persist_palette: false,
             _picker_changes,
@@ -1509,6 +1524,7 @@ impl SettingsWindow {
     fn screen_shader_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let enabled = crate::workspace::post_shader_on();
         let all_windows = self.post_shader_all_windows;
+        let run_idle = self.post_shader_run_idle;
         let path = self.post_shader_path.clone();
         let error = crate::workspace::post_shader_error();
         let description = match &path {
@@ -1546,6 +1562,29 @@ impl SettingsWindow {
         // declares them reads the same here as it does on a panel.
         let hub = self.signals.clone();
         let labels = crate::workspace::post_shader_slot_labels();
+        // This frame's resolved slot values, the Bindings page's readout
+        // over the app-wide list: hand-set values seeded first, routes
+        // written over them, so the rows say what actually reaches the
+        // shader rather than what was set.
+        let mut resolved = panel::shader::SlotTargets::default();
+        for (slot, value) in &self.post_shader_manual {
+            if let Some(entry) = resolved.slots.get_mut(*slot as usize) {
+                *entry = *value;
+            }
+        }
+        signal_ui::apply_routes(&self.post_shader_routes, &hub, &mut resolved);
+        let routed: Vec<bool> = (0..panel::shader::SLOTS)
+            .map(|slot| {
+                self.post_shader_routes.iter().any(|route| {
+                    route.enabled && panel::shader::target_slot(&route.target) == Some(slot)
+                })
+            })
+            .collect();
+        let scrubs = &self.post_shader_slot_scrubs;
+        let value_edit = &self.value_edit;
+        // Its own copy: the editor below borrows `labels` for the length
+        // of the section closure.
+        let slot_labels = labels.clone();
         let editor = signal_ui::routes::RouteEditor {
             id: "screen-shader-route",
             hub: &hub,
@@ -1583,6 +1622,16 @@ impl SettingsWindow {
                          popped-out panels. The revert countdown stays unshaded either way",
                     ),
                     panel::toggle(all_windows, Self::set_post_shader_all_windows, cx),
+                )
+                .keyed(
+                    &["shader", "idle", "pause", "freeze", "mouse"],
+                    "Run While Idle",
+                    Some(
+                        "Keep drawing with nothing playing. The animation stays parked \
+                         either way; this is what lets a shader that reads the mouse \
+                         follow the cursor while the music is stopped",
+                    ),
+                    panel::toggle(run_idle, Self::set_post_shader_run_idle, cx),
                 );
             rows = match error {
                 Some(error) => rows.custom(&["shader", "error", "compile"], || {
@@ -1591,7 +1640,16 @@ impl SettingsWindow {
                 None => rows,
             };
             rows.custom(
-                &["shader", "signal", "route", "slot", "bind", "modulation"],
+                &[
+                    "shader",
+                    "signal",
+                    "route",
+                    "slot",
+                    "bind",
+                    "modulation",
+                    "knob",
+                    "manual",
+                ],
                 || {
                     let add = editor.add_button(cx);
                     let mut body = div()
@@ -1610,13 +1668,55 @@ impl SettingsWindow {
                                      and so on. The first route you add takes over the whole feed.",
                         ));
                     }
-                    panel::setting_block(
-                        "Signals",
-                        Some("Which shared signal each of the shader's sixteen slots reads"),
-                        Some(add.into_any_element()),
-                        body,
-                    )
-                    .into_any_element()
+                    // The Bindings page's slot list over the app-wide
+                    // config: a routed slot shows the value reaching the
+                    // shader, an unrouted one is a hand-set knob, which is
+                    // how a screen shader's named parameters get tuned
+                    // without editing WGSL.
+                    let mut slots = div().flex().flex_col().gap(tokens::SPACE_MD);
+                    for (slot, routed) in routed.iter().copied().enumerate() {
+                        let value = resolved.slots.get(slot).copied().unwrap_or(0.0);
+                        let control = match (routed, scrubs.get(slot)) {
+                            (false, Some(scrub)) => panel::value_slider_edit(
+                                scrub,
+                                value_edit,
+                                value,
+                                format!("{value:.2}"),
+                                format!("{value:.2}"),
+                                |typed| typed,
+                                move |this: &mut Self, fraction, cx| {
+                                    this.set_post_shader_manual(slot, fraction, cx);
+                                },
+                                cx,
+                            ),
+                            _ => slot_readout(value),
+                        };
+                        slots = slots.child(panel::setting_row_dyn(
+                            panel::shader::slot_label(&slot_labels, slot),
+                            Some(slot_accessor(slot).into()),
+                            control,
+                        ));
+                    }
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens::SPACE_MD)
+                        .child(panel::setting_block(
+                            "Signals",
+                            Some("Which shared signal each of the shader's sixteen slots reads"),
+                            Some(add.into_any_element()),
+                            body,
+                        ))
+                        .child(panel::setting_block(
+                            "Slots",
+                            Some(
+                                "Each slot as it reaches the shader; slots without a route \
+                                 are hand-set knobs",
+                            ),
+                            None,
+                            slots,
+                        ))
+                        .into_any_element()
                 },
             )
         })
@@ -1655,6 +1755,37 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// One hand-set slot edit: into this window's mirror, into the
+    /// workspace's live feed so the shader follows the drag, and into the
+    /// file once the burst settles, the routes' exact write path.
+    fn set_post_shader_manual(&mut self, slot: usize, value: f32, cx: &mut Context<Self>) {
+        match self
+            .post_shader_manual
+            .iter_mut()
+            .find(|(at, _)| *at as usize == slot)
+        {
+            Some(entry) => entry.1 = value,
+            None => self.post_shader_manual.push((slot as u8, value)),
+        }
+        let manual = self.post_shader_manual.clone();
+        crate::workspace::set_post_shader_manual(manual.clone());
+        self.manual_persist_gen += 1;
+        let gen = self.manual_persist_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            let latest = this
+                .update(cx, |this, _| this.manual_persist_gen)
+                .unwrap_or(gen);
+            if latest == gen {
+                Settings::update(move |s| s.post_shader.manual = manual);
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// The shader switch: into the file, then every shaded window
     /// reapplies, which is also what clears the pass when it goes off.
     /// Turning it on runs the countdown confirm; a shader can bury the
@@ -1683,6 +1814,13 @@ impl SettingsWindow {
     fn set_post_shader_all_windows(&mut self, on: bool, cx: &mut Context<Self>) {
         self.post_shader_all_windows = on;
         Settings::update(move |s| s.post_shader.all_windows = on);
+        crate::workspace::apply_post_shader(cx);
+        cx.notify();
+    }
+
+    fn set_post_shader_run_idle(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.post_shader_run_idle = on;
+        Settings::update(move |s| s.post_shader.run_when_idle = on);
         crate::workspace::apply_post_shader(cx);
         cx.notify();
     }
@@ -4803,6 +4941,54 @@ fn coverage_note(text: String) -> Div {
 /// A setting row's value where a control would sit.
 fn readout(value: String) -> Div {
     div().text_color(palette::text_muted()).child(value)
+}
+
+/// The WGSL accessor a slot arrives on, so the Slots list says where to
+/// read it rather than leaving the mapping to be counted out by hand. The
+/// Shader panel's Bindings page keeps its own copy of this pair.
+fn slot_accessor(slot: usize) -> String {
+    let lane = ["x", "y", "z", "w"][slot % 4];
+    format!("params.signals[{}].{lane}", slot / 4)
+}
+
+/// A routed slot's live value: a readout rather than a control, since the
+/// route is the whole value while it feeds the slot. The signal glyph up
+/// front is what says "connected" at a glance against the sliders around it.
+fn slot_readout(value: f32) -> Div {
+    const BAR: f32 = 64.0;
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_XS)
+        .child(
+            gpui::svg()
+                .path(icons::AUDIO_WAVEFORM)
+                .size(px(12.))
+                .flex_none()
+                .text_color(palette::accent()),
+        )
+        .child(
+            div()
+                .w(px(28.))
+                .text_xs()
+                .text_color(palette::text_faint())
+                .child(format!("{value:.2}")),
+        )
+        .child(
+            div()
+                .w(px(BAR))
+                .h(px(6.))
+                .rounded(px(3.))
+                .bg(palette::bg_control())
+                .child(
+                    div()
+                        .h_full()
+                        .w(px(BAR * value.clamp(0.0, 1.0)))
+                        .rounded(px(3.))
+                        .bg(palette::accent()),
+                ),
+        )
 }
 
 /// The exclusive toggle as the output layer's mode. The two device lists

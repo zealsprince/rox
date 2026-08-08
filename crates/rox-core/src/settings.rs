@@ -1377,6 +1377,22 @@ pub struct PostShaderConfig {
     /// whole feed, so an unrouted slot reads zero from then on.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
+    /// Hand-set slot values, the twin of the Shader panel config's list:
+    /// what a slot reads with nothing feeding it, which is how a screen
+    /// shader's named parameters get tuned without a signal in sight. A
+    /// route on the same slot wins while it's there; the hand-set value
+    /// comes back when it goes. Under the legacy no-routes feed a hand-set
+    /// slot is likewise held out of the pool's order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub manual: Vec<(u8, f32)>,
+    /// Keep frames coming while the audio is silent, the panel shaders'
+    /// switch grown app-wide. Off, a paused player parks the pass on its
+    /// last frame and it costs nothing; on, the pass keeps drawing, which
+    /// is what lets a shader that reads the mouse follow the cursor with
+    /// nothing playing. The clock only advances with the signal feed
+    /// either way, so idle frames track the mouse without the animation
+    /// creeping forward.
+    pub run_when_idle: bool,
 }
 
 impl PostShaderConfig {
@@ -2900,7 +2916,10 @@ mod tests {
             plain.get("post_shader").is_none(),
             "no screen shader writes no key"
         );
-        assert!(plain.get("shaders").is_none(), "an empty pool writes no key");
+        assert!(
+            plain.get("shaders").is_none(),
+            "an empty pool writes no key"
+        );
 
         let bundle = WorkspaceBundle {
             meta: WorkspaceMeta {

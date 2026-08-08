@@ -141,7 +141,7 @@ pub fn pending_shader(
     let clipped = source.lines().count().saturating_sub(lines.len());
     let origin: SharedString = match path {
         Some(path) => format!("Said to come from {}", path.display()).into(),
-        None => "No file behind it; the source rode the layout".into(),
+        None => "No file behind it; the source travelled inside the layout".into(),
     };
     let listing = div()
         .id(id)
@@ -192,58 +192,7 @@ pub fn pending_shader(
         )
 }
 
-/// The block a surface wearing a pool shader shows: which shader it's on,
-/// that the file behind it is shared, and the two ways off it. Both shader
-/// surfaces wear this, the way they share the approval block above.
-///
-/// A name the pool doesn't hold says so outright. The surface paints
-/// nothing in that state and there's no error to read anywhere else, so
-/// without this the panel is just blank for no stated reason.
-pub fn pool_shader_block<P: 'static>(
-    name: &str,
-    missing: bool,
-    edit: impl Fn(&mut P, &mut Context<P>) + 'static,
-    detach: impl Fn(&mut P, &mut Context<P>) + 'static,
-    cx: &mut Context<P>,
-) -> Div {
-    let note: SharedString = if missing {
-        format!(
-            "{name} isn't in this workspace's shaders, so nothing paints. Choosing a \
-             file or a preset detaches this panel and gives it a source of its own."
-        )
-        .into()
-    } else {
-        format!(
-            "Wearing {name} from this workspace's shaders. The source is shared, so an \
-             edit lands on every panel wearing the name."
-        )
-        .into()
-    };
-    let controls = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(tokens::SPACE_SM)
-        .child(small_button(
-            "Edit as File",
-            icons::EXTERNAL_LINK,
-            missing,
-            cx.listener(move |this, _, _, cx| edit(this, cx)),
-        ))
-        .child(small_button(
-            "Detach Copy",
-            icons::COPY,
-            missing,
-            cx.listener(move |this, _, _, cx| detach(this, cx)),
-        ));
-    div()
-        .flex()
-        .flex_col()
-        .gap(tokens::SPACE_MD)
-        .child(panel::setting_row_dyn("Pool Shader", Some(note), controls))
-}
-
-/// The name field behind "Save to Shaders", on whichever surface is wearing
+/// The name field behind the save row, on whichever surface is showing
 /// it. The input builds the first time the block renders rather than when
 /// the surface is constructed: a panel has a `Window` at render and not
 /// before. It lives on the surface from then on, so a half-typed name
@@ -291,16 +240,19 @@ impl ShaderNameField {
     }
 }
 
-/// The save-to-pool block both shader surfaces wear: a name, and the button
-/// that puts this surface's inline shader into the workspace's shaders
-/// under it. Promotion is how a shader stops belonging to one panel: from
-/// here the pool holds the source, any other panel can wear the same name,
-/// and one edit reaches all of them.
-pub fn save_to_pool_block<P: 'static>(
+/// The save row: a name, and the button that puts this surface's own
+/// shader into the workspace's shaders under it. Saving is how a shader
+/// stops belonging to one panel - the workspace holds the source from
+/// there, any other panel can use the same name, and one edit reaches all
+/// of them.
+///
+/// It stays a plain row rather than an entry in the picker above. Inputs
+/// defer and so does the picker's popup, and gpui 0.2.2 panics on a
+/// deferred element that defers again.
+fn save_block<P: 'static>(
     field: &mut ShaderNameField,
     fallback: &str,
-    inert: bool,
-    save: impl Fn(&mut P, String, &mut Context<P>) + 'static,
+    save: fn(&mut P, String, &mut Context<P>),
     window: &mut Window,
     cx: &mut Context<P>,
 ) -> Div {
@@ -312,18 +264,16 @@ pub fn save_to_pool_block<P: 'static>(
         typed
     };
     let replaces = settings::shader_pool_get(&name).is_some();
-    let note: SharedString = if inert {
-        "Nothing to save yet: pick a preset or a file first".into()
-    } else if replaces {
+    let note: SharedString = if replaces {
         format!(
-            "Saving replaces the shader this workspace already calls {name}, so every \
-             panel wearing that name changes with it"
+            "Replaces the shader this workspace already calls {name}. Every panel using \
+             that name changes with it"
         )
         .into()
     } else {
         format!(
-            "Hands the source to the workspace as {name}. The panel wears it by name \
-             from then on, and so can any other panel"
+            "Adds it to this workspace's shaders under {name}. Any panel can use it, and \
+             editing it updates them all"
         )
         .into()
     };
@@ -331,9 +281,13 @@ pub fn save_to_pool_block<P: 'static>(
         let input = input.clone();
         let fallback = fallback.to_string();
         small_button(
-            if replaces { "Replace" } else { "Save" },
+            if replaces {
+                "Replace"
+            } else {
+                "Save to Workspace"
+            },
             icons::PLUS,
-            inert,
+            false,
             cx.listener(move |this, _, _, cx| {
                 let typed = input.read(cx).value().trim().to_string();
                 let name = if typed.is_empty() {
@@ -361,6 +315,215 @@ pub fn save_to_pool_block<P: 'static>(
             .text_color(palette::text_muted())
             .child(note),
     )
+}
+
+/// The picker both shader surfaces lead with, and the rows that follow from
+/// whatever it's showing.
+///
+/// A shader arrives one of a few ways - a shipped example, one of the
+/// workspace's shaders, a file, or text that rode in on a layout - and each
+/// of those wants a different sentence and different buttons under it. One
+/// row picks, and only the rows that selection needs come after, instead of
+/// every path's controls stacking on the page at once.
+///
+/// The actions are plain `fn` pointers rather than closures: every caller
+/// passes a method call on its own surface, and the picker's popup has to
+/// carry them across a `'static` menu closure.
+pub struct ShaderSource<'a, P: 'static> {
+    /// Element id prefix. Two surfaces can have their settings open at
+    /// once, and a shared id would put them on one popup's state.
+    pub id: &'static str,
+    /// The workspace shader this config names, if it names one.
+    pub name: Option<&'a str>,
+    /// The file the source was last read from, a bookmark for reloads.
+    pub path: Option<&'a Path>,
+    /// What actually runs: the workspace's copy under a name, the config's
+    /// own source otherwise, None when a name resolves to nothing.
+    pub resolved: Option<&'a str>,
+    /// Clearing the shader, for a surface where having none is a state
+    /// worth offering. Some puts a None entry at the top of the list.
+    pub clear: Option<fn(&mut P, &mut Context<P>)>,
+    pub use_example: fn(&mut P, usize, &mut Context<P>),
+    pub use_named: fn(&mut P, String, &mut Context<P>),
+    pub choose_file: fn(&mut P, &mut Window, &mut Context<P>),
+    pub eject: fn(&mut P, &mut Context<P>),
+    pub detach: fn(&mut P, &mut Context<P>),
+    pub reload: fn(&mut P, &mut Context<P>),
+    pub save: fn(&mut P, String, &mut Context<P>),
+    /// The half-typed name a save would land under.
+    pub field: &'a mut ShaderNameField,
+    /// The name a save lands on with that field left empty.
+    pub fallback: &'a str,
+}
+
+impl<P: 'static> ShaderSource<'_, P> {
+    pub fn render(self, window: &mut Window, cx: &mut Context<P>) -> Div {
+        let ShaderSource {
+            id,
+            name,
+            path,
+            resolved,
+            clear,
+            use_example,
+            use_named,
+            choose_file,
+            eject,
+            detach,
+            reload,
+            save,
+            field,
+            fallback,
+        } = self;
+        let choice = shader::pick(name, path, resolved);
+
+        // The list, grouped the way the app's other grouped menus are: a
+        // label item over each run of entries, and the one action that
+        // isn't a choice sitting under a separator at the bottom.
+        let pool = settings::shader_pool();
+        let current = choice.clone();
+        let host = cx.entity().downgrade();
+        let picker = settings_ui::select_field(
+            SharedString::from(format!("{id}-source")),
+            shader::pick_label(&choice),
+            matches!(choice, shader::Pick::Empty),
+        )
+        .dropdown_menu(move |mut menu, _, _| {
+            menu = menu.scrollable(true).max_h(px(320.));
+            if let Some(clear) = clear {
+                let host = host.clone();
+                menu = menu.item(
+                    PopupMenuItem::new("None")
+                        .checked(matches!(current, shader::Pick::Empty))
+                        .on_click(move |_, _, cx| {
+                            if let Some(host) = host.upgrade() {
+                                host.update(cx, clear);
+                            }
+                        }),
+                );
+            }
+            menu = menu.item(PopupMenuItem::label("Examples"));
+            for (index, preset) in shader::PRESETS.iter().enumerate() {
+                let host = host.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(preset.label)
+                        .checked(current == shader::Pick::Example(index))
+                        .on_click(move |_, _, cx| {
+                            if let Some(host) = host.upgrade() {
+                                host.update(cx, |this, cx| use_example(this, index, cx));
+                            }
+                        }),
+                );
+            }
+            if !pool.is_empty() {
+                menu = menu.item(PopupMenuItem::label("This Workspace"));
+                for entry in &pool {
+                    let host = host.clone();
+                    let entry_name = entry.name.clone();
+                    let checked = matches!(
+                        &current,
+                        shader::Pick::Named { name, .. } if name == &entry_name
+                    );
+                    menu = menu.item(
+                        PopupMenuItem::new(entry.name.clone())
+                            .checked(checked)
+                            .on_click(move |_, _, cx| {
+                                let entry_name = entry_name.clone();
+                                if let Some(host) = host.upgrade() {
+                                    host.update(cx, |this, cx| use_named(this, entry_name, cx));
+                                }
+                            }),
+                    );
+                }
+            }
+            let host = host.clone();
+            menu.separator().item(
+                PopupMenuItem::new("From File...")
+                    .icon(Icon::default().path(icons::FOLDER))
+                    .on_click(move |_, window, cx| {
+                        if let Some(host) = host.upgrade() {
+                            host.update(cx, |this, cx| choose_file(this, window, cx));
+                        }
+                    }),
+            )
+        });
+
+        let note: SharedString = match &choice {
+            shader::Pick::Empty => "Pick an example to start, or point rox at a .wgsl file \
+                                    with a fragment stage defining fs_user(uv)"
+                .into(),
+            shader::Pick::Example(index) => shader::pick_blurb(*index).into(),
+            shader::Pick::Named {
+                name,
+                missing: true,
+            } => format!(
+                "{name} isn't in this workspace's shaders anymore, so nothing paints. \
+                 Pick something else here and this panel gets a source of its own."
+            )
+            .into(),
+            shader::Pick::Named { .. } => {
+                "Shared across this workspace. Editing it updates every panel that uses it.".into()
+            }
+            shader::Pick::File(path) => format!(
+                "{}. Your saves reload while the panel draws, and the source travels \
+                 inside the layout, so the panel keeps its shader on a machine that \
+                 never had the file.",
+                path.display()
+            )
+            .into(),
+            shader::Pick::Custom => "This source travels inside the layout with no file behind \
+                                     it. Edit as File writes it back out and picks up your saves."
+                .into(),
+        };
+
+        let empty = matches!(choice, shader::Pick::Empty);
+        let named = matches!(choice, shader::Pick::Named { .. });
+        let missing = matches!(choice, shader::Pick::Named { missing: true, .. });
+        let file = matches!(choice, shader::Pick::File(_));
+        let actions = (!empty).then(|| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_SM)
+                // A file is already the editing surface, so a second copy
+                // of it would only be a way to drift the two apart.
+                .when(file, |row| {
+                    row.child(small_button(
+                        "Reload",
+                        icons::REFRESH_CW,
+                        false,
+                        cx.listener(move |this, _, _, cx| reload(this, cx)),
+                    ))
+                })
+                .when(!file, |row| {
+                    row.child(small_button(
+                        "Edit as File",
+                        icons::EXTERNAL_LINK,
+                        missing,
+                        cx.listener(move |this, _, _, cx| eject(this, cx)),
+                    ))
+                })
+                .when(named, |row| {
+                    row.child(small_button(
+                        "Make Private Copy",
+                        icons::COPY,
+                        missing,
+                        cx.listener(move |this, _, _, cx| detach(this, cx)),
+                    ))
+                })
+        });
+        // Nothing to hand over when there's no source, and a shader that
+        // already belongs to the workspace is where saving would put it.
+        let save = (!empty && !named).then(|| save_block(field, fallback, save, window, cx));
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(panel::setting_row_dyn("Source", Some(note), picker))
+            .children(actions)
+            .children(save)
+    }
 }
 
 /// The open rename windows, keyed by the panel they rename; the same
@@ -1260,9 +1423,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         // rather than the inline text. The gate and the approval block both
         // read this, so a shader that arrived in a bundle can't slip past
         // them by riding in under a name with an empty source behind it.
-        let running = shader::resolve_source(shader.name.as_deref(), &shader.source);
-        let missing = shader.name.is_some() && running.is_none();
-        let running = running.unwrap_or_default();
+        let resolved = shader::resolve_source(shader.name.as_deref(), &shader.source);
+        let running = resolved.clone().unwrap_or_default();
         // A source that arrived inside a layout or a bundle doesn't run
         // until it's read and approved here.
         let pending = (!running.trim().is_empty() && !shader::approved(&running)).then(|| {
@@ -1309,58 +1471,35 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         let labels = shader::slot_labels(&running);
         self.shader_routes.sync(shader.routes.len());
 
-        let named = shader.name.clone();
-        let controls = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_SM)
-            .child(small_button(
-                "Reload",
-                icons::REFRESH_CW,
-                // A named panel's bookmark points at whatever it had inlined
-                // before the name went on, so re-reading it would pull that
-                // back over the pool's shader. The pool entry reloads itself.
-                named.is_some() || shader.path.is_none(),
-                cx.listener(|this, _, _, cx| this.reload_shader(cx)),
-            ))
-            .child(small_button(
-                "Choose File",
-                icons::FOLDER,
-                false,
-                cx.listener(|this, _, window, cx| this.pick_shader_file(window, cx)),
-            ))
-            // An inline shader ejects to a file from here; a named one ejects
-            // through its pool entry, on the block above.
-            .when(named.is_none(), |controls| {
-                controls.child(small_button(
-                    "Edit as File",
-                    icons::EXTERNAL_LINK,
-                    shader.source.trim().is_empty(),
-                    cx.listener(|this, _, _, cx| this.eject_shader(cx)),
-                ))
-            });
-        let source_note: SharedString = match (&named, &shader.path, shader.source.is_empty()) {
-            (Some(name), _, _) => format!(
-                "Choosing a file detaches this panel from {name} and gives it a source \
-                 of its own"
-            )
-            .into(),
-            (None, Some(path), _) => format!(
-                "{}. The source is copied into the layout, so the panel keeps its \
-                 shader on a machine that never had the file; Reload picks up edits",
-                path.display()
-            )
-            .into(),
-            (None, None, false) => "Loaded from a file that is no longer recorded; the source \
-                                    rides the layout. Edit as File writes it back out and \
-                                    picks the edits up as you save"
-                .into(),
-            (None, None, true) => "Pick a WGSL file with a fragment stage defining fs_user(uv). \
-                                   Reading `screen` shades what the panel drew, `prev` gives it \
-                                   a frame of feedback, and neither draws a plain quad"
-                .into(),
+        // The name a save would land under, read before the field is
+        // borrowed for the picker block below.
+        let fallback = {
+            let label = panel
+                .read(cx)
+                .custom_title()
+                .map(str::to_string)
+                .unwrap_or_else(|| panel::display_name(panel.read(cx).panel_name()));
+            shader::eject_name(&label, &shader.source)
         };
+        let picked = ShaderSource {
+            id: "panel-shader",
+            name: shader.name.as_deref(),
+            path: shader.path.as_deref(),
+            resolved: resolved.as_deref(),
+            // A panel is allowed to carry no surface shader at all, unlike
+            // the Shader panel, whose whole body is the thing.
+            clear: Some(|this: &mut Self, cx| this.clear_shader(cx)),
+            use_example: |this: &mut Self, index, cx| this.use_shader_example(index, cx),
+            use_named: |this: &mut Self, name, cx| this.use_pool_shader(name, cx),
+            choose_file: |this: &mut Self, window, cx| this.pick_shader_file(window, cx),
+            eject: |this: &mut Self, cx| this.eject_shader(cx),
+            detach: |this: &mut Self, cx| this.detach_shader(cx),
+            reload: |this: &mut Self, cx| this.reload_shader(cx),
+            save: |this: &mut Self, name, cx| this.save_shader_to_pool(name, cx),
+            field: &mut self.shader_name,
+            fallback: &fallback,
+        }
+        .render(window, cx);
         let mut source = div()
             .flex()
             .flex_col()
@@ -1376,11 +1515,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     cx,
                 ),
             ))
-            .child(panel::setting_row_dyn(
-                "Shader File",
-                Some(source_note),
-                controls,
-            ));
+            .child(picked);
         if let Some(error) = error {
             source = source.child(
                 div()
@@ -1403,36 +1538,6 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 cx,
             ),
         ));
-
-        // Wearing a pool shader, or the offer to hand this one over. Never
-        // both: a panel is either pointing at the workspace's copy or
-        // carrying its own.
-        let pool = named.as_ref().map(|name| {
-            pool_shader_block(
-                name,
-                missing,
-                |this: &mut Self, cx| this.eject_shader(cx),
-                |this: &mut Self, cx| this.detach_shader(cx),
-                cx,
-            )
-        });
-        let save = named.is_none().then(|| {
-            let label = panel
-                .read(cx)
-                .custom_title()
-                .map(str::to_string)
-                .unwrap_or_else(|| panel::display_name(panel.read(cx).panel_name()));
-            let fallback = shader::eject_name(&label, &shader.source);
-            let empty = shader.source.trim().is_empty();
-            save_to_pool_block(
-                &mut self.shader_name,
-                &fallback,
-                empty,
-                |this: &mut Self, name, cx| this.save_shader_to_pool(name, cx),
-                window,
-                cx,
-            )
-        });
 
         // The one route editor every shader surface wears, over this
         // panel's own list: the write goes back through `edit_shader`, so
@@ -1459,9 +1564,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex_col()
             .gap(SECTION_GAP)
             .children(pending.map(|body| section("Awaiting Approval", None, body)))
-            .children(pool.map(|body| section("Workspace Shader", None, body)))
             .child(section("Shader", None, source))
-            .children(save.map(|body| section("Save to Shaders", None, body)))
             .child(section(
                 "Signals",
                 Some(add.into_any_element()),
@@ -1626,6 +1729,60 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             move |shader| {
                 shader.source = entry.source;
                 shader.name = None;
+                shader.path = None;
+            },
+            cx,
+        );
+    }
+
+    /// Point the panel at one of the workspace's shaders. The inline source
+    /// goes with the bookmark: the workspace holds what runs from here, and
+    /// a second copy sitting on the panel would only be the one that's
+    /// wrong after the next edit to the shared entry.
+    ///
+    /// Nothing is approved on the way through. A workspace shader that came
+    /// in with a bundle still has to be read before it runs, and this is
+    /// the same choice picking a name in a bundle's config would have made.
+    fn use_pool_shader(&mut self, name: String, cx: &mut Context<Self>) {
+        self.edit_shader(
+            move |shader| {
+                shader.name = Some(name);
+                shader.source = String::new();
+                shader.path = None;
+            },
+            cx,
+        );
+    }
+
+    /// Load one of the shipped examples. Sits beside the file pick rather
+    /// than beside detach because it does the same thing: the panel comes
+    /// off whatever it was on and carries this source itself. The bookmark
+    /// goes, since an example has no file behind it and a stale one would
+    /// have the watch overwrite it a moment later.
+    fn use_shader_example(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(preset) = shader::PRESETS.get(index) else {
+            return;
+        };
+        let source = preset.source.to_string();
+        self.edit_shader(
+            move |shader| {
+                shader.source = source;
+                shader.name = None;
+                shader.path = None;
+            },
+            cx,
+        );
+    }
+
+    /// Take the shader off this panel: no name, no source, no bookmark. The
+    /// switch is left alone, since it's the row above and its own decision.
+    /// A workspace shader the panel was using stays in the workspace for
+    /// whatever else uses it.
+    fn clear_shader(&mut self, cx: &mut Context<Self>) {
+        self.edit_shader(
+            |shader| {
+                shader.name = None;
+                shader.source = String::new();
                 shader.path = None;
             },
             cx,

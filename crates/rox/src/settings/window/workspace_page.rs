@@ -25,16 +25,22 @@ pub(crate) struct CardEditor {
 /// The card's editable lines: what each one is called, what an empty one
 /// hints at, and the field it reads and writes. Created and updated stay
 /// out of this list because nobody types a date; a save stamps them.
-type CardField = (&'static str, &'static str, fn(&mut WorkspaceMeta) -> &mut String);
+type CardField = (
+    &'static str,
+    &'static str,
+    fn(&mut WorkspaceMeta) -> &mut String,
+);
 const CARD_FIELDS: [CardField; 5] = [
     ("Author", "Who made it", |meta| &mut meta.author),
     ("Description", "What the look is going for", |meta| {
         &mut meta.description
     }),
     ("Website", "Where it lives", |meta| &mut meta.website),
-    ("Version", "Your own version, whatever you count in", |meta| {
-        &mut meta.version
-    }),
+    (
+        "Version",
+        "Your own version, whatever you count in",
+        |meta| &mut meta.version,
+    ),
     ("License", "The terms you share it under", |meta| {
         &mut meta.license
     }),
@@ -161,16 +167,21 @@ impl SettingsWindow {
                             // A row and, for the one whose details are open,
                             // its card right under it, so the fields sit with
                             // the workspace they belong to.
-                            list = list.child(div().flex().flex_col().children(
-                                entries.into_iter().flat_map(|entry| {
-                                    let open = self
-                                        .workspace_card
-                                        .as_ref()
-                                        .is_some_and(|card| card.name == entry.name);
-                                    let row = self.workspace_row(entry, live, cx);
-                                    [Some(row), open.then(|| self.workspace_card_body(cx))]
-                                }).flatten(),
-                            ));
+                            list = list.child(
+                                div().flex().flex_col().children(
+                                    entries
+                                        .into_iter()
+                                        .flat_map(|entry| {
+                                            let open = self
+                                                .workspace_card
+                                                .as_ref()
+                                                .is_some_and(|card| card.name == entry.name);
+                                            let row = self.workspace_row(entry, live, cx);
+                                            [Some(row), open.then(|| self.workspace_card_body(cx))]
+                                        })
+                                        .flatten(),
+                                ),
+                            );
                         }
                         list.into_any_element()
                     },
@@ -312,18 +323,12 @@ impl SettingsWindow {
                         Input::new(input).small().w(px(240.)),
                     ));
                 }
-                body = body.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .child(small_button(
-                            "Save Card",
-                            icons::CHECK,
-                            false,
-                            cx.listener(|this, _, _, cx| this.save_workspace_card(cx)),
-                        )),
-                );
+                body = body.child(div().flex().flex_row().justify_end().child(small_button(
+                    "Save Card",
+                    icons::CHECK,
+                    false,
+                    cx.listener(|this, _, _, cx| this.save_workspace_card(cx)),
+                )));
             }
             // A shipped bundle's file is in the app's assets, so there's
             // nothing to write back to. Fork it with Save Current under a
@@ -729,7 +734,10 @@ impl SettingsWindow {
                     "This replaces the saved workspace with the current state.".into(),
                     "Overwrite",
                 ),
-                Pending::ApplyWorkspace { card, imported: true } => (
+                Pending::ApplyWorkspace {
+                    card,
+                    imported: true,
+                } => (
                     format!("Imported \"{}\"", card.name),
                     "It's saved to your workspaces. Applying it now replaces your layouts, \
                      palette, and appearance with the workspace's."

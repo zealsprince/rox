@@ -1,0 +1,705 @@
+{
+  "version": 1,
+  "name": "Critters",
+  "layouts": [
+    {
+      "name": "Critters",
+      "dump": {
+        "version": 1,
+        "center": {
+          "panel_name": "StackPanel",
+          "children": [
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "menu",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "anchor": true,
+                          "max_width": 24.0,
+                          "max_height": 24.0,
+                          "align": "left"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "search",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "anchor": true,
+                          "max_height": 24.0,
+                          "chips": "inline"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "window controls",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "anchor": true,
+                          "max_width": 96.0,
+                          "max_height": 24.0,
+                          "min_width": 96.0,
+                          "style": "icons",
+                          "mini": true,
+                          "align": "right"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    28.0,
+                    936.0,
+                    96.0
+                  ],
+                  "axis": 0
+                }
+              }
+            },
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "folder tree",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "cover": "none",
+                          "folders": "dim",
+                          "songs": "dim",
+                          "follow_playing": true,
+                          "resume_playing": false,
+                          "smooth_follow": true
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "library",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "query": "",
+                          "search": false,
+                          "query_source": "global",
+                          "density": "compact",
+                          "headers": "compact",
+                          "group_by": "album",
+                          "column_layout": [
+                            {
+                              "key": "track",
+                              "width": 40.0
+                            },
+                            {
+                              "key": "title",
+                              "width": 340.0
+                            },
+                            {
+                              "key": "artist",
+                              "width": 200.0
+                            },
+                            {
+                              "key": "duration",
+                              "width": 60.0
+                            }
+                          ],
+                          "sort_key": null,
+                          "sort_desc": false,
+                          "follow_playing": true,
+                          "resume_playing": false,
+                          "smooth_follow": false,
+                          "art_rounding": 0.0,
+                          "header_art": false,
+                          "header_year": true,
+                          "header_details": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "shader",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "source": "",
+                          "name": "Serpent",
+                          "routes": [
+                            {
+                              "enabled": true,
+                              "signal": 1,
+                              "target": "slot0",
+                              "from": 0.0,
+                              "to": 1.0
+                            },
+                            {
+                              "enabled": true,
+                              "signal": 2,
+                              "target": "slot1",
+                              "from": 0.0,
+                              "to": 1.0
+                            },
+                            {
+                              "enabled": true,
+                              "signal": 3,
+                              "target": "slot2",
+                              "from": 0.0,
+                              "to": 1.0
+                            }
+                          ],
+                          "run_when_idle": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    240.0,
+                    540.0,
+                    280.0
+                  ],
+                  "axis": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "seek",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "max_height": 20.0,
+                      "timings": true,
+                      "show_total": true,
+                      "scrobble_marker": false
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            },
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "track info",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "anchor": true,
+                          "max_height": 24.0,
+                          "align": "left",
+                          "output_tint": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "playback",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "min_width": 270.0,
+                          "max_width": 270.0,
+                          "max_height": 24.0,
+                          "align": "right",
+                          "stop": true,
+                          "random": false,
+                          "play_highlight": "none"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "volume",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "min_width": 100.0,
+                          "max_width": 100.0,
+                          "max_height": 24.0,
+                          "align": "right",
+                          "stretch": false,
+                          "icon": true,
+                          "slider": false,
+                          "percent": true
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    690.0,
+                    270.0,
+                    100.0
+                  ],
+                  "axis": 0
+                }
+              }
+            }
+          ],
+          "info": {
+            "stack": {
+              "sizes": [
+                24.0,
+                690.0,
+                20.0,
+                26.0
+              ],
+              "axis": 1
+            }
+          }
+        }
+      },
+      "size": {
+        "width": 1080.0,
+        "height": 800.0
+      }
+    },
+    {
+      "name": "Critters Mini",
+      "dump": {
+        "version": 1,
+        "center": {
+          "panel_name": "StackPanel",
+          "children": [
+            {
+              "panel_name": "StackPanel",
+              "children": [
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "track info",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "anchor": true,
+                          "align": "left",
+                          "output_tint": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "mini toggle",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "locked": true,
+                          "max_width": 26.0,
+                          "align": "left"
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "stack": {
+                  "sizes": [
+                    514.0,
+                    26.0
+                  ],
+                  "axis": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "shader",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "anchor": true,
+                      "source": "",
+                      "name": "Serpent",
+                      "routes": [
+                        {
+                          "enabled": true,
+                          "signal": 1,
+                          "target": "slot0",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "slot1",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 3,
+                          "target": "slot2",
+                          "from": 0.0,
+                          "to": 1.0
+                        }
+                      ],
+                      "run_when_idle": false
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "playback",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "max_height": 24.0,
+                      "align": "center",
+                      "stop": true,
+                      "random": false,
+                      "play_highlight": "none"
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            },
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "seek",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "locked": true,
+                      "max_height": 20.0,
+                      "timings": true,
+                      "show_total": false,
+                      "scrobble_marker": false
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            }
+          ],
+          "info": {
+            "stack": {
+              "sizes": [
+                28.0,
+                52.0,
+                24.0,
+                20.0
+              ],
+              "axis": 1
+            }
+          }
+        }
+      },
+      "size": {
+        "width": 540.0,
+        "height": 180.0
+      }
+    }
+  ],
+  "primary_layout": "Critters",
+  "mini_layout": "Critters Mini",
+  "palette_dark": {
+    "accent": "#ffffff",
+    "accent_hover": "#cccccc",
+    "highlight": "#e8e8e8",
+    "border": "#303030",
+    "border_light": "#3c3c3c",
+    "text_bright": "#ffffff",
+    "text_on_accent": "#000000",
+    "bg_root": "#000000",
+    "bg_panel": "#000000",
+    "bg_elevated": "#0c0c0c",
+    "bg_menubar": "#080808",
+    "bg_menu": "#101010",
+    "bg_control": "#181818",
+    "bg_menu_hover": "#1e1e1e",
+    "bg_control_active": "#2a2a2a",
+    "bg_control_hover": "#262626",
+    "bg_input": "#060606",
+    "bg_toolbar": "#0a0a0a",
+    "text": "#e6e6e6",
+    "text_secondary": "#c2c2c2",
+    "text_dim": "#9e9e9e",
+    "text_muted": "#787878",
+    "text_faint": "#525252",
+    "gridline": "#262626"
+  },
+  "palette_light": {
+    "accent": "#141414",
+    "accent_hover": "#383838",
+    "highlight": "#dcdcd6",
+    "border": "#b0ada1",
+    "border_light": "#a5a296",
+    "text_bright": "#000000",
+    "text_on_accent": "#f2f0ea",
+    "bg_root": "#f2f0ea",
+    "bg_panel": "#f2f0ea",
+    "bg_elevated": "#e9e7df",
+    "bg_menubar": "#e2dfd6",
+    "bg_menu": "#dedbd1",
+    "bg_control": "#d6d3c8",
+    "bg_menu_hover": "#cfccc0",
+    "bg_control_active": "#c6c3b6",
+    "bg_control_hover": "#bfbcae",
+    "bg_input": "#f7f5f0",
+    "bg_toolbar": "#e9e7df",
+    "text": "#191919",
+    "text_secondary": "#2e2e2e",
+    "text_dim": "#454545",
+    "text_muted": "#5f5f5f",
+    "text_faint": "#7d7d7d",
+    "gridline": "#b5b2a6"
+  },
+  "signals": [
+    {
+      "id": 1,
+      "name": "Kick",
+      "source": {
+        "kind": "band",
+        "lo": 35.0,
+        "hi": 130.0
+      },
+      "smooth": 0.2,
+      "threshold": 0.15,
+      "reset_on_track": false
+    },
+    {
+      "id": 2,
+      "name": "Mix",
+      "source": {
+        "kind": "level"
+      },
+      "smooth": 0.35,
+      "threshold": 0.0,
+      "reset_on_track": false
+    },
+    {
+      "id": 3,
+      "name": "Drift",
+      "source": {
+        "kind": "aggregate",
+        "of": 2,
+        "rate": 0.04
+      },
+      "smooth": 0.0,
+      "threshold": 0.0,
+      "reset_on_track": true
+    }
+  ],
+  "shaders": [
+    {
+      "name": "Dither",
+      "source": "// Critters: the whole app as a 1-bit print.\n//\n// A five-tone ordered dither is the page's constant identity, playing or\n// not; the damage moves through it as torn clouds that drift with the\n// song, coarsening the print rather than replacing it. Inside a cloud the\n// tone count crushes a little, the grid chunks, static fizzes with the\n// mix level, and bright pixels grow column-aligned sort tails. At a\n// cloud's hottest core the picture is bitten out entirely, through a\n// coarse diamond screen, the way the game cuts a chunk from a scene. The\n// clouds belong to the music: paused, they all but vanish and the plain\n// print is the whole look. Under the cursor the page is simply the page:\n// a clear circle, no ink tricks at all.\n//\n// The swathes slot is a hand-set knob, not a signal: 0.5 is the look as\n// designed, 0 turns the clouds off outright, 1 doubles them.\n//\n// @slot 0: kick\n// @slot 1: mix\n// @slot 2: drift\n// @slot 3: swathes\n\nfn critters_bayer(cell: vec2<f32>) -> f32 {\n    let p = vec2<u32>(u32(max(cell.x, 0.0)), u32(max(cell.y, 0.0)));\n    let x = (p.x ^ p.y) & 7u;\n    let y = p.y & 7u;\n    let v = ((x & 1u) * 2u + (y & 1u)) * 16u\n        + (((x >> 1u) & 1u) * 2u + ((y >> 1u) & 1u)) * 4u\n        + ((x >> 2u) * 2u + (y >> 2u));\n    return (f32(v) + 0.5) / 64.0;\n}\n\nfn critters_hash(p: vec2<f32>) -> f32 {\n    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);\n}\n\nfn critters_noise(p: vec2<f32>) -> f32 {\n    let i = floor(p);\n    let f = fract(p);\n    let u = f * f * (3.0 - 2.0 * f);\n    let a = critters_hash(i);\n    let b = critters_hash(i + vec2<f32>(1.0, 0.0));\n    let c = critters_hash(i + vec2<f32>(0.0, 1.0));\n    let d = critters_hash(i + vec2<f32>(1.0, 1.0));\n    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n}\n\nfn critters_luma(color: vec4<f32>) -> f32 {\n    return dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));\n}\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let kick = clamp(params.signals[0].x, 0.0, 1.0);\n    let loudness = clamp(params.signals[0].y, 0.0, 1.0);\n    let drift = params.signals[0].z;\n    let swathes = clamp(params.signals[0].w, 0.0, 1.0) * 2.0;\n    let playing = clamp(params.user_meta[0].z, 0.0, 1.0);\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let px = uv * res;\n    let aspect = vec2<f32>(res.x / res.y, 1.0);\n\n    // The clouds: two octaves of noise on opposing orbits of the drift\n    // phase, thresholded high, so the damage reads as torn patches\n    // drifting through the print rather than stripes crossing it. The\n    // kick barely touches the field; a steady kick holding the mask open\n    // is what made the play state a different shader than the idle one.\n    // The clouds belong to the music outright: paused, the mask drops to\n    // a whisper and the plain print carries the look alone. The hand-set\n    // swathes knob scales the whole thing, off at 0, doubled at 1.\n    let orbit = vec2<f32>(cos(6.28318530718 * drift), sin(6.28318530718 * drift));\n    let n1 = critters_noise(\n        uv * aspect * 4.0 + orbit * 1.2 + vec2<f32>(params.time * 0.02, -params.time * 0.015),\n    );\n    let n2 = critters_noise(\n        uv * aspect * 9.0 - orbit * 1.8 + vec2<f32>(-params.time * 0.012, params.time * 0.018),\n    );\n    let field = n1 * 0.62 + n2 * 0.38 + kick * 0.05;\n    let alive = (0.06 + 0.94 * playing) * swathes;\n    let m = clamp(smoothstep(0.60, 0.80, field) * alive, 0.0, 1.0);\n\n    // Sampling grid: native on clean paper, chunked inside a swathe, and\n    // chunked harder when the kick lands there.\n    let chunk = 1.0 + floor(m * (1.0 + kick) + 0.25);\n    let cell = floor(px / chunk);\n    let src = textureSampleLevel(screen, samp, (cell + 0.5) * chunk / res, 0.0);\n    var luma = critters_luma(src);\n\n    // The sort tails: a fragment pass can't truly sort a column, so inside\n    // a swathe every bright pixel grows a downward comet tail instead,\n    // column-aligned, its length rolled per column so a run of streaks\n    // comes out ragged the way a real sort does. Eight taps, always taken,\n    // gated by the mask at the end.\n    let colw = max(chunk, 3.0);\n    let col = floor(px.x / colw);\n    let ragged = 0.35 + 0.65 * critters_hash(vec2<f32>(col, floor(drift * 48.0)));\n    let tail = (6.0 + 22.0 * kick) * ragged / res.y;\n    let colx = (col + 0.5) * colw / res.x;\n    var streak = 0.0;\n    for (var j = 1; j < 9; j = j + 1) {\n        let back = f32(j) / 8.0;\n        let above = vec2<f32>(colx, clamp(uv.y - back * tail, 0.0, 1.0));\n        let l = critters_luma(textureSampleLevel(screen, samp, above, 0.0));\n        // Only genuinely bright sources spawn a tail; dim rows dripping\n        // was what whited out whole panels.\n        streak = max(streak, smoothstep(0.4, 0.8, l) * l * (1.0 - back * back));\n    }\n    luma = max(luma, streak * m * 0.7);\n\n    // Static rides the swathes when the mix runs loud, faintly.\n    luma += (critters_hash(cell + floor(drift * 883.0)) - 0.5) * 0.06 * loudness * m;\n\n    // Tone count: a five-tone print on clean paper, unmissable on a dark\n    // palette, so the dither is the page's constant identity and a swathe\n    // only coarsens it. Light themes get a little more headroom, since\n    // paper shows every tone the way black swallows them. The matrix\n    // crawls a cell at a time with the drift phase, never smoothly, so\n    // text stays print-stable.\n    let paper = mix(5.0, 7.0, clamp(params.user_meta[1].x, 0.0, 1.0));\n    let tones = mix(paper, mix(4.0, 3.0, kick), m);\n    let crawl = floor(vec2<f32>(drift, drift * 0.5) * 8.0);\n    let threshold = critters_bayer(cell + crawl);\n    let steps = max(tones - 1.0, 1.0);\n    let q = clamp(floor(luma * steps + threshold) / steps, 0.0, 1.0);\n\n    // The bite: at a cloud's hottest core the picture is cut out\n    // entirely, through a coarse diamond screen so the hole's edge is the\n    // game's chunky pattern rather than a soft fade.\n    let coarse = critters_bayer(floor(px / 10.0));\n    let bite = smoothstep(0.84, 0.96, field) * alive;\n    let inked = q * (1.0 - step(coarse, bite));\n\n    // The lamp: the composed frame untouched inside the circle, easing\n    // back into the print at the rim.\n    let raw = textureSampleLevel(screen, samp, uv, 0.0);\n    let lamp = 1.0 - smoothstep(0.09, 0.18, length((uv - params.mouse.xy / res) * aspect));\n    return vec4<f32>(mix(vec3<f32>(inked), raw.rgb, lamp), 1.0);\n}\n"
+    },
+    {
+      "name": "Serpent",
+      "source": "// Serpent: the back wall of the Snake chapter.\n//\n// Two fields of folded value noise, printed straight to three tones with\n// its own Bayer pass, so the panel is full print whatever the screen\n// shader is doing. Every bit of motion hangs off the drift phase, which\n// is music-driven time: paused, the coil holds perfectly still no matter\n// how often the window repaints. The kick moves nothing. It lifts the\n// second field through the first instead, so a hit reads as something\n// surfacing rather than the whole wall flinching.\n//\n// @slot 0: kick\n// @slot 1: mix\n// @slot 2: drift\n\nfn serpent_hash(p: vec2<f32>) -> f32 {\n    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);\n}\n\nfn serpent_noise(p: vec2<f32>) -> f32 {\n    let i = floor(p);\n    let f = fract(p);\n    let u = f * f * (3.0 - 2.0 * f);\n    let a = serpent_hash(i);\n    let b = serpent_hash(i + vec2<f32>(1.0, 0.0));\n    let c = serpent_hash(i + vec2<f32>(0.0, 1.0));\n    let d = serpent_hash(i + vec2<f32>(1.0, 1.0));\n    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n}\n\nfn serpent_fbm(p: vec2<f32>) -> f32 {\n    var value = 0.0;\n    var amp = 0.5;\n    var q = p;\n    for (var i = 0; i < 4; i = i + 1) {\n        value += amp * serpent_noise(q);\n        q = q * 2.03 + vec2<f32>(17.0, 9.2);\n        amp *= 0.5;\n    }\n    return value;\n}\n\nfn serpent_bayer(cell: vec2<f32>) -> f32 {\n    let p = vec2<u32>(u32(max(cell.x, 0.0)), u32(max(cell.y, 0.0)));\n    let x = (p.x ^ p.y) & 7u;\n    let y = p.y & 7u;\n    let v = ((x & 1u) * 2u + (y & 1u)) * 16u\n        + (((x >> 1u) & 1u) * 2u + ((y >> 1u) & 1u)) * 4u\n        + ((x >> 2u) * 2u + (y >> 2u));\n    return (f32(v) + 0.5) / 64.0;\n}\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let kick = clamp(params.signals[0].x, 0.0, 1.0);\n    let loudness = clamp(params.signals[0].y, 0.0, 1.0);\n    let drift = params.signals[0].z;\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let p = (uv - 0.5) * vec2<f32>(res.x / res.y, 1.0);\n\n    // Music time as a point on a circle: continuous through the phase\n    // wrap, and frozen the moment the music is. The two fields orbit in\n    // opposite directions so they never read as one sliding image.\n    let phase = 6.28318530718 * drift;\n    let orbit = vec2<f32>(cos(phase), sin(phase));\n\n    // The wall: noise moved by noise, drifting on the orbit. The warp\n    // strength is fixed; nothing here jitters with the music.\n    let warp_a = vec2<f32>(\n        serpent_fbm(p * 1.7 + orbit * 0.6),\n        serpent_fbm(p * 1.7 - orbit * 0.4 + vec2<f32>(4.7, 1.3)),\n    );\n    let body_a = serpent_fbm(p * 2.6 + (warp_a - 0.5) * 1.8 + orbit * 0.3);\n    let ridge_a = abs(sin((body_a * 6.0 + phase * 0.5) * 3.14159));\n    let ink_a = pow(ridge_a, 2.6) * (0.35 + 0.65 * body_a) * (0.5 + 0.5 * loudness);\n\n    // The thing beneath it: finer scales, turned against the wall's grain,\n    // riding the orbit backwards. It's always there, and the kick is only\n    // a lamp on it.\n    let q = vec2<f32>(p.x * 0.36 - p.y * 0.93, p.x * 0.93 + p.y * 0.36);\n    let warp_b = vec2<f32>(\n        serpent_fbm(q * 3.1 - orbit * 0.5),\n        serpent_fbm(q * 3.1 + orbit * 0.7 + vec2<f32>(8.1, 3.9)),\n    );\n    let body_b = serpent_fbm(q * 4.2 + (warp_b - 0.5) * 1.4 - orbit * 0.4);\n    let ridge_b = abs(sin((body_b * 8.0 - phase * 0.5) * 3.14159));\n    let reveal = smoothstep(0.15, 0.85, kick);\n    let ink_b = pow(ridge_b, 2.0) * (0.4 + 0.6 * body_b) * reveal;\n\n    let ink = clamp(max(ink_a, ink_b), 0.0, 1.0);\n\n    // Printed on the way out: three tones through the same matrix the\n    // screen pass uses, so the panel is dithered even where the swathes\n    // aren't. The screen pass quantizing this again is harmless, since a\n    // three-tone image re-reads as itself.\n    let threshold = serpent_bayer(floor(uv * res));\n    let printed = clamp(floor(ink * 2.0 + threshold) / 2.0, 0.0, 1.0);\n    return vec4<f32>(vec3<f32>(printed), 1.0);\n}\n"
+    }
+  ],
+  "meta": {
+    "author": "zealsprince",
+    "description": "The whole app as a 1-bit print: an ordered dither over every surface, tones that crunch with the kick, and a noise wall that writhes with the song. After Critters for Sale.",
+    "version": "0.1",
+    "created": "2026-08-08",
+    "updated": "2026-08-08"
+  },
+  "post_shader": {
+    "enabled": true,
+    "name": "Dither",
+    "all_windows": true,
+    "routes": [
+      {
+        "enabled": true,
+        "signal": 1,
+        "target": "slot0",
+        "from": 0.0,
+        "to": 1.0
+      },
+      {
+        "enabled": true,
+        "signal": 2,
+        "target": "slot1",
+        "from": 0.0,
+        "to": 1.0
+      },
+      {
+        "enabled": true,
+        "signal": 3,
+        "target": "slot2",
+        "from": 0.0,
+        "to": 1.0
+      }
+    ],
+    "manual": [
+      [
+        3,
+        0.5
+      ]
+    ],
+    "run_when_idle": true
+  },
+  "appearance": {
+    "surface_opacity": 1.0,
+    "backdrop_strength": 1.0,
+    "frame": {
+      "margin": 0.0,
+      "padding": 0.0,
+      "rounding": 0.0,
+      "border": 0.0
+    },
+    "keep_theme": true,
+    "art_theming": false,
+    "rating_style": "stars",
+    "quick_play": {
+      "show_cover": false,
+      "show_subtitle": true,
+      "show_duration": true,
+      "comfortable": false
+    },
+    "hide_menubar": true,
+    "os_decorations": false
+  }
+}

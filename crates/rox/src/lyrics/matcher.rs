@@ -10,7 +10,7 @@
 //! One window per track path, registered like the cover editor, so asking
 //! again focuses the open one instead of stacking a twin.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, Div, Entity, Global, ScrollHandle,
@@ -18,7 +18,8 @@ use gpui::{
 };
 use gpui_component::Root;
 
-use rox_library::lyrics::{self, Source};
+use rox_core::fmt::fmt_ms;
+use rox_library::lyrics;
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
@@ -27,11 +28,10 @@ use crate::matching::{
     confidence_badge, confidence_bar, note, open_or_focus, Phase, WindowRegistry,
 };
 use crate::panel::AppState;
-use crate::panels::library::fmt_ms;
 use crate::player::fmt_time;
 use crate::providers::{self, LyricsCandidate, TrackQuery};
+use crate::settings::lyrics_dir;
 use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
-use crate::settings::{lyrics_dir, LyricsSave, Settings};
 
 /// The default window size: room for the candidate list beside a preview
 /// that reads a verse or two without scrolling.
@@ -97,7 +97,7 @@ impl LyricsMatch {
     fn new(state: AppState, path: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         // The query is the track's library tags, and the duration comes off
         // the projection so it scores whether or not the track is playing.
-        let query = query_for(&state, &path, cx);
+        let query = query_for(&state.library, &path, cx);
         let duration_ms = query
             .duration_secs
             .map(|secs| (secs * 1000.0) as u32)
@@ -356,47 +356,10 @@ impl LyricsMatch {
     }
 }
 
-/// The search query for a track: its library tags and, off the projection,
-/// its duration, so the score does not depend on the track being the one
-/// playing. Shared with the panel's auto-search. An empty artist or title
-/// means there is nothing to match on; the caller decides what to do.
-pub fn query_for(state: &AppState, path: &Path, cx: &App) -> TrackQuery {
-    let library = state.library.read(cx);
-    let meta = library.meta_for(path);
-    let duration_ms = library
-        .id_for(path)
-        .and_then(|id| duration_ms_for(state, id, cx))
-        .unwrap_or(0);
-    let (artist, title, album) = meta
-        .map(|m| (m.artist, m.title, m.album))
-        .unwrap_or_default();
-    TrackQuery {
-        artist,
-        title,
-        album,
-        duration_secs: (duration_ms > 0).then(|| duration_ms as f64 / 1000.0),
-    }
-}
-
-/// Where a saved sheet lands, per the Providers page's tag/sidecar/store
-/// choice. Shared by Apply and the panel's auto-search so both honor the
-/// one destination setting.
-pub fn save_target(path: &Path) -> Source {
-    match Settings::load().accounts.providers.lyrics_save {
-        LyricsSave::Tag => Source::Tag,
-        LyricsSave::Sidecar => Source::Sidecar(lyrics::default_sidecar(path)),
-        LyricsSave::Store => Source::Store(lyrics::store_file(&lyrics_dir(), path)),
-    }
-}
-
-/// The track's duration in ms off the projection, resolved from its id,
-/// so the score does not depend on the track being the one playing.
-fn duration_ms_for(state: &AppState, id: i64, cx: &App) -> Option<u32> {
-    let library = state.library.read(cx);
-    let projection = library.projection()?;
-    let row = projection.db_id.iter().position(|&db| db == id)?;
-    Some(projection.resolve(row as u32).duration_ms)
-}
+/// The query a provider gets asked with, and where a found sheet lands,
+/// both live down in the service layer now: the panel needs them too, and
+/// neither one draws anything.
+pub use rox_services::lyrics::{query_for, save_target};
 
 impl Render for LyricsMatch {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

@@ -7,6 +7,7 @@
 pub mod art;
 pub mod duplicates;
 pub mod embeddings;
+pub mod folders;
 pub mod genre;
 pub mod genre_meta;
 pub mod hash;
@@ -21,9 +22,11 @@ pub mod projection;
 pub mod rating;
 pub mod replaygain;
 pub mod scanner;
+pub mod sort;
 pub mod store;
 pub mod tag_source;
 pub mod thumbs;
+pub mod view;
 pub mod watch;
 pub mod writer;
 

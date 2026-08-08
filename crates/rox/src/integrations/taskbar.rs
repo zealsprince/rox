@@ -12,7 +12,8 @@
 //! signal, a session-bus broadcast keyed by desktop file, with no window in
 //! it at all. macOS has the dock tile and is not wired here.
 //!
-//! [`watch`] is the whole surface. Each job start calls it, one sampler
+//! [`watch`] is the whole surface. Each job start calls it, either directly
+//! or through [`follow`] for the scans the catalog announces, one sampler
 //! spins at [`TICK`] while anything runs and stops itself once the last one
 //! ends. Writes are gated on the whole percent moving, the same shape as
 //! [`super::tray::set_playing`] against player notifies: a scan counts ten
@@ -20,7 +21,9 @@
 
 use std::time::Duration;
 
-use gpui::{App, Global};
+use gpui::{App, Entity, Global};
+
+use crate::catalog::{Library, LibraryJob};
 
 /// How often the sampler reads the running jobs. The tasks window's own
 /// tick, for the same reason: a bar this coarse has nothing to say more
@@ -68,6 +71,25 @@ pub(crate) fn watch(cx: &mut App) {
         }
         cx.update(|cx| cx.default_global::<Taskbar>().watching = false)
             .ok();
+    })
+    .detach();
+}
+
+/// Follow a library's scans. A scan is the one job that never touches the
+/// tasks window's ticker, so the sampler is started off the catalog's own
+/// event instead.
+///
+/// The launch catch-up scan starts inside `Library::new`, before anything
+/// can be subscribed to it, so a library that is already scanning gets the
+/// sampler here rather than waiting for the next one.
+pub(crate) fn follow(library: &Entity<Library>, cx: &mut App) {
+    if library.read(cx).scanning() {
+        watch(cx);
+    }
+    App::subscribe(cx, library, |_, event, cx| {
+        if matches!(event, LibraryJob::ScanStarted) {
+            watch(cx);
+        }
     })
     .detach();
 }

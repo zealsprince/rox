@@ -15,12 +15,14 @@ use gpui::{
     Subscription, UniformListScrollHandle, Window,
 };
 use gpui_component::input::{MoveDown, MovePageDown, MovePageUp, MoveUp};
+use rox_core::fmt::fmt_ms;
+use rox_core::QUEUE_CAP;
 use rox_library::projection::{Projection, QUERY_FIELDS};
 
 use crate::assets::icons;
+use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::panel::{self, AppState};
-use crate::panels::library::{fmt_ms, LibraryEvent, QUEUE_CAP};
 use crate::query::search::{SearchBox, SearchEvent};
 use crate::settings::{QuickPlayConfig, Settings};
 use crate::tags::suggest;

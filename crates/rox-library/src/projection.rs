@@ -570,11 +570,14 @@ impl FilterSet {
         }
     }
 
-    /// Whether one track's db id passes the id pin; no pin passes all.
-    fn id_ok(&self, db_id: i64) -> bool {
-        match &self.ids {
-            Some(ids) => ids.contains(&db_id),
-            None => true,
+    /// Whether one track's db id passes the id pin; no pin passes all. A
+    /// row with no db id (a file dropped on the queue, never scanned) is
+    /// in no id-keyed set there is, so a pin always leaves it out.
+    fn id_ok(&self, db_id: Option<i64>) -> bool {
+        match (&self.ids, db_id) {
+            (Some(ids), Some(db_id)) => ids.contains(&db_id),
+            (Some(_), None) => false,
+            (None, _) => true,
         }
     }
 
@@ -653,10 +656,11 @@ impl FilterSet {
 /// rather than the column-optimized [`Projection::search`] and
 /// [`Projection::filter_mask`] over the whole catalog.
 pub struct TrackFields<'a> {
-    /// The track's library db id, for [`FilterSet`]'s id pin. Rows with no
-    /// db id of their own pass 0, which no track carries, so a pinned filter
-    /// leaves them out.
-    pub db_id: i64,
+    /// The track's library db id, for [`FilterSet`]'s id pin. None for a
+    /// row the catalog never gave one: a file dropped straight on the
+    /// queue is off-catalog, and an id pin leaves every one of them out
+    /// rather than folding them onto a shared phantom id.
+    pub db_id: Option<i64>,
     pub title: &'a str,
     pub artist: &'a str,
     pub album_artist: &'a str,
@@ -725,6 +729,23 @@ fn year_strings() -> &'static Arena {
 /// [`parse_query`]. An empty needle matches everything.
 fn contains_fold(haystack: &str, needle_lower: &str) -> bool {
     needle_lower.is_empty() || haystack.to_lowercase().contains(needle_lower)
+}
+
+/// A row a panel filters its own list with. The panels that hold their own
+/// rows rather than a projection slice (the queue, the playlists tree) all
+/// ran the same two matchers over the same borrowed fields; naming the
+/// fields is the only part that differs, so that's all an implementor
+/// writes.
+pub trait Filterable {
+    /// This row's fields, borrowed for one match.
+    fn fields(&self) -> TrackFields<'_>;
+
+    /// Whether the row passes both halves of the active query: the free and
+    /// pinned text terms, and the structured filter.
+    fn passes(&self, terms: &[Term], filter: &FilterSet, fold: bool) -> bool {
+        let fields = self.fields();
+        track_matches(terms, &fields) && filter.matches(&fields, fold)
+    }
 }
 
 /// Whether one track's fields satisfy every parsed query term. Free terms
@@ -1817,6 +1838,57 @@ mod tests {
         assert_eq!(titles_for(&p, "stronger year:2007").len(), 1);
     }
 
+    /// A row that names its own fields runs both matchers off one impl,
+    /// which is what the queue and the playlists tree share. An off-catalog
+    /// row carries no db id, so an id pin leaves it out rather than folding
+    /// every such row onto a shared phantom id.
+    #[test]
+    fn a_filterable_row_runs_both_matchers() {
+        struct Queued {
+            id: Option<i64>,
+            title: String,
+            artist: String,
+        }
+
+        impl Filterable for Queued {
+            fn fields(&self) -> TrackFields<'_> {
+                TrackFields {
+                    db_id: self.id,
+                    title: &self.title,
+                    artist: &self.artist,
+                    album_artist: &self.artist,
+                    album: "",
+                    genre: "",
+                    year: 0,
+                    codec: "flac",
+                    path: "/m/x.flac",
+                }
+            }
+        }
+
+        let known = Queued {
+            id: Some(7),
+            title: "Stronger".into(),
+            artist: "Daft Punk".into(),
+        };
+        let dropped = Queued {
+            id: None,
+            title: "Stronger".into(),
+            artist: "Daft Punk".into(),
+        };
+        let none = FilterSet::default();
+        let terms = parse_query("stronger");
+        assert!(known.passes(&terms, &none, false));
+        assert!(dropped.passes(&terms, &none, false));
+        // The text half still has to hold.
+        assert!(!known.passes(&parse_query("harder"), &none, false));
+
+        // An id pin takes the catalog row and leaves the dropped file out.
+        let pinned = FilterSet::with_ids(vec![7]);
+        assert!(known.passes(&terms, &pinned, false));
+        assert!(!dropped.passes(&terms, &pinned, false));
+    }
+
     /// The per-track matcher the queue, history, and playlists filter their
     /// own rows with agrees with `search` over the catalog: free terms sweep
     /// the text fields, pins isolate one, and the structured filter matches
@@ -1824,7 +1896,7 @@ mod tests {
     #[test]
     fn track_matcher_mirrors_search() {
         let fields = TrackFields {
-            db_id: 1,
+            db_id: Some(1),
             title: "Stronger",
             artist: "Daft Punk",
             album_artist: "Daft Punk",
@@ -2102,7 +2174,7 @@ mod tests {
 
         // The per-track matcher agrees.
         let fields = |path| TrackFields {
-            db_id: 1,
+            db_id: Some(1),
             title: "",
             artist: "",
             album_artist: "",
@@ -2160,7 +2232,7 @@ mod tests {
 
         // The per-track matcher agrees with the mask.
         let fields = TrackFields {
-            db_id: 1,
+            db_id: Some(1),
             title: "One",
             artist: "A",
             album_artist: "A",
@@ -2223,7 +2295,7 @@ mod tests {
         let mask = folded.filter_mask(&filter).unwrap();
         assert_eq!(mask.iter().filter(|&&b| b).count(), 3);
         let fields = TrackFields {
-            db_id: 1,
+            db_id: Some(1),
             title: "T",
             artist: "DAFT PUNK",
             album_artist: "",
@@ -2415,6 +2487,47 @@ mod tests {
 
         // The chips read past the pin: it is not the filter panel's doing.
         assert!(pinned.fields_empty());
+    }
+
+    /// A queue entry the catalog never saw (a file dropped straight on the
+    /// queue) carries no db id, so an id pin leaves it out - and leaves it
+    /// out on its own, not lumped in with every other id-less row. Field
+    /// picks still judge it on its tags.
+    #[test]
+    fn an_id_less_row_never_passes_an_id_pin() {
+        let dropped = TrackFields {
+            db_id: None,
+            title: "Bootleg",
+            artist: "Air",
+            album_artist: "Air",
+            album: "",
+            genre: "Electronic",
+            year: 2001,
+            codec: "flac",
+            path: "/tmp/bootleg.flac",
+        };
+        let catalogued = TrackFields {
+            db_id: Some(7),
+            ..dropped
+        };
+
+        // Any pin at all, including one that happens to hold 0, misses it.
+        for ids in [vec![7], vec![0], vec![0, 7], Vec::new()] {
+            let pinned = FilterSet::with_ids(ids);
+            assert!(
+                !pinned.matches(&dropped, false),
+                "an off-catalog row has no id to pin"
+            );
+        }
+        assert!(FilterSet::with_ids(vec![7]).matches(&catalogued, false));
+
+        // No pin, and the row is judged on its fields like any other.
+        let mut by_artist = FilterSet::default();
+        by_artist.toggle(FilterField::Artist, "Air");
+        assert!(by_artist.matches(&dropped, false));
+        by_artist.toggle(FilterField::Artist, "Air");
+        by_artist.toggle(FilterField::Artist, "Daft Punk");
+        assert!(!by_artist.matches(&dropped, false));
     }
 
     /// The plays column loads the listens aggregate and sorts like any

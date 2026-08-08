@@ -6167,7 +6167,6 @@ dependencies = [
  "async-channel 2.5.0",
  "chrono",
  "dirs 5.0.1",
- "discord-rich-presence",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
@@ -6182,13 +6181,15 @@ dependencies = [
  "rox-dock",
  "rox-library",
  "rox-net",
+ "rox-panel-api",
  "rox-panel-kit",
+ "rox-panels",
  "rox-playback",
+ "rox-services",
  "rox-viz",
  "rust-embed",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "souvlaki",
  "trash",
  "tray-icon",
@@ -6285,6 +6286,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rox-panel-api"
+version = "1.14.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "gpui-component",
+ "log",
+ "lsp-types",
+ "rox-core",
+ "rox-design",
+ "rox-dock",
+ "rox-library",
+ "rox-panel-kit",
+ "rox-services",
+ "rox-viz",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "rox-panel-kit"
 version = "1.14.0"
 dependencies = [
@@ -6292,6 +6314,29 @@ dependencies = [
  "gpui-component",
  "rox-design",
  "serde",
+]
+
+[[package]]
+name = "rox-panels"
+version = "1.14.0"
+dependencies = [
+ "dirs 5.0.1",
+ "gpui",
+ "gpui-component",
+ "image",
+ "log",
+ "rox-core",
+ "rox-design",
+ "rox-dock",
+ "rox-library",
+ "rox-net",
+ "rox-panel-api",
+ "rox-panel-kit",
+ "rox-playback",
+ "rox-services",
+ "rox-viz",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -6308,6 +6353,27 @@ dependencies = [
  "serde_json",
  "symphonia",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "rox-services"
+version = "1.14.0"
+dependencies = [
+ "async-channel 2.5.0",
+ "discord-rich-presence",
+ "gpui",
+ "image",
+ "log",
+ "rox-acoustic",
+ "rox-core",
+ "rox-design",
+ "rox-library",
+ "rox-net",
+ "rox-playback",
+ "rox-viz",
+ "serde",
+ "serde_json",
+ "url",
 ]
 
 [[package]]

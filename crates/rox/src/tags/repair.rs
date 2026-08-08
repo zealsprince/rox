@@ -36,8 +36,8 @@ use rox_library::writer::{self, Edit};
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
+use crate::catalog::Library;
 use crate::design::{palette, tokens};
-use crate::panels::library::Library;
 use crate::settings::ui::{small_button, MIN_SIZE};
 
 /// How many files each detection hop reads before the count moves. Big

@@ -1,0 +1,45 @@
+[package]
+name = "rox-panel-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Panels are gpui views, and the menus, inputs, and window roots the shared
+# helpers build come off the component library.
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+# The palette, tokens, and embedded icons every helper draws with.
+rox-design = { path = "../rox-design" }
+# The dock traits a panel implements, and the tab panel the chrome helpers
+# reach for.
+rox-dock = { path = "../rox-dock" }
+# Settings (the app frame, the rating style, the shader approvals) and the
+# clock formatters.
+rox-core = { path = "../rox-core" }
+# The projection types the shared query filters over, and the rating scale.
+rox-library = { path = "../rox-library" }
+# The shared widget layer the panel helpers re-export and build on.
+rox-panel-kit = { path = "../rox-panel-kit" }
+# The headless services AppState is made of: the catalog, the player, the
+# caches, the selection, the backdrop, the presence.
+rox-services = { path = "../rox-services" }
+# The signal pool the routes editor and the surface shaders ride.
+rox-viz = { path = "../rox-viz" }
+# Panel configs round-trip through the layout dumps as JSON.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The openers registry logs when something calls up into a window before the
+# binary has installed it.
+log = "0.4"
+# The surface shader hashes its source for the approval gate.
+sha2 = "0.10"
+# The tag suggestions ride the input widget's completion menu, whose
+# provider trait speaks these types; already in the tree through
+# gpui-component.
+lsp-types = "0.97"
+# The completion trait returns a fallible task.
+anyhow = "1"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

@@ -17,8 +17,9 @@ pub mod models;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{App, Global};
+use gpui::{App, Entity, Global};
 
+use crate::catalog::{Library, LibraryJob};
 use crate::settings::Settings;
 
 // Glob rather than a list: the shim's job is that every name the app already
@@ -70,9 +71,8 @@ pub fn stop(cx: &mut App) {
 /// a caller that could hand in a different one would be able to fill the
 /// table under a name nothing reads.
 ///
-/// The database path comes in rather than the library entity, because the
-/// watch sync starts this from inside the library's own update and reading a
-/// leased entity panics.
+/// The database path comes in rather than the library entity, so the pass
+/// carries nothing it would have to read back.
 pub fn start(db_path: PathBuf, cx: &mut App) {
     let settings = Settings::load();
     if progress(cx).is_some() || !settings.acoustic_analysis {
@@ -138,6 +138,24 @@ pub fn start(db_path: PathBuf, cx: &mut App) {
             }
         })
         .ok();
+    })
+    .detach();
+}
+
+/// Follow a library's watch syncs, so a library with the switch on stays
+/// described as it grows instead of waiting for someone to open the settings
+/// and press a button.
+///
+/// Only what the watcher brought in, deliberately. A full scan is an import
+/// or a manual rescan, and a library's worth of decoding is an afternoon that
+/// should be asked for; the catalog draws that line and only emits for the
+/// watch case.
+pub fn follow(library: &Entity<Library>, cx: &mut App) {
+    App::subscribe(cx, library, |library, event, cx| {
+        if matches!(event, LibraryJob::WatchSettled) {
+            let db_path = library.read(cx).db_path();
+            start(db_path, cx);
+        }
     })
     .detach();
 }

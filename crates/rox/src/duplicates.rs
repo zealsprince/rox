@@ -31,12 +31,13 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::{Root, Sizable, Size};
+use rox_core::fmt::fmt_ms;
 use rox_library::duplicates::match_duplicates;
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
+use crate::catalog::Library;
 use crate::design::{palette, tokens};
-use crate::panels::library::{fmt_ms, Library};
 use crate::settings::ui::{checkbox, small_button, MIN_SIZE};
 use crate::thumbs::{Thumb, Thumbs};
 

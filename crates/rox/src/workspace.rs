@@ -30,6 +30,7 @@ use gpui_component::Icon;
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
+use crate::catalog::Library;
 use crate::composite;
 use crate::design::{palette, tokens};
 use crate::history::{History, HistoryEvent};
@@ -53,7 +54,7 @@ use crate::panels::genre_grid::{GenreGridConfig, GenreGridPanel};
 use crate::panels::grid::{GridConfig, GridPanel};
 use crate::panels::group::GroupPanel;
 use crate::panels::history::HistoryPanel;
-use crate::panels::library::{Library, LibraryConfig, LibraryPanel};
+use crate::panels::library::{LibraryConfig, LibraryPanel};
 use crate::panels::lyrics::{LyricsPanel, StampLine};
 use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::metadata::MetadataPanel;
@@ -95,17 +96,21 @@ pub(crate) mod native_menu;
 
 const MENU_BAR_H: f32 = 30.0;
 
-/// The open workspace windows, registered in [`Workspace::new`] and
-/// dropped in the close hook. The last one to close takes the app with
-/// it; settings, popout, and customize windows are children of a
-/// workspace, not reasons to keep a headless process alive. Handles
-/// rather than a count so the decorations toggle can reach exactly
-/// these windows; the workspace rides along so code that only has a
-/// window (the dock's tab-menu hook) can find the workspace behind it.
-#[derive(Default)]
-struct WorkspaceWindows(Vec<(AnyWindowHandle, WeakEntity<Workspace>)>);
+// The registry of open workspace windows lives in rox-panel-api now, so
+// the app-level lookups panels reach for can answer without the Workspace
+// type. It holds the entity type-erased; the typed wrappers below downcast
+// it back. front_workspace answers with the handle and the shared state,
+// which is all its callers (the tray, the taskbar, the tasks/EQ/signals/
+// console windows, the single-instance guard) ever wanted.
+use rox_panel_api::windows::OpenWorkspace;
+pub(crate) use rox_panel_api::windows::{front_workspace, note_activated, WorkspaceWindows};
 
-impl Global for WorkspaceWindows {}
+/// The workspace behind a registry entry, or None once its entity has
+/// gone. The registry stores it type-erased so nothing below the binary
+/// has to know this type.
+fn typed_workspace(workspace: &gpui::AnyWeakEntity) -> Option<Entity<Workspace>> {
+    workspace.upgrade()?.downcast::<Workspace>().ok()
+}
 
 /// Renegotiate every workspace window's decorations to the live flag.
 /// Only the main windows follow it; child windows (settings, popouts,
@@ -118,7 +123,13 @@ pub(crate) fn apply_decorations(cx: &mut App) {
     // window silently keeps its old chrome until restart.
     cx.defer(|cx| {
         let mode = settings::window_decorations();
-        for (handle, _) in cx.default_global::<WorkspaceWindows>().0.clone() {
+        let open: Vec<AnyWindowHandle> = cx
+            .default_global::<WorkspaceWindows>()
+            .open
+            .iter()
+            .map(|w| w.handle)
+            .collect();
+        for handle in open {
             handle
                 .update(cx, |_, window, _| window.request_decorations(mode))
                 .ok();
@@ -220,10 +231,13 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
     cx.defer(|cx| {
         let config = Settings::load().post_shader;
         POST_SHADER_ON.store(config.enabled, Ordering::Relaxed);
-        for (handle, workspace) in cx.default_global::<WorkspaceWindows>().0.clone() {
-            let Some(workspace) = workspace.upgrade() else {
-                continue;
-            };
+        let open: Vec<(AnyWindowHandle, Entity<Workspace>)> = cx
+            .default_global::<WorkspaceWindows>()
+            .open
+            .iter()
+            .filter_map(|w| Some((w.handle, typed_workspace(&w.workspace)?)))
+            .collect();
+        for (handle, workspace) in open {
             handle
                 .update(cx, |_, window, cx| {
                     workspace.update(cx, |workspace, _| workspace.apply_post_shader(window));
@@ -272,9 +286,9 @@ fn sweep_shaded_children(cx: &mut App) {
     };
     let workspaces: Vec<AnyWindowHandle> = cx
         .default_global::<WorkspaceWindows>()
-        .0
+        .open
         .iter()
-        .map(|(handle, _)| *handle)
+        .map(|w| w.handle)
         .collect();
     let confirm = cx.default_global::<PostShaderConfirmWindow>().0;
     let shaded = cx.default_global::<ShadedChildren>().windows.clone();
@@ -389,8 +403,8 @@ pub(crate) fn close_workspace_window(
 ) {
     let handle = window.window_handle();
     let open = cx.default_global::<WorkspaceWindows>();
-    open.0.retain(|(h, _)| *h != handle);
-    let last = open.0.is_empty();
+    open.open.retain(|w| w.handle != handle);
+    let last = open.open.is_empty();
     let stay = last && settings::quit_to_tray() && tray::resident(cx) && workspace.is_some();
     let mut media = None;
     if let Some(ws) = workspace {
@@ -427,9 +441,14 @@ pub(crate) fn close_workspace_window(
     // Each window's service speaks for its own player, so the survivor
     // registers anew rather than inheriting this one.
     if had_media && !last {
-        if let Some((handle, ws)) = cx.default_global::<WorkspaceWindows>().0.first().cloned() {
+        if let Some((handle, ws)) = cx
+            .default_global::<WorkspaceWindows>()
+            .open
+            .first()
+            .map(|w| (w.handle, typed_workspace(&w.workspace)))
+        {
             let _ = handle.update(cx, |_, window, cx| {
-                if let Some(ws) = ws.upgrade() {
+                if let Some(ws) = ws {
                     ws.update(cx, |this, cx| this.install_media(window, cx));
                 }
             });
@@ -459,7 +478,7 @@ fn close_active_window(cx: &mut App) {
     cx.defer(move |cx| {
         let _ = handle.update(cx, |_, window, cx| {
             if is_workspace_window(window, cx) {
-                let last = cx.default_global::<WorkspaceWindows>().0.len() <= 1;
+                let last = cx.default_global::<WorkspaceWindows>().open.len() <= 1;
                 let would_quit = last && !(settings::quit_to_tray() && tray::resident(cx));
                 if !would_quit {
                     let workspace = workspace_for_window(window, cx).and_then(|ws| ws.upgrade());
@@ -471,17 +490,6 @@ fn close_active_window(cx: &mut App) {
             }
         });
     });
-}
-
-/// The frontmost open workspace window and its shared state: what the tray
-/// activates on Open, and whose player its Play/Pause drives. Skips entries
-/// whose entity is already gone.
-pub(crate) fn front_workspace(cx: &mut App) -> Option<(AnyWindowHandle, AppState)> {
-    let open = cx.default_global::<WorkspaceWindows>().0.clone();
-    open.iter().find_map(|(handle, ws)| {
-        let state = ws.upgrade()?.read(cx).state.clone();
-        Some((*handle, state))
-    })
 }
 
 /// Route OS-handed files into a workspace's player: the command line at
@@ -507,10 +515,11 @@ pub(crate) fn play_launch_paths(
 /// window's quick-start tiles land here: they live in their own OS window,
 /// with no workspace of their own to call into.
 pub(crate) fn apply_workspace_to_front(name: &str, cx: &mut App) {
-    let open = cx.default_global::<WorkspaceWindows>().0.clone();
-    let found = open
-        .into_iter()
-        .find_map(|(handle, ws)| ws.upgrade().map(|ws| (handle, ws)));
+    let found = cx
+        .default_global::<WorkspaceWindows>()
+        .open
+        .iter()
+        .find_map(|w| Some((w.handle, typed_workspace(&w.workspace)?)));
     if let Some((handle, ws)) = found {
         let name = name.to_string();
         let _ = handle.update(cx, |_, window, cx| {
@@ -525,9 +534,9 @@ pub(crate) fn apply_workspace_to_front(name: &str, cx: &mut App) {
 pub(crate) fn is_workspace_window(window: &Window, cx: &mut App) -> bool {
     let handle = window.window_handle();
     cx.default_global::<WorkspaceWindows>()
-        .0
+        .open
         .iter()
-        .any(|(h, _)| *h == handle)
+        .any(|w| w.handle == handle)
 }
 
 /// The workspace hosting `window`, when it is a workspace window (not a
@@ -535,11 +544,12 @@ pub(crate) fn is_workspace_window(window: &Window, cx: &mut App) -> bool {
 /// workspace and open the queue modal there.
 pub(crate) fn workspace_for_window(window: &Window, cx: &App) -> Option<WeakEntity<Workspace>> {
     let handle = window.window_handle();
-    cx.try_global::<WorkspaceWindows>()?
-        .0
+    let entry = cx
+        .try_global::<WorkspaceWindows>()?
+        .open
         .iter()
-        .find(|(h, _)| *h == handle)
-        .map(|(_, ws)| ws.clone())
+        .find(|w| w.handle == handle)?;
+    Some(typed_workspace(&entry.workspace)?.downgrade())
 }
 
 /// Append the "Add Panel" flyout to a panel's dropdown as its own section:
@@ -567,10 +577,11 @@ pub(crate) fn add_panel_submenu(
     let handle = window.window_handle();
     let Some(workspace) = cx
         .default_global::<WorkspaceWindows>()
-        .0
+        .open
         .iter()
-        .find(|(h, _)| *h == handle)
-        .map(|(_, ws)| ws.clone())
+        .find(|w| w.handle == handle)
+        .and_then(|w| typed_workspace(&w.workspace))
+        .map(|ws| ws.downgrade())
     else {
         return menu;
     };
@@ -670,12 +681,14 @@ const TRANSPORT_ROW_H: f32 = 120.0;
 /// minimum instead of taking a center panel's share.
 const SEARCH_BAR_H: f32 = 52.0;
 
+// The three playback actions panels bind against live in rox-panel-api, so
+// a panel's transport button and this window's keymap name the same type.
+// Registration and the handlers stay here.
+pub(crate) use rox_panel_api::actions::{SeekBackward, SeekForward, TogglePlayback};
+
 actions!(
     rox,
     [
-        TogglePlayback,
-        SeekBackward,
-        SeekForward,
         OpenSettings,
         OpenStats,
         OpenQuickPlay,
@@ -694,12 +707,6 @@ actions!(
 /// is focused: there space and arrows keep typing into the query. Bindings
 /// win over key listeners, the exclusion is what hands the keys back.
 const PLAYBACK_KEY_SCOPE: Option<&str> = Some("Workspace && !SearchInput");
-
-/// The same scope as a plain context, for the tooltips that show what key
-/// runs the button they're on. A lookup parses its argument as a context to
-/// match predicates against, and the predicate above isn't one, so passing
-/// it finds no binding and the tip loses its key.
-pub const PLAYBACK_TIP_SCOPE: Option<&'static str> = Some("Workspace");
 
 /// App-level key bindings; call once at startup.
 pub fn init(cx: &mut App) {
@@ -1157,9 +1164,10 @@ impl MenuAction {
 /// it stays reachable while a child window (settings, stats, a popped-out
 /// panel) has focus, so picks route here instead of at the key window.
 fn front_workspace_entity(cx: &mut App) -> Option<(AnyWindowHandle, Entity<Workspace>)> {
-    let open = cx.default_global::<WorkspaceWindows>().0.clone();
-    open.iter()
-        .find_map(|(handle, ws)| Some((*handle, ws.upgrade()?)))
+    cx.default_global::<WorkspaceWindows>()
+        .open
+        .iter()
+        .find_map(|w| Some((w.handle, typed_workspace(&w.workspace)?)))
 }
 
 /// Run `f` against the frontmost workspace inside its own window. Deferred:
@@ -1647,6 +1655,9 @@ pub struct Workspace {
     _history_changed: Subscription,
     /// A new bake must repaint the window that shows it.
     _backdrop_changed: Subscription,
+    /// Keeps the window registry frontmost-first, so the tray, the native
+    /// menu, and the file handoff act on the window the user was last in.
+    _window_activated: Subscription,
     /// The OS media service, on the primary window only: the D-Bus name is
     /// per-process, so a second window never registers its own. `None` on
     /// every other window and when the platform backend won't come up. The
@@ -1767,6 +1778,12 @@ impl Workspace {
         let state = adopt.unwrap_or_else(|| {
             let player = cx.new(Player::new);
             let library = cx.new(Library::new);
+            // The catalog says when a scan starts and when a watch sync has
+            // settled; what happens next is the app's, not the service's.
+            // Both hang off the app rather than this window, so a close to
+            // the tray leaves them on the library the hold keeps.
+            crate::integrations::taskbar::follow(&library, cx);
+            crate::embeddings::follow(&library, cx);
             let scrobbler = cx.new(|cx| Scrobbler::new(&player, &library, cx));
             let discord = cx.new(|cx| DiscordPresence::new(&player, &library, cx));
             AppState {
@@ -1813,7 +1830,7 @@ impl Workspace {
         // The first window to open is the primary: it restores the last track
         // and owns the OS media service. The global is still empty here; this
         // window joins it below, so a later New Window reads false.
-        let is_primary = cx.default_global::<WorkspaceWindows>().0.is_empty();
+        let is_primary = cx.default_global::<WorkspaceWindows>().open.is_empty();
         // An adopted player is already where the user left it, often
         // playing; the launch restore would yank it back to the saved spot.
         if settings.restore_last_track && is_primary && !adopted {
@@ -1976,10 +1993,30 @@ impl Workspace {
                 .update(cx, |library, cx| library.record_play(track_id, cx));
         });
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        // Frontmost lookups follow focus, so every workspace window reports
+        // its own activation. Deactivation is nobody's business: the window
+        // losing focus to a child (settings, a popout) is still the
+        // workspace the user is in.
+        let _window_activated = cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                note_activated(window.window_handle(), cx);
+            }
+        });
         let weak_self = cx.entity().downgrade();
-        cx.default_global::<WorkspaceWindows>()
-            .0
-            .push((window.window_handle(), weak_self));
+        let registry = cx.default_global::<WorkspaceWindows>();
+        let opened = registry.next_opened;
+        registry.next_opened += 1;
+        // At the head: a window opens focused, and the activation observer
+        // above only fires on a later focus change.
+        registry.open.insert(
+            0,
+            OpenWorkspace {
+                handle: window.window_handle(),
+                workspace: weak_self.into(),
+                state: state.clone(),
+                opened,
+            },
+        );
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             close_workspace_window(this.upgrade(), window, cx);
@@ -2039,6 +2076,7 @@ impl Workspace {
             _library_changed,
             _history_changed,
             _backdrop_changed,
+            _window_activated,
             media,
             post_shader: None,
         };
@@ -2120,11 +2158,15 @@ impl Workspace {
         };
         // The oldest open workspace speaks for the app-wide concerns: the
         // child sweeps and their signal feed run once, not per workspace.
+        // By open serial, not the list's head - the registry reorders on
+        // activation, and the app-wide role shouldn't hop windows every
+        // time focus moves.
         let primary = cx
             .default_global::<WorkspaceWindows>()
-            .0
-            .first()
-            .is_some_and(|(handle, _)| *handle == window.window_handle());
+            .open
+            .iter()
+            .min_by_key(|w| w.opened)
+            .is_some_and(|w| w.handle == window.window_handle());
         if driver.checked.elapsed().as_secs_f32() > 1.0 {
             driver.checked = Instant::now();
             if settings::file_stamp(&driver.path) != driver.stamp {

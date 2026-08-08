@@ -293,9 +293,7 @@ impl Render for WelcomeWindow {
                 icons::FOLDER_PLUS,
                 false,
                 cx.listener(|this, _, _, cx| {
-                    this.state
-                        .library
-                        .update(cx, |library, cx| library.browse(cx));
+                    crate::catalog::browse(&this.state.library, cx);
                 }),
             );
 

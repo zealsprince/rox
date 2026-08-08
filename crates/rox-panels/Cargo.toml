@@ -1,0 +1,49 @@
+[package]
+name = "rox-panels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Every panel is a gpui view, and its rows, menus, and inputs come off the
+# component library.
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+# The seam these compile against: the shared state, the chrome, the panel
+# settings window, the shared track and query surfaces, and the openers
+# table a panel calls up into the app's windows through.
+rox-panel-api = { path = "../rox-panel-api" }
+# The widget builders the panel bodies are assembled from.
+rox-panel-kit = { path = "../rox-panel-kit" }
+# The services the views render over: the catalog, the player, the caches,
+# the selection, the history, the artist store, the peak cache.
+rox-services = { path = "../rox-services" }
+# Settings, the clock formatters, and the queue cap.
+rox-core = { path = "../rox-core" }
+# The palette, the tokens, and the embedded icons.
+rox-design = { path = "../rox-design" }
+# The dock traits every panel implements.
+rox-dock = { path = "../rox-dock" }
+# The projection rows, the playlists, the lyrics store, and the tag writer
+# the editing panels drive.
+rox-library = { path = "../rox-library" }
+# The engine types the transport reads, and the continuation the library and
+# playlist panels queue through.
+rox-playback = { path = "../rox-playback" }
+# The enrichment lookups the biography, metadata, and lyrics panels make.
+rox-net = { path = "../rox-net" }
+# The PCM feed and the signal pool the audio views draw from.
+rox-viz = { path = "../rox-viz" }
+# Panel configs round-trip through the layout dumps as JSON.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Decodes the cover bytes the art panels draw at their own size.
+image = "0.25"
+log = "0.4"
+# The playlist panel resolves ~ for the m3u export path.
+dirs = "5"
+
+[dev-dependencies]
+# The panel tests that need a real Context<Self> drive gpui's headless
+# TestAppContext.
+gpui = { workspace = true, features = ["test-support"] }

@@ -24,11 +24,11 @@ use rox_library::writer::{self, Change, Edit, Field};
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
+use crate::catalog::Library;
 use crate::design::{palette, tokens};
 use crate::matching::{
     confidence_badge, confidence_bar, note, open_or_focus, Phase, WindowRegistry,
 };
-use crate::panels::library::Library;
 use crate::player::fmt_time;
 use crate::providers::{self, MetadataCandidate, TrackQuery};
 use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};

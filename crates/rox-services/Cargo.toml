@@ -1,0 +1,50 @@
+[package]
+name = "rox-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The model pick this crate resolves, and the pass the catalog asks the app
+# to start once a watch sync settles.
+rox-acoustic = { path = "../rox-acoustic" }
+# Settings, the pace estimates, and the clock formatters the player still
+# hands out.
+rox-core = { path = "../rox-core" }
+# The backdrop bakes a palette seed and paints through the tokens.
+rox-design = { path = "../rox-design" }
+# The database under all of this: the projection, the scanner, the writer,
+# the root watcher, listens, playlists, and the vector table.
+rox-library = { path = "../rox-library" }
+# The engine the player drives, plus the EQ, gain, and continuation it
+# configures.
+rox-playback = { path = "../rox-playback" }
+# The enrichment providers behind the artist store, the signed Last.fm calls
+# the scrobbler sends, and the Discord identity the presence connects as.
+rox-net = { path = "../rox-net" }
+# The PCM feed the player's pump drains into.
+rox-viz = { path = "../rox-viz" }
+# Entities, events, and the background executor everything here runs its
+# blocking half on.
+gpui = { workspace = true }
+# Decodes and blurs cover art for the backdrop, and re-encodes the artist
+# portraits at thumbnail size.
+image = "0.25"
+# The artist store's cache entries are JSON on disk, and a Last.fm reply is
+# JSON on the way in.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The logging facade; the app's backend picks these up.
+log = "0.4"
+# The Discord presence connection, and the wire that carries its commands
+# to the IPC loop off the main thread.
+discord-rich-presence = "1.x"
+async-channel = "2"
+# Percent-encodes the art URL the presence hands Discord, so spaces and
+# unicode survive. Already in the tree, same 2.x line.
+url = "2"
+
+[dev-dependencies]
+# The shared selection's tests drive a real Context<Self> against gpui's
+# headless TestAppContext.
+gpui = { workspace = true, features = ["test-support"] }

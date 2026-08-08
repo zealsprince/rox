@@ -24,11 +24,25 @@ rox-library = { path = "../rox-library" }
 # The enrichment providers, the signed Last.fm calls, and the baked-in
 # service identities, re-exported as crate::providers and crate::discord.
 rox-net = { path = "../rox-net" }
+# The seam the panels compile against: the shared state, the panel chrome
+# and its settings window, the shared track/query/signal surfaces, and the
+# openers table this binary installs so panels can reach up into its
+# windows. Re-exported at crate::panel, crate::panel_settings,
+# crate::signal_ui and the rest of the old paths.
+rox-panel-api = { path = "../rox-panel-api" }
 # The shared widget layer, re-exported through crate::panel and
 # crate::settings::ui so the panels' paths into it read the way they always
 # have.
 rox-panel-kit = { path = "../rox-panel-kit" }
+# The panels themselves. The eight that still call into the workspace stay
+# in the binary; the rest render out of here and are re-exported at
+# crate::panels so every path in the app reads the way it always did.
+rox-panels = { path = "../rox-panels" }
 rox-playback = { path = "../rox-playback" }
+# The headless service layer the shared state is made of: the catalog, the
+# player, the scrobbler, the caches, the selection, the backdrop, and the
+# presence, re-exported at the module paths the app always read them at.
+rox-services = { path = "../rox-services" }
 rox-viz = { path = "../rox-viz" }
 # Platform data dir for the library database.
 dirs = "5"
@@ -70,11 +84,6 @@ trash = "5"
 # transport; percent-encodes the path so spaces and unicode survive. Already
 # in the tree, same 2.x line.
 url = "2"
-# Rich Prescence for Discord
-discord-rich-presence = "1.x"
-# Hashes the shader a workspace carries, so the confirm gate can tell an
-# unchanged one from an edited one. Pure Rust, no build script.
-sha2 = "0.10"
 
 # The quit-to-tray icon: StatusNotifierItem over D-Bus, pure Rust on the
 # same zbus 5 line souvlaki brought in. Runtime-agnostic via async-io

@@ -1,42 +1,19 @@
-//! The concrete panels the workspace hosts, each a view over the shared
-//! entities in [`crate::panel::AppState`]. The panel framework itself, per
-//! ADR 7, lives in [`crate::panel`]; this module just gathers the panels.
+//! The panels that still belong to the binary, plus the door onto the rest.
+//!
+//! Most panels render out of rox-panels now and are re-exported below, so
+//! every `crate::panels::` path in the app still lands. What stays here are
+//! the ones that call into [`crate::workspace::Workspace`] for real - the
+//! drawer, the group and overlay hosts, the slide and mini frames, the
+//! menubar, the window controls, the queue widget - since the workspace is
+//! the binary.
 
-pub mod art;
-pub mod artist_grid;
-pub mod biography;
-pub mod cover;
-pub mod drag_anchor;
 pub mod drawer;
-pub mod eq_widget;
-pub mod favourite;
-pub mod filter;
-pub mod folder_tree;
-pub mod genre_grid;
-pub mod grid;
 pub mod group;
-pub mod history;
-pub mod library;
-pub mod lyrics;
 pub mod menu;
-pub mod metadata;
 pub mod mini;
-pub mod output;
 pub mod overlay;
-pub mod particles;
-pub mod playlists;
-pub mod queue;
 pub mod queue_widget;
-pub mod rating;
-pub mod search;
-pub mod shader;
 pub mod slide;
-pub mod spacer;
-pub mod spectrum;
-pub mod stats_widget;
-pub mod status;
-pub mod theme_toggle;
-pub mod transport;
-pub mod vu;
-pub mod waveform;
 pub mod window_controls;
+
+pub use rox_panels::*;

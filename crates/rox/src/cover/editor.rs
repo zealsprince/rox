@@ -20,14 +20,15 @@ use gpui::{
 use gpui_component::spinner::Spinner;
 use gpui_component::{Root, Sizable, Size};
 
+use rox_core::fmt::fmt_ms;
 use rox_library::writer::{self, Edit, PicChange, PicKind};
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
+use crate::catalog::Library;
 use crate::design::{palette, tokens};
 use crate::matching::{open_or_focus, WindowRegistry};
 use crate::panel::AppState;
-use crate::panels::library::{fmt_ms, Library};
 use crate::providers;
 use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
 

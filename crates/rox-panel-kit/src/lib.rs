@@ -21,13 +21,25 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use serde::{Deserialize, Serialize};
 
+pub mod axis;
+
+pub mod config;
+
+pub mod wall;
+
 mod gesture;
 pub use gesture::*;
+
+mod motif;
+pub use motif::motif;
 
 mod tracked_load;
 pub use tracked_load::TrackedImage;
 
 pub mod ui;
+
+mod window_buttons;
+pub use window_buttons::{maximize, traffic_lights, MAXIMIZE_TIP};
 
 /// What a control's hover tooltip says, and the identity gpui parks its
 /// timing under. Every [`icon_control`] takes one: a glyph on its own says

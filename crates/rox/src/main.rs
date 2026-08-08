@@ -11,9 +11,6 @@
 // debug builds so stdout/stderr logging stays visible.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod artists;
-mod backdrop;
-mod catalog;
 mod charts;
 mod composite;
 mod console_window;
@@ -22,8 +19,6 @@ mod cover;
 mod duplicates;
 mod embeddings;
 mod eq_window;
-mod group_head;
-mod history;
 mod integrations;
 mod lastfm;
 mod lyrics;
@@ -33,24 +28,18 @@ mod panel_catalog;
 mod panel_settings;
 mod panels;
 mod pass_prompt;
-mod peaks;
-mod player;
 mod playlist_create;
-mod portraits;
 mod query;
 mod quick_play;
 mod rating_ui;
 mod replaygain_job;
-mod selection;
 mod settings;
 mod signal_ui;
 mod signals_window;
-mod source;
 mod startup;
 mod stats_window;
 mod tags;
 mod tasks_window;
-mod thumbs;
 mod track_ui;
 mod workspace;
 mod workspaces;
@@ -64,9 +53,17 @@ pub(crate) use rox_design::assets;
 // crate down now; these keep the paths the app already reads through.
 pub(crate) use rox_core::settings::MIN_WINDOW_SIZE;
 pub(crate) use rox_core::{logging, pace};
-// The enrichment providers and the Discord identity moved out with the rest
-// of the outbound HTTP; both answer to the paths they always did.
-pub(crate) use rox_net::{discord, providers};
+// The enrichment providers moved out with the rest of the outbound HTTP and
+// answer to the path they always did.
+pub(crate) use rox_net::providers;
+// The headless services the shared state is made of. They render nothing and
+// know nothing about panels, so they sit a crate down; the app still reaches
+// each one at the module path it always had. The scrobbler keeps a file
+// here, since it still has a binary-side piece hanging off it (the
+// loved-list import).
+pub(crate) use rox_services::{
+    backdrop, catalog, history, peaks, player, portraits, selection, thumbs,
+};
 
 use gpui::{
     point, px, size, App, AppContext, Application, Bounds, SharedString, TitlebarOptions,
@@ -79,12 +76,9 @@ use design::palette;
 use settings::Settings;
 use workspace::Workspace;
 
-/// The Wayland/X11 app id, set on every window we open. Windows share it so
-/// the compositor groups them as one app and, on Wayland, will consider an
-/// xdg-activation request from one window to raise another (bringing an
-/// already-open settings or customize window to the front). Without it the
-/// backend's activate is a no-op.
-pub const APP_ID: &str = "rox";
+// The app id every window carries lives with the rest of the floor now; the
+// tray and the media controls still reach it here.
+pub(crate) use rox_core::APP_ID;
 
 /// The frame size pinned on the command line: `rox --window-size 1440x900`
 /// opens at exactly that and layout swaps leave it alone for the session. A
@@ -229,11 +223,69 @@ fn open_workspace_window(
     .expect("failed to open the main window");
 }
 
+/// Hand rox-panel-api the windows it can't reach on its own. Panels and the
+/// shared helpers live a crate down and can't depend upward, so every call
+/// into a window (the tag editor, the stats page, the Add Panel flyout)
+/// goes through this table. Installed before anything can open a window.
+fn install_openers() {
+    rox_panel_api::openers::install(rox_panel_api::openers::Openers {
+        tags_editor: tags::editor::open,
+        tags_matcher: tags::matcher::open,
+        cover_editor: cover::editor::open,
+        playlist_create: playlist_create::open,
+        playlist_rename: playlist_create::open_rename,
+        eq_window: eq_window::open,
+        stats_window: stats_window::open,
+        signals_window: signals_window::open,
+        console_notice: console_window::notice,
+        lyrics_watch: watch_lyrics_panel,
+        lyrics_edit: lyrics::edit::open,
+        lyrics_matcher: lyrics::matcher::open,
+        lyrics_saved: lyrics::saved,
+        add_panel_submenu: workspace::add_panel_submenu,
+        host_settings_item: composite::host_settings_item,
+        confirm_close_locked,
+    });
+}
+
+/// The typed side of the lyrics watch: the panel comes down type-erased,
+/// since the registry can't name a concrete panel, and goes back into the
+/// watcher list as itself. A panel already dropped never registers.
+fn watch_lyrics_panel(panel: gpui::AnyWeakEntity, cx: &mut App) {
+    let Some(panel) = panel
+        .upgrade()
+        .and_then(|panel| panel.downcast::<panels::lyrics::LyricsPanel>().ok())
+    else {
+        return;
+    };
+    lyrics::watch(panel.downgrade(), cx);
+}
+
+/// The typed side of a pinned panel's Close: find the workspace behind the
+/// window and float the confirm there. A window with no workspace behind it
+/// has nowhere to put the dialog, and the pin holds as it did before.
+fn confirm_close_locked(
+    panel: std::sync::Arc<dyn rox_dock::PanelView>,
+    tabs: gpui::WeakEntity<rox_dock::TabPanel>,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) {
+    let Some(ws) = workspace::workspace_for_window(window, cx).and_then(|ws| ws.upgrade()) else {
+        return;
+    };
+    ws.update(cx, |ws, cx| {
+        ws.confirm_close_locked(panel, tabs, window, cx);
+    });
+}
+
 fn main() {
     // The settings model can't reach up into the workspace files it has to
     // drain on a pre-split launch, so it gets pointed at them first, before
     // anything reads a setting.
     settings::set_workspace_migrator(workspaces::migrate_saved);
+    // The windows panels open live up here; the table goes in before any of
+    // them can be reached.
+    install_openers();
     // Files handed to us on the command line (`rox song.flac`, or the file
     // manager's Open With). Collected before the app boots so a plausible-file
     // filter runs off the real argv, not gpui's.

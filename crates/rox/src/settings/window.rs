@@ -31,6 +31,7 @@ use gpui_component::{Root, Sizable as _};
 
 use crate::assets::icons;
 use crate::backdrop::{NowPlayingArt, WindowBackdrop};
+use crate::catalog::{Library, LibraryEvent};
 use crate::continuation;
 use crate::design::palette::{self, Palette, Role, ROLES};
 use crate::design::tokens;
@@ -40,7 +41,6 @@ use crate::integrations::tray;
 use crate::lastfm::{self, import, AuthPhase, Scrobbler};
 use crate::panel::{self, AppState, ScrubState};
 use crate::panel_settings;
-use crate::panels::library::{Library, LibraryEvent};
 use crate::pass_prompt;
 use crate::player::Player;
 use crate::providers;
@@ -3457,7 +3457,7 @@ impl SettingsWindow {
             icons::PLUS,
             scanning,
             cx.listener(|this, _, _, cx| {
-                this.library.update(cx, |library, cx| library.browse(cx));
+                crate::catalog::browse(&this.library, cx);
             }),
         )));
         // The library's badge and the file under the scan cursor, or the
@@ -3498,7 +3498,7 @@ impl SettingsWindow {
                 icons::FOLDER_PLUS,
                 scanning,
                 cx.listener(|this, _, _, cx| {
-                    this.library.update(cx, |library, cx| library.browse(cx));
+                    crate::catalog::browse(&this.library, cx);
                 }),
             ))
             .child(small_button(

@@ -21,6 +21,8 @@
 
 use rusqlite::{Connection, OptionalExtension};
 
+use crate::projection::{Filterable, TrackFields};
+
 /// The playlists and their member rows beside the tracks they key to. No
 /// foreign key on purpose, matching the listens table: deleting a track keeps
 /// its playlist rows, that is the snapshot's job. Duplicates are allowed, so
@@ -187,6 +189,22 @@ pub struct PlaylistTrack {
     /// while the track exists, the snapshot's once it is gone, so a pruned
     /// file whose bytes are still on disk keeps its cover.
     pub path: String,
+}
+
+impl Filterable for PlaylistTrack {
+    fn fields(&self) -> TrackFields<'_> {
+        TrackFields {
+            db_id: Some(self.track_id),
+            title: &self.title,
+            artist: &self.artist,
+            album_artist: &self.album_artist,
+            album: &self.album,
+            genre: &self.genre,
+            year: self.year,
+            codec: &self.codec,
+            path: &self.path,
+        }
+    }
 }
 
 /// Create an empty playlist, returning its id. `now` is unix seconds.

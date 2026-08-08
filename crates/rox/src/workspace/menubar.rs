@@ -206,7 +206,7 @@ impl Workspace {
                 .flex_none()
                 .gap(tokens::SPACE_SM)
                 .px(tokens::SPACE_MD)
-                .children(crate::panels::window_controls::traffic_lights(close)),
+                .children(rox_panel_kit::traffic_lights(close)),
         )
     }
 

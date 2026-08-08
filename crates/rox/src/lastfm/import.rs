@@ -32,8 +32,8 @@ use gpui::{App, Entity, Global, SharedString};
 
 use rox_library::store;
 
+use crate::catalog::Library;
 use crate::lastfm::Scrobbler;
-use crate::panels::library::Library;
 use crate::providers::{agent, net_reason, normalize};
 use crate::settings::Settings;
 

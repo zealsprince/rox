@@ -8,6 +8,7 @@
 //! panels persist can live here too.
 
 pub mod analysis;
+pub mod curve;
 pub mod feed;
 pub mod signal;
 

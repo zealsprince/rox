@@ -26,17 +26,18 @@ use gpui::{
 use gpui_component::scroll::Scrollbar;
 use gpui_component::Root;
 
+use rox_core::fmt::fmt_ago;
+use rox_core::QUEUE_CAP;
 use rox_library::listens::{NamePlays, Rollup, TrackPlays};
+use rox_panel_kit::motif;
 
 use crate::assets::icons;
 use crate::backdrop::WindowBackdrop;
+use crate::catalog::LibraryEvent;
 use crate::charts;
 use crate::design::{palette, tokens};
 use crate::history::HistoryEvent;
 use crate::panel::{self, AppState};
-use crate::panels::genre_grid::motif;
-use crate::panels::history::fmt_ago;
-use crate::panels::library::{LibraryEvent, QUEUE_CAP};
 use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
 use crate::settings::{Settings, StatsWindowState};
 use crate::thumbs::Thumb;

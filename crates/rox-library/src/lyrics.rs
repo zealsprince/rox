@@ -22,6 +22,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::writer::{self, Change, Field};
 
@@ -369,10 +370,87 @@ fn offset_tag(line: &str) -> Option<f64> {
         .flatten()
 }
 
+/// How long a rest waits past the line it follows before the sheet moves
+/// to it, so the last words linger instead of blinking away.
+const REST_HOLD_SECS: f64 = 4.0;
+
+/// The loaded sheet with rests woven in: a leading blank line before a
+/// first sung line that opens past `gap_secs`, and a blank line in each
+/// gap between sung lines wider than `gap_secs`, placed a short hold after
+/// the line it follows so the last words linger before the sheet moves to
+/// the rest. The sheet comes back untouched when it carries no timing or
+/// both rests are off.
+///
+/// Relies on [`parse`] handing lines back in time order, which it
+/// guarantees: a sorted sheet is what the gap walk measures against.
+pub fn weave_rests(raw: &Arc<Lyrics>, intro: bool, gap: bool, gap_secs: f64) -> Arc<Lyrics> {
+    if !raw.synced || (!intro && !gap) {
+        return raw.clone();
+    }
+    let mut lines = Vec::with_capacity(raw.lines.len() + 4);
+    let mut prev_timed: Option<f64> = None;
+    for line in &raw.lines {
+        if let Some(at) = line.at {
+            match prev_timed {
+                // Before the first sung line: a lead-in rest when the intro
+                // runs long enough to earn one.
+                None if intro && at > gap_secs => lines.push(rest_line(0.0)),
+                // Between two sung lines: a rest a short hold past the first,
+                // clamped to before the midpoint so a shorter gap still
+                // splits cleanly.
+                Some(prev) if gap && at - prev > gap_secs => {
+                    let hold = ((at - prev) * 0.5).min(REST_HOLD_SECS);
+                    lines.push(rest_line(prev + hold));
+                }
+                _ => {}
+            }
+            prev_timed = Some(at);
+        }
+        lines.push(line.clone());
+    }
+    Arc::new(Lyrics {
+        source: raw.source.clone(),
+        text: raw.text.clone(),
+        lines,
+        synced: raw.synced,
+    })
+}
+
+/// A blank timed line, which a display shows as a rest and seeks like any
+/// other.
+pub fn rest_line(at: f64) -> Line {
+    Line {
+        at: Some(at),
+        text: String::new(),
+    }
+}
+
+/// The last timed line at or before `position`, the one under the
+/// playhead. None before the first line's time, so nothing lights up
+/// during an intro. Leans on [`parse`]'s time order the same way
+/// [`weave_rests`] does: the scan stops at the first line past the
+/// playhead.
+pub fn active_line(lyrics: &Lyrics, position: f64) -> Option<usize> {
+    let mut active = None;
+    for (ix, line) in lyrics.lines.iter().enumerate() {
+        match line.at {
+            Some(at) if at <= position + 0.05 => active = Some(ix),
+            Some(_) => break,
+            None => {}
+        }
+    }
+    active
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// LRC files legally carry their tags in any order, and everything
+    /// reading the parsed lines (the panel's playhead scan, the rest
+    /// weave) walks them expecting time order. Two lines sharing a stamp
+    /// keep the order the file gave them: a sorted sheet comes back
+    /// untouched.
     #[test]
     fn timed_lines_parse_and_sort() {
         let (lines, synced) = parse("[00:12.50]second\n[00:01.00]first\n");
@@ -382,6 +460,19 @@ mod tests {
         assert_eq!(lines[0].at, Some(1.0));
         assert_eq!(lines[1].text, "second");
         assert_eq!(lines[1].at, Some(12.5));
+
+        let (lines, _) = parse("[00:30.00]c\n[00:05.00]a\n[00:05.00]b\n[00:20.00]d\n");
+        let read: Vec<(Option<f64>, &str)> =
+            lines.iter().map(|l| (l.at, l.text.as_str())).collect();
+        assert_eq!(
+            read,
+            [
+                (Some(5.0), "a"),
+                (Some(5.0), "b"),
+                (Some(20.0), "d"),
+                (Some(30.0), "c"),
+            ]
+        );
     }
 
     #[test]

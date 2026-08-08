@@ -9,7 +9,10 @@ members = [
     "crates/rox-playback",
     "crates/rox-library",
     "crates/rox-net",
+    "crates/rox-panel-api",
     "crates/rox-panel-kit",
+    "crates/rox-panels",
+    "crates/rox-services",
     "crates/rox-viz",
 ]
 default-members = ["crates/rox"]

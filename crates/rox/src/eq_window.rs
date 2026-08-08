@@ -20,6 +20,7 @@ use gpui::{
 };
 use gpui_component::Root;
 
+use rox_panel_kit::axis::fmt_axis_hz;
 use rox_playback::eq::{BANDS, FREQ_MAX, FREQ_MIN, GAIN_MAX_DB, Q_MAX, Q_MIN};
 use rox_playback::latency::{self, LatencyHold};
 use rox_viz::analysis::{self, Analyzer};
@@ -27,7 +28,6 @@ use rox_viz::analysis::{self, Analyzer};
 use crate::assets::icons;
 use crate::design::{palette, tokens};
 use crate::panel::{self, AppState, ScrubState};
-use crate::panels::spectrum::fmt_axis_hz;
 use crate::player;
 use crate::settings::ui::{self as settings_ui, small_button};
 use crate::settings::{AnalyzerStyle, LayoutSize, Settings};

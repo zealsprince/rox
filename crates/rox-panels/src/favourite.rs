@@ -5,14 +5,13 @@
 //! catalog toggle the library table's heart column does, so the state
 //! matches wherever else it shows.
 
-use std::path::PathBuf;
-
 use gpui::{
     div, prelude::*, px, svg, AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable,
     MouseButton, Pixels, SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
@@ -42,7 +41,7 @@ pub struct FavouriteConfig {
 /// whether the id is favourited. Cached so the pump's per-frame notifies
 /// never turn into database lookups.
 struct Tracked {
-    path: PathBuf,
+    key: TrackKey,
     id: Option<i64>,
     favourite: bool,
 }
@@ -103,22 +102,18 @@ impl FavouritePanel {
     }
 
     /// The shown track's id and favourite state, resolving and caching on a
-    /// path change. No id while the source points at nothing, or at a file
+    /// track change. No id while the source points at nothing, or at a file
     /// the library does not carry.
     fn current(&mut self, cx: &App) -> (Option<i64>, bool) {
-        let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
+        let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
             self.track = None;
             return (None, false);
         };
-        if self.track.as_ref().map(|t| &t.path) != Some(&path) {
+        if self.track.as_ref().map(|t| &t.key) != Some(&key) {
             let library = self.state.library.read(cx);
-            let id = library.id_for(&path);
+            let id = library.id_for_key(&key);
             let favourite = id.is_some_and(|id| library.is_favourite(id));
-            self.track = Some(Tracked {
-                path,
-                id,
-                favourite,
-            });
+            self.track = Some(Tracked { key, id, favourite });
         }
         self.track
             .as_ref()

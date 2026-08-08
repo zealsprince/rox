@@ -53,6 +53,14 @@ pub fn match_duplicates(projection: &Projection) -> Vec<GroupSpec> {
         if projection.duration_ms[i] == 0 {
             continue;
         }
+        // Cue tracks are spans of one image, so every row of a disc shares a
+        // path. A pass that let them in would offer to trash "copies" that
+        // are really the same file, and deleting one would take the album.
+        // Their identity question is whether the disc is ripped twice, which
+        // is not what this clustering answers.
+        if projection.sub[i] > 0 {
+            continue;
+        }
         let artist_lower = projection.artists.lower[projection.artist[i] as usize].as_str();
         by_key
             .entry((artist_lower, projection.title_lower.get(i)))
@@ -119,6 +127,8 @@ mod tests {
     /// their neutral defaults.
     fn track(path: &str, title: &str, artist: &str, album: &str, duration_ms: u32) -> TrackRow {
         TrackRow {
+            sub: 0,
+            cue: None,
             path: path.into(),
             title: title.into(),
             artist: artist.into(),
@@ -232,6 +242,29 @@ mod tests {
         let groups = match_duplicates(&p);
         assert_eq!(groups.len(), 1);
         assert!(!groups[0].same_album);
+    }
+
+    /// Cue tracks of one image never cluster with each other. They share a
+    /// path, so a group would be offering to delete the album to get rid of a
+    /// "copy"; two tracks of a disc that happen to be tagged alike (a hidden
+    /// track, a reprise) are exactly the case that would trigger it.
+    #[test]
+    fn cue_tracks_of_one_image_are_not_duplicates() {
+        let image = "/m/Album/disc.flac";
+        let cue = |sub: u16| TrackRow {
+            sub,
+            track_no: sub,
+            cue: Some(crate::CueSlice {
+                cue_path: "/m/Album/disc.cue".into(),
+                span: crate::cue::Span {
+                    start_ms: u32::from(sub) * 200_000,
+                    end_ms: None,
+                },
+            }),
+            ..track(image, "Reprise", "Artist", "Album", 200_000)
+        };
+        let p = projection(&[cue(1), cue(2), cue(3)]);
+        assert!(match_duplicates(&p).is_empty());
     }
 
     /// A lone copy is not a duplicate, so it never becomes a group.

@@ -21,6 +21,7 @@ use gpui_component::spinner::Spinner;
 use gpui_component::{Root, Sizable, Size};
 
 use rox_core::fmt::fmt_ms;
+use rox_library::cue::TrackKey;
 use rox_library::writer::{self, Edit, PicChange, PicKind};
 
 use crate::matching::{open_or_focus, WindowRegistry};
@@ -94,9 +95,11 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
 type FilePictures = Vec<(PicKind, Vec<u8>, String)>;
 
 /// One selected track as the list shows it; the path is what the baselines
-/// read and the commits write.
+/// read and the commits write, and the sub says which row of it the tags
+/// belong to when the file is a cue image.
 struct CoverTrack {
     path: PathBuf,
+    sub: u16,
     line: SharedString,
     duration_ms: u32,
 }
@@ -179,15 +182,20 @@ impl CoverEditor {
                         |(projection, row_of)| {
                             let row = *row_of.get(&id)?;
                             let v = projection.resolve(row);
-                            Some((v.title.to_owned(), v.artist.to_owned(), v.duration_ms))
+                            Some((
+                                v.title.to_owned(),
+                                v.artist.to_owned(),
+                                v.duration_ms,
+                                v.sub,
+                            ))
                         },
                     );
-                    let (title, artist, duration_ms) = resolved.unwrap_or_else(|| {
+                    let (title, artist, duration_ms, sub) = resolved.unwrap_or_else(|| {
                         let title = path
                             .file_stem()
                             .map(|s| s.to_string_lossy().into_owned())
                             .unwrap_or_else(|| path.display().to_string());
-                        (title, String::new(), 0)
+                        (title, String::new(), 0, 0)
                     });
                     let mut line = title;
                     if !artist.is_empty() {
@@ -196,6 +204,7 @@ impl CoverEditor {
                     }
                     tracks.push(CoverTrack {
                         path,
+                        sub,
                         line: line.into(),
                         duration_ms,
                     });
@@ -350,10 +359,14 @@ impl CoverEditor {
         let Some(track) = self.tracks.first() else {
             return;
         };
+        let key = TrackKey {
+            path: track.path.clone(),
+            sub: track.sub,
+        };
         let (artist, album) = self
             .library
             .read(cx)
-            .meta_for(&track.path)
+            .meta_for_key(&key)
             .map(|m| (m.artist, m.album))
             .unwrap_or_default();
         crate::cover::matcher::open(
@@ -533,7 +546,10 @@ impl CoverEditor {
                     }
                 }
                 if !committed.is_empty() {
-                    library.update(cx, |library, cx| library.apply_edits(&committed, cx));
+                    // No subs: a cover edit carries no named columns, so
+                    // there is no library row for it to land on. The reindex
+                    // behind it is what picks the new picture up.
+                    library.update(cx, |library, cx| library.apply_edits(&committed, &[], cx));
                 }
                 match first_error {
                     None => window.remove_window(),

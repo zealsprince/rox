@@ -19,6 +19,7 @@ use gpui::{
 use gpui_component::Root;
 
 use rox_core::fmt::fmt_ms;
+use rox_library::cue::TrackKey;
 use rox_library::lyrics;
 
 use crate::matching::{
@@ -98,7 +99,7 @@ impl LyricsMatch {
     fn new(state: AppState, path: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         // The query is the track's library tags, and the duration comes off
         // the projection so it scores whether or not the track is playing.
-        let query = query_for(&state.library, &path, cx);
+        let query = query_for(&state.library, &TrackKey::from(path.clone()), cx);
         let duration_ms = query
             .duration_secs
             .map(|secs| (secs * 1000.0) as u32)

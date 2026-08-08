@@ -23,6 +23,7 @@ use rox_dock::{Panel, PanelEvent, PanelInfo, PanelState, TabPanel};
 
 use rox_core::fmt::{fmt_ago, fmt_ms, fmt_num};
 use rox_core::QUEUE_CAP;
+use rox_library::cue::TrackKey;
 use rox_library::projection::Projection;
 use rox_library::view::{self, Group, Grouping, Row, ViewSpec};
 
@@ -165,7 +166,7 @@ struct TrackTable {
     /// `on_drag` value is built eagerly every frame, so the id-to-path query
     /// caches here or a scrolled list would hit the catalog per row per frame.
     /// Same lifetime as `cover_paths`; cleared on reload.
-    drag_paths: HashMap<i64, Option<PathBuf>>,
+    drag_keys: HashMap<i64, Option<TrackKey>>,
     /// Bumped on every selection change. Keys the drag-set cache below so it
     /// rebuilds only when the selection actually moves, not per frame. A view
     /// swap always clears the selection, so this catches those too.
@@ -179,7 +180,7 @@ struct TrackTable {
     /// change and shared behind an Arc. A grab inside the selection hands every
     /// visible selected row this same Arc instead of rebuilding the whole set
     /// per row per frame.
-    drag_set: Option<(u64, Arc<[PathBuf]>)>,
+    drag_set: Option<(u64, Arc<[TrackKey]>)>,
 }
 
 impl TrackTable {
@@ -207,10 +208,9 @@ impl TrackTable {
 
     /// The drag payload for a grab on row `ix`. A grab inside a multi
     /// selection carries the whole set in view order; outside it, just that
-    /// row - queue.rs's rule. Resolves to paths through the same `paths_for`
-    /// the play actions use, so a drop enqueues exactly what those queue, ids
-    /// aligned per path for the drop target that wants them. The value is
-    /// built eagerly every frame, so paths come from `drag_paths`, filled per
+    /// row - queue.rs's rule. Resolves through the same `keys_for` the play
+    /// actions use, so a drop enqueues exactly what those queue. The value is
+    /// built eagerly every frame, so keys come from `drag_keys`, filled per
     /// id on the first grab that needs it rather than a query per row per frame.
     fn drag_payload(&mut self, ix: usize, cx: &App) -> Option<PlayDrag> {
         let projection = self.state.library.read(cx).projection().cloned()?;
@@ -221,61 +221,60 @@ impl TrackTable {
         // A grab inside a multi-selection carries the whole set in view order,
         // built once per selection change and shared behind an Arc so it costs
         // a refcount bump per row, not a rebuild. Outside it, just this row.
-        let paths: Arc<[PathBuf]> = if self.selected.len() > 1 && self.selected.contains(&ix) {
+        let keys: Arc<[TrackKey]> = if self.selected.len() > 1 && self.selected.contains(&ix) {
             if self.drag_set.as_ref().map(|(gen, _)| *gen) != Some(self.sel_gen) {
                 let mut rows: Vec<usize> = self.selected.iter().copied().collect();
                 rows.sort_unstable();
-                let set: Arc<[PathBuf]> = self.resolve_drag_paths(&rows, &projection, cx).into();
+                let set: Arc<[TrackKey]> = self.resolve_drag_keys(&rows, &projection, cx).into();
                 self.drag_set = Some((self.sel_gen, set));
             }
             self.drag_set.as_ref().map(|(_, set)| set.clone())?
         } else {
-            self.resolve_drag_paths(&[ix], &projection, cx).into()
+            self.resolve_drag_keys(&[ix], &projection, cx).into()
         };
-        if paths.is_empty() {
+        if keys.is_empty() {
             return None;
         }
         Some(PlayDrag {
-            paths,
+            keys,
             title: title.into(),
         })
     }
 
-    /// Resolve view rows to their files in row order, through the same per-id
-    /// path cache the cover column fills, so a drag never re-queries the
-    /// catalog once a track's path is known.
-    fn resolve_drag_paths(
+    /// Resolve view rows to their tracks in row order, through a per-id cache
+    /// so a drag never re-queries the catalog once a track is known.
+    fn resolve_drag_keys(
         &mut self,
         rows: &[usize],
         projection: &Projection,
         cx: &App,
-    ) -> Vec<PathBuf> {
+    ) -> Vec<TrackKey> {
         let ids: Vec<i64> = rows
             .iter()
             .filter_map(|&i| self.track_at(i))
             .map(|row| projection.db_id[row as usize])
             .collect();
-        let mut paths = Vec::with_capacity(ids.len());
+        let mut keys = Vec::with_capacity(ids.len());
         for id in ids {
-            let path = match self.drag_paths.get(&id) {
-                Some(path) => path.clone(),
+            let key = match self.drag_keys.get(&id) {
+                Some(key) => key.clone(),
                 None => {
-                    let path = self
+                    let key = self
                         .state
                         .library
                         .read(cx)
-                        .paths_for(&[id])
+                        .keys_for(&[id])
                         .ok()
-                        .and_then(|mut paths| paths.pop());
-                    self.drag_paths.insert(id, path.clone());
-                    path
+                        .and_then(|mut keys| keys.pop());
+                    self.drag_keys.insert(id, key.clone());
+                    key
                 }
             };
-            if let Some(path) = path {
-                paths.push(path);
+            if let Some(key) = key {
+                keys.push(key);
             }
         }
-        paths
+        keys
     }
 
     /// The nearest track row from `ix` heading `forward`, bouncing off the
@@ -1245,7 +1244,7 @@ pub struct LibraryPanel {
     error: Option<SharedString>,
     /// The playing track's path, the change detector: the player notifies
     /// every pump tick, so everything up to this compare stays cheap.
-    playing_path: Option<PathBuf>,
+    playing_key: Option<TrackKey>,
     /// The type-ahead buffer and when it last grew; a pause starts over.
     type_ahead: String,
     type_ahead_at: Option<std::time::Instant>,
@@ -1436,7 +1435,7 @@ impl LibraryPanel {
             similar: Arc::new(HashMap::new()),
             similar_anchor: None,
             cover_paths: HashMap::new(),
-            drag_paths: HashMap::new(),
+            drag_keys: HashMap::new(),
             sel_gen: 0,
             added_now: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1499,7 +1498,7 @@ impl LibraryPanel {
             resync_box: false,
             selection_ids,
             error: None,
-            playing_path: None,
+            playing_key: None,
             type_ahead: String::new(),
             type_ahead_at: None,
             restore_scroll: (config.scroll_row > 0).then_some(config.scroll_row),
@@ -1560,15 +1559,15 @@ impl LibraryPanel {
     /// Follow the player: on a track change, resolve the playing path to
     /// its id (one store lookup) and re-locate its row in the view.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
-        let path = self.state.player.read(cx).now_playing().map(|now| now.path);
-        if path == self.playing_path {
+        let path = self.state.player.read(cx).now_playing().map(|now| now.key);
+        if path == self.playing_key {
             return;
         }
-        self.playing_path = path;
+        self.playing_key = path;
         let id = self
-            .playing_path
+            .playing_key
             .as_ref()
-            .and_then(|path| self.state.library.read(cx).id_for(path));
+            .and_then(|key| self.state.library.read(cx).id_for_key(key));
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
             delegate.playing_id = id;
@@ -2425,16 +2424,16 @@ impl LibraryPanel {
                 })
                 .collect();
             (
-                library.paths_for(&ids),
+                library.keys_for(&ids),
                 continuation::Scope::View(order.into()),
             )
         };
         match result {
-            Ok(paths) => self.state.player.update(cx, |player, cx| {
+            Ok(keys) => self.state.player.update(cx, |player, cx| {
                 if explicit {
-                    player.play_explicit(paths, cx);
+                    player.play_explicit(keys, cx);
                 } else {
-                    player.play_at(paths, start, cx);
+                    player.play_at(keys, start, cx);
                 }
                 // After the play, never before: starting a session clears
                 // the scope back to the library at large.
@@ -2482,7 +2481,7 @@ impl LibraryPanel {
         let Some(row) = self.table.read(cx).delegate().track_at(row_ix) else {
             return;
         };
-        let paths = {
+        let keys = {
             let library = self.state.library.read(cx);
             let Some(projection) = library.projection() else {
                 return;
@@ -2490,8 +2489,8 @@ impl LibraryPanel {
             let Some(&id) = projection.db_id.get(row as usize) else {
                 return;
             };
-            match library.paths_for(&[id]) {
-                Ok(paths) => paths,
+            match library.keys_for(&[id]) {
+                Ok(keys) => keys,
                 Err(e) => {
                     self.error = Some(format!("library: {e}").into());
                     cx.notify();
@@ -2511,7 +2510,7 @@ impl LibraryPanel {
             if player.continuation_mode() == continuation::Mode::Off {
                 player.toggle_continuation(cx);
             }
-            player.play(paths, cx);
+            player.play(keys, cx);
         });
     }
 

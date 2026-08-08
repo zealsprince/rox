@@ -35,6 +35,11 @@ use crate::TrackRow;
 pub const EXTENSIONS: &[&str] = &[
     "flac", "mp3", "wav", "ogg", "oga", "m4a", "m4b", "aac", "aif", "aiff", "aifc", "mka", "caf",
 ];
+
+/// Cue sheets are deliberately not in [`EXTENSIONS`]: a sheet is not audio,
+/// and an external open handed one must not try to play it. The walk notices
+/// them separately, and only to split the image files they point at.
+pub const CUE_EXTENSION: &str = "cue";
 const BATCH: usize = 512;
 
 #[derive(Default)]
@@ -63,20 +68,45 @@ pub fn scan(
     root: &Path,
     progress: impl Fn(usize, usize, &Path) -> bool + Sync,
 ) -> rusqlite::Result<ScanSummary> {
-    let known = store::local_files(conn)?;
-    let mut files = Vec::new();
-    collect(root, &mut files);
-    files.sort();
-    let total = files.len();
+    let mut known = store::local_files(conn)?;
+    // Which images the store currently holds as cue tracks, so this pass can
+    // tell what a sheet used to produce from what it produces now.
+    let stored_cues = store::cue_subs(conn)?;
+    let mut walk = Walk::default();
+    collect(root, &mut walk);
+    walk.audio.sort();
     // The walk is the ground truth for what lives under the root this pass:
     // an unreadable file (permissions, transient IO) still lands here from
     // its parent's directory entry, so it never counts as gone. Built before
-    // the batch loop consumes `files`, keyed the same way process_file keys a
-    // stored row so the two sets compare byte for byte.
-    let present: std::collections::HashSet<String> = files
+    // the batch loop consumes the list, keyed the same way process_file keys
+    // a stored row so the two sets compare byte for byte. Claimed images are
+    // in here too: the sheet changes what rows they get, not whether the file
+    // is there.
+    let present: std::collections::HashSet<String> = walk
+        .audio
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
+
+    let claimed = claims(&walk.cues, &walk.audio);
+    // An image a sheet no longer claims has to be re-read even if its own
+    // (mtime, size) never moved: its cue rows are about to go, and dropping
+    // them without emitting the plain row would lose the file. Forgetting it
+    // here is what makes process_file read it again.
+    for path in stored_cues.keys() {
+        if !claimed.contains_key(Path::new(path)) {
+            known.remove(path);
+        }
+    }
+    // Claimed images get their rows from the cue pass below, never a plain
+    // row of their own.
+    let files: Vec<PathBuf> = walk
+        .audio
+        .iter()
+        .filter(|path| !claimed.contains_key(*path))
+        .cloned()
+        .collect();
+    let total = files.len() + claimed.len();
 
     let mut summary = ScanSummary::default();
     let scanned = AtomicUsize::new(0);
@@ -122,6 +152,61 @@ pub fn scan(
         }
     }
 
+    // The cue pass. One image at a time rather than in file-sized batches:
+    // there are as many claimed images as there are ripped discs, and each
+    // one is a single probe that fans out into a handful of rows.
+    if !summary.aborted {
+        let images: Vec<&PathBuf> = claimed.keys().collect();
+        for chunk in images.chunks(BATCH) {
+            let outcomes: Vec<(&PathBuf, CueOutcome)> = chunk
+                .par_iter()
+                .map(|image| {
+                    let outcome = process_cue(image, &claimed[*image], &known, &stored_cues);
+                    let done = scanned.fetch_add(1, Ordering::Relaxed) + 1;
+                    if !progress(done, total, image) {
+                        cancelled.store(true, Ordering::Relaxed);
+                    }
+                    (*image, outcome)
+                })
+                .collect();
+
+            let mut batch: Vec<TrackRow> = Vec::new();
+            for (image, outcome) in outcomes {
+                match outcome {
+                    CueOutcome::Missing => {}
+                    CueOutcome::Unchanged(tracks) => summary.unchanged += tracks,
+                    CueOutcome::Indexed(rows) => {
+                        summary.indexed += rows.len();
+                        batch.extend(rows);
+                    }
+                }
+                // The sheet's word on which subsongs the image has, run
+                // whatever the outcome: it retires the plain sub 0 row an
+                // image carried before a sheet claimed it, and the cue rows
+                // for tracks a re-edited sheet dropped.
+                let keep: Vec<u16> = claimed[image].tracks.iter().map(|t| t.number).collect();
+                store::retain_subs(conn, &image.to_string_lossy(), &keep)?;
+            }
+            if !batch.is_empty() {
+                store::insert_batch(conn, &batch)?;
+            }
+            if cancelled.load(Ordering::Relaxed) {
+                summary.aborted = true;
+                break;
+            }
+        }
+    }
+
+    // The other direction: an image whose sheet is gone keeps only the plain
+    // row the walk just re-emitted for it, so its cue rows go here.
+    if !summary.aborted {
+        for path in stored_cues.keys() {
+            if !claimed.contains_key(Path::new(path)) {
+                store::retain_subs(conn, path, &[0])?;
+            }
+        }
+    }
+
     // Diff the stored rows under root against what the walk found and drop
     // the rows whose files are gone. Skipped on two counts, both to keep a
     // bad pass from wiping the library: an aborted scan never finished the
@@ -148,15 +233,71 @@ pub fn scan(
 /// Blocking; run it off the UI thread.
 pub fn reindex(conn: &mut Connection, paths: &[PathBuf]) -> rusqlite::Result<usize> {
     let known = HashMap::new();
-    let rows: Vec<TrackRow> = paths
+    // A cue sheet in the list is not a file to index, it's an instruction to
+    // re-cut the images it names. Sheets sitting beside a named audio file
+    // count too: without them a touched image would land as one plain row and
+    // wipe the cue rows it should have kept.
+    let mut dirs: Vec<&Path> = paths.iter().filter_map(|p| p.parent()).collect();
+    dirs.sort();
+    dirs.dedup();
+    let mut cues: Vec<PathBuf> = paths.iter().filter(|p| is_cue(p)).cloned().collect();
+    let mut nearby: Vec<PathBuf> = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if is_cue(&path) {
+                cues.push(path);
+            } else if is_audio(&path) {
+                nearby.push(path);
+            }
+        }
+    }
+    cues.sort();
+    cues.dedup();
+    let claimed = claims(&cues, &nearby);
+
+    // Everything to re-read: the audio files named, plus every image a named
+    // sheet claims. Claimed images go through the cue path, the rest plain.
+    let mut targets: Vec<PathBuf> = paths.iter().filter(|p| is_audio(p)).cloned().collect();
+    for image in claimed.keys() {
+        targets.push(image.clone());
+    }
+    targets.sort();
+    targets.dedup();
+
+    let rows: Vec<TrackRow> = targets
         .par_iter()
-        .filter_map(|path| match process_file(path, &known) {
-            Outcome::Indexed { row, .. } => Some(*row),
-            _ => None,
+        .flat_map(|path| match claimed.get(path) {
+            // An empty stored-subs map forces the read: the caller only names
+            // files it just changed, so nothing here is unchanged by
+            // definition.
+            Some(claim) => match process_cue(path, claim, &known, &HashMap::new()) {
+                CueOutcome::Indexed(rows) => rows,
+                _ => Vec::new(),
+            },
+            None => match process_file(path, &known) {
+                Outcome::Indexed { row, .. } => vec![*row],
+                _ => Vec::new(),
+            },
         })
         .collect();
     if !rows.is_empty() {
         store::insert_batch(conn, &rows)?;
+        // Square the stored subsongs with what the sheets say now, the same
+        // bookkeeping a full scan runs and in the same order: rows land
+        // first, then the ones they replaced go. A claimed image loses the
+        // plain row it used to have, an image whose sheet went away loses its
+        // cue rows.
+        for (image, claim) in &claimed {
+            let keep: Vec<u16> = claim.tracks.iter().map(|t| t.number).collect();
+            store::retain_subs(conn, &image.to_string_lossy(), &keep)?;
+        }
+        for path in targets.iter().filter(|p| !claimed.contains_key(*p)) {
+            store::retain_subs(conn, &path.to_string_lossy(), &[0])?;
+        }
         // A watched file coming back lands here as a fresh row; give any
         // playlist members and listens still pointing at its old id the
         // same reattach a full scan runs.
@@ -239,9 +380,9 @@ pub fn read_one(path: &Path) -> Option<TrackRow> {
 /// window) needs the on-disk paths to inspect, indexed or not. Blocking IO;
 /// run it off the UI thread.
 pub fn audio_files(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    collect(root, &mut out);
-    out
+    let mut walk = Walk::default();
+    collect(root, &mut walk);
+    walk.audio
 }
 
 /// Whether a path carries one of the audio extensions the scan indexes, the
@@ -253,7 +394,33 @@ pub fn is_audio(path: &Path) -> bool {
         .is_some_and(|e| EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
-fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Whether a path is a cue sheet. Deliberately not part of [`is_audio`]: a
+/// sheet is never playable and never a row, it only decides how the image
+/// beside it is cut up.
+pub fn is_cue(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(CUE_EXTENSION))
+}
+
+/// Whether a changed path is worth handing to [`reindex`]: audio, or a cue
+/// sheet whose edit re-cuts the image it points at. What a watcher's
+/// relevance filter should ask, since filtering on [`is_audio`] alone drops
+/// every sheet edit on the floor.
+pub fn is_relevant(path: &Path) -> bool {
+    is_audio(path) || is_cue(path)
+}
+
+/// What one walk found: the audio files that become rows, and the cue sheets
+/// that decide how some of them are cut. Kept apart because a sheet is not a
+/// track and must never be indexed as one.
+#[derive(Default)]
+struct Walk {
+    audio: Vec<PathBuf>,
+    cues: Vec<PathBuf>,
+}
+
+fn collect(dir: &Path, out: &mut Walk) {
     let mut seen = HashSet::new();
     // Seed with the root's real path so a link back up to it stops the walk too.
     if let Ok(canon) = std::fs::canonicalize(dir) {
@@ -262,7 +429,7 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     collect_into(dir, out, &mut seen);
 }
 
-fn collect_into(dir: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
+fn collect_into(dir: &Path, out: &mut Walk, seen: &mut HashSet<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -291,9 +458,261 @@ fn collect_into(dir: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>)
             }
             collect_into(&path, out, seen);
         } else if is_audio(&path) {
-            out.push(path);
+            out.audio.push(path);
+        } else if is_cue(&path) {
+            out.cues.push(path);
         }
     }
+}
+
+/// One cue sheet's claim on one image file: which sheet made it, when that
+/// sheet was last written, the album-level tags off it, and the tracks it
+/// cuts the image into.
+struct Claim {
+    cue_path: PathBuf,
+    /// The sheet's own mtime, folded into the row's so an edit to the sheet
+    /// reindexes the image even though the image itself never changed.
+    cue_mtime: i64,
+    album: String,
+    album_artist: String,
+    genre: String,
+    year: u16,
+    tracks: Vec<crate::cue::CueTrack>,
+}
+
+/// Read the cue sheets a walk found and work out which images they claim,
+/// keyed by the resolved image path. A sheet that will not parse, or whose
+/// FILE lines point at nothing indexable, claims nothing and leaves those
+/// files to be indexed plain. Two sheets naming one image is a broken
+/// library either way; the last one read wins.
+fn claims(cues: &[PathBuf], audio: &[PathBuf]) -> HashMap<PathBuf, Claim> {
+    if cues.is_empty() {
+        return HashMap::new();
+    }
+    // The walked audio grouped by directory, so resolving a FILE line is a
+    // lookup rather than a read_dir per sheet or a sweep of the whole walk.
+    let mut by_dir: HashMap<&Path, Vec<&Path>> = HashMap::new();
+    for path in audio {
+        if let Some(dir) = path.parent() {
+            by_dir.entry(dir).or_default().push(path.as_path());
+        }
+    }
+    let mut out: HashMap<PathBuf, Claim> = HashMap::new();
+    for cue_path in cues {
+        let Some(dir) = cue_path.parent() else {
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(cue_path) else {
+            continue;
+        };
+        let Some(sheet) = crate::cue::parse(&bytes) else {
+            continue;
+        };
+        let cue_mtime = std::fs::metadata(cue_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        for file in sheet.files {
+            let Some(image) = resolve_image(dir, &file.path, &by_dir) else {
+                continue;
+            };
+            out.insert(
+                image,
+                Claim {
+                    cue_path: cue_path.clone(),
+                    cue_mtime,
+                    album: sheet.title.clone(),
+                    album_artist: sheet.performer.clone(),
+                    genre: sheet.genre.clone(),
+                    year: sheet.year,
+                    tracks: file.tracks,
+                },
+            );
+        }
+    }
+    out
+}
+
+/// Turn a sheet's FILE argument into a path the scan actually found. Three
+/// tries, loosening as they go: the name as written, the same name in any
+/// casing (a sheet from Windows beside files on a case-sensitive disk), then
+/// the same stem under any audio extension, because rippers habitually write
+/// `.wav` in the sheet and leave a `.flac` on disk. Only files the walk
+/// already indexed can match, so a sheet pointing at a `.bin` image nothing
+/// here decodes resolves to nothing and its tracks are skipped.
+fn resolve_image(
+    cue_dir: &Path,
+    arg: &str,
+    by_dir: &HashMap<&Path, Vec<&Path>>,
+) -> Option<PathBuf> {
+    // Sheets written on Windows use backslashes even for a bare name, and a
+    // multi-disc sheet may reach into a subdirectory.
+    let arg = arg.replace('\\', "/");
+    let rel = Path::new(&arg);
+    let name = rel.file_name()?.to_str()?;
+    let dir = match rel.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => cue_dir.join(parent),
+        _ => cue_dir.to_path_buf(),
+    };
+    let siblings = by_dir.get(dir.as_path())?;
+    fn named<'a>(path: &&'a Path) -> Option<&'a str> {
+        path.file_name().and_then(|n| n.to_str())
+    }
+    if let Some(hit) = siblings.iter().find(|p| named(p) == Some(name)) {
+        return Some(hit.to_path_buf());
+    }
+    if let Some(hit) = siblings
+        .iter()
+        .find(|p| named(p).is_some_and(|n| n.eq_ignore_ascii_case(name)))
+    {
+        return Some(hit.to_path_buf());
+    }
+    let stem = Path::new(name).file_stem()?.to_str()?;
+    siblings
+        .iter()
+        .find(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case(stem))
+        })
+        .map(|hit| hit.to_path_buf())
+}
+
+/// What one claimed image's pass produced.
+enum CueOutcome {
+    /// The image vanished or would not stat between the walk and the read.
+    Missing,
+    /// The image and its sheet are both unchanged and the store already
+    /// holds exactly these subsongs, so nothing was read. Carries how many
+    /// tracks were skipped, for the summary.
+    Unchanged(usize),
+    /// The rows to upsert, one per track of the sheet.
+    Indexed(Vec<TrackRow>),
+}
+
+/// Stat a claimed image and, if anything moved, probe it once and cut it into
+/// its cue tracks. The unchanged check keys off the combined mtime and the
+/// subsongs already stored, so editing the sheet alone still re-emits.
+fn process_cue(
+    image: &Path,
+    claim: &Claim,
+    known: &HashMap<String, (i64, u64)>,
+    stored_cues: &HashMap<String, Vec<u16>>,
+) -> CueOutcome {
+    let Ok(meta) = std::fs::metadata(image) else {
+        return CueOutcome::Missing;
+    };
+    let size = meta.len();
+    let image_mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // A cue row's mtime is the later of the two files it comes from, so a
+    // touched sheet counts as a changed track even when the image is
+    // untouched, which is the usual way a cue rip gets corrected.
+    let mtime = image_mtime.max(claim.cue_mtime);
+    let path_str = image.to_string_lossy().into_owned();
+    let subs: Vec<u16> = claim.tracks.iter().map(|t| t.number).collect();
+    if known.get(&path_str) == Some(&(mtime, size)) && stored_cues.get(&path_str) == Some(&subs) {
+        return CueOutcome::Unchanged(subs.len());
+    }
+
+    // One probe for the whole disc: codec, stream numbers, and the tags the
+    // sheet leaves out all come off the image, and reading it per track would
+    // reopen the same gigabyte a dozen times.
+    let image_tags = read_tags(image).unwrap_or_else(|| fallback_row(image));
+    CueOutcome::Indexed(cue_rows(image, claim, &image_tags, size, mtime))
+}
+
+/// Cut one image's tags into a row per cue track. The sheet wins on the
+/// album-level fields where it says anything, since it was written about
+/// this disc; the image's own tags fill the gaps.
+fn cue_rows(
+    image: &Path,
+    claim: &Claim,
+    image_tags: &TrackRow,
+    size: u64,
+    mtime: i64,
+) -> Vec<TrackRow> {
+    let path = image.to_string_lossy().into_owned();
+    let cue_path = claim.cue_path.to_string_lossy().into_owned();
+    claim
+        .tracks
+        .iter()
+        .map(|track| {
+            // The last track of an image has no end, so it runs from its
+            // start to whatever the file's own length turned out to be. A
+            // start past the end (a sheet that outlived its image) floors at
+            // zero rather than wrap.
+            let duration_ms = track
+                .span
+                .len_ms()
+                .unwrap_or_else(|| image_tags.duration_ms.saturating_sub(track.span.start_ms));
+            let artist = track.performer.clone();
+            TrackRow {
+                path: path.clone(),
+                sub: track.number,
+                // A sheet that named no title leaves the row the same
+                // filename fallback an unreadable file would get.
+                title: if track.title.is_empty() {
+                    image_tags.title.clone()
+                } else {
+                    track.title.clone()
+                },
+                album_artist: if claim.album_artist.is_empty() {
+                    artist.clone()
+                } else {
+                    claim.album_artist.clone()
+                },
+                artist,
+                album: if claim.album.is_empty() {
+                    image_tags.album.clone()
+                } else {
+                    claim.album.clone()
+                },
+                genre: if claim.genre.is_empty() {
+                    image_tags.genre.clone()
+                } else {
+                    claim.genre.clone()
+                },
+                year: if claim.year == 0 {
+                    image_tags.year
+                } else {
+                    claim.year
+                },
+                // The sheet knows nothing about discs, so a multi-disc rip
+                // gets its disc number off the image's own tag.
+                disc_no: image_tags.disc_no,
+                track_no: track.number,
+                duration_ms,
+                codec: image_tags.codec.clone(),
+                bitrate_kbps: image_tags.bitrate_kbps,
+                sample_rate_hz: image_tags.sample_rate_hz,
+                bit_depth: image_tags.bit_depth,
+                rating: 0,
+                // Only the album figures. A whole-disc rip's track gain
+                // describes the whole image, so handing it to each track
+                // would level every one of them by the disc's average; the
+                // album pair means exactly what it says either way.
+                replay_gain: crate::replaygain::ReplayGain {
+                    track_db: None,
+                    track_peak: None,
+                    album_db: image_tags.replay_gain.album_db,
+                    album_peak: image_tags.replay_gain.album_peak,
+                },
+                cue: Some(crate::CueSlice {
+                    cue_path: cue_path.clone(),
+                    span: track.span,
+                }),
+                size,
+                mtime,
+            }
+        })
+        .collect()
 }
 
 /// Tag read isolated per file: a malformed file that errors or panics
@@ -429,6 +848,8 @@ fn replay_gain_across_tags(file: &TaggedFile) -> crate::replaygain::ReplayGain {
 fn fallback_row(path: &Path) -> TrackRow {
     TrackRow {
         path: String::new(),
+        sub: 0,
+        cue: None,
         title: filename_title(path),
         artist: String::new(),
         album_artist: String::new(),
@@ -748,7 +1169,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("tone.wav");
-        std::fs::write(&path, pcm_wav(44100, 16, 2)).unwrap();
+        std::fs::write(&path, pcm_wav(44100, 16, 2, 1)).unwrap();
 
         let row = read_one(&path).unwrap();
         assert_eq!(row.codec, "wav");
@@ -756,13 +1177,290 @@ mod tests {
         assert_eq!(row.bit_depth, 16);
     }
 
+    /// A twelve second image and a sheet cutting it into three, the shape a
+    /// whole-disc rip takes. Three seconds each for the first two tracks, the
+    /// rest of the file for the last.
+    const SHEET: &str = r#"REM GENRE "Post Rock"
+REM DATE 2003
+PERFORMER "The Band"
+TITLE "The Album"
+FILE "disc.wav" WAVE
+  TRACK 01 AUDIO
+    TITLE "One"
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    TITLE "Two"
+    PERFORMER "Guest"
+    INDEX 01 00:03:00
+  TRACK 03 AUDIO
+    TITLE "Three"
+    INDEX 01 00:06:00
+"#;
+
+    /// A fresh fixture directory holding the image, and a store over it.
+    fn cue_fixture(name: &str) -> (PathBuf, Connection) {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("disc.wav"), pcm_wav(44100, 16, 2, 12)).unwrap();
+        let conn = store::open(&dir.join("library.db")).unwrap();
+        store::init_schema(&conn).unwrap();
+        (dir, conn)
+    }
+
+    /// Every row the store holds for one image, in subsong order: the columns
+    /// a cue test wants to read back.
+    #[allow(clippy::type_complexity)]
+    fn subsongs(conn: &Connection, image: &Path) -> Vec<(u16, String, String, u32)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT sub, title, artist, duration_ms FROM tracks
+                 WHERE path = ?1 ORDER BY sub",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([image.to_str().unwrap()], |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as u16,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get::<_, i64>(3)? as u32,
+                ))
+            })
+            .unwrap();
+        rows.map(Result::unwrap).collect()
+    }
+
+    /// Push a file's mtime forward. Second-granularity timestamps mean a test
+    /// that rewrites a file inside the same second would otherwise look
+    /// untouched, and the whole point of the combined mtime is that it moves.
+    fn touch_ahead(path: &Path) {
+        let ahead = std::time::SystemTime::now() + std::time::Duration::from_secs(120);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(ahead)
+            .unwrap();
+    }
+
+    /// The core of it: a sheet beside an image turns one file into a row per
+    /// track, the image gets no plain row of its own, and every row carries
+    /// the sheet's tags over the image's own.
+    #[test]
+    fn a_cue_sheet_splits_its_image_into_tracks() {
+        let (dir, mut conn) = cue_fixture("rox-scanner-cue-split");
+        let image = dir.join("disc.wav");
+        std::fs::write(dir.join("disc.cue"), SHEET).unwrap();
+
+        let summary = scan(&mut conn, &dir, |_, _, _| true).unwrap();
+        assert_eq!(summary.indexed, 3, "one row per cue track");
+        assert_eq!(store::count(&conn).unwrap(), 3, "and no plain image row");
+
+        let rows = subsongs(&conn, &image);
+        assert_eq!(
+            rows,
+            [
+                (1, "One".to_string(), "The Band".to_string(), 3_000),
+                // A track that named its own performer keeps it.
+                (2, "Two".to_string(), "Guest".to_string(), 3_000),
+                // The last track runs from its start to the file's end.
+                (3, "Three".to_string(), "The Band".to_string(), 6_000),
+            ]
+        );
+
+        // The album-level tags come off the sheet, the stream numbers off the
+        // one probe of the image.
+        let (album, album_artist, genre, year, codec, rate, depth): (
+            String,
+            String,
+            String,
+            u16,
+            String,
+            u32,
+            u8,
+        ) = conn
+            .query_row(
+                "SELECT album, album_artist, genre, year, codec, sample_rate, bit_depth
+                 FROM tracks WHERE sub = 2",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(album, "The Album");
+        assert_eq!(album_artist, "The Band");
+        assert_eq!(genre, "Post Rock");
+        assert_eq!(year, 2003);
+        assert_eq!((codec, rate, depth), ("wav".to_string(), 44100, 16));
+
+        // The spans landed beside the rows, the last one open-ended.
+        let path = image.to_str().unwrap();
+        assert_eq!(
+            store::queue_meta_for_key(&conn, path, 2).unwrap().span,
+            Some(crate::cue::Span {
+                start_ms: 3_000,
+                end_ms: Some(6_000)
+            })
+        );
+        assert_eq!(
+            store::queue_meta_for_key(&conn, path, 3).unwrap().span,
+            Some(crate::cue::Span {
+                start_ms: 6_000,
+                end_ms: None
+            })
+        );
+
+        // A second pass with nothing touched reads no tags at all.
+        let summary = scan(&mut conn, &dir, |_, _, _| true).unwrap();
+        assert_eq!((summary.indexed, summary.unchanged), (0, 3));
+        assert_eq!(summary.removed, 0, "a claimed image is not a missing file");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A sheet naming a file that isn't there resolves by stem instead, since
+    /// rippers write `.wav` in the sheet and leave a lossless file on disk.
+    #[test]
+    fn a_cue_sheet_resolves_its_image_by_stem() {
+        let (dir, mut conn) = cue_fixture("rox-scanner-cue-stem");
+        // The sheet says .aiff, the disk holds disc.wav.
+        std::fs::write(dir.join("disc.cue"), SHEET.replace("disc.wav", "DISC.aiff")).unwrap();
+
+        scan(&mut conn, &dir, |_, _, _| true).unwrap();
+        assert_eq!(subsongs(&conn, &dir.join("disc.wav")).len(), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The sheet is deleted: the image goes back to being one plain file,
+    /// its cue rows and their spans go, and nothing is left dangling.
+    #[test]
+    fn a_deleted_cue_sheet_gives_the_image_back_whole() {
+        let (dir, mut conn) = cue_fixture("rox-scanner-cue-deleted");
+        let image = dir.join("disc.wav");
+        std::fs::write(dir.join("disc.cue"), SHEET).unwrap();
+        scan(&mut conn, &dir, |_, _, _| true).unwrap();
+        assert_eq!(store::count(&conn).unwrap(), 3);
+
+        std::fs::remove_file(dir.join("disc.cue")).unwrap();
+        scan(&mut conn, &dir, |_, _, _| true).unwrap();
+
+        assert_eq!(
+            subsongs(&conn, &image),
+            [(0, "disc".to_string(), String::new(), 12_000)],
+            "one row for the whole image, titled off its filename"
+        );
+        assert!(store::cue_spans(&conn).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// And the other direction: a sheet dropped next to an already-indexed
+    /// image replaces its plain row with the tracks.
+    #[test]
+    fn a_new_cue_sheet_replaces_the_plain_row() {
+        let (dir, mut conn) = cue_fixture("rox-scanner-cue-added");
+        let image = dir.join("disc.wav");
+        scan(&mut conn, &dir, |_, _, _| true).unwrap();
+        assert_eq!(subsongs(&conn, &image).len(), 1, "one plain row to start");
+
+        std::fs::write(dir.join("disc.cue"), SHEET).unwrap();
+        scan(&mut conn, &dir, |_, _, _| true).unwrap();
+
+        let subs: Vec<u16> = subsongs(&conn, &image).iter().map(|r| r.0).collect();
+        assert_eq!(subs, [1, 2, 3], "the plain row gave way to the tracks");
+        assert_eq!(store::cue_spans(&conn).unwrap().len(), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Editing the sheet reindexes the image even though the image itself
+    /// never changed: a cue row's mtime is the later of the two files, so the
+    /// unchanged check sees the edit.
+    #[test]
+    fn editing_a_cue_sheet_reindexes_the_image() {
+        let (dir, mut conn) = cue_fixture("rox-scanner-cue-edited");
+        let image = dir.join("disc.wav");
+        let cue = dir.join("disc.cue");
+        std::fs::write(&cue, SHEET).unwrap();
+        scan(&mut conn, &dir, |_, _, _| true).unwrap();
+
+        // Same three tracks, one retitled, so nothing but the mtime can be
+        // what tells the scan to look again.
+        std::fs::write(&cue, SHEET.replace("\"Two\"", "\"Second\"")).unwrap();
+        touch_ahead(&cue);
+        let summary = scan(&mut conn, &dir, |_, _, _| true).unwrap();
+
+        assert_eq!((summary.indexed, summary.unchanged), (3, 0));
+        assert_eq!(subsongs(&conn, &image)[1].1, "Second");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A sheet that loses a track loses that row, and only that row.
+    #[test]
+    fn a_shortened_cue_sheet_drops_the_track_it_no_longer_lists() {
+        let (dir, mut conn) = cue_fixture("rox-scanner-cue-shortened");
+        let image = dir.join("disc.wav");
+        let cue = dir.join("disc.cue");
+        std::fs::write(&cue, SHEET).unwrap();
+        scan(&mut conn, &dir, |_, _, _| true).unwrap();
+
+        let shorter = SHEET
+            .split("  TRACK 03")
+            .next()
+            .expect("the sheet splits at its last track")
+            .to_string();
+        std::fs::write(&cue, shorter).unwrap();
+        touch_ahead(&cue);
+        scan(&mut conn, &dir, |_, _, _| true).unwrap();
+
+        let rows = subsongs(&conn, &image);
+        assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(
+            rows[1].3, 9_000,
+            "track two now runs to the end of the file"
+        );
+        assert_eq!(store::cue_spans(&conn).unwrap().len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The watch path: a sheet written into a folder arrives as one changed
+    /// path, and reindex has to read it as an instruction to re-cut the image
+    /// rather than try to index the sheet as a track.
+    #[test]
+    fn reindex_takes_a_cue_sheet_as_a_re_cut() {
+        let (dir, mut conn) = cue_fixture("rox-scanner-cue-reindex");
+        let image = dir.join("disc.wav");
+        scan(&mut conn, &dir, |_, _, _| true).unwrap();
+        assert_eq!(subsongs(&conn, &image).len(), 1);
+
+        let cue = dir.join("disc.cue");
+        std::fs::write(&cue, SHEET).unwrap();
+        assert_eq!(reindex(&mut conn, std::slice::from_ref(&cue)).unwrap(), 3);
+
+        let subs: Vec<u16> = subsongs(&conn, &image).iter().map(|r| r.0).collect();
+        assert_eq!(subs, [1, 2, 3]);
+        assert_eq!(
+            store::count(&conn).unwrap(),
+            3,
+            "the sheet itself never becomes a row"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// A minimal PCM wav: the RIFF header, a fmt chunk naming the format,
-    /// and a second of silence, which is all lofty needs to report the
+    /// and `seconds` of silence, which is all lofty needs to report the
     /// properties.
-    fn pcm_wav(rate: u32, bits: u16, channels: u16) -> Vec<u8> {
+    fn pcm_wav(rate: u32, bits: u16, channels: u16, seconds: u32) -> Vec<u8> {
         let block_align = channels * bits / 8;
         let byte_rate = rate * block_align as u32;
-        let data = vec![0u8; byte_rate as usize];
+        let data = vec![0u8; (byte_rate * seconds) as usize];
         let mut out = Vec::with_capacity(data.len() + 44);
         out.extend_from_slice(b"RIFF");
         out.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());

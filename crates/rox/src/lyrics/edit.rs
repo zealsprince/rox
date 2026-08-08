@@ -20,6 +20,7 @@ use gpui::{
 use gpui_component::input::{Input, InputState, Position};
 use gpui_component::{Root, Sizable};
 
+use rox_library::cue::TrackKey;
 use rox_library::lyrics::{self, Source};
 
 use crate::matching::{open_or_focus, WindowRegistry};
@@ -98,7 +99,8 @@ impl LyricsEdit {
         window.focus(&input.read(cx).focus_handle(cx));
         // The header names the track off its library tags, so the window
         // says what it is even before the file read lands.
-        let query = rox_services::lyrics::query_for(&state.library, &path, cx);
+        let query =
+            rox_services::lyrics::query_for(&state.library, &TrackKey::from(path.clone()), cx);
         let line = if query.artist.is_empty() {
             query.title.clone()
         } else {
@@ -162,7 +164,7 @@ impl LyricsEdit {
             .player
             .read(cx)
             .now_playing()
-            .filter(|now| now.path == self.path)
+            .filter(|now| now.path() == self.path)
             .map(|now| now.position_secs)
     }
 

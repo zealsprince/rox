@@ -362,15 +362,15 @@ impl StatsWindow {
             .library
             .read(cx)
             .ids_for_rollup(by, name, QUEUE_CAP);
-        let Ok(paths) = self.state.library.read(cx).paths_for(&ids) else {
+        let Ok(keys) = self.state.library.read(cx).keys_for(&ids) else {
             return;
         };
-        if paths.is_empty() {
+        if keys.is_empty() {
             return;
         }
         self.state
             .player
-            .update(cx, |player, cx| player.play(paths, cx));
+            .update(cx, |player, cx| player.play(keys, cx));
     }
 
     /// Queue a recents row and what follows it in the list, the history
@@ -388,15 +388,15 @@ impl StatsWindow {
             .take(QUEUE_CAP)
             .map(|row| row.track_id)
             .collect();
-        let Ok(paths) = self.state.library.read(cx).paths_for(&ids) else {
+        let Ok(keys) = self.state.library.read(cx).keys_for(&ids) else {
             return;
         };
-        if paths.is_empty() {
+        if keys.is_empty() {
             return;
         }
         self.state
             .player
-            .update(cx, |player, cx| player.play(paths, cx));
+            .update(cx, |player, cx| player.play(keys, cx));
     }
 
     /// One track path's cover through the shared thumbnail service; None

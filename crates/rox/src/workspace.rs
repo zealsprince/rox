@@ -22,6 +22,7 @@ use rox_dock::{
     register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo, PanelView,
     StackPanel, TabPanel, ToggleZoom,
 };
+use rox_library::cue::TrackKey;
 
 use gpui::rgba;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -504,10 +505,23 @@ pub(crate) fn play_launch_paths(
     if paths.is_empty() {
         return;
     }
+    // Files handed over by the OS are whole files: nothing out there names a
+    // subsong, so they queue as plain tracks.
+    let keys: Vec<TrackKey> = paths.into_iter().map(TrackKey::from).collect();
     state.player.update(cx, |player, cx| match mode {
-        rox_library::open_files::LaunchMode::Play => player.play(paths, cx),
-        rox_library::open_files::LaunchMode::Enqueue => player.enqueue(paths, cx),
+        rox_library::open_files::LaunchMode::Play => player.play(keys, cx),
+        rox_library::open_files::LaunchMode::Enqueue => player.enqueue(keys, cx),
     });
+}
+
+/// Filter dropped paths to decodable audio and read them as whole files.
+/// A drop off the desktop names files, never subsongs; a drag out of the
+/// library carries its own keys and never comes through here.
+fn loose_keys(paths: Vec<PathBuf>) -> Vec<TrackKey> {
+    rox_library::open_files::resolve_audio_paths(paths)
+        .into_iter()
+        .map(TrackKey::from)
+        .collect()
 }
 
 /// Apply a named workspace to the frontmost workspace window from app
@@ -1642,7 +1656,7 @@ pub struct Workspace {
     /// The playing path the window title currently reflects; None while
     /// the title is the plain app name. Compared each player tick so the
     /// tag lookup and the platform title call only run on a track change.
-    titled_track: Option<PathBuf>,
+    titled_track: Option<TrackKey>,
     _layout_changed: Subscription,
     /// The player pump notifies every tick while a session runs; the
     /// title refresh rides it and bails on the path compare.
@@ -1840,7 +1854,7 @@ impl Workspace {
             // last_track falls through to the single-track restore.
             let queue = settings.session.last_queue.as_ref().and_then(|q| {
                 let library = state.library.read(cx);
-                let mut paths = Vec::with_capacity(q.entries.len());
+                let mut keys = Vec::with_capacity(q.entries.len());
                 let mut explicit = Vec::with_capacity(q.entries.len());
                 let mut cursor = 0;
                 for (i, entry) in q.entries.iter().enumerate() {
@@ -1850,17 +1864,24 @@ impl Workspace {
                         .and_then(|mut paths| paths.pop());
                     if let Some(path) = path {
                         if i <= q.cursor {
-                            cursor = paths.len();
+                            cursor = keys.len();
                         }
-                        paths.push(path);
+                        // The sub comes off the saved entry rather than the
+                        // library: the id names the row, but the projection
+                        // that could answer which subsong it is may not be
+                        // loaded this early in a launch.
+                        keys.push(TrackKey {
+                            path,
+                            sub: entry.sub,
+                        });
                         explicit.push(entry.explicit);
                     }
                 }
-                (!paths.is_empty()).then_some((paths, explicit, cursor, q.position_secs))
+                (!keys.is_empty()).then_some((keys, explicit, cursor, q.position_secs))
             });
-            if let Some((paths, explicit, cursor, position_secs)) = queue {
+            if let Some((keys, explicit, cursor, position_secs)) = queue {
                 state.player.update(cx, |player, cx| {
-                    player.restore_queue(paths, explicit, cursor, position_secs, cx)
+                    player.restore_queue(keys, explicit, cursor, position_secs, cx)
                 });
             } else if let Some(last) = settings.session.last_track {
                 let path = state
@@ -1870,9 +1891,13 @@ impl Workspace {
                     .ok()
                     .and_then(|mut paths| paths.pop());
                 if let Some(path) = path {
-                    state.player.update(cx, |player, cx| {
-                        player.restore(path, last.position_secs, cx)
-                    });
+                    let key = TrackKey {
+                        path,
+                        sub: last.sub,
+                    };
+                    state
+                        .player
+                        .update(cx, |player, cx| player.restore(key, last.position_secs, cx));
                 }
             }
         }
@@ -2844,17 +2869,18 @@ impl Workspace {
     /// while something plays, the plain app name otherwise. Untagged files
     /// fall back to their file name, same as the track info readout.
     fn refresh_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let path = self.state.player.read(cx).now_playing().map(|now| now.path);
-        if path == self.titled_track {
+        let key = self.state.player.read(cx).now_playing().map(|now| now.key);
+        if key == self.titled_track {
             return;
         }
-        let title = match &path {
-            Some(path) => {
-                let meta = self.state.library.read(cx).meta_for(path);
+        let title = match &key {
+            Some(key) => {
+                let meta = self.state.library.read(cx).meta_for_key(key);
                 let track = meta.as_ref().map(|m| m.title.clone()).unwrap_or_else(|| {
-                    path.file_stem()
+                    key.path
+                        .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string())
+                        .unwrap_or_else(|| key.path.display().to_string())
                 });
                 match meta.map(|m| m.artist).filter(|a| !a.is_empty()) {
                     Some(artist) => format!("{artist} - {track} - rox"),
@@ -2864,7 +2890,7 @@ impl Workspace {
             None => "rox".into(),
         };
         window.set_window_title(&title);
-        self.titled_track = path;
+        self.titled_track = key;
     }
 
     /// Route OS-handed files into the shared player. The launch path
@@ -2890,25 +2916,34 @@ impl Workspace {
     /// file open (the .desktop default) still replaces the session, that path
     /// runs through open_paths, not here.
     fn play_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        let paths = rox_library::open_files::resolve_audio_paths(paths);
-        if paths.is_empty() {
+        self.play_keys(loose_keys(paths), cx);
+    }
+
+    /// The same for a drag out of the library, which already carries keys and
+    /// so never loses a cue track's number on the way over.
+    fn play_keys(&mut self, keys: Vec<TrackKey>, cx: &mut Context<Self>) {
+        if keys.is_empty() {
             return;
         }
         self.state
             .player
-            .update(cx, |player, cx| player.play_now(paths, cx));
+            .update(cx, |player, cx| player.play_now(keys, cx));
     }
 
     /// Add dropped files or tracks to the up-next queue, filtered to decodable
     /// audio. The Add to queue drop zone routes here.
     fn queue_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        let paths = rox_library::open_files::resolve_audio_paths(paths);
-        if paths.is_empty() {
+        self.queue_keys(loose_keys(paths), cx);
+    }
+
+    /// The same for a library drag, keys and all.
+    fn queue_keys(&mut self, keys: Vec<TrackKey>, cx: &mut Context<Self>) {
+        if keys.is_empty() {
             return;
         }
         self.state
             .player
-            .update(cx, |player, cx| player.enqueue(paths, cx));
+            .update(cx, |player, cx| player.enqueue(keys, cx));
     }
 
     /// The Play now / Add to queue drop zones, shown only while an audio
@@ -2977,14 +3012,14 @@ impl Workspace {
                 this.play_dropped(paths.paths().to_vec(), cx);
             }))
             .on_drop(cx.listener(|this, drag: &PlayDrag, _, cx| {
-                this.play_dropped(drag.paths.to_vec(), cx);
+                this.play_keys(drag.keys.to_vec(), cx);
             }))
         } else {
             card.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 this.queue_dropped(paths.paths().to_vec(), cx);
             }))
             .on_drop(cx.listener(|this, drag: &PlayDrag, _, cx| {
-                this.queue_dropped(drag.paths.to_vec(), cx);
+                this.queue_keys(drag.keys.to_vec(), cx);
             }))
         }
     }
@@ -3048,9 +3083,10 @@ impl Workspace {
         // it: the next launch starts cold.
         let library = self.state.library.read(cx);
         let last_track = self.state.player.read(cx).now_playing().and_then(|now| {
-            let id = library.id_for(&now.path)?;
+            let id = library.id_for_key(&now.key)?;
             Some(LastTrack {
                 id,
+                sub: now.key.sub,
                 position_secs: now.position_secs,
             })
         });
@@ -3064,13 +3100,14 @@ impl Workspace {
             |(entries, cursor, position_secs)| {
                 let mut tracks = Vec::with_capacity(entries.len());
                 let mut new_cursor = 0;
-                for (i, (path, explicit)) in entries.iter().enumerate() {
-                    if let Some(id) = library.id_for(path) {
+                for (i, (key, explicit)) in entries.iter().enumerate() {
+                    if let Some(id) = library.id_for_key(key) {
                         if i <= cursor {
                             new_cursor = tracks.len();
                         }
                         tracks.push(QueuedTrack {
                             id,
+                            sub: key.sub,
                             explicit: *explicit,
                         });
                     }

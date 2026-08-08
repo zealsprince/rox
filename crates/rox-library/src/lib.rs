@@ -5,6 +5,7 @@
 //! reused these modules for its harness (git history, commit bd22dc1).
 
 pub mod art;
+pub mod cue;
 pub mod duplicates;
 pub mod embeddings;
 pub mod folders;
@@ -50,9 +51,28 @@ pub fn value_eq(a: &str, b: &str, fold: bool) -> bool {
     a == b || (fold && a.to_lowercase() == b.to_lowercase())
 }
 
+/// The cue half of a track row: which sheet claimed the image, and the
+/// slice of it this track is. Only cue tracks carry one, so a library of
+/// plain files never allocates it and the store writes no side row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CueSlice {
+    /// The .cue file this span came out of. Kept so a scan can tell which
+    /// sheet owns a row, and so a deleted sheet's rows are findable.
+    pub cue_path: String,
+    pub span: cue::Span,
+}
+
 /// One track row as it crosses scanner -> SQLite -> projection.
 pub struct TrackRow {
     pub path: String,
+    /// Which subsong of `path` this row is: 0 for a plain file, the cue
+    /// sheet's 1-based TRACK number for a span of an image. Identity is
+    /// (source, path, sub), so a whole-disc rip holds one row per track
+    /// and playlists, listens, search and sort all inherit them.
+    pub sub: u16,
+    /// The span and sheet, for a cue track; None for a plain file. Rides
+    /// the row so one upsert lands the track and its side row together.
+    pub cue: Option<CueSlice>,
     pub title: String,
     pub artist: String,
     /// The album's credited artist, falling back to the track artist when

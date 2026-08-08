@@ -1078,7 +1078,12 @@ impl CoverArtPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         match self.resolved.get(self.config.source, &self.state, cx) {
             None => self.retarget(Slide::Empty, cx),
-            Some(path) => {
+            Some(key) => {
+                // Art is a property of the file, not the track: every cue
+                // track of one image shares its cover, so the cache stays
+                // keyed on the path and a boundary between two of them
+                // reloads nothing.
+                let path = key.path;
                 self.ensure_art(&path, cx);
                 let target = match &self.art {
                     Some((cached, art)) if *cached == path => Some(match art {

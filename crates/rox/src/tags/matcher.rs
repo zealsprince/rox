@@ -11,8 +11,6 @@
 //! One window per track path and opening editor, registered like the
 //! cover editor.
 
-use std::path::PathBuf;
-
 use gpui::{
     div, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, Div, Entity, EntityId,
     Global, ScrollHandle, SharedString, Subscription, Task, WeakEntity, Window, WindowHandle,
@@ -20,6 +18,7 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Root, Sizable as _};
 
+use rox_library::cue::TrackKey;
 use rox_library::writer::{self, Change, Edit, Field};
 
 use crate::matching::{
@@ -74,11 +73,12 @@ const DEFAULT_SIZE: (f32, f32) = (760., 560.);
 /// typing spends one request, not one a keystroke.
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(350);
 
-/// The registry key: the track path, plus the opening editor for fills.
-/// A fill's window binds its Apply to the editor that opened it, so two
-/// editors on the same track need their own windows; the panel's commit
-/// lookup carries no editor and shares one window per path.
-type MatchKey = (PathBuf, Option<EntityId>);
+/// The registry key: the track, plus the opening editor for fills. A fill's
+/// window binds its Apply to the editor that opened it, so two editors on the
+/// same track need their own windows; the panel's commit lookup carries no
+/// editor and shares one window per track. Keyed on the whole track, so two
+/// tracks of one cue image get a window each.
+type MatchKey = (TrackKey, Option<EntityId>);
 
 /// The open match windows, keyed so a second request for the same track
 /// (and editor, for fills) focuses the first.
@@ -96,8 +96,8 @@ impl WindowRegistry for OpenMatchers {
 
 /// Open a metadata compare that writes straight to the track on apply,
 /// the metadata panel's lookup.
-pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, path: PathBuf, cx: &mut App) {
-    open_with(library, now_art, path, Sink::Commit, cx);
+pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, key: TrackKey, cx: &mut App) {
+    open_with(library, now_art, key, Sink::Commit, cx);
 }
 
 /// Open a metadata compare that fills a tag editor's form on apply rather
@@ -106,7 +106,7 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, path: Path
 pub fn open_fill(
     library: Entity<Library>,
     now_art: Entity<NowPlayingArt>,
-    path: PathBuf,
+    key: TrackKey,
     editor: WeakEntity<TagEditor>,
     editor_window: AnyWindowHandle,
     cx: &mut App,
@@ -115,14 +115,14 @@ pub fn open_fill(
         editor,
         window: editor_window,
     };
-    open_with(library, now_art, path, sink, cx);
+    open_with(library, now_art, key, sink, cx);
 }
 
-/// Open a metadata compare on `path`, or focus the one already on it.
+/// Open a metadata compare on `key`, or focus the one already on it.
 fn open_with(
     library: Entity<Library>,
     now_art: Entity<NowPlayingArt>,
-    path: PathBuf,
+    key: TrackKey,
     sink: Sink,
     cx: &mut App,
 ) {
@@ -131,7 +131,7 @@ fn open_with(
         Sink::Fill { editor, .. } => Some(editor.entity_id()),
     };
     open_or_focus::<OpenMatchers>(
-        (path.clone(), opener),
+        (key.clone(), opener),
         move |cx| {
             let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
             rox_panel_api::panel::open_child_window(
@@ -140,7 +140,7 @@ fn open_with(
                 bounds,
                 Some(settings_ui::MIN_SIZE),
                 move |window, cx| {
-                    cx.new(|cx| TagMatch::new(library, now_art, path, sink, window, cx))
+                    cx.new(|cx| TagMatch::new(library, now_art, key, sink, window, cx))
                 },
             )
         },
@@ -153,7 +153,7 @@ struct TagMatch {
     /// What Apply does with the picked fields.
     sink: Sink,
     /// The track the tags write back to.
-    path: PathBuf,
+    key: TrackKey,
     /// The track as the header shows it.
     line: SharedString,
     /// The editable query fields, seeded from the track's tags: what the
@@ -193,18 +193,18 @@ impl TagMatch {
     fn new(
         library: Entity<Library>,
         now_art: Entity<NowPlayingArt>,
-        path: PathBuf,
+        key: TrackKey,
         sink: Sink,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let (meta, duration_secs) = {
             let lib = library.read(cx);
-            let meta = lib.meta_for(&path);
-            let duration_secs = lib
-                .id_for(&path)
-                .and_then(|id| duration_secs_for(&library, id, cx));
-            (meta, duration_secs)
+            let resolved = lib.resolve_key(&key);
+            let duration_secs = resolved
+                .as_ref()
+                .and_then(|(id, _)| duration_secs_for(&library, *id, cx));
+            (resolved.map(|(_, meta)| meta), duration_secs)
         };
         let (artist, title, album) = meta
             .map(|m| (m.artist, m.title, m.album))
@@ -245,7 +245,7 @@ impl TagMatch {
         let mut this = TagMatch {
             library,
             sink,
-            path: path.clone(),
+            key: key.clone(),
             line: line.into(),
             artist_input,
             title_input,
@@ -283,7 +283,7 @@ impl TagMatch {
     /// the compare's left column. A file that will not read leaves the
     /// current values empty; the compare still shows what a write sets.
     fn read_current(&self, cx: &mut Context<Self>) {
-        let path = self.path.clone();
+        let path = self.key.path.clone();
         cx.spawn(async move |this, cx| {
             let read = cx
                 .background_executor()
@@ -424,10 +424,11 @@ impl TagMatch {
                     })
                     .collect();
                 let edit = Edit {
-                    path: self.path.clone(),
+                    path: self.key.path.clone(),
                     changes,
                     pictures: Vec::new(),
                 };
+                let sub = self.key.sub;
                 self.saving = true;
                 self.error = None;
                 cx.notify();
@@ -436,14 +437,17 @@ impl TagMatch {
                     let (edit, result) = cx
                         .background_executor()
                         .spawn(async move {
-                            let result = writer::commit_batch(std::slice::from_ref(&edit));
+                            // Through the key, so a cue track's pick lands in
+                            // the library instead of stamping the shared image.
+                            let result =
+                                writer::commit_key(&edit.path, sub, &edit.changes, &edit.pictures);
                             (edit, result)
                         })
                         .await;
-                    let outcome = result.into_iter().next().map(|(_, r)| r);
-                    this.update_in(cx, |this, window, cx| match outcome {
+                    this.update_in(cx, |this, window, cx| match Some(result) {
                         Some(Ok(())) => {
-                            library.update(cx, |library, cx| library.apply_edits(&[edit], cx));
+                            library
+                                .update(cx, |library, cx| library.apply_edits(&[edit], &[sub], cx));
                             window.remove_window();
                         }
                         Some(Err(e)) => {

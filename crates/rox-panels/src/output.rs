@@ -104,10 +104,8 @@ impl OutputPanel {
     }
 
     /// What the device agreed to, as a tone, a headline, and the lines the
-    /// state earns. Nothing here is derived from the settings: the fallback
-    /// line only appears because a backend reported one, and the rate line
-    /// compares the device against the file rather than against what was
-    /// asked for.
+    /// state earns; [`OutputStatus::lines`] carries the reasoning behind
+    /// each line.
     fn readout(&self, cx: &App) -> (Tone, SharedString, Vec<SharedString>) {
         let player = self.state.player.read(cx);
         let Some(status) = player.output_status() else {
@@ -128,7 +126,7 @@ impl OutputPanel {
             };
         };
         let negotiated = &status.negotiated;
-        let (tone, resampling) = tone_for(&status);
+        let (tone, _) = tone_for(&status);
         let mode = match negotiated.mode {
             Mode::Exclusive => "Exclusive",
             Mode::Shared => "Shared",
@@ -142,36 +140,10 @@ impl OutputPanel {
         } else {
             format!("{mode}, {numbers}")
         };
-        let mut lines = Vec::new();
-        // The fallback line is the whole reason a failed claim isn't a
-        // mystery: the toggle stays on, and this says why it isn't what
-        // you're hearing.
-        if let Some(why) = &negotiated.fallback {
-            lines.push(format!("Exclusive fell back to shared: {why}").into());
-        }
-        // Leveling is a multiply on the source (ADR 19), so it rides above
-        // the rate: it's the shorter answer to whether these are the file's
-        // own samples. Said plainly rather than colored, and only when the
-        // file is actually being moved, so an untagged library doesn't carry
-        // a line about a gain nothing applied.
-        if let Some(db) = status.leveling_db {
-            lines.push(format!("ReplayGain is levelling this file by {db:+.1} dB").into());
-        }
-        if let Some(source) = status.source_rate {
-            // A conversion is the reason the callout went amber, so it
-            // speaks whatever the toggle says. The toggle only decides
-            // whether the all-clear is worth a line of its own.
-            if resampling {
-                lines.push(
-                    format!("The playing file is {source} Hz, resampled to reach the device")
-                        .into(),
-                );
-            } else if self.config.source_rate {
-                lines.push(
-                    format!("The playing file is {source} Hz, so nothing is resampling it").into(),
-                );
-            }
-        }
+        // The compact register: the reasons folded into one comma line, so
+        // the expanded callout stays two lines tall in a docked slot. The
+        // settings window's status block asks for the full sentences.
+        let lines = status.lines(false, self.config.source_rate);
         (tone, headline.into(), lines)
     }
 

@@ -15,6 +15,7 @@ use std::sync::{Arc, OnceLock};
 use gpui::{div, AnyWeakEntity, App, Div, Entity, EntityId, SharedString, WeakEntity, Window};
 use gpui_component::menu::PopupMenu;
 use rox_dock::{PanelView, TabPanel};
+use rox_library::cue::TrackKey;
 use rox_services::backdrop::NowPlayingArt;
 use rox_services::catalog::Library;
 
@@ -26,7 +27,7 @@ pub struct Openers {
     /// The tag editor over a track selection.
     pub tags_editor: fn(AppState, Vec<i64>, &mut App),
     /// The metadata compare for one file, writing what's applied.
-    pub tags_matcher: fn(Entity<Library>, Entity<NowPlayingArt>, PathBuf, &mut App),
+    pub tags_matcher: fn(Entity<Library>, Entity<NowPlayingArt>, TrackKey, &mut App),
     /// The cover editor over a track selection.
     pub cover_editor: fn(AppState, Vec<i64>, &mut App),
     /// The new-playlist prompt, seeded with the tracks to file into it.
@@ -94,11 +95,11 @@ pub fn tags_editor(state: AppState, ids: Vec<i64>, cx: &mut App) {
 pub fn tags_matcher(
     library: Entity<Library>,
     now_art: Entity<NowPlayingArt>,
-    path: PathBuf,
+    key: TrackKey,
     cx: &mut App,
 ) {
     if let Some(openers) = openers("the metadata compare") {
-        (openers.tags_matcher)(library, now_art, path, cx);
+        (openers.tags_matcher)(library, now_art, key, cx);
     }
 }
 

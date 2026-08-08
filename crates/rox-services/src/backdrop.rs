@@ -72,7 +72,10 @@ impl NowPlayingArt {
     fn sync(&mut self, cx: &mut Context<Self>) {
         let (playing, between_tracks) = {
             let player = self.player.read(cx);
-            let playing = player.now_playing().map(|now| now.path);
+            // Keyed on the file, not the track: cue tracks of one image share
+            // its cover, so a boundary between two of them is no reason to
+            // bake the backdrop again.
+            let playing = player.now_playing().map(|now| now.path().to_path_buf());
             // The engine's position clock blinks off for a moment between
             // tracks and while a fresh queue opens, with the session very
             // much alive.

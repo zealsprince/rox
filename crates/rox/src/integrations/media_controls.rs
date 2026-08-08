@@ -20,7 +20,7 @@
 //! answering while the app sits in the tray with no window at all: the close
 //! hands the session to the tray's hold, and the reopen hands it back.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use gpui::{App, AppContext as _, Context, Entity, Subscription, Task, Window};
@@ -30,6 +30,7 @@ use souvlaki::{
 };
 
 use rox_core::APP_ID;
+use rox_library::cue::TrackKey;
 use rox_library::hash::fnv1a;
 use rox_panel_api::panel::AppState;
 use rox_services::player::NowPlaying;
@@ -249,9 +250,9 @@ pub struct MediaSession {
     /// The player and library this service speaks for. A reopen from the tray
     /// adopts the same state, so the session carries over untouched.
     state: AppState,
-    /// The path the widget's tags currently reflect, so the library resolve
+    /// The track the widget's tags currently reflect, so the library resolve
     /// behind them only runs on a track change, not every notify.
-    track: Option<PathBuf>,
+    track: Option<TrackKey>,
     /// The player pump notifies every tick while a session runs; the publish
     /// rides it and its own gating drops the ones that would write nothing.
     _player: Subscription,
@@ -326,17 +327,20 @@ impl MediaSession {
     fn publish(&mut self, cx: &mut Context<Self>) {
         let now = self.state.player.read(cx).now_playing();
         let playing = self.state.player.read(cx).is_playing();
-        let path = now.as_ref().map(|now| now.path.clone());
-        if path != self.track {
-            self.track = path.clone();
+        // Keyed on the whole track, not the file: two cue tracks of one
+        // image are the same path, and the widget would sit on the first
+        // one's title and cover for the rest of the disc.
+        let key = now.as_ref().map(|now| now.key.clone());
+        if key != self.track {
+            self.track = key.clone();
             let meta = now.as_ref().map(|now| self.now_playing_meta(now, cx));
             self.keys.set_track(meta);
-            self.publish_cover(path.clone(), cx);
+            self.publish_cover(key.clone(), cx);
         }
         let position = now
             .as_ref()
             .map(|now| Duration::from_secs_f64(now.position_secs.max(0.0)));
-        self.keys.set_playing(path.is_some(), playing, position);
+        self.keys.set_playing(key.is_some(), playing, position);
     }
 
     /// Resolve the current track's cover off the UI thread and hand it to the
@@ -345,12 +349,12 @@ impl MediaSession {
     /// needs no further work. The result is dropped when the track has moved
     /// on by the time the read finishes, so a late cover never lands on the
     /// wrong track.
-    fn publish_cover(&mut self, track: Option<PathBuf>, cx: &mut Context<Self>) {
+    fn publish_cover(&mut self, track: Option<TrackKey>, cx: &mut Context<Self>) {
         let Some(track) = track else {
             return;
         };
         cx.spawn(async move |this, cx| {
-            let resolved = track.clone();
+            let resolved = track.path.clone();
             let cover = cx
                 .background_executor()
                 .spawn(async move {
@@ -359,7 +363,7 @@ impl MediaSession {
                 })
                 .await;
             this.update(cx, |this, _| {
-                if this.track.as_deref() != Some(track.as_path()) {
+                if this.track.as_ref() != Some(&track) {
                     return;
                 }
                 this.keys.set_cover(cover);
@@ -373,13 +377,13 @@ impl MediaSession {
     /// An unknown file falls back to its filename for the title, empty for
     /// the rest, so the widget never shows a blank card.
     fn now_playing_meta(&self, now: &NowPlaying, cx: &App) -> NowPlayingMeta {
-        let tags = self.state.library.read(cx).meta_for(&now.path);
+        let tags = self.state.library.read(cx).meta_for_key(&now.key);
         let title = tags
             .as_ref()
             .map(|m| m.title.clone())
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| {
-                now.path
+                now.path()
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default()

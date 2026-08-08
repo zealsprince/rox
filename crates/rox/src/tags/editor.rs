@@ -31,6 +31,7 @@ use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableEvent
 use gpui_component::{Root, Sizable, Size};
 
 use rox_core::fmt::fmt_ms;
+use rox_library::cue::TrackKey;
 use rox_library::projection::Projection;
 use rox_library::rating;
 use rox_library::writer::{self, Change, Edit, Field};
@@ -186,9 +187,11 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
 }
 
 /// One selected track as the list shows it, resolved at open; the path is
-/// what the baselines read and the commits write.
+/// what the baselines read and the commits write, and the sub says which row
+/// of it they belong to when the file is a cue image.
 struct TrackRow {
     path: PathBuf,
+    sub: u16,
     title: SharedString,
     /// The row's display line (title, artist when tagged) in a read-only
     /// input, so its text selects and copies into the fields - the way
@@ -295,22 +298,27 @@ impl TagEditor {
                 let resolved = projection.as_ref().and_then(|projection| {
                     let row = *row_of.get(&id)?;
                     let v = projection.resolve(row);
-                    Some((v.title.to_owned(), v.artist.to_owned(), v.duration_ms))
+                    Some((
+                        v.title.to_owned(),
+                        v.artist.to_owned(),
+                        v.duration_ms,
+                        v.sub,
+                    ))
                 });
-                let (title, artist, duration_ms) = resolved.unwrap_or_else(|| {
+                let (title, artist, duration_ms, sub) = resolved.unwrap_or_else(|| {
                     let title = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.display().to_string());
-                    (title, String::new(), 0)
+                    (title, String::new(), 0, 0)
                 });
-                tracks.push((path, title, artist, duration_ms));
+                tracks.push((path, sub, title, artist, duration_ms));
             }
             tracks
         };
         let tracks: Vec<TrackRow> = tracks
             .into_iter()
-            .map(|(path, title, artist, duration_ms)| {
+            .map(|(path, sub, title, artist, duration_ms)| {
                 let mut line = title.clone();
                 if !artist.is_empty() {
                     line.push_str(" - ");
@@ -319,6 +327,7 @@ impl TagEditor {
                 let line = cx.new(|cx| InputState::new(window, cx).default_value(line));
                 TrackRow {
                     path,
+                    sub,
                     title: title.into(),
                     line,
                     duration_ms,
@@ -941,12 +950,15 @@ impl TagEditor {
         let Some(track) = self.tracks.first() else {
             return;
         };
-        let path = track.path.clone();
+        let key = TrackKey {
+            path: track.path.clone(),
+            sub: track.sub,
+        };
         let library = self.library.clone();
         let now_art = self.now_art.clone();
         let weak = cx.entity().downgrade();
         let handle = window.window_handle();
-        crate::tags::matcher::open_fill(library, now_art, path, weak, handle, cx);
+        crate::tags::matcher::open_fill(library, now_art, key, weak, handle, cx);
     }
 
     /// Fill the form from a looked-up match, one field at a time: each set
@@ -1026,11 +1038,16 @@ impl TagEditor {
                 });
             }
             if !changes.is_empty() {
-                edits.push(Edit {
-                    path: track.path.clone(),
-                    changes,
-                    pictures: Vec::new(),
-                });
+                // The sub rides beside the edit: a writer::Edit names a file,
+                // and one file can be a dozen cue tracks.
+                edits.push((
+                    Edit {
+                        path: track.path.clone(),
+                        changes,
+                        pictures: Vec::new(),
+                    },
+                    track.sub,
+                ));
             }
         }
         if edits.is_empty() {
@@ -1050,9 +1067,10 @@ impl TagEditor {
             // visibly the one holding things up, and a cancel that closes
             // the window ends the loop instead of grinding on unseen.
             let mut committed: Vec<Edit> = Vec::new();
+            let mut committed_subs: Vec<u16> = Vec::new();
             let mut failures = 0usize;
             let mut first_error: Option<String> = None;
-            for edit in edits {
+            for (edit, sub) in edits {
                 // Note the write before it lands so the watch batch it
                 // triggers is suppressed, not reindexed. The apply_edits at
                 // the end notes too, but by then the suppression window has
@@ -1068,12 +1086,17 @@ impl TagEditor {
                 let (edit, result) = cx
                     .background_executor()
                     .spawn(async move {
-                        let r = writer::commit_with(&edit.path, &edit.changes, &edit.pictures);
+                        // Through the key: a cue track's edit stays in the
+                        // library, since its image belongs to the whole disc.
+                        let r = writer::commit_key(&edit.path, sub, &edit.changes, &edit.pictures);
                         (edit, r)
                     })
                     .await;
                 match result {
-                    Ok(()) => committed.push(edit),
+                    Ok(()) => {
+                        committed.push(edit);
+                        committed_subs.push(sub);
+                    }
                     Err(e) => {
                         failures += 1;
                         if first_error.is_none() {
@@ -1122,7 +1145,9 @@ impl TagEditor {
                     }
                 }
                 if !committed.is_empty() {
-                    library.update(cx, |library, cx| library.apply_edits(&committed, cx));
+                    library.update(cx, |library, cx| {
+                        library.apply_edits(&committed, &committed_subs, cx)
+                    });
                 }
                 match first_error {
                     None => {

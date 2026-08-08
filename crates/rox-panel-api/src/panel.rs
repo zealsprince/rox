@@ -429,19 +429,19 @@ pub fn reveal_item(menu: PopupMenu, state: AppState, id: Option<i64>) -> PopupMe
     )
 }
 
-/// Resolve track ids to paths and hand them to the player: after the playing
+/// Resolve track ids to keys and hand them to the player: after the playing
 /// track when `next`, at the tail otherwise. Shared by the context-menu
 /// actions across every song surface.
 pub fn queue_tracks(state: &AppState, ids: &[i64], next: bool, cx: &mut App) {
-    let paths = match state.library.read(cx).paths_for(ids) {
-        Ok(paths) if !paths.is_empty() => paths,
+    let keys = match state.library.read(cx).keys_for(ids) {
+        Ok(keys) if !keys.is_empty() => keys,
         _ => return,
     };
     state.player.update(cx, |player, cx| {
         if next {
-            player.play_next(paths, cx);
+            player.play_next(keys, cx);
         } else {
-            player.enqueue(paths, cx);
+            player.enqueue(keys, cx);
         }
     });
 }

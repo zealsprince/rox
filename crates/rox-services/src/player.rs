@@ -17,6 +17,7 @@ use gpui::{App, Context, Entity, Global, SharedString, Subscription, Task};
 use rox_core::settings::{
     GainModeSetting, ReplayGainSave, ReplayGainSettings, Settings, ShuffleMode,
 };
+use rox_library::cue::{Span, TrackKey};
 use rox_library::embeddings;
 use rox_library::store;
 use rox_playback::continuation::{self, Pick};
@@ -87,14 +88,16 @@ fn random_pool<'a>(scope: &'a continuation::Scope, library: &'a [i64]) -> &'a [i
     }
 }
 
-/// One random entry of `pool` resolved to a playable path. None when the
+/// One random entry of `pool` resolved to a playable key. None when the
 /// pool is empty or the id it landed on has no file behind it any more.
-fn draw_one(library: &Library, pool: &[i64]) -> Option<Vec<PathBuf>> {
+/// Keys rather than paths, so landing on a cue track draws that track's span
+/// instead of the whole image it lives in.
+fn draw_one(library: &Library, pool: &[i64]) -> Option<Vec<TrackKey>> {
     if pool.is_empty() {
         return None;
     }
     let id = pool[random_index(pool.len())];
-    library.paths_for(&[id]).ok().filter(|p| !p.is_empty())
+    library.keys_for(&[id]).ok().filter(|keys| !keys.is_empty())
 }
 
 /// Whether the queue has run close enough to its end to ask for more
@@ -143,9 +146,11 @@ struct Session {
     /// for. The Audio page reads this, and the rate follow compares against
     /// it, so neither is going on the setting's word.
     negotiated: output::Negotiated,
-    /// The queued paths, kept so the views can resolve the playing track
-    /// back to its file.
-    queue: Vec<PathBuf>,
+    /// The queued keys, kept so the views can resolve the playing track back
+    /// to its file. Keys rather than paths because the engine's pool is
+    /// paths: two cue tracks of one image are the same path twice down there,
+    /// and this mirror is the only thing left that can tell them apart.
+    queue: Vec<TrackKey>,
     /// The ReplayGain tags handed to the engine, in the same pool order as
     /// `queue`. Kept so the status readout can say what the playing file is
     /// actually being levelled by rather than what the setting is set to.
@@ -156,6 +161,7 @@ impl Session {
     #[allow(clippy::too_many_arguments)]
     fn start(
         queue: StartQueue,
+        keys: Vec<TrackKey>,
         volume: f32,
         loop_mode: LoopMode,
         shuffle: Option<bool>,
@@ -214,7 +220,6 @@ impl Session {
         // ever carries for the chain: the bands are atomics on the shared
         // handle, so every later turn of a knob is a store.
         let _ = tx.send(Cmd::ChainPush(Box::new(Eq::new(eq_params().clone()))));
-        let paths = queue.paths.clone();
         let gains = queue.gains.clone();
         let engine = engine::Engine::new(queue, shared.clone(), out.producer, device_rate, rx);
         std::thread::Builder::new()
@@ -228,18 +233,58 @@ impl Session {
             _stream: out.stream,
             device_rate,
             negotiated: out.negotiated,
-            queue: paths,
+            queue: keys,
             gains,
         })
     }
 }
 
-/// The library lookup for a batch of paths on their way into the queue, one
-/// entry per path in the order they were asked about.
+/// The library lookup for a batch of keys on their way into the queue, one
+/// entry per key in the order they were asked about.
 struct QueueMeta {
     groups: Vec<Option<u64>>,
     gains: Vec<gain::ReplayGain>,
     ids: Vec<Option<i64>>,
+    /// The slice of the file each key plays, None for a plain file. The
+    /// engine takes these beside the paths, which is the whole of how a cue
+    /// track differs from the image it lives in once it's in the pool.
+    spans: Vec<Option<Span>>,
+}
+
+/// Resolve a batch of keys against the library, or answer defaults for all of
+/// them when there is no database to ask. Split out of the player so the
+/// lookup can be tested against a real store without a running session.
+///
+/// A key the library doesn't hold resolves to ungrouped, untagged, and
+/// unidentified, which plays fine: a file dropped in from outside still has
+/// samples, it just has nothing to level or splice by.
+fn resolve_queue_meta(
+    conn: Option<&rox_library::rusqlite::Connection>,
+    keys: &[TrackKey],
+) -> QueueMeta {
+    let mut meta = QueueMeta {
+        groups: Vec::with_capacity(keys.len()),
+        gains: Vec::with_capacity(keys.len()),
+        ids: Vec::with_capacity(keys.len()),
+        spans: Vec::with_capacity(keys.len()),
+    };
+    for key in keys {
+        let row = conn
+            .zip(key.path.to_str())
+            .and_then(|(conn, path)| store::queue_meta_for_key(conn, path, key.sub).ok())
+            .unwrap_or_default();
+        let rg = row.replay_gain;
+        meta.groups.push(row.group);
+        meta.gains.push(gain::ReplayGain {
+            track_db: rg.track_db,
+            track_peak: rg.track_peak,
+            album_db: rg.album_db,
+            album_peak: rg.album_peak,
+        });
+        meta.ids.push(row.id);
+        meta.spans.push(row.span);
+    }
+    meta
 }
 
 /// A snapshot of the playing track for the audio views: which file and
@@ -247,13 +292,25 @@ struct QueueMeta {
 /// the tap says, so the views read that from the feed instead.
 #[derive(Clone)]
 pub struct NowPlaying {
-    pub path: PathBuf,
+    /// Which file, and which subsong of it. Two cue tracks of one image are
+    /// the same path with different subs, so anything naming the track (the
+    /// info panel, the scrobbler, the media session) has to read the whole
+    /// key rather than just the path.
+    pub key: TrackKey,
     pub position_secs: f64,
     pub duration_secs: Option<f64>,
     /// Pool index of the audible track, off the position clock. The queue
     /// resolver matches entries on this rather than the path, so a file that
     /// sits in the order more than once lands on the occurrence playing now.
     pub audible_idx: usize,
+}
+
+impl NowPlaying {
+    /// The playing file, for the callers that genuinely want a path (cover
+    /// lookups, a decode window, a filename fallback) rather than an identity.
+    pub fn path(&self) -> &std::path::Path {
+        &self.key.path
+    }
 }
 
 impl Drop for Session {
@@ -292,7 +349,10 @@ impl FadeView {
 /// gating on this does not wake for it. See [`observe_view`].
 #[derive(Clone, PartialEq)]
 pub struct PlayerView {
-    pub track: Option<PathBuf>,
+    /// The playing track, key and all: a bare path can't tell two cue tracks
+    /// of one image apart, so a gated observer would sit out the boundary
+    /// between them and every readout would keep the first one's title.
+    pub track: Option<TrackKey>,
     pub duration_secs: Option<f64>,
     pub playing: bool,
     pub active: bool,
@@ -341,9 +401,74 @@ pub struct OutputStatus {
     pub leveling_db: Option<f32>,
 }
 
-/// A queue snapshot for the close-time persist: every entry's path and
+impl OutputStatus {
+    /// The lines under the readout's headline, in the register the surface
+    /// asks for. Expanded gives each earned fact a sentence of its own, the
+    /// settings page's wording; compact folds them into one comma list, the
+    /// headline's own style, so a docked panel stays two lines tall.
+    /// `confirm_rate` is the all-clear toggle: whether a rate nothing is
+    /// converting still earns a mention, since a conversion speaks either
+    /// way. Nothing here is derived from the settings: the fallback line
+    /// only appears because a backend reported one, and the rate line
+    /// compares the device against the file rather than against what was
+    /// asked for.
+    pub fn lines(&self, expanded: bool, confirm_rate: bool) -> Vec<SharedString> {
+        let resampling = self
+            .source_rate
+            .is_some_and(|source| source != self.negotiated.sample_rate);
+        let mut lines: Vec<SharedString> = Vec::new();
+        // The fallback line is the whole reason a failed claim isn't a
+        // mystery: the toggle stays on, and this says why it isn't what
+        // you're hearing. Broken enough to keep a line of its own in both
+        // registers.
+        if let Some(why) = &self.negotiated.fallback {
+            lines.push(format!("Exclusive fell back to shared: {why}").into());
+        }
+        // Leveling multiplies the source on its way to the ring (ADR 19),
+        // so it rides above the rate: whatever the rates say, this is the
+        // one that decides whether these are the file's own samples. Only
+        // when something is actually applied, so an untagged file with the
+        // fallback at zero says nothing.
+        if expanded {
+            if let Some(db) = self.leveling_db {
+                lines.push(format!("ReplayGain is levelling this file by {db:+.1} dB").into());
+            }
+            if let Some(source) = self.source_rate {
+                if resampling {
+                    lines.push(
+                        format!("The playing file is {source} Hz, resampled to reach the device")
+                            .into(),
+                    );
+                } else if confirm_rate {
+                    lines.push(
+                        format!("The playing file is {source} Hz, so nothing is resampling it")
+                            .into(),
+                    );
+                }
+            }
+        } else {
+            let mut bits = Vec::new();
+            if let Some(db) = self.leveling_db {
+                bits.push(format!("ReplayGain {db:+.1} dB"));
+            }
+            if let Some(source) = self.source_rate {
+                if resampling {
+                    bits.push(format!("{source} Hz file resampled"));
+                } else if confirm_rate {
+                    bits.push(format!("{source} Hz file, no resampling"));
+                }
+            }
+            if !bits.is_empty() {
+                lines.push(bits.join(", ").into());
+            }
+        }
+        lines
+    }
+}
+
+/// A queue snapshot for the close-time persist: every entry's key and
 /// explicit flag, the audible cursor, and the position clock in seconds.
-pub type QueueStatePersist = (Vec<(PathBuf, bool)>, usize, f64);
+pub type QueueStatePersist = (Vec<(TrackKey, bool)>, usize, f64);
 
 pub struct Player {
     session: Option<Session>,
@@ -451,46 +576,24 @@ impl Player {
         }
     }
 
-    /// What the engine needs per queued path beyond the path itself: the
-    /// album group (ADR 17) and the ReplayGain tags (ADR 19), plus the
-    /// library id continuation keeps to know what the session has already
-    /// held. Three parallel vecs, two of which the queue commands carry.
-    /// Unknown paths resolve to ungrouped, untagged, and unidentified; a
-    /// missing database means every path does, and playback carries on
-    /// unlevelled.
-    fn queue_meta_for(&mut self, paths: &[PathBuf]) -> QueueMeta {
+    /// What the engine needs per queued key beyond the file itself: the album
+    /// group (ADR 17), the ReplayGain tags (ADR 19), and the span a cue track
+    /// plays, plus the library id continuation keeps to know what the session
+    /// has already held. Four parallel vecs, three of which the queue commands
+    /// carry. Unknown keys resolve to ungrouped, untagged, unsliced and
+    /// unidentified; a missing database means every key does, and playback
+    /// carries on unlevelled.
+    ///
+    /// The group falls out of the album tags, so two tracks of one rip answer
+    /// the same one and the crossfade leaves their gapless splice alone
+    /// (ADR 19). Nothing here has to special-case that; the sheet's album
+    /// lands on every row the scanner writes.
+    fn queue_meta_for(&mut self, keys: &[TrackKey]) -> QueueMeta {
         if self.meta_conn.is_none() {
             let db = rox_core::settings::data_dir().join("library.db");
             self.meta_conn = db.exists().then(|| store::open(&db).ok()).flatten();
         }
-        let Some(conn) = self.meta_conn.as_ref() else {
-            return QueueMeta {
-                groups: vec![None; paths.len()],
-                gains: vec![Default::default(); paths.len()],
-                ids: vec![None; paths.len()],
-            };
-        };
-        let mut meta = QueueMeta {
-            groups: Vec::with_capacity(paths.len()),
-            gains: Vec::with_capacity(paths.len()),
-            ids: Vec::with_capacity(paths.len()),
-        };
-        for path in paths {
-            let row = path
-                .to_str()
-                .and_then(|s| store::queue_meta_for_path(conn, s).ok())
-                .unwrap_or_default();
-            let rg = row.replay_gain;
-            meta.groups.push(row.group);
-            meta.gains.push(gain::ReplayGain {
-                track_db: rg.track_db,
-                track_peak: rg.track_peak,
-                album_db: rg.album_db,
-                album_peak: rg.album_peak,
-            });
-            meta.ids.push(row.id);
-        }
-        meta
+        resolve_queue_meta(self.meta_conn.as_ref(), keys)
     }
 
     /// The audio feed the audio views read from.
@@ -504,7 +607,7 @@ impl Player {
     pub fn now_playing(&self) -> Option<NowPlaying> {
         let session = self.session.as_ref()?;
         let (track, secs) = session.shared.position(session.device_rate)?;
-        let path = session.queue.get(track)?.clone();
+        let key = session.queue.get(track)?.clone();
         let duration_secs = {
             let tracks = session.shared.tracks.lock().unwrap();
             tracks
@@ -513,7 +616,7 @@ impl Player {
                 .and_then(|t| t.duration_secs)
         };
         Some(NowPlaying {
-            path,
+            key,
             position_secs: secs,
             duration_secs,
             audible_idx: track,
@@ -527,7 +630,7 @@ impl Player {
 
     /// Replace whatever is playing with a fresh queue starting at its first
     /// track; the old session quits on drop.
-    pub fn play(&mut self, queue: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub fn play(&mut self, queue: Vec<TrackKey>, cx: &mut Context<Self>) {
         self.start_session(queue, 0, None, Vec::new(), false, cx);
     }
 
@@ -536,7 +639,7 @@ impl Player {
     /// double click in a track list uses, seeding the whole list so Next and
     /// Prev carry through the surrounding album instead of dead-ending at the
     /// clicked track.
-    pub fn play_at(&mut self, queue: Vec<PathBuf>, start: usize, cx: &mut Context<Self>) {
+    pub fn play_at(&mut self, queue: Vec<TrackKey>, start: usize, cx: &mut Context<Self>) {
         self.start_session(queue, start, None, Vec::new(), false, cx);
     }
 
@@ -546,7 +649,7 @@ impl Player {
     /// these entries are the up-next queue, so the queue panel lists them.
     /// Clicking an album in a browser lands here, so the album you played
     /// shows in the queue.
-    pub fn play_explicit(&mut self, queue: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub fn play_explicit(&mut self, queue: Vec<TrackKey>, cx: &mut Context<Self>) {
         let explicit = vec![true; queue.len()];
         self.start_session(queue, 0, None, explicit, false, cx);
     }
@@ -555,9 +658,9 @@ impl Player {
     /// track: load it paused at a position, ready on the seek strip but silent
     /// until asked to play. Files written since carry the whole queue and come
     /// back through [`restore_queue`] instead.
-    pub fn restore(&mut self, path: PathBuf, position_secs: f64, cx: &mut Context<Self>) {
+    pub fn restore(&mut self, key: TrackKey, position_secs: f64, cx: &mut Context<Self>) {
         self.start_session(
-            vec![path],
+            vec![key],
             0,
             Some(position_secs.max(0.0)),
             Vec::new(),
@@ -572,7 +675,7 @@ impl Player {
     /// parallel to `queue`; `cursor` is the entry that was playing.
     pub fn restore_queue(
         &mut self,
-        queue: Vec<PathBuf>,
+        queue: Vec<TrackKey>,
         explicit: Vec<bool>,
         cursor: usize,
         position_secs: f64,
@@ -618,6 +721,24 @@ impl Player {
         self.queued().len()
     }
 
+    /// The key a queue entry names. The engine's pool holds bare paths, so
+    /// two cue tracks of one image are indistinguishable down there; this
+    /// mirror, indexed by the entry's pool index, is what tells them apart.
+    /// Anything drawing a queue row's title or resolving it back to a library
+    /// row has to come through here rather than read `entry.path`.
+    ///
+    /// An index the mirror doesn't hold falls back to the entry's own path as
+    /// a plain file, which is what every entry was before cue tracks existed.
+    pub fn key_for(&self, entry: &QueueEntry) -> TrackKey {
+        self.key_at(entry.idx)
+            .unwrap_or_else(|| TrackKey::from(entry.path.clone()))
+    }
+
+    /// The key at a pool index, None while no session holds one.
+    pub fn key_at(&self, idx: usize) -> Option<TrackKey> {
+        self.session.as_ref()?.queue.get(idx).cloned()
+    }
+
     /// The whole play order for the close-time persist: every entry's path
     /// and whether it was explicit, plus the audible cursor and where its
     /// clock sits. The cursor rides off the position clock, not the decode
@@ -634,33 +755,33 @@ impl Player {
         let entries = snap
             .entries
             .iter()
-            .map(|e| (e.path.clone(), e.explicit))
+            .map(|e| (self.key_for(e), e.explicit))
             .collect();
         Some((entries, cursor, position_secs))
     }
 
     /// Queue tracks to play next, at the front of the explicit queue right
     /// after the playing track. With nothing loaded this just starts them.
-    pub fn play_next(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub fn play_next(&mut self, keys: Vec<TrackKey>, cx: &mut Context<Self>) {
         let after = self.playing_after();
-        self.insert(after, paths, false, cx);
+        self.insert(after, keys, false, cx);
     }
 
     /// Play these now without discarding the queue: splice them right after the
     /// playing track and jump to the first, so the rest of the queue plays on
     /// behind them. With nothing loaded this just starts them. The drop's Play
     /// now zone routes here; an OS file open replaces the session instead.
-    pub fn play_now(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub fn play_now(&mut self, keys: Vec<TrackKey>, cx: &mut Context<Self>) {
         let after = self.playing_after();
-        self.insert(after, paths, true, cx);
+        self.insert(after, keys, true, cx);
     }
 
     /// Queue tracks at the end of the explicit queue, after anything already
     /// queued but before the context resumes. With nothing loaded this starts
     /// them.
-    pub fn enqueue(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub fn enqueue(&mut self, keys: Vec<TrackKey>, cx: &mut Context<Self>) {
         let after = self.enqueue_after();
-        self.insert(after, paths, false, cx);
+        self.insert(after, keys, false, cx);
     }
 
     /// The queue entry index of the playing track, matched by pool index off
@@ -723,37 +844,41 @@ impl Player {
         Some(after)
     }
 
-    /// Splice paths into the running session as explicit queue entries,
+    /// Splice keys into the running session as explicit queue entries,
     /// mirroring the pool growth on our side so `now_playing` can still resolve
     /// a freshly queued track back to its file. With no session, fall back to
     /// starting playback (a context, not a queue).
     fn insert(
         &mut self,
         after: Option<u64>,
-        paths: Vec<PathBuf>,
+        keys: Vec<TrackKey>,
         and_play: bool,
         cx: &mut Context<Self>,
     ) {
-        if paths.is_empty() {
+        if keys.is_empty() {
             return;
         }
         if self.session.is_none() {
-            self.play(paths, cx);
+            self.play(keys, cx);
             return;
         }
-        self.splice(after, paths, None, true, and_play, cx);
+        self.splice(after, keys, None, true, and_play, cx);
     }
 
-    /// The insert both the hand-queued paths and a landed continuation batch
+    /// The insert both the hand-queued keys and a landed continuation batch
     /// go through: resolve the library metadata, mirror the pool growth, and
     /// hand the batch to the engine. `groups` overrides what the library says
     /// about album membership where a caller has an opinion; None per entry,
     /// or None for the whole batch, takes the library's own grouping.
+    ///
+    /// The keys split into paths and spans right here, at the engine
+    /// boundary: below this line a cue track is one more path with a slice
+    /// beside it, and nothing in the engine knows the difference.
     #[allow(clippy::too_many_arguments)]
     fn splice(
         &mut self,
         after: Option<u64>,
-        paths: Vec<PathBuf>,
+        keys: Vec<TrackKey>,
         groups: Option<Vec<Option<u64>>>,
         explicit: bool,
         and_play: bool,
@@ -766,7 +891,7 @@ impl Player {
             return;
         }
         // Library lookup before the session borrow; both want &mut self.
-        let meta = self.queue_meta_for(&paths);
+        let meta = self.queue_meta_for(&keys);
         let groups = match groups {
             Some(picked) => picked
                 .into_iter()
@@ -779,13 +904,15 @@ impl Player {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        session.queue.extend(paths.iter().cloned());
+        let paths: Vec<PathBuf> = keys.iter().map(|key| key.path.clone()).collect();
+        session.queue.extend(keys);
         session.gains.extend(meta.gains.iter().copied());
         let _ = session.tx.send(Cmd::Insert {
             after,
             paths,
             groups,
             gains: meta.gains,
+            spans: meta.spans,
             explicit,
             and_play,
         });
@@ -845,7 +972,7 @@ impl Player {
 
     fn start_session(
         &mut self,
-        queue: Vec<PathBuf>,
+        queue: Vec<TrackKey>,
         start: usize,
         paused_at: Option<f64>,
         explicit: Vec<bool>,
@@ -856,16 +983,27 @@ impl Player {
             return;
         }
         let start = start.min(queue.len() - 1);
+        // Album groups, ReplayGain and cue spans for the whole context. A
+        // restore re-derives all three here too, so none of them needs
+        // persisting with the queue.
+        let meta = self.queue_meta_for(&queue);
+        let (groups, gains, spans) = (meta.groups, meta.gains, meta.spans);
         // A paused start (the launch restore) never renders audio, so the
         // visualizer tap stays empty and the spectrum has nothing to show.
         // Remember what to prime the feed with so a frozen panel gets a real
-        // frame at the load position instead of blank bars.
-        let prime = paused_at.map(|secs| (queue[start].clone(), secs.max(0.0)));
-        // Album groups and ReplayGain for the whole context. A restore
-        // re-derives both here too, so neither needs persisting with the
-        // queue.
-        let meta = self.queue_meta_for(&queue);
-        let (groups, gains) = (meta.groups, meta.gains);
+        // frame at the load position instead of blank bars. A cue track's
+        // clock runs from its own zero, so the window to decode sits that far
+        // into the image rather than that far into the file.
+        let prime = paused_at.map(|secs| {
+            let offset = spans
+                .get(start)
+                .copied()
+                .flatten()
+                .map(|span| span.start_ms as f64 / 1000.0)
+                .unwrap_or(0.0);
+            (queue[start].path.clone(), offset + secs.max(0.0))
+        });
+        let paths: Vec<PathBuf> = queue.iter().map(|key| key.path.clone()).collect();
         // A fresh context is a fresh session for continuation too: nothing
         // has been played, nothing has been asked for, and whoever started
         // playback names the scope after this returns. A rebuild (a device
@@ -884,12 +1022,14 @@ impl Player {
         };
         match Session::start(
             StartQueue {
-                paths: queue,
+                paths,
                 start,
                 explicit,
                 groups,
                 gains,
+                spans,
             },
+            queue,
             self.effective_volume(),
             self.settings.session.loop_mode(),
             shuffle,
@@ -1154,13 +1294,13 @@ impl Player {
         if self.settings.session.shuffle && self.shuffle_mode() == ShuffleMode::Random {
             shuffle_slice(&mut resolved);
         }
-        let (paths, groups): (Vec<PathBuf>, Vec<Option<u64>>) = resolved.into_iter().unzip();
+        let (keys, groups): (Vec<TrackKey>, Vec<Option<u64>>) = resolved.into_iter().unzip();
         // Context, not queue: what continuation adds is the album or library
         // run playing on around you, so the queue widgets stay quiet about it
         // the way they do for the context that seeded the session. Visible in
         // the timeline and removable all the same, which is the whole answer
         // to "rox is playing things I didn't pick".
-        self.splice(None, paths, Some(groups), false, false, cx);
+        self.splice(None, keys, Some(groups), false, false, cx);
         // Similar ranks the whole upcoming portion against the playing track,
         // which is what the mode already does on every skip, so the fold is
         // just asking it again now the batch has arrived. Nothing to pin
@@ -1202,11 +1342,12 @@ impl Player {
         self.settings.session.shuffle && self.shuffle_mode() == ShuffleMode::Similar
     }
 
-    /// Resolve a batch to playable paths, each with the group its pick asked
-    /// for. One lookup per id rather than one for the batch, because
-    /// `paths_for` drops ids it can't resolve and the groups would slide out
-    /// from under the paths they belong to.
-    fn resolve_picks(&mut self, picks: &[Pick]) -> Vec<(PathBuf, Option<u64>)> {
+    /// Resolve a batch to playable keys, each with the group its pick asked
+    /// for. Through the player's own store connection, since path and sub
+    /// both sit on the row an id names. A pick the library can no longer
+    /// resolve drops out with its group beside it, so the two never slide
+    /// apart.
+    fn resolve_picks(&mut self, picks: &[Pick]) -> Vec<(TrackKey, Option<u64>)> {
         if self.meta_conn.is_none() {
             let db = rox_core::settings::data_dir().join("library.db");
             self.meta_conn = db.exists().then(|| store::open(&db).ok()).flatten();
@@ -1217,8 +1358,8 @@ impl Player {
         picks
             .iter()
             .filter_map(|pick| {
-                let path = store::paths_for(conn, &[pick.id]).ok()?.pop()?;
-                Some((PathBuf::from(path), pick.group))
+                let key = store::key_for_id(conn, pick.id).ok().flatten()?;
+                Some((key, pick.group))
             })
             .collect()
     }
@@ -1271,7 +1412,7 @@ impl Player {
     /// of escaping to the library the way a fresh session would.
     pub fn play_random(&mut self, library: &Entity<Library>, cx: &mut Context<Self>) {
         let scope = self.scope.clone();
-        let paths = {
+        let keys = {
             let library = library.read(cx);
             let all: &[i64] = library
                 .projection()
@@ -1283,8 +1424,8 @@ impl Player {
             // gets a second try.
             draw_one(library, random_pool(&scope, all)).or_else(|| draw_one(library, all))
         };
-        let Some(paths) = paths else { return };
-        self.play(paths, cx);
+        let Some(keys) = keys else { return };
+        self.play(keys, cx);
         // After the play, never before: starting a session clears the scope
         // back to the library at large.
         self.scope = scope;
@@ -1312,7 +1453,7 @@ impl Player {
         let Some((entries, cursor, position_secs)) = self.queue_state() else {
             return false;
         };
-        let (paths, explicit): (Vec<PathBuf>, Vec<bool>) = entries.into_iter().unzip();
+        let (keys, explicit): (Vec<TrackKey>, Vec<bool>) = entries.into_iter().unzip();
         // A rebuild is the same music on a different stream, so the scope
         // carries over: the view play started in is still the view play
         // started in. The start clears it, which is right for a fresh context
@@ -1320,7 +1461,7 @@ impl Player {
         // whole order comes back and it's re-derived from that.
         let scope = self.scope.clone();
         // Restore-shaped start: preserve the saved order, seed the position.
-        self.start_session(paths, cursor, Some(position_secs), explicit, true, cx);
+        self.start_session(keys, cursor, Some(position_secs), explicit, true, cx);
         self.scope = scope;
         // A restore comes up paused, so put it back to playing. Only when the
         // start actually produced a session.
@@ -2109,7 +2250,7 @@ impl Player {
                     break;
                 }
             }
-            let Some((seed_path, tail)) = inputs else {
+            let Some((seed, tail)) = inputs else {
                 return;
             };
             // Read on this thread, before the spawn: the pick is a process
@@ -2119,8 +2260,7 @@ impl Player {
                 .background_executor()
                 .spawn(async move {
                     let conn = store::open(&db_path).ok()?;
-                    let seed = store::id_for_path(&conn, seed_path.to_str()?).ok()??;
-                    let scores: HashMap<i64, f32> = embeddings::scores(&conn, seed, &model)
+                    let scores: HashMap<i64, f32> = embeddings::scores(&conn, seed?, &model)
                         .ok()?
                         .into_iter()
                         .collect();
@@ -2129,10 +2269,7 @@ impl Player {
                     // them above everything that genuinely sounds unalike.
                     let mut ranked: Vec<(u64, f32)> = tail
                         .into_iter()
-                        .filter_map(|(entry, path)| {
-                            let id = store::id_for_path(&conn, path.to_str()?).ok()??;
-                            Some((entry, *scores.get(&id)?))
-                        })
+                        .filter_map(|(entry, id)| Some((entry, *scores.get(&id)?)))
                         .collect();
                     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
                     let mut ids: Vec<u64> = ranked.into_iter().map(|(entry, _)| entry).collect();
@@ -2171,7 +2308,16 @@ impl Player {
     /// The seed track and the upcoming entries a similarity ordering works
     /// over, or None while the engine has yet to publish a queue or there is
     /// nothing ahead to order.
-    fn similarity_inputs(&self, leaving: Option<u64>) -> Option<(PathBuf, Vec<(u64, PathBuf)>)> {
+    ///
+    /// Library ids off the pool mirror rather than paths off the snapshot: a
+    /// path is not an identity once cue tracks exist, and resolving one back
+    /// would score every track of a rip as whichever row sorted first. The
+    /// mirror already holds the id the insert looked up, so this costs no
+    /// query either. The seed stays optional so a track the library doesn't
+    /// hold reads as nothing to score rather than as a queue that has yet to
+    /// publish, which is what the caller's retry is waiting on.
+    #[allow(clippy::type_complexity)]
+    fn similarity_inputs(&self, leaving: Option<u64>) -> Option<(Option<i64>, Vec<(u64, i64)>)> {
         let session = self.session.as_ref()?;
         let snap = session.shared.queue_snapshot();
         // A skip seeds on where it lands, so it reads the track the engine
@@ -2195,12 +2341,12 @@ impl Player {
         if leaving == Some(entry.id) {
             return None;
         }
-        let seed = entry.path.clone();
-        let tail: Vec<(u64, PathBuf)> = snap
+        let seed = self.pool_ids.get(entry.idx).copied().flatten();
+        let tail: Vec<(u64, i64)> = snap
             .entries
             .get(at + 1..)?
             .iter()
-            .map(|e| (e.id, e.path.clone()))
+            .filter_map(|e| Some((e.id, self.pool_ids.get(e.idx).copied().flatten()?)))
             .collect();
         (!tail.is_empty()).then_some((seed, tail))
     }
@@ -2241,7 +2387,7 @@ impl Player {
     pub fn view(&self) -> PlayerView {
         let now = self.now_playing();
         PlayerView {
-            track: now.as_ref().map(|now| now.path.clone()),
+            track: now.as_ref().map(|now| now.key.clone()),
             duration_secs: now.and_then(|now| now.duration_secs),
             playing: self.is_playing(),
             active: self.is_active(),
@@ -2588,5 +2734,142 @@ mod tests {
         let mut empty: Vec<u64> = Vec::new();
         shuffle_head(&mut empty, 4);
         assert!(empty.is_empty());
+    }
+
+    /// The pinned crossfade requirement (ADR 19): consecutive cue tracks of
+    /// one image have to land in the same album group, or the fade would run
+    /// over a splice that was gapless on the disc.
+    ///
+    /// It falls out of the library rather than needing a rule here: the group
+    /// is hashed from (album artist, album), and the scanner writes the
+    /// sheet's album onto every row it cuts. This pins that, so a change to
+    /// how groups are derived can't quietly start fading mid-record.
+    #[test]
+    fn cue_tracks_of_one_image_share_an_album_group() {
+        let mut conn = rox_library::rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        let image = "/m/Album/disc.flac";
+        store::insert_batch(
+            &mut conn,
+            &[
+                cue_row(image, 1, 0, Some(180_000)),
+                cue_row(image, 2, 180_000, Some(400_000)),
+                cue_row(image, 3, 400_000, None),
+                other_album_row("/m/Other/loose.flac"),
+            ],
+        )
+        .unwrap();
+
+        let keys = [
+            TrackKey {
+                path: PathBuf::from(image),
+                sub: 1,
+            },
+            TrackKey {
+                path: PathBuf::from(image),
+                sub: 2,
+            },
+            TrackKey {
+                path: PathBuf::from(image),
+                sub: 3,
+            },
+            TrackKey::from(PathBuf::from("/m/Other/loose.flac")),
+        ];
+        let meta = resolve_queue_meta(Some(&conn), &keys);
+
+        assert!(meta.groups[0].is_some(), "a cue track is grouped at all");
+        assert_eq!(
+            meta.groups[0], meta.groups[1],
+            "tracks 1 and 2 of one rip are the same album"
+        );
+        assert_eq!(meta.groups[1], meta.groups[2]);
+        assert_ne!(
+            meta.groups[2], meta.groups[3],
+            "a track off another record is not"
+        );
+
+        // The spans come back beside the groups, which is what the engine
+        // needs to play a slice rather than the whole image.
+        assert_eq!(
+            meta.spans[0],
+            Some(Span {
+                start_ms: 0,
+                end_ms: Some(180_000)
+            })
+        );
+        assert_eq!(
+            meta.spans[2],
+            Some(Span {
+                start_ms: 400_000,
+                end_ms: None
+            }),
+            "the last track of an image runs to the file's own end"
+        );
+        assert_eq!(meta.spans[3], None, "a plain file plays whole");
+        assert_eq!(meta.ids.len(), 4);
+        assert!(meta.ids.iter().all(|id| id.is_some()));
+        assert_ne!(meta.ids[0], meta.ids[1], "each cue track is its own row");
+    }
+
+    /// Nothing to ask means everything defaults, one entry per key, so a
+    /// player with no database still queues and plays.
+    #[test]
+    fn a_missing_database_defaults_every_key() {
+        let keys = [
+            TrackKey::from(PathBuf::from("/m/a.flac")),
+            TrackKey {
+                path: PathBuf::from("/m/disc.flac"),
+                sub: 4,
+            },
+        ];
+        let meta = resolve_queue_meta(None, &keys);
+        assert_eq!(meta.groups, vec![None, None]);
+        assert_eq!(meta.ids, vec![None, None]);
+        assert_eq!(meta.spans, vec![None, None]);
+        assert_eq!(meta.gains.len(), 2);
+    }
+
+    /// A row on one album, for the group compares above.
+    fn album_row(path: &str, album: &str) -> rox_library::TrackRow {
+        rox_library::TrackRow {
+            path: path.to_string(),
+            sub: 0,
+            cue: None,
+            title: "Song".into(),
+            artist: "X".into(),
+            album_artist: "X".into(),
+            album: album.to_string(),
+            genre: String::new(),
+            year: 0,
+            disc_no: 0,
+            track_no: 0,
+            duration_ms: 180_000,
+            codec: "flac".into(),
+            bitrate_kbps: 0,
+            sample_rate_hz: 0,
+            bit_depth: 0,
+            rating: 0,
+            replay_gain: Default::default(),
+            size: 0,
+            mtime: 0,
+        }
+    }
+
+    fn other_album_row(path: &str) -> rox_library::TrackRow {
+        album_row(path, "Other")
+    }
+
+    /// One track of a cue rip: the same image path, its own subsong number
+    /// and span, and the sheet's album on every row.
+    fn cue_row(path: &str, sub: u16, start_ms: u32, end_ms: Option<u32>) -> rox_library::TrackRow {
+        rox_library::TrackRow {
+            sub,
+            track_no: sub,
+            cue: Some(rox_library::CueSlice {
+                cue_path: "/m/Album/disc.cue".into(),
+                span: Span { start_ms, end_ms },
+            }),
+            ..album_row(path, "Album")
+        }
     }
 }

@@ -4,8 +4,6 @@
 //! per-view config and resolve it here at render time; the setting row is
 //! shared so the knob reads the same in every customize window.
 
-use std::path::PathBuf;
-
 use gpui::{App, Context, Div, Entity, Window};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Side;
@@ -13,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::panel::{self, AppState};
 use rox_design::assets::icons;
+use rox_library::cue::TrackKey;
 
 /// The two places a displayed track can come from.
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -24,14 +23,15 @@ pub enum TrackSource {
 }
 
 impl TrackSource {
-    /// The track the source currently points at: the playing file, or the
-    /// first track of the selection resolved back to its path.
-    pub fn resolve(self, state: &AppState, cx: &App) -> Option<PathBuf> {
+    /// The track the source currently points at: the playing one, or the
+    /// first of the selection. A key rather than a path, so a panel drawing
+    /// one track of a cue rip describes that track and not its image.
+    pub fn resolve(self, state: &AppState, cx: &App) -> Option<TrackKey> {
         match self {
-            TrackSource::Playing => state.player.read(cx).now_playing().map(|now| now.path),
+            TrackSource::Playing => state.player.read(cx).now_playing().map(|now| now.key),
             TrackSource::Selected => {
                 let id = state.selection.read(cx).tracks().first().copied()?;
-                state.library.read(cx).paths_for(&[id]).ok()?.pop()
+                state.library.read(cx).keys_for(&[id]).ok()?.pop()
             }
         }
     }
@@ -44,7 +44,7 @@ impl TrackSource {
 /// stays uncached, it reads shared atomics.
 #[derive(Default)]
 pub struct ResolvedTrack {
-    selected: Option<Option<PathBuf>>,
+    selected: Option<Option<TrackKey>>,
 }
 
 impl ResolvedTrack {
@@ -53,7 +53,7 @@ impl ResolvedTrack {
         self.selected = None;
     }
 
-    pub fn get(&mut self, source: TrackSource, state: &AppState, cx: &App) -> Option<PathBuf> {
+    pub fn get(&mut self, source: TrackSource, state: &AppState, cx: &App) -> Option<TrackKey> {
         match source {
             TrackSource::Playing => source.resolve(state, cx),
             TrackSource::Selected => self

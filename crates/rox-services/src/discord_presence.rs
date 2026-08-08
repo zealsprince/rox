@@ -127,11 +127,11 @@ impl DiscordPresence {
         let is_playing = player.is_playing();
 
         let current_state = now_playing.map(|now| {
-            let meta = self.library.read(cx).meta_for(&now.path);
+            let meta = self.library.read(cx).meta_for_key(&now.key);
             let (title, artist, album, codec, bitrate_kbps) = match meta {
                 Some(m) => (
                     if m.title.is_empty() {
-                        now.path
+                        now.path()
                             .file_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_else(|| "Unknown Track".into())
@@ -148,13 +148,13 @@ impl DiscordPresence {
                     m.bitrate_kbps,
                 ),
                 None => (
-                    now.path
+                    now.path()
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "Unknown Track".into()),
                     "Unknown Artist".to_string(),
                     String::new(),
-                    now.path
+                    now.path()
                         .extension()
                         .map(|e| e.to_string_lossy().to_string())
                         .unwrap_or_default(),

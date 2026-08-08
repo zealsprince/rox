@@ -58,16 +58,26 @@ pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
 /// their path current. The event itself (played_at, the tag snapshot)
 /// never changes. Returns how many events relinked.
 pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
+    // The snapshot key is the fragment form a TrackKey serializes to: the
+    // bare path for a plain file, path#sub for a cue track. Matching on the
+    // bare path would land every listen of a rip on whichever of its rows
+    // sorts first, so both the refresh and the relink build the same
+    // expression the recorder wrote.
     conn.execute(
-        "UPDATE listens SET path = t.path FROM tracks t
+        "UPDATE listens SET path =
+             CASE WHEN t.sub = 0 THEN t.path ELSE t.path || '#' || t.sub END
+         FROM tracks t
          WHERE t.id = listens.track_id AND t.source = 'local'
-           AND listens.path <> t.path",
+           AND listens.path <>
+             CASE WHEN t.sub = 0 THEN t.path ELSE t.path || '#' || t.sub END",
         [],
     )?;
     let by_path = conn.execute(
         "UPDATE listens SET track_id = t.id FROM tracks t
          WHERE listens.path <> ''
-           AND t.source = 'local' AND t.path = listens.path
+           AND t.source = 'local'
+           AND CASE WHEN t.sub = 0 THEN t.path ELSE t.path || '#' || t.sub END
+               = listens.path
            AND NOT EXISTS (SELECT 1 FROM tracks x WHERE x.id = listens.track_id)",
         [],
     )?;
@@ -87,8 +97,8 @@ pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
 }
 
 /// One listen as it lands: the track's identity, when the play began
-/// (unix seconds), its tags at play time, and the path that played, the
-/// reattach key.
+/// (unix seconds), its tags at play time, and the key that played in
+/// fragment form (path#sub for a cue track), the reattach key.
 pub struct Listen {
     pub track_id: i64,
     pub played_at: i64,
@@ -101,7 +111,9 @@ pub struct Listen {
 
 /// Build the listen for a playing path from the live catalog. Ok(None)
 /// when the path is not in the library: an unindexed file plays without
-/// history, since events key to track identity.
+/// history, since events key to track identity. Answers for plain files
+/// only; a cue track's listen is built by the recorder from the row it
+/// already resolved, since a bare path can't say which span played.
 pub fn listen_for_path(
     conn: &Connection,
     path: &str,
@@ -109,7 +121,7 @@ pub fn listen_for_path(
 ) -> rusqlite::Result<Option<Listen>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, title, artist, album, genre FROM tracks
-         WHERE source = 'local' AND path = ?1",
+         WHERE source = 'local' AND path = ?1 AND sub = 0",
     )?;
     let mut rows = stmt.query([path])?;
     match rows.next()? {
@@ -588,6 +600,8 @@ mod tests {
 
     fn track(path: &str, title: &str, artist: &str, album: &str, genre: &str) -> TrackRow {
         TrackRow {
+            sub: 0,
+            cue: None,
             path: path.into(),
             title: title.into(),
             artist: artist.into(),
@@ -958,6 +972,84 @@ mod tests {
                 .all(|t| t.track_id != new_id),
             "the returned file is not a stranger to its own history"
         );
+    }
+
+    #[test]
+    fn reattach_keeps_a_rips_listens_on_their_own_tracks() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        // Two spans of one image with identical tags, so the tag fallback's
+        // exactly-one guard can never answer and only the fragment snapshot
+        // can say which track a listen belongs to.
+        let cue_track = |sub: u16, start_ms: u32| {
+            let mut row = track("/m/disc.flac", "Untitled", "A", "Rip", "rock");
+            row.sub = sub;
+            row.track_no = sub;
+            row.cue = Some(crate::CueSlice {
+                cue_path: "/m/disc.cue".into(),
+                span: crate::cue::Span {
+                    start_ms,
+                    end_ms: Some(start_ms + 1000),
+                },
+            });
+            row
+        };
+        // The keeper holds MAX(id) across the delete, the same move the
+        // plain-file reattach test makes, so the returned rip can't just
+        // reuse its old rowids and dodge the relink.
+        store::insert_batch(
+            &mut conn,
+            &[
+                cue_track(1, 0),
+                cue_track(2, 1000),
+                track("/m/keep.mp3", "Keeper", "B", "Other", "jazz"),
+            ],
+        )
+        .unwrap();
+        let id_for = |conn: &Connection, sub: u16| -> i64 {
+            conn.query_row(
+                "SELECT id FROM tracks WHERE path = '/m/disc.flac' AND sub = ?1",
+                [sub],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        for sub in [1u16, 2] {
+            append(
+                &conn,
+                &Listen {
+                    track_id: id_for(&conn, sub),
+                    played_at: sub as i64 * 100,
+                    title: "Untitled".into(),
+                    artist: "A".into(),
+                    album: "Rip".into(),
+                    genre: "rock".into(),
+                    path: format!("/m/disc.flac#{sub}"),
+                },
+            )
+            .unwrap();
+        }
+
+        // The rip prunes and returns under fresh ids, the reattach scenario.
+        conn.execute("DELETE FROM tracks WHERE path = '/m/disc.flac'", [])
+            .unwrap();
+        store::insert_batch(&mut conn, &[cue_track(1, 0), cue_track(2, 1000)]).unwrap();
+
+        assert_eq!(reattach(&conn).unwrap(), 2);
+        for sub in [1u16, 2] {
+            let relinked: i64 = conn
+                .query_row(
+                    "SELECT track_id FROM listens WHERE path = ?1",
+                    [format!("/m/disc.flac#{sub}")],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                relinked,
+                id_for(&conn, sub),
+                "each listen lands on the row of its own span"
+            );
+        }
     }
 
     #[test]

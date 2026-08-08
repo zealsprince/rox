@@ -2634,32 +2634,10 @@ impl SettingsWindow {
             negotiated.channels,
             negotiated.format
         );
-        let mut lines = Vec::new();
-        // The fallback line is the whole reason a failed claim isn't a
-        // mystery: the toggle stays on, and this says why it isn't what
-        // you're hearing.
-        if let Some(why) = &negotiated.fallback {
-            lines.push(format!("Exclusive fell back to shared: {why}").into());
-        }
-        // Leveling multiplies the source on its way to the ring (ADR 19),
-        // so it goes above the rate line: whatever the rates say, this is
-        // the one that decides whether these are the file's own samples.
-        // Only when something is actually applied, so an untagged file with
-        // the fallback at zero says nothing.
-        if let Some(db) = status.leveling_db {
-            lines.push(format!("ReplayGain is levelling this file by {db:+.1} dB").into());
-        }
-        if let Some(source) = status.source_rate {
-            lines.push(
-                if resampling {
-                    format!("The playing file is {source} Hz, resampled to reach the device")
-                } else {
-                    format!("The playing file is {source} Hz, so nothing is resampling it")
-                }
-                .into(),
-            );
-        }
-        panel::banner(tone, headline, lines)
+        // The expanded register: this block has a page to itself, so each
+        // reason keeps a sentence of its own where the output panel folds
+        // them into one line.
+        panel::banner(tone, headline, status.lines(true, true))
     }
 
     /// Ask for exclusive output, or give the device back. The player

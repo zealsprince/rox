@@ -21,6 +21,7 @@ use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
+use rox_library::cue::TrackKey;
 use rox_library::projection::{parse_query, FilterSet, Filterable, TrackFields};
 use rox_library::store::TrackMeta;
 
@@ -308,7 +309,7 @@ pub struct QueuePanel {
     /// the cheap change detector so the per-pump observe only re-reads the
     /// queue when an edit lands or a track advances (which shrinks the queue).
     rev: Option<u64>,
-    playing_path: Option<PathBuf>,
+    playing_key: Option<TrackKey>,
     /// The selected entries, by entry id, so a rebuild or a regroup keeps the
     /// highlight on the same entries wherever they land. Shift extends, cmd
     /// (ctrl elsewhere) toggles, Ctrl+A takes the lot, the library's rules.
@@ -404,7 +405,7 @@ impl QueuePanel {
             loose_tags: HashMap::new(),
             playing: None,
             rev: None,
-            playing_path: None,
+            playing_key: None,
             selected: HashSet::new(),
             drag_gen: 0,
             drag_set: None,
@@ -465,26 +466,31 @@ impl QueuePanel {
     /// advance drops a played item off the front.
     fn sync(&mut self, cx: &mut Context<Self>) {
         let rev = self.state.player.read(cx).queue_rev();
-        let playing_path = self.state.player.read(cx).now_playing().map(|now| now.path);
-        if rev == self.rev && playing_path == self.playing_path {
+        let playing_key = self.state.player.read(cx).now_playing().map(|now| now.key);
+        if rev == self.rev && playing_key == self.playing_key {
             return;
         }
         self.rev = rev;
-        self.playing_path = playing_path;
+        self.playing_key = playing_key;
         let queued = self.state.player.read(cx).queued();
+        // Every entry's key, through the pool mirror: the engine's own
+        // entries carry a bare path, so two cue tracks of one image would
+        // otherwise resolve to the same row and draw the same title twice.
+        let keys: Vec<TrackKey> = {
+            let player = self.state.player.read(cx);
+            queued.iter().map(|e| player.key_for(e)).collect()
+        };
         let library = self.state.library.read(cx);
         // Resolve every queued and playing file to its id and tags once, in a
         // single query each. The plays, loose-tag, and row passes below all read
         // from this instead of hitting id_for and meta_for twice apiece per
         // entry, which was four round trips a row on every rebuild.
-        let resolved: Vec<Option<(i64, TrackMeta)>> = queued
-            .iter()
-            .map(|e| library.resolve_path(&e.path))
-            .collect();
+        let resolved: Vec<Option<(i64, TrackMeta)>> =
+            keys.iter().map(|key| library.resolve_key(key)).collect();
         let playing_resolved: Option<(i64, TrackMeta)> = self
-            .playing_path
+            .playing_key
             .as_ref()
-            .and_then(|path| library.resolve_path(path));
+            .and_then(|key| library.resolve_key(key));
         // Total play counts for the queue's tracks and the playing one, one
         // projection pass, for the plays column.
         let plays = {
@@ -501,18 +507,18 @@ impl QueuePanel {
         // not know, once, before the resolve passes read the cache. Each
         // read_one hits the disk, so it is gated on a rev-change rebuild here
         // and cached per path; a steady queue reads nothing.
-        for (path, meta) in queued
-            .iter()
-            .map(|e| &e.path)
-            .zip(resolved.iter())
-            .chain(self.playing_path.as_ref().map(|p| (p, &playing_resolved)))
-        {
+        for (path, meta) in keys.iter().map(|key| &key.path).zip(resolved.iter()).chain(
+            self.playing_key
+                .as_ref()
+                .map(|key| (&key.path, &playing_resolved)),
+        ) {
             if meta.is_none() && !self.loose_tags.contains_key(path) {
                 self.loose_tags
                     .insert(path.clone(), rox_library::scanner::read_one(path));
             }
         }
-        self.playing = self.playing_path.as_ref().map(|path| {
+        self.playing = self.playing_key.as_ref().map(|key| {
+            let path = &key.path;
             let track_id = playing_resolved.as_ref().map(|(id, _)| *id);
             let count = track_id.and_then(|id| plays.get(&id).copied()).unwrap_or(0);
             match playing_resolved {
@@ -561,9 +567,10 @@ impl QueuePanel {
         self.favourites = library.favourite_ids();
         self.tracks = queued
             .iter()
+            .zip(&keys)
             .zip(resolved)
             .enumerate()
-            .map(|(i, (entry, resolved))| {
+            .map(|(i, ((entry, key), resolved))| {
                 let track_id = resolved.as_ref().map(|(id, _)| *id);
                 let pos = (i + 1) as u32;
                 let count = track_id.and_then(|id| plays.get(&id).copied()).unwrap_or(0);
@@ -585,12 +592,12 @@ impl QueuePanel {
                         duration_ms: m.duration_ms,
                         rating: m.rating,
                         plays: count,
-                        path: entry.path.clone(),
+                        path: key.path.clone(),
                     },
                     // Out of library: draw the file's own tags, read off the
                     // disk and cached above. Fall back to just the file name
                     // only when the file could not be stat'd.
-                    None => match self.loose_tags.get(&entry.path).and_then(Option::as_ref) {
+                    None => match self.loose_tags.get(&key.path).and_then(Option::as_ref) {
                         Some(r) => TrackRow {
                             entry_id: entry.id,
                             track_id,
@@ -608,13 +615,13 @@ impl QueuePanel {
                             duration_ms: r.duration_ms,
                             rating: 0,
                             plays: count,
-                            path: entry.path.clone(),
+                            path: key.path.clone(),
                         },
                         None => TrackRow {
                             entry_id: entry.id,
                             track_id,
                             pos,
-                            title: file_label(&entry.path),
+                            title: file_label(&key.path),
                             artist: String::new(),
                             album: String::new(),
                             album_artist: String::new(),
@@ -627,7 +634,7 @@ impl QueuePanel {
                             duration_ms: 0,
                             rating: 0,
                             plays: count,
-                            path: entry.path.clone(),
+                            path: key.path.clone(),
                         },
                     },
                 }
@@ -1032,23 +1039,29 @@ impl QueuePanel {
         if drag.is_empty() {
             return;
         }
-        let paths = drag.paths.to_vec();
+        let keys = drag.keys.to_vec();
         self.state
             .player
-            .update(cx, |player, cx| player.enqueue(paths, cx));
+            .update(cx, |player, cx| player.enqueue(keys, cx));
     }
 
     /// An OS file dropped onto the queue panel enqueues, same as a track
     /// dragged in from the library. The window body plays drops now, so the
     /// queue panel stays the one surface that adds without interrupting.
     fn enqueue_external(&mut self, paths: &ExternalPaths, cx: &mut Context<Self>) {
-        let paths = rox_library::open_files::resolve_audio_paths(paths.paths().to_vec());
-        if paths.is_empty() {
+        // Loose files off the desktop, so they queue as whole files: nothing
+        // out here names a subsong.
+        let keys: Vec<TrackKey> =
+            rox_library::open_files::resolve_audio_paths(paths.paths().to_vec())
+                .into_iter()
+                .map(TrackKey::from)
+                .collect();
+        if keys.is_empty() {
             return;
         }
         self.state
             .player
-            .update(cx, |player, cx| player.enqueue(paths, cx));
+            .update(cx, |player, cx| player.enqueue(keys, cx));
     }
 
     /// The visible slice of the list: album headings and queue entries, drawn

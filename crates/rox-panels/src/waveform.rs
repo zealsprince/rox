@@ -794,8 +794,10 @@ impl WaveformPanel {
 
         // Kick a decode when the playing track changes.
         if let Some(now) = &now {
-            if self.track.as_deref() != Some(now.path.as_path()) {
-                let path = now.path.clone();
+            // Keyed on the file: the strip draws the whole image's shape,
+            // and a cue rip's tracks all live inside one.
+            if self.track.as_deref() != Some(now.path()) {
+                let path = now.path().to_path_buf();
                 self.start_decode(path, cx);
             }
         }

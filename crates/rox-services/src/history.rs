@@ -33,7 +33,23 @@ impl EventEmitter<HistoryEvent> for History {}
 impl History {
     pub fn new(scrobbler: &Entity<Scrobbler>, cx: &mut Context<Self>) -> Self {
         let _listened = cx.subscribe(scrobbler, |this: &mut Self, _, event: &Listened, cx| {
-            this.record(event.path.clone(), event.started, cx);
+            // The event already carries the row it resolved to and the tags
+            // to snapshot, so nothing here has to ask the database who
+            // played. That matters for a cue rip: the path would answer with
+            // whichever track of the disc sorts first, every single time.
+            let Some(track_id) = event.track_id else {
+                return;
+            };
+            let listen = listens::Listen {
+                track_id,
+                played_at: event.started as i64,
+                title: event.title.clone(),
+                artist: event.artist.clone(),
+                album: event.album.clone(),
+                genre: event.genre.clone(),
+                path: event.key.to_fragment(),
+            };
+            this.record(listen, cx);
         });
         History {
             db_path: rox_core::settings::data_dir().join("library.db"),
@@ -41,32 +57,23 @@ impl History {
         }
     }
 
-    /// Append one listen off the UI thread: resolve the track and its
-    /// tag snapshot, insert the event row. A file outside the library
-    /// records nothing - events key to track identity. Failures log and
-    /// never touch playback, like the scrobbler's own submissions.
-    fn record(&self, path: PathBuf, started: u64, cx: &mut Context<Self>) {
+    /// Append one listen off the UI thread. A file outside the library never
+    /// gets here - events key to track identity, and the scrobbler drops the
+    /// id for one it couldn't resolve. Failures log and never touch playback,
+    /// like the scrobbler's own submissions.
+    fn record(&self, listen: listens::Listen, cx: &mut Context<Self>) {
         let db_path = self.db_path.clone();
         cx.spawn(async move |this, cx| {
             let recorded = cx
                 .background_executor()
                 .spawn(async move {
                     let conn = store::open(&db_path).map_err(|e| e.to_string())?;
-                    let Some(path) = path.to_str() else {
-                        return Ok(None);
-                    };
-                    let Some(listen) = listens::listen_for_path(&conn, path, started as i64)
-                        .map_err(|e| e.to_string())?
-                    else {
-                        return Ok(None);
-                    };
                     listens::append(&conn, &listen).map_err(|e| e.to_string())?;
-                    Ok::<Option<i64>, String>(Some(listen.track_id))
+                    Ok::<i64, String>(listen.track_id)
                 })
                 .await;
             this.update(cx, |_, cx| match recorded {
-                Ok(Some(track_id)) => cx.emit(HistoryEvent::Recorded { track_id }),
-                Ok(None) => {}
+                Ok(track_id) => cx.emit(HistoryEvent::Recorded { track_id }),
                 Err(e) => log::warn!("history: {e}"),
             })
             .ok();

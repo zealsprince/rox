@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use std::time::Instant;
 
+use rox_library::cue::Span;
 use rtrb::Producer;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error;
@@ -71,6 +72,11 @@ pub enum Cmd {
         /// from the library beside the groups. Shorter pads with the
         /// untagged default, which the rule's fallback then answers for.
         gains: Vec<gain::ReplayGain>,
+        /// The slice of the file each path plays, parallel the same way. A
+        /// cue track is a span inside one image file, so two entries can
+        /// share a path and still be different music. Shorter than `paths`
+        /// pads with None, which means play the whole file.
+        spans: Vec<Option<Span>>,
         explicit: bool,
         /// Jump to the first of the batch and play it now, keeping the rest of
         /// the queue behind it. A drag onto Play now sets this; Play Next and
@@ -172,8 +178,40 @@ struct Source {
     pos_frames: u64,
     /// The track's length in device-rate frames, where the container says.
     /// None for a stream that never claimed one, which is also the answer
-    /// to "when does the fade window open": it doesn't.
+    /// to "when does the fade window open": it doesn't. For a spanned source
+    /// this is the span's length, not the file's, so the fade window and the
+    /// EOF anticipation key off the track the listener picked.
     total_frames: Option<u64>,
+    /// The slice of the file this source plays, where it plays only part of
+    /// one. None is the ordinary case, the whole file start to end.
+    span: Option<SpanFrames>,
+    /// Where the decoder stands in the file, in the file's own frames. Only
+    /// a spanned source needs this: the span's end is a sample position in
+    /// the file, and the cut has to be made against the file's clock before
+    /// the resampler turns those frames into device-rate ones.
+    src_frame: u64,
+}
+
+/// A [`Span`] resolved onto the file's own frame clock, which is where the
+/// boundary has to be honored: milliseconds are how a cue sheet writes a
+/// timestamp, frames are what a decoder hands over. Integer math both ways,
+/// so the end of one track and the start of the next land on the same frame
+/// and two consecutive spans splice with nothing missing or doubled.
+#[derive(Clone, Copy)]
+struct SpanFrames {
+    /// First playable frame of the span.
+    start: u64,
+    /// One past the span's last playable frame. None on the last track of an
+    /// image, which runs to the file's own end.
+    end: Option<u64>,
+}
+
+/// Milliseconds on a stream of `rate` as a count of its frames. Truncating
+/// integer math on purpose: every caller that asks about the same timestamp
+/// gets the same frame back, so a boundary shared by two spans is one frame
+/// rather than two that differ by a rounding step.
+fn ms_frames(ms: u32, rate: u32) -> u64 {
+    (ms as u64 * rate as u64) / 1000
 }
 
 /// One slot in the play order: a stable id the UI addresses it by, and the
@@ -200,6 +238,11 @@ pub struct Engine {
     /// file's tags by the library, never by the engine; what happens here
     /// is the rule below turning them into one factor per source.
     gains: Vec<gain::ReplayGain>,
+    /// The slice of the file each pool entry plays, parallel the same way.
+    /// None is the whole file, which is every plain track; a cue track
+    /// carries the span its sheet gave it, and several pool entries then
+    /// point at one image file with different spans.
+    spans: Vec<Option<Span>>,
     idx: usize,
     /// The play order. All navigation walks this, so `order[pos]` is the
     /// playing entry and Prev retraces the path. Editable in place: insert,
@@ -291,9 +334,9 @@ struct Wound {
 
 /// The playing context handed to a new engine: the ordered paths, where in
 /// them to start, which entries are user-queued rather than part of the
-/// context, the album group per entry, and its ReplayGain tags. The three
-/// parallel vecs pad out where they run short of `paths`, with false, None,
-/// and the untagged default.
+/// context, the album group per entry, its ReplayGain tags, and the slice of
+/// the file it plays. The four parallel vecs pad out where they run short of
+/// `paths`, with false, None, the untagged default, and None again.
 #[derive(Default)]
 pub struct StartQueue {
     pub paths: Vec<PathBuf>,
@@ -301,6 +344,10 @@ pub struct StartQueue {
     pub explicit: Vec<bool>,
     pub groups: Vec<Option<u64>>,
     pub gains: Vec<gain::ReplayGain>,
+    /// Which part of each path to play, None being all of it. A cue track
+    /// comes through as a span inside its image file, so a restored session
+    /// of one disc rip is one path repeated with a span apiece.
+    pub spans: Vec<Option<Span>>,
 }
 
 impl Engine {
@@ -317,6 +364,7 @@ impl Engine {
             explicit,
             groups,
             gains,
+            spans,
         } = queue;
         // The starting queue is the playing context: an album, a library run,
         // whatever the caller handed over. A fresh context passes an empty
@@ -335,10 +383,13 @@ impl Engine {
         groups.resize(queue.len(), None);
         let mut gains = gains;
         gains.resize(queue.len(), gain::ReplayGain::default());
+        let mut spans = spans;
+        spans.resize(queue.len(), None);
         Engine {
             order,
             groups,
             gains,
+            spans,
             pos: 0,
             start: start.min(queue.len().saturating_sub(1)),
             next_id: queue.len() as u64,
@@ -450,10 +501,11 @@ impl Engine {
                         paths,
                         groups,
                         gains,
+                        spans,
                         explicit,
                         and_play,
                     } => {
-                        let at = self.insert(after, paths, groups, gains, explicit);
+                        let at = self.insert(after, paths, groups, gains, spans, explicit);
                         // From the ended state the source is None, so the new
                         // entries land in order but nothing opens them and we
                         // stay silent. Route the first of the batch through the
@@ -714,7 +766,7 @@ impl Engine {
     fn open_file_at(&mut self, mut p: usize) -> Option<(Source, usize, TrackInfo)> {
         while p < self.order.len() {
             let i = self.order[p].idx;
-            match Source::open(&self.queue[i], self.device_rate) {
+            match Source::open(&self.queue[i], self.device_rate, self.spans[i]) {
                 Ok((mut src, info)) => {
                     // The gain rides with the track open (ADR 19), so it
                     // changes exactly where the source does.
@@ -1145,6 +1197,7 @@ impl Engine {
         paths: Vec<PathBuf>,
         groups: Vec<Option<u64>>,
         gains: Vec<gain::ReplayGain>,
+        spans: Vec<Option<Span>>,
         explicit: bool,
     ) -> Option<usize> {
         if paths.is_empty() {
@@ -1163,6 +1216,7 @@ impl Engine {
             self.queue.push(path);
             self.groups.push(groups.get(i).copied().flatten());
             self.gains.push(gains.get(i).copied().unwrap_or_default());
+            self.spans.push(spans.get(i).copied().flatten());
             self.shared.tracks.lock().unwrap().push(None);
             new.push(OrderEntry {
                 id: self.next_id,
@@ -1530,9 +1584,9 @@ pub fn count_frames(path: &PathBuf) -> Result<(u64, Option<u64>), String> {
     // Probe once for the source rate, then open for real with the device
     // rate equal to it, so the resampler is a passthrough and the count is
     // in source frames.
-    let (probe, info) = Source::open(path, 48000)?;
+    let (probe, info) = Source::open(path, 48000, None)?;
     drop(probe);
-    let (mut src, info) = Source::open(path, info.sample_rate)?;
+    let (mut src, info) = Source::open(path, info.sample_rate, None)?;
 
     let mut decoded: u64 = 0;
     let mut chunk = Vec::new();
@@ -1562,9 +1616,9 @@ pub fn count_frames(path: &PathBuf) -> Result<(u64, Option<u64>), String> {
 pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<Vec<(f32, f32)>>, String> {
     // Probe once for the source rate, then open for real with the device
     // rate equal to it, so the resampler is a passthrough.
-    let (probe, info) = Source::open(path, 48000)?;
+    let (probe, info) = Source::open(path, 48000, None)?;
     drop(probe);
-    let (mut src, info) = Source::open(path, info.sample_rate)?;
+    let (mut src, info) = Source::open(path, info.sample_rate, None)?;
 
     // Coarse pass: one pair per lane per fixed block of frames, so memory
     // stays a few thousand pairs whatever the track length, then fold down
@@ -1673,7 +1727,7 @@ pub fn decode_window(
     device_rate: u32,
     frames: usize,
 ) -> Result<Vec<f32>, String> {
-    let (mut src, _) = Source::open(path, device_rate)?;
+    let (mut src, _) = Source::open(path, device_rate, None)?;
     if position_secs > 0.0 {
         let _ = src.seek(position_secs);
     }
@@ -1696,7 +1750,17 @@ pub fn decode_window(
 }
 
 impl Source {
-    fn open(path: &PathBuf, device_rate: u32) -> Result<(Source, TrackInfo), String> {
+    /// Open `path` and hand back a source for the part of it named by
+    /// `span`, None meaning all of it. A cue track is a span inside a whole
+    /// disc image, and from here on the source behaves as if the span were
+    /// the whole file: it opens positioned at the span's first frame, counts
+    /// its position from there, reports the span's length, and calls the
+    /// span's end the end of the track.
+    fn open(
+        path: &PathBuf,
+        device_rate: u32,
+        span: Option<Span>,
+    ) -> Result<(Source, TrackInfo), String> {
         let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -1729,16 +1793,54 @@ impl Source {
         let channels = params.channels.as_ref().map(|c| c.count()).unwrap_or(2);
 
         // num_frames already excludes encoder delay and padding in 0.6.
-        let duration_secs = track
+        let file_frames = track.num_frames;
+        let file_secs = track
             .duration
             .zip(time_base)
             .and_then(|(dur, tb)| tb.calc_time(Timestamp::from(dur.get() as i64)))
             .map(|t| t.as_secs_f64())
-            .or_else(|| track.num_frames.map(|n| n as f64 / sample_rate as f64));
+            .or_else(|| file_frames.map(|n| n as f64 / sample_rate as f64));
 
         let decoder = symphonia::default::get_codecs()
             .make_audio_decoder(params, &AudioDecoderOptions::default())
             .map_err(|e| format!("decoder: {e}"))?;
+
+        // The span on the file's own frame clock, which is the only clock
+        // its end can be honored on: everything downstream of the resampler
+        // counts device-rate frames, and a boundary cut there would land a
+        // sample or two either side of where the sheet put it.
+        let span_frames = span.map(|s| SpanFrames {
+            start: ms_frames(s.start_ms, sample_rate),
+            end: s.end_ms.map(|end| ms_frames(end, sample_rate)),
+        });
+
+        // How long the track is, which for a spanned source is how long the
+        // span is. Measured between the two frames its boundaries resolve
+        // to rather than from the millisecond difference, because at a rate
+        // where a millisecond isn't a whole number of frames those two
+        // answers differ by one and the frame clock is the one the decode
+        // actually follows. The open-ended span, the last track of an
+        // image, borrows the file's own end and takes its start off it.
+        let start_secs = span_frames.map_or(0.0, |sf| sf.start as f64 / sample_rate as f64);
+        let (duration_secs, num_frames) = match span_frames {
+            Some(sf) => {
+                let frames = match sf.end {
+                    // A sheet whose last timestamp runs past the file gets
+                    // the file's end, so the length it reports is one the
+                    // track can actually reach.
+                    Some(end) => Some(
+                        end.min(file_frames.unwrap_or(u64::MAX))
+                            .saturating_sub(sf.start),
+                    ),
+                    None => file_frames.map(|n| n.saturating_sub(sf.start)),
+                };
+                let secs = frames
+                    .map(|n| n as f64 / sample_rate as f64)
+                    .or_else(|| file_secs.map(|secs| (secs - start_secs).max(0.0)));
+                (secs, frames)
+            }
+            None => (file_secs, file_frames),
+        };
 
         let info = TrackInfo {
             name: path
@@ -1746,7 +1848,7 @@ impl Source {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string()),
             duration_secs,
-            num_frames: track.num_frames,
+            num_frames,
             sample_rate,
             channels,
         };
@@ -1755,27 +1857,37 @@ impl Source {
         // fade window is measured on. Prefer the frame count the container
         // states (encoder delay and padding already out of it) and fall
         // back to the duration.
-        let total_frames = track
-            .num_frames
+        let total_frames = num_frames
             .map(|n| (n as f64 * device_rate as f64 / sample_rate as f64).round() as u64)
             .or_else(|| duration_secs.map(|secs| (secs * device_rate as f64).round() as u64));
 
-        Ok((
-            Source {
-                format,
-                decoder,
-                track_id,
-                time_base,
-                device_rate,
-                resampler: Resampler::new(sample_rate, device_rate),
-                scratch: Vec::new(),
-                rg: gain::ReplayGain::default(),
-                gain: 1.0,
-                pos_frames: 0,
-                total_frames,
-            },
-            info,
-        ))
+        let mut source = Source {
+            format,
+            decoder,
+            track_id,
+            time_base,
+            device_rate,
+            resampler: Resampler::new(sample_rate, device_rate),
+            scratch: Vec::new(),
+            rg: gain::ReplayGain::default(),
+            gain: 1.0,
+            pos_frames: 0,
+            total_frames,
+            span: span_frames,
+            src_frame: 0,
+        };
+
+        // Walk to the span's first frame before the caller ever asks for a
+        // packet, so the source hands back the track from its very first
+        // chunk. Same accurate seek a scrub uses, decoder and resampler
+        // reset with it, and the decode drops whatever the packet-granular
+        // landing left in front of the span. A span starting at zero is
+        // already where it needs to be.
+        if span_frames.is_some_and(|sf| sf.start > 0) && source.seek_file(start_secs).is_none() {
+            return Err(format!("seek to span start {start_secs}s failed"));
+        }
+
+        Ok((source, info))
     }
 
     /// Take on this file's ReplayGain tags and the rule to read them by.
@@ -1800,6 +1912,14 @@ impl Source {
             .map(|total| total.saturating_sub(self.pos_frames))
     }
 
+    /// Frames of the file still owed before the span's end, on the file's
+    /// own clock. None where nothing bounds the decode: a whole file, or the
+    /// open-ended span that runs to the file's end anyway and lets natural
+    /// EOF do the stopping.
+    fn span_left(&self) -> Option<u64> {
+        self.span?.end.map(|end| end.saturating_sub(self.src_frame))
+    }
+
     /// Decode packets until one yields samples, appending device-rate stereo
     /// to `out` with this source's own gain applied. Returns false at end of
     /// stream.
@@ -1816,6 +1936,14 @@ impl Source {
 
     /// The decode itself: packets in, device-rate stereo appended to `out`.
     fn decode_chunk(&mut self, device_rate: u32, out: &mut Vec<f32>) -> bool {
+        // A span already at its end is a track already over, and it answers
+        // exactly what the file's own end answers: drain the resampler's
+        // carried frame and stop. Everything upstream of here then takes the
+        // gapless boundary it would have taken at EOF.
+        if self.span_left() == Some(0) {
+            self.resampler.flush(out);
+            return false;
+        }
         loop {
             let packet = match self.format.next_packet() {
                 Ok(Some(p)) => p,
@@ -1874,7 +2002,7 @@ impl Source {
 
             // Fold to stereo: mono duplicates, extra channels drop. Real
             // downmix is engine work, not spike work.
-            let stereo: Vec<f32> = match ch {
+            let mut stereo: Vec<f32> = match ch {
                 2 => std::mem::take(&mut self.scratch),
                 1 => {
                     let mut v = Vec::with_capacity(frames * 2);
@@ -1894,11 +2022,50 @@ impl Source {
                 }
             };
 
+            // The span's first frame. A format answers an accurate seek with
+            // the packet holding the timestamp, which is near enough for a
+            // scrub and nowhere near enough for a cue seam: the frames
+            // between where the seek landed and where the track starts
+            // belong to the track before it, and playing them would double
+            // them up at the boundary. They go here, in the file's own
+            // frames, before anything downstream can hear them.
+            if let Some(start) = self.span.map(|s| s.start) {
+                if self.src_frame < start {
+                    let skip = ((start - self.src_frame) as usize).min(frames);
+                    stereo.drain(..skip * 2);
+                    self.src_frame += skip as u64;
+                    if stereo.is_empty() {
+                        if ch == 2 {
+                            self.scratch = stereo;
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            // The span's end falls somewhere inside a packet, so the packet
+            // is cut here too, still in the file's own frames, before the
+            // resampler smears the boundary across a fractional step. Past
+            // the cut this is the natural EOF path to the sample: flush the
+            // resampler's carried frame, report the track over, and let the
+            // caller splice the next one in behind it.
+            let have = (stereo.len() / 2) as u64;
+            let ends = match self.span_left() {
+                Some(left) if have >= left => {
+                    stereo.truncate(left as usize * 2);
+                    true
+                }
+                _ => false,
+            };
+            self.src_frame += (stereo.len() / 2) as u64;
             self.resampler.process(&stereo, out);
+            if ends {
+                self.resampler.flush(out);
+            }
             if ch == 2 {
                 self.scratch = stereo;
             }
-            return true;
+            return !ends;
         }
     }
 
@@ -1906,7 +2073,41 @@ impl Source {
     /// seconds, which can differ from the request. None when the seek failed
     /// and the reader never moved, so the caller doesn't register a segment
     /// that jumps the position display to a spot playback never reached.
+    ///
+    /// Both the request and the answer are track-relative, so a span's 0:00
+    /// is its own first frame rather than the image file's. That's what
+    /// keeps the seek strip and the position clock reading a cue track the
+    /// way they read a plain file, with no arithmetic of their own.
     fn seek(&mut self, secs: f64) -> Option<f64> {
+        let Some(span) = self.span else {
+            let landed = self.seek_file(secs)?;
+            // The track position moved, so the fade window's countdown
+            // moves with it: a seek into the last seconds of a track
+            // opens the window, a seek back out of it closes it again.
+            self.pos_frames = (landed * self.device_rate as f64).round() as u64;
+            return Some(landed);
+        };
+        let rate = self.resampler.src_rate() as f64;
+        let start = span.start as f64 / rate;
+        // Clamped to the span at both ends: a scrub past the end of a cue
+        // track belongs on that track's last frame, never inside the one
+        // after it, which is the same file a few seconds along.
+        let target = match span.end {
+            Some(end) => (start + secs.max(0.0)).clamp(start, end as f64 / rate),
+            None => start + secs.max(0.0),
+        };
+        let landed = self.seek_file(target)?;
+        let rel = (landed - start).max(0.0);
+        self.pos_frames = (rel * self.device_rate as f64).round() as u64;
+        Some(rel)
+    }
+
+    /// The seek itself, against the file's own timeline: move the reader,
+    /// reset the decoder and the resampler around the jump, and report where
+    /// it actually landed. Split out because a spanned source seeks twice
+    /// over, once to enter its span and again for every scrub inside it, and
+    /// only the caller knows which clock the seconds are on.
+    fn seek_file(&mut self, secs: f64) -> Option<f64> {
         let time = Time::try_from_secs_f64(secs).unwrap_or(Time::ZERO);
         match self.format.seek(
             SeekMode::Accurate,
@@ -1923,10 +2124,11 @@ impl Source {
                     .and_then(|tb| tb.calc_time(seeked.actual_ts))
                     .map(|t| t.as_secs_f64().max(0.0))
                     .unwrap_or(secs);
-                // The track position moved, so the fade window's countdown
-                // moves with it: a seek into the last seconds of a track
-                // opens the window, a seek back out of it closes it again.
-                self.pos_frames = (landed * self.device_rate as f64).round() as u64;
+                // The span's end is an absolute spot in the file, so what
+                // counts toward it is where the reader really is, not where
+                // the seek was aimed. A coarse landing shortens or lengthens
+                // the decode rather than moving the boundary.
+                self.src_frame = (landed * self.resampler.src_rate() as f64).round() as u64;
                 Some(landed)
             }
             Err(e) => {
@@ -2256,6 +2458,7 @@ mod tests {
             vec!["a".into(), "b".into(), "c".into()],
             vec![Some(7), Some(7), None],
             Vec::new(),
+            Vec::new(),
             true,
         );
         assert_eq!(at, Some(1));
@@ -2279,6 +2482,7 @@ mod tests {
             None,
             vec!["c0".into(), "c1".into()],
             vec![Some(9), Some(9)],
+            Vec::new(),
             Vec::new(),
             false,
         );
@@ -2314,6 +2518,7 @@ mod tests {
             vec!["c0".into(), "c1".into(), "c2".into(), "c3".into()],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             false,
         );
         let head: Vec<u64> = e.order[..=e.pos].iter().map(|en| en.id).collect();
@@ -2343,7 +2548,14 @@ mod tests {
         // Played through: the cursor sits on the last entry and the source
         // is gone, which is the ended state.
         e.pos = 1;
-        let at = e.insert(None, vec!["c0".into()], Vec::new(), Vec::new(), false);
+        let at = e.insert(
+            None,
+            vec!["c0".into()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
         assert_eq!(at, Some(2), "the first appended entry is what plays next");
         assert_eq!(e.order[at.unwrap()].idx, 2);
     }
@@ -2351,7 +2563,7 @@ mod tests {
     #[test]
     fn insert_pads_missing_groups_with_none() {
         let mut e = test_engine(1);
-        // Groups and gains vecs shorter than paths pad rather than panic.
+        // Group, gain, and span vecs shorter than paths pad rather than panic.
         e.insert(
             None,
             vec!["a".into(), "b".into()],
@@ -2360,6 +2572,10 @@ mod tests {
                 track_db: Some(-6.0),
                 ..gain::ReplayGain::default()
             }],
+            vec![Some(Span {
+                start_ms: 1_000,
+                end_ms: Some(3_000),
+            })],
             false,
         );
         let snap = e.shared.queue_snapshot();
@@ -2367,6 +2583,10 @@ mod tests {
         assert_eq!(snap.entries[2].group, None);
         assert_eq!(e.gains[1].track_db, Some(-6.0));
         assert_eq!(e.gains[2], gain::ReplayGain::default());
+        // A cue track's span rides in beside its gain, and the entry the
+        // caller said nothing about plays its whole file.
+        assert_eq!(e.spans[1].map(|s| s.start_ms), Some(1_000));
+        assert_eq!(e.spans[2], None);
     }
 
     /// Give pool entries their album groups, the way the player resolves
@@ -2562,7 +2782,7 @@ mod tests {
         let fx = Fixtures::new("short-track");
         let path = fx.wav("a.wav", 4.0);
         let mut e = engine_over(vec![path.clone()]);
-        let (src, _) = Source::open(&path, 48_000).expect("the fixture opens");
+        let (src, _) = Source::open(&path, 48_000, None).expect("the fixture opens");
         // A twelve second window five seconds in, which is where a five
         // second track would hit its own EOF.
         let mut fade = Fade::new(src, 12 * 48_000);
@@ -2581,7 +2801,7 @@ mod tests {
         let fx = Fixtures::new("drop-fade");
         let path = fx.wav("a.wav", 4.0);
         let mut e = engine_over(vec![path.clone()]);
-        let (src, _) = Source::open(&path, 48_000).expect("the fixture opens");
+        let (src, _) = Source::open(&path, 48_000, None).expect("the fixture opens");
         e.fade = Some(Fade::new(src, 96_000));
         e.publish_fade(0, 96_000, false);
 
@@ -2692,6 +2912,189 @@ mod tests {
 
         assert!(e.skip_to(None, 1, false).is_some());
         assert!(e.shared.flush_seq.load(Ordering::Acquire) > seq, "cut");
+    }
+
+    /// A cue span, written the way a sheet gives one: milliseconds in, an
+    /// open end for the last track of an image.
+    fn span(start_ms: u32, end_ms: Option<u32>) -> Span {
+        Span { start_ms, end_ms }
+    }
+
+    /// Drain a source start to finish the way the run loop does, and hand
+    /// back the interleaved stereo it produced. The fixtures are 48 kHz and
+    /// so is the device rate here, so the resampler is a passthrough and the
+    /// samples come back bit for bit.
+    fn decode_all(path: &PathBuf, span: Option<Span>) -> Vec<f32> {
+        let (mut src, _) = Source::open(path, 48_000, span).expect("the fixture opens");
+        let mut out = Vec::new();
+        let mut chunk = Vec::new();
+        loop {
+            chunk.clear();
+            let more = src.next_chunk(48_000, &mut chunk);
+            out.extend_from_slice(&chunk);
+            if !more {
+                break;
+            }
+        }
+        out
+    }
+
+    /// A spanned source is the slice, not the file: it reports the slice's
+    /// length, sits at its own 0:00 before anything decodes, and the first
+    /// sample out of it is the one a second into the image.
+    #[test]
+    fn a_span_opens_at_its_start_and_reports_its_own_length() {
+        let fx = Fixtures::new("span-open");
+        let path = fx.wav("image.wav", 4.0);
+        let (src, info) =
+            Source::open(&path, 48_000, Some(span(1_000, Some(3_000)))).expect("the image opens");
+
+        assert_eq!(info.duration_secs, Some(2.0), "the span's length, not 4s");
+        assert_eq!(info.num_frames, Some(96_000));
+        assert_eq!(src.total_frames, Some(96_000));
+        assert_eq!(src.pos_frames, 0, "the clock starts at the span's own 0:00");
+        drop(src);
+
+        // And the audio really is the middle of the image rather than its
+        // head: one second in for two seconds, sample for sample.
+        let whole = decode_all(&path, None);
+        let spanned = decode_all(&path, Some(span(1_000, Some(3_000))));
+        assert_eq!(spanned, whole[48_000 * 2..144_000 * 2]);
+    }
+
+    /// The span's end is the track's end, cut on the frame the sheet named
+    /// rather than wherever the packet carrying it happened to finish.
+    #[test]
+    fn a_span_ends_on_its_boundary_frame() {
+        let fx = Fixtures::new("span-boundary");
+        let path = fx.wav("image.wav", 4.0);
+        // A boundary that lands mid-packet whatever the block size: 1234 ms
+        // is 59_232 frames, which is no round number of anything.
+        let spanned = decode_all(&path, Some(span(0, Some(1_234))));
+        assert_eq!(spanned.len() / 2, 59_232, "cut on the exact frame");
+
+        // And it's the head of the file, unaltered up to that frame.
+        let whole = decode_all(&path, None);
+        assert_eq!(spanned, whole[..59_232 * 2]);
+    }
+
+    /// The whole point of the exercise: two cue tracks of one image, played
+    /// back to back, are the image. Nothing dropped at the seam, nothing
+    /// played twice, and the frame counts add up to the region they cover.
+    #[test]
+    fn two_spans_of_one_image_cover_it_end_to_end() {
+        let fx = Fixtures::new("span-adjacent");
+        let path = fx.wav("image.wav", 4.0);
+        let first = decode_all(&path, Some(span(0, Some(2_000))));
+        let second = decode_all(&path, Some(span(2_000, Some(4_000))));
+        assert_eq!(first.len() / 2, 96_000);
+        assert_eq!(second.len() / 2, 96_000);
+
+        let mut spliced = first;
+        spliced.extend_from_slice(&second);
+        let whole = decode_all(&path, None);
+        assert_eq!(spliced.len() / 2, 192_000, "the two spans are the image");
+        assert_eq!(spliced, whole);
+    }
+
+    /// Seeking a cue track is seeking the track: the seconds going in and
+    /// the seconds coming back are both measured from the span's own start,
+    /// so the seek strip and the position clock need no arithmetic of their
+    /// own. Past the end it clamps to the span rather than scrubbing into
+    /// the next track, which is the same file a few seconds along.
+    #[test]
+    fn seeking_inside_a_span_stays_inside_it_and_reads_track_relative() {
+        let fx = Fixtures::new("span-seek");
+        let path = fx.wav("image.wav", 4.0);
+        let (mut src, _) =
+            Source::open(&path, 48_000, Some(span(1_000, Some(3_000)))).expect("the image opens");
+
+        // A container answers a seek with the packet holding the timestamp,
+        // so the landing is a few milliseconds coarse. What matters is which
+        // clock it's on: half a second, not the second and a half into the
+        // image that spot really is.
+        let landed = src.seek(0.5).expect("the wav seeks");
+        assert!(
+            (landed - 0.5).abs() < 0.05,
+            "landed at {landed}, which is not half a second into the track"
+        );
+        assert_eq!(src.pos_frames, (landed * 48_000.0).round() as u64);
+        assert!(src.pos_frames > 0 && src.pos_frames < 96_000);
+
+        // Well past the span's end: it clamps into this track rather than
+        // scrubbing on into the next one, which is the same file a few
+        // seconds along.
+        let landed = src.seek(30.0).expect("the wav seeks");
+        assert!(landed <= 2.0, "landed at {landed}, past the span's end");
+        assert!(2.0 - landed < 0.05, "and not short of it either");
+        let left = src.remaining().expect("the span states its length");
+        // From there the track has exactly its own tail left: the end is a
+        // spot in the file, so a coarse landing shortens the decode instead
+        // of moving the boundary.
+        let mut decoded = 0u64;
+        let mut chunk = Vec::new();
+        loop {
+            chunk.clear();
+            let more = src.next_chunk(48_000, &mut chunk);
+            decoded += (chunk.len() / 2) as u64;
+            if !more {
+                break;
+            }
+        }
+        assert_eq!(decoded, left);
+    }
+
+    /// The last track of an image has no end in the sheet, so it takes the
+    /// file's: everything from its start to natural EOF, and the length it
+    /// reports is the file's minus that start.
+    #[test]
+    fn an_open_ended_span_runs_to_the_files_end() {
+        let fx = Fixtures::new("span-open-end");
+        let path = fx.wav("image.wav", 4.0);
+        let (src, info) = Source::open(&path, 48_000, Some(span(3_000, None))).expect("it opens");
+        assert_eq!(info.duration_secs, Some(1.0));
+        assert_eq!(info.num_frames, Some(48_000));
+        assert_eq!(src.total_frames, Some(48_000));
+        drop(src);
+
+        let tail = decode_all(&path, Some(span(3_000, None)));
+        let whole = decode_all(&path, None);
+        assert_eq!(tail.len() / 2, 48_000);
+        assert_eq!(tail, whole[144_000 * 2..]);
+    }
+
+    /// The pool carries the span the same way it carries the group and the
+    /// gain, so the source the engine opens for an entry is that entry's
+    /// slice. One image, two entries, two different tracks.
+    #[test]
+    fn the_pool_opens_each_entry_at_its_own_span() {
+        let fx = Fixtures::new("span-pool");
+        let path = fx.wav("image.wav", 4.0);
+        let shared = Arc::new(Shared::new(2));
+        let (producer, _consumer) = rtrb::RingBuffer::<f32>::new(16);
+        let (_tx, rx) = mpsc::channel::<Cmd>();
+        let mut e = Engine::new(
+            StartQueue {
+                paths: vec![path.clone(), path],
+                spans: vec![Some(span(0, Some(1_000))), Some(span(1_000, None))],
+                ..StartQueue::default()
+            },
+            shared,
+            producer,
+            48_000,
+            rx,
+        );
+
+        let first = e.open_at(0).expect("the image opens");
+        assert_eq!(first.total_frames, Some(48_000));
+        drop(first);
+        let second = e.open_at(1).expect("the image opens again");
+        assert_eq!(second.total_frames, Some(144_000));
+        // Each entry publishes its own length, which is what the transport
+        // and the fade window read off.
+        let tracks = e.shared.tracks.lock().unwrap();
+        assert_eq!(tracks[0].as_ref().and_then(|t| t.duration_secs), Some(1.0));
+        assert_eq!(tracks[1].as_ref().and_then(|t| t.duration_secs), Some(3.0));
     }
 
     #[test]

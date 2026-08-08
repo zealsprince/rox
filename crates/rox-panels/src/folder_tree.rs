@@ -12,7 +12,7 @@
 //! with no matching songs drop out.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{PathBuf, MAIN_SEPARATOR};
+use std::path::MAIN_SEPARATOR;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -28,6 +28,7 @@ use gpui_component::{Icon, Side};
 use rox_core::fmt::fmt_ms;
 use rox_core::QUEUE_CAP;
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use rox_library::folders::{build_roots, node_at, sum_counts, Node};
 use rox_library::projection::FilterField;
 use rox_library::sort::natural_cmp;
@@ -219,16 +220,16 @@ pub struct FolderTreePanel {
     menu_row: Option<usize>,
     /// The playing track's path and library id, the highlight's key, the
     /// history panel's follow.
-    playing_path: Option<PathBuf>,
+    playing_key: Option<TrackKey>,
     playing: Option<i64>,
     /// Per-track paths resolved for drag payloads, so a hover frame never
     /// repeats the store lookup. Cleared on a library update.
-    drag_paths: HashMap<i64, Option<PathBuf>>,
+    drag_keys: HashMap<i64, Option<TrackKey>>,
     /// Bumped whenever the selection or the visible order changes, keying the
     /// drag-set cache so a grab inside a big selection shares one Arc across
     /// every visible selected row instead of rebuilding the set per row.
     drag_gen: u64,
-    drag_set: Option<(u64, Arc<[PathBuf]>)>,
+    drag_set: Option<(u64, Arc<[TrackKey]>)>,
     /// The idle clock behind resume: a browse gesture arms it, its wake
     /// scrolls back to the playing track once the panel sits untouched.
     resume_idle: ResumeIdle,
@@ -310,9 +311,9 @@ impl FolderTreePanel {
             selected: HashSet::new(),
             anchor: None,
             menu_row: None,
-            playing_path: None,
+            playing_key: None,
             playing: None,
-            drag_paths: HashMap::new(),
+            drag_keys: HashMap::new(),
             drag_gen: 0,
             drag_set: None,
             resume_idle: ResumeIdle::default(),
@@ -350,7 +351,7 @@ impl FolderTreePanel {
             self.expanded = self.roots.iter().map(|r| r.path.clone()).collect();
             self.seeded = true;
         }
-        self.drag_paths.clear();
+        self.drag_keys.clear();
         self.recount(cx);
     }
 
@@ -524,9 +525,9 @@ impl FolderTreePanel {
             .into_iter()
             .map(|(row, id, title)| {
                 let label = self
-                    .path_for(id, cx)
-                    .as_deref()
-                    .and_then(|path| path.file_name())
+                    .key_for(id, cx)
+                    .as_ref()
+                    .and_then(|key| key.path.file_name())
                     .map(|name| SharedString::from(name.to_string_lossy().into_owned()))
                     .filter(|name| !name.is_empty())
                     .unwrap_or(title);
@@ -587,19 +588,19 @@ impl FolderTreePanel {
         cx.notify();
     }
 
-    /// Follow the player: on a track change, resolve the playing path to
+    /// Follow the player: on a track change, resolve the playing track to
     /// its id, the history panel's move. The highlight matches track rows
     /// by that id.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
-        let path = self.state.player.read(cx).now_playing().map(|now| now.path);
-        if path == self.playing_path {
+        let key = self.state.player.read(cx).now_playing().map(|now| now.key);
+        if key == self.playing_key {
             return;
         }
-        self.playing_path = path;
+        self.playing_key = key;
         self.playing = self
-            .playing_path
+            .playing_key
             .as_ref()
-            .and_then(|path| self.state.library.read(cx).id_for(path));
+            .and_then(|key| self.state.library.read(cx).id_for_key(key));
         // Reveal and chase the new track when the follow is on; the move
         // notifies on its own.
         if self.config.follow_playing {
@@ -831,19 +832,19 @@ impl FolderTreePanel {
 
     /// The cached file path for a track id, resolved once through the store
     /// and shared by the drag payloads and the cover thumbnails.
-    fn path_for(&mut self, id: i64, cx: &App) -> Option<PathBuf> {
-        match self.drag_paths.get(&id) {
-            Some(path) => path.clone(),
+    fn key_for(&mut self, id: i64, cx: &App) -> Option<TrackKey> {
+        match self.drag_keys.get(&id) {
+            Some(key) => key.clone(),
             None => {
-                let path = self
+                let key = self
                     .state
                     .library
                     .read(cx)
-                    .paths_for(&[id])
+                    .keys_for(&[id])
                     .ok()
-                    .and_then(|mut paths| paths.pop());
-                self.drag_paths.insert(id, path.clone());
-                path
+                    .and_then(|mut keys| keys.pop());
+                self.drag_keys.insert(id, key.clone());
+                key
             }
         }
     }
@@ -859,8 +860,8 @@ impl FolderTreePanel {
             .read(cx)
             .projection()
             .map(|p| p.db_id[row as usize])?;
-        let path = self.path_for(id, cx)?;
-        track_columns::cover_thumb(&self.state, Some(path.as_path()), true, cx)
+        let key = self.key_for(id, cx)?;
+        track_columns::cover_thumb(&self.state, Some(key.path.as_path()), true, cx)
     }
 
     /// Queue a set of projection rows on the shared player with the cursor
@@ -873,38 +874,38 @@ impl FolderTreePanel {
             .min(rows.len().saturating_sub(QUEUE_CAP));
         let hi = (lo + QUEUE_CAP).min(rows.len());
         let rows = &rows[lo..hi];
-        let paths = {
+        let keys = {
             let library = self.state.library.read(cx);
             let Some(projection) = library.projection() else {
                 return;
             };
             let ids: Vec<i64> = rows.iter().map(|&r| projection.db_id[r as usize]).collect();
-            let Ok(paths) = library.paths_for(&ids) else {
+            let Ok(keys) = library.keys_for(&ids) else {
                 return;
             };
-            paths
+            keys
         };
-        if paths.is_empty() {
+        if keys.is_empty() {
             return;
         }
         self.state
             .player
-            .update(cx, |player, cx| player.play_at(paths, start - lo, cx));
+            .update(cx, |player, cx| player.play_at(keys, start - lo, cx));
     }
 
     /// Queue an explicit set of library ids from the front, the multi-select
     /// menu's play. Order is the caller's (view order for a selection).
     fn play_ids(&mut self, ids: &[i64], cx: &mut Context<Self>) {
         let capped = &ids[..ids.len().min(QUEUE_CAP)];
-        let Ok(paths) = self.state.library.read(cx).paths_for(capped) else {
+        let Ok(keys) = self.state.library.read(cx).keys_for(capped) else {
             return;
         };
-        if paths.is_empty() {
+        if keys.is_empty() {
             return;
         }
         self.state
             .player
-            .update(cx, |player, cx| player.play_at(paths, 0, cx));
+            .update(cx, |player, cx| player.play_at(keys, 0, cx));
     }
 
     /// Play a folder's subtree from the top; the double click's and the
@@ -927,14 +928,14 @@ impl FolderTreePanel {
 
     /// A song row's drag payload: the whole selection in view order when the
     /// dragged row is part of a multi-selection, otherwise just this row.
-    /// Paths resolve through the shared cache, the library table's route
+    /// Keys resolve through the shared cache, the library table's route
     /// into the play-drag story.
     fn song_drag(&mut self, ix: usize, title: &SharedString, cx: &App) -> Option<PlayDrag> {
         let id = self.song_id_at(ix)?;
         // A grab inside a multi-selection carries the whole set in visible order,
         // built once per selection or reflow and shared behind an Arc so it's a
         // refcount bump per row, not a rebuild. Outside it, just this song.
-        let paths: Arc<[PathBuf]> = if self.selected.len() > 1 && self.selected.contains(&id) {
+        let keys: Arc<[TrackKey]> = if self.selected.len() > 1 && self.selected.contains(&id) {
             if self.drag_set.as_ref().map(|(gen, _)| *gen) != Some(self.drag_gen) {
                 let ids: Vec<i64> = self
                     .visible
@@ -944,19 +945,19 @@ impl FolderTreePanel {
                         _ => None,
                     })
                     .collect();
-                let set: Arc<[PathBuf]> =
-                    ids.iter().filter_map(|&id| self.path_for(id, cx)).collect();
+                let set: Arc<[TrackKey]> =
+                    ids.iter().filter_map(|&id| self.key_for(id, cx)).collect();
                 self.drag_set = Some((self.drag_gen, set));
             }
             self.drag_set.as_ref().map(|(_, set)| set.clone())?
         } else {
-            self.path_for(id, cx).into_iter().collect()
+            self.key_for(id, cx).into_iter().collect()
         };
-        if paths.is_empty() {
+        if keys.is_empty() {
             return None;
         }
         Some(PlayDrag {
-            paths,
+            keys,
             title: title.clone(),
         })
     }

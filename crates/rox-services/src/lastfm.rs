@@ -20,11 +20,11 @@
 //! pushes: nothing here reads Last.fm's loved list back.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{Context, Entity, EventEmitter, SharedString, Subscription};
 
+use rox_library::cue::TrackKey;
 use rox_library::store::TrackMeta;
 
 use rox_core::settings::{Lastfm, Settings};
@@ -55,7 +55,18 @@ const LISTEN_CAP_SECS: f64 = 240.0;
 /// History records it always; the scrobble follows its own threshold
 /// while armed.
 pub struct Listened {
-    pub path: PathBuf,
+    /// Which track played: path and subsong both, since a path alone can't
+    /// name one track of a cue rip.
+    pub key: TrackKey,
+    /// The library row the watch resolved to, None for a file the library
+    /// doesn't hold. Carried rather than looked up again by the recorder,
+    /// which would only have the path to ask with.
+    pub track_id: Option<i64>,
+    /// The tag snapshot the event row keeps, off that same lookup.
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub genre: String,
     /// When the play began, unix seconds.
     pub started: u64,
 }
@@ -82,7 +93,11 @@ const LOVE_BACKOFF: [Duration; 3] = [
 /// The playing track under watch: its identity, tags, and how much of it
 /// has actually sounded so far.
 struct Watch {
-    path: PathBuf,
+    key: TrackKey,
+    /// The library row behind the key, None for a file it doesn't know.
+    /// Resolved once with the tags below, since both come out of the same
+    /// (path, sub) lookup.
+    id: Option<i64>,
     /// The library's tags, or None for a file it doesn't know; Last.fm
     /// needs at least an artist and a title, so untagged tracks watch
     /// silently.
@@ -682,10 +697,10 @@ impl Scrobbler {
         let changed = self
             .watch
             .as_ref()
-            .map(|watch| watch.path != now.path)
+            .map(|watch| watch.key != now.key)
             .unwrap_or(true);
         if changed {
-            self.begin_watch(now.path.clone(), now.duration_secs, now.position_secs, cx);
+            self.begin_watch(now.key.clone(), now.duration_secs, now.position_secs, cx);
         } else {
             let watch = self.watch.as_mut().expect("watch exists when unchanged");
             if now.duration_secs.is_some() {
@@ -699,7 +714,7 @@ impl Scrobbler {
             } else if delta < -5.0 && watch.listened && now.position_secs < 5.0 {
                 // Back to the top after a counted listen - a loop restart
                 // or a deliberate replay - counts as a fresh play.
-                self.begin_watch(now.path.clone(), now.duration_secs, now.position_secs, cx);
+                self.begin_watch(now.key.clone(), now.duration_secs, now.position_secs, cx);
                 return;
             }
             watch.last_pos = now.position_secs;
@@ -729,7 +744,28 @@ impl Scrobbler {
             if listens && !watch.listened {
                 watch.listened = true;
                 cx.emit(Listened {
-                    path: watch.path.clone(),
+                    key: watch.key.clone(),
+                    track_id: watch.id,
+                    title: watch
+                        .meta
+                        .as_ref()
+                        .map(|m| m.title.clone())
+                        .unwrap_or_default(),
+                    artist: watch
+                        .meta
+                        .as_ref()
+                        .map(|m| m.artist.clone())
+                        .unwrap_or_default(),
+                    album: watch
+                        .meta
+                        .as_ref()
+                        .map(|m| m.album.clone())
+                        .unwrap_or_default(),
+                    genre: watch
+                        .meta
+                        .as_ref()
+                        .map(|m| m.genre.clone())
+                        .unwrap_or_default(),
                     started: watch.started,
                 });
             }
@@ -790,14 +826,19 @@ impl Scrobbler {
     /// mid-way still has to play its share.
     fn begin_watch(
         &mut self,
-        path: PathBuf,
+        key: TrackKey,
         duration: Option<f64>,
         position: f64,
         cx: &mut Context<Self>,
     ) {
-        let meta = self.library.read(cx).meta_for(&path);
+        let resolved = self.library.read(cx).resolve_key(&key);
+        let (id, meta) = match resolved {
+            Some((id, meta)) => (Some(id), Some(meta)),
+            None => (None, None),
+        };
         self.watch = Some(Watch {
-            path,
+            key,
+            id,
             meta,
             duration,
             // Zero until the tick that first sees audio moving stamps it,
@@ -864,7 +905,8 @@ mod tests {
 
     fn watch(duration: f64, played: f64, pos: f64) -> Watch {
         Watch {
-            path: PathBuf::from("/music/track.flac"),
+            key: TrackKey::from(std::path::PathBuf::from("/music/track.flac")),
+            id: None,
             meta: None,
             duration: Some(duration),
             started: 0,

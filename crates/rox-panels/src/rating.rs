@@ -5,14 +5,13 @@
 //! click writes through the same catalog call the library table's rating
 //! column makes, so a star set here shows everywhere else.
 
-use std::path::PathBuf;
-
 use gpui::{
     div, prelude::*, px, AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable,
     Pixels, SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
@@ -44,7 +43,7 @@ pub struct RatingConfig {
 /// know), and the rating the id holds. Cached so the pump's per-frame
 /// notifies never turn into database lookups.
 struct Tracked {
-    path: PathBuf,
+    key: TrackKey,
     id: Option<i64>,
     rating: u8,
 }
@@ -103,21 +102,21 @@ impl RatingPanel {
         }
     }
 
-    /// The shown track's id and rating, resolving and caching on a path
+    /// The shown track's id and rating, resolving and caching on a track
     /// change. Both None-ish while the source points at nothing, or at a
     /// file the library does not carry.
     fn current(&mut self, cx: &App) -> (Option<i64>, u8) {
-        let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
+        let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
             self.track = None;
             return (None, 0);
         };
-        if self.track.as_ref().map(|t| &t.path) != Some(&path) {
+        if self.track.as_ref().map(|t| &t.key) != Some(&key) {
             let library = self.state.library.read(cx);
-            let id = library.id_for(&path);
+            let id = library.id_for_key(&key);
             let rating = id
                 .and_then(|id| library.ratings_for(&[id]).get(&id).copied())
                 .unwrap_or(0);
-            self.track = Some(Tracked { path, id, rating });
+            self.track = Some(Tracked { key, id, rating });
         }
         self.track.as_ref().map_or((None, 0), |t| (t.id, t.rating))
     }

@@ -411,6 +411,35 @@ pub fn commit_with(path: &Path, changes: &[Change], pictures: &[PicChange]) -> R
     result
 }
 
+/// Whether a track's tags can go into its file at all. A cue track is a span
+/// inside an image every other track of the disc shares, so there is nowhere
+/// on disk that means "track 4 of this rip": writing a title would title the
+/// whole image, and writing a rating would rate all twelve songs. Only sub 0,
+/// a file that is its own track, is writable.
+///
+/// Editing the sheet itself would be the honest way to change a cue track's
+/// tags, and rox does not do that yet. Until it does, these edits live in the
+/// library alone.
+pub fn writes_to_file(sub: u16) -> bool {
+    sub == 0
+}
+
+/// [`commit_with`] for a caller holding a subsong key. A cue track's changes
+/// never reach the disk: the file write is skipped and Ok comes back, so a
+/// rating click or a field edit lands in the library's own row instead of
+/// stamping every track of the image. A plain file (sub 0) commits normally.
+pub fn commit_key(
+    path: &Path,
+    sub: u16,
+    changes: &[Change],
+    pictures: &[PicChange],
+) -> Result<(), String> {
+    if !writes_to_file(sub) {
+        return Ok(());
+    }
+    commit_with(path, changes, pictures)
+}
+
 /// Commit every edit, isolated per file: one malformed file costs its own
 /// entry, never the batch. Results come back in edit order.
 pub fn commit_batch(edits: &[Edit]) -> Vec<(PathBuf, Result<(), String>)> {

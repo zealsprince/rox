@@ -563,7 +563,7 @@ impl PlaylistsPanel {
         t.passes(terms, &self.applied_filter, crate::settings::fold_case())
     }
 
-    /// Follow the player: resolve the playing path to its track id, so every
+    /// Follow the player: resolve the playing track to its id, so every
     /// row of that track across playlists carries the highlight.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
         let playing = self
@@ -571,7 +571,7 @@ impl PlaylistsPanel {
             .player
             .read(cx)
             .now_playing()
-            .and_then(|now| self.state.library.read(cx).id_for(&now.path));
+            .and_then(|now| self.state.library.read(cx).id_for_key(&now.key));
         if playing != self.playing {
             self.playing = playing;
             cx.notify();
@@ -638,19 +638,19 @@ impl PlaylistsPanel {
     /// Start the playlist playing, from `start_track` when given (a double
     /// click on a row), from the top otherwise (the header's Play).
     fn play(&self, playlist_id: i64, start_track: Option<i64>, cx: &mut Context<Self>) {
-        let (paths, start, ids) = {
+        let (keys, start, ids) = {
             let library = self.state.library.read(cx);
             let ids = library.playlist_ids(playlist_id);
             let start = start_track
                 .and_then(|t| ids.iter().position(|&x| x == t))
                 .unwrap_or(0);
-            (library.paths_for(&ids).unwrap_or_default(), start, ids)
+            (library.keys_for(&ids).unwrap_or_default(), start, ids)
         };
-        if paths.is_empty() {
+        if keys.is_empty() {
             return;
         }
         self.state.player.update(cx, |player, cx| {
-            player.play_at(paths, start, cx);
+            player.play_at(keys, start, cx);
             // After the play, never before: starting a session clears the
             // scope back to the library at large. The playlist in its own
             // order is what continuation carries on down (ADR 17), and what

@@ -1936,6 +1936,11 @@ impl WorkspaceBundle {
 #[serde(default)]
 pub struct LastTrack {
     pub id: i64,
+    /// Which subsong of its file the track was: 0 for a plain file, the cue
+    /// sheet's track number for a span of an image. Defaulted, so a file
+    /// written before cue support reads as a plain file, which is what every
+    /// track in it was.
+    pub sub: u16,
     pub position_secs: f64,
 }
 
@@ -1962,6 +1967,14 @@ pub struct QueueState {
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct QueuedTrack {
     pub id: i64,
+    /// Which subsong of its file the entry is, 0 for a plain file. Carried
+    /// beside the id rather than left to be re-derived: the restore resolves
+    /// the id to a path before the projection is necessarily up, and without
+    /// this a whole-disc rip would come back as twelve copies of the image.
+    /// Defaulted per field, since the struct itself isn't, so a session file
+    /// written before cue support still reads instead of costing the queue.
+    #[serde(default)]
+    pub sub: u16,
     pub explicit: bool,
 }
 
@@ -2954,6 +2967,71 @@ mod tests {
         assert!(session.loop_mode() == LoopMode::All);
         assert!(session.shuffle);
         assert_eq!(session.last_scan, 12345);
+    }
+
+    /// The saved queue carries each entry's subsong, so a whole-disc rip comes
+    /// back as its own tracks instead of the image over and over. A file
+    /// written before cue support carries no `sub` at all and has to keep
+    /// reading, as every track in it was a plain file.
+    #[test]
+    fn a_saved_queue_round_trips_its_subs() {
+        let state = SessionState {
+            last_track: Some(LastTrack {
+                id: 7,
+                sub: 3,
+                position_secs: 12.5,
+            }),
+            last_queue: Some(QueueState {
+                entries: vec![
+                    QueuedTrack {
+                        id: 7,
+                        sub: 3,
+                        explicit: false,
+                    },
+                    QueuedTrack {
+                        id: 8,
+                        sub: 4,
+                        explicit: true,
+                    },
+                    QueuedTrack {
+                        id: 9,
+                        sub: 0,
+                        explicit: false,
+                    },
+                ],
+                cursor: 1,
+                position_secs: 12.5,
+            }),
+            ..SessionState::default()
+        };
+        let text = serde_json::to_string(&state).unwrap();
+        let back: SessionState = serde_json::from_str(&text).unwrap();
+        let queue = back.last_queue.expect("the queue survives the round trip");
+        let subs: Vec<u16> = queue.entries.iter().map(|e| e.sub).collect();
+        assert_eq!(subs, [3, 4, 0]);
+        assert_eq!(queue.cursor, 1);
+        assert!(queue.entries[1].explicit);
+        let last = back.last_track.expect("the single-track fallback too");
+        assert_eq!((last.id, last.sub), (7, 3));
+
+        // An older file: no `sub` anywhere, on either shape.
+        let json = serde_json::json!({
+            "last_track": { "id": 7, "position_secs": 12.5 },
+            "last_queue": {
+                "entries": [{ "id": 7, "explicit": false }, { "id": 8, "explicit": true }],
+                "cursor": 1,
+            },
+        });
+        let old: SessionState = serde_json::from_value(json).unwrap();
+        let queue = old
+            .last_queue
+            .expect("an entry without a sub still reads, so the queue survives");
+        assert_eq!(queue.entries.len(), 2);
+        assert!(
+            queue.entries.iter().all(|e| e.sub == 0),
+            "a missing sub reads as a plain file"
+        );
+        assert_eq!(old.last_track.map(|t| t.sub), Some(0));
     }
 
     /// A shuffle mode this build has never heard of reads as Random and takes

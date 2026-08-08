@@ -10,8 +10,8 @@
 //! shader it exists to undo.
 
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, EntityId, Global, SharedString, Task,
-    WeakEntity, Window, WindowHandle,
+    div, prelude::*, px, size, App, Bounds, Context, EntityId, Global, Task, WeakEntity, Window,
+    WindowHandle,
 };
 use gpui_component::Root;
 
@@ -19,7 +19,7 @@ use rox_core::settings::{PostShaderConfig, Settings};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel;
-use rox_panel_kit::ui::small_button;
+use rox_panel_kit::ui::{chord, kbd_line, small_button, Seg};
 
 /// How long the shader stays on trial before it reverts on its own.
 const COUNTDOWN_SECS: u32 = 12;
@@ -166,11 +166,6 @@ impl Render for ShaderConfirm {
         let player = self.player;
         palette::note_focus(player, window.is_window_active(), cx);
         let remaining = self.remaining;
-        let hotkey = if cfg!(target_os = "macos") {
-            "Cmd+Shift+X"
-        } else {
-            "Ctrl+Shift+X"
-        };
         panel::window_body(player, || {
             div()
                 .flex()
@@ -186,14 +181,18 @@ impl Render for ShaderConfirm {
                 })
                 .child("Keep this screen shader?")
                 .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_muted())
-                        .child(SharedString::from(format!(
-                            "A shader can make windows hard to use. Without a Keep, \
-                             everything reverts in {remaining}s. {hotkey} toggles the \
-                             shader from anywhere.",
-                        ))),
+                    kbd_line([
+                        Seg::Text(
+                            format!(
+                                "A shader can make windows hard to use. Without a Keep, \
+                                 everything reverts in {remaining}s."
+                            )
+                            .into(),
+                        ),
+                        Seg::Key(chord("Shift+X")),
+                        Seg::Text("toggles the shader from anywhere.".into()),
+                    ])
+                    .text_xs(),
                 )
                 .child(div().flex_1())
                 .child(

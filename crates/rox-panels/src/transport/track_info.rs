@@ -1,7 +1,6 @@
 //! The track info readout panel: one line with the playing track's tags,
 //! with the optional marquee crawl and piece swap for tight panels.
 
-use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use gpui::{
@@ -11,6 +10,7 @@ use gpui::{
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use serde::{Deserialize, Serialize};
 
 use rox_library::store::TrackMeta;
@@ -178,8 +178,8 @@ struct MarqueeScroll {
     delay: f32,
     /// The last frame's clock, for the per-frame step.
     last_tick: Instant,
-    /// The path the crawl belongs to; a track change starts over.
-    path: Option<PathBuf>,
+    /// The track the crawl belongs to; a track change starts over.
+    key: Option<TrackKey>,
     /// Loop mode's verdict off the last layout: whether one copy alone
     /// overflows, so the line renders doubled and wraps.
     looping: bool,
@@ -208,7 +208,7 @@ impl MarqueeScroll {
             hold: default_marquee_delay(),
             delay: default_marquee_delay(),
             last_tick: Instant::now(),
-            path: None,
+            key: None,
             looping: false,
             swap_ix: 0,
             swap_at: Instant::now(),
@@ -291,7 +291,7 @@ pub struct TrackInfoPanel {
     /// The playing path's tags, or None for a file the library does not
     /// know. Cached because the pump notifies every frame and the lookup is
     /// a database query; cleared when the track or the catalog changes.
-    meta: Option<(PathBuf, Option<TrackMeta>)>,
+    meta: Option<(TrackKey, Option<TrackMeta>)>,
     /// The marquee's crawl, live only while the setting is on and the
     /// line overflows.
     marquee: MarqueeScroll,
@@ -423,11 +423,13 @@ impl TrackInfoPanel {
         cx.notify();
     }
 
-    /// The playing path's tags, from the cache or one lookup on a miss.
-    fn meta_for(&mut self, path: &Path, cx: &App) -> Option<&TrackMeta> {
-        if self.meta.as_ref().map(|(p, _)| p.as_path()) != Some(path) {
-            let meta = self.state.library.read(cx).meta_for(path);
-            self.meta = Some((path.to_path_buf(), meta));
+    /// The playing track's tags, from the cache or one lookup on a miss.
+    /// Keyed on the whole track, so two cue tracks of one image don't both
+    /// draw whichever of them the library sorts first.
+    fn meta_for(&mut self, key: &TrackKey, cx: &App) -> Option<&TrackMeta> {
+        if self.meta.as_ref().map(|(k, _)| k) != Some(key) {
+            let meta = self.state.library.read(cx).meta_for_key(key);
+            self.meta = Some((key.clone(), meta));
         }
         self.meta.as_ref().and_then(|(_, meta)| meta.as_ref())
     }
@@ -768,12 +770,12 @@ impl TrackInfoPanel {
 
         // An untagged file still shows something: its file name for the
         // title, no byline.
-        let meta = self.meta_for(&now.path, cx);
+        let meta = self.meta_for(&now.key, cx);
         let title = meta.map(|m| m.title.clone()).unwrap_or_else(|| {
-            now.path
+            now.path()
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| now.path.display().to_string())
+                .unwrap_or_else(|| now.path().display().to_string())
         });
         let mut heading = String::new();
         if let Some(no) = meta.map(|m| m.track_no).filter(|no| *no > 0) {
@@ -800,8 +802,8 @@ impl TrackInfoPanel {
 
         // A fresh track starts every cycle over: crawl home, swap back
         // to the heading.
-        if self.marquee.path.as_deref() != Some(now.path.as_path()) {
-            self.marquee.path = Some(now.path.clone());
+        if self.marquee.key.as_ref() != Some(&now.key) {
+            self.marquee.key = Some(now.key.clone());
             self.marquee.reset();
         }
 

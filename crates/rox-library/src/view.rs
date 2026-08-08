@@ -286,6 +286,8 @@ mod tests {
         bit_depth: u8,
     ) -> TrackRow {
         TrackRow {
+            sub: 0,
+            cue: None,
             path: path.into(),
             title: path.into(),
             artist: album_artist.into(),

@@ -8,6 +8,7 @@ use std::path::Path;
 use gpui::{App, Entity};
 
 use rox_core::settings::{lyrics_dir, LyricsSave, Settings};
+use rox_library::cue::TrackKey;
 use rox_library::lyrics::{self, Source};
 use rox_net::providers::TrackQuery;
 
@@ -16,13 +17,14 @@ use crate::catalog::Library;
 /// The provider query for a track: its tags off the catalog, and its
 /// duration off the projection so the score doesn't depend on the track
 /// being the one playing.
-pub fn query_for(library: &Entity<Library>, path: &Path, cx: &App) -> TrackQuery {
+pub fn query_for(library: &Entity<Library>, key: &TrackKey, cx: &App) -> TrackQuery {
     let catalog = library.read(cx);
-    let meta = catalog.meta_for(path);
-    let duration_ms = catalog
-        .id_for(path)
-        .and_then(|id| duration_ms_for(library, id, cx))
+    let resolved = catalog.resolve_key(key);
+    let duration_ms = resolved
+        .as_ref()
+        .and_then(|(id, _)| duration_ms_for(library, *id, cx))
         .unwrap_or(0);
+    let meta = resolved.map(|(_, meta)| meta);
     let (artist, title, album) = meta
         .map(|m| (m.artist, m.title, m.album))
         .unwrap_or_default();

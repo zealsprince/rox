@@ -134,6 +134,58 @@ pub fn header(label: &'static str) -> Div {
         .child(label)
 }
 
+/// The platform's primary modifier as the shortcut labels show it.
+pub fn chord(key: &str) -> SharedString {
+    if cfg!(target_os = "macos") {
+        format!("Cmd+{key}")
+    } else {
+        format!("Ctrl+{key}")
+    }
+    .into()
+}
+
+/// One piece of a [`kbd_line`]: plain copy or a key chip.
+pub enum Seg {
+    Text(SharedString),
+    Key(SharedString),
+}
+
+/// A keycap chip, sized to ride inline with the body copy.
+pub fn kbd(label: SharedString) -> Div {
+    div()
+        .flex_none()
+        .px(px(5.))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(palette::border())
+        .bg(palette::bg_control())
+        .text_xs()
+        .text_color(palette::text())
+        .child(label)
+}
+
+/// A body line that mixes copy with keycap chips. The text splits into
+/// words so the row wraps like prose, the chips flowing along with it.
+pub fn kbd_line(segs: impl IntoIterator<Item = Seg>) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap_x(px(4.))
+        .gap_y(px(4.))
+        .text_color(palette::text_muted())
+        .children(segs.into_iter().flat_map(|seg| {
+            match seg {
+                Seg::Text(text) => text
+                    .split_whitespace()
+                    .map(|word| div().child(word.to_string()))
+                    .collect(),
+                Seg::Key(label) => vec![kbd(label)],
+            }
+        }))
+}
+
 /// A titled section of a page: the name over a hairline, an optional
 /// control riding the header's right edge, the rows under it.
 pub fn section(label: &'static str, trailing: Option<AnyElement>, body: impl IntoElement) -> Div {

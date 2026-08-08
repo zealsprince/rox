@@ -13,6 +13,7 @@ use gpui::{
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::Icon;
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use serde::{Deserialize, Serialize};
 
 use rox_design::assets::icons;
@@ -60,7 +61,7 @@ pub struct QueueWidgetPanel {
     /// The cheap change detector: the queue revision and the playing path, the
     /// two things that move the count.
     rev: Option<u64>,
-    playing_path: Option<std::path::PathBuf>,
+    playing_key: Option<TrackKey>,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
     _player_changed: Subscription,
@@ -74,7 +75,7 @@ impl QueueWidgetPanel {
             config,
             count: 0,
             rev: None,
-            playing_path: None,
+            playing_key: None,
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
@@ -87,12 +88,12 @@ impl QueueWidgetPanel {
     /// compare so a steady queue costs two reads per tick.
     fn sync(&mut self, cx: &mut Context<Self>) {
         let rev = self.state.player.read(cx).queue_rev();
-        let playing_path = self.state.player.read(cx).now_playing().map(|now| now.path);
-        if rev == self.rev && playing_path == self.playing_path {
+        let playing_key = self.state.player.read(cx).now_playing().map(|now| now.key);
+        if rev == self.rev && playing_key == self.playing_key {
             return;
         }
         self.rev = rev;
-        self.playing_path = playing_path;
+        self.playing_key = playing_key;
         self.count = self.state.player.read(cx).queued_count();
         cx.notify();
     }
@@ -125,20 +126,23 @@ impl QueueWidgetPanel {
     /// The tooltip's rows: the next titles with their artists, resolved
     /// fresh at hover.
     fn next_up(&self, cx: &App) -> Vec<(SharedString, SharedString)> {
-        let queued = self.state.player.read(cx).queued();
+        let player = self.state.player.read(cx);
+        let queued = player.queued();
         let library = self.state.library.read(cx);
         queued
             .iter()
             .take(TOOLTIP_ROWS)
             .map(|entry| {
-                let meta = library.meta_for(&entry.path);
+                // Through the pool mirror, so two cue tracks of one image
+                // list as themselves rather than the same title twice.
+                let key = player.key_for(entry);
+                let meta = library.meta_for_key(&key);
                 let title = meta
                     .as_ref()
                     .map(|meta| meta.title.clone())
                     .filter(|title| !title.is_empty())
                     .or_else(|| {
-                        entry
-                            .path
+                        key.path
                             .file_name()
                             .map(|name| name.to_string_lossy().into_owned())
                     })

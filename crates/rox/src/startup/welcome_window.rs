@@ -18,7 +18,7 @@ use rox_core::settings::app_font;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::{self, AppState};
-use rox_panel_kit::ui::{section, small_button, SECTION_GAP};
+use rox_panel_kit::ui::{chord, kbd_line, section, small_button, Seg, SECTION_GAP};
 use rox_services::backdrop::WindowBackdrop;
 
 /// The open welcome window, if any: opening again focuses it instead of
@@ -49,15 +49,6 @@ pub fn open(state: AppState, cx: &mut App) {
         move |_window, cx| cx.new(|cx| WelcomeWindow::new(state, cx)),
     );
     cx.set_global(OpenWelcome(handle));
-}
-
-/// The platform's primary modifier as the shortcut labels show it.
-fn chord(key: &str) -> String {
-    if cfg!(target_os = "macos") {
-        format!("Cmd+{key}")
-    } else {
-        format!("Ctrl+{key}")
-    }
 }
 
 struct WelcomeWindow {
@@ -117,48 +108,6 @@ impl WelcomeWindow {
 /// A section's body line, the pages' muted copy register.
 fn line(text: impl Into<SharedString>) -> Div {
     div().text_color(palette::text_muted()).child(text.into())
-}
-
-/// One piece of a [`kbd_line`]: plain copy or a key chip.
-enum Seg {
-    Text(&'static str),
-    Key(SharedString),
-}
-
-/// A keycap chip, sized to ride inline with the body copy.
-fn kbd(label: SharedString) -> Div {
-    div()
-        .flex_none()
-        .px(px(5.))
-        .rounded(px(4.))
-        .border_1()
-        .border_color(palette::border())
-        .bg(palette::bg_control())
-        .text_xs()
-        .text_color(palette::text())
-        .child(label)
-}
-
-/// A body line that mixes copy with keycap chips. The text splits into
-/// words so the row wraps like prose, the chips flowing along with it.
-fn kbd_line(segs: impl IntoIterator<Item = Seg>) -> Div {
-    div()
-        .flex()
-        .flex_row()
-        .flex_wrap()
-        .items_center()
-        .gap_x(px(4.))
-        .gap_y(px(4.))
-        .text_color(palette::text_muted())
-        .children(segs.into_iter().flat_map(|seg| {
-            match seg {
-                Seg::Text(text) => text
-                    .split_whitespace()
-                    .map(|word| div().child(word))
-                    .collect(),
-                Seg::Key(label) => vec![kbd(label)],
-            }
-        }))
 }
 
 /// One tile's preview pair: the asset path and aspect ratio per theme
@@ -356,17 +305,19 @@ impl Render for WelcomeWindow {
                         .child(kbd_line([
                             Seg::Text(
                                 "Every surface is a panel, and the menubar's Panels menu \
-                             opens more of them. If the menubar is hidden, hold",
+                             opens more of them. If the menubar is hidden, hold"
+                                    .into(),
                             ),
                             Seg::Key("Alt".into()),
-                            Seg::Text("to bring it back."),
+                            Seg::Text("to bring it back.".into()),
                         ]))
                         .child(kbd_line([
-                            Seg::Text("Drag a tab to rearrange, or hold middle mouse or"),
+                            Seg::Text("Drag a tab to rearrange, or hold middle mouse or".into()),
                             Seg::Key("Alt".into()),
                             Seg::Text(
                                 "+ left click anywhere in a panel. Drop one outside the \
-                             window and it becomes its own window.",
+                             window and it becomes its own window."
+                                    .into(),
                             ),
                         ])),
                 ))
@@ -374,27 +325,28 @@ impl Render for WelcomeWindow {
                     "Playback",
                     None,
                     kbd_line([
-                        Seg::Key(chord("P").into()),
-                        Seg::Text("opens quick play: type a track, hit"),
+                        Seg::Key(chord("P")),
+                        Seg::Text("opens quick play: type a track, hit".into()),
                         Seg::Key("Enter".into()),
-                        Seg::Text("and it plays."),
+                        Seg::Text("and it plays.".into()),
                         Seg::Key("Space".into()),
-                        Seg::Text("toggles playback;"),
+                        Seg::Text("toggles playback;".into()),
                         Seg::Key("Left".into()),
-                        Seg::Text("and"),
+                        Seg::Text("and".into()),
                         Seg::Key("Right".into()),
-                        Seg::Text("seek."),
+                        Seg::Text("seek.".into()),
                     ]),
                 ))
                 .child(section(
                     "Make It Yours",
                     None,
                     kbd_line([
-                        Seg::Key(chord(",").into()),
+                        Seg::Key(chord(",")),
                         Seg::Text(
                             "opens settings: the palette, transparency, and behavior. \
                          Save an arrangement as a layout; a workspace bundles layouts \
-                         and palette into one shareable look.",
+                         and palette into one shareable look."
+                                .into(),
                         ),
                     ]),
                 ))

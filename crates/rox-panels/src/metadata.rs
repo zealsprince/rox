@@ -24,7 +24,7 @@
 //! hit areas only show while a search panel is up somewhere to display
 //! what a click writes.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use gpui::{
@@ -36,6 +36,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Sizable};
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use rox_library::projection::FilterField;
 use rox_library::writer::{self, Change, Field};
 use serde::{Deserialize, Serialize};
@@ -260,7 +261,7 @@ const EDIT_FIELDS: &[(Field, &str)] = &[
 /// file, and one input per entry of [`EDIT_FIELDS`]. Lives only while
 /// edit mode is on.
 struct EditState {
-    path: PathBuf,
+    key: TrackKey,
     /// The named fields as the writer read them, what save diffs
     /// against; None until the read lands (or never, on a file the
     /// writer cannot parse), and save stays inert without it.
@@ -281,7 +282,7 @@ pub struct MetadataPanel {
     /// The shown path's row, or None inside for a file the library does
     /// not know. Cached because the pump notifies every frame and the row
     /// lookup scans the projection; cleared when the catalog changes.
-    details: Option<(PathBuf, Option<Details>)>,
+    details: Option<(TrackKey, Option<Details>)>,
     /// The loaded background art keyed by the track it belongs to, with the
     /// pending marker, generation guard, and swap/drop retires the shared
     /// loader carries.
@@ -352,13 +353,13 @@ impl MetadataPanel {
         }
     }
 
-    /// The shown path's row, from the cache or one projection scan on a
-    /// miss. None for a file the library does not know or while the
+    /// The shown track's row, from the cache or one projection scan on a
+    /// miss. None for a track the library does not know or while the
     /// projection is still loading.
-    fn details_for(&mut self, path: &Path, cx: &App) -> Option<&Details> {
-        if self.details.as_ref().map(|(p, _)| p.as_path()) != Some(path) {
+    fn details_for(&mut self, key: &TrackKey, cx: &App) -> Option<&Details> {
+        if self.details.as_ref().map(|(k, _)| k) != Some(key) {
             let library = self.state.library.read(cx);
-            let details = library.id_for(path).and_then(|id| {
+            let details = library.id_for_key(key).and_then(|id| {
                 let projection = library.projection()?;
                 let row = projection.db_id.iter().position(|&db_id| db_id == id)?;
                 let v = projection.resolve(row as u32);
@@ -380,7 +381,7 @@ impl MetadataPanel {
                     rating: v.rating,
                 })
             });
-            self.details = Some((path.to_path_buf(), details));
+            self.details = Some((key.clone(), details));
         }
         self.details
             .as_ref()
@@ -457,7 +458,7 @@ impl MetadataPanel {
         if self.edit.is_some() {
             return;
         }
-        let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
+        let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
             return;
         };
         let inputs: Vec<Entity<InputState>> = EDIT_FIELDS
@@ -477,7 +478,7 @@ impl MetadataPanel {
             .collect();
         window.focus(&inputs[0].read(cx).focus_handle(cx));
         self.edit = Some(EditState {
-            path: path.clone(),
+            key: key.clone(),
             baseline: None,
             inputs,
             error: None,
@@ -490,13 +491,13 @@ impl MetadataPanel {
             let read = cx
                 .background_executor()
                 .spawn({
-                    let path = path.clone();
+                    let path = key.path.clone();
                     async move { writer::read(&path) }
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {
                 let Some(edit) = &mut this.edit else { return };
-                if edit.path != path {
+                if edit.key != key {
                     return;
                 }
                 match read {
@@ -563,31 +564,34 @@ impl MetadataPanel {
         }
         edit.saving = true;
         edit.error = None;
-        let path = edit.path.clone();
+        let key = edit.key.clone();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn({
-                    let path = path.clone();
+                    let key = key.clone();
                     let changes = changes.clone();
-                    async move { writer::commit(&path, &changes) }
+                    // Through the key: a cue track's edit stays in the
+                    // library, since the image on disk belongs to the whole
+                    // disc and writing a title there would title all of it.
+                    async move { writer::commit_key(&key.path, key.sub, &changes, &[]) }
                 })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
                     Ok(()) => {
-                        if this.edit.as_ref().is_some_and(|edit| edit.path == path) {
+                        if this.edit.as_ref().is_some_and(|edit| edit.key == key) {
                             this.edit = None;
                             panel::refresh_tab_panel(&this.tab_panel, cx);
                         }
                         this.state
                             .library
-                            .update(cx, |library, cx| library.apply_edit(&path, &changes, cx));
+                            .update(cx, |library, cx| library.apply_edit(&key, &changes, cx));
                     }
                     Err(e) => {
                         if let Some(edit) = &mut this.edit {
-                            if edit.path == path {
+                            if edit.key == key {
                                 edit.saving = false;
                                 edit.error = Some(e.into());
                             }
@@ -876,7 +880,7 @@ impl Panel for MetadataPanel {
             providers::metadata_online(),
             self.resolved.get(self.config.source, &self.state, cx),
         ) {
-            (true, Some(path)) => {
+            (true, Some(key)) => {
                 let library = self.state.library.clone();
                 let now_art = self.state.now_art.clone();
                 menu.separator().item(
@@ -886,7 +890,7 @@ impl Panel for MetadataPanel {
                             rox_panel_api::openers::tags_matcher(
                                 library.clone(),
                                 now_art.clone(),
-                                path.clone(),
+                                key.clone(),
                                 cx,
                             );
                         }),
@@ -1118,10 +1122,10 @@ impl MetadataPanel {
 
         // An open edit pins its track; the source only drives the sheet
         // while nothing is being edited.
-        let Some(path) = self
+        let Some(key) = self
             .edit
             .as_ref()
-            .map(|edit| edit.path.clone())
+            .map(|edit| edit.key.clone())
             .or_else(|| self.resolved.get(self.config.source, &self.state, cx))
         else {
             // The source points at no track: a quiet line where the sheet
@@ -1137,6 +1141,9 @@ impl MetadataPanel {
         // over it so the fields keep reading over busy covers. Until the
         // load lands the plain background stands in; no fade, the sheet's
         // text swaps in the same frame anyway.
+        // Art hangs off the file, which cue tracks of one image share, so
+        // the cache stays keyed on the path.
+        let path = key.path.clone();
         if self.config.cover {
             self.ensure_art(&path, cx);
         }
@@ -1164,7 +1171,7 @@ impl MetadataPanel {
 
         // An untagged file still shows something: its file name for the
         // title, no fields.
-        let details = self.details_for(&path, cx).cloned();
+        let details = self.details_for(&key, cx).cloned();
         let title = details
             .as_ref()
             .map(|d| d.title.clone())

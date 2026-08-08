@@ -7,19 +7,20 @@
 //! clicks queue from the row, the library panel's moves. Its own panel,
 //! never a mode of the library.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
     div, prelude::*, px, uniform_list, App, Context, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseDownEvent, ScrollStrategy, SharedString, Stateful, Subscription,
-    UniformListScrollHandle, WeakEntity, Window,
+    Focusable, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, ScrollStrategy, SharedString,
+    Stateful, Subscription, UniformListScrollHandle, WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::Icon;
 use rox_core::fmt::fmt_ago;
 use rox_core::QUEUE_CAP;
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use rox_library::listens::{NeverOrder, TrackPlays};
 use rox_library::projection::{parse_query, track_matches, FilterSet, TrackFields};
 use serde::{Deserialize, Serialize};
@@ -279,12 +280,17 @@ pub struct HistoryPanel {
     /// The album runs the heading rows index, rebuilt with `rows`.
     albums: Vec<track_columns::AlbumGroup>,
     /// The favourited track ids, what each row's heart checks against.
-    favourites: std::collections::HashSet<i64>,
-    /// The clicked track's index into `tracks`, for the selection highlight.
-    selected: Option<usize>,
+    favourites: HashSet<i64>,
+    /// The selected tracks, as indices into `tracks`. Shift extends, cmd
+    /// (ctrl elsewhere) toggles, Ctrl+A takes the lot, the library's rules.
+    /// A refresh re-reads the tracks, so it clears with them.
+    selected: HashSet<usize>,
+    /// Where the next shift-click extends from: the last plain or toggle
+    /// pick, as its index into `tracks`.
+    anchor: Option<usize>,
     /// The playing track's path, the change detector for the highlight;
     /// the player notifies every pump, so the compare keeps sync cheap.
-    playing_path: Option<PathBuf>,
+    playing_key: Option<TrackKey>,
     /// The playing track as its library id, the rows' key.
     playing: Option<i64>,
     /// The track under the last right press, for the context menu: the
@@ -374,9 +380,10 @@ impl HistoryPanel {
             applied_filter: FilterSet::default(),
             rows: Vec::new(),
             albums: Vec::new(),
-            favourites: std::collections::HashSet::new(),
-            selected: None,
-            playing_path: None,
+            favourites: HashSet::new(),
+            selected: HashSet::new(),
+            anchor: None,
+            playing_key: None,
             playing: None,
             menu_row: None,
             scroll: UniformListScrollHandle::new(),
@@ -402,15 +409,15 @@ impl HistoryPanel {
     /// matches rows by that id, so in the recent view every listen of the
     /// playing track carries it.
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
-        let path = self.state.player.read(cx).now_playing().map(|now| now.path);
-        if path == self.playing_path {
+        let path = self.state.player.read(cx).now_playing().map(|now| now.key);
+        if path == self.playing_key {
             return;
         }
-        self.playing_path = path;
+        self.playing_key = path;
         self.playing = self
-            .playing_path
+            .playing_key
             .as_ref()
-            .and_then(|path| self.state.library.read(cx).id_for(path));
+            .and_then(|key| self.state.library.read(cx).id_for_key(key));
         cx.notify();
     }
 
@@ -428,7 +435,8 @@ impl HistoryPanel {
             ),
         };
         self.favourites = library.favourite_ids();
-        self.selected = None;
+        self.selected.clear();
+        self.anchor = None;
         self.menu_row = None;
         self.refresh_query(cx);
         self.rebuild_rows();
@@ -580,7 +588,7 @@ impl HistoryPanel {
         let Some((ix, ti)) = self.playing_row() else {
             return;
         };
-        self.select(ti, cx);
+        self.select(ti, Modifiers::default(), cx);
         self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
         cx.notify();
     }
@@ -617,20 +625,135 @@ impl HistoryPanel {
         panel::refresh_tab_panel(&self.tab_panel, cx);
     }
 
-    /// A single click selects a track: the highlight here, its track id on
-    /// the shared selection for the panels that display it. `ti` indexes
-    /// `tracks`, not the display rows.
-    fn select(&mut self, ti: usize, cx: &mut Context<Self>) {
-        let Some(track) = self.tracks.get(ti) else {
+    /// Put a click on a track row: plain selects just it, shift extends from
+    /// the anchor over the visible tracks between, cmd (ctrl elsewhere)
+    /// toggles - the library's rules. `ti` indexes `tracks`, not the display
+    /// rows; the shift range runs over the display order, so it crosses
+    /// album headings the way the eye does.
+    fn select(&mut self, ti: usize, modifiers: Modifiers, cx: &mut Context<Self>) {
+        if ti >= self.tracks.len() {
             return;
-        };
-        self.selected = Some(ti);
-        let ids = vec![track.track_id];
+        }
+        if modifiers.shift {
+            let pos_of = |t: usize| {
+                self.rows
+                    .iter()
+                    .position(|row| matches!(row, Row::Track(i) if *i as usize == t))
+            };
+            let Some(ix) = pos_of(ti) else {
+                return;
+            };
+            let anchor_ix = self.anchor.and_then(pos_of).unwrap_or(ix);
+            let (lo, hi) = (anchor_ix.min(ix), anchor_ix.max(ix));
+            let range: Vec<usize> = self.rows[lo..=hi]
+                .iter()
+                .filter_map(|row| match row {
+                    Row::Track(i) => Some(*i as usize),
+                    _ => None,
+                })
+                .collect();
+            // Ctrl+Shift stacks the range onto the selection so you can
+            // skip a run and grab a second block; plain shift replaces.
+            if modifiers.secondary() {
+                self.selected.extend(range);
+            } else {
+                self.selected = range.into_iter().collect();
+            }
+            if self.anchor.is_none() {
+                self.anchor = Some(ti);
+            }
+        } else if modifiers.secondary() {
+            if !self.selected.insert(ti) {
+                self.selected.remove(&ti);
+            }
+            self.anchor = Some(ti);
+        } else {
+            self.selected = HashSet::from([ti]);
+            self.anchor = Some(ti);
+        }
+        self.publish_selection(cx);
+        cx.notify();
+    }
+
+    /// Ctrl+A: take every visible track - the filter's rows, so the selection
+    /// matches what shows. Anchors at the first so a follow-up shift-click
+    /// narrows from the top.
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        let tracks: Vec<usize> = self
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Track(ti) => Some(*ti as usize),
+                _ => None,
+            })
+            .collect();
+        if tracks.is_empty() {
+            return;
+        }
+        self.anchor = tracks.first().copied();
+        self.selected = tracks.into_iter().collect();
+        self.publish_selection(cx);
+        cx.notify();
+    }
+
+    /// The selected track ids in display order, deduplicated: the Recent
+    /// view lists a track once per listen, and the shared selection and the
+    /// menu actions want each track once.
+    fn selected_track_ids(&self) -> Vec<i64> {
+        let mut seen = HashSet::new();
+        self.rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Track(ti) => {
+                    let ti = *ti as usize;
+                    self.selected
+                        .contains(&ti)
+                        .then(|| self.tracks[ti].track_id)
+                }
+                _ => None,
+            })
+            .filter(|&id| seen.insert(id))
+            .collect()
+    }
+
+    /// Publish the selected track ids on the shared selection for the
+    /// panels that display it.
+    fn publish_selection(&self, cx: &mut Context<Self>) {
+        let ids = self.selected_track_ids();
+        if ids.is_empty() {
+            return;
+        }
         let source = cx.entity_id();
         self.state
             .selection
             .update(cx, |selection, cx| selection.set(ids, source, cx));
+    }
+
+    /// Escape drops the selection and the shared scope with it. The local
+    /// publish skips empty sets, so the clear goes to the selection
+    /// entity directly.
+    fn deselect(&mut self, cx: &mut Context<Self>) {
+        if self.selected.is_empty() {
+            return;
+        }
+        self.selected.clear();
+        self.anchor = None;
+        let source = cx.entity_id();
+        self.state
+            .selection
+            .update(cx, |selection, cx| selection.set(Vec::new(), source, cx));
         cx.notify();
+    }
+
+    /// Ctrl+A takes every visible track; Escape drops the selection.
+    fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let modifiers = &event.keystroke.modifiers;
+        let key = event.keystroke.key.as_str();
+        if modifiers.secondary() && key == "a" {
+            self.select_all(cx);
+        } else if key == "escape" {
+            self.deselect(cx);
+        }
     }
 
     /// A double click queues the track with the surrounding view as its
@@ -663,29 +786,29 @@ impl HistoryPanel {
             .map(|&i| self.tracks[i].track_id)
             .collect();
         let click = pos - lo;
-        // paths_for drops deleted ids, so the compacted queue is shorter than
+        // keys_for drops deleted ids, so the compacted queue is shorter than
         // the window and the raw click offset no longer lines up. The start is
         // how many ids ahead of the click actually resolved. If the clicked
         // track is itself one of the deleted ones, bail rather than play its
         // neighbour, which is what would land at that index.
         let resolved = {
             let library = self.state.library.read(cx);
-            let (Ok(paths), Ok(before), Ok(clicked)) = (
-                library.paths_for(&ids),
-                library.paths_for(&ids[..click]),
-                library.paths_for(&ids[click..=click]),
+            let (Ok(keys), Ok(before), Ok(clicked)) = (
+                library.keys_for(&ids),
+                library.keys_for(&ids[..click]),
+                library.keys_for(&ids[click..=click]),
             ) else {
                 return;
             };
-            if paths.is_empty() || clicked.is_empty() {
+            if keys.is_empty() || clicked.is_empty() {
                 return;
             }
-            (paths, before.len())
+            (keys, before.len())
         };
-        let (paths, start) = resolved;
+        let (keys, start) = resolved;
         self.state
             .player
-            .update(cx, |player, cx| player.play_at(paths, start, cx));
+            .update(cx, |player, cx| player.play_at(keys, start, cx));
     }
 
     /// The visible slice of the list: album headings (Recent view) and track
@@ -737,7 +860,7 @@ impl HistoryPanel {
     fn track_row(&self, ix: usize, ti: usize, now: i64, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = &self.tracks[ti];
         let playing = self.playing == Some(t.track_id);
-        let selected = self.selected == Some(ti);
+        let selected = self.selected.contains(&ti);
         let favourite = self.favourites.contains(&t.track_id);
         let mut row = div()
             .id(("history-row", ix))
@@ -760,11 +883,14 @@ impl HistoryPanel {
             .hover(|d| d.bg(palette::bg_control_hover()))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    // Take focus so Ctrl+A and Escape reach the panel's key
+                    // handler.
+                    window.focus(&this.focus);
                     if event.click_count > 1 {
                         this.play_from(ti, cx);
                     } else {
-                        this.select(ti, cx);
+                        this.select(ti, event.modifiers, cx);
                     }
                 }),
             )
@@ -774,8 +900,8 @@ impl HistoryPanel {
                 MouseButton::Right,
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                     this.menu_row = Some(ti);
-                    if this.selected != Some(ti) {
-                        this.select(ti, cx);
+                    if !this.selected.contains(&ti) {
+                        this.select(ti, Modifiers::default(), cx);
                     }
                 }),
             );
@@ -1264,7 +1390,13 @@ impl HistoryPanel {
             self.resync_box = false;
             self.sync_query_box(window, cx);
         }
-        let root = div().size_full().flex().flex_col().bg(palette::bg_root());
+        let root = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(palette::bg_root())
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)));
         let content = if self.rows.is_empty() {
             // Tracks hidden by the query read differently from an empty record.
             let message = if !self.tracks.is_empty() {
@@ -1330,25 +1462,29 @@ impl HistoryPanel {
             let Some(this) = weak.upgrade() else {
                 return menu;
             };
+            // The clicked track plus the selection it acts on. The right
+            // press already pulled the track into the set, so this is what
+            // is lit.
             let target = {
                 let panel = this.read(cx);
                 panel
                     .menu_row
-                    .and_then(|ti| panel.tracks.get(ti).map(|t| (ti, t.track_id)))
+                    .filter(|ti| *ti < panel.tracks.len())
+                    .map(|ti| (ti, panel.selected_track_ids()))
             };
-            let Some((ti, id)) = target else {
+            let Some((ti, ids)) = target else {
                 return this.update(cx, |this, cx| this.dropdown_menu(menu, window, cx));
             };
             let state = this.read(cx).state.clone();
             let panel = weak.clone();
-            // Play queues the track and what follows in the view's order,
-            // the double click's move.
-            let menu =
-                panel::track_actions(menu, state, vec![id], "Play", window, cx, move |_, cx| {
-                    if let Some(this) = panel.upgrade() {
-                        this.update(cx, |this, cx| this.play_from(ti, cx));
-                    }
-                });
+            // Play queues the clicked track and what follows in the view's
+            // order, the double click's move; the rest of the actions take
+            // the whole selection.
+            let menu = panel::track_actions(menu, state, ids, "Play", window, cx, move |_, cx| {
+                if let Some(this) = panel.upgrade() {
+                    this.update(cx, |this, cx| this.play_from(ti, cx));
+                }
+            });
             this.update(cx, |this, cx| {
                 this.dropdown_menu(menu.separator(), window, cx)
             })

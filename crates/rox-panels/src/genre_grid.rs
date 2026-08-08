@@ -35,6 +35,7 @@ use gpui_component::{h_virtual_list, v_virtual_list, Icon, Side, VirtualListScro
 use rox_core::fmt::plural;
 use rox_core::QUEUE_CAP;
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use rox_library::projection::{FilterField, FilterSet};
 use rox_panel_kit::config::{default_true, is_zero};
 use rox_panel_kit::motif;
@@ -283,7 +284,7 @@ pub struct GenreGridPanel {
     /// The idle-resume clock, stamped on every scroll or press.
     resume_idle: ResumeIdle,
     /// The playing track's path, the change detector for follow-playing.
-    playing_path: Option<PathBuf>,
+    playing_key: Option<TrackKey>,
     /// The playing track's first cell in the current view. A multi-genre
     /// track lives in several; the first is the one the follow heads for
     /// and the dim mode exempts.
@@ -383,7 +384,7 @@ impl GenreGridPanel {
             restore,
             last_tick: Instant::now(),
             resume_idle: ResumeIdle::default(),
-            playing_path: None,
+            playing_key: None,
             playing_ix: None,
             playing: false,
             dim_fading: false,
@@ -416,20 +417,17 @@ impl GenreGridPanel {
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
         let (playing, path) = {
             let player = self.state.player.read(cx);
-            (
-                player.is_playing(),
-                player.now_playing().map(|now| now.path),
-            )
+            (player.is_playing(), player.now_playing().map(|now| now.key))
         };
         if playing != self.playing {
             self.playing = playing;
             self.dim_fading = true;
             cx.notify();
         }
-        if path == self.playing_path {
+        if path == self.playing_key {
             return;
         }
-        self.playing_path = path;
+        self.playing_key = path;
         self.playing_ix = self.playing_cell(cx);
         self.dim_fading = true;
         if self.config.follow_playing {
@@ -442,9 +440,9 @@ impl GenreGridPanel {
     /// holds one. The membership scan is per cell but only runs on a
     /// track change.
     fn playing_cell(&self, cx: &App) -> Option<usize> {
-        let path = self.playing_path.as_ref()?;
+        let key = self.playing_key.as_ref()?;
         let library = self.state.library.read(cx);
-        let id = library.id_for(path)?;
+        let id = library.id_for_key(key)?;
         let projection = library.projection()?;
         self.cells.iter().position(|cell| {
             cell.rows
@@ -939,13 +937,13 @@ impl GenreGridPanel {
             .flat_map(|&ix| self.ids_for(ix, cx))
             .take(QUEUE_CAP)
             .collect();
-        let result = self.state.library.read(cx).paths_for(&ids);
+        let result = self.state.library.read(cx).keys_for(&ids);
         match result {
-            Ok(paths) => {
+            Ok(keys) => {
                 self.error = None;
                 self.state
                     .player
-                    .update(cx, |player, cx| player.play_explicit(paths, cx));
+                    .update(cx, |player, cx| player.play_explicit(keys, cx));
             }
             Err(e) => {
                 self.error = Some(format!("library: {e}").into());

@@ -11,10 +11,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{App, Context, Entity, EventEmitter, PathPromptOptions, SharedString, Task};
 
+use rox_library::cue::TrackKey;
 use rox_library::embeddings;
 use rox_library::listens;
 use rox_library::playlists;
-use rox_library::projection::Projection;
+use rox_library::projection::{Projection, RowView};
 use rox_library::rusqlite::{self, Connection};
 use rox_library::scanner::{self, ScanSummary};
 use rox_library::store;
@@ -58,6 +59,59 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// The same tags a store lookup answers with, read off a projection row
+/// instead. What lets a (path, sub) resolve stop at the id query: the row is
+/// already in memory, and its rating and play count are the live atomics
+/// rather than whatever the last write put on disk.
+fn meta_from_row(row: &RowView<'_>) -> store::TrackMeta {
+    store::TrackMeta {
+        title: row.title.to_string(),
+        artist: row.artist.to_string(),
+        album: row.album.to_string(),
+        track_no: row.track_no,
+        album_artist: row.album_artist.to_string(),
+        year: row.year,
+        genre: row.genre.to_string(),
+        duration_ms: row.duration_ms,
+        codec: row.codec.to_string(),
+        bitrate_kbps: row.bitrate_kbps,
+        sample_rate_hz: row.sample_rate_hz,
+        bit_depth: row.bit_depth,
+        rating: row.rating,
+    }
+}
+
+/// Read one M3U line back to a library track id, the other half of what
+/// [`Library::playlist_export_rows`] writes. None for an entry the library
+/// never scanned: there is no file behind it to play.
+///
+/// A `path#N` entry is a cue track, unless the library holds a file by that
+/// literal name. The existence check is what decides, per
+/// [`TrackKey::from_fragment`], so a real file called `track#2` still beats
+/// the fragment reading of it. Relative names resolve against the sheet's own
+/// folder either way.
+fn resolve_m3u_entry(conn: &Connection, base_dir: &Path, entry: &str) -> Option<i64> {
+    let resolve = |name: &str| {
+        let path = Path::new(name);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            base_dir.join(path)
+        }
+    };
+    let exists = |name: &str| {
+        resolve(name)
+            .to_str()
+            .and_then(|full| store::id_for_path(conn, full).ok().flatten())
+            .is_some()
+    };
+    let key = TrackKey::from_fragment(entry, exists);
+    let full = resolve(key.path.to_str()?);
+    store::queue_meta_for_key(conn, full.to_str()?, key.sub)
+        .ok()?
+        .id
 }
 
 /// How often the UI samples a running scan's progress.
@@ -792,27 +846,87 @@ impl Library {
             .unwrap_or_default()
     }
 
-    /// Resolve a playing file back to its tags on the UI-side connection,
-    /// for the track info panel. None when the path is not in the library.
-    pub fn meta_for(&self, path: &std::path::Path) -> Option<store::TrackMeta> {
-        let conn = self.conn.as_ref()?;
-        store::meta_for_path(conn, path.to_str()?).ok().flatten()
+    /// Resolve database ids to the subsong keys that name them, in the order
+    /// given. The sibling of [`paths_for`](Self::paths_for) for anything that
+    /// goes on to play what it resolved: a cue track's key carries its own
+    /// number, so it points at that track's span instead of the whole image
+    /// its dozen siblings share. Ids the library has since dropped fall out,
+    /// the same way `paths_for` drops them.
+    pub fn keys_for(&self, ids: &[i64]) -> Result<Vec<TrackKey>, String> {
+        let Some(conn) = &self.conn else {
+            return Ok(Vec::new());
+        };
+        let mut keys = Vec::with_capacity(ids.len());
+        for &id in ids {
+            // One query per id rather than one for the batch: a dropped id
+            // would slide the paths out from under the subs otherwise.
+            let path = store::paths_for(conn, &[id])
+                .map_err(|e| e.to_string())?
+                .pop();
+            if let Some(path) = path {
+                keys.push(TrackKey {
+                    path: PathBuf::from(path),
+                    sub: self.sub_for_id(id),
+                });
+            }
+        }
+        Ok(keys)
     }
 
-    /// Resolve a playing file to its track id on the UI-side connection,
-    /// for marking its row. None when the path is not in the library.
-    pub fn id_for(&self, path: &std::path::Path) -> Option<i64> {
-        let conn = self.conn.as_ref()?;
-        store::id_for_path(conn, path.to_str()?).ok().flatten()
+    /// Which subsong of its file a track id is, off the projection's dense
+    /// column through the same id -> row index a rating click uses. Zero when
+    /// the projection has no row for it, which is both what a plain file
+    /// answers and the honest fallback mid-scan.
+    pub fn sub_for_id(&self, id: i64) -> u16 {
+        let (Some(projection), Some(&row)) = (&self.projection, self.row_by_id.get(&id)) else {
+            return 0;
+        };
+        projection.sub.get(row as usize).copied().unwrap_or(0)
     }
 
-    /// Resolve a path to its track id and tags together in one query, for
-    /// callers (the queue) that want both and would otherwise pay `id_for`
-    /// plus `meta_for` separately. None when the path is not in the library.
-    pub fn resolve_path(&self, path: &std::path::Path) -> Option<(i64, store::TrackMeta)> {
+    /// Resolve a playing track back to its tags on the UI-side connection,
+    /// for the track info panel. None when the key is not in the library.
+    pub fn meta_for_key(&self, key: &TrackKey) -> Option<store::TrackMeta> {
+        self.resolve_key(key).map(|(_, meta)| meta)
+    }
+
+    /// Resolve a playing track to its id on the UI-side connection, for
+    /// marking its row. None when the key is not in the library.
+    pub fn id_for_key(&self, key: &TrackKey) -> Option<i64> {
         let conn = self.conn.as_ref()?;
-        store::meta_row_for_path(conn, path.to_str()?)
-            .ok()
+        store::queue_meta_for_key(conn, key.path.to_str()?, key.sub)
+            .ok()?
+            .id
+    }
+
+    /// Resolve a key to its track id and tags together, for callers (the
+    /// queue) that want both and would otherwise ask twice.
+    ///
+    /// Keyed on (path, sub) rather than the path alone, which is the whole
+    /// point: a path-only lookup answers with whichever row of a cue image
+    /// sorts first, so every track of a rip would draw track one's title. The
+    /// id comes from the sub-aware store lookup, and the tags come off the
+    /// projection row that id lands on, which costs no second query. A plain
+    /// file falls back to the store when the projection isn't up (mid-scan,
+    /// or a deleted playlist member that never had a row).
+    pub fn resolve_key(&self, key: &TrackKey) -> Option<(i64, store::TrackMeta)> {
+        let conn = self.conn.as_ref()?;
+        let path = key.path.to_str()?;
+        let id = store::queue_meta_for_key(conn, path, key.sub).ok()?.id;
+        if let Some(id) = id {
+            if let (Some(projection), Some(&row)) = (&self.projection, self.row_by_id.get(&id)) {
+                // The guard a rating click uses too: a projection swapped
+                // between paint and lookup would leave the row pointing at
+                // somebody else's track.
+                if projection.db_id.get(row as usize) == Some(&id) {
+                    return Some((id, meta_from_row(&projection.resolve(row))));
+                }
+            }
+        }
+        // No projection row to read: only a sub 0 key can be answered from
+        // the store, since its lookup can't tell one cue track from another.
+        (key.sub == 0)
+            .then(|| store::meta_row_for_path(conn, path).ok().flatten())
             .flatten()
     }
 
@@ -913,11 +1027,42 @@ impl Library {
     }
 
     /// One playlist's playable members resolved for an M3U export, in order.
+    ///
+    /// Each row's path is a [`TrackKey`] fragment rather than a bare path, so
+    /// a cue rip exports as twelve `disc.flac#N` lines instead of the same
+    /// file twelve times over. The tags come off the projection row, which is
+    /// also the only place the sub lives; with no projection loaded this
+    /// falls back to the store's own path-only rows, which is worse than
+    /// nothing only for cue tracks and exactly right for everything else.
     pub fn playlist_export_rows(&self, id: i64) -> Vec<playlists::ExportTrack> {
-        self.conn
-            .as_ref()
-            .and_then(|conn| playlists::export_rows(conn, id).ok())
-            .unwrap_or_default()
+        let Some(conn) = &self.conn else {
+            return Vec::new();
+        };
+        let Some(projection) = &self.projection else {
+            return playlists::export_rows(conn, id).unwrap_or_default();
+        };
+        let ids = playlists::ids(conn, id).unwrap_or_default();
+        ids.iter()
+            .filter_map(|&track_id| {
+                let &row = self.row_by_id.get(&track_id)?;
+                if projection.db_id.get(row as usize) != Some(&track_id) {
+                    return None;
+                }
+                let view = projection.resolve(row);
+                let path = store::paths_for(conn, &[track_id]).ok()?.pop()?;
+                let key = TrackKey {
+                    path: PathBuf::from(path),
+                    sub: view.sub,
+                };
+                Some(playlists::ExportTrack {
+                    path: key.to_fragment(),
+                    title: view.title.to_string(),
+                    artist: view.artist.to_string(),
+                    // Nearest second, the resolution #EXTINF wants.
+                    duration_secs: (view.duration_ms as i64 + 500) / 1000,
+                })
+            })
+            .collect()
     }
 
     /// The favourited track ids, what the library's heart column checks each
@@ -1036,15 +1181,7 @@ impl Library {
         let conn = self.conn.as_mut()?;
         let ids: Vec<i64> = entries
             .iter()
-            .filter_map(|entry| {
-                let path = Path::new(entry);
-                let full = if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    base_dir.join(path)
-                };
-                store::id_for_path(conn, full.to_str()?).ok().flatten()
-            })
+            .filter_map(|entry| resolve_m3u_entry(conn, base_dir, entry))
             .collect();
         let id = playlists::create(conn, name, now_secs()).ok()?;
         if !ids.is_empty() {
@@ -1061,17 +1198,22 @@ impl Library {
     /// duration, codec, and the like on their stale scan values; the
     /// reindex behind it carries those too. The file was already written
     /// and verified by the caller.
-    pub fn apply_edit(&mut self, path: &Path, changes: &[writer::Change], cx: &mut Context<Self>) {
+    pub fn apply_edit(
+        &mut self,
+        key: &TrackKey,
+        changes: &[writer::Change],
+        cx: &mut Context<Self>,
+    ) {
         // The caller already wrote the file; note it so the watch batch it
         // triggers does not bounce back as a redundant reindex.
-        self.note_self_write([path.to_path_buf()]);
-        if let Some((id, conn)) = self.id_for(path).zip(self.conn.as_ref()) {
+        self.note_self_write([key.path.clone()]);
+        if let Some((id, conn)) = self.id_for_key(key).zip(self.conn.as_ref()) {
             if let Err(e) = store::apply_changes(conn, id, changes) {
                 self.status = format!("library: {e}").into();
                 cx.notify();
             }
         }
-        self.reload(Refresh::Reindex(vec![path.to_path_buf()]), cx);
+        self.reload(Refresh::Reindex(vec![key.path.clone()]), cx);
     }
 
     /// A batch of committed edits into the catalog, the tag editor's save:
@@ -1080,9 +1222,18 @@ impl Library {
     /// every other scanner-derived field converge with the edit, not just
     /// the columns the form named. A file the writer fixed or a filename
     /// the user finally tagged both read back true here.
-    pub fn apply_edits(&mut self, edits: &[writer::Edit], cx: &mut Context<Self>) {
-        for edit in edits {
-            let Some(id) = self.id_for(&edit.path) else {
+    ///
+    /// `subs` runs parallel to `edits` and says which subsong each one is,
+    /// padding with 0 where it's short: a [`writer::Edit`] names a file, and
+    /// a file stopped being a track the moment cue sheets came in. Without it
+    /// an edit to track five of a rip would land on track one's row.
+    pub fn apply_edits(&mut self, edits: &[writer::Edit], subs: &[u16], cx: &mut Context<Self>) {
+        for (i, edit) in edits.iter().enumerate() {
+            let key = TrackKey {
+                path: edit.path.clone(),
+                sub: subs.get(i).copied().unwrap_or(0),
+            };
+            let Some(id) = self.id_for_key(&key) else {
                 continue;
             };
             let Some(conn) = &self.conn else { return };
@@ -1202,14 +1353,14 @@ impl Library {
                     id.map(|id| (id, this.pending_ratings.remove(&id).unwrap()))
                 });
                 let Ok(Some((id, rating))) = next else { break };
-                let Ok(Some(path)) = this.update(cx, |this, _| {
-                    let path = this.paths_for(&[id]).ok().and_then(|mut paths| paths.pop());
+                let Ok(Some(key)) = this.update(cx, |this, _| {
+                    let key = this.keys_for(&[id]).ok().and_then(|mut keys| keys.pop());
                     // Note the write before it lands so the watch batch it
                     // triggers is suppressed, not reindexed.
-                    if let Some(path) = &path {
-                        this.note_self_write([path.clone()]);
+                    if let Some(key) = &key {
+                        this.note_self_write([key.path.clone()]);
                     }
-                    path
+                    key
                 }) else {
                     continue;
                 };
@@ -1220,7 +1371,12 @@ impl Library {
                             field: writer::Field::Rating,
                             value: (rating > 0).then(|| rox_library::rating::display(rating)),
                         };
-                        writer::commit(&path, &[change]).map_err(|e| (path, e))
+                        // Through the key, so rating one track of a cue rip
+                        // stays in the library: the image on disk is shared by
+                        // every track of the disc, and stamping it would rate
+                        // all twelve.
+                        writer::commit_key(&key.path, key.sub, &[change], &[])
+                            .map_err(|e| (key.path, e))
                     })
                     .await;
                 if let Err((path, e)) = result {
@@ -1579,7 +1735,10 @@ fn watch_sync(
                 if under_root(&path) {
                     changed.extend(scanner::audio_files(&path));
                 }
-            } else if scanner::is_audio(&path) {
+            } else if scanner::is_relevant(&path) {
+                // Sheets as well as audio: a .cue edit re-cuts the image
+                // beside it, so asking is_audio here would drop every sheet
+                // change on the floor and leave the rip's tracks stale.
                 changed.push(path);
             }
         } else if under_root(&path) {
@@ -1675,7 +1834,7 @@ pub fn browse(library: &Entity<Library>, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::watch_sync;
+    use super::{resolve_m3u_entry, watch_sync};
     use rox_library::store;
 
     /// The watcher's per-change sync: a new file on disk lands as a row, a
@@ -1761,5 +1920,128 @@ mod tests {
             1,
             "a root that reads gone is never pruned"
         );
+    }
+
+    /// A cue rip round-trips through an M3U: the export writes one
+    /// `image.flac#N` line per track, and the import reads each back to the
+    /// row it came from rather than collapsing the disc onto track one.
+    #[test]
+    fn m3u_fragments_round_trip_a_cue_rip() {
+        use rox_library::cue::TrackKey;
+        use rox_library::m3u;
+        use rox_library::playlists::ExportTrack;
+        use std::path::{Path, PathBuf};
+
+        let mut conn = rox_library::rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        let image = "/m/Album/disc.flac";
+        store::insert_batch(
+            &mut conn,
+            &[
+                cue_row(image, 1, 0, Some(180_000)),
+                cue_row(image, 2, 180_000, Some(400_000)),
+                cue_row(image, 3, 400_000, None),
+                plain_row("/m/Album/loose.mp3"),
+                // A file whose name really ends in `#2`, the case the
+                // fragment reading must not steal.
+                plain_row("/m/Album/track#2"),
+            ],
+        )
+        .unwrap();
+
+        let keys = [
+            TrackKey {
+                path: PathBuf::from(image),
+                sub: 1,
+            },
+            TrackKey {
+                path: PathBuf::from(image),
+                sub: 3,
+            },
+            TrackKey::from(PathBuf::from("/m/Album/loose.mp3")),
+            TrackKey::from(PathBuf::from("/m/Album/track#2")),
+        ];
+        let rows: Vec<ExportTrack> = keys
+            .iter()
+            .map(|key| ExportTrack {
+                path: key.to_fragment(),
+                title: "Song".into(),
+                artist: "X".into(),
+                duration_secs: 180,
+            })
+            .collect();
+        let document = m3u::to_m3u8(&rows);
+        assert!(document.contains("/m/Album/disc.flac#1"));
+        assert!(document.contains("/m/Album/disc.flac#3"));
+
+        let read: Vec<i64> = m3u::parse(&document)
+            .iter()
+            .filter_map(|entry| resolve_m3u_entry(&conn, Path::new("/m/Album"), entry))
+            .collect();
+        let want: Vec<i64> = keys
+            .iter()
+            .map(|key| {
+                store::queue_meta_for_key(&conn, key.path.to_str().unwrap(), key.sub)
+                    .unwrap()
+                    .id
+                    .expect("every fixture key is in the library")
+            })
+            .collect();
+        assert_eq!(read, want, "each line comes back as the row it was");
+        // The two cue lines are distinct rows, which is the whole point of
+        // the fragment; without it both would read as the image's first.
+        assert_ne!(read[0], read[1]);
+
+        // A relative line resolves against the sheet's folder, subsong and
+        // all, the way an exported playlist moved beside its music does.
+        assert_eq!(
+            resolve_m3u_entry(&conn, Path::new("/m/Album"), "disc.flac#2"),
+            store::queue_meta_for_key(&conn, image, 2).unwrap().id,
+        );
+        // An entry the library never scanned has no file to play.
+        assert_eq!(
+            resolve_m3u_entry(&conn, Path::new("/m/Album"), "/m/gone.flac"),
+            None
+        );
+    }
+
+    /// A row for a plain file: the fields the fragment round trip reads.
+    fn plain_row(path: &str) -> rox_library::TrackRow {
+        rox_library::TrackRow {
+            path: path.to_string(),
+            sub: 0,
+            cue: None,
+            title: "Song".into(),
+            artist: "X".into(),
+            album_artist: "X".into(),
+            album: "Album".into(),
+            genre: String::new(),
+            year: 0,
+            disc_no: 0,
+            track_no: 0,
+            duration_ms: 180_000,
+            codec: "flac".into(),
+            bitrate_kbps: 0,
+            sample_rate_hz: 0,
+            bit_depth: 0,
+            rating: 0,
+            replay_gain: Default::default(),
+            size: 0,
+            mtime: 0,
+        }
+    }
+
+    /// One track of a cue rip: the same image path, its own subsong number
+    /// and span.
+    fn cue_row(path: &str, sub: u16, start_ms: u32, end_ms: Option<u32>) -> rox_library::TrackRow {
+        rox_library::TrackRow {
+            sub,
+            track_no: sub,
+            cue: Some(rox_library::CueSlice {
+                cue_path: "/m/Album/disc.cue".into(),
+                span: rox_library::cue::Span { start_ms, end_ms },
+            }),
+            ..plain_row(path)
+        }
     }
 }

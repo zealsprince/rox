@@ -710,6 +710,8 @@ mod tests {
 
     fn track(path: &str, title: &str, artist: &str, album: &str) -> TrackRow {
         TrackRow {
+            sub: 0,
+            cue: None,
             path: path.into(),
             title: title.into(),
             artist: artist.into(),

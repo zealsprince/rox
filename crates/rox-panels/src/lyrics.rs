@@ -28,6 +28,7 @@ use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::spinner::Spinner;
 use gpui_component::{Icon, Sizable};
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use rox_library::lyrics::{self, active_line, weave_rests, Lyrics};
 use rox_viz::curve;
 use serde::{Deserialize, Serialize};
@@ -519,10 +520,12 @@ impl LyricsPanel {
     /// back where they came from, then rings the lyrics reload broadcast. One
     /// window per track; a second request focuses the open one.
     fn open_edit(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
+        let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
             return;
         };
-        rox_panel_api::openers::lyrics_edit(self.state.clone(), path, cx);
+        // The editor writes the file's own sheet, so it takes the path:
+        // lyrics storage is per file, cue tracks of one image share one.
+        rox_panel_api::openers::lyrics_edit(self.state.clone(), key.path, cx);
     }
 
     /// The timestamp `steps` sung lines away from the active one: forward
@@ -557,15 +560,16 @@ impl LyricsPanel {
         Some(timed[(target as usize).min(timed.len() - 1)])
     }
 
-    /// Where playback sits within `path`, or None when a different track
+    /// Where playback sits within `key`, or None when a different track
     /// (or nothing) is playing. The stamp button and the synced highlight
-    /// both key off this.
-    fn playback_position(&self, path: &Path, cx: &App) -> Option<f64> {
+    /// both key off this. The whole key, so a boundary between two tracks of
+    /// one image reads as the track change it is.
+    fn playback_position(&self, key: &TrackKey, cx: &App) -> Option<f64> {
         self.state
             .player
             .read(cx)
             .now_playing()
-            .filter(|now| now.path == *path)
+            .filter(|now| now.key == *key)
             .map(|now| now.position_secs)
     }
 
@@ -575,17 +579,18 @@ impl LyricsPanel {
     /// once a render runs, so the tick just wakes the panel that was parked
     /// between line changes instead of repainting it 60 times a second.
     fn tick_wakes(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
+        let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
             // The source lost its track: repaint to the placeholder if a
             // sheet was up.
             return self.loaded.is_some() || self.pending.is_some();
         };
+        let path = key.path.as_path();
         // A different track needs a load and a fresh face; let the render
         // kick the fetch. Once it is loading, wait for the load's own notify.
-        if self.loaded.as_ref().map(|(p, _)| p.as_path()) != Some(path.as_path()) {
-            return self.pending.as_deref() != Some(path.as_path());
+        if self.loaded.as_ref().map(|(p, _)| p.as_path()) != Some(path) {
+            return self.pending.as_deref() != Some(path);
         }
-        let Some(lyrics) = self.lyrics_for(&path).cloned() else {
+        let Some(lyrics) = self.lyrics_for(path).cloned() else {
             return false;
         };
         if !lyrics.synced {
@@ -595,7 +600,7 @@ impl LyricsPanel {
         // render stores and the rests count as line changes worth a wake.
         let lyrics = self.display_lyrics(&lyrics);
         let active = self
-            .playback_position(&path, cx)
+            .playback_position(&key, cx)
             .and_then(|secs| active_line(&lyrics, secs));
         active != self.active_line
     }
@@ -605,10 +610,10 @@ impl LyricsPanel {
     /// confirms, so nothing is written before a look. The window rings
     /// the lyrics reload broadcast on save.
     fn open_match(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
+        let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
             return;
         };
-        rox_panel_api::openers::lyrics_matcher(self.state.clone(), path, cx);
+        rox_panel_api::openers::lyrics_matcher(self.state.clone(), key.path, cx);
     }
 
     /// Say the shown track has no lyrics: out of the sidecar, the store,
@@ -630,7 +635,11 @@ impl LyricsPanel {
     /// the way out, so a failed delete never leaves the track marked with
     /// words still in it.
     fn set_none(&mut self, on: bool, cx: &mut Context<Self>) {
-        let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
+        let Some(path) = self
+            .resolved
+            .get(self.config.source, &self.state, cx)
+            .map(|key| key.path)
+        else {
             return;
         };
         // Auto-search runs once per track path, so lifting the mark has to
@@ -1134,7 +1143,7 @@ impl Panel for LyricsPanel {
         // loads as empty, so a sheet showing means it is not marked, and
         // the wipe is what marks it.
         let menu = match self.resolved.get(self.config.source, &self.state, cx) {
-            Some(path) if self.lyrics_for(&path).is_some() => {
+            Some(key) if self.lyrics_for(&key.path).is_some() => {
                 let weak = cx.entity().downgrade();
                 menu.item(
                     PopupMenuItem::new("Wipe Lyrics")
@@ -1145,8 +1154,8 @@ impl Panel for LyricsPanel {
                         }),
                 )
             }
-            Some(path) => {
-                let marked = lyrics::marked_none(&path, Some(&lyrics_dir()));
+            Some(key) => {
+                let marked = lyrics::marked_none(&key.path, Some(&lyrics_dir()));
                 let weak = cx.entity().downgrade();
                 menu.item(
                     PopupMenuItem::new("No Lyrics for This Track")
@@ -1216,7 +1225,7 @@ impl LyricsPanel {
     /// The panel body: the display face, a synced karaoke list, a plain
     /// sheet, or a quiet placeholder. Editing lives in its own window.
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
+        let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
             // With the name showing, a track stands in for the panel's face,
             // so with none the panel reads as empty rather than flashing a
             // "No track" notice.
@@ -1227,20 +1236,20 @@ impl LyricsPanel {
             };
         };
 
-        self.ensure_loaded(&path, cx);
-        let Some(lyrics) = self.lyrics_for(&path).cloned() else {
+        self.ensure_loaded(&key.path, cx);
+        let Some(lyrics) = self.lyrics_for(&key.path).cloned() else {
             // Still loading, or the track carries none.
-            return if self.pending.as_deref() == Some(path.as_path()) {
+            return if self.pending.as_deref() == Some(key.path.as_path()) {
                 loading()
             } else {
-                self.empty_face(&path, cx)
+                self.empty_face(&key, cx)
             };
         };
 
         if lyrics.synced {
-            self.synced_face(&path, &lyrics, window, cx)
+            self.synced_face(&key, &lyrics, window, cx)
         } else {
-            self.plain_face(&path, &lyrics, cx)
+            self.plain_face(&key, &lyrics, cx)
         }
     }
 
@@ -1250,8 +1259,8 @@ impl LyricsPanel {
     /// straight away. The whole face honors the panel's alignment, and once
     /// the panel is too short to stack the line over the button it flows
     /// them onto one row so both still show. Auto-search kicks off here too.
-    fn empty_face(&mut self, path: &Path, cx: &mut Context<Self>) -> Div {
-        self.maybe_auto_search(path, cx);
+    fn empty_face(&mut self, key: &TrackKey, cx: &mut Context<Self>) -> Div {
+        self.maybe_auto_search(key, cx);
         let align = self.config.align;
         // Unmeasured (height 0) stacks; only a measured, short panel flows
         // the line and button inline, so the first frame never flickers.
@@ -1272,7 +1281,7 @@ impl LyricsPanel {
         let name = self
             .config
             .show_name
-            .then(|| self.track_name(path, cx))
+            .then(|| self.track_name(key, cx))
             .filter(|name| !name.is_empty());
 
         let face = div()
@@ -1331,11 +1340,12 @@ impl LyricsPanel {
     /// The shown track's name for the empty face: its title, then the
     /// artist when the tags carry one, the file stem standing in for a
     /// missing title.
-    fn track_name(&self, path: &Path, cx: &App) -> SharedString {
-        let meta = self.state.library.read(cx).meta_for(path);
+    fn track_name(&self, key: &TrackKey, cx: &App) -> SharedString {
+        let meta = self.state.library.read(cx).meta_for_key(key);
         let (title, artist) = meta.map(|m| (m.title, m.artist)).unwrap_or_default();
         let title = if title.is_empty() {
-            path.file_stem()
+            key.path
+                .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default()
         } else {
@@ -1357,10 +1367,11 @@ impl LyricsPanel {
     /// A track marked as carrying no lyrics is skipped: the mark is there
     /// precisely because a lookup got it wrong, and this is what would
     /// otherwise put the wrong sheet back every session.
-    fn maybe_auto_search(&mut self, path: &Path, cx: &mut Context<Self>) {
+    fn maybe_auto_search(&mut self, key: &TrackKey, cx: &mut Context<Self>) {
         if !self.config.auto_search || !providers::lyrics_online() {
             return;
         }
+        let path = key.path.as_path();
         if self.auto_tried.as_deref() == Some(path) {
             return;
         }
@@ -1368,7 +1379,7 @@ impl LyricsPanel {
         if lyrics::marked_none(path, Some(&lyrics_dir())) {
             return;
         }
-        let query = rox_services::lyrics::query_for(&self.state.library, path, cx);
+        let query = rox_services::lyrics::query_for(&self.state.library, key, cx);
         if query.artist.is_empty() || query.title.is_empty() {
             return;
         }
@@ -1404,7 +1415,7 @@ impl LyricsPanel {
     /// reach the middle too when pre-scroll is on.
     fn synced_face(
         &mut self,
-        path: &Path,
+        key: &TrackKey,
         lyrics: &Arc<Lyrics>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1414,7 +1425,7 @@ impl LyricsPanel {
         let lyrics = self.display_lyrics(lyrics);
         // The playhead only speaks for the track it is on; a Selected
         // source pointed elsewhere reads no position and just scrolls.
-        let position = self.playback_position(path, cx);
+        let position = self.playback_position(key, cx);
         let active = position.and_then(|secs| active_line(&lyrics, secs));
         self.active_line = active;
         self.positioned = position.is_some();
@@ -1710,7 +1721,7 @@ impl LyricsPanel {
     /// no highlight, no follow, for lyrics with no timestamps. With the
     /// title option on, the track name pins above the scroll so a short
     /// panel still says what song it is.
-    fn plain_face(&self, path: &Path, lyrics: &Arc<Lyrics>, cx: &App) -> Div {
+    fn plain_face(&self, key: &TrackKey, lyrics: &Arc<Lyrics>, cx: &App) -> Div {
         let align = self.config.align;
         let text_align = match align {
             Align::Left => gpui::TextAlign::Left,
@@ -1743,7 +1754,7 @@ impl LyricsPanel {
         // The title pins above the scroll as a fixed row, so it holds while
         // the sheet scrolls and stays put when a short panel squeezes the
         // words out.
-        let title = self.config.show_title.then(|| self.track_name(path, cx));
+        let title = self.config.show_title.then(|| self.track_name(key, cx));
         div()
             .size_full()
             .flex()

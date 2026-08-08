@@ -235,6 +235,7 @@ pub struct Builder {
     added: Vec<i64>,
     track_gain: Vec<i16>,
     album_gain: Vec<i16>,
+    sub: Vec<u16>,
     folder: Vec<u32>,
     artists: Interner,
     album_artists: Interner,
@@ -281,6 +282,7 @@ impl Builder {
         added: i64,
         track_gain_db: Option<f32>,
         album_gain_db: Option<f32>,
+        sub: u16,
     ) {
         self.db_id.push(id);
         self.title.push(title);
@@ -302,6 +304,7 @@ impl Builder {
         self.added.push(added);
         self.track_gain.push(pack_gain(track_gain_db));
         self.album_gain.push(pack_gain(album_gain_db));
+        self.sub.push(sub);
         // Interned per album directory, so it stays cheap even at ten
         // million rows; an empty parent (a bare filename) folds to "".
         let folder = Path::new(path)
@@ -356,6 +359,16 @@ pub struct Projection {
     /// library sorts or reads by them, so they stay in the database.
     pub track_gain: Vec<i16>,
     pub album_gain: Vec<i16>,
+    /// Which subsong of its file each row is: 0 for a plain file, the cue
+    /// sheet's 1-based track number for a span of an image. Dense because
+    /// it's two bytes a track and every TrackKey the UI builds needs it.
+    pub sub: Vec<u16>,
+    /// The cue tracks' spans, keyed by row index. Sparse on purpose per the
+    /// ADR 5 memory discipline: a library with no cue sheets holds an empty
+    /// map instead of a dense column of None, and even a library full of
+    /// them only pays per cue row. Nothing reads this to show a duration -
+    /// duration_ms is already on the row - it's for the player.
+    pub spans: HashMap<u32, crate::cue::Span>,
     /// Each track's parent directory, interned. Folders repeat once per
     /// album directory, so interning keeps this a handful of symbols even
     /// across a huge library. Searchable and filterable like artist/album.
@@ -412,6 +425,8 @@ pub struct RowView<'a> {
     pub track_gain_db: Option<f32>,
     pub album_gain_db: Option<f32>,
     pub folder: &'a str,
+    /// Which subsong of its file the row is, 0 for a plain file.
+    pub sub: u16,
 }
 
 /// One album-artist match from [`Projection::search_artists`]: the interned
@@ -835,7 +850,8 @@ impl Projection {
              rating,
              added,
              track_gain,
-             album_gain| {
+             album_gain,
+             sub| {
                 b.push(
                     id,
                     path,
@@ -856,11 +872,13 @@ impl Projection {
                     added,
                     track_gain,
                     album_gain,
+                    sub,
                 );
             },
         )?;
-        let projection = Self::merge(vec![b], fold);
+        let mut projection = Self::merge(vec![b], fold);
         projection.fill_plays(conn)?;
+        projection.fill_spans(conn)?;
         Ok(projection)
     }
 
@@ -902,7 +920,8 @@ impl Projection {
                              rating,
                              added,
                              track_gain,
-                             album_gain| {
+                             album_gain,
+                             sub| {
                                 b.push(
                                     id,
                                     path,
@@ -923,6 +942,7 @@ impl Projection {
                                     added,
                                     track_gain,
                                     album_gain,
+                                    sub,
                                 );
                             },
                         )?;
@@ -937,9 +957,10 @@ impl Projection {
         for b in builders {
             shards.push(b?);
         }
-        let projection = Self::merge(shards, fold);
+        let mut projection = Self::merge(shards, fold);
         let conn = store::open(db_path)?;
         projection.fill_plays(&conn)?;
+        projection.fill_spans(&conn)?;
         Ok(projection)
     }
 
@@ -953,6 +974,24 @@ impl Projection {
         for (i, id) in self.db_id.iter().enumerate() {
             if let Some(&n) = counts.get(id) {
                 self.plays[i].store(n, Ordering::Relaxed);
+            }
+        }
+        Ok(())
+    }
+
+    /// Fill the sparse span map from the cue side table, after the merge has
+    /// fixed what row each track id landed on. One query for the whole
+    /// library rather than per shard: the table holds a row per cue track and
+    /// nothing at all in a library of plain files, so there's no work to
+    /// split. A span whose track id is not in the projection is skipped.
+    fn fill_spans(&mut self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+        let spans = store::cue_spans(conn)?;
+        if spans.is_empty() {
+            return Ok(());
+        }
+        for (row, id) in self.db_id.iter().enumerate() {
+            if let Some(&span) = spans.get(id) {
+                self.spans.insert(row as u32, span);
             }
         }
         Ok(())
@@ -985,6 +1024,7 @@ impl Projection {
         out.added.reserve(total);
         out.track_gain.reserve(total);
         out.album_gain.reserve(total);
+        out.sub.reserve(total);
         out.folder.reserve(total);
 
         for shard in shards {
@@ -1018,6 +1058,7 @@ impl Projection {
             out.added.extend_from_slice(&shard.added);
             out.track_gain.extend_from_slice(&shard.track_gain);
             out.album_gain.extend_from_slice(&shard.album_gain);
+            out.sub.extend_from_slice(&shard.sub);
             out.folder
                 .extend(shard.folder.iter().map(|&s| map_f[s as usize]));
         }
@@ -1043,6 +1084,10 @@ impl Projection {
             added: out.added,
             track_gain: out.track_gain,
             album_gain: out.album_gain,
+            sub: out.sub,
+            // Filled after the merge by fill_spans, which needs a connection
+            // and reads a table the shard loaders never touch.
+            spans: HashMap::new(),
             rating: out.rating.into_iter().map(AtomicU8::new).collect(),
             plays,
             folder: out.folder,
@@ -1085,7 +1130,14 @@ impl Projection {
             track_gain_db: unpack_gain(self.track_gain[i]),
             album_gain_db: unpack_gain(self.album_gain[i]),
             folder: &self.folders.strings[self.folder[i] as usize],
+            sub: self.sub[i],
         }
+    }
+
+    /// The cue span a row plays, None for a plain file. Sparse lookup, so
+    /// this is a hash probe rather than an index.
+    pub fn span(&self, row: u32) -> Option<crate::cue::Span> {
+        self.spans.get(&row).copied()
     }
 
     /// Case-folded substring search, one term at a time per
@@ -1739,6 +1791,8 @@ mod tests {
 
     fn row(path: &str, album: &str, disc_no: u16, track_no: u16) -> TrackRow {
         TrackRow {
+            sub: 0,
+            cue: None,
             path: path.into(),
             title: String::new(),
             artist: String::new(),
@@ -1762,6 +1816,8 @@ mod tests {
 
     fn track(path: &str, title: &str, artist: &str, year: u16) -> TrackRow {
         TrackRow {
+            sub: 0,
+            cue: None,
             path: path.into(),
             title: title.into(),
             artist: artist.into(),
@@ -2321,6 +2377,8 @@ mod tests {
     fn search_surfaces_albums_and_artists() {
         fn full(path: &str, album_artist: &str, album: &str, title: &str) -> TrackRow {
             TrackRow {
+                sub: 0,
+                cue: None,
                 path: path.into(),
                 title: title.into(),
                 artist: album_artist.into(),
@@ -2646,6 +2704,8 @@ mod tests {
     fn search_grouped_matches_reference() {
         fn full(path: &str, album_artist: &str, album: &str, title: &str) -> TrackRow {
             TrackRow {
+                sub: 0,
+                cue: None,
                 path: path.into(),
                 title: title.into(),
                 artist: album_artist.into(),
@@ -2735,6 +2795,8 @@ mod tests {
     fn search_cache_is_stable_across_calls() {
         fn full(path: &str, album_artist: &str, album: &str) -> TrackRow {
             TrackRow {
+                sub: 0,
+                cue: None,
                 path: path.into(),
                 title: "t".into(),
                 artist: album_artist.into(),

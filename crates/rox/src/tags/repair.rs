@@ -434,7 +434,9 @@ impl TagRepair {
                     })
                     .collect();
                 if !edits.is_empty() {
-                    library.update(cx, |library, cx| library.apply_edits(&edits, cx));
+                    // The repair rewrites a file's header and names no columns, so
+                    // there is no per-row sub for it to land on.
+                    library.update(cx, |library, cx| library.apply_edits(&edits, &[], cx));
                 }
                 let done: HashSet<PathBuf> = repaired.into_iter().collect();
                 let kept: Vec<RepairRow> = std::mem::take(&mut this.found)

@@ -361,13 +361,13 @@ impl QuickPlay {
                     .map(|&row| projection.db_id[row as usize])
                     .collect()
             };
-            library.paths_for(&ids)
+            library.keys_for(&ids)
         };
         match result {
-            Ok(paths) => {
+            Ok(keys) => {
                 self.state
                     .player
-                    .update(cx, |player, cx| player.play(paths, cx));
+                    .update(cx, |player, cx| player.play(keys, cx));
                 cx.emit(DismissEvent);
             }
             Err(e) => {

@@ -65,6 +65,12 @@ impl LibraryWatcher {
                 if matches!(event.kind, EventKind::Access(_)) {
                     continue;
                 }
+                // Note that nothing here filters by extension. A .cue write
+                // has to ride the batch like an audio write does, since
+                // editing a sheet re-cuts the image beside it; the receiver's
+                // relevance test is [`crate::scanner::is_relevant`], which
+                // passes both, and [`crate::scanner::reindex`] knows what to
+                // do with a sheet.
                 // The debouncer correlates a rename into a single Both
                 // event carrying [from, to]. Carry that as a pair so the
                 // sync moves the row and keeps its id; a Both that did not

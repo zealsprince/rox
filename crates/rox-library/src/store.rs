@@ -93,6 +93,78 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
         name: "acoustic-embeddings",
         up: crate::embeddings::init_schema,
     },
+    // Subsong identity: a track is (source, path, sub), where sub is 0 for a
+    // plain file and a cue sheet's 1-based TRACK number for a span of an
+    // image. That means the old UNIQUE (source, path) has to go, and SQLite
+    // cannot alter a constraint in place, so the table is rebuilt around the
+    // new one the way playlist_tracks was. Existing rows are all plain files
+    // and take sub 0; ids are carried over, so nothing joining on a track id
+    // (playlists, listens, embeddings) notices.
+    crate::migrate::Migration {
+        name: "track-subsong",
+        up: |conn| {
+            conn.execute_batch(
+                "CREATE TABLE tracks_new (
+                    id            INTEGER PRIMARY KEY,
+                    source        TEXT NOT NULL DEFAULT 'local',
+                    path          TEXT NOT NULL,
+                    sub           INTEGER NOT NULL DEFAULT 0,
+                    title         TEXT NOT NULL,
+                    artist        TEXT NOT NULL,
+                    album_artist  TEXT NOT NULL DEFAULT '',
+                    album         TEXT NOT NULL,
+                    genre         TEXT NOT NULL,
+                    year          INTEGER NOT NULL,
+                    disc_no       INTEGER NOT NULL DEFAULT 0,
+                    track_no      INTEGER NOT NULL,
+                    duration_ms   INTEGER NOT NULL,
+                    codec         TEXT NOT NULL DEFAULT '',
+                    bitrate       INTEGER NOT NULL DEFAULT 0,
+                    sample_rate   INTEGER NOT NULL DEFAULT 0,
+                    bit_depth     INTEGER NOT NULL DEFAULT 0,
+                    rating        INTEGER NOT NULL DEFAULT 0,
+                    added         INTEGER NOT NULL DEFAULT 0,
+                    size          INTEGER NOT NULL,
+                    mtime         INTEGER NOT NULL,
+                    rg_track_gain REAL,
+                    rg_track_peak REAL,
+                    rg_album_gain REAL,
+                    rg_album_peak REAL,
+                    rg_source     INTEGER,
+                    UNIQUE (source, path, sub)
+                );
+                 INSERT INTO tracks_new
+                    (id, source, path, sub, title, artist, album_artist, album, genre, year,
+                     disc_no, track_no, duration_ms, codec, bitrate, sample_rate, bit_depth,
+                     rating, added, size, mtime,
+                     rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, rg_source)
+                    SELECT id, source, path, 0, title, artist, album_artist, album, genre, year,
+                     disc_no, track_no, duration_ms, codec, bitrate, sample_rate, bit_depth,
+                     rating, added, size, mtime,
+                     rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, rg_source
+                    FROM tracks;
+                 DROP TABLE tracks;
+                 ALTER TABLE tracks_new RENAME TO tracks;",
+            )
+        },
+    },
+    // Where a cue track's span lives. Its own table rather than two nullable
+    // columns on tracks: rows exist only for cue tracks, so a library of
+    // plain files carries an empty table and pays nothing per row. end_ms is
+    // NULL on the last track of an image, which runs to the file's own end.
+    crate::migrate::Migration {
+        name: "cue-tracks",
+        up: |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS cue_tracks (
+                    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+                    cue_path TEXT NOT NULL,
+                    start_ms INTEGER NOT NULL,
+                    end_ms   INTEGER
+                );",
+            )
+        },
+    },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -203,13 +275,18 @@ const KEEPS_MEASURED_GAIN: &str = "rg_source = 1
                     AND excluded.rg_track_gain IS NULL AND excluded.rg_album_gain IS NULL";
 
 /// Insert or refresh one batch of local rows inside a single transaction. An
-/// existing (source, path) row keeps its id, so projection db_ids stay valid
-/// across a rescan. A re-read file's rating imports like any tag, except a
-/// zero keeps the stored one: a rating the writer could not land in the
+/// existing (source, path, sub) row keeps its id, so projection db_ids stay
+/// valid across a rescan. A re-read file's rating imports like any tag, except
+/// a zero keeps the stored one: a rating the writer could not land in the
 /// file (wav, read-only media) must not vanish because the file changed.
 /// ReplayGain follows [`KEEPS_MEASURED_GAIN`]: tags overwrite anything,
 /// including a measurement, and only a measured row survives a rescan that
 /// found no tags.
+///
+/// A row carrying a [`crate::CueSlice`] lands its span in `cue_tracks` beside
+/// the track; a plain row drops any side row left over from when that key was
+/// a cue track. Both are skipped outright where the library has no cue rows
+/// at all, so a plain library pays one question per batch and nothing per row.
 pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Result<()> {
     // The scan time stamps first-seen rows only: the conflict update below
     // leaves `added` alone, so a rescan of an unchanged or edited file keeps
@@ -218,16 +295,23 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    // Whether any span has to be written or cleared this batch. A library
+    // with no cue sheets answers no once and skips the per-row side work.
+    let spans_in_play = rows.iter().any(|r| r.cue.is_some()) || {
+        conn.query_row("SELECT EXISTS (SELECT 1 FROM cue_tracks)", [], |r| {
+            r.get::<_, i64>(0)
+        })? == 1
+    };
     let tx = conn.transaction()?;
     {
         let mut stmt = tx.prepare_cached(&format!(
             "INSERT INTO tracks
-             (path, title, artist, album_artist, album, genre, year, disc_no, track_no,
+             (path, sub, title, artist, album_artist, album, genre, year, disc_no, track_no,
               duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added, size, mtime,
               rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, rg_source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+             VALUES (?1, ?23, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
                      ?17, ?18, ?19, ?20, ?21, ?22, 0)
-             ON CONFLICT (source, path) DO UPDATE SET
+             ON CONFLICT (source, path, sub) DO UPDATE SET
                 title = excluded.title, artist = excluded.artist,
                 album_artist = excluded.album_artist,
                 album = excluded.album, genre = excluded.genre,
@@ -250,6 +334,21 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 mtime = excluded.mtime",
             keep = KEEPS_MEASURED_GAIN,
         ))?;
+        // The upsert leaves no id behind on the conflict branch, so a row
+        // that owes side work looks its id up. Only cue rows and the batches
+        // that follow them ever get here.
+        let mut key_id = tx.prepare_cached(
+            "SELECT id FROM tracks WHERE source = 'local' AND path = ?1 AND sub = ?2",
+        )?;
+        let mut put_span = tx.prepare_cached(
+            "INSERT INTO cue_tracks (track_id, cue_path, start_ms, end_ms)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (track_id) DO UPDATE SET
+                cue_path = excluded.cue_path,
+                start_ms = excluded.start_ms,
+                end_ms = excluded.end_ms",
+        )?;
+        let mut drop_span = tx.prepare_cached("DELETE FROM cue_tracks WHERE track_id = ?1")?;
         for r in rows {
             stmt.execute(rusqlite::params![
                 r.path,
@@ -274,10 +373,111 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 r.replay_gain.track_peak,
                 r.replay_gain.album_db,
                 r.replay_gain.album_peak,
+                r.sub,
             ])?;
+            if !spans_in_play {
+                continue;
+            }
+            let id: i64 = key_id.query_row(rusqlite::params![r.path, r.sub], |row| row.get(0))?;
+            match &r.cue {
+                Some(slice) => {
+                    put_span.execute(rusqlite::params![
+                        id,
+                        slice.cue_path,
+                        slice.span.start_ms,
+                        slice.span.end_ms,
+                    ])?;
+                }
+                // A key that used to be a cue track and is now a plain file
+                // (its sheet was deleted) must not keep the old span.
+                None => {
+                    drop_span.execute([id])?;
+                }
+            }
         }
     }
     tx.commit()
+}
+
+/// Drop cue side rows whose track is gone. The table declares ON DELETE
+/// CASCADE, but SQLite leaves foreign keys off unless a connection asks for
+/// them, and the tests open their own connections, so every delete path
+/// sweeps rather than rely on a pragma one caller might not set. Orphans
+/// would be worse than untidy: SQLite reuses rowids, so a fresh track could
+/// otherwise inherit a dead one's span.
+fn sweep_cue_orphans(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM cue_tracks WHERE track_id NOT IN (SELECT id FROM tracks)",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Keep only these subsongs of one file and drop the rest, the scanner's cue
+/// bookkeeping. An image a sheet claims keeps exactly the subs the sheet
+/// still produces, which is also what retires the plain sub 0 row it had
+/// before the sheet appeared; an image whose sheet is gone keeps only sub 0,
+/// which retires the cue rows. Returns how many rows went.
+pub fn retain_subs(conn: &Connection, path: &str, keep: &[u16]) -> rusqlite::Result<usize> {
+    // No sub is negative, so the empty case deletes every row for the path
+    // rather than build a `NOT IN ()` SQLite will not parse.
+    let list = if keep.is_empty() {
+        "-1".to_string()
+    } else {
+        keep.iter()
+            .map(|sub| sub.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let removed = conn.execute(
+        &format!(
+            "DELETE FROM tracks
+             WHERE source = 'local' AND path = ?1 AND sub NOT IN ({list})"
+        ),
+        [path],
+    )?;
+    if removed > 0 {
+        sweep_cue_orphans(conn)?;
+    }
+    Ok(removed)
+}
+
+/// Which subsongs of which files are cue tracks right now, so a scan can tell
+/// what a sheet used to produce from what it produces this pass. Keyed by
+/// image path, subs ascending. Rows exist only for cue tracks, so this reads
+/// nothing on a library of plain files.
+pub fn cue_subs(conn: &Connection) -> rusqlite::Result<HashMap<String, Vec<u16>>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.path, t.sub FROM tracks t JOIN cue_tracks c ON c.track_id = t.id
+         WHERE t.source = 'local' ORDER BY t.path, t.sub",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut out: HashMap<String, Vec<u16>> = HashMap::new();
+    while let Some(row) = rows.next()? {
+        out.entry(row.get(0)?)
+            .or_default()
+            .push(row.get::<_, i64>(1)? as u16);
+    }
+    Ok(out)
+}
+
+/// Every cue track's span keyed by its track id, what the projection fills
+/// its sparse span map from. One query over the side table, so a library
+/// without cue sheets reads an empty result and allocates nothing.
+pub fn cue_spans(conn: &Connection) -> rusqlite::Result<HashMap<i64, crate::cue::Span>> {
+    let mut stmt = conn.prepare("SELECT track_id, start_ms, end_ms FROM cue_tracks")?;
+    let mut rows = stmt.query([])?;
+    let mut out = HashMap::new();
+    while let Some(row) = rows.next()? {
+        out.insert(
+            row.get::<_, i64>(0)?,
+            crate::cue::Span {
+                start_ms: row.get::<_, i64>(1)? as u32,
+                end_ms: row.get::<_, Option<i64>>(2)?.map(|end| end as u32),
+            },
+        );
+    }
+    Ok(out)
 }
 
 /// The half-open path range holding exactly the files under `root`: from
@@ -432,6 +632,10 @@ pub struct AlbumToMeasure {
 /// by disc and track within it, so the work comes back in a stable order run
 /// to run. A track carrying only an album gain still counts as missing: album
 /// mode has something to level it by, track mode is only borrowing.
+///
+/// Cue tracks are left out. The pass works in paths, and every track of a
+/// whole-disc rip is the same path, so it would measure one image over and
+/// over and then write each result onto all of them.
 pub fn albums_missing_replaygain(conn: &Connection) -> rusqlite::Result<Vec<AlbumToMeasure>> {
     let mut stmt = conn.prepare(
         "SELECT t.album_artist, t.album, t.path, g.total
@@ -439,7 +643,7 @@ pub fn albums_missing_replaygain(conn: &Connection) -> rusqlite::Result<Vec<Albu
          JOIN (SELECT album_artist, album, COUNT(*) AS total FROM tracks
                WHERE source = 'local' GROUP BY album_artist, album) g
            ON g.album_artist = t.album_artist AND g.album = t.album
-         WHERE t.source = 'local' AND t.rg_track_gain IS NULL
+         WHERE t.source = 'local' AND t.rg_track_gain IS NULL AND t.sub = 0
          ORDER BY t.album_artist, t.album, t.disc_no, t.track_no, t.path",
     )?;
     let mut rows = stmt.query([])?;
@@ -496,7 +700,7 @@ pub fn set_measured_replaygain(
                 rg_album_gain = COALESCE(?4, rg_album_gain),
                 rg_album_peak = COALESCE(?5, rg_album_peak),
                 rg_source = ?6
-             WHERE source = 'local' AND path = ?1
+             WHERE source = 'local' AND path = ?1 AND sub = 0
                AND (rg_source = ?6 OR rg_track_gain IS NULL)",
         )?;
         for (path, gain) in measured {
@@ -518,10 +722,14 @@ pub fn set_measured_replaygain(
 /// library. The files themselves are untouched.
 pub fn remove_under(conn: &Connection, root: &Path) -> rusqlite::Result<usize> {
     let (lo, hi) = path_range(root);
-    conn.execute(
+    let removed = conn.execute(
         "DELETE FROM tracks WHERE source = 'local' AND path >= ?1 AND path < ?2",
         rusqlite::params![lo, hi],
-    )
+    )?;
+    if removed > 0 {
+        sweep_cue_orphans(conn)?;
+    }
+    Ok(removed)
 }
 
 /// Drop the row for one path and, if it was a directory, every row beneath
@@ -532,11 +740,15 @@ pub fn remove_under(conn: &Connection, root: &Path) -> rusqlite::Result<usize> {
 pub fn remove_subtree(conn: &Connection, path: &Path) -> rusqlite::Result<usize> {
     let exact = path.to_string_lossy();
     let (lo, hi) = path_range(path);
-    conn.execute(
+    let removed = conn.execute(
         "DELETE FROM tracks
          WHERE source = 'local' AND (path = ?1 OR (path >= ?2 AND path < ?3))",
         rusqlite::params![exact, lo, hi],
-    )
+    )?;
+    if removed > 0 {
+        sweep_cue_orphans(conn)?;
+    }
+    Ok(removed)
 }
 
 /// Move the row for one path and, if it was a directory, every row beneath
@@ -597,8 +809,12 @@ pub fn prune_missing(
     // The stored paths under root the walk did not find. Collected first so
     // the delete runs off a plain list, not a live cursor over the table.
     let gone: Vec<String> = {
+        // DISTINCT because one file can hold several rows: a cue image is one
+        // path per track of the disc, and the delete below is path-wide, so
+        // the vanished file should be named once.
         let mut stmt = conn.prepare(
-            "SELECT path FROM tracks WHERE source = 'local' AND path >= ?1 AND path < ?2",
+            "SELECT DISTINCT path FROM tracks
+             WHERE source = 'local' AND path >= ?1 AND path < ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![lo, hi], |r| r.get::<_, String>(0))?;
         rows.filter_map(Result::ok)
@@ -608,16 +824,20 @@ pub fn prune_missing(
     if gone.is_empty() {
         return Ok(0);
     }
+    let mut removed = 0;
     let tx = conn.transaction()?;
     {
+        // A gone image takes every subsong of it, which is what a whole-disc
+        // rip losing its file should do.
         let mut del =
             tx.prepare_cached("DELETE FROM tracks WHERE source = 'local' AND path = ?1")?;
         for path in &gone {
-            del.execute([path])?;
+            removed += del.execute([path])?;
         }
     }
     tx.commit()?;
-    Ok(gone.len())
+    sweep_cue_orphans(conn)?;
+    Ok(removed)
 }
 
 /// Every local path with its (mtime, size), so a rescan can skip files that
@@ -791,6 +1011,10 @@ pub struct QueueMeta {
     pub id: Option<i64>,
     pub group: Option<u64>,
     pub replay_gain: crate::replaygain::ReplayGain,
+    /// The slice of the file to play, for a cue track; None for a plain
+    /// file, which plays whole. Only [`queue_meta_for_key`] can fill this,
+    /// since a span belongs to a (path, sub) pair rather than a path.
+    pub span: Option<crate::cue::Span>,
 }
 
 /// Resolve a playable path to its [`QueueMeta`]. Everything defaults when
@@ -801,7 +1025,7 @@ pub struct QueueMeta {
 pub fn queue_meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<QueueMeta> {
     let mut stmt = conn.prepare_cached(
         "SELECT album_artist, album, rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, id
-         FROM tracks WHERE source = 'local' AND path = ?1",
+         FROM tracks WHERE source = 'local' AND path = ?1 AND sub = 0",
     )?;
     let mut rows = stmt.query([path])?;
     match rows.next()? {
@@ -817,9 +1041,68 @@ pub fn queue_meta_for_path(conn: &Connection, path: &str) -> rusqlite::Result<Qu
                     album_db: row.get(4)?,
                     album_peak: row.get(5)?,
                 },
+                span: None,
             })
         }
         None => Ok(QueueMeta::default()),
+    }
+}
+
+/// The same for a full (path, sub) key, the subsong-aware lookup: a plain
+/// file asks with sub 0 and gets exactly what [`queue_meta_for_path`]
+/// answers, a cue track asks with its number and gets the span to play
+/// besides. An unknown key defaults the same way, so a file from outside the
+/// library still plays.
+pub fn queue_meta_for_key(conn: &Connection, path: &str, sub: u16) -> rusqlite::Result<QueueMeta> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT t.album_artist, t.album, t.rg_track_gain, t.rg_track_peak,
+                t.rg_album_gain, t.rg_album_peak, t.id, c.start_ms, c.end_ms
+         FROM tracks t LEFT JOIN cue_tracks c ON c.track_id = t.id
+         WHERE t.source = 'local' AND t.path = ?1 AND t.sub = ?2",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![path, sub])?;
+    match rows.next()? {
+        Some(row) => {
+            let album_artist: String = row.get(0)?;
+            let album: String = row.get(1)?;
+            let start_ms: Option<i64> = row.get(7)?;
+            Ok(QueueMeta {
+                id: row.get(6)?,
+                group: crate::hash::album_group(&album_artist, &album),
+                replay_gain: crate::replaygain::ReplayGain {
+                    track_db: row.get(2)?,
+                    track_peak: row.get(3)?,
+                    album_db: row.get(4)?,
+                    album_peak: row.get(5)?,
+                },
+                span: start_ms.map(|start_ms| crate::cue::Span {
+                    start_ms: start_ms as u32,
+                    end_ms: row
+                        .get::<_, Option<i64>>(8)
+                        .ok()
+                        .flatten()
+                        .map(|e| e as u32),
+                }),
+            })
+        }
+        None => Ok(QueueMeta::default()),
+    }
+}
+
+/// The playable key for a library id, the reverse of
+/// [`queue_meta_for_key`]: path and sub straight off the row. What turns an
+/// id handed back by a background task (a continuation pick, say) into
+/// something the player can queue. None for an id no longer in the library.
+pub fn key_for_id(conn: &Connection, id: i64) -> rusqlite::Result<Option<crate::cue::TrackKey>> {
+    let mut stmt =
+        conn.prepare_cached("SELECT path, sub FROM tracks WHERE source = 'local' AND id = ?1")?;
+    let mut rows = stmt.query([id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(crate::cue::TrackKey {
+            path: std::path::PathBuf::from(row.get::<_, String>(0)?),
+            sub: row.get::<_, u16>(1)?,
+        })),
+        None => Ok(None),
     }
 }
 
@@ -949,8 +1232,10 @@ pub fn max_rowid(conn: &Connection) -> rusqlite::Result<i64> {
 /// Stream the projection columns for one rowid range, in id order. The
 /// sink's argument order mirrors the SELECT: path, title, artist, album
 /// artist, album, genre, then codec and the stream numbers after the tag
-/// numbers, the rating and scan time, then the two ReplayGain figures. The
-/// path rides so the projection can derive each track's folder.
+/// numbers, the rating and scan time, then the two ReplayGain figures and
+/// last the subsong number. The path rides so the projection can derive each
+/// track's folder; the sub rides so it can build a TrackKey. Spans do not:
+/// they are sparse, and the projection fills them from [`cue_spans`].
 #[allow(clippy::type_complexity)]
 pub fn scan_range(
     conn: &Connection,
@@ -976,12 +1261,13 @@ pub fn scan_range(
         i64,
         Option<f32>,
         Option<f32>,
+        u16,
     ),
 ) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, path, title, artist, album_artist, album, genre, year, disc_no, track_no,
                 duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added,
-                rg_track_gain, rg_album_gain
+                rg_track_gain, rg_album_gain, sub
          FROM tracks WHERE id > ?1 AND id <= ?2 ORDER BY id",
     )?;
     let mut rows = stmt.query(rusqlite::params![lo, hi])?;
@@ -1006,6 +1292,7 @@ pub fn scan_range(
             row.get::<_, i64>(16)?,
             row.get(17)?,
             row.get(18)?,
+            row.get::<_, i64>(19)? as u16,
         );
     }
     Ok(())
@@ -1017,6 +1304,8 @@ mod tests {
 
     fn row(path: &str, album_artist: &str, album: &str, size: u64) -> TrackRow {
         TrackRow {
+            sub: 0,
+            cue: None,
             path: path.into(),
             title: String::new(),
             artist: String::new(),
@@ -1035,6 +1324,20 @@ mod tests {
             replay_gain: Default::default(),
             size,
             mtime: 0,
+        }
+    }
+
+    /// One track of a cue rip: the image path with a subsong number and the
+    /// span that goes in the side table.
+    fn cue_row(path: &str, sub: u16, start_ms: u32, end_ms: Option<u32>) -> TrackRow {
+        TrackRow {
+            sub,
+            track_no: sub,
+            cue: Some(crate::CueSlice {
+                cue_path: "/m/Album/disc.cue".into(),
+                span: crate::cue::Span { start_ms, end_ms },
+            }),
+            ..row(path, "X", "Album", 100)
         }
     }
 
@@ -1214,6 +1517,95 @@ mod tests {
             crate::replaygain::Source::Tags
         );
         assert_eq!(mtime, 500, "no file is owed a re-read for this column");
+    }
+
+    /// The subsong step rebuilds the tracks table around (source, path, sub).
+    /// The rebuild is the risky half: ids have to survive it or every join in
+    /// the database (playlists, listens, embeddings) points at nothing.
+    #[test]
+    fn track_subsong_step_rebuilds_the_table_around_the_new_key() {
+        let conn = Connection::open_in_memory().unwrap();
+        let rung = MIGRATIONS
+            .iter()
+            .position(|m| m.name == "track-subsong")
+            .expect("the track-subsong rung is part of the ladder");
+        crate::migrate::run(&conn, &MIGRATIONS[..rung]).unwrap();
+        conn.execute(
+            "INSERT INTO tracks (path, title, artist, album_artist, album, genre, year,
+                disc_no, track_no, duration_ms, codec, bitrate, sample_rate, bit_depth,
+                rating, added, size, mtime, rg_track_gain)
+             VALUES ('/m/disc.flac', 'One', 'A', 'A', 'Album', 'rock', 1997, 1, 1, 600000,
+                     'flac', 1006, 44100, 16, 60, 123, 4096, 500, -7.35)",
+            [],
+        )
+        .unwrap();
+        let before: i64 = conn
+            .query_row("SELECT id FROM tracks", [], |r| r.get(0))
+            .unwrap();
+
+        crate::migrate::run(&conn, &MIGRATIONS[..=rung]).unwrap();
+
+        let (id, sub, rating, added, gain): (i64, i64, i64, i64, f64) = conn
+            .query_row(
+                "SELECT id, sub, rating, added, rg_track_gain FROM tracks",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(id, before, "the rebuild carries ids, so every join holds");
+        assert_eq!(sub, 0, "an existing row is a plain file");
+        assert_eq!((rating, added), (60, 123), "app-owned columns came across");
+        assert!((gain - -7.35).abs() < 1e-6, "the gains came across");
+
+        // The old UNIQUE (source, path) is what had to go: two subsongs of
+        // one image are now legal.
+        let insert = |sub: u16| {
+            conn.execute(
+                "INSERT INTO tracks (path, sub, title, artist, album_artist, album, genre,
+                    year, track_no, duration_ms, size, mtime)
+                 VALUES ('/m/disc.flac', ?1, 'Two', 'A', 'A', 'Album', '', 1997, 2, 0, 4096, 500)",
+                [sub],
+            )
+        };
+        insert(2).expect("a second subsong of the same image");
+        assert!(insert(2).is_err(), "the new key still forbids a repeat");
+    }
+
+    /// The cue step adds the side table and nothing else. NULL end_ms is the
+    /// point of it: the last track of an image runs to the file's own end.
+    #[test]
+    fn cue_tracks_step_adds_the_span_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        let rung = MIGRATIONS
+            .iter()
+            .position(|m| m.name == "cue-tracks")
+            .expect("the cue-tracks rung is part of the ladder");
+        crate::migrate::run(&conn, &MIGRATIONS[..rung]).unwrap();
+        assert!(
+            conn.prepare("SELECT 1 FROM cue_tracks").is_err(),
+            "the table arrives with its own rung, not before"
+        );
+
+        crate::migrate::run(&conn, &MIGRATIONS[..=rung]).unwrap();
+        conn.execute(
+            "INSERT INTO tracks (id, path, sub, title, artist, album_artist, album, genre,
+                year, track_no, duration_ms, size, mtime)
+             VALUES (7, '/m/disc.flac', 3, 'Three', 'A', 'A', 'Album', '', 0, 3, 0, 4096, 500)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cue_tracks (track_id, cue_path, start_ms, end_ms)
+             VALUES (7, '/m/disc.cue', 620146, NULL)",
+            [],
+        )
+        .unwrap();
+        let (start, end): (i64, Option<i64>) = conn
+            .query_row("SELECT start_ms, end_ms FROM cue_tracks", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((start, end), (620_146, None));
     }
 
     /// The SQL in [`KEEPS_MEASURED_GAIN`] and the upsert spells the measured
@@ -1782,6 +2174,158 @@ mod tests {
             id_for_path(&conn, "/m/Artist/Album Two/1.mp3").unwrap(),
             Some(sibling_id),
             "a name-prefix sibling folder is not swept up"
+        );
+    }
+
+    /// One image, several rows: the cue tracks share a path, keep their own
+    /// spans, and answer the key-addressed lookup the player will use.
+    #[test]
+    fn cue_rows_share_an_image_and_carry_their_spans() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let image = "/m/Album/disc.flac";
+        insert_batch(
+            &mut conn,
+            &[
+                cue_row(image, 1, 0, Some(180_000)),
+                cue_row(image, 2, 180_000, Some(400_000)),
+                cue_row(image, 3, 400_000, None),
+                row("/m/Album/loose.mp3", "X", "Album", 100),
+            ],
+        )
+        .unwrap();
+        assert_eq!(count(&conn).unwrap(), 4);
+
+        let second = queue_meta_for_key(&conn, image, 2).unwrap();
+        assert_eq!(
+            second.span,
+            Some(crate::cue::Span {
+                start_ms: 180_000,
+                end_ms: Some(400_000)
+            })
+        );
+        assert_eq!(second.group, crate::hash::album_group("X", "Album"));
+        let last = queue_meta_for_key(&conn, image, 3).unwrap();
+        assert_eq!(
+            last.span,
+            Some(crate::cue::Span {
+                start_ms: 400_000,
+                end_ms: None
+            }),
+            "the last track runs to the file's own end"
+        );
+        // A plain file answers the same lookup with no span at all.
+        assert_eq!(
+            queue_meta_for_key(&conn, "/m/Album/loose.mp3", 0)
+                .unwrap()
+                .span,
+            None
+        );
+        // The path-only lookup speaks for sub 0, and the image has no such
+        // row, so it defaults rather than guess a track.
+        assert_eq!(
+            queue_meta_for_path(&conn, image).unwrap(),
+            QueueMeta::default()
+        );
+
+        assert_eq!(cue_subs(&conn).unwrap().get(image), Some(&vec![1, 2, 3]));
+        assert_eq!(cue_spans(&conn).unwrap().len(), 3);
+    }
+
+    /// The two transitions the scanner leans on: a sheet dropping a track,
+    /// and an image going back to being one plain file. Both run through
+    /// retain_subs, and both have to take the side rows with them.
+    #[test]
+    fn retain_subs_prunes_the_rows_and_their_spans() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let image = "/m/Album/disc.flac";
+        let all = || {
+            vec![
+                cue_row(image, 1, 0, Some(180_000)),
+                cue_row(image, 2, 180_000, Some(400_000)),
+                cue_row(image, 3, 400_000, None),
+            ]
+        };
+        insert_batch(&mut conn, &all()).unwrap();
+
+        // A re-edited sheet that no longer lists track 3.
+        assert_eq!(retain_subs(&conn, image, &[1, 2]).unwrap(), 1);
+        assert_eq!(count(&conn).unwrap(), 2);
+        assert_eq!(
+            cue_spans(&conn).unwrap().len(),
+            2,
+            "the dead track's span went with it"
+        );
+
+        // The sheet deleted: the image is one plain file again. The scan
+        // upserts sub 0 first, then the cue rows go.
+        insert_batch(&mut conn, &[row(image, "X", "Album", 100)]).unwrap();
+        assert_eq!(retain_subs(&conn, image, &[0]).unwrap(), 2);
+        assert_eq!(count(&conn).unwrap(), 1);
+        assert!(
+            cue_spans(&conn).unwrap().is_empty(),
+            "no span outlives its track, or a reused rowid would inherit it"
+        );
+
+        // And back the other way: the plain row's key becoming a cue track
+        // again clears nothing it shouldn't, and a plain upsert over a key
+        // that was a cue track drops the stale span.
+        insert_batch(&mut conn, &[cue_row(image, 0, 5_000, Some(9_000))]).unwrap();
+        assert_eq!(cue_spans(&conn).unwrap().len(), 1);
+        insert_batch(&mut conn, &[row(image, "X", "Album", 100)]).unwrap();
+        assert!(cue_spans(&conn).unwrap().is_empty());
+    }
+
+    /// A vanished image takes every subsong of it, spans included.
+    #[test]
+    fn removing_an_image_takes_all_its_subsongs() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let image = "/m/Album/disc.flac";
+        insert_batch(
+            &mut conn,
+            &[
+                cue_row(image, 1, 0, Some(180_000)),
+                cue_row(image, 2, 180_000, None),
+                row("/m/Album/loose.mp3", "X", "Album", 100),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(remove_subtree(&conn, Path::new(image)).unwrap(), 2);
+        assert_eq!(count(&conn).unwrap(), 1);
+        assert!(cue_spans(&conn).unwrap().is_empty());
+    }
+
+    /// The projection carries the subsong number densely and the spans
+    /// sparsely, so a library of plain files holds an empty map.
+    #[test]
+    fn the_projection_carries_subs_dense_and_spans_sparse() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let image = "/m/Album/disc.flac";
+        insert_batch(
+            &mut conn,
+            &[
+                row("/m/Album/loose.mp3", "X", "Album", 100),
+                cue_row(image, 1, 0, Some(180_000)),
+                cue_row(image, 2, 180_000, None),
+            ],
+        )
+        .unwrap();
+
+        let p = crate::projection::Projection::load_serial(&conn, false).unwrap();
+        assert_eq!(p.sub, [0, 1, 2]);
+        assert_eq!(p.resolve(2).sub, 2);
+        assert_eq!(p.spans.len(), 2, "only the cue rows hold a span");
+        assert_eq!(p.span(0), None, "a plain file is not in the map");
+        assert_eq!(
+            p.span(1),
+            Some(crate::cue::Span {
+                start_ms: 0,
+                end_ms: Some(180_000)
+            })
         );
     }
 

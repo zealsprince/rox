@@ -31,6 +31,7 @@ use gpui_component::scroll::Scrollbar;
 use gpui_component::{h_virtual_list, v_virtual_list, Icon, Side, VirtualListScrollHandle};
 use rox_core::QUEUE_CAP;
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use rox_panel_kit::config::{default_true, is_zero};
 use rox_panel_kit::wall::{default_dim, WallLayout, TILE_DIM_MAX, TILE_LABEL_H};
 use serde::{Deserialize, Serialize};
@@ -250,7 +251,7 @@ pub struct GridPanel {
     /// the user has stepped away.
     resume_idle: ResumeIdle,
     /// The playing track's path, the change detector for follow-playing.
-    playing_path: Option<PathBuf>,
+    playing_key: Option<TrackKey>,
     /// The playing album's cell in the current view, kept fresh by
     /// `sync_playing` and `rebuild` so per-frame dimming never rescans.
     playing_ix: Option<usize>,
@@ -369,7 +370,7 @@ impl GridPanel {
             restore,
             last_tick: Instant::now(),
             resume_idle: ResumeIdle::default(),
-            playing_path: None,
+            playing_key: None,
             playing_ix: None,
             playing: false,
             dim_fading: false,
@@ -405,10 +406,7 @@ impl GridPanel {
     fn sync_playing(&mut self, cx: &mut Context<Self>) {
         let (playing, path) = {
             let player = self.state.player.read(cx);
-            (
-                player.is_playing(),
-                player.now_playing().map(|now| now.path),
-            )
+            (player.is_playing(), player.now_playing().map(|now| now.key))
         };
         if playing != self.playing {
             // Pause lifts the dim, resuming drops it back; render steps
@@ -417,10 +415,10 @@ impl GridPanel {
             self.dim_fading = true;
             cx.notify();
         }
-        if path == self.playing_path {
+        if path == self.playing_key {
             return;
         }
-        self.playing_path = path;
+        self.playing_key = path;
         self.playing_ix = self.playing_cell(cx);
         // The un-dimmed album moved, so the old and new tiles both ease.
         self.dim_fading = true;
@@ -432,9 +430,9 @@ impl GridPanel {
 
     /// The playing track's album in the current view, when it holds one.
     fn playing_cell(&self, cx: &App) -> Option<usize> {
-        let path = self.playing_path.as_ref()?;
+        let key = self.playing_key.as_ref()?;
         let library = self.state.library.read(cx);
-        let id = library.id_for(path)?;
+        let id = library.id_for_key(key)?;
         let projection = library.projection()?;
         let view_ix = self
             .view
@@ -839,13 +837,13 @@ impl GridPanel {
             .flat_map(|&ix| self.ids_for(ix, cx))
             .take(QUEUE_CAP)
             .collect();
-        let result = self.state.library.read(cx).paths_for(&ids);
+        let result = self.state.library.read(cx).keys_for(&ids);
         match result {
-            Ok(paths) => {
+            Ok(keys) => {
                 self.error = None;
                 self.state
                     .player
-                    .update(cx, |player, cx| player.play_explicit(paths, cx));
+                    .update(cx, |player, cx| player.play_explicit(keys, cx));
             }
             Err(e) => {
                 self.error = Some(format!("library: {e}").into());

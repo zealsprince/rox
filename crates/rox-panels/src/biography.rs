@@ -9,7 +9,6 @@
 //! scrolls as one; each block has its own toggle in the panel settings,
 //! so a narrow panel can pare down to just the text.
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
@@ -21,6 +20,7 @@ use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::spinner::Spinner;
 use gpui_component::{Icon, Sizable, Size};
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use serde::{Deserialize, Serialize};
 
 use crate::artists::{self, Artist};
@@ -94,7 +94,7 @@ pub struct BiographyPanel {
     /// The shown path's artist tag, cached because the pump notifies per
     /// frame and the lookup is a database read; empty inside for an
     /// untagged file. Cleared when the catalog changes.
-    artist: Option<(PathBuf, String)>,
+    artist: Option<(TrackKey, String)>,
     /// The store's answer keyed by the folded name it was asked under;
     /// None inside is a clean miss, Last.fm knowing nothing by the name.
     loaded: Option<(String, Option<Artist>)>,
@@ -177,16 +177,16 @@ impl BiographyPanel {
     /// The shown path's artist tag, from the cache or one database read
     /// on a miss. Empty for an untagged file or one the library does not
     /// know.
-    fn artist_for(&mut self, path: &Path, cx: &App) -> String {
-        if self.artist.as_ref().map(|(p, _)| p.as_path()) != Some(path) {
+    fn artist_for(&mut self, key: &TrackKey, cx: &App) -> String {
+        if self.artist.as_ref().map(|(k, _)| k) != Some(key) {
             let name = self
                 .state
                 .library
                 .read(cx)
-                .meta_for(path)
+                .meta_for_key(key)
                 .map(|meta| meta.artist)
                 .unwrap_or_default();
-            self.artist = Some((path.to_path_buf(), name));
+            self.artist = Some((key.clone(), name));
         }
         self.artist
             .as_ref()
@@ -599,10 +599,10 @@ impl BiographyPanel {
         // track's art, ADR 10) does not bleed up behind the text; the
         // panel lays its own artist background over this instead.
         let root = div().size_full().bg(palette::bg_root_opaque());
-        let Some(path) = self.resolved.get(self.config.source, &self.state, cx) else {
+        let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
             return root.child(quiet("No track"));
         };
-        let name = self.artist_for(&path, cx);
+        let name = self.artist_for(&key, cx);
         if name.is_empty() {
             return root.child(quiet("No artist tag"));
         }

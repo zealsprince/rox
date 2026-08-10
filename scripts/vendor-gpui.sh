@@ -7,6 +7,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Patches apply in glob order and later ones diff against earlier ones' output,
+# so the order is load bearing. Glob order is collation order, and en_US.UTF-8
+# collation ignores punctuation, which shuffles user-shader-* against
+# user-shaders-*. Pin C so the sort is byte order on every machine.
+export LC_ALL=C
+
 # name version sha256-of-the-.crate-tarball (from Cargo.lock's checksum)
 # The nix package build duplicates this table in flake.nix (vendoredCrate
 # calls), bump both together.
@@ -28,6 +34,7 @@ vendor_one() {
     local crate="$name-$version.crate"
     local out="vendor/$name"
     local stamp="$out/.rox-stamp"
+    # Ordered by LC_ALL=C, see the pin at the top of the script.
     local patches=(patches/"$name"/*.patch)
 
     local want="$version-$(cat "${patches[@]}" | checksum)"

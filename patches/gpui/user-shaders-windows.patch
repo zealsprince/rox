@@ -1,0 +1,2731 @@
+diff -x .rox-stamp -ruN /tmp/gpui-baseline/Cargo.toml vendor/gpui/Cargo.toml
+--- a/Cargo.toml	2026-08-10 09:32:30.373876789 -0600
++++ b/Cargo.toml	2026-08-10 09:59:55.600890792 -0600
+@@ -592,6 +592,17 @@
+ features = ["wgsl-in"]
+ optional = true
+ 
++# rox patch: Windows runs the shader pipeline through the DirectX renderer, so
++# it needs naga to translate the composed WGSL to HLSL as well as to validate
++# it. No feature-named variant here - there's no `macos-blade` equivalent to
++# gate on, the DirectX backend is the only Windows backend.
++[target.'cfg(target_os = "windows")'.dependencies.naga]
++version = "25.0"
++features = [
++    "wgsl-in",
++    "hlsl-out",
++]
++
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.build-dependencies.naga]
+ version = "25.0"
+ features = ["wgsl-in"]
+@@ -763,3 +774,8 @@
+ [lints.rust.unexpected_cfgs]
+ level = "allow"
+ priority = 0
++
++# rox patch: its own workspace root, so `cargo test --manifest-path
++# vendor/gpui/Cargo.toml` can build the dev-dependencies the shader tests need.
++# A patched-in path dependency is never a member of the outer workspace anyway.
++[workspace]
+diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/linux/wayland/window.rs vendor/gpui/src/platform/linux/wayland/window.rs
+--- a/src/platform/linux/wayland/window.rs	2026-08-10 09:32:30.380296660 -0600
++++ b/src/platform/linux/wayland/window.rs	2026-08-10 09:59:55.610881310 -0600
+@@ -1139,7 +1139,7 @@
+         self.borrow().renderer.gpu_specs().into()
+     }
+ 
+-    fn register_user_shader(&self, id: u32, source: &str) {
++    fn register_user_shader(&self, id: u32, source: &str, _decorated: &str) {
+         self.borrow_mut().renderer.register_user_shader(id, source);
+     }
+ 
+diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/linux/x11/window.rs vendor/gpui/src/platform/linux/x11/window.rs
+--- a/src/platform/linux/x11/window.rs	2026-08-10 09:32:30.371277840 -0600
++++ b/src/platform/linux/x11/window.rs	2026-08-10 10:02:00.821733355 -0600
+@@ -1670,7 +1670,7 @@
+         self.0.state.borrow().renderer.gpu_specs().into()
+     }
+ 
+-    fn register_user_shader(&self, id: u32, source: &str) {
++    fn register_user_shader(&self, id: u32, source: &str, _decorated: &str) {
+         self.0
+             .state
+             .borrow_mut()
+diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/mac/window.rs vendor/gpui/src/platform/mac/window.rs
+--- a/src/platform/mac/window.rs	2026-08-10 09:32:30.374160042 -0600
++++ b/src/platform/mac/window.rs	2026-08-10 09:59:55.601840891 -0600
+@@ -1567,7 +1567,7 @@
+     // pipeline to hand these to; without the feature the no-op defaults on
+     // the trait stand and `Window` refuses registration before it gets here.
+     #[cfg(feature = "macos-blade")]
+-    fn register_user_shader(&self, id: u32, source: &str) {
++    fn register_user_shader(&self, id: u32, source: &str, _decorated: &str) {
+         self.0.lock().renderer.register_user_shader(id, source);
+     }
+ 
+diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/directx_devices.rs vendor/gpui/src/platform/windows/directx_devices.rs
+--- a/src/platform/windows/directx_devices.rs	2006-07-23 19:21:28.000000000 -0600
++++ b/src/platform/windows/directx_devices.rs	2026-08-10 09:59:55.602228424 -0600
+@@ -46,6 +46,10 @@
+     pub(crate) dxgi_factory: IDXGIFactory6,
+     pub(crate) device: ID3D11Device,
+     pub(crate) device_context: ID3D11DeviceContext,
++    // rox patch: what the device actually came back with. A 10.1 fallback caps
++    // at shader model 4.1, which can't run the user shader pipeline, so the
++    // renderer refuses registration rather than compiling shaders that fail.
++    pub(crate) feature_level: D3D_FEATURE_LEVEL,
+ }
+ 
+ impl DirectXDevices {
+@@ -55,7 +59,7 @@
+             get_dxgi_factory(debug_layer_available).context("Creating DXGI factory")?;
+         let adapter =
+             get_adapter(&dxgi_factory, debug_layer_available).context("Getting DXGI adapter")?;
+-        let (device, device_context) = {
++        let (device, device_context, feature_level) = {
+             let mut context: Option<ID3D11DeviceContext> = None;
+             let mut feature_level = D3D_FEATURE_LEVEL::default();
+             let device = get_device(
+@@ -77,7 +81,7 @@
+                 }
+                 _ => unreachable!(),
+             }
+-            (device, context.unwrap())
++            (device, context.unwrap(), feature_level)
+         };
+ 
+         Ok(Self {
+@@ -85,6 +89,7 @@
+             dxgi_factory,
+             device,
+             device_context,
++            feature_level,
+         })
+     }
+ }
+diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/directx_renderer.rs vendor/gpui/src/platform/windows/directx_renderer.rs
+--- a/src/platform/windows/directx_renderer.rs	2026-08-10 09:32:30.367217394 -0600
++++ b/src/platform/windows/directx_renderer.rs	2026-08-10 10:01:13.885332017 -0600
+@@ -7,7 +7,7 @@
+ use anyhow::{Context, Result};
+ use windows::{
+     Win32::{
+-        Foundation::HWND,
++        Foundation::{HWND, RECT},
+         Graphics::{
+             Direct3D::*,
+             Direct3D11::*,
+@@ -25,6 +25,12 @@
+     },
+     *,
+ };
++// rox patch: the user shader pipeline. The composed chain and its per-pass
++// bindings drive both the register map the translator uses and the order
++// resources get bound in at draw time.
++use crate::platform::windows::shader_translate::{self, HlslBinding};
++use crate::window::{ChainBinding, ChainPassDesc};
++use std::collections::HashMap;
+ 
+ pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
+ const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
+@@ -45,6 +51,11 @@
+     pipelines: DirectXRenderPipelines,
+     direct_composition: Option<DirectComposition>,
+     font_info: &'static FontInfo,
++    // rox patch: everything the user shader pipeline owns, plus where this
++    // frame's main pass is aimed. Without a post shader or a region entry that
++    // stays the swapchain and the whole thing costs nothing.
++    shaders: DirectXUserShaders,
++    main_target_view: [Option<ID3D11RenderTargetView>; 1],
+ }
+ 
+ /// Direct3D objects
+@@ -55,6 +66,9 @@
+     pub(crate) device: ID3D11Device,
+     pub(crate) device_context: ID3D11DeviceContext,
+     dxgi_device: Option<IDXGIDevice>,
++    // rox patch: the user shader pipeline needs shader model 5.0, which a
++    // 10.1 fallback device can't reach.
++    feature_level: D3D_FEATURE_LEVEL,
+ }
+ 
+ struct DirectXResources {
+@@ -106,6 +120,7 @@
+             dxgi_factory,
+             device,
+             device_context,
++            feature_level,
+         } = directx_devices;
+         let dxgi_device = if disable_direct_composition {
+             None
+@@ -119,6 +134,7 @@
+             device: device.clone(),
+             device_context: device_context.clone(),
+             dxgi_device,
++            feature_level: *feature_level,
+         }))
+     }
+ }
+@@ -155,6 +171,10 @@
+             Some(composition)
+         };
+ 
++        let shaders = DirectXUserShaders::new(&devices.device, devices.feature_level)
++            .context("Creating user shader resources")?;
++        let main_target_view = resources.render_target_view.clone();
++
+         Ok(DirectXRenderer {
+             hwnd,
+             atlas,
+@@ -164,6 +184,8 @@
+             pipelines,
+             direct_composition,
+             font_info: Self::get_font_info(),
++            shaders,
++            main_target_view,
+         })
+     }
+ 
+@@ -185,14 +207,30 @@
+                 _pad: 0,
+             }],
+         )?;
++        // rox patch: the uniform block the in-scene shader primitive reads.
++        // Same two fields the blade path fills, and it costs one 16-byte
++        // upload whether or not a shader is installed.
++        update_buffer(
++            &self.devices.device_context,
++            self.shaders.globals_buffer[0].as_ref().unwrap(),
++            &[UserGlobalParams {
++                viewport_size: [
++                    self.resources.viewport[0].Width,
++                    self.resources.viewport[0].Height,
++                ],
++                // The composition swapchain is premultiplied; the plain one
++                // ignores alpha.
++                premultiplied_alpha: u32::from(self.direct_composition.is_some()),
++                pad: 0,
++            }],
++        )?;
+         unsafe {
+-            self.devices.device_context.ClearRenderTargetView(
+-                self.resources.render_target_view[0].as_ref().unwrap(),
+-                &[0.0; 4],
+-            );
+             self.devices
+                 .device_context
+-                .OMSetRenderTargets(Some(&self.resources.render_target_view), None);
++                .ClearRenderTargetView(self.main_target_view[0].as_ref().unwrap(), &[0.0; 4]);
++            self.devices
++                .device_context
++                .OMSetRenderTargets(Some(&self.main_target_view), None);
+             self.devices
+                 .device_context
+                 .RSSetViewports(Some(&self.resources.viewport));
+@@ -267,13 +305,20 @@
+             Some(composition)
+         };
+ 
++        // rox patch: every user shader object belonged to the dead device, so
++        // the pipeline rebuilds itself from the bytecode and pixels it kept
++        // rather than making the caller re-register.
++        let shaders = DirectXUserShaders::new(&devices.device, devices.feature_level)?;
++
+         self.atlas
+             .handle_device_lost(&devices.device, &devices.device_context);
++        self.shaders.rebuild_onto(shaders, &devices.device);
+         self.devices = devices;
+         self.resources = resources;
+         self.globals = globals;
+         self.pipelines = pipelines;
+         self.direct_composition = direct_composition;
++        self.main_target_view = self.resources.render_target_view.clone();
+ 
+         unsafe {
+             self.devices
+@@ -284,8 +329,35 @@
+     }
+ 
+     pub(crate) fn draw(&mut self, scene: &Scene) -> Result<()> {
++        // rox patch: a post shader wants the composed frame whole and a region
++        // entry wants rects of it read back, so either one moves the main pass
++        // into an offscreen scene target. With neither, this is the swapchain
++        // and the frame draws exactly as it always did.
++        let has_regions = !scene.user_shader_regions().is_empty();
++        let needs_scene_target = self.shaders.post.is_some() || has_regions;
++        self.main_target_view = if needs_scene_target {
++            match self.ensure_scene_target() {
++                Ok(view) => view,
++                Err(err) => {
++                    log::error!("Failed to allocate the user shader scene target: {err:#}");
++                    self.resources.render_target_view.clone()
++                }
++            }
++        } else {
++            self.resources.render_target_view.clone()
++        };
++        let offscreen = needs_scene_target && self.shaders.scene.is_some();
++
+         self.pre_draw()?;
++        // `Scene::finish` sorted the entries by paint order, which is the order
++        // they run in. Splitting the main pass at the overlay boundary costs an
++        // extra pass, so only do it when there's a region sequence to slot in.
++        let mut regions_done = false;
+         for batch in scene.batches() {
++            if offscreen && has_regions && !regions_done && batch.is_overlay() {
++                regions_done = true;
++                self.draw_shader_regions(scene);
++            }
+             match batch {
+                 PrimitiveBatch::Shadows(shadows) => self.draw_shadows(shadows),
+                 PrimitiveBatch::Quads(quads) => self.draw_quads(quads),
+@@ -303,9 +375,12 @@
+                     sprites,
+                 } => self.draw_polychrome_sprites(texture_id, sprites),
+                 PrimitiveBatch::Surfaces(surfaces) => self.draw_surfaces(surfaces),
+-                // rox patch: user shaders are blade only. Skipped rather than
+-                // ported to HLSL.
+-                PrimitiveBatch::UserShaders(_) | PrimitiveBatch::UserShaderRegions(_) => Ok(()),
++                // rox patch: the in-scene primitive draws here like any other
++                // batch. Regions don't - they're in the scene so cached views
++                // replay them, and the whole sequence runs at the overlay
++                // boundary below.
++                PrimitiveBatch::UserShaders(user_shaders) => self.draw_user_shaders(user_shaders),
++                PrimitiveBatch::UserShaderRegions(_) => Ok(()),
+             }.context(format!("scene too large: {} paths, {} shadows, {} quads, {} underlines, {} mono, {} poly, {} surfaces",
+                     scene.paths.len(),
+                     scene.shadows.len(),
+@@ -315,6 +390,21 @@
+                     scene.polychrome_sprites.len(),
+                     scene.surfaces.len(),))?;
+         }
++
++        // rox patch: a frame with no overlay never hit the boundary above, so
++        // the region sequence runs here instead; then the post pass, or a
++        // straight copy when regions ran without one.
++        if offscreen {
++            if has_regions && !regions_done {
++                self.draw_shader_regions(scene);
++            }
++            if self.shaders.post.is_some() {
++                self.draw_post_pass();
++            } else {
++                self.blit_scene_to_swapchain();
++            }
++        }
++
+         self.present()
+     }
+ 
+@@ -327,6 +417,13 @@
+         self.resources.width = width;
+         self.resources.height = height;
+ 
++        // rox patch: the scene target, the chain intermediates and every
++        // feedback buffer are sized to what they were drawn over, so a window
++        // resize throws all of them away and trails restart. Same three
++        // teardown sites the blade path has.
++        self.shaders.discard_sized_resources();
++        self.main_target_view = [None];
++
+         // Clear the render target before resizing
+         unsafe { self.devices.device_context.OMSetRenderTargets(None, None) };
+         unsafe { ManuallyDrop::drop(&mut self.resources.render_target) };
+@@ -351,6 +448,7 @@
+ 
+         self.resources
+             .recreate_resources(&self.devices, width, height)?;
++        self.main_target_view = self.resources.render_target_view.clone();
+         unsafe {
+             self.devices
+                 .device_context
+@@ -455,7 +553,7 @@
+             // Restore main render target
+             self.devices
+                 .device_context
+-                .OMSetRenderTargets(Some(&self.resources.render_target_view), None);
++                .OMSetRenderTargets(Some(&self.main_target_view), None);
+         }
+ 
+         Ok(())
+@@ -1210,8 +1308,10 @@
+     viewport
+ }
+ 
++// rox patch: split so the region pass can build the scissoring twin without
++// duplicating the description.
+ #[inline]
+-fn set_rasterizer_state(device: &ID3D11Device, device_context: &ID3D11DeviceContext) -> Result<()> {
++fn create_rasterizer_state(device: &ID3D11Device, scissor: bool) -> Result<ID3D11RasterizerState> {
+     let desc = D3D11_RASTERIZER_DESC {
+         FillMode: D3D11_FILL_SOLID,
+         CullMode: D3D11_CULL_NONE,
+@@ -1220,15 +1320,20 @@
+         DepthBiasClamp: 0.0,
+         SlopeScaledDepthBias: 0.0,
+         DepthClipEnable: true.into(),
+-        ScissorEnable: false.into(),
++        ScissorEnable: scissor.into(),
+         MultisampleEnable: true.into(),
+         AntialiasedLineEnable: false.into(),
+     };
+-    let rasterizer_state = unsafe {
++    unsafe {
+         let mut state = None;
+         device.CreateRasterizerState(&desc, Some(&mut state))?;
+-        state.unwrap()
+-    };
++        Ok(state.unwrap())
++    }
++}
++
++#[inline]
++fn set_rasterizer_state(device: &ID3D11Device, device_context: &ID3D11DeviceContext) -> Result<()> {
++    let rasterizer_state = create_rasterizer_state(device, false)?;
+     unsafe { device_context.RSSetState(&rasterizer_state) };
+     Ok(())
+ }
+@@ -1391,6 +1496,1519 @@
+ 
+ const BUFFER_COUNT: usize = 3;
+ 
++// ===========================================================================
++// rox patch: the user shader pipeline.
++//
++// The blade renderer is the source of truth for the behaviour here - the same
++// chain walk, the same target shapes, the same clocks. What differs is only
++// what D3D11 forces: bind-by-slot instead of descriptor sets, an explicit
++// offscreen scene target because the swapchain can't be sampled, and HLSL
++// bytecode instead of WGSL modules.
++// ===========================================================================
++
++/// The one shader model FXC and the pipeline both want. A device below this
++/// can't run any of it, so registration refuses rather than compiling shaders
++/// that would fail one by one.
++const REQUIRED_FEATURE_LEVEL: D3D_FEATURE_LEVEL = D3D_FEATURE_LEVEL_11_0;
++
++/// Whether a device at this level can run the pipeline at all. `DirectXDevices`
++/// accepts a 10.1 device as a fallback and that caps at shader model 4.1, so
++/// registration has to say `"unsupported"` rather than compile shaders the
++/// device will refuse one by one.
++fn feature_level_runs_user_shaders(level: D3D_FEATURE_LEVEL) -> bool {
++    level.0 >= REQUIRED_FEATURE_LEVEL.0
++}
++
++/// Uniforms every user shader pass shares - post, region, primitive. Field for
++/// field the `ShaderParams` struct the shader template declares, and the same
++/// 128 bytes the blade mirror pins.
++#[repr(C)]
++#[derive(Clone, Copy, Default)]
++struct UserShaderParams {
++    time: f32,
++    delta: f32,
++    resolution: [f32; 2],
++    mouse: [f32; 4],
++    meta: [[f32; 4]; 2],
++    signals: [[f32; 4]; 4],
++}
++
++const _: () = assert!(std::mem::size_of::<UserShaderParams>() == 128);
++
++/// The `GlobalParams` block the in-scene primitive's template declares. Not
++/// the renderer's own `GlobalParams`, which carries font tuning the shader
++/// template knows nothing about.
++#[repr(C)]
++#[derive(Clone, Copy, Default)]
++struct UserGlobalParams {
++    viewport_size: [f32; 2],
++    premultiplied_alpha: u32,
++    pad: u32,
++}
++
++/// A shader's clock. Every step is capped so one long-parked frame doesn't
++/// jump time, and `delta` is that same capped step - zero on the first tick.
++#[derive(Default)]
++struct ShaderClock {
++    time: f32,
++    delta: f32,
++    last: Option<std::time::Instant>,
++}
++
++impl ShaderClock {
++    fn tick(&mut self) {
++        let now = std::time::Instant::now();
++        self.delta = match self.last {
++            Some(last) => now.duration_since(last).as_secs_f32().min(0.1),
++            None => 0.0,
++        };
++        self.time += self.delta;
++        self.last = Some(now);
++    }
++}
++
++/// The compiled stages of one program, kept so a lost device can rebuild its
++/// pipelines without the caller re-registering anything.
++#[derive(Clone)]
++struct ShaderBytecode {
++    vertex: Vec<u8>,
++    fragment: Vec<u8>,
++}
++
++impl ShaderBytecode {
++    fn build(source: &str, bindings: &[HlslBinding]) -> std::result::Result<Self, String> {
++        let (vertex, fragment) = shader_translate::build(source, bindings)?;
++        Ok(Self { vertex, fragment })
++    }
++
++    fn stages(&self, device: &ID3D11Device) -> Result<(ID3D11VertexShader, ID3D11PixelShader)> {
++        Ok((
++            create_vertex_shader(device, &self.vertex)?,
++            create_fragment_shader(device, &self.fragment)?,
++        ))
++    }
++}
++
++/// An offscreen colour target: the scene the main pass composes into, a
++/// chain's intermediates, a feedback buffer, a region's scratch copy. All of
++/// them are read back as textures, so they all carry both views.
++struct RenderTexture {
++    texture: ID3D11Texture2D,
++    rtv: [Option<ID3D11RenderTargetView>; 1],
++    srv: [Option<ID3D11ShaderResourceView>; 1],
++    width: u32,
++    height: u32,
++}
++
++impl RenderTexture {
++    fn new(device: &ID3D11Device, width: u32, height: u32) -> Result<Self> {
++        let texture = unsafe {
++            let desc = D3D11_TEXTURE2D_DESC {
++                Width: width.max(1),
++                Height: height.max(1),
++                MipLevels: 1,
++                ArraySize: 1,
++                // The renderer's own format throughout: a shader has to see
++                // exactly the pixels the rest of the frame composed, and hand
++                // back something the swapchain takes unchanged.
++                Format: RENDER_TARGET_FORMAT,
++                SampleDesc: DXGI_SAMPLE_DESC {
++                    Count: 1,
++                    Quality: 0,
++                },
++                Usage: D3D11_USAGE_DEFAULT,
++                BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
++                CPUAccessFlags: 0,
++                MiscFlags: 0,
++            };
++            let mut output = None;
++            device.CreateTexture2D(&desc, None, Some(&mut output))?;
++            output.unwrap()
++        };
++        let mut rtv = None;
++        unsafe { device.CreateRenderTargetView(&texture, None, Some(&mut rtv))? };
++        let mut srv = None;
++        unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut srv))? };
++        Ok(Self {
++            texture,
++            rtv: [rtv],
++            srv: [srv],
++            width: width.max(1),
++            height: height.max(1),
++        })
++    }
++
++    /// A fresh target starts transparent black, the way blade's empty render
++    /// pass leaves one, so a trail begins from nothing rather than from noise.
++    fn cleared(
++        device: &ID3D11Device,
++        context: &ID3D11DeviceContext,
++        w: u32,
++        h: u32,
++    ) -> Result<Self> {
++        let texture = Self::new(device, w, h)?;
++        unsafe { context.ClearRenderTargetView(texture.rtv(), &[0.0; 4]) };
++        Ok(texture)
++    }
++
++    fn rtv(&self) -> &ID3D11RenderTargetView {
++        self.rtv[0].as_ref().unwrap()
++    }
++
++    fn srv(&self) -> ID3D11ShaderResourceView {
++        self.srv[0].clone().unwrap()
++    }
++}
++
++/// One pass's renderer-owned textures. The final pass draws into whatever the
++/// program was aimed at, so it carries no `target`; every earlier pass gets
++/// one at its scaled size, and any pass reading `prev` gets a feedback buffer
++/// beside it. Recycled across frames, thrown away on a resize.
++#[derive(Default)]
++struct ChainPassTarget {
++    target: Option<RenderTexture>,
++    feedback: Option<RenderTexture>,
++}
++
++/// One compiled pass of a chain.
++struct ChainPass {
++    vertex: ID3D11VertexShader,
++    fragment: ID3D11PixelShader,
++    bytecode: ShaderBytecode,
++    scale: f32,
++    bindings: Vec<ChainBinding>,
++}
++
++impl ChainPass {
++    fn uses_prev(&self) -> bool {
++        self.bindings
++            .iter()
++            .any(|binding| matches!(binding, ChainBinding::Prev))
++    }
++
++    fn samples_screen(&self) -> bool {
++        self.bindings
++            .iter()
++            .any(|binding| matches!(binding, ChainBinding::Screen))
++    }
++}
++
++/// A whole compiled program, post or region. One pass is the common case and
++/// allocates no intermediates at all.
++struct ShaderChain {
++    passes: Vec<ChainPass>,
++}
++
++impl ShaderChain {
++    /// Scale and feedback per pass, which is all the target allocator needs.
++    fn target_shape(&self) -> Vec<(f32, bool)> {
++        self.passes
++            .iter()
++            .map(|pass| (pass.scale, pass.uses_prev()))
++            .collect()
++    }
++}
++
++/// The in-scene primitive variant of a program: one instanced quad pipeline,
++/// with a clock its own draws advance.
++struct PrimitiveProgram {
++    vertex: ID3D11VertexShader,
++    fragment: ID3D11PixelShader,
++    bytecode: ShaderBytecode,
++    clock: ShaderClock,
++}
++
++/// Per-instance textures for the region pass: `scratch` holds the copy of the
++/// composed image the passes read as `screen`, `targets` the chain's own
++/// intermediates and feedback buffers.
++struct RegionInstance {
++    shader_id: u32,
++    width: u32,
++    height: u32,
++    scratch: RenderTexture,
++    targets: Vec<ChainPassTarget>,
++    clock: ShaderClock,
++}
++
++struct PostProgram {
++    chain: ShaderChain,
++    // Advanced by `set_post_signals`, so time freezes when the caller stops
++    // feeding signals rather than when the window stops drawing.
++    clock: ShaderClock,
++}
++
++/// A caller-registered image. Lives until the window closes; v1 never evicts.
++/// The pixels stay around so a lost device can re-upload without the caller
++/// registering again.
++struct UserTexture {
++    srv: [Option<ID3D11ShaderResourceView>; 1],
++    width: u32,
++    height: u32,
++    pixels: Vec<u8>,
++}
++
++/// The instance buffer the in-scene primitive reads. naga turns a WGSL storage
++/// binding into a `ByteAddressBuffer`, so this is a raw view rather than the
++/// structured ones the built-in pipelines use.
++struct RawBuffer {
++    buffer: ID3D11Buffer,
++    view: [Option<ID3D11ShaderResourceView>; 1],
++    capacity: usize,
++}
++
++impl RawBuffer {
++    fn new(device: &ID3D11Device, bytes: usize) -> Result<Self> {
++        let bytes = bytes.max(16).next_power_of_two();
++        let desc = D3D11_BUFFER_DESC {
++            ByteWidth: bytes as u32,
++            Usage: D3D11_USAGE_DYNAMIC,
++            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
++            CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
++            MiscFlags: D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS.0 as u32,
++            StructureByteStride: 0,
++        };
++        let buffer = unsafe {
++            let mut buffer = None;
++            device.CreateBuffer(&desc, None, Some(&mut buffer))?;
++            buffer.unwrap()
++        };
++        let view_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
++            Format: DXGI_FORMAT_R32_TYPELESS,
++            ViewDimension: D3D11_SRV_DIMENSION_BUFFEREX,
++            Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
++                BufferEx: D3D11_BUFFEREX_SRV {
++                    FirstElement: 0,
++                    NumElements: (bytes / 4) as u32,
++                    Flags: D3D11_BUFFEREX_SRV_FLAG_RAW.0 as u32,
++                },
++            },
++        };
++        let view = unsafe {
++            let mut view = None;
++            device.CreateShaderResourceView(&buffer, Some(&view_desc), Some(&mut view))?;
++            [view]
++        };
++        Ok(Self {
++            buffer,
++            view,
++            capacity: bytes,
++        })
++    }
++}
++
++/// Everything the user shader pipeline owns for one window.
++struct DirectXUserShaders {
++    /// False on a device that can't reach shader model 5.0. Registration
++    /// returns `"unsupported"` and rox shows the banner it already has.
++    supported: bool,
++    sampler: [Option<ID3D11SamplerState>; 1],
++    /// Premultiplied-over, the same compose the blade pipelines use: it lets a
++    /// transparent program ride the frame under it wherever the target arrives
++    /// loaded, and it's the identity on a target that was just cleared.
++    blend: ID3D11BlendState,
++    /// No blending at all, for the straight copies.
++    replace_blend: ID3D11BlendState,
++    scissor_rasterizer: ID3D11RasterizerState,
++    plain_rasterizer: ID3D11RasterizerState,
++    params_buffer: [Option<ID3D11Buffer>; 1],
++    globals_buffer: [Option<ID3D11Buffer>; 1],
++    instances: Option<RawBuffer>,
++    blit: Option<(ID3D11VertexShader, ID3D11PixelShader)>,
++
++    primitives: HashMap<u32, PrimitiveProgram>,
++    chains: HashMap<u32, ShaderChain>,
++    textures: HashMap<u32, UserTexture>,
++    regions: HashMap<u64, RegionInstance>,
++
++    post: Option<PostProgram>,
++    post_signals: [f32; 16],
++    post_meta: [f32; 8],
++    post_mouse: [f32; 4],
++    post_targets: Vec<ChainPassTarget>,
++    // Ping-pong pair for a post chain that reads `prev`: this frame renders
++    // into one and samples the other, then they swap.
++    post_prev: Option<[RenderTexture; 2]>,
++    post_prev_index: usize,
++
++    scene: Option<RenderTexture>,
++}
++
++impl DirectXUserShaders {
++    fn new(device: &ID3D11Device, feature_level: D3D_FEATURE_LEVEL) -> Result<Self> {
++        let sampler = unsafe {
++            let desc = D3D11_SAMPLER_DESC {
++                Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
++                // Clamped rather than wrapped: a pass reading outside its own
++                // bounds should see the edge, not the far side.
++                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
++                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
++                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
++                MipLODBias: 0.0,
++                MaxAnisotropy: 1,
++                ComparisonFunc: D3D11_COMPARISON_ALWAYS,
++                BorderColor: [0.0; 4],
++                MinLOD: 0.0,
++                MaxLOD: D3D11_FLOAT32_MAX,
++            };
++            let mut output = None;
++            device.CreateSamplerState(&desc, Some(&mut output))?;
++            [output]
++        };
++
++        Ok(Self {
++            supported: feature_level_runs_user_shaders(feature_level),
++            sampler,
++            blend: create_premultiplied_blend_state(device)?,
++            replace_blend: create_replace_blend_state(device)?,
++            scissor_rasterizer: create_rasterizer_state(device, true)?,
++            plain_rasterizer: create_rasterizer_state(device, false)?,
++            params_buffer: create_constant_buffer::<UserShaderParams>(device)?,
++            globals_buffer: create_constant_buffer::<UserGlobalParams>(device)?,
++            instances: None,
++            blit: None,
++            primitives: HashMap::default(),
++            chains: HashMap::default(),
++            textures: HashMap::default(),
++            regions: HashMap::default(),
++            post: None,
++            post_signals: [0.0; 16],
++            post_meta: [0.0; 8],
++            post_mouse: [0.0; 4],
++            post_targets: Vec::new(),
++            post_prev: None,
++            post_prev_index: 0,
++            scene: None,
++        })
++    }
++
++    /// Throws away everything sized to the window or to a region's bounds. The
++    /// next frame allocates what it needs again, so trails restart rather than
++    /// smearing the old size.
++    fn discard_sized_resources(&mut self) {
++        self.scene = None;
++        self.post_targets.clear();
++        self.post_prev = None;
++        self.post_prev_index = 0;
++        self.regions.clear();
++    }
++
++    /// Moves the registered programs onto a fresh device: pipelines rebuild
++    /// from the bytecode they kept and images from their pixels, so a device
++    /// loss doesn't make the caller register anything twice.
++    fn rebuild_onto(&mut self, mut fresh: Self, device: &ID3D11Device) {
++        for (id, program) in self.primitives.drain() {
++            if let Ok((vertex, fragment)) = program.bytecode.stages(device).log_err_owned() {
++                fresh.primitives.insert(
++                    id,
++                    PrimitiveProgram {
++                        vertex,
++                        fragment,
++                        bytecode: program.bytecode,
++                        clock: ShaderClock::default(),
++                    },
++                );
++            }
++        }
++        for (id, chain) in self.chains.drain() {
++            if let Some(chain) = rebuild_chain(device, chain) {
++                fresh.chains.insert(id, chain);
++            }
++        }
++        for (id, texture) in self.textures.drain() {
++            if let Some(rebuilt) =
++                create_user_texture(device, texture.width, texture.height, &texture.pixels)
++            {
++                fresh.textures.insert(id, rebuilt);
++            }
++        }
++        if let Some(post) = self.post.take()
++            && let Some(chain) = rebuild_chain(device, post.chain)
++        {
++            fresh.post = Some(PostProgram {
++                chain,
++                clock: ShaderClock::default(),
++            });
++        }
++        fresh.post_signals = self.post_signals;
++        fresh.post_meta = self.post_meta;
++        fresh.post_mouse = self.post_mouse;
++        *self = fresh;
++    }
++}
++
++/// Recompiles every pass of a chain onto a new device, dropping the whole
++/// program if any pass fails - a half-built chain would draw nonsense.
++fn rebuild_chain(device: &ID3D11Device, chain: ShaderChain) -> Option<ShaderChain> {
++    let mut passes = Vec::with_capacity(chain.passes.len());
++    for pass in chain.passes {
++        let (vertex, fragment) = pass.bytecode.stages(device).log_err_owned().ok()?;
++        passes.push(ChainPass {
++            vertex,
++            fragment,
++            bytecode: pass.bytecode,
++            scale: pass.scale,
++            bindings: pass.bindings,
++        });
++    }
++    Some(ShaderChain { passes })
++}
++
++fn create_user_texture(
++    device: &ID3D11Device,
++    width: u32,
++    height: u32,
++    rgba8: &[u8],
++) -> Option<UserTexture> {
++    let data = D3D11_SUBRESOURCE_DATA {
++        pSysMem: rgba8.as_ptr() as *const _,
++        SysMemPitch: width * 4,
++        SysMemSlicePitch: 0,
++    };
++    let desc = D3D11_TEXTURE2D_DESC {
++        Width: width,
++        Height: height,
++        MipLevels: 1,
++        ArraySize: 1,
++        // Straight-alpha bytes read as sRGB, the same format the blade path
++        // uploads them under, so an asset samples identically on both.
++        Format: DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
++        SampleDesc: DXGI_SAMPLE_DESC {
++            Count: 1,
++            Quality: 0,
++        },
++        Usage: D3D11_USAGE_IMMUTABLE,
++        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
++        CPUAccessFlags: 0,
++        MiscFlags: 0,
++    };
++    let texture = unsafe {
++        let mut output = None;
++        device
++            .CreateTexture2D(&desc, Some(&data), Some(&mut output))
++            .log_err()?;
++        output?
++    };
++    let srv = unsafe {
++        let mut view = None;
++        device
++            .CreateShaderResourceView(&texture, None, Some(&mut view))
++            .log_err()?;
++        [view]
++    };
++    Some(UserTexture {
++        srv,
++        width,
++        height,
++        pixels: rgba8.to_vec(),
++    })
++}
++
++/// A pass target's size at its scale, never smaller than one pixel.
++fn scaled_size(size: u32, scale: f32) -> u32 {
++    ((size as f32 * scale).round() as u32).max(1)
++}
++
++#[inline]
++fn create_constant_buffer<T>(device: &ID3D11Device) -> Result<[Option<ID3D11Buffer>; 1]> {
++    let desc = D3D11_BUFFER_DESC {
++        ByteWidth: std::mem::size_of::<T>() as u32,
++        Usage: D3D11_USAGE_DYNAMIC,
++        BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
++        CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
++        ..Default::default()
++    };
++    unsafe {
++        let mut buffer = None;
++        device.CreateBuffer(&desc, None, Some(&mut buffer))?;
++        Ok([buffer])
++    }
++}
++
++#[inline]
++fn create_premultiplied_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> {
++    let mut desc = D3D11_BLEND_DESC::default();
++    desc.RenderTarget[0].BlendEnable = true.into();
++    desc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
++    desc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
++    desc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
++    desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
++    desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
++    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
++    desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8;
++    unsafe {
++        let mut state = None;
++        device.CreateBlendState(&desc, Some(&mut state))?;
++        Ok(state.unwrap())
++    }
++}
++
++#[inline]
++fn create_replace_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> {
++    let mut desc = D3D11_BLEND_DESC::default();
++    desc.RenderTarget[0].BlendEnable = false.into();
++    desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8;
++    unsafe {
++        let mut state = None;
++        device.CreateBlendState(&desc, Some(&mut state))?;
++        Ok(state.unwrap())
++    }
++}
++
++/// Straight copy of one texture onto a render target, as a draw rather than a
++/// transfer because the swapchain texture isn't a copy destination.
++const BLIT_HLSL: &str = r#"
++Texture2D<float4> screen : register(t0);
++SamplerState samp : register(s0);
++
++struct BlitVarying {
++    float4 position : SV_Position;
++    float2 uv : TEXCOORD0;
++};
++
++BlitVarying blit_vertex(uint vertex_id : SV_VertexID) {
++    float2 corner = float2(float((vertex_id << 1u) & 2u), float(vertex_id & 2u));
++    BlitVarying output;
++    output.position = float4(corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0);
++    output.uv = corner;
++    return output;
++}
++
++float4 blit_fragment(BlitVarying input) : SV_Target {
++    return screen.Sample(samp, input.uv);
++}
++"#;
++
++fn full_viewport(width: u32, height: u32) -> [D3D11_VIEWPORT; 1] {
++    [D3D11_VIEWPORT {
++        TopLeftX: 0.0,
++        TopLeftY: 0.0,
++        Width: width as f32,
++        Height: height as f32,
++        MinDepth: 0.0,
++        MaxDepth: 1.0,
++    }]
++}
++
++/// Unbinds the pixel-stage textures a shader pass left behind, so the next
++/// thing that wants one of them as a render target doesn't collide with its
++/// own SRV.
++fn release_shader_resources(context: &ID3D11DeviceContext, count: usize) {
++    if count == 0 {
++        return;
++    }
++    let empty = vec![None; count];
++    unsafe { context.PSSetShaderResources(0, Some(&empty)) };
++}
++
++/// Gathers a pass's texture views in the pinned order its registers were
++/// assigned in. `None` when something it needs is missing, either an asset
++/// that was never registered or an intermediate that failed to allocate,
++/// which skips the whole program for the frame.
++fn chain_pass_resources(
++    bindings: &[ChainBinding],
++    screen: Option<&ID3D11ShaderResourceView>,
++    prev_override: Option<&ID3D11ShaderResourceView>,
++    targets: &[ChainPassTarget],
++    index: usize,
++    textures: &HashMap<u32, UserTexture>,
++) -> Option<Vec<Option<ID3D11ShaderResourceView>>> {
++    let mut views = Vec::with_capacity(bindings.len());
++    for binding in bindings {
++        match binding {
++            // The uniform block and the sampler have registers of their own.
++            ChainBinding::Params | ChainBinding::Sampler => {}
++            ChainBinding::Screen => views.push(Some(screen?.clone())),
++            ChainBinding::Prev => views.push(Some(match prev_override {
++                Some(view) => view.clone(),
++                None => targets.get(index)?.feedback.as_ref()?.srv(),
++            })),
++            ChainBinding::Pass { index: earlier, .. } => {
++                views.push(Some(targets.get(*earlier)?.target.as_ref()?.srv()))
++            }
++            ChainBinding::Asset { id, .. } => views.push(Some(textures.get(id)?.srv[0].clone()?)),
++        }
++    }
++    Some(views)
++}
++
++impl DirectXRenderer {
++    /// Whether this device can run user shaders at all. `Window` asks before
++    /// it registers anything, so a 10.1 fallback reports `"unsupported"` up
++    /// front instead of failing shader by shader.
++    pub(crate) fn user_shaders_supported(&self) -> bool {
++        self.shaders.supported
++    }
++
++    /// Compiles the in-scene primitive variant of a program. `decorated` is
++    /// the composed module with explicit bind points; the bare variant blade
++    /// takes is no use here. Registering an id twice is a no-op.
++    pub(crate) fn register_user_shader(&mut self, id: u32, decorated: &str) {
++        if !self.shaders.supported || self.shaders.primitives.contains_key(&id) {
++            return;
++        }
++        let bytecode = match ShaderBytecode::build(decorated, &shader_translate::PRIMITIVE_BINDINGS)
++        {
++            Ok(bytecode) => bytecode,
++            Err(err) => {
++                log::error!("Failed to build the in-scene shader primitive: {err}");
++                return;
++            }
++        };
++        let Ok((vertex, fragment)) = bytecode.stages(&self.devices.device).log_err_owned() else {
++            return;
++        };
++        self.shaders.primitives.insert(
++            id,
++            PrimitiveProgram {
++                vertex,
++                fragment,
++                bytecode,
++                clock: ShaderClock::default(),
++            },
++        );
++    }
++
++    /// Compiles the region variant of a program - the chain that reads the
++    /// composed image under its bounds. Second call for an id is a no-op.
++    pub(crate) fn register_screen_shader(&mut self, id: u32, chain: &[ChainPassDesc]) {
++        if !self.shaders.supported || self.shaders.chains.contains_key(&id) {
++            return;
++        }
++        let Some(chain) = self.create_shader_chain(chain) else {
++            return;
++        };
++        self.shaders.chains.insert(id, chain);
++    }
++
++    /// Uploads a caller-provided image a chain can bind by name. Immutable and
++    /// uploaded in one go, since the bytes arrive with the registration.
++    pub(crate) fn register_user_texture(&mut self, id: u32, width: u32, height: u32, rgba8: &[u8]) {
++        if !self.shaders.supported || self.shaders.textures.contains_key(&id) {
++            return;
++        }
++        if let Some(texture) = create_user_texture(&self.devices.device, width, height, rgba8) {
++            self.shaders.textures.insert(id, texture);
++        }
++    }
++
++    /// Installs or clears the whole-window post-process program.
++    pub(crate) fn set_post_shader(&mut self, chain: Option<&[ChainPassDesc]>) {
++        self.shaders.post_targets.clear();
++        self.shaders.post_prev = None;
++        self.shaders.post_prev_index = 0;
++        let Some(chain) = chain else {
++            self.shaders.post = None;
++            return;
++        };
++        if !self.shaders.supported {
++            return;
++        }
++        self.shaders.post = self.create_shader_chain(chain).map(|chain| PostProgram {
++            chain,
++            clock: ShaderClock::default(),
++        });
++    }
++
++    pub(crate) fn set_post_signals(&mut self, signals: [f32; 16], meta: [f32; 8], mouse: [f32; 4]) {
++        self.shaders.post_signals = signals;
++        self.shaders.post_meta = meta;
++        self.shaders.post_mouse = mouse;
++        if let Some(post) = &mut self.shaders.post {
++            post.clock.tick();
++        }
++    }
++
++    /// Moves the post pass's mouse without advancing its clock: what an idle
++    /// repaint feeds, so a paused shader can follow the cursor while its
++    /// animation stays parked.
++    pub(crate) fn set_post_mouse(&mut self, mouse: [f32; 4]) {
++        self.shaders.post_mouse = mouse;
++    }
++
++    fn create_shader_chain(&self, chain: &[ChainPassDesc]) -> Option<ShaderChain> {
++        let mut passes = Vec::with_capacity(chain.len());
++        for pass in chain {
++            let bindings = pass
++                .bindings
++                .iter()
++                .map(HlslBinding::for_chain)
++                .collect::<Vec<_>>();
++            let bytecode = match ShaderBytecode::build(&pass.decorated, &bindings) {
++                Ok(bytecode) => bytecode,
++                Err(err) => {
++                    log::error!("Failed to build a screen shader pass: {err}");
++                    return None;
++                }
++            };
++            let (vertex, fragment) = bytecode.stages(&self.devices.device).log_err_owned().ok()?;
++            passes.push(ChainPass {
++                vertex,
++                fragment,
++                bytecode,
++                scale: pass.scale,
++                bindings: pass.bindings.clone(),
++            });
++        }
++        Some(ShaderChain { passes })
++    }
++
++    /// The offscreen the main pass composes into whenever anything shader-y is
++    /// live. Recycled across frames; the resize path is what throws it away.
++    fn ensure_scene_target(&mut self) -> Result<[Option<ID3D11RenderTargetView>; 1]> {
++        let (width, height) = (self.resources.width, self.resources.height);
++        let stale = self
++            .shaders
++            .scene
++            .as_ref()
++            .is_none_or(|scene| scene.width != width || scene.height != height);
++        if stale {
++            // Dropped first, so a failure leaves nothing behind rather than a
++            // target at the old size for the frame to compose into.
++            self.shaders.scene = None;
++            self.shaders.scene = Some(RenderTexture::new(&self.devices.device, width, height)?);
++        }
++        Ok(self.shaders.scene.as_ref().unwrap().rtv.clone())
++    }
++
++    /// Builds a chain's per-pass targets over a `width` by `height` surface.
++    /// The final pass draws into whatever the program was aimed at, so it gets
++    /// no target of its own; the rest get one at their scale. A pass that
++    /// reads `prev` gets a feedback buffer too, except the final post pass,
++    /// which ping-pongs its own pair instead, hence `feedback_for_final`.
++    fn create_chain_targets(
++        &self,
++        shape: &[(f32, bool)],
++        width: u32,
++        height: u32,
++        feedback_for_final: bool,
++    ) -> Option<Vec<ChainPassTarget>> {
++        let device = &self.devices.device;
++        let context = &self.devices.device_context;
++        let last = shape.len().saturating_sub(1);
++        let mut targets = Vec::with_capacity(shape.len());
++        for (index, (scale, uses_prev)) in shape.iter().enumerate() {
++            let is_last = index == last;
++            let pass_width = scaled_size(width, *scale);
++            let pass_height = scaled_size(height, *scale);
++            let make =
++                || RenderTexture::cleared(device, context, pass_width, pass_height).log_err();
++            let target = if is_last { None } else { Some(make()?) };
++            let feedback = if *uses_prev && (!is_last || feedback_for_final) {
++                Some(make()?)
++            } else {
++                None
++            };
++            targets.push(ChainPassTarget { target, feedback });
++        }
++        Some(targets)
++    }
++
++    /// Draws one chain pass: binds the uniform block, the sampler and the
++    /// pass's textures in the order its registers were assigned, then puts a
++    /// fullscreen triangle through it.
++    #[allow(clippy::too_many_arguments)]
++    fn draw_chain_pass(
++        &self,
++        pass: &ChainPass,
++        params: UserShaderParams,
++        target: &ID3D11RenderTargetView,
++        views: &[Option<ID3D11ShaderResourceView>],
++        viewport: &[D3D11_VIEWPORT; 1],
++        scissor: Option<RECT>,
++        clear: bool,
++    ) -> Result<()> {
++        let context = &self.devices.device_context;
++        update_buffer(
++            context,
++            self.shaders.params_buffer[0].as_ref().unwrap(),
++            &[params],
++        )?;
++        unsafe {
++            if clear {
++                context.ClearRenderTargetView(target, &[0.0; 4]);
++            }
++            context.OMSetRenderTargets(Some(&[Some(target.clone())]), None);
++            context.OMSetBlendState(&self.shaders.blend, None, 0xFFFFFFFF);
++            context.RSSetViewports(Some(viewport));
++            match scissor {
++                Some(rect) => {
++                    context.RSSetState(&self.shaders.scissor_rasterizer);
++                    context.RSSetScissorRects(Some(&[rect]));
++                }
++                None => context.RSSetState(&self.shaders.plain_rasterizer),
++            }
++            context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++            context.VSSetShader(&pass.vertex, None);
++            context.PSSetShader(&pass.fragment, None);
++            context.PSSetConstantBuffers(0, Some(&self.shaders.params_buffer));
++            context.PSSetSamplers(0, Some(&self.shaders.sampler));
++            if !views.is_empty() {
++                context.PSSetShaderResources(0, Some(views));
++            }
++            // A fullscreen triangle needs no vertex buffer and no input
++            // layout; the vertex stage builds it from SV_VertexID.
++            context.Draw(3, 0);
++            context.RSSetState(&self.shaders.plain_rasterizer);
++        }
++        release_shader_resources(context, views.len());
++        Ok(())
++    }
++
++    /// Straight copy of `source` onto `target`. Needed because the swapchain
++    /// texture isn't a copy destination, so "region entries but no post
++    /// shader" still has to get the composed image across as a draw.
++    fn blit(&mut self, target: &ID3D11RenderTargetView, source: &ID3D11ShaderResourceView) {
++        if self.shaders.blit.is_none() {
++            let build = || -> std::result::Result<_, String> {
++                let vertex = shader_translate::compile(
++                    BLIT_HLSL,
++                    "blit_vertex",
++                    shader_translate::VERTEX_PROFILE,
++                )?;
++                let fragment = shader_translate::compile(
++                    BLIT_HLSL,
++                    "blit_fragment",
++                    shader_translate::FRAGMENT_PROFILE,
++                )?;
++                Ok((
++                    shader_translate::blob_bytes(&vertex),
++                    shader_translate::blob_bytes(&fragment),
++                ))
++            };
++            let stages = match build() {
++                Ok((vertex, fragment)) => ShaderBytecode { vertex, fragment }
++                    .stages(&self.devices.device)
++                    .log_err_owned()
++                    .ok(),
++                Err(err) => {
++                    log::error!("Failed to build the shader blit pipeline: {err}");
++                    None
++                }
++            };
++            let Some(stages) = stages else { return };
++            self.shaders.blit = Some(stages);
++        }
++        let Some((vertex, fragment)) = &self.shaders.blit else {
++            return;
++        };
++        let context = &self.devices.device_context;
++        unsafe {
++            context.ClearRenderTargetView(target, &[0.0; 4]);
++            context.OMSetRenderTargets(Some(&[Some(target.clone())]), None);
++            context.OMSetBlendState(&self.shaders.replace_blend, None, 0xFFFFFFFF);
++            context.RSSetState(&self.shaders.plain_rasterizer);
++            context.RSSetViewports(Some(&self.resources.viewport));
++            context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++            context.VSSetShader(vertex, None);
++            context.PSSetShader(fragment, None);
++            context.PSSetSamplers(0, Some(&self.shaders.sampler));
++            context.PSSetShaderResources(0, Some(&[Some(source.clone())]));
++            context.Draw(3, 0);
++        }
++        release_shader_resources(context, 1);
++    }
++
++    /// Puts the composed scene on the swapchain when region entries ran
++    /// without a post shader to carry it across.
++    fn blit_scene_to_swapchain(&mut self) {
++        let Some(scene) = self.shaders.scene.as_ref().map(RenderTexture::srv) else {
++            return;
++        };
++        let Some(target) = self.resources.render_target_view[0].clone() else {
++            return;
++        };
++        self.blit(&target, &scene);
++    }
++
++    /// The in-scene primitive batch: one instanced quad per entry, grouped
++    /// into runs that share a uniform block the way the blade path groups
++    /// them.
++    fn draw_user_shaders(&mut self, user_shaders: &[UserShader]) -> Result<()> {
++        let Some(first) = user_shaders.first() else {
++            return Ok(());
++        };
++        // The clock ticks on this shader's own draws, so a panel that stops
++        // painting freezes rather than jumping ahead.
++        let Some(program) = self.shaders.primitives.get_mut(&first.shader_id) else {
++            return Ok(());
++        };
++        program.clock.tick();
++        let (time, delta) = (program.clock.time, program.clock.delta);
++        let vertex = program.vertex.clone();
++        let fragment = program.fragment.clone();
++
++        // `params` is one uniform for the whole draw, and `mouse` is
++        // bounds-local, so instances only ride together while their feed and
++        // their whole bounds match.
++        let mut start = 0;
++        while start < user_shaders.len() {
++            let head = &user_shaders[start];
++            let mut end = start + 1;
++            while end < user_shaders.len()
++                && user_shaders[end].params == head.params
++                && user_shaders[end].meta == head.meta
++                && user_shaders[end].bounds == head.bounds
++            {
++                end += 1;
++            }
++            let run = &user_shaders[start..end];
++            let params = UserShaderParams {
++                time,
++                delta,
++                resolution: [head.bounds.size.width.0, head.bounds.size.height.0],
++                mouse: head.mouse,
++                meta: meta_rows(head.meta),
++                signals: signal_rows(head.params),
++            };
++            self.upload_shader_instances(run)?;
++            let Some(instances) = &self.shaders.instances else {
++                return Ok(());
++            };
++            let instance_view = instances.view.clone();
++            let context = &self.devices.device_context;
++            update_buffer(
++                context,
++                self.shaders.params_buffer[0].as_ref().unwrap(),
++                &[params],
++            )?;
++            unsafe {
++                context.OMSetBlendState(&self.shaders.blend, None, 0xFFFFFFFF);
++                context.RSSetState(&self.shaders.plain_rasterizer);
++                context.RSSetViewports(Some(&self.resources.viewport));
++                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
++                context.VSSetShader(&vertex, None);
++                context.PSSetShader(&fragment, None);
++                // b0 is the template's own globals block, b1 the shared
++                // uniform block; the instances are an SRV at t0.
++                let constants = [
++                    self.shaders.globals_buffer[0].clone(),
++                    self.shaders.params_buffer[0].clone(),
++                ];
++                context.VSSetConstantBuffers(0, Some(&constants));
++                context.PSSetConstantBuffers(0, Some(&constants));
++                context.VSSetShaderResources(0, Some(&instance_view));
++                context.PSSetShaderResources(0, Some(&instance_view));
++                context.DrawInstanced(4, run.len() as u32, 0, 0);
++            }
++            start = end;
++        }
++        Ok(())
++    }
++
++    /// Grows the raw instance buffer if it has to, then writes this run into
++    /// it. The primitive's WGSL declares a storage binding, so HLSL sees a
++    /// `ByteAddressBuffer` and the view has to be a raw one.
++    fn upload_shader_instances(&mut self, run: &[UserShader]) -> Result<()> {
++        let bytes = std::mem::size_of_val(run);
++        let grow = self
++            .shaders
++            .instances
++            .as_ref()
++            .is_none_or(|instances| instances.capacity < bytes);
++        if grow {
++            self.shaders.instances = Some(RawBuffer::new(&self.devices.device, bytes)?);
++        }
++        let instances = self.shaders.instances.as_ref().unwrap();
++        update_buffer(&self.devices.device_context, &instances.buffer, run)
++    }
++
++    /// Runs every region entry in paint order, so a later one reads what the
++    /// earlier ones left behind, then puts the main target back for whatever
++    /// draws next.
++    fn draw_shader_regions(&mut self, scene: &Scene) {
++        for region in scene.user_shader_regions() {
++            self.draw_shader_region(region);
++        }
++        unsafe {
++            self.devices
++                .device_context
++                .OMSetRenderTargets(Some(&self.main_target_view), None);
++            self.devices
++                .device_context
++                .RSSetViewports(Some(&self.resources.viewport));
++        }
++    }
++
++    /// Re-runs one registered program over everything already composed under
++    /// `region.bounds`, writing back into the same scene target.
++    fn draw_shader_region(&mut self, region: &UserShaderRegion) {
++        if !self.shaders.chains.contains_key(&region.shader_id) || self.shaders.scene.is_none() {
++            return;
++        }
++
++        let surface_width = self.resources.width as i32;
++        let surface_height = self.resources.height as i32;
++        let left = region.bounds.origin.x.0.round() as i32;
++        let top = region.bounds.origin.y.0.round() as i32;
++        let width = region.bounds.size.width.0.round().max(0.0) as u32;
++        let height = region.bounds.size.height.0.round().max(0.0) as u32;
++        if width == 0 || height == 0 {
++            return;
++        }
++
++        // The copy takes whatever part of the bounds is actually on screen;
++        // the shader still sees uv 0..1 across the whole bounds, so a panel
++        // hanging off the edge reads transparent black out there rather than
++        // a stretched image.
++        let copy_left = left.max(0);
++        let copy_top = top.max(0);
++        let copy_right = (left + width as i32).min(surface_width);
++        let copy_bottom = (top + height as i32).min(surface_height);
++        if copy_right <= copy_left || copy_bottom <= copy_top {
++            return;
++        }
++
++        // Everything outside the content mask belongs to whoever drew it, so
++        // the scissor is what keeps this pass inside its own lane.
++        let mask = region.content_mask.bounds;
++        let clip_left = left.max(mask.origin.x.0.round() as i32).max(0);
++        let clip_top = top.max(mask.origin.y.0.round() as i32).max(0);
++        let clip_right = (left + width as i32)
++            .min((mask.origin.x.0 + mask.size.width.0).round() as i32)
++            .min(surface_width);
++        let clip_bottom = (top + height as i32)
++            .min((mask.origin.y.0 + mask.size.height.0).round() as i32)
++            .min(surface_height);
++        if clip_right <= clip_left || clip_bottom <= clip_top {
++            return;
++        }
++
++        self.ensure_region_instance(region, width, height);
++        let Some(instance) = self.shaders.regions.get_mut(&region.instance) else {
++            return;
++        };
++        instance.clock.tick();
++        let (time, delta) = (instance.clock.time, instance.clock.delta);
++        let scratch_view = instance.scratch.srv();
++        let scratch_texture = instance.scratch.texture.clone();
++
++        let source_box = D3D11_BOX {
++            left: copy_left as u32,
++            top: copy_top as u32,
++            front: 0,
++            right: copy_right as u32,
++            bottom: copy_bottom as u32,
++            back: 1,
++        };
++        let local_origin = ((copy_left - left) as u32, (copy_top - top) as u32);
++        let scene_texture = self.shaders.scene.as_ref().unwrap().texture.clone();
++        let scene_rtv = self.shaders.scene.as_ref().unwrap().rtv().clone();
++
++        // One snapshot of the composed image per frame: every pass that reads
++        // `screen` reads this same scratch.
++        unsafe {
++            self.devices.device_context.CopySubresourceRegion(
++                &scratch_texture,
++                0,
++                local_origin.0,
++                local_origin.1,
++                0,
++                &scene_texture,
++                0,
++                Some(&source_box),
++            );
++        }
++
++        let Some(last) = self.shaders.chains[&region.shader_id]
++            .passes
++            .len()
++            .checked_sub(1)
++        else {
++            return;
++        };
++        for index in 0..=last {
++            let is_last = index == last;
++            let instance = &self.shaders.regions[&region.instance];
++            let pass = &self.shaders.chains[&region.shader_id].passes[index];
++            let (target_view, resolution, viewport, scissor) = if is_last {
++                (
++                    scene_rtv.clone(),
++                    [width as f32, height as f32],
++                    [D3D11_VIEWPORT {
++                        TopLeftX: left as f32,
++                        TopLeftY: top as f32,
++                        Width: width as f32,
++                        Height: height as f32,
++                        MinDepth: 0.0,
++                        MaxDepth: 1.0,
++                    }],
++                    Some(RECT {
++                        left: clip_left,
++                        top: clip_top,
++                        right: clip_right,
++                        bottom: clip_bottom,
++                    }),
++                )
++            } else {
++                let Some(target) = instance.targets.get(index).and_then(|t| t.target.as_ref())
++                else {
++                    return;
++                };
++                (
++                    target.rtv().clone(),
++                    [target.width as f32, target.height as f32],
++                    full_viewport(target.width, target.height),
++                    None,
++                )
++            };
++            let Some(views) = chain_pass_resources(
++                &pass.bindings,
++                Some(&scratch_view),
++                None,
++                &instance.targets,
++                index,
++                &self.shaders.textures,
++            ) else {
++                return;
++            };
++            let params = UserShaderParams {
++                time,
++                delta,
++                resolution,
++                mouse: region.mouse,
++                meta: meta_rows(region.meta),
++                signals: signal_rows(region.signals),
++            };
++            // Intermediates draw onto their own cleared texture, where the
++            // premultiplied blend is the identity. The final pass lands on the
++            // loaded frame, so a transparent program composites over the panel
++            // it rides and an opaque one replaces its rect.
++            if self
++                .draw_chain_pass(
++                    pass,
++                    params,
++                    &target_view,
++                    &views,
++                    &viewport,
++                    scissor,
++                    !is_last,
++                )
++                .log_err()
++                .is_none()
++            {
++                return;
++            }
++
++            // Feedback is last frame's output, so the copy happens after the
++            // pass that produced this frame's. The final pass reads its rect
++            // back out of the scene target it just drew into.
++            self.copy_region_feedback(region.instance, index, is_last, &source_box, local_origin);
++        }
++    }
++
++    fn copy_region_feedback(
++        &self,
++        instance_key: u64,
++        index: usize,
++        is_last: bool,
++        source_box: &D3D11_BOX,
++        local_origin: (u32, u32),
++    ) {
++        let Some(instance) = self.shaders.regions.get(&instance_key) else {
++            return;
++        };
++        let Some(target) = instance.targets.get(index) else {
++            return;
++        };
++        let Some(feedback) = target.feedback.as_ref() else {
++            return;
++        };
++        unsafe {
++            if is_last {
++                let Some(scene) = self.shaders.scene.as_ref() else {
++                    return;
++                };
++                self.devices.device_context.CopySubresourceRegion(
++                    &feedback.texture,
++                    0,
++                    local_origin.0,
++                    local_origin.1,
++                    0,
++                    &scene.texture,
++                    0,
++                    Some(source_box),
++                );
++            } else if let Some(pass_target) = target.target.as_ref() {
++                self.devices.device_context.CopySubresourceRegion(
++                    &feedback.texture,
++                    0,
++                    0,
++                    0,
++                    0,
++                    &pass_target.texture,
++                    0,
++                    None,
++                );
++            }
++        }
++    }
++
++    /// Makes sure this instance has a scratch texture and the chain's pass
++    /// targets at the region's current size. A size change, a different
++    /// program or a newly needed feedback buffer all rebuild from scratch,
++    /// cleared: trails restart rather than smearing the old size.
++    fn ensure_region_instance(&mut self, region: &UserShaderRegion, width: u32, height: u32) {
++        let Some(chain) = self.shaders.chains.get(&region.shader_id) else {
++            return;
++        };
++        let shape = chain.target_shape();
++        let stale = match self.shaders.regions.get(&region.instance) {
++            Some(instance) => {
++                instance.width != width
++                    || instance.height != height
++                    || instance.shader_id != region.shader_id
++                    || (region.uses_prev
++                        && !instance
++                            .targets
++                            .iter()
++                            .any(|target| target.feedback.is_some()))
++            }
++            None => true,
++        };
++        if !stale {
++            return;
++        }
++        self.shaders.regions.remove(&region.instance);
++
++        let Some(scratch) = RenderTexture::cleared(
++            &self.devices.device,
++            &self.devices.device_context,
++            width,
++            height,
++        )
++        .log_err() else {
++            return;
++        };
++        let Some(targets) = self.create_chain_targets(&shape, width, height, true) else {
++            return;
++        };
++        self.shaders.regions.insert(
++            region.instance,
++            RegionInstance {
++                shader_id: region.shader_id,
++                width,
++                height,
++                scratch,
++                targets,
++                clock: ShaderClock::default(),
++            },
++        );
++    }
++
++    /// The whole-window pass. Without feedback the final pass writes straight
++    /// to the swapchain; with it, it ping-pongs two intermediates so `prev` is
++    /// last frame's finished image, and blits the winner across.
++    fn draw_post_pass(&mut self) {
++        let Some(post) = &self.shaders.post else {
++            return;
++        };
++        let (time, delta) = (post.clock.time, post.clock.delta);
++        let shape = post.chain.target_shape();
++        let Some(last) = shape.len().checked_sub(1) else {
++            return;
++        };
++        let uses_prev = shape[last].1;
++        // A chain that never reads the composed frame can't put it back, so
++        // its output alone would erase the app it was meant to ride. Those get
++        // the frame blitted under them and land on it loaded, where the
++        // premultiplied blend composites the shader over it.
++        let overlay = !uses_prev && !post.chain.passes.iter().any(ChainPass::samples_screen);
++
++        let (width, height) = (self.resources.width, self.resources.height);
++        if self.shaders.post_targets.len() != shape.len() {
++            let Some(targets) = self.create_chain_targets(&shape, width, height, false) else {
++                return;
++            };
++            self.shaders.post_targets = targets;
++        }
++        if uses_prev && self.shaders.post_prev.is_none() {
++            let make = || {
++                RenderTexture::cleared(
++                    &self.devices.device,
++                    &self.devices.device_context,
++                    width,
++                    height,
++                )
++                .log_err()
++            };
++            let (Some(first), Some(second)) = (make(), make()) else {
++                return;
++            };
++            self.shaders.post_prev = Some([first, second]);
++        }
++
++        let Some(scene_view) = self.shaders.scene.as_ref().map(RenderTexture::srv) else {
++            return;
++        };
++        let Some(swapchain) = self.resources.render_target_view[0].clone() else {
++            return;
++        };
++        let (final_view, prev_view) = match &self.shaders.post_prev {
++            Some(pair) => (
++                pair[self.shaders.post_prev_index].rtv().clone(),
++                Some(pair[1 - self.shaders.post_prev_index].srv()),
++            ),
++            None => (swapchain.clone(), None),
++        };
++        if overlay {
++            self.blit(&final_view, &scene_view);
++        }
++
++        for index in 0..=last {
++            let is_last = index == last;
++            let post = self.shaders.post.as_ref().unwrap();
++            let pass = &post.chain.passes[index];
++            let (target_view, resolution, viewport) = if is_last {
++                (
++                    final_view.clone(),
++                    [width as f32, height as f32],
++                    full_viewport(width, height),
++                )
++            } else {
++                let Some(target) = self
++                    .shaders
++                    .post_targets
++                    .get(index)
++                    .and_then(|t| t.target.as_ref())
++                else {
++                    return;
++                };
++                (
++                    target.rtv().clone(),
++                    [target.width as f32, target.height as f32],
++                    full_viewport(target.width, target.height),
++                )
++            };
++            // The final pass's `prev` is the ping-pong partner, not a copy:
++            // the finished frame is already sitting in the other half.
++            let final_prev = if is_last { prev_view.as_ref() } else { None };
++            let Some(views) = chain_pass_resources(
++                &pass.bindings,
++                Some(&scene_view),
++                final_prev,
++                &self.shaders.post_targets,
++                index,
++                &self.shaders.textures,
++            ) else {
++                return;
++            };
++            let params = UserShaderParams {
++                time,
++                delta,
++                resolution,
++                mouse: self.shaders.post_mouse,
++                meta: meta_rows(self.shaders.post_meta),
++                signals: signal_rows(self.shaders.post_signals),
++            };
++            if self
++                .draw_chain_pass(
++                    pass,
++                    params,
++                    &target_view,
++                    &views,
++                    &viewport,
++                    None,
++                    !(is_last && overlay),
++                )
++                .log_err()
++                .is_none()
++            {
++                return;
++            }
++
++            if !is_last {
++                let target = &self.shaders.post_targets[index];
++                if let (Some(pass_target), Some(feedback)) =
++                    (target.target.as_ref(), target.feedback.as_ref())
++                {
++                    unsafe {
++                        self.devices.device_context.CopySubresourceRegion(
++                            &feedback.texture,
++                            0,
++                            0,
++                            0,
++                            0,
++                            &pass_target.texture,
++                            0,
++                            None,
++                        );
++                    }
++                }
++            }
++        }
++
++        if self.shaders.post_prev.is_some() {
++            let finished =
++                self.shaders.post_prev.as_ref().unwrap()[self.shaders.post_prev_index].srv();
++            self.blit(&swapchain, &finished);
++            self.shaders.post_prev_index = 1 - self.shaders.post_prev_index;
++        }
++    }
++}
++
++/// The uniform block stores `meta` and `signals` as vec4 rows; the caller
++/// hands them over flat.
++fn meta_rows(meta: [f32; 8]) -> [[f32; 4]; 2] {
++    [
++        [meta[0], meta[1], meta[2], meta[3]],
++        [meta[4], meta[5], meta[6], meta[7]],
++    ]
++}
++
++fn signal_rows(signals: [f32; 16]) -> [[f32; 4]; 4] {
++    [
++        [signals[0], signals[1], signals[2], signals[3]],
++        [signals[4], signals[5], signals[6], signals[7]],
++        [signals[8], signals[9], signals[10], signals[11]],
++        [signals[12], signals[13], signals[14], signals[15]],
++    ]
++}
++
++#[cfg(test)]
++mod user_shader_tests {
++    // Deliberately not `use super::*`: this file globs `crate::*`, which
++    // carries gpui's own `test` macro, and that shadows the built-in
++    // attribute.
++    use super::{
++        D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
++        feature_level_runs_user_shaders, meta_rows, signal_rows,
++    };
++
++    #[test]
++    fn the_feature_level_guard_takes_11_0_and_up() {
++        assert!(!feature_level_runs_user_shaders(D3D_FEATURE_LEVEL_10_1));
++        assert!(feature_level_runs_user_shaders(D3D_FEATURE_LEVEL_11_0));
++        assert!(feature_level_runs_user_shaders(D3D_FEATURE_LEVEL_11_1));
++    }
++
++    #[test]
++    fn the_uniform_rows_match_the_flat_arguments() {
++        let meta = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
++        assert_eq!(meta_rows(meta)[1], [4.0, 5.0, 6.0, 7.0]);
++        let mut signals = [0.0; 16];
++        signals[13] = 9.0;
++        assert_eq!(signal_rows(signals)[3], [0.0, 9.0, 0.0, 0.0]);
++    }
++}
++
++/// `ResultExt::log_err` hands back a reference-free `Option`; this is the
++/// owning twin the pipeline builders want.
++trait LogErrOwned<T> {
++    fn log_err_owned(self) -> std::result::Result<T, ()>;
++}
++
++impl<T> LogErrOwned<T> for Result<T> {
++    fn log_err_owned(self) -> std::result::Result<T, ()> {
++        match self {
++            Ok(value) => Ok(value),
++            Err(err) => {
++                log::error!("{err:#}");
++                Err(())
++            }
++        }
++    }
++}
++
+ pub(crate) mod shader_resources {
+     use anyhow::Result;
+ 
+diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/shader_translate.rs vendor/gpui/src/platform/windows/shader_translate.rs
+--- a/src/platform/windows/shader_translate.rs	1969-12-31 17:00:00.000000000 -0700
++++ b/src/platform/windows/shader_translate.rs	2026-08-10 10:01:13.903332170 -0600
+@@ -0,0 +1,271 @@
++//! rox patch: WGSL to HLSL for the user shader pipeline.
++//!
++//! The blade backends hand their composed modules straight to blade, which
++//! speaks WGSL. The DirectX renderer doesn't, so the composed module gets
++//! translated here and compiled with FXC before it becomes a pipeline. The
++//! source is the `@group(0) @binding(n)`-decorated variant that
++//! `ChainPassDesc` carries alongside the bare one, so the register map falls
++//! straight out of the pinned binding order - no reflection round trip.
++
++use windows::{
++    Win32::Graphics::Direct3D::{
++        Fxc::{D3DCOMPILE_OPTIMIZATION_LEVEL3, D3DCompile},
++        ID3DBlob, ID3DInclude,
++    },
++    core::PCSTR,
++};
++
++use crate::window::ChainBinding;
++
++/// What one binding becomes on the D3D11 side. The chain bindings map onto
++/// this; the in-scene primitive declares its three by hand.
++#[derive(Copy, Clone, Debug, Eq, PartialEq)]
++pub(crate) enum HlslBinding {
++    /// A constant buffer, `b{n}`.
++    Uniform,
++    /// The sampler, `s{n}`.
++    Sampler,
++    /// A texture SRV, `t{n}`.
++    Texture,
++    /// A read-only storage buffer, which HLSL sees as a `ByteAddressBuffer`,
++    /// so it shares the SRV registers with textures.
++    Storage,
++}
++
++impl HlslBinding {
++    /// How a chain pass's bindings land on registers: the uniform block is the
++    /// one constant buffer, `samp` the one sampler, everything else a texture
++    /// in the order the pass pinned.
++    pub(crate) fn for_chain(binding: &ChainBinding) -> Self {
++        match binding {
++            ChainBinding::Params => HlslBinding::Uniform,
++            ChainBinding::Sampler => HlslBinding::Sampler,
++            _ => HlslBinding::Texture,
++        }
++    }
++}
++
++/// The bindings the in-scene primitive's template declares, in the order
++/// `compose_user_shader_source` decorates them.
++pub(crate) const PRIMITIVE_BINDINGS: [HlslBinding; 3] = [
++    HlslBinding::Uniform,
++    HlslBinding::Uniform,
++    HlslBinding::Storage,
++];
++
++/// A translated module plus the entry point names it actually ended up with.
++/// naga renames anything that collides with an HLSL keyword, so the compiler
++/// gets told what the writer emitted rather than what the WGSL said.
++pub(crate) struct TranslatedShader {
++    pub source: String,
++    pub vertex_entry: String,
++    pub fragment_entry: String,
++}
++
++/// Where a binding sits once the whole list has been walked.
++fn register_of(bindings: &[HlslBinding], index: usize) -> u32 {
++    let kind = bindings[index];
++    bindings[..index]
++        .iter()
++        .filter(|earlier| match kind {
++            // Textures and byte-address buffers are both SRVs, so they share a
++            // counter; the two others get one each.
++            HlslBinding::Texture | HlslBinding::Storage => {
++                matches!(earlier, HlslBinding::Texture | HlslBinding::Storage)
++            }
++            other => **earlier == other,
++        })
++        .count() as u32
++}
++
++/// The register map for a decorated module: `@binding(n)` indexes `bindings`,
++/// which is the same vec the renderer walks when it binds resources.
++fn binding_map(bindings: &[HlslBinding]) -> naga::back::hlsl::BindingMap {
++    let mut map = naga::back::hlsl::BindingMap::default();
++    for index in 0..bindings.len() {
++        map.insert(
++            naga::ResourceBinding {
++                group: 0,
++                binding: index as u32,
++            },
++            naga::back::hlsl::BindTarget {
++                space: 0,
++                register: register_of(bindings, index),
++                binding_array_size: None,
++                dynamic_storage_buffer_offsets_index: None,
++                // WGSL bounds-checks its indexing and the shaders here index
++                // `signals` and `user_meta` with runtime values, so keep the
++                // clamps naga would emit on any other backend.
++                restrict_indexing: true,
++            },
++        );
++    }
++    map
++}
++
++/// Translates one decorated WGSL module to HLSL. `bindings` is the pass's
++/// pinned binding order; `Err` carries naga's message the way registration
++/// hands back a validation error.
++pub(crate) fn translate(
++    source: &str,
++    bindings: &[HlslBinding],
++) -> Result<TranslatedShader, String> {
++    use naga::back::hlsl;
++
++    let module = naga::front::wgsl::parse_str(source).map_err(|err| err.emit_to_string(source))?;
++    let info = naga::valid::Validator::new(
++        naga::valid::ValidationFlags::all(),
++        naga::valid::Capabilities::default(),
++    )
++    .validate(&module)
++    .map_err(|err| err.emit_to_string(source))?;
++
++    let options = hlsl::Options {
++        // FXC tops out here, and the pipeline refuses to register on a device
++        // that can't reach it.
++        shader_model: hlsl::ShaderModel::V5_0,
++        binding_map: binding_map(bindings),
++        // Every binding is spelled out above, so a module that reaches for one
++        // that isn't should fail loudly rather than get a made-up register.
++        fake_missing_bindings: false,
++        // The sampler index buffer never survives the rewrite below, but the
++        // writer still refuses to emit one without a target.
++        sampler_buffer_binding_map: [(
++            hlsl::SamplerIndexBufferKey { group: 0 },
++            hlsl::BindTarget::default(),
++        )]
++        .into_iter()
++        .collect(),
++        ..Default::default()
++    };
++
++    let mut hlsl_source = String::new();
++    let reflection = hlsl::Writer::new(&mut hlsl_source, &options)
++        .write(&module, &info, None)
++        .map_err(|err| format!("HLSL translation failed: {err}"))?;
++
++    let entry_name = |stage: naga::ShaderStage| -> Result<String, String> {
++        let index = module
++            .entry_points
++            .iter()
++            .position(|entry| entry.stage == stage)
++            .ok_or_else(|| format!("the composed module has no {stage:?} entry point"))?;
++        match reflection.entry_point_names.get(index) {
++            Some(Ok(name)) => Ok(name.clone()),
++            Some(Err(err)) => Err(format!("HLSL translation failed: {err}")),
++            None => Err("HLSL translation dropped an entry point".to_string()),
++        }
++    };
++
++    Ok(TranslatedShader {
++        vertex_entry: entry_name(naga::ShaderStage::Vertex)?,
++        fragment_entry: entry_name(naga::ShaderStage::Fragment)?,
++        source: rewrite_sampler(&hlsl_source),
++    })
++}
++
++/// naga routes every sampler through D3D12's bindless construct: an unbounded
++/// `SamplerState` heap in a non-zero register space, indexed through a
++/// structured buffer. D3D11 has neither register spaces nor unbounded sampler
++/// arrays, so the three declarations get dropped and the `static const` alias
++/// becomes a plain `s0` sampler.
++///
++/// This is a rewrite of generated code, so it's the thing here most likely to
++/// break quietly on a naga bump. The guard is the compile-level test in
++/// `window.rs`, which asserts FXC accepts the result rather than comparing
++/// text.
++fn rewrite_sampler(hlsl: &str) -> String {
++    const HEAP: &str = "SamplerState nagaSamplerHeap[";
++    const COMPARISON_HEAP: &str = "SamplerComparisonState nagaComparisonSamplerHeap[";
++    const INDEX_BUFFER: &str = "StructuredBuffer<uint> naga";
++    const ALIAS: &str = "static const SamplerState ";
++
++    let mut out = String::with_capacity(hlsl.len());
++    for line in hlsl.lines() {
++        let trimmed = line.trim_start();
++        if trimmed.starts_with(HEAP)
++            || trimmed.starts_with(COMPARISON_HEAP)
++            || (trimmed.starts_with(INDEX_BUFFER) && trimmed.contains("SamplerIndexArray"))
++        {
++            continue;
++        }
++        if let Some(rest) = trimmed.strip_prefix(ALIAS)
++            && let Some((name, _)) = rest.split_once(" = ")
++        {
++            out.push_str(&format!("SamplerState {name} : register(s0);\n"));
++            continue;
++        }
++        out.push_str(line);
++        out.push('\n');
++    }
++    out
++}
++
++/// FXC over a translated module. The error blob comes back verbatim, matching
++/// how the blade path hands naga's message to the caller.
++pub(crate) fn compile(source: &str, entry_point: &str, target: &str) -> Result<ID3DBlob, String> {
++    let entry = format!("{entry_point}\0");
++    let target = format!("{target}\0");
++    let mut code = None;
++    let mut errors = None;
++
++    let result = unsafe {
++        D3DCompile(
++            source.as_ptr() as *const _,
++            source.len(),
++            PCSTR::null(),
++            None,
++            None::<&ID3DInclude>,
++            PCSTR::from_raw(entry.as_ptr()),
++            PCSTR::from_raw(target.as_ptr()),
++            D3DCOMPILE_OPTIMIZATION_LEVEL3,
++            0,
++            &mut code,
++            Some(&mut errors),
++        )
++    };
++
++    match result {
++        Ok(()) => code.ok_or_else(|| "the shader compiler returned no bytecode".to_string()),
++        Err(err) => Err(compile_error(errors, err)),
++    }
++}
++
++fn compile_error(errors: Option<ID3DBlob>, fallback: windows::core::Error) -> String {
++    let Some(errors) = errors else {
++        return format!("{fallback}");
++    };
++    let text = unsafe {
++        std::ffi::CStr::from_ptr(errors.GetBufferPointer() as *const i8).to_string_lossy()
++    };
++    let text = text.trim();
++    if text.is_empty() {
++        format!("{fallback}")
++    } else {
++        text.to_string()
++    }
++}
++
++/// The bytecode of a compiled stage, kept so a lost device can rebuild its
++/// pipelines without the caller re-registering anything.
++pub(crate) fn blob_bytes(blob: &ID3DBlob) -> Vec<u8> {
++    unsafe {
++        std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize())
++            .to_vec()
++    }
++}
++
++/// Translates and compiles both stages of one composed module.
++pub(crate) fn build(source: &str, bindings: &[HlslBinding]) -> Result<(Vec<u8>, Vec<u8>), String> {
++    let translated = translate(source, bindings)?;
++    let vertex = compile(&translated.source, &translated.vertex_entry, VERTEX_PROFILE)?;
++    let fragment = compile(
++        &translated.source,
++        &translated.fragment_entry,
++        FRAGMENT_PROFILE,
++    )?;
++    Ok((blob_bytes(&vertex), blob_bytes(&fragment)))
++}
++
++pub(crate) const VERTEX_PROFILE: &str = "vs_5_0";
++pub(crate) const FRAGMENT_PROFILE: &str = "ps_5_0";
+diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/window.rs vendor/gpui/src/platform/windows/window.rs
+--- a/src/platform/windows/window.rs	2026-08-10 09:32:30.381323252 -0600
++++ b/src/platform/windows/window.rs	2026-08-10 09:59:55.611662667 -0600
+@@ -938,6 +938,53 @@
+     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
+         // There is no such thing on Windows.
+     }
++
++    // rox patch: the user shader pipeline, translated to HLSL and run through
++    // the DirectX renderer. Validation happens in `Window`, so anything that
++    // reaches here has already passed naga.
++    fn user_shaders_supported(&self) -> bool {
++        self.0.state.borrow().renderer.user_shaders_supported()
++    }
++
++    fn register_user_shader(&self, id: u32, _source: &str, decorated: &str) {
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .register_user_shader(id, decorated);
++    }
++
++    fn register_screen_shader(&self, id: u32, chain: &[ChainPassDesc]) {
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .register_screen_shader(id, chain);
++    }
++
++    fn register_user_texture(&self, id: u32, width: u32, height: u32, rgba8: &[u8]) {
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .register_user_texture(id, width, height, rgba8);
++    }
++
++    fn set_post_shader(&self, chain: Option<&[ChainPassDesc]>) {
++        self.0.state.borrow_mut().renderer.set_post_shader(chain);
++    }
++
++    fn set_post_signals(&self, signals: [f32; 16], meta: [f32; 8], mouse: [f32; 4]) {
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .set_post_signals(signals, meta, mouse);
++    }
++
++    fn set_post_mouse(&self, mouse: [f32; 4]) {
++        self.0.state.borrow_mut().renderer.set_post_mouse(mouse);
++    }
+ }
+ 
+ #[implement(IDropTarget)]
+diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows.rs vendor/gpui/src/platform/windows.rs
+--- a/src/platform/windows.rs	2006-07-23 19:21:28.000000000 -0600
++++ b/src/platform/windows.rs	2026-08-10 09:59:55.603696107 -0600
+@@ -9,6 +9,10 @@
+ mod events;
+ mod keyboard;
+ mod platform;
++// rox patch: WGSL to HLSL for the user shader pipeline. `pub(crate)` so the
++// registry tests in `window.rs` can reach it, which is what guards the sampler
++// rewrite.
++pub(crate) mod shader_translate;
+ mod system_settings;
+ mod util;
+ mod vsync;
+diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform.rs vendor/gpui/src/platform.rs
+--- a/src/platform.rs	2026-08-10 09:32:30.371531183 -0600
++++ b/src/platform.rs	2026-08-10 09:59:55.603891609 -0600
+@@ -23,6 +23,13 @@
+ #[cfg(target_os = "windows")]
+ mod windows;
+ 
++// rox patch: the shader registry tests in `window.rs` translate their composed
++// modules, and the translator lives behind this module. Re-exported under a
++// name of its own rather than opening `windows` up, since a `pub(crate) mod
++// windows` would shadow the `windows` crate wherever `crate::*` is globbed.
++#[cfg(all(test, target_os = "windows"))]
++pub(crate) use windows::shader_translate as windows_shader_translate;
++
+ #[cfg(all(
+     feature = "screen-capture",
+     any(
+@@ -550,11 +557,22 @@
+     fn set_client_inset(&self, _inset: Pixels) {}
+     fn gpu_specs(&self) -> Option<GpuSpecs>;
+ 
+-    // User shaders, the region pass and the whole-window post-process pass;
+-    // only the blade backends implement them. Validation happens in `Window`,
+-    // so by the time a source or a composed chain reaches here it has already
+-    // passed naga.
+-    fn register_user_shader(&self, _id: u32, _source: &str) {}
++    // User shaders, the region pass and the whole-window post-process pass.
++    // Validation happens in `Window`, so by the time a source or a composed
++    // chain reaches here it has already passed naga.
++    //
++    // The primitive arrives in both variants for the same reason
++    // `ChainPassDesc` carries both: blade assigns bind points from its own
++    // data layout and wants the bare module, a translating backend needs the
++    // `@group/@binding`-decorated one. Each backend takes the one its API
++    // wants and ignores the other.
++    /// Whether this backend can actually run user shaders. The compile-time
++    /// gates in `Window` cover a backend with no shader pipeline at all; this
++    /// covers one that has a pipeline the device is too old to run.
++    fn user_shaders_supported(&self) -> bool {
++        true
++    }
++    fn register_user_shader(&self, _id: u32, _source: &str, _decorated: &str) {}
+     fn register_screen_shader(&self, _id: u32, _chain: &[ChainPassDesc]) {}
+     fn register_user_texture(&self, _id: u32, _width: u32, _height: u32, _rgba8: &[u8]) {}
+     fn set_post_shader(&self, _chain: Option<&[ChainPassDesc]>) {}
+diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.rs
+--- a/src/window.rs	2026-08-10 09:32:30.376790421 -0600
++++ b/src/window.rs	2026-08-10 10:02:00.835478153 -0600
+@@ -3417,26 +3417,40 @@
+         #[cfg(any(
+             target_os = "linux",
+             target_os = "freebsd",
+-            all(target_os = "macos", feature = "macos-blade")
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
+         ))]
+         {
++            // A backend can have a shader pipeline the device can't run - the
++            // DirectX renderer needs shader model 5.0, and a 10.1 fallback
++            // device caps below it.
++            if !self.platform_window.user_shaders_supported() {
++                return Err("unsupported".to_string());
++            }
+             let (id, is_new) = self.user_shaders.register_chain(chain)?;
+             let primitive = if is_new {
+                 self.user_shaders
+                     .primitive_source(id)
+                     .map(|source| source.to_string())
++                    .zip(
++                        self.user_shaders
++                            .primitive_decorated_source(id)
++                            .map(|source| source.to_string()),
++                    )
+             } else {
+                 None
+             };
+-            if let Some(primitive) = primitive {
+-                self.platform_window.register_user_shader(id.0, &primitive);
++            if let Some((primitive, decorated)) = primitive {
++                self.platform_window
++                    .register_user_shader(id.0, &primitive, &decorated);
+             }
+             Ok(id)
+         }
+         #[cfg(not(any(
+             target_os = "linux",
+             target_os = "freebsd",
+-            all(target_os = "macos", feature = "macos-blade")
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
+         )))]
+         {
+             let _ = chain;
+@@ -3463,9 +3477,13 @@
+         #[cfg(any(
+             target_os = "linux",
+             target_os = "freebsd",
+-            all(target_os = "macos", feature = "macos-blade")
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
+         ))]
+         {
++            if !self.platform_window.user_shaders_supported() {
++                return Err("unsupported".to_string());
++            }
+             let (id, is_new) = self.user_textures.register(width, height, rgba8)?;
+             if is_new {
+                 self.platform_window
+@@ -3476,7 +3494,8 @@
+         #[cfg(not(any(
+             target_os = "linux",
+             target_os = "freebsd",
+-            all(target_os = "macos", feature = "macos-blade")
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
+         )))]
+         {
+             let _ = (width, height, rgba8);
+@@ -3560,13 +3579,10 @@
+         self.invalidator.debug_assert_paint();
+ 
+         #[cfg(any(
+-
+             target_os = "linux",
+-
+             target_os = "freebsd",
+-
+-            all(target_os = "macos", feature = "macos-blade")
+-
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
+         ))]
+         {
+             use crate::UserShaderRegion;
+@@ -3577,7 +3593,8 @@
+             // Compiled on first use rather than at registration, so a shader
+             // that only ever runs as a primitive never pays for the variant.
+             if let Some(chain) = self.user_shaders.take_pending_screen_source(shader) {
+-                self.platform_window.register_screen_shader(shader.0, &chain);
++                self.platform_window
++                    .register_screen_shader(shader.0, &chain);
+             }
+             let scale_factor = self.scale_factor();
+             let mouse = self.shader_mouse(bounds.origin, scale_factor);
+@@ -3598,7 +3615,8 @@
+         #[cfg(not(any(
+             target_os = "linux",
+             target_os = "freebsd",
+-            all(target_os = "macos", feature = "macos-blade")
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
+         )))]
+         {
+             let _ = (bounds, shader, instance, signals, meta);
+@@ -5694,7 +5712,15 @@
+ #[derive(Clone, Debug)]
+ pub(crate) struct ChainPassDesc {
+     /// The composed WGSL module, undecorated the way blade wants it.
++    #[cfg_attr(target_os = "windows", allow(dead_code))]
+     pub source: String,
++    /// The same module with `@group(0) @binding(n)` on every global, which is
++    /// what a backend that assigns its own bind points needs. `n` indexes
++    /// `bindings`, so a translator derives its register map from the same vec
++    /// it walks to bind resources at draw time. Composed unconditionally: it's
++    /// one string per pass, and a cfg here would fork the registry.
++    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
++    pub decorated: String,
+     /// Resolution scale for this pass's target; the final pass is always 1.0.
+     pub scale: f32,
+     /// What the pass actually references, in the pinned order.
+@@ -5741,7 +5767,8 @@
+     any(
+         target_os = "linux",
+         target_os = "freebsd",
+-        all(target_os = "macos", feature = "macos-blade")
++        all(target_os = "macos", feature = "macos-blade"),
++        target_os = "windows"
+     )
+ ))]
+ fn compose_screen_shader_source(
+@@ -5765,7 +5792,8 @@
+ #[cfg(any(
+     target_os = "linux",
+     target_os = "freebsd",
+-    all(target_os = "macos", feature = "macos-blade")
++    all(target_os = "macos", feature = "macos-blade"),
++    target_os = "windows"
+ ))]
+ fn validate_shader_source(source: &str) -> std::result::Result<naga::Module, String> {
+     let module = naga::front::wgsl::parse_str(source).map_err(|err| err.emit_to_string(source))?;
+@@ -5779,19 +5807,13 @@
+ }
+ 
+ #[cfg(all(
+-
+     test,
+-
+     any(
+-
+         target_os = "linux",
+-
+         target_os = "freebsd",
+-
+-        all(target_os = "macos", feature = "macos-blade")
+-
++        all(target_os = "macos", feature = "macos-blade"),
++        target_os = "windows"
+     )
+-
+ ))]
+ mod post_shader_tests {
+     use super::*;
+@@ -5960,6 +5982,10 @@
+     // binds an asset or runs more than one pass: none of that exists in scene
+     // space, so it can only ever run as a screen pass.
+     primitive_source: Option<String>,
++    // The same module decorated, for a backend that translates rather than
++    // assigning bind points from a data layout. Composed together with
++    // `primitive_source`, so the two are `Some` and `None` in lockstep.
++    primitive_decorated: Option<String>,
+     caps: UserShaderCaps,
+     // The region pipelines are compiled on first `paint_screen_shader`, so a
+     // shader that only ever runs as a primitive never pays for the variant.
+@@ -6105,7 +6131,8 @@
+         any(
+             target_os = "linux",
+             target_os = "freebsd",
+-            all(target_os = "macos", feature = "macos-blade")
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
+         )
+     ))]
+     pub(crate) fn screen_source(&self, id: UserShaderId) -> Option<&str> {
+@@ -6121,6 +6148,14 @@
+             .and_then(|entry| entry.primitive_source.as_deref())
+     }
+ 
++    /// The decorated twin of [`Self::primitive_source`], for a backend that
++    /// translates the module instead of handing it to blade.
++    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
++    pub(crate) fn primitive_decorated_source(&self, id: UserShaderId) -> Option<&str> {
++        self.entry(id)
++            .and_then(|entry| entry.primitive_decorated.as_deref())
++    }
++
+     /// Hands back the composed chain the first time a region wants it, and
+     /// nothing on every call after. Keeps the region pipelines lazy without
+     /// the caller tracking what has been compiled.
+@@ -6128,7 +6163,8 @@
+         not(any(
+             target_os = "linux",
+             target_os = "freebsd",
+-            all(target_os = "macos", feature = "macos-blade")
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
+         )),
+         allow(dead_code)
+     )]
+@@ -6152,7 +6188,8 @@
+         any(
+             target_os = "linux",
+             target_os = "freebsd",
+-            all(target_os = "macos", feature = "macos-blade")
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
+         )
+     ))]
+     fn register(&mut self, source: &str) -> std::result::Result<(UserShaderId, bool), String> {
+@@ -6164,7 +6201,8 @@
+     #[cfg(any(
+         target_os = "linux",
+         target_os = "freebsd",
+-        all(target_os = "macos", feature = "macos-blade")
++        all(target_os = "macos", feature = "macos-blade"),
++        target_os = "windows"
+     ))]
+     fn register_chain(
+         &mut self,
+@@ -6284,6 +6322,7 @@
+ 
+             passes.push(ChainPassDesc {
+                 source: compose_chain_pass_source(&pass.source, false, &bindings),
++                decorated: compose_chain_pass_source(&pass.source, true, &bindings),
+                 scale: pass.scale,
+                 bindings,
+             });
+@@ -6293,20 +6332,26 @@
+         // nor any chain neighbour, so a source that touches any of them fails
+         // here - which is exactly how a screen-pass-only program identifies
+         // itself. Only a one-pass chain gets as far as trying.
+-        let primitive_source = chain
++        let primitive = chain
+             .passes
+             .first()
+             .filter(|_| chain.passes.len() == 1)
+             .and_then(|pass| {
+-                validate_shader_source(&compose_user_shader_source(&pass.source, true))
++                let decorated = compose_user_shader_source(&pass.source, true);
++                validate_shader_source(&decorated)
+                     .ok()
+-                    .map(|_| compose_user_shader_source(&pass.source, false))
++                    .map(|_| (compose_user_shader_source(&pass.source, false), decorated))
+             });
++        let (primitive_source, primitive_decorated) = match primitive {
++            Some((source, decorated)) => (Some(source), Some(decorated)),
++            None => (None, None),
++        };
+ 
+         let id = UserShaderId(self.entries.len() as u32);
+         self.entries.push(UserShaderEntry {
+             passes,
+             primitive_source,
++            primitive_decorated,
+             caps,
+             region_registered: false,
+         });
+@@ -6343,7 +6388,8 @@
+         not(any(
+             target_os = "linux",
+             target_os = "freebsd",
+-            all(target_os = "macos", feature = "macos-blade")
++            all(target_os = "macos", feature = "macos-blade"),
++            target_os = "windows"
+         )),
+         allow(dead_code)
+     )]
+@@ -6383,19 +6429,13 @@
+ }
+ 
+ #[cfg(all(
+-
+     test,
+-
+     any(
+-
+         target_os = "linux",
+-
+         target_os = "freebsd",
+-
+-        all(target_os = "macos", feature = "macos-blade")
+-
++        all(target_os = "macos", feature = "macos-blade"),
++        target_os = "windows"
+     )
+-
+ ))]
+ mod user_shader_registry_tests {
+     use super::*;
+@@ -6946,6 +6986,128 @@
+         assert!(registry.register(2, 2, &pixels[..4]).is_err());
+         assert!(registry.register(0, 2, &[]).is_err());
+     }
++
++    // A chain pass that reaches for everything a pass can have: the composed
++    // frame, its own last output, the pass ahead of it and a declared image.
++    const EVERYTHING: &str = "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++        return textureSample(screen, samp, uv)
++             + textureSample(prev, samp, uv)
++             + textureSample(first, samp, uv)
++             + textureSample(plate, samp, uv);
++    }";
++
++    fn everything_chain() -> UserShaderChain {
++        UserShaderChain {
++            passes: vec![
++                pass(
++                    "first",
++                    "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                         return textureSample(screen, samp, uv);
++                     }",
++                    0.5,
++                ),
++                pass("out", EVERYTHING, 1.0),
++            ],
++            assets: vec![("plate".to_string(), UserTextureId(7))],
++        }
++    }
++
++    #[test]
++    fn the_decorated_variant_numbers_bindings_in_the_pinned_order() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry.register_chain(&everything_chain()).unwrap();
++        let last = registry.entries[id.0 as usize].passes.last().unwrap();
++
++        // What a translating backend derives its register map from: the
++        // `@binding(n)` on each global is that global's index into
++        // `bindings`, so the two walk in lockstep.
++        assert_eq!(
++            last.bindings,
++            vec![
++                ChainBinding::Params,
++                ChainBinding::Screen,
++                ChainBinding::Sampler,
++                ChainBinding::Prev,
++                ChainBinding::Pass {
++                    index: 0,
++                    name: "first".to_string()
++                },
++                ChainBinding::Asset {
++                    id: 7,
++                    name: "plate".to_string()
++                },
++            ]
++        );
++        for (slot, declaration) in [
++            "var<uniform> params: ShaderParams;",
++            "var screen: texture_2d<f32>;",
++            "var samp: sampler;",
++            "var prev: texture_2d<f32>;",
++            "var first: texture_2d<f32>;",
++            "var plate: texture_2d<f32>;",
++        ]
++        .into_iter()
++        .enumerate()
++        {
++            let expected = format!("@group(0) @binding({slot}) {declaration}");
++            assert!(
++                last.decorated.contains(&expected),
++                "missing `{expected}` in:\n{}",
++                last.decorated
++            );
++        }
++        // The bare variant is what blade takes, and carries no decorations.
++        assert!(!last.source.contains("@group("));
++    }
++
++    // The rest of this module is Windows only: it runs the composed modules
++    // through the HLSL translator and the shader compiler, which is what keeps
++    // the sampler rewrite honest. Asserting on the compiler's verdict rather
++    // than on the generated text is the point - a naga change that shifts the
++    // pattern has to fail loudly.
++    #[cfg(target_os = "windows")]
++    mod hlsl {
++        use super::*;
++        use crate::platform::windows_shader_translate::{
++            self as shader_translate, FRAGMENT_PROFILE, HlslBinding, PRIMITIVE_BINDINGS,
++            VERTEX_PROFILE,
++        };
++
++        fn compiles(source: &str, bindings: &[HlslBinding]) {
++            let translated = shader_translate::translate(source, bindings)
++                .unwrap_or_else(|err| panic!("translation failed: {err}"));
++            for (entry, profile) in [
++                (&translated.vertex_entry, VERTEX_PROFILE),
++                (&translated.fragment_entry, FRAGMENT_PROFILE),
++            ] {
++                shader_translate::compile(&translated.source, entry, profile).unwrap_or_else(
++                    |err| panic!("{profile} compile failed: {err}\n{}", translated.source),
++                );
++            }
++        }
++
++        #[test]
++        fn a_chain_pass_translates_and_compiles() {
++            let mut registry = UserShaderRegistry::default();
++            let (id, _) = registry.register_chain(&everything_chain()).unwrap();
++            for pass in &registry.entries[id.0 as usize].passes {
++                let bindings = pass
++                    .bindings
++                    .iter()
++                    .map(HlslBinding::for_chain)
++                    .collect::<Vec<_>>();
++                compiles(&pass.decorated, &bindings);
++            }
++        }
++
++        #[test]
++        fn the_in_scene_primitive_translates_and_compiles() {
++            let mut registry = UserShaderRegistry::default();
++            let (id, _) = registry.register(SOLID).unwrap();
++            let decorated = registry.primitive_decorated_source(id).unwrap();
++            compiles(decorated, &PRIMITIVE_BINDINGS);
++        }
++    }
+ }
+ 
+ /// The homography carrying the rectangle at `origin`/`size` (scaled px)

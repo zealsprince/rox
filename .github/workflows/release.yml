@@ -99,6 +99,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # macOS packaging deletes target/ to fit the DMG, so there's nothing
+          # left for the post step to save. Letting it run anyway writes a
+          # useless entry under the key and every later run restores that.
+          save-if: ${{ runner.os != 'macOS' }}
 
       # vendor/ is gitignored; [patch.crates-io] points at it, so rebuild it
       # from crates.io + patches/ before the build.
@@ -151,6 +156,12 @@ jobs:
           cp crates/rox/assets/app/rox.icns rox.app/Contents/Resources/
           sed "s/__VERSION__/$VERSION/" crates/rox/assets/app/Info.plist \
             > rox.app/Contents/Info.plist
+          # The arm64 runner only has ~14 GB of disk and the release build
+          # fills most of it, which left hdiutil below with no room to write
+          # the image ("No space left on device" copying into /Volumes/rox).
+          # Everything we ship is in the bundle now, so drop the build tree.
+          rm -rf target
+          df -h /
           if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
             # Hardened runtime and a timestamp are what notarization checks
             # for, so they have to go on before the submit step below.

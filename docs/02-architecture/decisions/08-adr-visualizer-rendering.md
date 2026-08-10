@@ -34,9 +34,17 @@ registration decided the source references, then paint it as an in-scene quad or
 region pass over some bounds. The shape is pinned in `shaders-contract.md`, which both
 sides build against; changing it edits that file first.
 
-Blade, the Linux backend, is the only one in scope. Elsewhere the calls return
-`Err("unsupported")` or no-op and the features hide themselves on that signal. macOS
-rides either the `macos-blade` feature or a Metal port later; neither is specced.
+Shaders ride blade's render pipelines, so the renderer decides who gets them: Linux
+and FreeBSD, and macOS through gpui's `macos-blade` feature, which the vendored patches
+extend the shader calls onto. Windows renders through DirectX, where the calls return
+`Err("unsupported")` or no-op. The features hide themselves on that error rather than
+on a platform check, so one source serves all three.
+
+`macos-blade` buys the shader surfaces at the price of the whole Mac render path: every
+glyph, quad and shadow goes through blade instead of the hand-written Metal renderer,
+and `set_presents_with_transaction` has no equivalent there. Porting the pipeline to
+Metal directly would avoid that trade and isn't specced. Windows wants either naga's
+HLSL backend feeding a runtime `D3DCompile`, or a blade backend gpui doesn't carry.
 
 Three consumers share the API: a whole-window post pass, a surface shader any panel can
 wear over its own body, and the Shader panel, whose entire body is the shader. All

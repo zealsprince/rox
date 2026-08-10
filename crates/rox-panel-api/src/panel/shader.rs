@@ -1034,6 +1034,29 @@ fn load_cover(path: &Path) -> Option<AssetImage> {
     })
 }
 
+/// The one word gpui answers with on a window whose renderer has no shader
+/// pipeline. The patches ride blade's render pipelines, so a DirectX window,
+/// or a Mac build without `macos-blade`, turns every registration down with
+/// this and nothing about the text is wrong.
+const NO_PIPELINE: &str = "unsupported";
+
+/// Whether a registration failure is the backend refusing rather than the
+/// shader being broken. The asset step fails first when a program declares
+/// an image, so the word arrives prefixed as often as it arrives bare.
+pub fn unsupported(error: &str) -> bool {
+    error == NO_PIPELINE || error.ends_with(&format!(": {NO_PIPELINE}"))
+}
+
+/// What to say instead, since "unsupported" under a "didn't compile"
+/// heading sends people hunting through WGSL that's perfectly fine.
+pub const NO_PIPELINE_NOTE: &str =
+    "This build renders through a backend with no shader pipeline. Shaders ride \
+     blade's render pipelines, so every source gets turned down whatever it says.";
+
+/// The headline over that. No full stop: it's a banner headline first, and
+/// the panel readout adds one where it reads as a sentence instead.
+pub const NO_PIPELINE_TITLE: &str = "Shaders don't run on this build";
+
 /// The last compile message per panel, for its settings window's readout.
 /// A panel whose shader compiles clean has no entry.
 static ERRORS: LazyLock<RwLock<HashMap<EntityId, String>>> =

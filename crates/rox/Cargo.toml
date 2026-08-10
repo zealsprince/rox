@@ -96,6 +96,16 @@ ksni = { version = "0.3.6", default-features = false, features = ["blocking", "a
 # runtime comes along with it.
 zbus = { version = "5", default-features = false, features = ["async-io"] }
 
+# Shaders ride blade's render pipelines, so on Mac they need blade to be the
+# renderer rather than the hand-written Metal one. Features unify across the
+# graph, so declaring it here turns it on for every crate that pulls gpui in.
+# The cost is the whole Mac render path, not just the shader surfaces: every
+# glyph and quad goes through blade too. It does drop the `xcrun metal` build
+# step, since gpui only compiles its Metal shaders when the feature is off.
+# Removing the block goes back to the Metal renderer and shaders stop running.
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { workspace = true, features = ["macos-blade"] }
+
 # The Win32 HWND souvlaki's SMTC backend binds to, pulled off the gpui window.
 # Already in the tree through gpui, same 0.6 line.
 [target.'cfg(windows)'.dependencies]

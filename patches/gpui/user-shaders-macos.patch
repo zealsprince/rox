@@ -1,0 +1,320 @@
+diff -x .rox-stamp -ruN a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -50,6 +50,9 @@
+     "bytemuck",
+     "objc2",
+     "objc2-metal",
++    # rox patch: user shaders are pre-validated with naga before they reach
++    # blade, which panics on bad WGSL.
++    "naga",
+ ]
+ runtime_shaders = []
+ screen-capture = ["scap"]
+@@ -580,6 +583,15 @@
+ version = "25.0"
+ features = ["wgsl-in"]
+ 
++# rox patch: the macos-blade shader path needs naga at runtime the same way the
++# blade backends do, and a manifest cfg() can't test a feature. Same two-table
++# shape blade-graphics already uses above: plain optional here, named by the
++# macos-blade feature, target-gated for linux and freebsd.
++[dependencies.naga]
++version = "25.0"
++features = ["wgsl-in"]
++optional = true
++
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.build-dependencies.naga]
+ version = "25.0"
+ features = ["wgsl-in"]
+diff -x .rox-stamp -ruN a/src/platform/mac/window.rs b/src/platform/mac/window.rs
+--- a/src/platform/mac/window.rs
++++ b/src/platform/mac/window.rs
+@@ -8,6 +8,10 @@
+     WindowBounds, WindowControlArea, WindowKind, WindowParams, dispatch_get_main_queue,
+     dispatch_sys::dispatch_async_f, platform::PlatformInputHandler, point, px, size,
+ };
++// rox patch: the shader forwarding below only exists when blade is the mac
++// renderer, and so does the type its chain arguments are spelled in.
++#[cfg(feature = "macos-blade")]
++use crate::window::ChainPassDesc;
+ use block::ConcreteBlock;
+ use cocoa::{
+     appkit::{
+@@ -1558,6 +1562,46 @@
+         None
+     }
+ 
++    // rox patch: the same forwarding the x11 and wayland windows do. Only
++    // reachable under macos-blade, since the Metal renderer has no shader
++    // pipeline to hand these to; without the feature the no-op defaults on
++    // the trait stand and `Window` refuses registration before it gets here.
++    #[cfg(feature = "macos-blade")]
++    fn register_user_shader(&self, id: u32, source: &str) {
++        self.0.lock().renderer.register_user_shader(id, source);
++    }
++
++    #[cfg(feature = "macos-blade")]
++    fn register_screen_shader(&self, id: u32, chain: &[ChainPassDesc]) {
++        self.0.lock().renderer.register_screen_shader(id, chain);
++    }
++
++    #[cfg(feature = "macos-blade")]
++    fn register_user_texture(&self, id: u32, width: u32, height: u32, rgba8: &[u8]) {
++        self.0
++            .lock()
++            .renderer
++            .register_user_texture(id, width, height, rgba8);
++    }
++
++    #[cfg(feature = "macos-blade")]
++    fn set_post_shader(&self, chain: Option<&[ChainPassDesc]>) {
++        self.0.lock().renderer.set_post_shader(chain);
++    }
++
++    #[cfg(feature = "macos-blade")]
++    fn set_post_signals(&self, signals: [f32; 16], meta: [f32; 8], mouse: [f32; 4]) {
++        self.0
++            .lock()
++            .renderer
++            .set_post_signals(signals, meta, mouse);
++    }
++
++    #[cfg(feature = "macos-blade")]
++    fn set_post_mouse(&self, mouse: [f32; 4]) {
++        self.0.lock().renderer.set_post_mouse(mouse);
++    }
++
+     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
+         let executor = self.0.lock().executor.clone();
+         executor
+diff -x .rox-stamp -ruN a/src/window.rs b/src/window.rs
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -3414,7 +3414,11 @@
+         &mut self,
+         chain: &UserShaderChain,
+     ) -> std::result::Result<UserShaderId, String> {
+-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++        #[cfg(any(
++            target_os = "linux",
++            target_os = "freebsd",
++            all(target_os = "macos", feature = "macos-blade")
++        ))]
+         {
+             let (id, is_new) = self.user_shaders.register_chain(chain)?;
+             let primitive = if is_new {
+@@ -3429,7 +3433,11 @@
+             }
+             Ok(id)
+         }
+-        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
++        #[cfg(not(any(
++            target_os = "linux",
++            target_os = "freebsd",
++            all(target_os = "macos", feature = "macos-blade")
++        )))]
+         {
+             let _ = chain;
+             Err("unsupported".to_string())
+@@ -3452,7 +3460,11 @@
+         height: u32,
+         rgba8: &[u8],
+     ) -> std::result::Result<UserTextureId, String> {
+-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++        #[cfg(any(
++            target_os = "linux",
++            target_os = "freebsd",
++            all(target_os = "macos", feature = "macos-blade")
++        ))]
+         {
+             let (id, is_new) = self.user_textures.register(width, height, rgba8)?;
+             if is_new {
+@@ -3461,7 +3473,11 @@
+             }
+             Ok(id)
+         }
+-        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
++        #[cfg(not(any(
++            target_os = "linux",
++            target_os = "freebsd",
++            all(target_os = "macos", feature = "macos-blade")
++        )))]
+         {
+             let _ = (width, height, rgba8);
+             Err("unsupported".to_string())
+@@ -3543,7 +3559,15 @@
+     ) {
+         self.invalidator.debug_assert_paint();
+ 
+-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++        #[cfg(any(
++
++            target_os = "linux",
++
++            target_os = "freebsd",
++
++            all(target_os = "macos", feature = "macos-blade")
++
++        ))]
+         {
+             use crate::UserShaderRegion;
+ 
+@@ -3571,7 +3595,11 @@
+                 meta,
+             });
+         }
+-        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
++        #[cfg(not(any(
++            target_os = "linux",
++            target_os = "freebsd",
++            all(target_os = "macos", feature = "macos-blade")
++        )))]
+         {
+             let _ = (bounds, shader, instance, signals, meta);
+         }
+@@ -5708,7 +5736,14 @@
+ 
+ // The two-flag shape, which is what the composition tests reason about. A
+ // one-pass chain with no assets composes to exactly this.
+-#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
++#[cfg(all(
++    test,
++    any(
++        target_os = "linux",
++        target_os = "freebsd",
++        all(target_os = "macos", feature = "macos-blade")
++    )
++))]
+ fn compose_screen_shader_source(
+     user_source: &str,
+     decorated: bool,
+@@ -5727,7 +5762,11 @@
+ // Blade panics on bad WGSL, so anything user-supplied gets checked up front.
+ // The parsed module comes back so the caller can inspect what the source
+ // declared.
+-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
++#[cfg(any(
++    target_os = "linux",
++    target_os = "freebsd",
++    all(target_os = "macos", feature = "macos-blade")
++))]
+ fn validate_shader_source(source: &str) -> std::result::Result<naga::Module, String> {
+     let module = naga::front::wgsl::parse_str(source).map_err(|err| err.emit_to_string(source))?;
+     naga::valid::Validator::new(
+@@ -5739,7 +5778,21 @@
+     Ok(module)
+ }
+ 
+-#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
++#[cfg(all(
++
++    test,
++
++    any(
++
++        target_os = "linux",
++
++        target_os = "freebsd",
++
++        all(target_os = "macos", feature = "macos-blade")
++
++    )
++
++))]
+ mod post_shader_tests {
+     use super::*;
+ 
+@@ -6047,7 +6100,14 @@
+ 
+     /// The composed module for the first pass. The drivers take the whole
+     /// chain; this is here for the tests that pin what one pass composes to.
+-    #[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
++    #[cfg(all(
++        test,
++        any(
++            target_os = "linux",
++            target_os = "freebsd",
++            all(target_os = "macos", feature = "macos-blade")
++        )
++    ))]
+     pub(crate) fn screen_source(&self, id: UserShaderId) -> Option<&str> {
+         self.entry(id)
+             .and_then(|entry| entry.passes.first())
+@@ -6065,7 +6125,11 @@
+     /// nothing on every call after. Keeps the region pipelines lazy without
+     /// the caller tracking what has been compiled.
+     #[cfg_attr(
+-        not(any(target_os = "linux", target_os = "freebsd")),
++        not(any(
++            target_os = "linux",
++            target_os = "freebsd",
++            all(target_os = "macos", feature = "macos-blade")
++        )),
+         allow(dead_code)
+     )]
+     pub(crate) fn take_pending_screen_source(
+@@ -6083,14 +6147,25 @@
+     /// Registers `source` as a one-pass program, the shape everything that
+     /// predates chains has. The drivers go through `Window`, which wraps the
+     /// same way; this is the shorthand the tests register with.
+-    #[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
++    #[cfg(all(
++        test,
++        any(
++            target_os = "linux",
++            target_os = "freebsd",
++            all(target_os = "macos", feature = "macos-blade")
++        )
++    ))]
+     fn register(&mut self, source: &str) -> std::result::Result<(UserShaderId, bool), String> {
+         self.register_chain(&one_pass_chain(source))
+     }
+ 
+     /// Registers a whole chain, returning its id and whether this call is what
+     /// created it. Re-registering the same chain is a lookup, not a compile.
+-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++    #[cfg(any(
++        target_os = "linux",
++        target_os = "freebsd",
++        all(target_os = "macos", feature = "macos-blade")
++    ))]
+     fn register_chain(
+         &mut self,
+         chain: &UserShaderChain,
+@@ -6265,7 +6340,11 @@
+     /// Registers an rgba8 image, returning its id and whether this call is
+     /// what created it.
+     #[cfg_attr(
+-        not(any(target_os = "linux", target_os = "freebsd")),
++        not(any(
++            target_os = "linux",
++            target_os = "freebsd",
++            all(target_os = "macos", feature = "macos-blade")
++        )),
+         allow(dead_code)
+     )]
+     fn register(
+@@ -6303,7 +6382,21 @@
+     }
+ }
+ 
+-#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
++#[cfg(all(
++
++    test,
++
++    any(
++
++        target_os = "linux",
++
++        target_os = "freebsd",
++
++        all(target_os = "macos", feature = "macos-blade")
++
++    )
++
++))]
+ mod user_shader_registry_tests {
+     use super::*;
+ 

@@ -970,6 +970,15 @@ impl SettingsWindow {
         }
     }
 
+    /// Catch the Typography slider up to a size this window didn't write:
+    /// the zoom shortcuts step the same live value from anywhere in the
+    /// app. Runs from render, `sync_editor_side`'s shape, since every step
+    /// repaints all windows. The slider's own scrub lands back on the value
+    /// it just wrote, so this only moves for outside writers.
+    fn sync_font_size(&mut self) {
+        self.font_size = palette::app_font_size();
+    }
+
     /// Catch the Shader page's mirrors up to a config this window didn't
     /// write: a workspace apply swaps the screen shader wholesale, and the
     /// picker kept naming the one the old look wore. Runs from render off
@@ -1214,12 +1223,8 @@ impl SettingsWindow {
     fn persist_appearance_soon(&mut self, cx: &mut Context<Self>) {
         self.persist_gen += 1;
         let gen = self.persist_gen;
-        let (surface, backdrop, frame, font_size) = (
-            self.surface_opacity,
-            self.backdrop_strength,
-            self.frame,
-            self.font_size,
-        );
+        let (surface, backdrop, frame) =
+            (self.surface_opacity, self.backdrop_strength, self.frame);
         let palette = self
             .persist_palette
             .then(|| (self.editor_mode, self.base.to_map()));
@@ -1242,6 +1247,11 @@ impl SettingsWindow {
                 })
                 .unwrap_or((gen, palette));
             if latest == gen {
+                // The font size comes off the live static rather than a
+                // capture: the zoom shortcuts write it from outside this
+                // window, and one landing inside the wait would otherwise
+                // get rolled back to whatever the slider last wrote.
+                let font_size = palette::app_font_size();
                 Settings::update(move |s| {
                     s.look.bundle.appearance.surface_opacity = surface;
                     s.look.bundle.appearance.backdrop_strength = backdrop;
@@ -1734,7 +1744,25 @@ impl SettingsWindow {
                 );
             rows = match error {
                 Some(error) => rows.custom(&["shader", "error", "compile"], || {
-                    coverage_note(error).into_any_element()
+                    // The callout the output section wears for a failed
+                    // device, for the same reason: the switch above reads as
+                    // on, and a muted line under it is not enough to say that
+                    // nothing behind it is running. A backend with no shader
+                    // pipeline turns every source down with one word, which
+                    // on its own reads as a stray label rather than a reason.
+                    match panel::shader::unsupported(&error) {
+                        true => panel::banner(
+                            panel::Tone::Bad,
+                            panel::shader::NO_PIPELINE_TITLE,
+                            vec![panel::shader::NO_PIPELINE_NOTE.into()],
+                        ),
+                        false => panel::banner(
+                            panel::Tone::Bad,
+                            "This shader didn't compile",
+                            vec![error.into()],
+                        ),
+                    }
+                    .into_any_element()
                 }),
                 None => rows,
             };
@@ -5392,6 +5420,10 @@ impl Render for SettingsWindow {
         // editor follows it here since every switch path repaints all
         // windows.
         self.sync_editor_side(window, cx);
+
+        // Same for the app font size, which the zoom shortcuts step from
+        // outside this window.
+        self.sync_font_size();
 
         // Same for the shader config, which a workspace apply replaces
         // from outside this window; the route sync below has to run over

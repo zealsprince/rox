@@ -665,6 +665,18 @@ impl ShaderPanel {
             );
         }
         let error = self.compiled.lock().unwrap().error.clone()?;
+        // A backend with no shader pipeline turns every source down the same
+        // way, so it gets the plain note the other non-running states get
+        // rather than a compiler readout for a compile that never ran.
+        if surface::unsupported(&error) {
+            return note(
+                vec![
+                    format!("{}.", surface::NO_PIPELINE_TITLE),
+                    surface::NO_PIPELINE_NOTE.to_string(),
+                ],
+                vec![NoteAction::Inspect],
+            );
+        }
         // naga's message runs several lines, with a caret under the span it
         // is complaining about. They have to stay lines, and they stay left
         // aligned at the top: centred, the carets point at the wrong
@@ -801,15 +813,26 @@ impl ShaderPanel {
             ))
             .child(picked);
         if let Some(error) = error {
-            shader = shader.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .children(error.lines().take(ERROR_LINES).map(str::to_string)),
-            );
+            // The callout the app's Overlay Shader section wears, for the
+            // same reason: the switch right above reads as on, and a muted
+            // block under it isn't enough to say that nothing behind it is
+            // running.
+            shader = shader.child(match surface::unsupported(&error) {
+                true => panel::banner(
+                    panel::Tone::Bad,
+                    surface::NO_PIPELINE_TITLE,
+                    vec![surface::NO_PIPELINE_NOTE.into()],
+                ),
+                false => panel::banner(
+                    panel::Tone::Bad,
+                    "This shader didn't compile",
+                    error
+                        .lines()
+                        .take(ERROR_LINES)
+                        .map(|line| SharedString::from(line.to_string()))
+                        .collect(),
+                ),
+            });
         }
         shader = shader.child(setting_row(
             "Run When Idle",
@@ -1154,8 +1177,9 @@ impl ShaderPanel {
     }
 
     /// The note over the panel's own body: what it's waiting on, centred,
-    /// with the buttons that answer it. A compiler message is the one that
-    /// keeps its own shape, since its caret lines only line up left aligned.
+    /// with the buttons that answer it. A compiler message keeps its lines
+    /// left aligned, since its carets only line up that way, but the block
+    /// still sits in the middle of the panel like every other note.
     fn note_overlay(&self, note: BodyNote, cx: &Context<Self>) -> Div {
         let raw = note.raw;
         let mut buttons = div()
@@ -1163,7 +1187,7 @@ impl ShaderPanel {
             .flex_row()
             .flex_wrap()
             .items_center()
-            .when(!raw, |buttons| buttons.justify_center())
+            .justify_center()
             .gap(tokens::SPACE_SM);
         for action in note.actions {
             let click = cx.listener(move |this: &mut Self, _, _, cx| match action {
@@ -1192,6 +1216,10 @@ impl ShaderPanel {
             .flex()
             .flex_col()
             .gap(px(2.))
+            // A naga message wraps rather than running off both edges: the
+            // block is centred, so anything wider than the panel would lose
+            // its left end as readily as its right.
+            .max_w_full()
             .when(!raw, |lines| lines.items_center().text_center())
             .children(note.lines);
 
@@ -1202,7 +1230,8 @@ impl ShaderPanel {
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
-            .when(!raw, |body| body.items_center().justify_center())
+            .items_center()
+            .justify_center()
             .overflow_hidden()
             .text_xs()
             .text_color(palette::text_muted())

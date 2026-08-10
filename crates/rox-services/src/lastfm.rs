@@ -11,6 +11,14 @@
 //! flow is Last.fm's desktop dance: fetch a token, authorize it in the
 //! browser, trade it for a permanent session key.
 //!
+//! Which session that lands under follows from the identity signing for
+//! it, per ADR 26: Last.fm binds a session to its api key, rox ships a
+//! different one per channel, and they all read the same file. So the
+//! scrobbler reads the session filed under the key it signs with, and
+//! treats a refusal (error 9) as that session being gone rather than as
+//! one more failed call, which is the only way a dead connection reaches
+//! the screen instead of the log.
+//!
 //! The same session key carries the favourites mirror: with it armed, a
 //! heart in rox becomes a love on Last.fm and taking the heart back
 //! unloves it. That half doesn't ride the player at all. It watches the
@@ -27,7 +35,7 @@ use gpui::{Context, Entity, EventEmitter, SharedString, Subscription};
 use rox_library::cue::TrackKey;
 use rox_library::store::TrackMeta;
 
-use rox_core::settings::{Lastfm, Settings};
+use rox_core::settings::{Lastfm, LastfmSession, Settings};
 
 use crate::catalog::{Library, LibraryEvent};
 use crate::player::Player;
@@ -324,12 +332,35 @@ impl Scrobbler {
         }
     }
 
+    /// The session this build signs with, None where it holds none for
+    /// its own api key. Sessions are filed by the key that minted them,
+    /// so which one this is follows from the identity above.
+    fn session(&self) -> Option<&LastfmSession> {
+        self.config.session(self.api_key())
+    }
+
+    /// The session key the signed calls carry, empty where this build
+    /// holds none. The armed switches gate every caller, so an empty one
+    /// never actually reaches the wire.
+    fn session_key(&self) -> String {
+        self.session().map(|s| s.key.clone()).unwrap_or_default()
+    }
+
+    /// The connected account's name, for the settings readout.
+    pub fn username(&self) -> &str {
+        self.config.username(self.api_key())
+    }
+
+    /// Whether a session exists under some other api key: a build that
+    /// connected before this one, on an install that signs differently.
+    pub fn connected_elsewhere(&self) -> bool {
+        self.config.connected_elsewhere(self.api_key())
+    }
+
     /// Whether anything could be sent at all: a session in hand and a pair
     /// to sign with. What both switches build on.
-    fn connected(&self) -> bool {
-        !self.config.session_key.is_empty()
-            && !self.api_key().is_empty()
-            && !self.api_secret().is_empty()
+    pub fn connected(&self) -> bool {
+        self.session().is_some() && !self.api_secret().is_empty()
     }
 
     /// Whether a played track would actually scrobble: the switch is on
@@ -495,8 +526,8 @@ impl Scrobbler {
             this.update(cx, |this, cx| {
                 match result {
                     Ok((session_key, username)) => {
-                        this.config.session_key = session_key;
-                        this.config.username = username;
+                        let api_key = this.api_key().to_string();
+                        this.config.connect(&api_key, session_key, username);
                         this.phase = AuthPhase::Idle;
                         this.persist();
                         // A connect is where the mirror becomes possible,
@@ -514,11 +545,28 @@ impl Scrobbler {
     }
 
     /// Drop the session locally. Last.fm keeps its side until the user
-    /// revokes rox there; a fresh connect just lands a new session.
+    /// revokes rox there; a fresh connect just lands a new session. Only
+    /// this build's session goes: another install signing with a
+    /// different api key keeps the one it authorized itself.
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
-        self.config.session_key.clear();
-        self.config.username.clear();
-        self.phase = AuthPhase::Idle;
+        self.drop_session(AuthPhase::Idle, cx);
+    }
+
+    /// Last.fm refused the session, so it's worthless to this build: the
+    /// user revoked rox on the site, or the session was minted under
+    /// another install's api key. Same teardown as a disconnect, minus
+    /// the user having asked for it, so the phase carries why.
+    fn session_rejected(&mut self, cx: &mut Context<Self>) {
+        log::warn!("lastfm: the session was rejected, reconnecting is the fix");
+        self.drop_session(AuthPhase::Rejected, cx);
+    }
+
+    /// Let go of whatever session this build was holding and settle every
+    /// piece of state that only made sense while it was good.
+    fn drop_session(&mut self, phase: AuthPhase, cx: &mut Context<Self>) {
+        let api_key = self.api_key().to_string();
+        self.config.clear_session(&api_key);
+        self.phase = phase;
         // Nothing queued can be signed any more, and holding it would only
         // flush it at whatever account connects next.
         self.favourites = None;
@@ -526,6 +574,17 @@ impl Scrobbler {
         self.love_error = None;
         self.persist();
         cx.notify();
+    }
+
+    /// One call came back clean. The only thing riding on that beyond the
+    /// call itself is the unattributed session: a landed call is the
+    /// proof of who minted it, so this is where it gets claimed.
+    fn call_landed(&mut self, cx: &mut Context<Self>) {
+        let api_key = self.api_key().to_string();
+        if self.config.attribute(&api_key) {
+            self.persist();
+            cx.notify();
+        }
     }
 
     /// Take hearts the import just wrote into the snapshot without sending
@@ -596,7 +655,7 @@ impl Scrobbler {
         let (key, love) = self.loves.take()?;
         let mut params = BTreeMap::new();
         params.insert("api_key".to_string(), self.api_key().to_string());
-        params.insert("sk".to_string(), self.config.session_key.clone());
+        params.insert("sk".to_string(), self.session_key());
         params.insert("artist".to_string(), key.0.clone());
         params.insert("track".to_string(), key.1.clone());
         Some(LoveSend {
@@ -624,11 +683,19 @@ impl Scrobbler {
         let error = match result {
             Ok(_) => {
                 self.love_error = None;
+                self.call_landed(cx);
                 cx.notify();
                 return None;
             }
             Err(error) => error,
         };
+        // A refused session isn't this heart's problem: every call fails
+        // the same way until the account reconnects, so the queue stops
+        // here rather than spending its backoff on a certainty.
+        if error.session_rejected() {
+            self.session_rejected(cx);
+            return None;
+        }
         let wait = error
             .retryable()
             .then(|| LOVE_BACKOFF.get(send.love.tries).copied())
@@ -853,10 +920,16 @@ impl Scrobbler {
         });
     }
 
-    /// Send the watched track to the API, fire and forget: the params the
-    /// two track methods share, the timestamp only where the scrobble
-    /// wants it. Missing tags skip quietly - Last.fm can't take a track
-    /// without an artist and a title.
+    /// Send the watched track to the API: the params the two track
+    /// methods share, the timestamp only where the scrobble wants it.
+    /// Missing tags skip quietly - Last.fm can't take a track without an
+    /// artist and a title.
+    ///
+    /// The result comes back rather than being dropped where it lands.
+    /// Nothing here retries, and a track that failed to send is gone
+    /// either way, but a refused session is the app's to notice: without
+    /// this the connection reads as fine on screen while every scrobble
+    /// falls into the log.
     fn submit(&self, method: &'static str, cx: &mut Context<Self>) {
         let Some(watch) = &self.watch else {
             return;
@@ -869,7 +942,7 @@ impl Scrobbler {
         }
         let mut params = BTreeMap::new();
         params.insert("api_key".to_string(), self.api_key().to_string());
-        params.insert("sk".to_string(), self.config.session_key.clone());
+        params.insert("sk".to_string(), self.session_key());
         params.insert("artist".to_string(), meta.artist.clone());
         params.insert("track".to_string(), meta.title.clone());
         if !meta.album.is_empty() {
@@ -885,13 +958,19 @@ impl Scrobbler {
             params.insert("timestamp".to_string(), watch.started.to_string());
         }
         let secret = self.api_secret().to_string();
-        cx.background_executor()
-            .spawn(async move {
-                if let Err(e) = call(method, &secret, params) {
-                    log::warn!("lastfm: {method}: {e}");
-                }
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { call(method, &secret, params) })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(_) => this.call_landed(cx),
+                Err(e) if e.session_rejected() => this.session_rejected(cx),
+                Err(e) => log::warn!("lastfm: {method}: {e}"),
             })
-            .detach();
+            .ok();
+        })
+        .detach();
     }
 }
 

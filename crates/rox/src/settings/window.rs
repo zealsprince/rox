@@ -3283,7 +3283,14 @@ impl SettingsWindow {
         let config = scrobbler.config().clone();
         let phase = scrobbler.phase().clone();
         let (loves_pending, love_error) = (scrobbler.loves_pending(), scrobbler.love_error());
-        let connected = !config.session_key.is_empty();
+        let connected = scrobbler.connected();
+        let username = scrobbler.username().to_string();
+        // A session under a different api key: this machine connected from
+        // an install that signs with its own identity (the nix package,
+        // a release build, a local one). Sessions don't cross, so the fix
+        // is a connect here, and saying so beats a bare "not connected"
+        // for someone who knows they already did this.
+        let elsewhere = scrobbler.connected_elsewhere();
         // A build with its own api identity connects in one click; only
         // one without asks for the user's pair.
         let builtin = has_builtin_keys();
@@ -3292,15 +3299,25 @@ impl SettingsWindow {
         // The connect strip: where the connection stands, and the one
         // action that moves it along.
         let status: SharedString = if connected {
-            format!("Connected as {}", config.username).into()
+            format!("Connected as {username}").into()
         } else {
             match &phase {
+                AuthPhase::Idle if elsewhere => {
+                    "Connected on another install of rox; each one authorizes \
+                     under its own api identity, so connect this one too"
+                        .into()
+                }
                 AuthPhase::Idle => "Not connected".into(),
                 AuthPhase::Requesting => "Requesting a token...".into(),
                 AuthPhase::Waiting(_) => {
                     "Authorize rox in the browser, then finish connecting".into()
                 }
                 AuthPhase::Confirming => "Confirming...".into(),
+                AuthPhase::Rejected => {
+                    "Last.fm turned the session down, so it was dropped; connect \
+                     again to keep scrobbling"
+                        .into()
+                }
                 AuthPhase::Failed(e) => format!("Connection failed: {e}").into(),
             }
         };
@@ -3326,8 +3343,14 @@ impl SettingsWindow {
                         this.scrobbler.update(cx, |s, cx| s.finish_auth(cx));
                     }),
                 ),
-                _ => small_button(
-                    "Connect",
+                // Reconnect where a session was lost rather than never
+                // held: the button reads as picking something back up.
+                phase => small_button(
+                    if matches!(phase, AuthPhase::Rejected) || elsewhere {
+                        "Reconnect"
+                    } else {
+                        "Connect"
+                    },
                     icons::EXTERNAL_LINK,
                     !keys_ready,
                     cx.listener(|this, _, _, cx| {

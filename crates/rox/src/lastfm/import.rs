@@ -186,14 +186,24 @@ pub fn blocked_reason(cx: &App) -> Option<&'static str> {
     if progress(cx).is_some() {
         return Some("An import is already running");
     }
-    let lastfm = Settings::load().accounts.lastfm;
-    if lastfm.username.is_empty() {
-        return Some("Connect a Last.fm account first");
-    }
     if api_key().is_empty() {
         return Some("This build has no api key to ask with");
     }
+    if username().is_empty() {
+        return Some("Connect a Last.fm account first");
+    }
     None
+}
+
+/// Whose loved tracks to read. Sessions are filed by the api key that
+/// minted them, so this is the account connected under the identity the
+/// read calls sign with, not whatever connected last.
+fn username() -> String {
+    Settings::load()
+        .accounts
+        .lastfm
+        .username(&api_key())
+        .to_string()
 }
 
 /// The key the read calls with, the scrobbler's fallback order: the
@@ -215,7 +225,7 @@ pub fn start(library: Entity<Library>, scrobbler: Entity<Scrobbler>, cx: &mut Ap
     if blocked_reason(cx).is_some() {
         return;
     }
-    let user = Settings::load().accounts.lastfm.username;
+    let user = username();
     let key = api_key();
     let db_path = library.read(cx).db_path();
     let progress = Arc::new(Progress::default());

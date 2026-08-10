@@ -63,6 +63,13 @@
           };
           unpackCmd = ''tar -xzf "$curSrc"'';
           patches = lib.filesystem.listFilesRecursive ./patches/${name};
+          # No fuzz, same as scripts/vendor-gpui.sh: a hunk whose context has
+          # drifted lands wherever the search stops, which isn't the same place
+          # on every patch implementation.
+          patchFlags = [
+            "-p1"
+            "-F0"
+          ];
           dontConfigure = true;
           dontBuild = true;
           installPhase = "cp -r . $out";

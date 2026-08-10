@@ -63,6 +63,15 @@ impl ApiError {
             Some(code) => matches!(code, 8 | 11 | 16 | 29),
         }
     }
+
+    /// Whether Last.fm refused the session itself (code 9), the one
+    /// failure that means the stored key is worth nothing to this build:
+    /// revoked on the site, or minted under a different api key. Every
+    /// call this build makes fails the same way until it reconnects, so
+    /// the answer is worth acting on rather than logging.
+    pub fn session_rejected(&self) -> bool {
+        self.code == Some(9)
+    }
 }
 
 /// One signed API call, blocking: POST the parameters, parse the JSON,
@@ -117,7 +126,8 @@ pub fn call(
 }
 
 /// Where the connect flow stands, for the settings window's readout.
-/// Connected is not a phase: a filled session key in the config is.
+/// Connected is not a phase: a session filed under this build's api key
+/// is.
 #[derive(Clone, PartialEq)]
 pub enum AuthPhase {
     Idle,
@@ -128,6 +138,10 @@ pub enum AuthPhase {
     Waiting(String),
     /// auth.getSession is in flight.
     Confirming,
+    /// Last.fm refused the session this build was holding, so it was
+    /// dropped. Its own phase rather than a `Failed`: nothing the user
+    /// did failed, and the fix is a plain reconnect.
+    Rejected,
     Failed(String),
 }
 
@@ -152,5 +166,22 @@ mod tests {
         assert!(api(29).retryable(), "rate limited");
         assert!(!api(9).retryable(), "invalid session, and it stays invalid");
         assert!(!api(6).retryable(), "a track Last.fm can't name");
+    }
+
+    #[test]
+    fn only_code_nine_condemns_the_session() {
+        let api = |code: Option<i64>| ApiError {
+            code,
+            message: "api said no".to_string(),
+        };
+        assert!(api(Some(9)).session_rejected());
+        assert!(
+            !api(Some(6)).session_rejected(),
+            "the track, not the session"
+        );
+        assert!(
+            !api(None).session_rejected(),
+            "offline says nothing about it"
+        );
     }
 }

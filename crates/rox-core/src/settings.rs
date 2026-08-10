@@ -1578,18 +1578,53 @@ pub fn shader_pool_rev() -> u64 {
     SHADER_POOL_REV.load(Ordering::Relaxed)
 }
 
+/// One connected account. Last.fm binds a session to the api key it was
+/// authorized under, so this is only ever usable by a build signing with
+/// that same key.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LastfmSession {
+    /// What the connect flow landed. Never expires until it's revoked on
+    /// Last.fm. Empty means this api key has no session: it never
+    /// connected, the user disconnected, or Last.fm refused what it had.
+    pub key: String,
+    /// The account it belongs to, for the settings readout.
+    pub username: String,
+}
+
+impl LastfmSession {
+    fn connected(&self) -> bool {
+        !self.key.is_empty()
+    }
+}
+
 /// The Last.fm account and how scrobbling behaves. The key and secret
 /// override the build's own api identity (`lastfm::keys`), for builds
-/// that ship none; the session key is what the connect flow lands and
-/// never expires until revoked on Last.fm.
+/// that ship none.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Lastfm {
     pub api_key: String,
     pub api_secret: String,
-    pub session_key: String,
-    /// The account the session belongs to, for the settings readout.
-    pub username: String,
+    /// The sessions this machine holds, filed under the api key that
+    /// minted each. A map rather than one session because the identity
+    /// varies by where the build came from: the nix package, the release
+    /// workflow, and a local `.env` build each sign with their own pair,
+    /// and they all read this one file. One session per key means moving
+    /// between them costs a connect the first time and nothing after.
+    ///
+    /// The empty key is the unattributed slot, holding the single session
+    /// a file from before this split carried. Whichever build it belongs
+    /// to claims it on the first call that lands ([`Self::attribute`]);
+    /// every other build files its own refusal and stops reaching for it.
+    pub sessions: BTreeMap<String, LastfmSession>,
+    /// The session a pre-`sessions` file carried, with nothing recording
+    /// which api key minted it. Read once on load into the unattributed
+    /// slot, never written back.
+    #[serde(skip_serializing)]
+    session_key: String,
+    #[serde(skip_serializing)]
+    username: String,
     /// Whether playback scrobbles at all; the connection stays either way.
     pub scrobbling: bool,
     /// Whether the heart mirrors out as a Last.fm love. Off by default,
@@ -1608,12 +1643,103 @@ impl Default for Lastfm {
         Lastfm {
             api_key: String::new(),
             api_secret: String::new(),
+            sessions: BTreeMap::new(),
             session_key: String::new(),
             username: String::new(),
             scrobbling: true,
             love_favourites: false,
             threshold: 0.5,
         }
+    }
+}
+
+/// The slot holding a session no api key has claimed yet.
+const UNATTRIBUTED: &str = "";
+
+impl Lastfm {
+    /// The session a build signing with `api_key` can actually use: its
+    /// own, or the unattributed one while this key has never tried. A
+    /// build with no identity at all gets None, since nothing it sent
+    /// could be signed anyway.
+    ///
+    /// An entry that's present but empty is a key that asked and was
+    /// refused, which is the whole reason it's stored: without it, every
+    /// launch would reach for a session it has already been told isn't
+    /// its own.
+    pub fn session(&self, api_key: &str) -> Option<&LastfmSession> {
+        if api_key.is_empty() {
+            return None;
+        }
+        match self.sessions.get(api_key) {
+            Some(session) => session.connected().then_some(session),
+            None => self.sessions.get(UNATTRIBUTED).filter(|s| s.connected()),
+        }
+    }
+
+    /// The account name for the settings readout, empty where this build
+    /// holds no session.
+    pub fn username(&self, api_key: &str) -> &str {
+        self.session(api_key).map_or("", |s| s.username.as_str())
+    }
+
+    /// Whether some other api key holds a session, for telling "never
+    /// connected" apart from "connected, but under a different build".
+    pub fn connected_elsewhere(&self, api_key: &str) -> bool {
+        self.sessions
+            .iter()
+            .any(|(key, session)| key != api_key && session.connected())
+    }
+
+    /// File the session the connect flow just landed under the key that
+    /// minted it.
+    pub fn connect(&mut self, api_key: &str, key: String, username: String) {
+        self.sessions
+            .insert(api_key.to_string(), LastfmSession { key, username });
+    }
+
+    /// Leave this build without a session: what Disconnect does, and
+    /// where a refusal from Last.fm lands. The entry stays behind empty
+    /// rather than going away, because an absent key is one that hasn't
+    /// tried the unattributed session yet and this one has.
+    ///
+    /// A build with no identity has nothing to clear, and writing its
+    /// refusal would take the unattributed slot and the session sitting
+    /// in it down with it.
+    pub fn clear_session(&mut self, api_key: &str) {
+        if api_key.is_empty() {
+            return;
+        }
+        self.sessions
+            .insert(api_key.to_string(), LastfmSession::default());
+    }
+
+    /// Claim the unattributed session for the key that just used it
+    /// successfully, which is the only proof of who minted it there is.
+    /// True when that moved something, so the caller knows to persist.
+    pub fn attribute(&mut self, api_key: &str) -> bool {
+        if api_key.is_empty() || self.sessions.contains_key(api_key) {
+            return false;
+        }
+        let Some(session) = self.sessions.remove(UNATTRIBUTED) else {
+            return false;
+        };
+        self.sessions.insert(api_key.to_string(), session);
+        true
+    }
+
+    /// Fold a pre-`sessions` file's flat session into the unattributed
+    /// slot. Nothing on disk says which build authorized it, so it goes
+    /// in unclaimed and the first call that lands names it.
+    fn fold_legacy_session(&mut self) {
+        let (key, username) = (
+            std::mem::take(&mut self.session_key),
+            std::mem::take(&mut self.username),
+        );
+        if key.is_empty() || !self.sessions.is_empty() {
+            return;
+        }
+        self.sessions
+            .insert(UNATTRIBUTED.to_string(), LastfmSession { key, username });
     }
 }
 
@@ -2777,6 +2903,10 @@ impl Settings {
         } else {
             0.5
         };
+        // A file from before sessions were filed by api key carries one
+        // flat session; it lands unattributed here and the next save
+        // drops the flat pair.
+        lastfm.fold_legacy_session();
         // The restored frame reads straight into window Bounds on open: a
         // non-finite field drops back to the centered default, and the size
         // floors at the window minimum so a zero or negative frame can't
@@ -3034,6 +3164,130 @@ mod tests {
         assert!(!json.contains("lastfm"));
         assert!(!json.contains("session_key"));
         assert!(!json.contains("last_track"));
+    }
+
+    /// The point of filing sessions by api key: two installs signing with
+    /// their own identities read the same file and each find their own.
+    /// Last.fm binds a session to the key that authorized it, so a build
+    /// picking up another's would be handed a refusal on every call.
+    #[test]
+    fn a_session_belongs_to_the_key_that_minted_it() {
+        let mut lastfm = Lastfm::default();
+        lastfm.connect("nix-key", "sk-nix".into(), "zealsprince".into());
+        assert_eq!(
+            lastfm.session("nix-key").map(|s| s.key.as_str()),
+            Some("sk-nix")
+        );
+        assert!(lastfm.session("release-key").is_none());
+        assert!(lastfm.connected_elsewhere("release-key"));
+
+        // Connecting the second install leaves the first alone, which is
+        // what makes moving between them a one-time cost each.
+        lastfm.connect("release-key", "sk-release".into(), "zealsprince".into());
+        assert_eq!(
+            lastfm.session("nix-key").map(|s| s.key.as_str()),
+            Some("sk-nix")
+        );
+        assert_eq!(
+            lastfm.session("release-key").map(|s| s.key.as_str()),
+            Some("sk-release")
+        );
+    }
+
+    /// A file from before the split carries one session with nothing
+    /// saying who minted it, so every build may try it and the one whose
+    /// call lands keeps it.
+    #[test]
+    fn the_unattributed_session_goes_to_whoever_proves_it_works() {
+        let mut lastfm: Lastfm = serde_json::from_value(serde_json::json!({
+            "session_key": "sk-old",
+            "username": "zealsprince",
+        }))
+        .unwrap();
+        lastfm.fold_legacy_session();
+        // Unclaimed, so either build reaches it.
+        assert_eq!(
+            lastfm.session("nix-key").map(|s| s.key.as_str()),
+            Some("sk-old")
+        );
+        assert_eq!(
+            lastfm.session("release-key").map(|s| s.key.as_str()),
+            Some("sk-old")
+        );
+
+        assert!(lastfm.attribute("nix-key"));
+        assert_eq!(
+            lastfm.session("nix-key").map(|s| s.key.as_str()),
+            Some("sk-old")
+        );
+        assert!(lastfm.session("release-key").is_none());
+        assert!(
+            !lastfm.attribute("release-key"),
+            "there is nothing left to claim"
+        );
+    }
+
+    /// A refusal has to be recorded, not just acted on. Without the empty
+    /// entry the build would reach for the unattributed session again on
+    /// the next launch, and every launch after that.
+    #[test]
+    fn a_refused_key_stops_reaching_for_a_session_that_isnt_its_own() {
+        let mut lastfm: Lastfm = serde_json::from_value(serde_json::json!({
+            "session_key": "sk-old",
+            "username": "zealsprince",
+        }))
+        .unwrap();
+        lastfm.fold_legacy_session();
+        lastfm.clear_session("release-key");
+        assert!(lastfm.session("release-key").is_none());
+        // And the build it does belong to still has it.
+        assert_eq!(
+            lastfm.session("nix-key").map(|s| s.key.as_str()),
+            Some("sk-old")
+        );
+
+        // The record survives the file trip, or the next launch asks again.
+        let back: Lastfm = serde_json::from_str(&serde_json::to_string(&lastfm).unwrap()).unwrap();
+        assert!(back.session("release-key").is_none());
+    }
+
+    /// Disconnecting has to hold even where an unattributed session is
+    /// sitting behind this build's own: the account came off screen, and
+    /// a fallback that quietly put it back would read as connected again.
+    #[test]
+    fn disconnecting_doesnt_fall_back_to_someone_elses_session() {
+        let mut lastfm: Lastfm = serde_json::from_value(serde_json::json!({
+            "session_key": "sk-old",
+            "username": "zealsprince",
+        }))
+        .unwrap();
+        lastfm.fold_legacy_session();
+        lastfm.connect("release-key", "sk-release".into(), "zealsprince".into());
+        lastfm.clear_session("release-key");
+        assert!(lastfm.session("release-key").is_none());
+    }
+
+    /// A build with no identity of its own can't sign anything, so it
+    /// holds no session however the file reads.
+    #[test]
+    fn no_api_key_means_no_session() {
+        let mut lastfm = Lastfm::default();
+        lastfm.connect("nix-key", "sk-nix".into(), "zealsprince".into());
+        assert!(lastfm.session("").is_none());
+        assert_eq!(lastfm.username(""), "");
+
+        // And it can't file a refusal either, which would land in the
+        // unattributed slot and take a carried-over session with it.
+        let mut carried: Lastfm = serde_json::from_value(serde_json::json!({
+            "session_key": "sk-old",
+        }))
+        .unwrap();
+        carried.fold_legacy_session();
+        carried.clear_session("");
+        assert_eq!(
+            carried.session("nix-key").map(|s| s.key.as_str()),
+            Some("sk-old")
+        );
     }
 
     /// The pool is what makes a named shader mean anything, so it has to
@@ -3805,11 +4059,13 @@ mod tests {
 
         let mut accounts = AccountsState::default();
         accounts.lastfm.threshold = 0.8;
-        accounts.lastfm.username = "zealsprince".into();
+        accounts
+            .lastfm
+            .connect("api-key", "sk".into(), "zealsprince".into());
         let back: AccountsState =
             serde_json::from_str(&serde_json::to_string(&accounts).unwrap()).unwrap();
         assert_eq!(back.lastfm.threshold, 0.8);
-        assert_eq!(back.lastfm.username, "zealsprince");
+        assert_eq!(back.lastfm.username("api-key"), "zealsprince");
 
         let windows = WindowsState {
             main: Some(WindowState {
@@ -3835,7 +4091,9 @@ mod tests {
     #[test]
     fn settings_file_carries_only_preferences() {
         let mut src = dressed();
-        src.accounts.lastfm.session_key = "a-real-secret".into();
+        src.accounts
+            .lastfm
+            .connect("api-key", "a-real-secret".into(), "zealsprince".into());
         src.session.volume = 0.5;
         src.windows.main = Some(WindowState {
             x: 1.0,
@@ -3872,7 +4130,7 @@ mod tests {
             "lastfm",
             "providers",
             "discord",
-            "session_key",
+            "sessions",
             "a-real-secret",
         ] {
             assert!(!json.contains(key), "settings.json still carries {key}");
@@ -4030,7 +4288,7 @@ mod tests {
             "shuffle": true,
             "last_scan": 12345,
             "update_cache": { "checked_at": 99, "latest": "1.9.0", "url": "https://x" },
-            "lastfm": { "username": "zealsprince", "threshold": 0.8 },
+            "lastfm": { "username": "zealsprince", "session_key": "sk", "threshold": 0.8 },
             "discord": { "enabled": true },
             "window": { "x": 1.0, "y": 2.0, "width": 800.0, "height": 600.0, "maximized": true },
             "stats_window": { "width": 500.0, "height": 400.0, "range": "year" },
@@ -4048,8 +4306,9 @@ mod tests {
         assert_eq!(session.last_scan, 12345);
         assert!(session.update_cache.is_some());
 
-        let accounts: AccountsState = from_legacy(&json);
-        assert_eq!(accounts.lastfm.username, "zealsprince");
+        let mut accounts: AccountsState = from_legacy(&json);
+        accounts.lastfm.fold_legacy_session();
+        assert_eq!(accounts.lastfm.username("any-key"), "zealsprince");
         assert_eq!(accounts.lastfm.threshold, 0.8);
         assert!(accounts.discord.enabled);
 
@@ -4342,13 +4601,16 @@ mod tests {
         assert_eq!(settings.replay_gain.preamp_db, 3.0);
 
         let accounts: AccountsState = serde_json::from_value(serde_json::json!({
-            "lastfm": { "session_key": "a-real-secret" },
+            "lastfm": { "sessions": { "api-key": { "key": "a-real-secret" } } },
             "providers": { "lyrics_save": "somewhere-else", "musicbrainz": false },
         }))
         .unwrap();
         assert!(accounts.providers.lyrics_save == LyricsSave::default());
         assert!(!accounts.providers.musicbrainz);
-        assert_eq!(accounts.lastfm.session_key, "a-real-secret");
+        assert_eq!(
+            accounts.lastfm.session("api-key").map(|s| s.key.as_str()),
+            Some("a-real-secret")
+        );
 
         let look: LookState = serde_json::from_value(serde_json::json!({
             "bundle": {

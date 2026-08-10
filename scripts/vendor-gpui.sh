@@ -61,7 +61,12 @@ vendor_one() {
 
     tar -xzf "$tmp/$crate" -C "$tmp"
     for p in "${patches[@]}"; do
-        patch -p1 -d "$tmp/$name-$version" --no-backup-if-mismatch --quiet <"$p"
+        # -F0 forbids fuzz. A hunk whose context has drifted is a hunk that
+        # lands wherever the search happens to stop, and GNU patch and the BSD
+        # patch macOS ships stop in different places: a fuzzy hunk here dropped
+        # quad_homography into the middle of the test module on macOS while
+        # landing correctly on Linux. Failing loudly beats two vendor trees.
+        patch -p1 -F0 -d "$tmp/$name-$version" --no-backup-if-mismatch --quiet <"$p"
     done
 
     rm -rf "$out"

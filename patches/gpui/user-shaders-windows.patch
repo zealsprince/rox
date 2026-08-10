@@ -1,6 +1,6 @@
-diff -x .rox-stamp -ruN /tmp/gpui-baseline/Cargo.toml vendor/gpui/Cargo.toml
---- a/Cargo.toml	2026-08-10 09:32:30.373876789 -0600
-+++ b/Cargo.toml	2026-08-10 09:59:55.600890792 -0600
+diff -ruN /tmp/b9/gpui-0.2.2/Cargo.toml /tmp/mine9/Cargo.toml
+--- a/Cargo.toml	2026-08-10 11:32:37.344759741 -0600
++++ b/Cargo.toml	2026-08-10 11:34:18.944316656 -0600
 @@ -592,6 +592,17 @@
  features = ["wgsl-in"]
  optional = true
@@ -28,10 +28,10 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/Cargo.toml vendor/gpui/Cargo.toml
 +# vendor/gpui/Cargo.toml` can build the dev-dependencies the shader tests need.
 +# A patched-in path dependency is never a member of the outer workspace anyway.
 +[workspace]
-diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/linux/wayland/window.rs vendor/gpui/src/platform/linux/wayland/window.rs
---- a/src/platform/linux/wayland/window.rs	2026-08-10 09:32:30.380296660 -0600
-+++ b/src/platform/linux/wayland/window.rs	2026-08-10 09:59:55.610881310 -0600
-@@ -1139,7 +1139,7 @@
+diff -ruN /tmp/b9/gpui-0.2.2/src/platform/linux/wayland/window.rs /tmp/mine9/src/platform/linux/wayland/window.rs
+--- a/src/platform/linux/wayland/window.rs	2026-08-10 11:32:37.341677932 -0600
++++ b/src/platform/linux/wayland/window.rs	2026-08-10 11:34:18.944775421 -0600
+@@ -1100,7 +1100,7 @@
          self.borrow().renderer.gpu_specs().into()
      }
  
@@ -40,9 +40,9 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/linux/wayland/window.rs 
          self.borrow_mut().renderer.register_user_shader(id, source);
      }
  
-diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/linux/x11/window.rs vendor/gpui/src/platform/linux/x11/window.rs
---- a/src/platform/linux/x11/window.rs	2026-08-10 09:32:30.371277840 -0600
-+++ b/src/platform/linux/x11/window.rs	2026-08-10 10:02:00.821733355 -0600
+diff -ruN /tmp/b9/gpui-0.2.2/src/platform/linux/x11/window.rs /tmp/mine9/src/platform/linux/x11/window.rs
+--- a/src/platform/linux/x11/window.rs	2026-08-10 11:32:37.342018085 -0600
++++ b/src/platform/linux/x11/window.rs	2026-08-10 11:34:18.945252236 -0600
 @@ -1670,7 +1670,7 @@
          self.0.state.borrow().renderer.gpu_specs().into()
      }
@@ -52,9 +52,9 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/linux/x11/window.rs vend
          self.0
              .state
              .borrow_mut()
-diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/mac/window.rs vendor/gpui/src/platform/mac/window.rs
---- a/src/platform/mac/window.rs	2026-08-10 09:32:30.374160042 -0600
-+++ b/src/platform/mac/window.rs	2026-08-10 09:59:55.601840891 -0600
+diff -ruN /tmp/b9/gpui-0.2.2/src/platform/mac/window.rs /tmp/mine9/src/platform/mac/window.rs
+--- a/src/platform/mac/window.rs	2026-08-10 11:32:37.344809480 -0600
++++ b/src/platform/mac/window.rs	2026-08-10 11:34:18.945778657 -0600
 @@ -1567,7 +1567,7 @@
      // pipeline to hand these to; without the feature the no-op defaults on
      // the trait stand and `Window` refuses registration before it gets here.
@@ -64,9 +64,9 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/mac/window.rs vendor/gpu
          self.0.lock().renderer.register_user_shader(id, source);
      }
  
-diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/directx_devices.rs vendor/gpui/src/platform/windows/directx_devices.rs
+diff -ruN /tmp/b9/gpui-0.2.2/src/platform/windows/directx_devices.rs /tmp/mine9/src/platform/windows/directx_devices.rs
 --- a/src/platform/windows/directx_devices.rs	2006-07-23 19:21:28.000000000 -0600
-+++ b/src/platform/windows/directx_devices.rs	2026-08-10 09:59:55.602228424 -0600
++++ b/src/platform/windows/directx_devices.rs	2026-08-10 11:34:18.946534719 -0600
 @@ -46,6 +46,10 @@
      pub(crate) dxgi_factory: IDXGIFactory6,
      pub(crate) device: ID3D11Device,
@@ -104,9 +104,9 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/directx_devices.
          })
      }
  }
-diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/directx_renderer.rs vendor/gpui/src/platform/windows/directx_renderer.rs
---- a/src/platform/windows/directx_renderer.rs	2026-08-10 09:32:30.367217394 -0600
-+++ b/src/platform/windows/directx_renderer.rs	2026-08-10 10:01:13.885332017 -0600
+diff -ruN /tmp/b9/gpui-0.2.2/src/platform/windows/directx_renderer.rs /tmp/mine9/src/platform/windows/directx_renderer.rs
+--- a/src/platform/windows/directx_renderer.rs	2026-08-10 11:32:37.337644863 -0600
++++ b/src/platform/windows/directx_renderer.rs	2026-08-10 11:34:18.946914833 -0600
 @@ -7,7 +7,7 @@
  use anyhow::{Context, Result};
  use windows::{
@@ -1906,9 +1906,9 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/directx_renderer
  pub(crate) mod shader_resources {
      use anyhow::Result;
  
-diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/shader_translate.rs vendor/gpui/src/platform/windows/shader_translate.rs
+diff -ruN /tmp/b9/gpui-0.2.2/src/platform/windows/shader_translate.rs /tmp/mine9/src/platform/windows/shader_translate.rs
 --- a/src/platform/windows/shader_translate.rs	1969-12-31 17:00:00.000000000 -0700
-+++ b/src/platform/windows/shader_translate.rs	2026-08-10 10:01:13.903332170 -0600
++++ b/src/platform/windows/shader_translate.rs	2026-08-10 11:34:18.947521449 -0600
 @@ -0,0 +1,271 @@
 +//! rox patch: WGSL to HLSL for the user shader pipeline.
 +//!
@@ -2181,10 +2181,10 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/shader_translate
 +
 +pub(crate) const VERTEX_PROFILE: &str = "vs_5_0";
 +pub(crate) const FRAGMENT_PROFILE: &str = "ps_5_0";
-diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/window.rs vendor/gpui/src/platform/windows/window.rs
---- a/src/platform/windows/window.rs	2026-08-10 09:32:30.381323252 -0600
-+++ b/src/platform/windows/window.rs	2026-08-10 09:59:55.611662667 -0600
-@@ -938,6 +938,53 @@
+diff -ruN /tmp/b9/gpui-0.2.2/src/platform/windows/window.rs /tmp/mine9/src/platform/windows/window.rs
+--- a/src/platform/windows/window.rs	2006-07-23 19:21:28.000000000 -0600
++++ b/src/platform/windows/window.rs	2026-08-10 11:34:18.947852532 -0600
+@@ -860,6 +860,53 @@
      fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
          // There is no such thing on Windows.
      }
@@ -2238,9 +2238,9 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows/window.rs vendor
  }
  
  #[implement(IDropTarget)]
-diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows.rs vendor/gpui/src/platform/windows.rs
+diff -ruN /tmp/b9/gpui-0.2.2/src/platform/windows.rs /tmp/mine9/src/platform/windows.rs
 --- a/src/platform/windows.rs	2006-07-23 19:21:28.000000000 -0600
-+++ b/src/platform/windows.rs	2026-08-10 09:59:55.603696107 -0600
++++ b/src/platform/windows.rs	2026-08-10 11:34:18.948099065 -0600
 @@ -9,6 +9,10 @@
  mod events;
  mod keyboard;
@@ -2252,9 +2252,9 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform/windows.rs vendor/gpui/s
  mod system_settings;
  mod util;
  mod vsync;
-diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform.rs vendor/gpui/src/platform.rs
---- a/src/platform.rs	2026-08-10 09:32:30.371531183 -0600
-+++ b/src/platform.rs	2026-08-10 09:59:55.603891609 -0600
+diff -ruN /tmp/b9/gpui-0.2.2/src/platform.rs /tmp/mine9/src/platform.rs
+--- a/src/platform.rs	2026-08-10 11:32:37.342305937 -0600
++++ b/src/platform.rs	2026-08-10 11:34:18.948432488 -0600
 @@ -23,6 +23,13 @@
  #[cfg(target_os = "windows")]
  mod windows;
@@ -2269,7 +2269,19 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform.rs vendor/gpui/src/platf
  #[cfg(all(
      feature = "screen-capture",
      any(
-@@ -550,11 +557,22 @@
+@@ -157,7 +164,10 @@
+ pub(crate) fn current_platform(_headless: bool) -> Rc<dyn Platform> {
+     Rc::new(
+         WindowsPlatform::new()
+-            .inspect_err(|err| show_error("Failed to launch", err.to_string()))
++            // rox patch: `{:#}` rather than `to_string`, which prints only the
++            // outermost context and drops the cause. A launch failure that
++            // won't say what actually broke can't be acted on.
++            .inspect_err(|err| show_error("Failed to launch", format!("{err:#}")))
+             .unwrap(),
+     )
+ }
+@@ -550,11 +560,22 @@
      fn set_client_inset(&self, _inset: Pixels) {}
      fn gpu_specs(&self) -> Option<GpuSpecs>;
  
@@ -2297,10 +2309,10 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/platform.rs vendor/gpui/src/platf
      fn register_screen_shader(&self, _id: u32, _chain: &[ChainPassDesc]) {}
      fn register_user_texture(&self, _id: u32, _width: u32, _height: u32, _rgba8: &[u8]) {}
      fn set_post_shader(&self, _chain: Option<&[ChainPassDesc]>) {}
-diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.rs
---- a/src/window.rs	2026-08-10 09:32:30.376790421 -0600
-+++ b/src/window.rs	2026-08-10 10:02:00.835478153 -0600
-@@ -3417,26 +3417,40 @@
+diff -ruN /tmp/b9/gpui-0.2.2/src/window.rs /tmp/mine9/src/window.rs
+--- a/src/window.rs	2026-08-10 11:32:37.345809489 -0600
++++ b/src/window.rs	2026-08-10 11:34:18.963544762 -0600
+@@ -3307,26 +3307,40 @@
          #[cfg(any(
              target_os = "linux",
              target_os = "freebsd",
@@ -2345,7 +2357,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
          )))]
          {
              let _ = chain;
-@@ -3463,9 +3477,13 @@
+@@ -3353,9 +3367,13 @@
          #[cfg(any(
              target_os = "linux",
              target_os = "freebsd",
@@ -2360,7 +2372,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
              let (id, is_new) = self.user_textures.register(width, height, rgba8)?;
              if is_new {
                  self.platform_window
-@@ -3476,7 +3494,8 @@
+@@ -3366,7 +3384,8 @@
          #[cfg(not(any(
              target_os = "linux",
              target_os = "freebsd",
@@ -2370,7 +2382,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
          )))]
          {
              let _ = (width, height, rgba8);
-@@ -3560,13 +3579,10 @@
+@@ -3450,13 +3469,10 @@
          self.invalidator.debug_assert_paint();
  
          #[cfg(any(
@@ -2386,7 +2398,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
          ))]
          {
              use crate::UserShaderRegion;
-@@ -3577,7 +3593,8 @@
+@@ -3467,7 +3483,8 @@
              // Compiled on first use rather than at registration, so a shader
              // that only ever runs as a primitive never pays for the variant.
              if let Some(chain) = self.user_shaders.take_pending_screen_source(shader) {
@@ -2396,7 +2408,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
              }
              let scale_factor = self.scale_factor();
              let mouse = self.shader_mouse(bounds.origin, scale_factor);
-@@ -3598,7 +3615,8 @@
+@@ -3488,7 +3505,8 @@
          #[cfg(not(any(
              target_os = "linux",
              target_os = "freebsd",
@@ -2406,7 +2418,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
          )))]
          {
              let _ = (bounds, shader, instance, signals, meta);
-@@ -5694,7 +5712,15 @@
+@@ -5584,7 +5602,15 @@
  #[derive(Clone, Debug)]
  pub(crate) struct ChainPassDesc {
      /// The composed WGSL module, undecorated the way blade wants it.
@@ -2422,7 +2434,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
      /// Resolution scale for this pass's target; the final pass is always 1.0.
      pub scale: f32,
      /// What the pass actually references, in the pinned order.
-@@ -5741,7 +5767,8 @@
+@@ -5631,7 +5657,8 @@
      any(
          target_os = "linux",
          target_os = "freebsd",
@@ -2432,7 +2444,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
      )
  ))]
  fn compose_screen_shader_source(
-@@ -5765,7 +5792,8 @@
+@@ -5655,7 +5682,8 @@
  #[cfg(any(
      target_os = "linux",
      target_os = "freebsd",
@@ -2442,7 +2454,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
  ))]
  fn validate_shader_source(source: &str) -> std::result::Result<naga::Module, String> {
      let module = naga::front::wgsl::parse_str(source).map_err(|err| err.emit_to_string(source))?;
-@@ -5779,19 +5807,13 @@
+@@ -5669,19 +5697,13 @@
  }
  
  #[cfg(all(
@@ -2464,7 +2476,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
  ))]
  mod post_shader_tests {
      use super::*;
-@@ -5960,6 +5982,10 @@
+@@ -5850,6 +5872,10 @@
      // binds an asset or runs more than one pass: none of that exists in scene
      // space, so it can only ever run as a screen pass.
      primitive_source: Option<String>,
@@ -2475,7 +2487,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
      caps: UserShaderCaps,
      // The region pipelines are compiled on first `paint_screen_shader`, so a
      // shader that only ever runs as a primitive never pays for the variant.
-@@ -6105,7 +6131,8 @@
+@@ -5995,7 +6021,8 @@
          any(
              target_os = "linux",
              target_os = "freebsd",
@@ -2485,7 +2497,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
          )
      ))]
      pub(crate) fn screen_source(&self, id: UserShaderId) -> Option<&str> {
-@@ -6121,6 +6148,14 @@
+@@ -6011,6 +6038,14 @@
              .and_then(|entry| entry.primitive_source.as_deref())
      }
  
@@ -2500,7 +2512,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
      /// Hands back the composed chain the first time a region wants it, and
      /// nothing on every call after. Keeps the region pipelines lazy without
      /// the caller tracking what has been compiled.
-@@ -6128,7 +6163,8 @@
+@@ -6018,7 +6053,8 @@
          not(any(
              target_os = "linux",
              target_os = "freebsd",
@@ -2510,7 +2522,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
          )),
          allow(dead_code)
      )]
-@@ -6152,7 +6188,8 @@
+@@ -6042,7 +6078,8 @@
          any(
              target_os = "linux",
              target_os = "freebsd",
@@ -2520,7 +2532,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
          )
      ))]
      fn register(&mut self, source: &str) -> std::result::Result<(UserShaderId, bool), String> {
-@@ -6164,7 +6201,8 @@
+@@ -6054,7 +6091,8 @@
      #[cfg(any(
          target_os = "linux",
          target_os = "freebsd",
@@ -2530,7 +2542,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
      ))]
      fn register_chain(
          &mut self,
-@@ -6284,6 +6322,7 @@
+@@ -6174,6 +6212,7 @@
  
              passes.push(ChainPassDesc {
                  source: compose_chain_pass_source(&pass.source, false, &bindings),
@@ -2538,7 +2550,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
                  scale: pass.scale,
                  bindings,
              });
-@@ -6293,20 +6332,26 @@
+@@ -6183,20 +6222,26 @@
          // nor any chain neighbour, so a source that touches any of them fails
          // here - which is exactly how a screen-pass-only program identifies
          // itself. Only a one-pass chain gets as far as trying.
@@ -2568,7 +2580,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
              caps,
              region_registered: false,
          });
-@@ -6343,7 +6388,8 @@
+@@ -6233,7 +6278,8 @@
          not(any(
              target_os = "linux",
              target_os = "freebsd",
@@ -2578,7 +2590,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
          )),
          allow(dead_code)
      )]
-@@ -6383,19 +6429,13 @@
+@@ -6273,19 +6319,13 @@
  }
  
  #[cfg(all(
@@ -2600,7 +2612,7 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
  ))]
  mod user_shader_registry_tests {
      use super::*;
-@@ -6946,6 +6986,128 @@
+@@ -6836,4 +6876,126 @@
          assert!(registry.register(2, 2, &pixels[..4]).is_err());
          assert!(registry.register(0, 2, &[]).is_err());
      }
@@ -2727,5 +2739,3 @@ diff -x .rox-stamp -ruN /tmp/gpui-baseline/src/window.rs vendor/gpui/src/window.
 +        }
 +    }
  }
- 
- /// The homography carrying the rectangle at `origin`/`size` (scaled px)

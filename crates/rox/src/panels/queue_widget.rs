@@ -119,8 +119,10 @@ impl QueueWidgetPanel {
             workspace.update(cx, |ws, cx| ws.toggle_queue_modal(window, cx));
             return;
         }
+        // Built for this window rather than pulled out of a layout, so it
+        // gets no way back into one.
         let queue = cx.new(|cx| QueuePanel::windowed(state.clone(), window, cx));
-        panel::pop_out_view(Arc::new(queue), state.clone(), cx);
+        panel::open_panel_window(Arc::new(queue), state.clone(), cx);
     }
 
     /// The tooltip's rows: the next titles with their artists, resolved
@@ -323,7 +325,7 @@ impl Panel for QueueWidgetPanel {
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let state = self.state.clone();
@@ -336,13 +338,14 @@ impl Panel for QueueWidgetPanel {
                 }),
         );
         let menu =
-            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         panel::popout_item(
             menu,
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }

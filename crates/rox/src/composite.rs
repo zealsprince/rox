@@ -203,6 +203,12 @@ pub fn pick_items(
     cx: &mut Context<PopupMenu>,
     on_pick: impl Fn(Arc<dyn PanelView>, &mut Window, &mut App) + Clone + 'static,
 ) -> PopupMenu {
+    // The saved panels lead the list here too, grayed by the same nesting
+    // rule the arrangement section is: a preset of a composite is still a
+    // composite.
+    if let Some(dock) = workspace.upgrade().map(|ws| ws.read(cx).dock().downgrade()) {
+        menu = crate::panel_presets::pick_submenu(menu, dock, true, window, cx, on_pick.clone());
+    }
     for section in catalog::sections() {
         // The arrangement panels stay in the slot picker but grayed: a
         // composite can't host another composite, one level of nesting.

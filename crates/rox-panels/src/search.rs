@@ -332,6 +332,7 @@ impl Panel for SearchPanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }

@@ -39,14 +39,32 @@
                   "panel_name": "TabPanel",
                   "children": [
                     {
-                      "panel_name": "search",
+                      "panel_name": "lyrics",
                       "children": [],
                       "info": {
                         "panel": {
                           "locked": true,
                           "anchor": true,
                           "max_height": 24.0,
-                          "chips": "inline"
+                          "source": "playing",
+                          "align": "center",
+                          "bold": false,
+                          "font_size": 12.9214,
+                          "line_spacing": 3.0,
+                          "follow": true,
+                          "pre_scroll": true,
+                          "fade_lines": true,
+                          "word_by_word": false,
+                          "intro_rest": true,
+                          "gap_rest": false,
+                          "gap_secs": 5.0,
+                          "dim": 0.7964,
+                          "dim_edge": "bottom",
+                          "search_button": false,
+                          "auto_search": false,
+                          "show_name": true,
+                          "show_title": true,
+                          "rest_mark": "none"
                         }
                       }
                     }
@@ -102,87 +120,12 @@
                   "panel_name": "TabPanel",
                   "children": [
                     {
-                      "panel_name": "folder tree",
-                      "children": [],
-                      "info": {
-                        "panel": {
-                          "cover": "none",
-                          "folders": "dim",
-                          "songs": "dim",
-                          "follow_playing": true,
-                          "resume_playing": false,
-                          "smooth_follow": true
-                        }
-                      }
-                    }
-                  ],
-                  "info": {
-                    "tabs": {
-                      "active_index": 0
-                    }
-                  }
-                },
-                {
-                  "panel_name": "TabPanel",
-                  "children": [
-                    {
-                      "panel_name": "library",
-                      "children": [],
-                      "info": {
-                        "panel": {
-                          "query": "",
-                          "search": false,
-                          "query_source": "global",
-                          "density": "compact",
-                          "headers": "compact",
-                          "group_by": "album",
-                          "column_layout": [
-                            {
-                              "key": "track",
-                              "width": 40.0
-                            },
-                            {
-                              "key": "title",
-                              "width": 340.0
-                            },
-                            {
-                              "key": "artist",
-                              "width": 200.0
-                            },
-                            {
-                              "key": "duration",
-                              "width": 60.0
-                            }
-                          ],
-                          "sort_key": null,
-                          "sort_desc": false,
-                          "follow_playing": true,
-                          "resume_playing": false,
-                          "smooth_follow": false,
-                          "art_rounding": 0.0,
-                          "header_art": false,
-                          "header_year": true,
-                          "header_details": false
-                        }
-                      }
-                    }
-                  ],
-                  "info": {
-                    "tabs": {
-                      "active_index": 0
-                    }
-                  }
-                },
-                {
-                  "panel_name": "TabPanel",
-                  "children": [
-                    {
                       "panel_name": "shader",
                       "children": [],
                       "info": {
                         "panel": {
                           "source": "",
-                          "name": "Serpent",
+                          "name": "Lace",
                           "routes": [
                             {
                               "enabled": true,
@@ -204,7 +147,366 @@
                               "target": "slot2",
                               "from": 0.0,
                               "to": 1.0
+                            },
+                            {
+                              "enabled": true,
+                              "signal": 4,
+                              "target": "slot4",
+                              "from": 0.0,
+                              "to": 1.0
                             }
+                          ],
+                          "manual": [
+                            [
+                              3,
+                              0.0
+                            ]
+                          ],
+                          "run_when_idle": false
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "tabs": {
+                      "active_index": 0
+                    }
+                  }
+                },
+                {
+                  "panel_name": "StackPanel",
+                  "children": [
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "art view",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "theme": {
+                                "padding": 0.0,
+                                "rounding": 0.0,
+                                "border": 0.0,
+                                "font_scale": 0.75
+                              },
+                              "query": "",
+                              "search": false,
+                              "query_source": "local",
+                              "vertical": false,
+                              "follow_playing": true,
+                              "resume_playing": true,
+                              "smooth_follow": true,
+                              "dim_playing": false,
+                              "desaturate_playing": false,
+                              "dim_always": false,
+                              "dim": 60.0,
+                              "rounding": 0.0
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "seek",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "locked": true,
+                              "max_height": 20.0,
+                              "show_total": true,
+                              "scrobble_marker": false,
+                              "items": [
+                                "elapsed",
+                                "strip",
+                                "ending"
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "track info",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "locked": true,
+                              "max_height": 24.0,
+                              "align": "center",
+                              "marquee": "off",
+                              "marquee_speed": 30.0,
+                              "marquee_delay": 2.0,
+                              "swap": true,
+                              "swap_secs": 4.0,
+                              "show_output": false,
+                              "output_tint": false
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "playback",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "locked": true,
+                              "max_height": 24.0,
+                              "align": "center",
+                              "play_highlight": "none",
+                              "items": [
+                                "volume",
+                                "prev",
+                                "seekback",
+                                "play",
+                                "seekforward",
+                                "next",
+                                "stop",
+                                "repeat",
+                                "shuffle",
+                                "random",
+                                "favourite"
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "spectrum",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "locked": true,
+                              "anchor": true,
+                              "max_height": 32.0,
+                              "min_height": 32.0,
+                              "style": "bars",
+                              "orientation": "top",
+                              "symmetry": "reverse",
+                              "freq_lo": 30.0,
+                              "freq_hi": 16000.0,
+                              "bar_width": 3.0,
+                              "bar_gap": 2.0,
+                              "block_height": 3.0,
+                              "block_gap": 1.0,
+                              "fft_size": 8192,
+                              "split": false,
+                              "split_hz": 1000.0,
+                              "fft_size_hi": 16384,
+                              "gradient": "off",
+                              "gradient_lo": "#33aacc",
+                              "gradient_hi": "#cc5588",
+                              "outline": false,
+                              "outline_width": 1.0,
+                              "caps": false,
+                              "freeze": false,
+                              "cap_gravity": 0.05,
+                              "labels": "off"
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "library",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "query": "",
+                              "search": false,
+                              "query_source": "global",
+                              "row_height": 30.0,
+                              "head_height": 30.0,
+                              "headers": "compact",
+                              "group_by": "album",
+                              "column_layout": [
+                                {
+                                  "key": "track",
+                                  "width": 40.0
+                                },
+                                {
+                                  "key": "title",
+                                  "width": 340.0
+                                },
+                                {
+                                  "key": "artist",
+                                  "width": 200.0
+                                },
+                                {
+                                  "key": "duration",
+                                  "width": 60.0
+                                }
+                              ],
+                              "sort_key": null,
+                              "sort_desc": false,
+                              "follow_playing": true,
+                              "resume_playing": true,
+                              "smooth_follow": false,
+                              "art_rounding": 0.0,
+                              "art_side": "left",
+                              "art_margin": 0.0,
+                              "header_gap_above": 0.0,
+                              "header_gap_below": 0.0,
+                              "header_art": false,
+                              "header_flush": false,
+                              "header_compact": [
+                                "artist",
+                                "album",
+                                "spacer",
+                                "year"
+                              ],
+                              "header_lines": [
+                                [
+                                  "artist",
+                                  "spacer",
+                                  "year"
+                                ],
+                                [
+                                  "album",
+                                  "spacer",
+                                  "tracks",
+                                  "time"
+                                ],
+                                []
+                              ],
+                              "compact_plays": false,
+                              "stripes": true,
+                              "row_borders": true,
+                              "column_headers": true
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "TabPanel",
+                      "children": [
+                        {
+                          "panel_name": "search",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "locked": true,
+                              "max_height": 24.0,
+                              "chips": "inline"
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "tabs": {
+                          "active_index": 0
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "stack": {
+                      "sizes": [
+                        112.0,
+                        20.0,
+                        24.0,
+                        24.0,
+                        32.0,
+                        188.0,
+                        24.0
+                      ],
+                      "axis": 1
+                    }
+                  }
+                },
+                {
+                  "panel_name": "TabPanel",
+                  "children": [
+                    {
+                      "panel_name": "shader",
+                      "children": [],
+                      "info": {
+                        "panel": {
+                          "source": "",
+                          "name": "Lace",
+                          "routes": [
+                            {
+                              "enabled": true,
+                              "signal": 1,
+                              "target": "slot0",
+                              "from": 0.0,
+                              "to": 1.0
+                            },
+                            {
+                              "enabled": true,
+                              "signal": 2,
+                              "target": "slot1",
+                              "from": 0.0,
+                              "to": 1.0
+                            },
+                            {
+                              "enabled": true,
+                              "signal": 3,
+                              "target": "slot2",
+                              "from": 0.0,
+                              "to": 1.0
+                            },
+                            {
+                              "enabled": true,
+                              "signal": 4,
+                              "target": "slot4",
+                              "from": 0.0,
+                              "to": 1.0
+                            }
+                          ],
+                          "manual": [
+                            [
+                              3,
+                              1.0
+                            ]
                           ],
                           "run_when_idle": false
                         }
@@ -221,123 +523,9 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    240.0,
-                    540.0,
-                    280.0
-                  ],
-                  "axis": 0
-                }
-              }
-            },
-            {
-              "panel_name": "TabPanel",
-              "children": [
-                {
-                  "panel_name": "seek",
-                  "children": [],
-                  "info": {
-                    "panel": {
-                      "locked": true,
-                      "max_height": 20.0,
-                      "timings": true,
-                      "show_total": true,
-                      "scrobble_marker": false
-                    }
-                  }
-                }
-              ],
-              "info": {
-                "tabs": {
-                  "active_index": 0
-                }
-              }
-            },
-            {
-              "panel_name": "StackPanel",
-              "children": [
-                {
-                  "panel_name": "TabPanel",
-                  "children": [
-                    {
-                      "panel_name": "track info",
-                      "children": [],
-                      "info": {
-                        "panel": {
-                          "locked": true,
-                          "anchor": true,
-                          "max_height": 24.0,
-                          "align": "left",
-                          "output_tint": false
-                        }
-                      }
-                    }
-                  ],
-                  "info": {
-                    "tabs": {
-                      "active_index": 0
-                    }
-                  }
-                },
-                {
-                  "panel_name": "TabPanel",
-                  "children": [
-                    {
-                      "panel_name": "playback",
-                      "children": [],
-                      "info": {
-                        "panel": {
-                          "locked": true,
-                          "min_width": 270.0,
-                          "max_width": 270.0,
-                          "max_height": 24.0,
-                          "align": "right",
-                          "stop": true,
-                          "random": false,
-                          "play_highlight": "none"
-                        }
-                      }
-                    }
-                  ],
-                  "info": {
-                    "tabs": {
-                      "active_index": 0
-                    }
-                  }
-                },
-                {
-                  "panel_name": "TabPanel",
-                  "children": [
-                    {
-                      "panel_name": "volume",
-                      "children": [],
-                      "info": {
-                        "panel": {
-                          "locked": true,
-                          "min_width": 100.0,
-                          "max_width": 100.0,
-                          "max_height": 24.0,
-                          "align": "right",
-                          "stretch": false,
-                          "icon": true,
-                          "slider": false,
-                          "percent": true
-                        }
-                      }
-                    }
-                  ],
-                  "info": {
-                    "tabs": {
-                      "active_index": 0
-                    }
-                  }
-                }
-              ],
-              "info": {
-                "stack": {
-                  "sizes": [
-                    690.0,
-                    270.0,
-                    100.0
+                    220.0,
+                    640.0,
+                    220.0
                   ],
                   "axis": 0
                 }
@@ -348,9 +536,7 @@
             "stack": {
               "sizes": [
                 24.0,
-                690.0,
-                20.0,
-                26.0
+                752.0
               ],
               "axis": 1
             }
@@ -358,8 +544,8 @@
         }
       },
       "size": {
-        "width": 1080.0,
-        "height": 800.0
+        "width": 1200.0,
+        "height": 1100.0
       }
     },
     {
@@ -383,7 +569,10 @@
                           "locked": true,
                           "anchor": true,
                           "align": "left",
-                          "output_tint": false
+                          "output_tint": false,
+                          "max_height": 24.0,
+                          "swap": true,
+                          "show_output": false
                         }
                       }
                     }
@@ -404,7 +593,8 @@
                         "panel": {
                           "locked": true,
                           "max_width": 26.0,
-                          "align": "left"
+                          "align": "left",
+                          "max_height": 24.0
                         }
                       }
                     }
@@ -437,7 +627,7 @@
                       "locked": true,
                       "anchor": true,
                       "source": "",
-                      "name": "Serpent",
+                      "name": "Sleeve",
                       "routes": [
                         {
                           "enabled": true,
@@ -457,6 +647,13 @@
                           "enabled": true,
                           "signal": 3,
                           "target": "slot2",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 4,
+                          "target": "slot3",
                           "from": 0.0,
                           "to": 1.0
                         }
@@ -523,7 +720,7 @@
           "info": {
             "stack": {
               "sizes": [
-                28.0,
+                24.0,
                 52.0,
                 24.0,
                 20.0
@@ -534,8 +731,8 @@
         }
       },
       "size": {
-        "width": 540.0,
-        "height": 180.0
+        "width": 460.0,
+        "height": 400.0
       }
     }
   ],
@@ -596,11 +793,11 @@
   "signals": [
     {
       "id": 1,
-      "name": "Kick",
+      "name": "Sub",
       "source": {
         "kind": "band",
-        "lo": 35.0,
-        "hi": 130.0
+        "lo": 20.0,
+        "hi": 60.0
       },
       "smooth": 0.2,
       "threshold": 0.15,
@@ -626,38 +823,67 @@
       },
       "smooth": 0.0,
       "threshold": 0.0,
-      "reset_on_track": true
+      "reset_on_track": false
+    },
+    {
+      "id": 4,
+      "name": "Punch",
+      "source": {
+        "kind": "trigger",
+        "lo": 60.0,
+        "hi": 150.0
+      },
+      "smooth": 0.25,
+      "threshold": 0.95,
+      "reset_on_track": false
+    },
+    {
+      "id": 5,
+      "name": "Presence",
+      "source": {
+        "kind": "level"
+      },
+      "smooth": 0.85,
+      "threshold": 0.0,
+      "reset_on_track": false
     }
   ],
   "shaders": [
     {
       "name": "Dither",
-      "source": "// Critters: the whole app as a 1-bit print.\n//\n// A five-tone ordered dither is the page's constant identity, playing or\n// not; the damage moves through it as torn clouds that drift with the\n// song, coarsening the print rather than replacing it. Inside a cloud the\n// tone count crushes a little, the grid chunks, static fizzes with the\n// mix level, and bright pixels grow column-aligned sort tails. At a\n// cloud's hottest core the picture is bitten out entirely, through a\n// coarse diamond screen, the way the game cuts a chunk from a scene. The\n// clouds belong to the music: paused, they all but vanish and the plain\n// print is the whole look. Under the cursor the page is simply the page:\n// a clear circle, no ink tricks at all.\n//\n// The swathes slot is a hand-set knob, not a signal: 0.5 is the look as\n// designed, 0 turns the clouds off outright, 1 doubles them.\n//\n// @slot 0: kick\n// @slot 1: mix\n// @slot 2: drift\n// @slot 3: swathes\n\nfn critters_bayer(cell: vec2<f32>) -> f32 {\n    let p = vec2<u32>(u32(max(cell.x, 0.0)), u32(max(cell.y, 0.0)));\n    let x = (p.x ^ p.y) & 7u;\n    let y = p.y & 7u;\n    let v = ((x & 1u) * 2u + (y & 1u)) * 16u\n        + (((x >> 1u) & 1u) * 2u + ((y >> 1u) & 1u)) * 4u\n        + ((x >> 2u) * 2u + (y >> 2u));\n    return (f32(v) + 0.5) / 64.0;\n}\n\nfn critters_hash(p: vec2<f32>) -> f32 {\n    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);\n}\n\nfn critters_noise(p: vec2<f32>) -> f32 {\n    let i = floor(p);\n    let f = fract(p);\n    let u = f * f * (3.0 - 2.0 * f);\n    let a = critters_hash(i);\n    let b = critters_hash(i + vec2<f32>(1.0, 0.0));\n    let c = critters_hash(i + vec2<f32>(0.0, 1.0));\n    let d = critters_hash(i + vec2<f32>(1.0, 1.0));\n    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n}\n\nfn critters_luma(color: vec4<f32>) -> f32 {\n    return dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));\n}\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let kick = clamp(params.signals[0].x, 0.0, 1.0);\n    let loudness = clamp(params.signals[0].y, 0.0, 1.0);\n    let drift = params.signals[0].z;\n    let swathes = clamp(params.signals[0].w, 0.0, 1.0) * 2.0;\n    let playing = clamp(params.user_meta[0].z, 0.0, 1.0);\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let px = uv * res;\n    let aspect = vec2<f32>(res.x / res.y, 1.0);\n\n    // The clouds: two octaves of noise on opposing orbits of the drift\n    // phase, thresholded high, so the damage reads as torn patches\n    // drifting through the print rather than stripes crossing it. The\n    // kick barely touches the field; a steady kick holding the mask open\n    // is what made the play state a different shader than the idle one.\n    // The clouds belong to the music outright: paused, the mask drops to\n    // a whisper and the plain print carries the look alone. The hand-set\n    // swathes knob scales the whole thing, off at 0, doubled at 1.\n    let orbit = vec2<f32>(cos(6.28318530718 * drift), sin(6.28318530718 * drift));\n    let n1 = critters_noise(\n        uv * aspect * 4.0 + orbit * 1.2 + vec2<f32>(params.time * 0.02, -params.time * 0.015),\n    );\n    let n2 = critters_noise(\n        uv * aspect * 9.0 - orbit * 1.8 + vec2<f32>(-params.time * 0.012, params.time * 0.018),\n    );\n    let field = n1 * 0.62 + n2 * 0.38 + kick * 0.05;\n    let alive = (0.06 + 0.94 * playing) * swathes;\n    let m = clamp(smoothstep(0.60, 0.80, field) * alive, 0.0, 1.0);\n\n    // Sampling grid: native on clean paper, chunked inside a swathe, and\n    // chunked harder when the kick lands there.\n    let chunk = 1.0 + floor(m * (1.0 + kick) + 0.25);\n    let cell = floor(px / chunk);\n    let src = textureSampleLevel(screen, samp, (cell + 0.5) * chunk / res, 0.0);\n    var luma = critters_luma(src);\n\n    // The sort tails: a fragment pass can't truly sort a column, so inside\n    // a swathe every bright pixel grows a downward comet tail instead,\n    // column-aligned, its length rolled per column so a run of streaks\n    // comes out ragged the way a real sort does. Eight taps, always taken,\n    // gated by the mask at the end.\n    let colw = max(chunk, 3.0);\n    let col = floor(px.x / colw);\n    let ragged = 0.35 + 0.65 * critters_hash(vec2<f32>(col, floor(drift * 48.0)));\n    let tail = (6.0 + 22.0 * kick) * ragged / res.y;\n    let colx = (col + 0.5) * colw / res.x;\n    var streak = 0.0;\n    for (var j = 1; j < 9; j = j + 1) {\n        let back = f32(j) / 8.0;\n        let above = vec2<f32>(colx, clamp(uv.y - back * tail, 0.0, 1.0));\n        let l = critters_luma(textureSampleLevel(screen, samp, above, 0.0));\n        // Only genuinely bright sources spawn a tail; dim rows dripping\n        // was what whited out whole panels.\n        streak = max(streak, smoothstep(0.4, 0.8, l) * l * (1.0 - back * back));\n    }\n    luma = max(luma, streak * m * 0.7);\n\n    // Static rides the swathes when the mix runs loud, faintly.\n    luma += (critters_hash(cell + floor(drift * 883.0)) - 0.5) * 0.06 * loudness * m;\n\n    // Tone count: a five-tone print on clean paper, unmissable on a dark\n    // palette, so the dither is the page's constant identity and a swathe\n    // only coarsens it. Light themes get a little more headroom, since\n    // paper shows every tone the way black swallows them. The matrix\n    // crawls a cell at a time with the drift phase, never smoothly, so\n    // text stays print-stable.\n    let paper = mix(5.0, 7.0, clamp(params.user_meta[1].x, 0.0, 1.0));\n    let tones = mix(paper, mix(4.0, 3.0, kick), m);\n    let crawl = floor(vec2<f32>(drift, drift * 0.5) * 8.0);\n    let threshold = critters_bayer(cell + crawl);\n    let steps = max(tones - 1.0, 1.0);\n    let q = clamp(floor(luma * steps + threshold) / steps, 0.0, 1.0);\n\n    // The bite: at a cloud's hottest core the picture is cut out\n    // entirely, through a coarse diamond screen so the hole's edge is the\n    // game's chunky pattern rather than a soft fade.\n    let coarse = critters_bayer(floor(px / 10.0));\n    let bite = smoothstep(0.84, 0.96, field) * alive;\n    let inked = q * (1.0 - step(coarse, bite));\n\n    // The lamp: the composed frame untouched inside the circle, easing\n    // back into the print at the rim.\n    let raw = textureSampleLevel(screen, samp, uv, 0.0);\n    let lamp = 1.0 - smoothstep(0.09, 0.18, length((uv - params.mouse.xy / res) * aspect));\n    return vec4<f32>(mix(vec3<f32>(inked), raw.rgb, lamp), 1.0);\n}\n"
+      "source": "// Critters: the whole app as a 1-bit print.\n//\n// A five-tone ordered dither is the page's constant identity, playing or\n// not; the damage moves through it as torn clouds that drift with the\n// song, coarsening the print rather than replacing it. Inside a cloud the\n// tone count drops a step, the grid chunks, static fizzes, all of it off\n// the mix level and none of it far enough to cost you a line of text, and\n// the picture actually sorts: each column is cut into\n// short runs and every run is put back in brightness order, which is what\n// pulls a bright edge out into a solid band. At a cloud's hottest core the\n// picture is bitten out entirely, through a coarse diamond screen, the way\n// the game cuts a chunk from a scene. The clouds belong to the music: they\n// ride the level itself, so a pause rings them out over a second or so and\n// leaves the plain print as the whole look. Under the cursor the page is\n// simply the page: a clear circle, no ink tricks at all.\n//\n// A light theme is a light page: the print keeps a couple more tones, and\n// a bite cuts down to white paper instead of punching a black hole in it.\n//\n// The sort is four passes. `keys` chunks the frame and writes luma with\n// the cloud mask, `rank` counts how many pixels of a run beat each one,\n// `sorted` gathers every run back in rank order, and `print` puts the\n// result through the dither. The three scan passes run at half size on\n// purpose: the sort chews on the print's own blocks, so a run comes out\n// as bands rather than as fizz, and the scan costs a quarter of what it\n// would at full size.\n//\n// The swathes slot is a hand-set knob, not a signal: 0.5 is the look as\n// designed, 0 turns the clouds off outright, 1 doubles them. How much of\n// that knob is open at any moment is presence, a slow read of the level\n// through a low knee: any real level prints the look as designed, and a\n// stop rings the envelope down through the knee over a second or two, so\n// the page fades back to plain print. The play flag is deliberately not in\n// here, since a boolean can only cut.\n//\n// The low end deliberately doesn't reach this one, which is why slot 0 is\n// empty here while the panel shaders wear the sub in it. This is the\n// surface you read the whole app through: what damage there is follows\n// the mix level and stays mild. The panels are where the bass gets to be\n// loud.\n//\n// @overlay\n// @slot 1: mix\n// @slot 2: drift\n// @slot 3: swathes\n// @slot 4: presence\n\nfn critters_bayer(cell: vec2<f32>) -> f32 {\n    let p = vec2<u32>(u32(max(cell.x, 0.0)), u32(max(cell.y, 0.0)));\n    let x = (p.x ^ p.y) & 7u;\n    let y = p.y & 7u;\n    let v = ((x & 1u) * 2u + (y & 1u)) * 16u\n        + (((x >> 1u) & 1u) * 2u + ((y >> 1u) & 1u)) * 4u\n        + ((x >> 2u) * 2u + (y >> 2u));\n    return (f32(v) + 0.5) / 64.0;\n}\n\nfn critters_hash(p: vec2<f32>) -> f32 {\n    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);\n}\n\nfn critters_noise(p: vec2<f32>) -> f32 {\n    let i = floor(p);\n    let f = fract(p);\n    let u = f * f * (3.0 - 2.0 * f);\n    let a = critters_hash(i);\n    let b = critters_hash(i + vec2<f32>(1.0, 0.0));\n    let c = critters_hash(i + vec2<f32>(0.0, 1.0));\n    let d = critters_hash(i + vec2<f32>(1.0, 1.0));\n    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n}\n\nfn critters_luma(color: vec4<f32>) -> f32 {\n    return dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));\n}\n\n// The clouds: two octaves of noise on opposing orbits of the drift phase,\n// thresholded high, so the damage reads as torn patches drifting through\n// the print rather than stripes crossing it. The mix lifts the field a\n// touch, so a loud passage tears a little more of the page than a quiet\n// one. The clouds belong to the music outright: presence opens them, and\n// since it's an envelope rather than a switch, a pause walks the mask\n// down to a whisper over a second or two and leaves the plain print\n// carrying the look alone. The hand-set swathes knob scales the whole\n// thing, off at 0, doubled at 1.\n//\n// Every pass calls this and every pass gets the same answer, since it's\n// aspect that shapes the field and a half-size pass has the same aspect.\n// Pure math on purpose: a prelude that touched `screen` would bind the\n// screen texture into the two scan passes, which never sample it.\n// Returns the raw field, the mask the swathes ride on, and how alive the\n// damage is at all.\nfn critters_clouds(uv: vec2<f32>) -> vec3<f32> {\n    let loudness = clamp(params.signals[0].y, 0.0, 1.0);\n    let drift = params.signals[0].z;\n    let swathes = clamp(params.signals[0].w, 0.0, 1.0) * 2.0;\n    // The knee keeps a quiet track printing the look as designed instead\n    // of half of it: anything with real level reads full, and the fade is\n    // the envelope's tail walking back down through it.\n    let presence = smoothstep(0.0, 0.30, clamp(params.signals[1].x, 0.0, 1.0));\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let aspect = vec2<f32>(res.x / res.y, 1.0);\n\n    let orbit = vec2<f32>(cos(6.28318530718 * drift), sin(6.28318530718 * drift));\n    let n1 = critters_noise(\n        uv * aspect * 4.0 + orbit * 1.2 + vec2<f32>(params.time * 0.02, -params.time * 0.015),\n    );\n    let n2 = critters_noise(\n        uv * aspect * 9.0 - orbit * 1.8 + vec2<f32>(-params.time * 0.012, params.time * 0.018),\n    );\n    let field = n1 * 0.62 + n2 * 0.38 + loudness * 0.04;\n    let alive = (0.06 + 0.94 * presence) * swathes;\n    let m = clamp(smoothstep(0.60, 0.80, field) * alive, 0.0, 1.0);\n    return vec3<f32>(field, m, alive);\n}\n\n// The sort window: a run of rows inside one narrow column. Its length is\n// rolled per column, so a field of runs comes out ragged the way a real\n// sort does rather than gridded. Clipped to the surface here, once, so the\n// scan and the gather see the same run of rows at the edges too.\n//\n// Each column keeps its own clock. The stagger shifts where in the drift\n// phase that column's tick turns over, so re-rolls scatter across the cycle\n// instead of every column re-chunking on the same frame, which is what made\n// the whole sorted field visibly reshuffle at once. Wrapping the tick at\n// six puts each column's last turnover just before the phase wraps rather\n// than on it, so the wrap itself changes nothing.\n//\n// The mix is deliberately not in here. Folding a live signal through this\n// floor re-chunks every open swathe while the level moves, and the mix\n// already has the mask, the sampling grid and the tone count to work with.\n//\n// Returns the run's first row and its length, both in this pass's pixels.\n// The cap of 24 is the loop bound both scan passes are written against.\nfn critters_span(px: vec2<f32>, res: vec2<f32>, drift: f32) -> vec2<f32> {\n    let colw = 3.0;\n    let col = floor(px.x / colw);\n    let ticks = 6.0;\n    let stagger = critters_hash(vec2<f32>(col, 17.0));\n    let raw = floor(drift * ticks + stagger);\n    let tick = raw - ticks * floor(raw / ticks);\n    let roll = critters_hash(vec2<f32>(col, tick));\n    let len = clamp(floor(4.0 + 16.0 * roll) + 4.0, 6.0, 24.0);\n    let phase = critters_hash(vec2<f32>(col, 41.0)) * len;\n    let slot = floor((px.y + phase) / len);\n    let top = floor(slot * len - phase);\n    let bottom = min(top + len, res.y);\n    return vec2<f32>(max(top, 0.0), max(bottom - max(top, 0.0), 1.0));\n}\n\n// @pass keys: 0.5\n// What the sort works on: the frame chunked exactly the way the print\n// chunks it, so a sorted run is made of the blocks that get printed, plus\n// the cloud mask riding along so the scan passes never recompute it.\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let loudness = clamp(params.signals[0].y, 0.0, 1.0);\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let px = floor(uv * res) + 0.5;\n\n    let cloud = critters_clouds(uv);\n    let m = cloud.y;\n\n    let chunk = 1.0 + floor(m * (1.0 + loudness) + 0.25);\n    let cell = floor(px / chunk);\n    let src = textureSampleLevel(screen, samp, (cell + 0.5) * chunk / res, 0.0);\n    return vec4<f32>(critters_luma(src), m, cloud.x, 1.0);\n}\n\n// @pass rank: 0.5\n// The scan: for every pixel, how many pixels of its run are brighter than\n// it. Ties break on position, so a flat run still comes out a permutation\n// instead of piling every pixel onto one slot. Taps land on texel centres\n// so two equal lumas compare equal exactly.\n//\n// On clean paper there is nothing to sort and the loop never runs, which\n// is what keeps a four-pass shader cheap while the music is stopped.\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let drift = params.signals[0].z;\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let px = floor(uv * res) + 0.5;\n    let texel = px / res;\n\n    let mine = textureSampleLevel(keys, samp, texel, 0.0);\n    if (mine.y < 0.02) {\n        return vec4<f32>(0.0, mine.x, mine.y, 1.0);\n    }\n\n    let span = critters_span(px, res, drift);\n    let top = span.x;\n    let len = span.y;\n    let local = floor(px.y - top);\n\n    var rank = 0.0;\n    for (var j = 0; j < 24; j = j + 1) {\n        let at = f32(j);\n        if (at >= len) {\n            break;\n        }\n        let other = textureSampleLevel(keys, samp, vec2<f32>(texel.x, (top + at + 0.5) / res.y), 0.0);\n        let ahead = other.x > mine.x || (other.x == mine.x && at < local);\n        rank = rank + select(0.0, 1.0, ahead);\n    }\n\n    // Parked off both ends of the range: the trip through an 8-bit target\n    // costs a little precision, and the gather matches on nearest rank\n    // rather than on equality, so the steps want room either side.\n    return vec4<f32>(0.03 + 0.94 * (rank + 0.5) / 24.0, mine.x, mine.y, 1.0);\n}\n\n// @pass sorted: 0.5\n// The gather: every slot in a run takes the pixel whose rank belongs\n// there. Brightest lands at the bottom, so a sorted run still hangs\n// downward off its bright edge the way the old faked tails did.\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let drift = params.signals[0].z;\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let px = floor(uv * res) + 0.5;\n    let texel = px / res;\n\n    let mine = textureSampleLevel(rank, samp, texel, 0.0);\n    if (mine.z < 0.02) {\n        return vec4<f32>(mine.y, mine.y, mine.z, 1.0);\n    }\n\n    let span = critters_span(px, res, drift);\n    let top = span.x;\n    let len = span.y;\n    let want = len - 1.0 - floor(px.y - top);\n\n    var best = mine.y;\n    var closest = 64.0;\n    for (var j = 0; j < 24; j = j + 1) {\n        let at = f32(j);\n        if (at >= len) {\n            break;\n        }\n        let tap = textureSampleLevel(rank, samp, vec2<f32>(texel.x, (top + at + 0.5) / res.y), 0.0);\n        let held = ((tap.x - 0.03) / 0.94) * 24.0 - 0.5;\n        let miss = abs(held - want);\n        if (miss < closest) {\n            closest = miss;\n            best = tap.y;\n        }\n    }\n    return vec4<f32>(best, mine.y, mine.z, 1.0);\n}\n\n// @pass print\n// The page: the frame chunked and quantized, the sorted runs mixed in\n// wherever a swathe is open, and the bite cut through the lot.\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let loudness = clamp(params.signals[0].y, 0.0, 1.0);\n    let drift = params.signals[0].z;\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let px = uv * res;\n    let aspect = vec2<f32>(res.x / res.y, 1.0);\n\n    let cloud = critters_clouds(uv);\n    let field = cloud.x;\n    let m = cloud.y;\n    let alive = cloud.z;\n\n    // Sampling grid: native on clean paper, two pixels inside a swathe,\n    // three where the mix is running loud, and that's as coarse as the\n    // page gets. Both this and the keys pass have to read the same, or the\n    // sort chews on blocks the print doesn't have.\n    let chunk = 1.0 + floor(m * (1.0 + loudness) + 0.25);\n    let cell = floor(px / chunk);\n    let src = textureSampleLevel(screen, samp, (cell + 0.5) * chunk / res, 0.0);\n    var luma = critters_luma(src);\n\n    // The sorted runs, back at full size. Only inside a swathe: clean\n    // paper is the plain print and always was.\n    let run = textureSampleLevel(sorted, samp, uv, 0.0).x;\n    luma = mix(luma, run, m);\n\n    // Static rides the swathes when the mix runs loud, faintly.\n    luma += (critters_hash(cell + floor(drift * 883.0)) - 0.5) * 0.06 * loudness * m;\n\n    // Tone count: a five-tone print on clean paper, unmissable on a dark\n    // palette, so the dither is the page's constant identity and a swathe\n    // only coarsens it. Light themes get a little more headroom, since\n    // paper shows every tone the way black swallows them. A swathe drops\n    // it to four tones, one below the dark paper, and that's the floor:\n    // crush it further and the print starts eating the text under it.\n    // The matrix crawls a cell at a time with the drift phase, never\n    // smoothly, so text stays print-stable.\n    //\n    // Which page this is comes off its own luma rather than the theme\n    // pick, so a cover bright enough to swing the palette is a light page\n    // here too. Stepped, not read as a level: the count wants one answer\n    // or the other, and a tint easing between them shouldn't walk the\n    // whole window's tone ladder up and down on the way.\n    let light = step(0.5, clamp(params.user_meta[1].x, 0.0, 1.0));\n    let paper = mix(5.0, 7.0, light);\n    let tones = mix(paper, mix(5.0, 4.0, loudness), m);\n    let crawl = floor(vec2<f32>(drift, drift * 0.5) * 8.0);\n    let threshold = critters_bayer(cell + crawl);\n    let steps = max(tones - 1.0, 1.0);\n    let q = clamp(floor(luma * steps + threshold) / steps, 0.0, 1.0);\n\n    // The bite: at a cloud's hottest core the picture is cut out entirely,\n    // through a coarse diamond screen so the hole's edge is the game's\n    // chunky pattern rather than a soft fade.\n    let coarse = critters_bayer(floor(px / 10.0));\n    let bite = smoothstep(0.84, 0.96, field) * alive;\n    // Bitten down to bare paper, and which paper depends on the page: a\n    // flat zero either way punched black holes through a light theme. Both\n    // ends sit on the tone ladder, so a hole is still a printed tone.\n    let inked = mix(q, light, step(coarse, bite));\n\n    // The lamp: the composed frame untouched inside the circle, easing\n    // back into the print at the rim.\n    let raw = textureSampleLevel(screen, samp, uv, 0.0);\n    let lamp = 1.0 - smoothstep(0.09, 0.18, length((uv - params.mouse.xy / res) * aspect));\n    return vec4<f32>(mix(vec3<f32>(inked), raw.rgb, lamp), 1.0);\n}\n"
     },
     {
-      "name": "Serpent",
-      "source": "// Serpent: the back wall of the Snake chapter.\n//\n// Two fields of folded value noise, printed straight to three tones with\n// its own Bayer pass, so the panel is full print whatever the screen\n// shader is doing. Every bit of motion hangs off the drift phase, which\n// is music-driven time: paused, the coil holds perfectly still no matter\n// how often the window repaints. The kick moves nothing. It lifts the\n// second field through the first instead, so a hit reads as something\n// surfacing rather than the whole wall flinching.\n//\n// @slot 0: kick\n// @slot 1: mix\n// @slot 2: drift\n\nfn serpent_hash(p: vec2<f32>) -> f32 {\n    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);\n}\n\nfn serpent_noise(p: vec2<f32>) -> f32 {\n    let i = floor(p);\n    let f = fract(p);\n    let u = f * f * (3.0 - 2.0 * f);\n    let a = serpent_hash(i);\n    let b = serpent_hash(i + vec2<f32>(1.0, 0.0));\n    let c = serpent_hash(i + vec2<f32>(0.0, 1.0));\n    let d = serpent_hash(i + vec2<f32>(1.0, 1.0));\n    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n}\n\nfn serpent_fbm(p: vec2<f32>) -> f32 {\n    var value = 0.0;\n    var amp = 0.5;\n    var q = p;\n    for (var i = 0; i < 4; i = i + 1) {\n        value += amp * serpent_noise(q);\n        q = q * 2.03 + vec2<f32>(17.0, 9.2);\n        amp *= 0.5;\n    }\n    return value;\n}\n\nfn serpent_bayer(cell: vec2<f32>) -> f32 {\n    let p = vec2<u32>(u32(max(cell.x, 0.0)), u32(max(cell.y, 0.0)));\n    let x = (p.x ^ p.y) & 7u;\n    let y = p.y & 7u;\n    let v = ((x & 1u) * 2u + (y & 1u)) * 16u\n        + (((x >> 1u) & 1u) * 2u + ((y >> 1u) & 1u)) * 4u\n        + ((x >> 2u) * 2u + (y >> 2u));\n    return (f32(v) + 0.5) / 64.0;\n}\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let kick = clamp(params.signals[0].x, 0.0, 1.0);\n    let loudness = clamp(params.signals[0].y, 0.0, 1.0);\n    let drift = params.signals[0].z;\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let p = (uv - 0.5) * vec2<f32>(res.x / res.y, 1.0);\n\n    // Music time as a point on a circle: continuous through the phase\n    // wrap, and frozen the moment the music is. The two fields orbit in\n    // opposite directions so they never read as one sliding image.\n    let phase = 6.28318530718 * drift;\n    let orbit = vec2<f32>(cos(phase), sin(phase));\n\n    // The wall: noise moved by noise, drifting on the orbit. The warp\n    // strength is fixed; nothing here jitters with the music.\n    let warp_a = vec2<f32>(\n        serpent_fbm(p * 1.7 + orbit * 0.6),\n        serpent_fbm(p * 1.7 - orbit * 0.4 + vec2<f32>(4.7, 1.3)),\n    );\n    let body_a = serpent_fbm(p * 2.6 + (warp_a - 0.5) * 1.8 + orbit * 0.3);\n    let ridge_a = abs(sin((body_a * 6.0 + phase * 0.5) * 3.14159));\n    let ink_a = pow(ridge_a, 2.6) * (0.35 + 0.65 * body_a) * (0.5 + 0.5 * loudness);\n\n    // The thing beneath it: finer scales, turned against the wall's grain,\n    // riding the orbit backwards. It's always there, and the kick is only\n    // a lamp on it.\n    let q = vec2<f32>(p.x * 0.36 - p.y * 0.93, p.x * 0.93 + p.y * 0.36);\n    let warp_b = vec2<f32>(\n        serpent_fbm(q * 3.1 - orbit * 0.5),\n        serpent_fbm(q * 3.1 + orbit * 0.7 + vec2<f32>(8.1, 3.9)),\n    );\n    let body_b = serpent_fbm(q * 4.2 + (warp_b - 0.5) * 1.4 - orbit * 0.4);\n    let ridge_b = abs(sin((body_b * 8.0 - phase * 0.5) * 3.14159));\n    let reveal = smoothstep(0.15, 0.85, kick);\n    let ink_b = pow(ridge_b, 2.0) * (0.4 + 0.6 * body_b) * reveal;\n\n    let ink = clamp(max(ink_a, ink_b), 0.0, 1.0);\n\n    // Printed on the way out: three tones through the same matrix the\n    // screen pass uses, so the panel is dithered even where the swathes\n    // aren't. The screen pass quantizing this again is harmless, since a\n    // three-tone image re-reads as itself.\n    let threshold = serpent_bayer(floor(uv * res));\n    let printed = clamp(floor(ink * 2.0 + threshold) / 2.0, 0.0, 1.0);\n    return vec4<f32>(vec3<f32>(printed), 1.0);\n}\n"
+      "name": "Wall",
+      "source": "// Wall: the writhing fold, three layers deep.\n//\n// The fold itself is the swirl the first wall printed: noise\n// moved by noise on the drift orbit, gated twice so only massed crests\n// ink, black paper between. Under it live two more layers that shine\n// through at their own points, so the wall reads as pages worn thin over\n// one another rather than one field. The underfold is a finer counter\n// rotating swirl that shows only where a slow wear mask opens, and its\n// ink follows the mix, so a loud passage lights patches a quiet one\n// leaves black. The strike is a bold coarse banding that snaps through\n// its own tears on each drum hit: it rides the punch, a trigger pulse\n// that fires the moment the kick band crosses its set line, and the sub\n// holds it up through a hit that runs on into sustained low end.\n//\n// Every bit of motion hangs off the drift phase, which is music-driven\n// time: paused, all three layers hold perfectly still no matter how\n// often the window repaints.\n//\n// The print runs whichever way the page does: white ink on black paper\n// under a dark theme, black ink on white paper under a light one.\n//\n// @slot 0: sub\n// @slot 1: mix\n// @slot 2: drift\n// @slot 3: punch\n\nfn wall_hash(p: vec2<f32>) -> f32 {\n    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);\n}\n\nfn wall_noise(p: vec2<f32>) -> f32 {\n    let i = floor(p);\n    let f = fract(p);\n    let u = f * f * (3.0 - 2.0 * f);\n    let a = wall_hash(i);\n    let b = wall_hash(i + vec2<f32>(1.0, 0.0));\n    let c = wall_hash(i + vec2<f32>(0.0, 1.0));\n    let d = wall_hash(i + vec2<f32>(1.0, 1.0));\n    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n}\n\nfn wall_fbm(p: vec2<f32>) -> f32 {\n    var value = 0.0;\n    var amp = 0.5;\n    var q = p;\n    for (var i = 0; i < 4; i = i + 1) {\n        value += amp * wall_noise(q);\n        q = q * 2.03 + vec2<f32>(17.0, 9.2);\n        amp *= 0.5;\n    }\n    return value;\n}\n\nfn wall_bayer(cell: vec2<f32>) -> f32 {\n    let p = vec2<u32>(u32(max(cell.x, 0.0)), u32(max(cell.y, 0.0)));\n    let x = (p.x ^ p.y) & 7u;\n    let y = p.y & 7u;\n    let v = ((x & 1u) * 2u + (y & 1u)) * 16u\n        + (((x >> 1u) & 1u) * 2u + ((y >> 1u) & 1u)) * 4u\n        + ((x >> 2u) * 2u + (y >> 2u));\n    return (f32(v) + 0.5) / 64.0;\n}\n\n// The three layers as one ink value, shared with the Lace sides so both\n// surfaces writhe the same way. `p` is centred aspect-true space.\nfn wall_ink(p: vec2<f32>, phase: f32, sub: f32, punch: f32, loudness: f32) -> f32 {\n    let orbit = vec2<f32>(cos(phase), sin(phase));\n\n    // The fold: the swirl. Warp strength is fixed and the gates stay\n    // where they are, because this layer is the wall's constant and it\n    // has to keep swirling on a track with no low end at all. The crests\n    // brighten as the mix runs loud, and the sub leans the crest gate\n    // open by a hair.\n    let warp = vec2<f32>(\n        wall_fbm(p * 1.7 + orbit * 0.6),\n        wall_fbm(p * 1.7 - orbit * 0.4 + vec2<f32>(4.7, 1.3)),\n    );\n    let body = wall_fbm(p * 2.6 + (warp - 0.5) * 1.8 + orbit * 0.3);\n    let ridge = abs(sin((body * 6.0 + phase * 0.5) * 3.14159));\n    let fold = smoothstep(0.74 - 0.10 * sub, 0.98, ridge)\n        * smoothstep(0.44, 0.74, body)\n        * (0.45 + 0.55 * loudness);\n\n    // The wear: where the page has thinned enough for the underfold to\n    // show. On the counter orbit, so the openings and the swirl slide\n    // against each other and the reveal keeps changing address.\n    let wear = smoothstep(\n        0.52,\n        0.72,\n        wall_fbm(p * 1.3 - orbit * 0.5 + vec2<f32>(2.9, 8.1)),\n    );\n\n    // The underfold: finer, counter-rotated, and the mix's own layer: at\n    // a whisper it barely inks, at full mix it burns through the wear.\n    let under_body = wall_fbm(p * 3.4 - orbit * 0.8 + vec2<f32>(6.2, 2.4));\n    let under_ridge = abs(sin((under_body * 8.0 - phase * 0.7) * 3.14159));\n    let under = smoothstep(0.70, 0.95, under_ridge)\n        * smoothstep(0.50, 0.80, under_body)\n        * wear\n        * (0.15 + 0.85 * loudness);\n\n    // The strike: the sheet under everything, coarse banding that runs the\n    // whole page rather than hiding in a few tears on the edges. Its wear\n    // is wide and soft, so the banding is somewhere in every part of the\n    // surface, and the surge decides how much of it surfaces. It comes up\n    // to the half tone and no further, so a drum reads as the page below\n    // rising through this one instead of the whole window flashing white.\n    //\n    // The surge is the punch or the sub, whichever is louder. A hit fires\n    // the punch and the pulse rings down; where that hit runs on into\n    // sustained low end the sub holds the sheet up instead of letting it\n    // drop out from under a bass note that's still sounding.\n    let surge = max(punch, sub * 0.85);\n    let tear = smoothstep(0.30, 0.74, wall_fbm(p * 0.9 + orbit * 1.1 + vec2<f32>(5.3, 1.7)));\n    let strike_ridge = abs(sin((wall_fbm(p * 1.1 - orbit * 0.9) * 3.0 - phase) * 3.14159));\n    let strike = smoothstep(0.42, 0.66, strike_ridge)\n        * (0.35 + 0.65 * tear)\n        * smoothstep(0.06, 0.80, surge);\n\n    // The two lower sheets print at the half tone, the fold at full, so\n    // the three read as separate sheets in the same stack.\n    return max(fold, max(under * 0.5, strike * 0.5));\n}\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let sub = clamp(params.signals[0].x, 0.0, 1.0);\n    let loudness = clamp(params.signals[0].y, 0.0, 1.0);\n    let drift = params.signals[0].z;\n    let punch = clamp(params.signals[0].w, 0.0, 1.0);\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let p = (uv - 0.5) * vec2<f32>(res.x / res.y, 1.0);\n\n    // Music time as a point on a circle: continuous through the phase\n    // wrap, and frozen the moment the music is.\n    let phase = 6.28318530718 * drift;\n    let ink = clamp(wall_ink(p, phase, sub, punch, loudness), 0.0, 1.0);\n\n    // Printed on the way out: three tones through the same matrix the\n    // screen pass uses, so the panel is dithered even where the swathes\n    // aren't. The screen pass quantizing this again is harmless, since a\n    // three-tone image re-reads as itself.\n    let threshold = wall_bayer(floor(uv * res));\n    let printed = clamp(floor(ink * 2.0 + threshold) / 2.0, 0.0, 1.0);\n\n    // Which way round the print runs. White ink on black paper under a\n    // dark page, black ink on white paper under a light one. The page's\n    // own luma decides rather than the theme pick, so a cover bright\n    // enough to swing the palette takes the print with it. A hard step,\n    // not a fade: a 1-bit print has nothing to fade through, and flipping\n    // this way leaves the three tones exactly three.\n    let light = step(0.5, clamp(params.user_meta[1].x, 0.0, 1.0));\n    let page = mix(printed, 1.0 - printed, light);\n    return vec4<f32>(vec3<f32>(page), 1.0);\n}\n"
+    },
+    {
+      "name": "Lace",
+      "source": "// Lace: one whole side of the page. The wall's three-layer fold rides the\n// top of the panel, tears off at a hem about two thirds down, and the\n// lower corner wears the frame plate: the ornament drawn as an image and\n// carried by the bundle, because ornament is drawing, not math. It sits\n// dead still, the way the game's own corners do, and at four pixels to\n// the texel rather than fitted, so the checker reads as a grid on any\n// layout. The page under it is where the music shows.\n//\n// Everything prints at three tones through the panel's own Bayer pass,\n// and every bit of motion hangs off the drift phase, which is\n// music-driven time: paused, the whole side holds perfectly still. The\n// print runs whichever way the page does, so a light theme gets the\n// whole side, plate included, as black ink on white paper.\n//\n// One shader serves both sides: the flip slot is a hand-set knob, not a\n// signal. 0 puts the outer edge on the panel's left, 1 mirrors it, so the\n// two corners face each other across the middle column.\n//\n// @slot 0: sub\n// @slot 1: mix\n// @slot 2: drift\n// @slot 3: flip\n// @slot 4: punch\n//\n// @asset frame: frame.png\n\nfn lace_hash(p: vec2<f32>) -> f32 {\n    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);\n}\n\nfn lace_noise(p: vec2<f32>) -> f32 {\n    let i = floor(p);\n    let f = fract(p);\n    let u = f * f * (3.0 - 2.0 * f);\n    let a = lace_hash(i);\n    let b = lace_hash(i + vec2<f32>(1.0, 0.0));\n    let c = lace_hash(i + vec2<f32>(0.0, 1.0));\n    let d = lace_hash(i + vec2<f32>(1.0, 1.0));\n    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n}\n\nfn lace_fbm(p: vec2<f32>) -> f32 {\n    var value = 0.0;\n    var amp = 0.5;\n    var q = p;\n    for (var i = 0; i < 4; i = i + 1) {\n        value += amp * lace_noise(q);\n        q = q * 2.03 + vec2<f32>(17.0, 9.2);\n        amp *= 0.5;\n    }\n    return value;\n}\n\nfn lace_bayer(cell: vec2<f32>) -> f32 {\n    let p = vec2<u32>(u32(max(cell.x, 0.0)), u32(max(cell.y, 0.0)));\n    let x = (p.x ^ p.y) & 7u;\n    let y = p.y & 7u;\n    let v = ((x & 1u) * 2u + (y & 1u)) * 16u\n        + (((x >> 1u) & 1u) * 2u + ((y >> 1u) & 1u)) * 4u\n        + ((x >> 2u) * 2u + (y >> 2u));\n    return (f32(v) + 0.5) / 64.0;\n}\n\n// The wall's three layers, same construction as the Wall shader so both\n// surfaces writhe together: the fold on the drift orbit, the underfold\n// burning through its wear patches with the mix, and the strike snapping\n// through its tears on the punch or the sustained sub.\nfn lace_wall(p: vec2<f32>, phase: f32, sub: f32, punch: f32, loudness: f32) -> f32 {\n    let orbit = vec2<f32>(cos(phase), sin(phase));\n\n    let warp = vec2<f32>(\n        lace_fbm(p * 1.7 + orbit * 0.6),\n        lace_fbm(p * 1.7 - orbit * 0.4 + vec2<f32>(4.7, 1.3)),\n    );\n    let body = lace_fbm(p * 2.6 + (warp - 0.5) * 1.8 + orbit * 0.3);\n    let ridge = abs(sin((body * 6.0 + phase * 0.5) * 3.14159));\n    let fold = smoothstep(0.74 - 0.10 * sub, 0.98, ridge)\n        * smoothstep(0.44, 0.74, body)\n        * (0.45 + 0.55 * loudness);\n\n    let wear = smoothstep(\n        0.52,\n        0.72,\n        lace_fbm(p * 1.3 - orbit * 0.5 + vec2<f32>(2.9, 8.1)),\n    );\n    let under_body = lace_fbm(p * 3.4 - orbit * 0.8 + vec2<f32>(6.2, 2.4));\n    let under_ridge = abs(sin((under_body * 8.0 - phase * 0.7) * 3.14159));\n    let under = smoothstep(0.70, 0.95, under_ridge)\n        * smoothstep(0.50, 0.80, under_body)\n        * wear\n        * (0.15 + 0.85 * loudness);\n\n    let surge = max(punch, sub * 0.85);\n    let tear = smoothstep(0.30, 0.74, lace_fbm(p * 0.9 + orbit * 1.1 + vec2<f32>(5.3, 1.7)));\n    let strike_ridge = abs(sin((lace_fbm(p * 1.1 - orbit * 0.9) * 3.0 - phase) * 3.14159));\n    let strike = smoothstep(0.42, 0.66, strike_ridge)\n        * (0.35 + 0.65 * tear)\n        * smoothstep(0.06, 0.80, surge);\n\n    return max(fold, max(under * 0.5, strike * 0.5));\n}\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let sub = clamp(params.signals[0].x, 0.0, 1.0);\n    let loudness = clamp(params.signals[0].y, 0.0, 1.0);\n    let drift = params.signals[0].z;\n    let flip = clamp(params.signals[0].w, 0.0, 1.0);\n    let punch = clamp(params.signals[1].x, 0.0, 1.0);\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    // Side space: x runs outer edge to inner edge whichever side this\n    // panel hangs on, so the two sides are true mirrors of one another.\n    let x = mix(uv.x, 1.0 - uv.x, step(0.5, flip));\n    let m = vec2<f32>(x, uv.y);\n\n    // Music time as a point on a circle: continuous through the phase\n    // wrap, and frozen the moment the music is.\n    let phase = 6.28318530718 * drift;\n    let orbit = vec2<f32>(cos(phase), sin(phase));\n\n    // The hem: where the wall tears off and the corner's paper begins.\n    // Mostly a straight cut, the way the game's boxes meet, with just\n    // enough waver to read as torn rather than ruled.\n    let hem = 0.62 + (lace_noise(vec2<f32>(x * 9.0, 3.7) + orbit * 0.2) - 0.5) * 0.04;\n\n    // The wall above the hem.\n    let p = (m - 0.5) * vec2<f32>(res.x / res.y, 1.0);\n    var ink = lace_wall(p, phase, sub, punch, loudness) * (1.0 - step(hem, uv.y));\n\n    // The sheet ignores the hem: the wall stops there, but the page under\n    // it runs the length of the side, so a hit surfaces the same banding\n    // across the corner's paper too. The column reads as one stack rather\n    // than as two boxes.\n    let surge = max(punch, sub * 0.85);\n    let sheet_ridge = abs(sin((lace_fbm(p * 1.1 - orbit * 0.9) * 3.0 - phase) * 3.14159));\n    let sheet_tear = smoothstep(0.30, 0.74, lace_fbm(p * 0.9 + orbit * 1.1 + vec2<f32>(5.3, 1.7)));\n    let sheet = smoothstep(0.42, 0.66, sheet_ridge)\n        * (0.35 + 0.65 * sheet_tear)\n        * smoothstep(0.06, 0.80, surge);\n    ink = max(ink, sheet * 0.5);\n\n    // The corner: the frame plate in the bottom-outer corner, four screen\n    // pixels to the texel, so its 64 across land as 256 and the checker\n    // reads as blocks instead of the fizz the print below would swallow.\n    // A whole number of pixels per texel and never fitted to the column,\n    // because a checker this fine only survives at a clean multiple; fit\n    // it and the resampling turns the grid to mush at the wide end and to\n    // moire at the narrow one.\n    //\n    // Snapped to texel centres on the way in. The sampler filters, and a\n    // blown-up checker read smoothly comes back gray at every block edge,\n    // which is the one thing a 1-bit plate can't be.\n    //\n    // The art's dense corner is its own top-left, and it hangs off the\n    // panel's outer-bottom, so both axes count from there: x already runs\n    // outward-in with the flip folded into it, which is what mirrors the\n    // plate across the two sides for free.\n    let plate_texel = vec2<f32>(x * res.x, (1.0 - uv.y) * res.y) / 4.0;\n    let boxed = step(plate_texel.x, 64.0) * step(plate_texel.y, 64.0);\n    let plate_uv = (floor(plate_texel) + 0.5) / 64.0;\n    let plate = textureSampleLevel(frame, samp, clamp(plate_uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).r;\n    ink = max(ink, plate * boxed);\n\n    // Printed on the way out: three tones through the same matrix the\n    // screen pass uses, so the panel is dithered even where the swathes\n    // aren't. The screen pass quantizing this again is harmless, since a\n    // three-tone image re-reads as itself.\n    let threshold = lace_bayer(floor(uv * res));\n    let printed = clamp(floor(ink * 2.0 + threshold) / 2.0, 0.0, 1.0);\n\n    // Which way round the print runs. White ink on black paper under a\n    // dark page, black ink on white paper under a light one. The page's\n    // own luma decides rather than the theme pick, so a cover bright\n    // enough to swing the palette takes the print with it. A hard step,\n    // not a fade: a 1-bit print has nothing to fade through, and flipping\n    // this way leaves the three tones exactly three. The plate flips with\n    // everything else, so the corner is drawn in ink either way.\n    let light = step(0.5, clamp(params.user_meta[1].x, 0.0, 1.0));\n    let page = mix(printed, 1.0 - printed, light);\n    return vec4<f32>(vec3<f32>(page), 1.0);\n}\n",
+      "assets": [
+        {
+          "file": "frame.png",
+          "data": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAAXNSR0IArs4c6QAAAGBQTFRFAAAAIiA0RSg8Zjkxj1Y733Em2aBm7sOa+/I2meVQar4wN5RuS2kvUkskMjw5Pz90MGCCW27hY5v/X83k////AAAAm623hH6HaWpqWVZSdkKKrDIy2Vdj13u6j5dKim8w8chABQAAARpJREFUWIXtlg0OwjAIhd8h2vtfVTN/ygO6wphGjSFxTTvg64O1orfNsNlj3J7jYXDmrrPg98cY5MsZeI5XNIeMqFc2g6WFyQqa1+bsS+RG590bf8j9c45Gz4m/42UJ5p43Al5vnbVb+DsZWEdbL01gtW1O1BXBrCoB/xcRzHomQiCrEDUbIREDmtfvylV+/b0PNeME9uSIa4DOXZvognsVOEKqjwxtnoBPkbR/l52j93JEgwMRBAfXIPo16jslT2DPcn3P5Kqg76AIwfjljKEI8DxlhCyBp85RgqgK+6fPMgJWeSIE+b61GhQihEn3NCj41+nN/4O3MwBFBX6BoF6FM/qgqkDJ/yMIavn/GpxgH1GF79egSlCNcAE6qcStNTT35AAAAABJRU5ErkJggg=="
+        }
+      ]
+    },
+    {
+      "name": "Sleeve",
+      "source": "// Sleeve: the Wall with the playing cover on top.\n//\n// The mini player's panel is the record sleeve: the playing track's\n// cover, letterboxed and in grayscale, laid over the same writhing\n// three-layer fold the side columns wear. The cover is pulled in a step\n// from every edge, so a band of the wall always frames it and it reads\n// as hanging on the wall rather than replacing it; the wall also holds\n// still on pause the way the Wall does. The\n// cover itself is plain, since the screen pass prints the whole window\n// and dithers it with everything else. A track without art lays the flat\n// dark plate over the wall instead.\n//\n// The wall behind it runs whichever way the page does, black paper under\n// a dark theme and white under a light one. The cover stays as it is:\n// running a photo backwards gives a negative, not the same print in the\n// other colour.\n//\n// The wall construction below is the Wall shader's, unchanged, so the\n// two stay one look; edit that one first and carry it over.\n//\n// @slot 0: sub\n// @slot 1: mix\n// @slot 2: drift\n// @slot 3: punch\n// @asset art: @cover\n\nfn wall_hash(p: vec2<f32>) -> f32 {\n    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);\n}\n\nfn wall_noise(p: vec2<f32>) -> f32 {\n    let i = floor(p);\n    let f = fract(p);\n    let u = f * f * (3.0 - 2.0 * f);\n    let a = wall_hash(i);\n    let b = wall_hash(i + vec2<f32>(1.0, 0.0));\n    let c = wall_hash(i + vec2<f32>(0.0, 1.0));\n    let d = wall_hash(i + vec2<f32>(1.0, 1.0));\n    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n}\n\nfn wall_fbm(p: vec2<f32>) -> f32 {\n    var value = 0.0;\n    var amp = 0.5;\n    var q = p;\n    for (var i = 0; i < 4; i = i + 1) {\n        value += amp * wall_noise(q);\n        q = q * 2.03 + vec2<f32>(17.0, 9.2);\n        amp *= 0.5;\n    }\n    return value;\n}\n\nfn wall_bayer(cell: vec2<f32>) -> f32 {\n    let p = vec2<u32>(u32(max(cell.x, 0.0)), u32(max(cell.y, 0.0)));\n    let x = (p.x ^ p.y) & 7u;\n    let y = p.y & 7u;\n    let v = ((x & 1u) * 2u + (y & 1u)) * 16u\n        + (((x >> 1u) & 1u) * 2u + ((y >> 1u) & 1u)) * 4u\n        + ((x >> 2u) * 2u + (y >> 2u));\n    return (f32(v) + 0.5) / 64.0;\n}\n\n// The three layers as one ink value, shared with the Lace sides so both\n// surfaces writhe the same way. `p` is centred aspect-true space.\nfn wall_ink(p: vec2<f32>, phase: f32, sub: f32, punch: f32, loudness: f32) -> f32 {\n    let orbit = vec2<f32>(cos(phase), sin(phase));\n\n    // The fold: the swirl. Warp strength is fixed and the gates stay\n    // where they are, because this layer is the wall's constant and it\n    // has to keep swirling on a track with no low end at all. The crests\n    // brighten as the mix runs loud, and the sub leans the crest gate\n    // open by a hair.\n    let warp = vec2<f32>(\n        wall_fbm(p * 1.7 + orbit * 0.6),\n        wall_fbm(p * 1.7 - orbit * 0.4 + vec2<f32>(4.7, 1.3)),\n    );\n    let body = wall_fbm(p * 2.6 + (warp - 0.5) * 1.8 + orbit * 0.3);\n    let ridge = abs(sin((body * 6.0 + phase * 0.5) * 3.14159));\n    let fold = smoothstep(0.74 - 0.10 * sub, 0.98, ridge)\n        * smoothstep(0.44, 0.74, body)\n        * (0.45 + 0.55 * loudness);\n\n    // The wear: where the page has thinned enough for the underfold to\n    // show. On the counter orbit, so the openings and the swirl slide\n    // against each other and the reveal keeps changing address.\n    let wear = smoothstep(\n        0.52,\n        0.72,\n        wall_fbm(p * 1.3 - orbit * 0.5 + vec2<f32>(2.9, 8.1)),\n    );\n\n    // The underfold: finer, counter-rotated, and the mix's own layer: at\n    // a whisper it barely inks, at full mix it burns through the wear.\n    let under_body = wall_fbm(p * 3.4 - orbit * 0.8 + vec2<f32>(6.2, 2.4));\n    let under_ridge = abs(sin((under_body * 8.0 - phase * 0.7) * 3.14159));\n    let under = smoothstep(0.70, 0.95, under_ridge)\n        * smoothstep(0.50, 0.80, under_body)\n        * wear\n        * (0.15 + 0.85 * loudness);\n\n    // The strike: the sheet under everything, coarse banding that runs the\n    // whole page rather than hiding in a few tears on the edges. Its wear\n    // is wide and soft, so the banding is somewhere in every part of the\n    // surface, and the surge decides how much of it surfaces. It comes up\n    // to the half tone and no further, so a drum reads as the page below\n    // rising through this one instead of the whole window flashing white.\n    //\n    // The surge is the punch or the sub, whichever is louder. A hit fires\n    // the punch and the pulse rings down; where that hit runs on into\n    // sustained low end the sub holds the sheet up instead of letting it\n    // drop out from under a bass note that's still sounding.\n    let surge = max(punch, sub * 0.85);\n    let tear = smoothstep(0.30, 0.74, wall_fbm(p * 0.9 + orbit * 1.1 + vec2<f32>(5.3, 1.7)));\n    let strike_ridge = abs(sin((wall_fbm(p * 1.1 - orbit * 0.9) * 3.0 - phase) * 3.14159));\n    let strike = smoothstep(0.42, 0.66, strike_ridge)\n        * (0.35 + 0.65 * tear)\n        * smoothstep(0.06, 0.80, surge);\n\n    // The two lower sheets print at the half tone, the fold at full, so\n    // the three read as separate sheets in the same stack.\n    return max(fold, max(under * 0.5, strike * 0.5));\n}\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let sub = clamp(params.signals[0].x, 0.0, 1.0);\n    let loudness = clamp(params.signals[0].y, 0.0, 1.0);\n    let drift = params.signals[0].z;\n    let punch = clamp(params.signals[0].w, 0.0, 1.0);\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let p = (uv - 0.5) * vec2<f32>(res.x / res.y, 1.0);\n\n    // Music time as a point on a circle: continuous through the phase\n    // wrap, and frozen the moment the music is.\n    let phase = 6.28318530718 * drift;\n    let ink = clamp(wall_ink(p, phase, sub, punch, loudness), 0.0, 1.0);\n\n    // Printed on the way out: three tones through the same matrix the\n    // screen pass uses, so the panel is dithered even where the swathes\n    // aren't. The screen pass quantizing this again is harmless, since a\n    // three-tone image re-reads as itself.\n    let threshold = wall_bayer(floor(uv * res));\n    let printed = clamp(floor(ink * 2.0 + threshold) / 2.0, 0.0, 1.0);\n\n    // Which way round the print runs, the Wall's rule: white ink on black\n    // paper under a dark page, black ink on white paper under a light\n    // one, off the page's own luma so a bright cover swinging the palette\n    // takes the print with it. Only the wall behind the sleeve flips. The\n    // cover doesn't, because a photo run backwards is a negative, not a\n    // print in the other colour.\n    let light = step(0.5, clamp(params.user_meta[1].x, 0.0, 1.0));\n    let page = mix(printed, 1.0 - printed, light);\n\n    // The sleeve: the playing cover over the wall. Continuous grayscale\n    // on purpose, so the screen pass quantizes the art with fresh tones\n    // instead of re-reading a print that already lost them.\n    let dims = vec2<f32>(textureDimensions(art));\n    let arta = dims.x / max(dims.y, 1.0);\n    let pana = res.x / res.y;\n    var span = vec2<f32>(1.0, 1.0);\n    if (pana > arta) {\n        span.x = arta / pana;\n    } else {\n        span.y = pana / arta;\n    }\n    // Pulled in from every edge so the wall frames the sleeve: the fit\n    // is the letterbox rect at nine tenths, which on the mini window\n    // leaves a band about twenty pixels wide.\n    let fit = span * 0.9;\n    let auv = (uv - vec2<f32>(0.5, 0.5)) / fit + vec2<f32>(0.5, 0.5);\n    let inside = step(0.0, auv.x) * step(auv.x, 1.0) * step(0.0, auv.y) * step(auv.y, 1.0);\n    let sample = textureSampleLevel(art, samp, clamp(auv, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0)), 0.0);\n    let cover = dot(sample.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));\n    let out = mix(page, cover, inside);\n    return vec4<f32>(vec3<f32>(out), 1.0);\n}\n"
     }
   ],
   "meta": {
     "author": "zealsprince",
-    "description": "The whole app as a 1-bit print: an ordered dither over every surface, tones that crunch with the kick, and a noise wall that writhes with the song. After Critters for Sale.",
-    "version": "0.1",
+    "description": "The whole app as a 1-bit print: an ordered dither over every surface, tones that crush with the sub-bass, and a noise wall that writhes with the song. After Critters for Sale.",
+    "version": "1.0",
     "created": "2026-08-08",
-    "updated": "2026-08-08"
+    "updated": "2026-08-09"
   },
   "post_shader": {
     "enabled": true,
     "name": "Dither",
-    "all_windows": true,
+    "all_windows": false,
     "routes": [
-      {
-        "enabled": true,
-        "signal": 1,
-        "target": "slot0",
-        "from": 0.0,
-        "to": 1.0
-      },
       {
         "enabled": true,
         "signal": 2,
@@ -669,6 +895,13 @@
         "enabled": true,
         "signal": 3,
         "target": "slot2",
+        "from": 0.0,
+        "to": 1.0
+      },
+      {
+        "enabled": true,
+        "signal": 5,
+        "target": "slot4",
         "from": 0.0,
         "to": 1.0
       }

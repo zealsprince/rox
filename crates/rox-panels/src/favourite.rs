@@ -371,6 +371,7 @@ impl Panel for FavouritePanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }

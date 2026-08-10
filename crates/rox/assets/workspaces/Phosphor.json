@@ -230,7 +230,7 @@
                       "gradient": "theme",
                       "outline": false,
                       "outline_width": 1.0,
-                      "caps": false,
+                      "caps": true,
                       "freeze": false,
                       "cap_gravity": 0.05,
                       "labels": false
@@ -441,7 +441,7 @@
                       "gradient": "theme",
                       "outline": false,
                       "outline_width": 1.0,
-                      "caps": false,
+                      "caps": true,
                       "freeze": false,
                       "cap_gravity": 0.05,
                       "labels": false
@@ -575,6 +575,67 @@
     "text_muted": "#4a8a4a",
     "text_faint": "#5f9c5f",
     "gridline": "#78a878"
+  },
+  "shaders": [
+    {
+      "name": "Phosphor",
+      "source": "// rox shader: Phosphor. The Tube preset forked into this workspace's own\n// screen, since a green-on-black terminal wants the whole glass and not just\n// a curved face.\n//\n// Everything the preset did is still here: the fill-normalized barrel warp,\n// scanlines off the device rows, a little misconvergence at the edges, a\n// vignette toward the rim. What the fork adds is the phosphor itself. The\n// picture is pushed into one glowing colour with a white-hot core, the lit\n// pixels bleed into the glass around them, a grille rules the picture into\n// stripes every four device pixels, and the last frame is kept under this\n// one so moving pixels trail the way a coated tube smears.\n//\n// The grille and the lines are measured in device pixels, so both go finer\n// as the display does. On a 2x screen they're a texture rather than the\n// stripes they read as at 1x; that's the knobs' problem to answer, not\n// something the shader can work out, since nothing in the uniforms says\n// what the scale factor is.\n//\n// The slots are the tube's dimensions rather than a response to the music.\n// There's no signal pool in this workspace, so all ten are hand-set and the\n// bundle ships the tuning; route them from another look's pool and the tube\n// moves. Hue is the one worth playing with: 0 is P1 green, around 0.2 is\n// amber, and the rest of the wheel is there because a tube with a hue knob\n// beats one without.\n//\n// The sweep is the only slot that reads anything on its own, and only\n// because it has to. See the note on it below.\n//\n// Every slot rests at a mild tube, so a fresh route reading zero is still a\n// look rather than a blank screen.\n//\n// The afterglow is why this one asks for idle frames. `prev` has to keep\n// being drawn to burn out, and a pass that stopped when the music did would\n// park a ghost on screen instead.\n//\n// @overlay\n// @slot 0: bend\n// @slot 1: lines\n// @slot 2: fringe\n// @slot 3: rim\n// @slot 4: hue\n// @slot 5: tint\n// @slot 6: glow\n// @slot 7: grille\n// @slot 8: afterglow\n// @slot 9: sweep\n\nconst PHOS_TAU: f32 = 6.28318530718;\nconst PHOS_LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);\n\n// Barrel warp normalized on the edge midpoints, where dot(c, c) is 0.25.\n//\n// The preset normalizes on the corners instead, which fills the window with\n// no dead border but magnifies everything between the corners, and what it\n// magnifies off the top is the menu bar. Normalizing on the midpoints is the\n// other trade: every pixel of the frame stays on the glass, and the corners\n// are what run past its edge instead. `glass` below is what cuts them.\nfn phos_warp(uv: vec2<f32>, bend: f32) -> vec2<f32> {\n    let c = uv - 0.5;\n    return 0.5 + c * ((1.0 + bend * dot(c, c)) / (1.0 + bend * 0.25));\n}\n\n// The coating, as a colour. Peak channel normalized to 1 so the hue knob\n// changes which phosphor this is and never how bright it burns.\nfn phos_tint(hue: f32) -> vec3<f32> {\n    let raw = 0.5 + 0.5 * cos(PHOS_TAU * (hue + vec3<f32>(0.67, 0.0, 0.33)));\n    return raw / max(max(raw.r, raw.g), max(raw.b, 0.001));\n}\n\nfn phos_luma(rgb: vec3<f32>) -> f32 {\n    return dot(rgb, PHOS_LUMA);\n}\n\nfn phos_read(uv: vec2<f32>) -> vec3<f32> {\n    return textureSampleLevel(screen, samp, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;\n}\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let bend = 0.10 + 0.35 * clamp(params.signals[0].x, 0.0, 1.0);\n    let lines = 0.08 + 0.30 * clamp(params.signals[0].y, 0.0, 1.0);\n    let spread = clamp(params.signals[0].z, 0.0, 1.0);\n    let rim = 0.25 + 0.45 * clamp(params.signals[0].w, 0.0, 1.0);\n    let hue = params.signals[1].x;\n    let tint_amount = 0.35 + 0.65 * clamp(params.signals[1].y, 0.0, 1.0);\n    let glow = 0.20 + 0.80 * clamp(params.signals[1].z, 0.0, 1.0);\n    let grille = 0.10 + 0.60 * clamp(params.signals[1].w, 0.0, 1.0);\n    let afterglow = clamp(params.signals[2].x, 0.0, 1.0);\n    let line_amount = clamp(params.signals[2].y, 0.0, 1.0);\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    // How bright the page under the tube already is, off the palette's own\n    // background. A dark theme is a tube in a dark room and gets the whole\n    // effect; a light one is mostly lit paper, where a colour wash, a\n    // halation firing on everything and a full-strength mesh over the\n    // brightest thing on screen would only make it unreadable. So the\n    // coating, the bleed, the grille and the lines all come off with it,\n    // and the geometry - the bend, the fringe, the rim - stays put.\n    let page = clamp(params.user_meta[1].x, 0.0, 1.0);\n    let ink = 1.0 - page;\n    let room = 0.35 + 0.65 * ink;\n    let fringe = (0.6 + 2.4 * spread) / res.x;\n\n    var w = phos_warp(uv, bend);\n\n    // The sweep: one row crossing the glass slowly, pinching the picture\n    // sideways as it passes and lighting nothing. It's a line you read off\n    // what it does to the text, not off any glow of its own. Its width is\n    // device pixels rather than a fraction of the window, so it stays a line\n    // on a big window instead of growing into a band.\n    //\n    // It's gated on the play flag deliberately. This pass's clock only\n    // advances while the signal feed pushes, so a line travelling on\n    // params.time alone would stop dead mid-screen the moment the music did;\n    // riding the flag means it fades out instead of parking.\n    let sweep = line_amount * clamp(params.user_meta[0].z, 0.0, 1.0);\n    // Distance from the line in device pixels, wrapped. Positive is below\n    // the line, which is where it hasn't reached yet.\n    let dy = (fract(w.y - fract(params.time * 0.073) + 0.5) - 0.5) * res.y;\n    // Zero on the line itself, hardest two pixels out either side and gone\n    // by four: the picture is pulled one way ahead of it and the other way\n    // behind, over a band thin enough to read as one bad row.\n    let pinch = clamp(dy / 4.0, -1.0, 1.0);\n    w.x = w.x + pinch * (1.0 - abs(pinch)) * 4.0 * sweep * 8.0 / res.x;\n\n    // Where the sampling point has run off the frame: the corners the bend\n    // pushes past the edge, and the couple of pixels the sweep shoves past\n    // the sides. Cut rather than clamped, since a clamp smears the last row\n    // of pixels outward and reads as a stretch mark. Feathered over a pixel\n    // so the corner comes out as a curve rather than a staircase.\n    let edge = min(min(w.x, 1.0 - w.x) * res.x, min(w.y, 1.0 - w.y) * res.y);\n    let glass = smoothstep(-1.0, 1.0, edge);\n    let wc = clamp(w, vec2<f32>(0.0), vec2<f32>(1.0));\n\n    // The fringe: red and blue pulled apart a pixel or three, green read\n    // straight, the way a misconverged tube smears its edges. Three taps,\n    // used twice: as the picture's own colour, and as the three brightnesses\n    // the coating lights from, so the misconvergence survives being pushed\n    // into one phosphor instead of averaging itself away.\n    let tap_r = phos_read(wc + vec2<f32>(fringe, 0.0));\n    let tap_c = phos_read(wc);\n    let tap_b = phos_read(wc - vec2<f32>(fringe, 0.0));\n    var rgb = vec3<f32>(tap_r.r, tap_c.g, tap_b.b);\n\n    // Into the coating: one colour carrying the picture's own brightness,\n    // burning toward white only where the beam is hardest. That highlight is\n    // what keeps the accent from flattening into the body text.\n    let tint = phos_tint(hue);\n    let lum = phos_luma(tap_c);\n    let beam = vec3<f32>(\n        tint.r * phos_luma(tap_r),\n        tint.g * lum,\n        tint.b * phos_luma(tap_b),\n    );\n    let phos = min(beam + vec3<f32>(pow(lum, 5.0) * 0.30), vec3<f32>(1.0));\n    rgb = mix(rgb, phos, tint_amount * room);\n\n    // Halation: what's lit bleeds into the glass around it. Two rings of\n    // taps off the composed frame, gated on the neighbourhood's brightness\n    // so unlit chrome stays where it is.\n    var halo = 0.0;\n    for (var i = 0u; i < 6u; i = i + 1u) {\n        let a = f32(i) * 1.04719755;\n        let dir = vec2<f32>(cos(a), sin(a)) / res;\n        halo = halo + phos_luma(phos_read(wc + dir * 3.0));\n        halo = halo + phos_luma(phos_read(wc + dir * 8.0));\n    }\n    halo = halo / 12.0;\n    rgb = rgb + tint * smoothstep(0.06, 0.45, halo) * glow * ink * 0.35;\n\n    // The grille: a stripe every four device pixels, swinging around one so\n    // turning it up textures the picture instead of dimming it. Brightness\n    // only, deliberately. Splitting the stripes into RGB the way a colour\n    // tube's mask does pulls saturated text toward white, which is the one\n    // thing a single-phosphor screen never does.\n    let stripe = 0.5 + 0.5 * cos(PHOS_TAU * wc.x * res.x / 4.0);\n    rgb = rgb * mix(1.0, stripe * 2.0, grille * room);\n\n    // Scanlines on the warped rows so they bow with the face, normalized the\n    // same way the grille is, and a slow soft flicker off the clock the way\n    // mains ripple shows on a real one.\n    let row = wc.y * res.y;\n    let depth = lines * room;\n    let scan = (1.0 - depth * (0.5 + 0.5 * sin(row * 2.09439510))) / (1.0 - depth * 0.5);\n    let flicker = 1.0 + 0.012 * sin(params.time * 9.0);\n    rgb = rgb * scan * flicker;\n\n    // Vignette toward the rim, and the glass cut off the sampling point.\n    let shade = 1.0 - rim * smoothstep(0.5, 1.4, length((uv - 0.5) * 2.0));\n    rgb = clamp(rgb * shade * glass, vec3<f32>(0.0), vec3<f32>(1.0));\n\n    // Afterglow. The last frame is kept under this one rather than blended\n    // into it: a still page decays to less than itself and comes out exactly\n    // itself, so only pixels that actually moved leave a trail.\n    //\n    // The cap is load-bearing, and the reason is the clock. This pass's\n    // clock advances on the signal feed, not on frames, so an app sitting\n    // idle draws frame after frame with the same `delta` - and on the very\n    // first tick that delta is zero. A decay written per second alone would\n    // then be a decay of exactly nothing, and every frame would max() into\n    // the last one until the window was a solid burn of everything that had\n    // ever been on it. So the ghost also has to lose a fixed share per\n    // frame, whatever the clock says it is.\n    let step = clamp(params.delta, 0.0, 0.1);\n    let keep = min(exp2(-step / (0.015 + 0.25 * afterglow)), 0.86);\n    let ghost = textureSampleLevel(prev, samp, uv, 0.0).rgb * keep;\n    return vec4<f32>(max(rgb, ghost), 1.0);\n}\n"
+    }
+  ],
+  "meta": {
+    "author": "zealsprince",
+    "description": "Monospace everything. Consolas, green on black, no cover in quick play: a terminal that happens to play music.",
+    "version": "1.0",
+    "created": "2026-07-23",
+    "updated": "2026-08-09"
+  },
+  "post_shader": {
+    "enabled": true,
+    "name": "Phosphor",
+    "all_windows": true,
+    "manual": [
+      [
+        0,
+        0.0
+      ],
+      [
+        1,
+        1.0
+      ],
+      [
+        2,
+        0.5
+      ],
+      [
+        3,
+        0.5
+      ],
+      [
+        4,
+        0.0
+      ],
+      [
+        5,
+        0.0
+      ],
+      [
+        6,
+        0.7
+      ],
+      [
+        7,
+        0.0
+      ],
+      [
+        8,
+        0.49
+      ],
+      [
+        9,
+        0.25
+      ]
+    ],
+    "run_when_idle": true
   },
   "appearance": {
     "surface_opacity": 1.0,

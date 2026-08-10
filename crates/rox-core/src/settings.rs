@@ -11,17 +11,20 @@
 //! dock dumps and palettes that dwarfed it now sit in their own files, and a
 //! saved workspace on disk is already an exported one.
 //!
-//! `layouts` here is the named dock presets. The settings window and its
-//! chrome (`ui`, `window`, `shader_confirm`) sit up in rox, where the widgets
-//! are.
+//! `layouts` here is the named dock presets, `panel_presets` the named single
+//! panels. The settings window and its chrome (`ui`, `window`,
+//! `shader_confirm`) sit up in rox, where the widgets are.
 
 pub mod layouts;
+pub mod panel_presets;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{LazyLock, OnceLock, RwLock};
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use gpui::{px, App, SharedString, WindowAppearance, WindowDecorations};
 use serde::{Deserialize, Serialize};
 
@@ -1308,6 +1311,48 @@ impl Default for QuickPlayConfig {
     }
 }
 
+/// One image a shader samples: the flat filename an `// @asset name: file`
+/// line points at, and the encoded file itself as base64.
+///
+/// The bytes are canonical for the same reason the source on
+/// [`NamedShader`] is. A plate referenced by path imports as a hole in the
+/// look on anyone else's machine, so the file rides along inside the
+/// bundle, byte for byte as it sat on disk. Encoded rather than raw pixels
+/// because that's what eject writes back out and what `image` reads in, and
+/// the 1-bit imagery this is for costs almost nothing that way.
+///
+/// Assets never gate. Approval is over code, and an image the approved code
+/// samples can spoil a look but can't run anything, so no fingerprint ever
+/// covers one (ADR 23).
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShaderAsset {
+    /// The name the shader declares it under, which is also the name eject
+    /// writes beside the `.wgsl`. A flat filename with no separators in it.
+    pub file: String,
+    /// The encoded image file, base64. A PNG stays a PNG in here.
+    pub data: String,
+}
+
+impl ShaderAsset {
+    /// Take a file's bytes into an entry, ready to travel.
+    pub fn from_bytes(file: impl Into<String>, bytes: &[u8]) -> Self {
+        ShaderAsset {
+            file: file.into(),
+            data: BASE64.encode(bytes),
+        }
+    }
+
+    /// The encoded file back out, for a decoder or for eject to write
+    /// straight to disk. The error is base64's own text, so a hand-edited
+    /// entry reads out the way a bad shader does.
+    pub fn decode(&self) -> Result<Vec<u8>, String> {
+        BASE64
+            .decode(self.data.as_bytes())
+            .map_err(|err| err.to_string())
+    }
+}
+
 /// One shader in a workspace's pool: a name, the WGSL behind it, and
 /// optionally the file it's being edited in.
 ///
@@ -1336,6 +1381,14 @@ pub struct NamedShader {
     /// exported bundle.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
+    /// The images the source declares with `// @asset`, carried as bytes so
+    /// the look lands whole. Empty for every shader that only reads the
+    /// screen, which is most of them, and an empty list writes no key.
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient::vec"
+    )]
+    pub assets: Vec<ShaderAsset>,
 }
 
 /// The whole-window post-process shader: whether it runs and which WGSL
@@ -1832,6 +1885,30 @@ pub struct NamedLayout {
     pub size: Option<LayoutSize>,
 }
 
+/// A single configured panel the user saved under a name: the panel's own
+/// dump, the leaf a layout carries per panel. Adding one back builds the
+/// panel with its config, its rename, and whatever children a composite
+/// holds, so a dialed-in panel is reproducible without redoing its settings.
+///
+/// The dump stays raw JSON for the reasons [`NamedLayout`]'s does: rox-core
+/// stays off the dock crate, and the file survives a config-schema move.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PanelPreset {
+    pub name: String,
+    /// The dock's `PanelState` as JSON: the panel's registry name, its config
+    /// blob, and its children.
+    pub panel: serde_json::Value,
+}
+
+impl PanelPreset {
+    /// The registry name of the panel inside, so a menu can find its icon and
+    /// placement without deserializing the dump. None for a blob that isn't
+    /// shaped like a panel state.
+    pub fn panel_name(&self) -> Option<&str> {
+        self.panel.get("panel_name")?.as_str()
+    }
+}
+
 /// A window size in logical pixels, stored with a layout preset so applying
 /// it can size the window to match.
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
@@ -1880,6 +1957,15 @@ pub struct WorkspaceBundle {
         deserialize_with = "lenient::vec"
     )]
     pub layouts: Vec<NamedLayout>,
+    /// The panel presets the workspace carries, each a named single panel.
+    /// They ride the bundle rather than the user's settings because a panel
+    /// can name a shader out of the pool below, and that name only means
+    /// something while this workspace's pool is the live one.
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient::vec"
+    )]
+    pub panel_presets: Vec<PanelPreset>,
     /// The mini-player button's two roles, by preset name, scoped to this
     /// workspace's own layouts.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1933,6 +2019,7 @@ impl Default for WorkspaceBundle {
             version: WORKSPACE_VERSION,
             name: String::new(),
             layouts: Vec::new(),
+            panel_presets: Vec::new(),
             primary_layout: None,
             mini_layout: None,
             palette_dark: BTreeMap::new(),
@@ -2217,10 +2304,10 @@ fn scrub_dump_paths(value: &mut serde_json::Value) {
 }
 
 /// Every shader source a dock dump carries, in whatever order the walk finds
-/// them. The read-only twin of [`scrub_dump_paths`] over the same two shapes,
-/// separate because one takes the tree by `&mut` and the other can't, and
-/// Rust has no way to write one walk over both. Whatever gets added to one
-/// belongs in the other.
+/// them. One of a family of walks over the same two shapes ([`scrub_dump_paths`],
+/// [`dump_wears_shader`], [`strip_dump_shaders`]), kept apart because some take
+/// the tree by `&mut` and some can't, and Rust has no way to write one walk over
+/// both. Whatever gets added to one belongs in all of them.
 ///
 /// This is what the startup trust pass hands [`trust_shipped`], so a shipped
 /// look's panels paint without asking anyone to agree to code that came with
@@ -2229,6 +2316,110 @@ pub fn dump_shader_sources(value: &serde_json::Value) -> Vec<String> {
     let mut out = Vec::new();
     collect_dump_shader_sources(value, &mut out);
     out
+}
+
+/// Whether anything in a dock dump would actually paint a shader: a panel
+/// wearing one as chrome, or the Shader panel itself. The question the apply
+/// confirm asks to decide whether the look gets the with-shaders choice at
+/// all, which is about what runs rather than about what the machine trusts.
+///
+/// A pool name counts the same as inline text. A name that resolves to
+/// nothing paints nothing, but that's a question for the pool the apply is
+/// about to install, not for a config that has said what it wants.
+pub fn dump_wears_shader(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            // Any panel's surface shader, flattened onto its config.
+            if let Some(serde_json::Value::Object(shader)) = map.get("shader") {
+                let on = shader
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                if on && (has_text(shader, "name") || has_text(shader, "source")) {
+                    return true;
+                }
+            }
+            // The Shader panel, which is a shader by definition: it counts
+            // unless its config has been emptied out or switched off. A
+            // config saying nothing at all runs the shipped example.
+            if map.get("panel_name").and_then(|name| name.as_str()) == Some(SHADER_PANEL) {
+                let config = map.get("info").and_then(|info| info.get("panel"));
+                let quiet = match config {
+                    Some(serde_json::Value::Object(config)) => {
+                        // Source text that's there and blank is a panel
+                        // somebody emptied; a config with no source line at
+                        // all is one that never said, and runs the default.
+                        let emptied = !has_text(config, "name")
+                            && config.contains_key("source")
+                            && !has_text(config, "source");
+                        let off = config.get("enabled").and_then(|v| v.as_bool()) == Some(false);
+                        emptied || off
+                    }
+                    _ => false,
+                };
+                if !quiet {
+                    return true;
+                }
+            }
+            map.values().any(dump_wears_shader)
+        }
+        serde_json::Value::Array(items) => items.iter().any(dump_wears_shader),
+        _ => false,
+    }
+}
+
+/// Whether a shader config's field holds a string with something in it.
+fn has_text(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+    map.get(key)
+        .and_then(|v| v.as_str())
+        .is_some_and(|text| !text.trim().is_empty())
+}
+
+/// Walk a dock dump and switch every shader in it off: the chrome one panels
+/// wear, and the Shader panel's own. The write twin of
+/// [`dump_wears_shader`], for a workspace applied without the shaders it
+/// brought.
+///
+/// Off, not gone. The source, the pool name and the routes all stay on the
+/// config, so a look lands quiet and every shader it brought is one toggle
+/// away on the panel that wears it. Nothing runs on the way in: an unread
+/// source still has to get past the approval block, and a switch that's down
+/// paints nothing whatever the trust says.
+///
+/// Deleting them was the old reading of the button, and it left the Shader
+/// panel with an empty config and no way back to the shader the look came
+/// with.
+pub fn strip_dump_shaders(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Object(shader)) = map.get_mut("shader") {
+                shader.insert("enabled".into(), serde_json::Value::Bool(false));
+            }
+            if map.get("panel_name").and_then(|name| name.as_str()) == Some(SHADER_PANEL) {
+                // A panel that saved no config of its own still runs the
+                // shipped example, so the switch has to be written even
+                // where there's nothing else to write it beside.
+                let info = map
+                    .entry("info")
+                    .or_insert_with(|| serde_json::json!({}))
+                    .as_object_mut();
+                if let Some(info) = info {
+                    let config = info
+                        .entry("panel")
+                        .or_insert_with(|| serde_json::json!({}))
+                        .as_object_mut();
+                    if let Some(config) = config {
+                        config.insert("enabled".into(), serde_json::Value::Bool(false));
+                    }
+                }
+            }
+            for child in map.values_mut() {
+                strip_dump_shaders(child);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(strip_dump_shaders),
+        _ => {}
+    }
 }
 
 fn collect_dump_shader_sources(value: &serde_json::Value, out: &mut Vec<String>) {
@@ -2858,11 +3049,13 @@ mod tests {
                     source: "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }"
                         .to_string(),
                     path: Some(PathBuf::from("/home/someone/grain.wgsl")),
+                    assets: Vec::new(),
                 },
                 NamedShader {
                     name: "Bloom".to_string(),
                     source: "// bloom".to_string(),
                     path: None,
+                    assets: Vec::new(),
                 },
             ],
             ..WorkspaceBundle::default()
@@ -2903,6 +3096,80 @@ mod tests {
         let bundle: WorkspaceBundle = serde_json::from_value(json).unwrap();
         assert_eq!(bundle.shaders.len(), 1);
         assert_eq!(bundle.shaders[0].name, "Grain");
+    }
+
+    /// A plate a shader samples travels the way its source does, byte for
+    /// byte, and the scrub doesn't reach into it: assets carry no paths, so
+    /// there's nothing local in one to take off. A pool with no assets
+    /// writes no key, which is every look that exists today.
+    #[test]
+    fn shader_assets_ride_the_pool_entry() {
+        let plain = serde_json::to_value(NamedShader {
+            name: "Grain".to_string(),
+            source: "// grain".to_string(),
+            path: None,
+            assets: Vec::new(),
+        })
+        .unwrap();
+        assert!(
+            plain.get("assets").is_none(),
+            "a shader with no plates writes no key: {plain}"
+        );
+
+        let plate = [0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00];
+        let mut bundle = WorkspaceBundle {
+            shaders: vec![NamedShader {
+                name: "Serpent".to_string(),
+                source: "// @asset plate: plate.png".to_string(),
+                path: Some(PathBuf::from("/home/someone/serpent.wgsl")),
+                assets: vec![ShaderAsset::from_bytes("plate.png", &plate)],
+            }],
+            ..WorkspaceBundle::default()
+        };
+
+        bundle.scrub_paths();
+        let json = serde_json::to_string(&bundle).unwrap();
+        let back: WorkspaceBundle = serde_json::from_str(&json).unwrap();
+        let entry = &back.shaders[0];
+        assert!(
+            entry.path.is_none(),
+            "the bookmark shouldn't have travelled"
+        );
+        assert_eq!(entry.assets.len(), 1);
+        assert_eq!(entry.assets[0].file, "plate.png");
+        assert_eq!(
+            entry.assets[0].decode().unwrap(),
+            plate,
+            "the plate landed as the same file that went in"
+        );
+    }
+
+    /// A hand-mangled asset costs that asset and nothing else, the same
+    /// lenient rule the pool itself follows.
+    #[test]
+    fn a_broken_asset_costs_only_itself() {
+        let json = serde_json::json!({
+            "shaders": [{
+                "name": "Serpent",
+                "source": "// serpent",
+                "assets": [
+                    { "file": "plate.png", "data": "AAEC" },
+                    { "file": "dither.png", "data": 7 },
+                ],
+            }],
+        });
+        let bundle: WorkspaceBundle = serde_json::from_value(json).unwrap();
+        let assets = &bundle.shaders[0].assets;
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].decode().unwrap(), vec![0u8, 1, 2]);
+
+        // Data that isn't base64 at all reads out rather than panicking, so
+        // the failure lands in a shader readout like every other one.
+        let bad = ShaderAsset {
+            file: "plate.png".to_string(),
+            data: "not base64!".to_string(),
+        };
+        assert!(bad.decode().is_err());
     }
 
     /// The card and the screen shader ride the bundle, and a look that has
@@ -3156,6 +3423,92 @@ mod tests {
         assert_eq!(found, ["// the shader panel", "// the surface one"]);
     }
 
+    /// A dump that wears a shader says so, whichever of the two shapes it is,
+    /// and a pool name counts the same as inline text: that's the one a
+    /// promoted shader leaves behind.
+    #[test]
+    fn a_dump_knows_when_it_wears_a_shader() {
+        let worn = |shader: serde_json::Value| {
+            serde_json::json!({
+                "panel_name": "folder tree",
+                "info": { "panel": { "shader": shader }},
+            })
+        };
+        assert!(dump_wears_shader(&worn(
+            serde_json::json!({ "enabled": true, "source": "// inline" })
+        )));
+        assert!(dump_wears_shader(&worn(
+            serde_json::json!({ "enabled": true, "source": "", "name": "Lace" })
+        )));
+        assert!(!dump_wears_shader(&worn(
+            serde_json::json!({ "enabled": false, "source": "// switched off" })
+        )));
+        assert!(!dump_wears_shader(&worn(
+            serde_json::json!({ "enabled": true, "source": "  " })
+        )));
+        assert!(!dump_wears_shader(&serde_json::json!({
+            "panel_name": "folder tree",
+            "info": { "panel": { "path": "/home/someone/Music" }},
+        })));
+        // The Shader panel is one by definition, and a config saying nothing
+        // runs the shipped example.
+        assert!(dump_wears_shader(&serde_json::json!({
+            "panel_name": "shader",
+            "info": { "panel": {}},
+        })));
+    }
+
+    /// Applying a look without its shaders switches both shapes off and
+    /// leaves everything else, the sources included: nothing paints, and
+    /// what the look came with is still there to turn on.
+    #[test]
+    fn stripping_a_dump_parks_both_shapes() {
+        let mut dump = serde_json::json!({
+            "panel_name": "StackPanel",
+            "children": [
+                {
+                    "panel_name": "shader",
+                    "info": { "panel": {
+                        "source": "// the shader panel",
+                        "name": "Lace",
+                        "run_when_idle": true,
+                    }},
+                },
+                {
+                    "panel_name": "folder tree",
+                    "info": { "panel": {
+                        "path": "/home/someone/Music",
+                        "shader": { "enabled": true, "name": "Lace" },
+                    }},
+                },
+            ],
+        });
+        strip_dump_shaders(&mut dump);
+        assert!(!dump_wears_shader(&dump));
+        // The sources stay where they are. They're still code that arrived
+        // with a bundle, so the trust walk goes on seeing them.
+        assert_eq!(dump_shader_sources(&dump), vec!["// the shader panel"]);
+        let panels = &dump["children"];
+        assert_eq!(panels[0]["info"]["panel"]["enabled"], false);
+        assert_eq!(panels[0]["info"]["panel"]["name"], "Lace");
+        assert_eq!(panels[0]["info"]["panel"]["source"], "// the shader panel");
+        assert_eq!(panels[0]["info"]["panel"]["run_when_idle"], true);
+        assert_eq!(panels[1]["info"]["panel"]["shader"]["enabled"], false);
+        assert_eq!(panels[1]["info"]["panel"]["shader"]["name"], "Lace");
+        assert_eq!(panels[1]["info"]["panel"]["path"], "/home/someone/Music");
+    }
+
+    /// A Shader panel that saved no config of its own runs the shipped
+    /// example, so parking it has to write the switch where there was
+    /// nothing to write it beside.
+    #[test]
+    fn stripping_parks_a_shader_panel_with_no_config() {
+        let mut dump = serde_json::json!({ "panel_name": "shader" });
+        strip_dump_shaders(&mut dump);
+        assert!(!dump_wears_shader(&dump));
+        assert_eq!(dump["info"]["panel"]["enabled"], false);
+    }
+
     /// The screen shader's file gets pulled inline on the way out, since a
     /// path alone imports as a dead pass. A path that reads nothing leaves
     /// the source empty rather than failing the export.
@@ -3270,6 +3623,7 @@ mod tests {
             name: "Grain".to_string(),
             source: "// grain".to_string(),
             path: None,
+            assets: Vec::new(),
         }]);
         assert!(shader_pool_rev() > before, "a replacement is news");
         assert_eq!(shader_pool().len(), 1);

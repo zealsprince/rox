@@ -18,6 +18,7 @@ use gpui_component::input::{MoveDown, MovePageDown, MovePageUp, MoveUp};
 use rox_core::fmt::fmt_ms;
 use rox_core::QUEUE_CAP;
 use rox_library::projection::{Projection, QUERY_FIELDS};
+use rox_playback::engine::shuffle_slice;
 
 use rox_core::settings::{QuickPlayConfig, Settings};
 use rox_design::assets::icons;
@@ -114,9 +115,9 @@ pub struct QuickPlay {
     /// typing a name jumps to the whole album or artist, not just its
     /// tracks. Empty while the query is, so browsing is tracks only.
     heads: Vec<Head>,
-    /// Projection rows matching the query, in the library panel's view
-    /// order: canonical browse order while empty, search order otherwise.
-    /// The list shows [`heads`](Self::heads) first, then these.
+    /// Projection rows matching the query: a shuffle of the whole library
+    /// while the query is empty, search order otherwise. The list shows
+    /// [`heads`](Self::heads) first, then these.
     hits: Arc<Vec<u32>>,
     /// The highlighted row, what enter plays. Indexes the combined list,
     /// heads first.
@@ -249,7 +250,8 @@ impl QuickPlay {
 
     /// Recompute the hits for the current query and reset the highlight
     /// to the top. A non-empty query also gathers the matching artists and
-    /// albums to show above the tracks; browsing stays tracks only.
+    /// albums to show above the tracks; browsing stays tracks only, drawn
+    /// at random so the modal isn't the same fourteen tracks every time.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let (heads, hits) = {
             let library = self.state.library.read(cx);
@@ -279,7 +281,15 @@ impl QuickPlay {
                     }
                     (heads, Arc::new(projection.search(&self.query)))
                 }
-                Some(_) => (Vec::new(), library.order()),
+                // Nothing typed yet: offer a random draw instead of the head
+                // of the browse order, which never changed between opens.
+                // The whole order gets shuffled rather than sampled, so enter
+                // on a row still queues a full run behind it.
+                Some(_) => {
+                    let mut rows = library.order().as_ref().clone();
+                    shuffle_slice(&mut rows);
+                    (Vec::new(), Arc::new(rows))
+                }
                 None => (Vec::new(), Arc::new(Vec::new())),
             }
         };

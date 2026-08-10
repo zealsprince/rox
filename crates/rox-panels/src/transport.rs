@@ -19,6 +19,25 @@ pub use volume::{VolumeConfig, VolumePanel};
 // toggles that ship on; the submodules reach it back through `super`.
 use rox_panel_kit::config::default_true;
 
+use gpui::{App, Entity, ScrollDelta, ScrollWheelEvent};
+
+use crate::player::Player;
+
+/// One wheel notch over a volume control, wherever it sits: the volume
+/// strip, or the speaker button on the playback strip. A notch arrives as
+/// 3 lines, so one notch steps 5%; the range is 0 to 100% and touching it
+/// unmutes.
+pub(crate) fn volume_wheel(player: &Entity<Player>, event: &ScrollWheelEvent, cx: &mut App) {
+    let lines = match event.delta {
+        ScrollDelta::Lines(lines) => lines.y,
+        ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 20.0,
+    };
+    player.update(cx, |player, cx| {
+        let volume = (player.volume() + lines / 3.0 * 0.05).clamp(0.0, 1.0);
+        player.set_volume(volume, cx);
+    });
+}
+
 /// The Panel and focus plumbing is identical across the transport panels;
 /// only the name and the minimum width differ. Every transport panel has a
 /// per-view config struct (a `config` field, a `config_menu` method, and a
@@ -146,6 +165,7 @@ macro_rules! transport_panel {
                     &cx.entity(),
                     self.tab_panel.clone(),
                     self.state.clone(),
+                    _window,
                 )
             }
         }

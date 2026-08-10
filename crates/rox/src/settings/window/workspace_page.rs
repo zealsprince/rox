@@ -46,6 +46,12 @@ const CARD_FIELDS: [CardField; 5] = [
     }),
 ];
 
+/// How big an exported bundle gets before the export says something about
+/// it. A look is text and a few thousand lines of WGSL until it carries
+/// image assets, and those are what push a file into the megabytes. Soft on
+/// purpose: it's a note in the log, never a refusal.
+const EXPORT_SIZE_WARN: usize = 4 * 1024 * 1024;
+
 impl CardEditor {
     /// What's typed in, as a card. The dates ride through untouched: they
     /// belong to the bundle's history, not to this form.
@@ -72,6 +78,7 @@ impl SettingsWindow {
         PageBody::new()
             .section(self.workspaces_section(q, live, cx))
             .section(self.presets_section(q, live, cx))
+            .section(self.panel_presets_section(q, cx))
             // The tree walks the live dock, so it only builds once the
             // query keeps it.
             .section(Section::new(
@@ -217,6 +224,26 @@ impl SettingsWindow {
             .items_center()
             .gap(tokens::SPACE_SM)
             .py(tokens::SPACE_XS)
+            // The card hangs under the row rather than in a window of its
+            // own: it's a handful of lines about the workspace right there,
+            // and only one is open at a time. The chevron leads the row so
+            // it points at the name it expands, and so the disclosure sits
+            // apart from the buttons that act on the workspace.
+            .child(icon_button(
+                if open {
+                    icons::CHEVRON_DOWN
+                } else {
+                    icons::CHEVRON_RIGHT
+                },
+                false,
+                {
+                    let name = name.clone();
+                    let builtin = entry.builtin;
+                    cx.listener(move |this, _, window, cx| {
+                        this.toggle_workspace_card(&name, builtin, window, cx)
+                    })
+                },
+            ))
             .child(
                 div()
                     .flex_1()
@@ -235,24 +262,6 @@ impl SettingsWindow {
                     }),
             )
             .when(entry.builtin, |d| d.child(shipped_tag()))
-            // The card hangs under the row rather than in a window of its
-            // own: it's a handful of lines about the workspace right there,
-            // and only one is open at a time.
-            .child(icon_button(
-                if open {
-                    icons::CHEVRON_DOWN
-                } else {
-                    icons::CHEVRON_RIGHT
-                },
-                false,
-                {
-                    let name = name.clone();
-                    let builtin = entry.builtin;
-                    cx.listener(move |this, _, window, cx| {
-                        this.toggle_workspace_card(&name, builtin, window, cx)
-                    })
-                },
-            ))
             // Applying replaces the whole look, so it routes through the
             // confirm dialog rather than acting straight off the click.
             .child(small_button("Apply", icons::CHECK, !live, {
@@ -303,12 +312,14 @@ impl SettingsWindow {
                 .text_color(palette::text_muted())
                 .child(text)
         };
+        // Indented to where the row's name starts, clear of the chevron that
+        // opened it: the icon button plus the gap behind it.
         let mut body = div()
             .flex()
             .flex_col()
             .gap(tokens::SPACE_SM)
             .pb(tokens::SPACE_SM)
-            .pl(tokens::SPACE_MD);
+            .pl(px(14.) + tokens::SPACE_XS * 2. + tokens::SPACE_SM);
         match card.fields.as_ref() {
             Some(fields) => {
                 body = body.child(muted(
@@ -343,11 +354,7 @@ impl SettingsWindow {
                     if value.trim().is_empty() {
                         continue;
                     }
-                    body = body.child(panel::setting_row_dyn(
-                        label,
-                        None,
-                        div().text_xs().child(SharedString::from(value)),
-                    ));
+                    body = body.child(card_readout_line(label, value));
                 }
             }
         }
@@ -508,6 +515,106 @@ impl SettingsWindow {
                 )
             },
         )
+    }
+
+    /// The panel presets section: the saved single panels as a list. They are
+    /// made and replaced from the panel they hold (its dropdown's Save As
+    /// Preset), so this list is where you see what the look carries and drop
+    /// what you're done with.
+    fn panel_presets_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        let presets = crate::panel_presets::saved();
+
+        Section::new(q, icons::COPY, "Panel Presets", None, |rows| {
+            rows.custom(
+                &["panel", "preset", "saved", "configured", "add panel"],
+                || {
+                    let mut list = div().flex().flex_col().gap(tokens::SPACE_XS).child(
+                        // Same instruction the save dialog gives, so it wears
+                        // the same keycaps for the menu path.
+                        kbd_line([
+                            Seg::Text(
+                                "One configured panel each, saved from a panel's own menu and \
+                                 added back from"
+                                    .into(),
+                            ),
+                            Seg::Key("Add Panel".into()),
+                            Seg::Text("then".into()),
+                            Seg::Key("Presets".into()),
+                            Seg::Text(
+                                "in any panel menu. They ride this workspace only, so another \
+                                 workspace won't carry them."
+                                    .into(),
+                            ),
+                        ])
+                        .text_xs(),
+                    );
+                    if presets.is_empty() {
+                        list = list.child(
+                            div()
+                                .text_color(palette::text_muted())
+                                .child("No panel presets yet"),
+                        );
+                    } else {
+                        list = list.child(
+                            div().flex().flex_col().children(
+                                presets
+                                    .into_iter()
+                                    .map(|preset| self.panel_preset_row(preset, cx)),
+                            ),
+                        );
+                    }
+                    list.into_any_element()
+                },
+            )
+        })
+    }
+
+    /// One panel preset's row: its name, the kind of panel inside it, and the
+    /// delete. The kind is what tells two presets of the same panel apart
+    /// from two of different ones once the names blur.
+    fn panel_preset_row(
+        &self,
+        preset: rox_core::settings::PanelPreset,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let kind = preset
+            .panel_name()
+            .map(rox_panel_api::panel::display_name)
+            .unwrap_or_else(|| "Unknown panel".into());
+        let icon = crate::panel_presets::icon_for(&preset);
+        let name = preset.name;
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .py(tokens::SPACE_XS)
+            .child(
+                svg()
+                    .path(icon)
+                    .size_3p5()
+                    .text_color(palette::text_muted()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(SharedString::from(name.clone())),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(SharedString::from(kind)),
+            )
+            .child(icon_button(icons::TRASH, false, {
+                cx.listener(move |_, _, _, cx| {
+                    rox_core::settings::panel_presets::remove(&name);
+                    cx.notify();
+                })
+            }))
+            .into_any_element()
     }
 
     /// One preset's row: its name, a shipped tag when it comes from the
@@ -722,6 +829,11 @@ impl SettingsWindow {
             _ => None,
         };
         let shaders = card.and_then(|card| card.shader_line());
+        let screen = card.and_then(|card| card.screen_shader.clone());
+        // Whether the yes splits in two. Code nobody has agreed to splits it,
+        // and so does a look that simply wears shaders, however many times
+        // it's been applied before.
+        let split = card.is_some_and(|card| card.splits_apply());
         let (title, body, confirm): (String, SharedString, &'static str) =
             match self.pending.as_ref()? {
                 Pending::OverwritePreset(name) => (
@@ -771,9 +883,14 @@ impl SettingsWindow {
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
-                        // The shader list needs the room; every other confirm
-                        // keeps the dialogs' shared width.
-                        .w(px(if shaders.is_some() { 380. } else { 320. }))
+                        // The shader list and the screen shader's hotkey line
+                        // both need the room; every other confirm keeps the
+                        // dialogs' shared width.
+                        .w(px(if split || screen.is_some() {
+                            380.
+                        } else {
+                            320.
+                        }))
                         .p(tokens::SPACE_MD)
                         .rounded(tokens::RADIUS)
                         .bg(palette::bg_menu_opaque())
@@ -784,16 +901,38 @@ impl SettingsWindow {
                         .children(card.and_then(|card| card.byline.clone()).map(line))
                         .children(card.and_then(|card| card.description.clone()).map(line))
                         .child(line(body))
+                        // A screen shader covers the whole window, so it gets
+                        // said before the apply rather than asked about after,
+                        // and the way back off comes with it.
+                        .children(screen.clone().map(line))
+                        .children(screen.map(|_| {
+                            kbd_line([
+                                Seg::Text("Turn it off any time with".into()),
+                                Seg::Key(chord("Shift+X")),
+                                Seg::Text("or".into()),
+                                Seg::Key("Window".into()),
+                                Seg::Text("then".into()),
+                                Seg::Key("Overlay Shader".into()),
+                            ])
+                            .text_xs()
+                        }))
                         .children(shaders.clone().map(line))
                         // Shaders that came with a look are somebody else's
                         // code, so the yes that runs them says so, and the yes
-                        // that doesn't is right beside it.
-                        .children(shaders.is_some().then(|| {
-                            line(
+                        // that doesn't is right beside it. Once they're agreed
+                        // to the question is only about the look, and the line
+                        // says that instead.
+                        .children(split.then(|| {
+                            line(if shaders.is_some() {
                                 "Approving lets them run on this machine. Applying without \
-                                 them leaves the surfaces wearing them blank."
-                                    .into(),
-                            )
+                                 them leaves the look bare, with the shaders still in its pool."
+                                    .into()
+                            } else {
+                                SharedString::from(
+                                    "Applying without them leaves the look bare, with the \
+                                     shaders still in its pool.",
+                                )
+                            })
                         }))
                         .child(
                             div()
@@ -810,22 +949,22 @@ impl SettingsWindow {
                                     }),
                                 ))
                                 .child(dialog_button(
-                                    if shaders.is_some() {
-                                        "Without Shaders"
-                                    } else {
-                                        confirm
-                                    },
-                                    shaders.is_none(),
+                                    if split { "Without Shaders" } else { confirm },
+                                    !split,
                                     cx.listener(|this, _, window, cx| {
-                                        this.confirm_pending(false, window, cx)
+                                        this.confirm_pending(ApplyShaders::Skip, window, cx)
                                     }),
                                 ))
-                                .children(shaders.is_some().then(|| {
+                                .children(split.then(|| {
                                     dialog_button(
-                                        "Approve and Apply",
+                                        if shaders.is_some() {
+                                            "Approve and Apply"
+                                        } else {
+                                            "With Shaders"
+                                        },
                                         true,
                                         cx.listener(|this, _, window, cx| {
-                                            this.confirm_pending(true, window, cx)
+                                            this.confirm_pending(ApplyShaders::Wear, window, cx)
                                         }),
                                     )
                                 })),
@@ -835,18 +974,23 @@ impl SettingsWindow {
     }
 
     /// Carry out the pending action, the confirm dialog's yes, and clear it.
-    /// `approve` separates the apply dialog's two yes buttons: it agrees to
-    /// the shaders the bundle brought, and it's the only thing on this path
-    /// that ever writes the approved list.
-    fn confirm_pending(&mut self, approve: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// `shaders` separates the apply dialog's two yes buttons: the wearing one
+    /// agrees to the shaders the bundle brought, and it's the only thing on
+    /// this path that ever writes the approved list.
+    fn confirm_pending(
+        &mut self,
+        shaders: ApplyShaders,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match self.pending.take() {
             Some(Pending::OverwritePreset(name)) => self.overwrite_preset(name, window, cx),
             Some(Pending::OverwriteWorkspace(name)) => self.overwrite_workspace(name, window, cx),
             Some(Pending::ApplyWorkspace { card, .. }) => {
-                if approve {
+                if shaders == ApplyShaders::Wear {
                     card.approve_shaders();
                 }
-                self.apply_workspace(&card.name, window, cx);
+                self.apply_workspace(&card.name, shaders, window, cx);
             }
             None => {}
         }
@@ -1271,6 +1415,13 @@ impl SettingsWindow {
 
     /// Export a workspace bundle to a file, the whole look as one shareable
     /// artifact. Works for shipped bundles too.
+    ///
+    /// Shader assets travel inside the file as encoded bytes, so a look that
+    /// stamps plates weighs what its images weigh. Past [`EXPORT_SIZE_WARN`]
+    /// that's worth saying out loud, and no more than that: a legitimate look
+    /// can be big, and a hard cap would only stop one (ADR 23). The note goes
+    /// to the log, which is where this window's writes report themselves, and
+    /// the export happens regardless.
     fn export_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
         let Some(mut bundle) = crate::workspaces::resolve(name) else {
             return;
@@ -1283,12 +1434,19 @@ impl SettingsWindow {
         }
         let home = dirs::home_dir().unwrap_or_default();
         let file = format!("{name}.json");
+        let label = name.to_string();
         let rx = cx.prompt_for_new_path(&home, Some(file.as_str()));
         cx.spawn(async move |_, _| {
             let Ok(Ok(Some(path))) = rx.await else {
                 return;
             };
             if let Ok(json) = serde_json::to_string_pretty(&bundle) {
+                if json.len() > EXPORT_SIZE_WARN {
+                    log::warn!(
+                        "workspace {label:?}: exported at {:.1} MiB, heavier than a look usually runs. Its shader assets ride inside the file.",
+                        json.len() as f64 / (1024.0 * 1024.0)
+                    );
+                }
                 std::fs::write(path, json).ok();
             }
         })
@@ -1344,9 +1502,21 @@ impl SettingsWindow {
     /// the no-layout fallback to the default arrangement all ride one flow.
     /// This window only mirrors the applied look into its own editor state
     /// on top.
-    fn apply_workspace(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_workspace(
+        &mut self,
+        name: &str,
+        shaders: ApplyShaders,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(bundle) = crate::workspaces::resolve(name) else {
             return;
+        };
+        // The workspace's own apply strips its copy the same way; this one is
+        // for the no-dock fallback below and for the mirror that follows it.
+        let bundle = match shaders {
+            ApplyShaders::Wear => bundle,
+            ApplyShaders::Skip => crate::workspaces::without_shaders(&bundle),
         };
         let workspace = self.workspace.clone();
         let name = name.to_string();
@@ -1355,7 +1525,13 @@ impl SettingsWindow {
             .update(cx, |_, window, cx| {
                 workspace.upgrade().is_some_and(|workspace| {
                     workspace.update(cx, |workspace, cx| {
-                        workspace.apply_workspace(&name, window, cx);
+                        workspace.apply_workspace(
+                            &name,
+                            shaders,
+                            crate::workspace::ShaderNotice::Told,
+                            window,
+                            cx,
+                        );
                     });
                     true
                 })
@@ -1389,4 +1565,26 @@ impl SettingsWindow {
         self.mini_layout = bundle.mini_layout.clone();
         cx.notify();
     }
+}
+
+/// One line of a shipped bundle's card, read out rather than typed in: the
+/// label in a column of its own, the value wrapping in what's left. The
+/// editable side uses `setting_row`'s inline control instead, since an input
+/// is one line high whatever's in it, while a description comes out of the
+/// file however long its author wrote it.
+fn card_readout_line(label: &'static str, value: String) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap(tokens::SPACE_MD)
+        .text_xs()
+        .child(
+            div()
+                .w(px(72.))
+                .flex_none()
+                .text_color(palette::text_muted())
+                .child(label),
+        )
+        .child(div().flex_1().min_w_0().child(SharedString::from(value)))
 }

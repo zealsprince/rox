@@ -44,6 +44,12 @@ use crate::settings::ui as settings_ui;
 const MIN_BARS: usize = 16;
 const MAX_BARS: usize = 512;
 
+/// The panel's own height floor, under the dock's 40px default: the body is
+/// one canvas that draws at whatever height it gets, so a layout is free to
+/// run the bands as a thin strip along an edge. The width keeps the dock
+/// floor, which is what the band count needs to stay readable.
+const MIN_HEIGHT: gpui::Pixels = gpui::px(16.);
+
 /// The bar width slider's span, px: thin bars pack more bands into the
 /// width, thick ones read chunky. Values snap to whole pixels.
 const BAR_W_MIN: f32 = 1.0;
@@ -1783,10 +1789,7 @@ impl Panel for SpectrumPanel {
     fn min_size(&self, _cx: &App) -> gpui::Size<gpui::Pixels> {
         crate::panel::chrome_min_size(
             &self.config.chrome,
-            gpui::size(
-                rox_dock::resizable::PANEL_MIN_SIZE,
-                rox_dock::resizable::PANEL_MIN_SIZE,
-            ),
+            gpui::size(rox_dock::resizable::PANEL_MIN_SIZE, MIN_HEIGHT),
         )
     }
 
@@ -1847,6 +1850,7 @@ impl Panel for SpectrumPanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }

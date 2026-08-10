@@ -171,6 +171,7 @@ pub struct WorkspaceBundle {
     pub version: u32,
     pub name: String,
     pub layouts: Vec<NamedLayout>,
+    pub panel_presets: Vec<PanelPreset>,          // saved single panels
     pub primary_layout: Option<String>,
     pub mini_layout: Option<String>,
     pub palette_dark: BTreeMap<String, String>,  // role name -> #rrggbb
@@ -183,9 +184,26 @@ pub struct WorkspaceBundle {
 `WORKSPACE_VERSION` = 1, independent of the dock `LAYOUT_VERSION` the dumps inside carry,
 so a reader can refuse a bundle from a newer format while the layouts still validate on
 their own version. The bundle is pure look: applying it (`workspaces::apply_look`)
-replaces the palettes, signals, appearance, and layout presets wholesale and leaves
+replaces the palettes, signals, appearance, and both kinds of preset wholesale and leaves
 machine- and account-bound state (library folders, Last.fm, window frames) untouched, so
 a bundle travels between installs without dragging along another machine's setup.
+
+## Panel presets
+
+Between one panel with its stock config and a whole saved layout sits the panel preset: a
+`PanelPreset` is one panel's `PanelState` under a name, the same leaf a layout dump
+carries per node. A panel's dropdown saves one (Save As Preset, in
+`rox_panel_api::panel_settings`), and `crate::panel_presets` builds it back through the
+`PanelRegistry` the way a layout restores that node - config, rename, and a composite's
+children included. Presets show as a Presets group in every Add Panel menu, in the Panels
+menu, and in the Window menu's New Window from Panel, which opens one through
+`pop_out_view`.
+
+They ride the bundle rather than the user's settings because a panel can name a shader
+out of the pool beside them (`shader::Pick::Named`), and that name only resolves while
+this workspace's pool is the live one. Everything that reads what a look would paint -
+`unapproved_shaders`, `wears_shaders`, `without_shaders` - walks the presets' dumps
+alongside the layouts'.
 
 The live look nests the same struct a saved file holds, so saving a workspace is a clone
 and applying one is an assignment. Saved workspaces are one JSON file each under

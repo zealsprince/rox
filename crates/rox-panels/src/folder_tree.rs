@@ -1862,6 +1862,7 @@ impl Panel for FolderTreePanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }

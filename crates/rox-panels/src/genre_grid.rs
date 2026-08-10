@@ -2028,6 +2028,7 @@ impl Panel for GenreGridPanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }

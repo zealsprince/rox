@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 use crate::panel_catalog::PanelDef;
 use crate::workspace::{
     menu_item_display, menu_section, panel_menu_item, section_shows, shortcut_for, signal_marked,
-    LayoutTarget, Menu, MenuAction, MenuEntry, MenuItem, Workspace, WorkspaceTarget, MENUS,
+    LayoutTarget, Menu, MenuAction, MenuEntry, MenuItem, PanelTarget, Workspace, WorkspaceTarget,
+    MENUS,
 };
 use rox_core::settings::{self, Settings};
 use rox_design::assets::icons;
@@ -57,6 +58,10 @@ pub struct MenuPanel {
     /// Which nested group flyout is open within the open top menu (its
     /// entry index).
     open_sub: Option<usize>,
+    /// The third level, for the one flyout with groups inside it: the Window
+    /// menu's panel picker. Indexed within that flyout, cleared with the
+    /// level above it.
+    open_subgroup: Option<usize>,
 }
 
 impl MenuPanel {
@@ -75,6 +80,7 @@ impl MenuPanel {
             open_at: None,
             open_top: None,
             open_sub: None,
+            open_subgroup: None,
         }
     }
 
@@ -82,6 +88,7 @@ impl MenuPanel {
         self.open_at = Some(position);
         self.open_top = None;
         self.open_sub = None;
+        self.open_subgroup = None;
         cx.notify();
     }
 
@@ -90,6 +97,7 @@ impl MenuPanel {
         self.open_at = None;
         self.open_top = None;
         self.open_sub = None;
+        self.open_subgroup = None;
         cx.notify();
     }
 
@@ -123,6 +131,7 @@ impl MenuPanel {
                 if *hovered && this.open_top != Some(index) {
                     this.open_top = Some(index);
                     this.open_sub = None;
+                    this.open_subgroup = None;
                     cx.notify();
                 }
             }))
@@ -148,6 +157,7 @@ impl MenuPanel {
                         .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                             if *hovered && this.open_sub.is_some() {
                                 this.open_sub = None;
+                                this.open_subgroup = None;
                                 cx.notify();
                             }
                         }))
@@ -169,6 +179,7 @@ impl MenuPanel {
                                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                         if *hovered && this.open_sub.is_some() {
                                             this.open_sub = None;
+                                            this.open_subgroup = None;
                                             cx.notify();
                                         }
                                     }))
@@ -193,6 +204,16 @@ impl MenuPanel {
                         with_new,
                     } => self
                         .workspaces_row(i, label, icon, *target, *with_new, cx)
+                        .into_any_element(),
+                    MenuEntry::PresetsSubmenu {
+                        label,
+                        icon,
+                        target,
+                    } => self
+                        .presets_row(i, label, icon, *target, cx)
+                        .into_any_element(),
+                    MenuEntry::PanelWindowsSubmenu { label, icon } => self
+                        .panel_windows_row(i, label, icon, cx)
                         .into_any_element(),
                 }
             }))
@@ -276,6 +297,7 @@ impl MenuPanel {
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_sub != Some(index) {
                     this.open_sub = Some(index);
+                    this.open_subgroup = None;
                     cx.notify();
                 }
             }))
@@ -318,6 +340,7 @@ impl MenuPanel {
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_sub != Some(index) {
                     this.open_sub = Some(index);
+                    this.open_subgroup = None;
                     cx.notify();
                 }
             }))
@@ -390,6 +413,196 @@ impl MenuPanel {
             .child(label)
     }
 
+    /// The panel-presets flyout row: the saved panels, read when it opens,
+    /// each doing the flyout's `target` - built into the workspace's window,
+    /// or opened in one of its own.
+    fn presets_row(
+        &self,
+        index: usize,
+        label: &'static str,
+        icon_path: &'static str,
+        target: PanelTarget,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let open = self.open_sub == Some(index);
+        self.sub_row(index, label, icon_path, open, cx)
+            .when(open, |d| {
+                // Read the presets only once the flyout opens.
+                let presets = crate::panel_presets::saved();
+                let flyout = dropdown(px(180.)).absolute().left_full().top(px(-5.));
+                d.child(if presets.is_empty() {
+                    flyout.child(
+                        div()
+                            .px(tokens::SPACE_MD)
+                            .py(tokens::SPACE_XS)
+                            .text_color(palette::text_muted())
+                            .child("No presets"),
+                    )
+                } else {
+                    flyout.children(
+                        presets
+                            .into_iter()
+                            .map(|preset| self.preset_panel_row(preset, target, cx)),
+                    )
+                })
+            })
+    }
+
+    /// The Window menu's panel picker: a flyout of groups - the saved
+    /// presets, then the catalog's own - each flying out again into its
+    /// panels, every pick opening a window of its own. The menubar draws the
+    /// same two levels.
+    fn panel_windows_row(
+        &self,
+        index: usize,
+        label: &'static str,
+        icon_path: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let open = self.open_sub == Some(index);
+        self.sub_row(index, label, icon_path, open, cx)
+            .when(open, |d| {
+                let presets = crate::panel_presets::saved();
+                let mut flyout = dropdown(px(180.)).absolute().left_full().top(px(-5.));
+                // Group 0 is the presets when there are any, so the catalog's
+                // groups start one along and the two levels never share an index.
+                if !presets.is_empty() {
+                    let rows = presets
+                        .into_iter()
+                        .map(|preset| self.preset_panel_row(preset, PanelTarget::NewWindow, cx))
+                        .collect();
+                    flyout = flyout.child(self.panel_window_group(
+                        0,
+                        crate::panel_presets::GROUP_LABEL,
+                        crate::panel_presets::GROUP_ICON,
+                        rows,
+                        cx,
+                    ));
+                }
+                for (i, section) in crate::panel_catalog::sections().enumerate() {
+                    let rows = section
+                        .panels
+                        .iter()
+                        .map(|def| self.panel_window_row(def, cx))
+                        .collect::<Vec<_>>();
+                    flyout = match section.group {
+                        None => flyout.children(rows),
+                        Some((label, icon_path)) => {
+                            flyout.child(self.panel_window_group(i + 1, label, icon_path, rows, cx))
+                        }
+                    };
+                }
+                d.child(flyout)
+            })
+    }
+
+    /// One group inside the panel picker, a level deeper than the flyouts
+    /// this panel usually draws. `index` is the group's slot in that picker,
+    /// kept apart from the entry indices the level above uses.
+    fn panel_window_group(
+        &self,
+        index: usize,
+        label: &'static str,
+        icon_path: &'static str,
+        rows: Vec<Div>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let open = self.open_subgroup == Some(index);
+        row()
+            .id(("panel-window-group", index))
+            .relative()
+            .justify_between()
+            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered && this.open_subgroup != Some(index) {
+                    this.open_subgroup = Some(index);
+                    cx.notify();
+                }
+            }))
+            .child(label_with_icon(icon_path, label))
+            .child(chevron())
+            .when(open, |d| {
+                d.child(
+                    dropdown(px(160.))
+                        .absolute()
+                        .left_full()
+                        .top(px(-5.))
+                        .children(rows),
+                )
+            })
+    }
+
+    /// A catalog row in the panel picker: closes the overlay, then opens that
+    /// panel with its stock config in a window of its own.
+    fn panel_window_row(&self, def: &'static PanelDef, cx: &mut Context<Self>) -> Div {
+        row()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                    this.close(cx);
+                    let Some(ws) = this.workspace.upgrade() else {
+                        return;
+                    };
+                    ws.update(cx, |ws, cx| ws.open_panel_window(def, window, cx));
+                }),
+            )
+            .child(icon(def.icon))
+            .child(def.label)
+    }
+
+    /// A preset row in a presets flyout: closes the overlay, then does the
+    /// flyout's `target` with the named preset.
+    fn preset_panel_row(
+        &self,
+        preset: rox_core::settings::PanelPreset,
+        target: PanelTarget,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let icon_path = crate::panel_presets::icon_for(&preset);
+        let label = SharedString::from(preset.name.clone());
+        let name = preset.name;
+        row()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                    this.close(cx);
+                    let Some(ws) = this.workspace.upgrade() else {
+                        return;
+                    };
+                    let name = name.clone();
+                    ws.update(cx, |ws, cx| ws.run_panel_preset(name, target, window, cx));
+                }),
+            )
+            .child(icon(icon_path))
+            .child(label)
+    }
+
+    /// A flyout row's own chrome: the label, the chevron, and the hover that
+    /// opens it at `index`. The flyout itself is the caller's.
+    fn sub_row(
+        &self,
+        index: usize,
+        label: &'static str,
+        icon_path: &'static str,
+        open: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        row()
+            .id(("menu-entry", index))
+            .relative()
+            .justify_between()
+            .when(open, |d| d.bg(palette::bg_control_hover_opaque()))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered && this.open_sub != Some(index) {
+                    this.open_sub = Some(index);
+                    this.open_subgroup = None;
+                    cx.notify();
+                }
+            }))
+            .child(label_with_icon(icon_path, label))
+            .child(chevron())
+    }
+
     /// A workspaces flyout row: like [`MenuPanel::layouts_row`] but its items
     /// are the saved and shipped workspaces, read when it opens, each doing
     /// the flyout's `target` with that bundle behind a confirm. With
@@ -414,6 +627,7 @@ impl MenuPanel {
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && this.open_sub != Some(index) {
                     this.open_sub = Some(index);
+                    this.open_subgroup = None;
                     cx.notify();
                 }
             }))
@@ -750,11 +964,11 @@ impl Panel for MenuPanel {
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         let menu =
-            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), _window, cx);
+            panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity(), cx);
         let menu = panel::duplicate_item(
             menu,
@@ -777,6 +991,7 @@ impl Panel for MenuPanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }

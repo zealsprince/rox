@@ -102,6 +102,18 @@ fn entry_items(entry: &'static MenuEntry, playing: bool) -> Vec<gpui::MenuItem> 
             name: (*label).into(),
             items: workspace_items(*target, *with_new),
         })],
+        MenuEntry::PresetsSubmenu { label, target, .. } => {
+            vec![gpui::MenuItem::submenu(gpui::Menu {
+                name: (*label).into(),
+                items: preset_items(*target),
+            })]
+        }
+        MenuEntry::PanelWindowsSubmenu { label, .. } => {
+            vec![gpui::MenuItem::submenu(gpui::Menu {
+                name: (*label).into(),
+                items: panel_window_items(),
+            })]
+        }
     }
 }
 
@@ -146,7 +158,7 @@ fn native_label(item: MenuItem, playing: bool) -> String {
         MenuAction::ToggleDecorations => showing(settings::os_decorations(), "OS Decorations"),
         MenuAction::ToggleArtTheming => switching(palette::art_theming(), "Song Theming"),
         MenuAction::TogglePostShader => {
-            switching(crate::workspace::post_shader_on(), "Screen Shader")
+            switching(crate::workspace::post_shader_on(), "Overlay Shader")
         }
         MenuAction::ToggleQuitToTray => switching(settings::quit_to_tray(), "Remain in Tray"),
         _ => item.label.into(),
@@ -252,6 +264,70 @@ fn workspace_items(target: WorkspaceTarget, with_new: bool) -> Vec<gpui::MenuIte
                 },
             )
         }));
+    }
+    items
+}
+
+/// The saved panel presets as native rows, read now for the same reason the
+/// layouts are. Same shape as [`layout_items`], minus the New row: a preset
+/// is saved from the panel it holds, not from a menu.
+#[cfg(target_os = "macos")]
+fn preset_items(target: PanelTarget) -> Vec<gpui::MenuItem> {
+    let kind = match target {
+        PanelTarget::Open => "panel-preset",
+        PanelTarget::NewWindow => "panel-preset-window",
+    };
+    let presets = crate::panel_presets::saved();
+    if presets.is_empty() {
+        return vec![placeholder("No presets")];
+    }
+    presets
+        .into_iter()
+        .map(|preset| {
+            gpui::MenuItem::action(
+                preset.name.clone(),
+                MenuCommand {
+                    command: format!("{kind}:{}", preset.name),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The Window menu's panel picker as native rows: the presets, then the
+/// catalog's groups as submenus, every pick opening a window of its own. The
+/// system bar nests as deep as we like, so this is the same two levels the
+/// in-window flyout draws.
+#[cfg(target_os = "macos")]
+fn panel_window_items() -> Vec<gpui::MenuItem> {
+    let mut items = Vec::new();
+    let presets = crate::panel_presets::saved();
+    if !presets.is_empty() {
+        items.push(gpui::MenuItem::submenu(gpui::Menu {
+            name: crate::panel_presets::GROUP_LABEL.into(),
+            items: preset_items(PanelTarget::NewWindow),
+        }));
+    }
+    for section in catalog::sections() {
+        let rows: Vec<gpui::MenuItem> = section
+            .panels
+            .iter()
+            .map(|def| {
+                gpui::MenuItem::action(
+                    def.label,
+                    MenuCommand {
+                        command: format!("panel-window:{}", def.label),
+                    },
+                )
+            })
+            .collect();
+        match section.group {
+            None => items.extend(rows),
+            Some((label, _)) => items.push(gpui::MenuItem::submenu(gpui::Menu {
+                name: label.into(),
+                items: rows,
+            })),
+        }
     }
     items
 }

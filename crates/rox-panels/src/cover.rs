@@ -10,7 +10,7 @@
 
 use std::f32::consts::TAU;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
@@ -19,24 +19,20 @@ use gpui::{
     SharedString, Subscription, Transformation, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use image::{Frame, RgbaImage};
+use image::Frame;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
+use crate::discs::{bake_disc, DiscShape, DISC_STYLES};
 use crate::panel::{
     self, align_row, justify, Align, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit,
 };
 use crate::panel_settings;
 use crate::selection::SelectionEvent;
 use crate::source::{self, ResolvedTrack, TrackSource};
-
-/// The disc bake's square side, in pixels: big enough that the panel's
-/// letterboxed fit stays sharp, small enough that the per-frame rotation
-/// stays a couple of milliseconds.
-const DISC_SIZE: u32 = 512;
 
 /// The spin speed slider's range and default, in revolutions per minute.
 /// A real disc spins far too fast to watch; the default is a lazy
@@ -49,19 +45,6 @@ const SPIN_RPM_DEFAULT: f32 = 10.0;
 /// speed; zero snaps straight to speed.
 const SPIN_RAMP_MAX: f32 = 10.0;
 const SPIN_RAMP_DEFAULT: f32 = 2.0;
-
-/// The CD's hole cut as a fraction of the disc radius, matched to the
-/// transparent hole in `assets/disc/cd.png`.
-const CD_HOLE: f32 = 0.132;
-
-/// The vinyl's label window and spindle hole as fractions of the record
-/// radius: an LP's 100 mm label and 7.24 mm hole on the 300 mm record.
-/// The window matches the transparent center of `assets/disc/vinyl.png`.
-const VINYL_LABEL: f32 = 0.33;
-const VINYL_HOLE: f32 = 0.024;
-
-/// The mask edges' anti-alias falloff, in bake pixels.
-const DISC_AA: f32 = 1.5;
 
 /// Which picture slot the panel shows. Disc is the tag's "media"
 /// picture, the CD scan; every pick falls back through the front cover,
@@ -90,25 +73,10 @@ impl ArtPick {
 
 /// Dress the artwork as a physical disc, whatever picture the slot
 /// carries: the face of a CD under its translucent plastic, or the label
-/// of a vinyl record. Off leaves the picture flat.
-#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DiscStyle {
-    #[default]
-    Off,
-    Cd,
-    Vinyl,
-}
-
-/// The shape a disc bake takes: the styles above, plus the bare circular
-/// crop a spinning disc scan gets, since a real scan carries its own hole
-/// and label.
-#[derive(Clone, Copy, PartialEq)]
-enum DiscShape {
-    Crop,
-    Cd,
-    Vinyl,
-}
+/// of a vinyl record. Off leaves the picture flat. Lives in
+/// [`crate::discs`] now that the art shelf wears the same styles;
+/// re-exported here because it's this panel's config vocabulary.
+pub use crate::discs::DiscStyle;
 
 /// The cover panel's per-view config: what a saved layout restores, and
 /// what the settings window edits.
@@ -502,14 +470,6 @@ impl CoverArtPanel {
         ("Artist", ArtPick::Artist),
     ];
 
-    /// The labelled disc styles, the settings row's and the flyout's one
-    /// list.
-    const DISC_STYLES: [(&'static str, DiscStyle); 3] = [
-        ("Off", DiscStyle::Off),
-        ("CD", DiscStyle::Cd),
-        ("Vinyl", DiscStyle::Vinyl),
-    ];
-
     /// The panel's own dropdown entries: the source and artwork picks,
     /// the same knobs the customize window edits.
     fn config_menu(
@@ -553,7 +513,7 @@ impl CoverArtPanel {
             // source flyout's rule.
             panel::follow_panel(&panel, cx);
             let mut submenu = submenu.check_side(gpui_component::Side::Right);
-            for (label, style) in Self::DISC_STYLES {
+            for (label, style) in DISC_STYLES {
                 submenu = submenu.item(panel::check_row(
                     label,
                     None,
@@ -662,7 +622,7 @@ impl PanelSettings for CoverArtPanel {
                 "Disc Style",
                 Some("Dress the artwork as a CD or as a vinyl record's label"),
                 panel::choices(
-                    &Self::DISC_STYLES,
+                    &DISC_STYLES,
                     self.config.disc_style,
                     |this: &mut Self, style, cx| this.set_disc_style(style, cx),
                     cx,
@@ -820,6 +780,7 @@ impl Panel for CoverArtPanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }
@@ -950,123 +911,6 @@ fn layer(
     .into_any_element()
 }
 
-/// One cover into disc form, run off the UI thread once per art load.
-/// Crop is the bare anti-aliased circle for a real disc scan, which
-/// carries its own hole and label. CD lays the translucent plastic
-/// overlay over the art and cuts the hole; Vinyl shrinks the art into
-/// the record's label window and punches the spindle. With an overlay
-/// missing or unreadable the styles fall back to the bare crop.
-fn bake_disc(bytes: &[u8], shape: DiscShape) -> Option<RgbaImage> {
-    let art = image::load_from_memory(bytes).ok()?;
-    let (width, height) = (art.width(), art.height());
-    let side = width.min(height);
-    if side == 0 {
-        return None;
-    }
-    let art = art.crop_imm((width - side) / 2, (height - side) / 2, side, side);
-    let overlay = match shape {
-        DiscShape::Crop => None,
-        DiscShape::Cd => disc_overlay(DiscStyle::Cd),
-        DiscShape::Vinyl => disc_overlay(DiscStyle::Vinyl),
-    };
-    let mut disc = match (shape, overlay) {
-        (DiscShape::Crop, _) | (_, None) => {
-            let size = side.min(DISC_SIZE);
-            let mut disc = art.thumbnail_exact(size, size).into_rgba8();
-            mask_circle(&mut disc, None);
-            disc
-        }
-        (DiscShape::Cd, Some(overlay)) => {
-            let mut disc = art.thumbnail_exact(DISC_SIZE, DISC_SIZE).into_rgba8();
-            for (pixel, top) in disc.pixels_mut().zip(overlay.pixels()) {
-                pixel.0 = over(top.0, pixel.0);
-            }
-            mask_circle(&mut disc, Some(CD_HOLE));
-            disc
-        }
-        (DiscShape::Vinyl, Some(overlay)) => {
-            // The art shrinks to the label window; its square corners
-            // reach past the window's circle but stay under the opaque
-            // record, so the window's own edge does the masking.
-            let label = (VINYL_LABEL * DISC_SIZE as f32) as u32;
-            let label_art = art.thumbnail_exact(label, label).into_rgba8();
-            let offset = (DISC_SIZE - label) / 2;
-            let mut disc = RgbaImage::new(DISC_SIZE, DISC_SIZE);
-            for (x, y, pixel) in disc.enumerate_pixels_mut() {
-                let base = if (offset..offset + label).contains(&x)
-                    && (offset..offset + label).contains(&y)
-                {
-                    label_art.get_pixel(x - offset, y - offset).0
-                } else {
-                    [0, 0, 0, 0]
-                };
-                pixel.0 = over(overlay.get_pixel(x, y).0, base);
-            }
-            mask_circle(&mut disc, Some(VINYL_HOLE));
-            disc
-        }
-    };
-    // The renderer's BGRA, the same swizzle gpui's own decode does.
-    for pixel in disc.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
-    Some(disc)
-}
-
-/// The disc overlay art, decoded and sized to the bake once per run.
-fn disc_overlay(style: DiscStyle) -> Option<&'static RgbaImage> {
-    static CD: OnceLock<Option<RgbaImage>> = OnceLock::new();
-    static VINYL: OnceLock<Option<RgbaImage>> = OnceLock::new();
-    let (cell, path) = match style {
-        DiscStyle::Cd => (&CD, "disc/cd.png"),
-        DiscStyle::Vinyl => (&VINYL, "disc/vinyl.png"),
-        DiscStyle::Off => return None,
-    };
-    cell.get_or_init(|| {
-        let file = crate::assets::Assets::get(path)?;
-        let overlay = image::load_from_memory(&file.data).ok()?;
-        Some(overlay.thumbnail_exact(DISC_SIZE, DISC_SIZE).into_rgba8())
-    })
-    .as_ref()
-}
-
-/// Straight-alpha "over": `top` composited onto `base`.
-fn over(top: [u8; 4], base: [u8; 4]) -> [u8; 4] {
-    let top_a = top[3] as f32 / 255.0;
-    let base_a = base[3] as f32 / 255.0 * (1.0 - top_a);
-    let alpha = top_a + base_a;
-    if alpha <= 0.0 {
-        return [0, 0, 0, 0];
-    }
-    let mix = |t: u8, b: u8| ((t as f32 * top_a + b as f32 * base_a) / alpha).round() as u8;
-    [
-        mix(top[0], base[0]),
-        mix(top[1], base[1]),
-        mix(top[2], base[2]),
-        (alpha * 255.0).round() as u8,
-    ]
-}
-
-/// The bake's geometry mask: the anti-aliased outer circle, and the
-/// center hole when the shape cuts one.
-fn mask_circle(disc: &mut RgbaImage, hole: Option<f32>) {
-    let size = disc.width();
-    let center = (size as f32 - 1.0) / 2.0;
-    let radius = center;
-    for (x, y, pixel) in disc.enumerate_pixels_mut() {
-        let dx = x as f32 - center;
-        let dy = y as f32 - center;
-        let r = (dx * dx + dy * dy).sqrt();
-        let mut alpha = ((radius - r) / DISC_AA).clamp(0.0, 1.0);
-        if let Some(hole) = hole {
-            alpha *= ((r - hole * radius) / DISC_AA).clamp(0.0, 1.0);
-        }
-        if alpha < 1.0 {
-            pixel.0[3] = (pixel.0[3] as f32 * alpha).round() as u8;
-        }
-    }
-}
-
 impl Render for CoverArtPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
@@ -1167,94 +1011,5 @@ impl CoverArtPanel {
             .bg(palette::bg_root())
             .relative()
             .child(inner)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn png_of(image: RgbaImage) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        image::DynamicImage::ImageRgba8(image)
-            .write_to(
-                &mut std::io::Cursor::new(&mut bytes),
-                image::ImageFormat::Png,
-            )
-            .unwrap();
-        bytes
-    }
-
-    /// Each shape masks as its physical object: the crop keeps its center
-    /// (a scan carries its own hole), the CD shows the art through the
-    /// plastic and cuts the hole, the vinyl shrinks the art to the label
-    /// window, stays dark across the grooves, and punches the spindle.
-    #[test]
-    fn bake_shapes_the_disc() {
-        let bytes = png_of(RgbaImage::from_pixel(
-            64,
-            64,
-            image::Rgba([200, 10, 10, 255]),
-        ));
-        let crop = bake_disc(&bytes, DiscShape::Crop).unwrap();
-        assert_eq!(crop.get_pixel(0, 0).0[3], 0, "corner should mask out");
-        assert_eq!(
-            crop.get_pixel(32, 32).0[3],
-            255,
-            "the crop keeps its center"
-        );
-        let sample = crop.get_pixel(32, 32).0;
-        assert!(
-            sample[2] > sample[0],
-            "red should land in the BGRA red slot"
-        );
-
-        let center = DISC_SIZE / 2;
-        let at = |fraction: f32| center + (fraction * center as f32) as u32;
-        let cd = bake_disc(&bytes, DiscShape::Cd).unwrap();
-        assert_eq!(cd.width(), DISC_SIZE, "styles bake at full size");
-        assert_eq!(cd.get_pixel(center, center).0[3], 0, "the CD cuts its hole");
-        let face = cd.get_pixel(at(0.6), center).0;
-        assert_eq!(face[3], 255);
-        assert!(face[2] > face[0], "the art shows through the plastic");
-
-        let vinyl = bake_disc(&bytes, DiscShape::Vinyl).unwrap();
-        assert_eq!(
-            vinyl.get_pixel(center, center).0[3],
-            0,
-            "the vinyl punches its spindle hole"
-        );
-        let label = vinyl.get_pixel(at(0.2), center).0;
-        assert!(label[2] > 100, "the label window shows the art");
-        let groove = vinyl.get_pixel(at(0.7), center).0;
-        assert_eq!(groove[3], 255);
-        assert!(groove[2] < 60, "the record stays dark");
-    }
-
-    /// Not a test: dumps the bakes to /tmp for eyeballing. Run by hand
-    /// with --ignored.
-    #[test]
-    #[ignore]
-    fn dump_bakes() {
-        let art = RgbaImage::from_fn(400, 400, |x, y| {
-            let checker = ((x / 50) + (y / 50)) % 2 == 0;
-            image::Rgba(if checker {
-                [200, 60, 30, 255]
-            } else {
-                [240, 220, 200, 255]
-            })
-        });
-        let bytes = png_of(art);
-        for (name, shape) in [
-            ("crop", DiscShape::Crop),
-            ("cd", DiscShape::Cd),
-            ("vinyl", DiscShape::Vinyl),
-        ] {
-            let mut disc = bake_disc(&bytes, shape).unwrap();
-            for pixel in disc.chunks_exact_mut(4) {
-                pixel.swap(0, 2);
-            }
-            disc.save(format!("/tmp/bake-{name}.png")).unwrap();
-        }
     }
 }

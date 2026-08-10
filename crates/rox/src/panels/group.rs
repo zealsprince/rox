@@ -452,6 +452,7 @@ impl Panel for GroupPanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }

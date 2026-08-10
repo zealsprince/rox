@@ -57,7 +57,7 @@ pub fn open(
     let view = std::rc::Rc::new(std::cell::RefCell::new(None));
     let handle = {
         let view = view.clone();
-        rox_panel_api::panel::open_fixed_window(cx, "rox - Screen Shader", bounds, move |_, cx| {
+        rox_panel_api::panel::open_fixed_window(cx, "rox - Overlay Shader", bounds, move |_, cx| {
             let entity = cx.new(|cx| ShaderConfirm::new(prior, player, on_reverted, cx));
             *view.borrow_mut() = Some(entity.clone());
             entity

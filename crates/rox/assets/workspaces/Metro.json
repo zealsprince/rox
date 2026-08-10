@@ -910,6 +910,13 @@
     "text_on_accent": "#ffffff",
     "text_secondary": "#555555"
   },
+  "meta": {
+    "author": "zealsprince",
+    "description": "Flat panels and comfortable rows in Segoe UI, with art theming on so the whole palette follows whatever cover is playing.",
+    "version": "1.0",
+    "created": "2026-07-23",
+    "updated": "2026-08-09"
+  },
   "appearance": {
     "surface_opacity": 1.0,
     "backdrop_strength": 1.0,

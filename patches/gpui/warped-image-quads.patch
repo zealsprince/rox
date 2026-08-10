@@ -1,0 +1,453 @@
+--- a/src/scene.rs
++++ b/src/scene.rs
+@@ -812,6 +812,22 @@
+     // rox patch: the same per-sprite transform MonochromeSprite carries, so
+     // images can rotate and scale on the GPU (paint_image_transformed).
+     pub transformation: TransformationMatrix,
++    // rox patch: pads the fields below to vec4 alignment on the GPU side.
++    pub pad2: [f32; 2],
++    // rox patch: the perspective row of a homography as (gx, gy, w0, 0),
++    // making w = w0 + gx * px + gy * py; (0, 0, 1, 0) is affine. The
++    // constant rides along because the map is normalized at the quad's
++    // center, where w is guaranteed positive - normalizing at the screen
++    // origin flips the whole map negative whenever the vanishing line
++    // crosses between origin and quad, and the GPU clips w < 0 as behind
++    // the eye (paint_image_quad).
++    pub perspective: [f32; 4],
++    // rox patch: alpha at the sprite's four corners (tl, tr, br, bl),
++    // blended bilinearly across the face - the reflection fade.
++    pub fade: [f32; 4],
++    // rox patch: a straight-alpha color mixed over the sample, the turn
++    // shading a rectangular overlay can't shape to a keystoned quad.
++    pub wash: [f32; 4],
+ }
+ 
+ impl From<PolychromeSprite> for Primitive {
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -3074,6 +3074,10 @@
+                 tile,
+                 opacity,
+                 transformation: TransformationMatrix::unit(),
++                pad2: [0.; 2],
++                perspective: [0., 0., 1., 0.],
++                fade: [1.; 4],
++                wash: [0.; 4],
+             });
+         }
+         Ok(())
+@@ -3220,6 +3224,112 @@
+             tile,
+             opacity,
+             transformation,
++            pad2: [0.; 2],
++            perspective: [0., 0., 1., 0.],
++            fade: [1.; 4],
++            wash: [0.; 4],
++        });
++        Ok(())
++    }
++
++    /// Paint an image stretched over an arbitrary convex quad with
++    /// perspective-correct sampling: the texture's corners land on
++    /// `corners`, given clockwise from the top-left. `source` picks the
++    /// fraction of the image to sample, `Bounds` in 0..1 texture space, so
++    /// a caller can center-crop the way `ObjectFit::Cover` would - and a
++    /// negative source size samples backwards, which is how a reflection
++    /// flips: keep the corners in their natural screen order and mirror
++    /// the texture instead, so the vertex map never inverts. `fade` is
++    /// the alpha at each corner, blended bilinearly across the face, and
++    /// `wash` is a straight-alpha color mixed over the sample. Corner
++    /// rounding doesn't survive a keystone, so quads always paint square.
++    ///
++    /// This method should only be called as part of the paint phase of element drawing.
++    ///
++    /// rox patch: the perspective face of the polychrome pipeline, for the
++    /// art shelf's turned covers and their reflections.
++    pub fn paint_image_quad(
++        &mut self,
++        corners: [Point<Pixels>; 4],
++        source: Bounds<f32>,
++        data: Arc<RenderImage>,
++        frame_index: usize,
++        grayscale: bool,
++        fade: [f32; 4],
++        wash: Hsla,
++    ) -> Result<()> {
++        self.invalidator.debug_assert_paint();
++
++        let scale_factor = self.scale_factor();
++        let quad = corners.map(|corner| {
++            let corner = corner.scale(scale_factor);
++            [corner.x.0, corner.y.0]
++        });
++        let (mut min_x, mut min_y) = (quad[0][0], quad[0][1]);
++        let (mut max_x, mut max_y) = (min_x, min_y);
++        for [x, y] in &quad {
++            min_x = min_x.min(*x);
++            min_y = min_y.min(*y);
++            max_x = max_x.max(*x);
++            max_y = max_y.max(*y);
++        }
++        // The quad's AABB is the sprite's vertex domain; the homography
++        // carries it onto the corners, so the texture lands on the quad
++        // whatever rectangle the vertices walk.
++        let bounds = Bounds {
++            origin: point(ScaledPixels(min_x), ScaledPixels(min_y)),
++            size: size(ScaledPixels(max_x - min_x), ScaledPixels(max_y - min_y)),
++        };
++        let Some((transformation, perspective)) =
++            quad_homography([min_x, min_y], [max_x - min_x, max_y - min_y], quad)
++        else {
++            return Ok(());
++        };
++        let params = RenderImageParams {
++            image_id: data.id,
++            frame_index,
++        };
++
++        let mut tile = self
++            .sprite_atlas
++            .get_or_insert_with(&params.into(), &mut || {
++                Ok(Some((
++                    data.size(frame_index),
++                    Cow::Borrowed(
++                        data.as_bytes(frame_index)
++                            .expect("It's the caller's job to pass a valid frame index"),
++                    ),
++                )))
++            })?
++            .expect("Callback above only returns Some");
++        // The source crop shrinks the tile itself, so the vertex uv math
++        // never has to know about it.
++        let tile_size = tile.bounds.size;
++        tile.bounds.origin.x += DevicePixels((source.origin.x * tile_size.width.0 as f32) as i32);
++        tile.bounds.origin.y += DevicePixels((source.origin.y * tile_size.height.0 as f32) as i32);
++        tile.bounds.size.width = DevicePixels((source.size.width * tile_size.width.0 as f32) as i32);
++        tile.bounds.size.height =
++            DevicePixels((source.size.height * tile_size.height.0 as f32) as i32);
++        let content_mask = self.content_mask().scale(scale_factor);
++        let opacity = self.element_opacity();
++
++        self.next_frame.scene.insert_primitive(PolychromeSprite {
++            order: 0,
++            pad: 0,
++            grayscale,
++            bounds,
++            content_mask,
++            corner_radii: Corners::default(),
++            tile,
++            opacity,
++            transformation,
++            pad2: [0.; 2],
++            perspective,
++            fade,
++            wash: {
++                let wash = crate::Rgba::from(wash);
++                [wash.r, wash.g, wash.b, wash.a]
++            },
+         });
+         Ok(())
+     }
+@@ -6744,3 +6854,90 @@
+         assert!(registry.register(0, 2, &[]).is_err());
+     }
+ }
++
++/// The homography carrying the rectangle at `origin`/`size` (scaled px)
++/// onto `quad`, its target corners clockwise from the top-left, split the
++/// way [`PolychromeSprite`] wants it: the affine rows as a
++/// [`TransformationMatrix`] and the perspective row normalized so
++/// w = 1 + perspective . p. None when the quad is degenerate.
++///
++/// rox patch: the CPU half of `paint_image_quad`, Heckbert's unit-square
++/// projective mapping composed with the rect-to-unit affine.
++fn quad_homography(
++    origin: [f32; 2],
++    size: [f32; 2],
++    quad: [[f32; 2]; 4],
++) -> Option<(TransformationMatrix, [f32; 4])> {
++    let [tl, tr, br, bl] = quad;
++    let [ox, oy] = origin;
++    let [width, height] = size;
++    if width <= 0.0 || height <= 0.0 {
++        return None;
++    }
++    // Unit square onto the quad (Heckbert): the affine terms fall out of
++    // the perspective row, which is zero when the opposite edge sums
++    // cancel - a parallelogram.
++    let sx = tl[0] - tr[0] + br[0] - bl[0];
++    let sy = tl[1] - tr[1] + br[1] - bl[1];
++    let (g, h) = if sx == 0.0 && sy == 0.0 {
++        (0.0, 0.0)
++    } else {
++        let dx1 = tr[0] - br[0];
++        let dx2 = bl[0] - br[0];
++        let dy1 = tr[1] - br[1];
++        let dy2 = bl[1] - br[1];
++        let den = dx1 * dy2 - dx2 * dy1;
++        if den.abs() < f32::EPSILON {
++            return None;
++        }
++        ((sx * dy2 - dx2 * sy) / den, (dx1 * sy - sx * dy1) / den)
++    };
++    let a = tr[0] - tl[0] + g * tr[0];
++    let b = bl[0] - tl[0] + h * bl[0];
++    let c = tl[0];
++    let d = tr[1] - tl[1] + g * tr[1];
++    let e = bl[1] - tl[1] + h * bl[1];
++    let f = tl[1];
++    // Composed with u = (p - origin) / size, then the whole map scaled so
++    // w is one at the rect's center. A homography is only defined up to
++    // scale, and the GPU clips w < 0 as behind the eye; the center is the
++    // one point guaranteed on the visible side of the vanishing line, so
++    // normalizing there keeps w positive across the whole quad. (The
++    // screen origin is not so guaranteed: a keystone's vanishing line can
++    // cross between origin and quad, which flipped the map's sign and
++    // swallowed every right-leaning cover.)
++    let px = [g / width, h / height];
++    let w0 = 1.0 - g * ox / width - h * oy / height;
++    let center = [ox + width / 2.0, oy + height / 2.0];
++    let k = w0 + px[0] * center[0] + px[1] * center[1];
++    if k.abs() < 1e-6 {
++        return None;
++    }
++    let row0 = [a / width / k, b / height / k];
++    let row1 = [d / width / k, e / height / k];
++    let translation = [
++        (c - a * ox / width - b * oy / height) / k,
++        (f - d * ox / width - e * oy / height) / k,
++    ];
++    let perspective = [px[0] / k, px[1] / k, w0 / k, 0.0];
++    // A quad leaning past its own horizon has no one-sided w; skip it
++    // rather than let the GPU clip half a face. w lives on the vertex
++    // domain, so the corners to check are the rect's.
++    for [x, y] in [
++        [ox, oy],
++        [ox + width, oy],
++        [ox + width, oy + height],
++        [ox, oy + height],
++    ] {
++        if perspective[2] + perspective[0] * x + perspective[1] * y <= 0.0 {
++            return None;
++        }
++    }
++    Some((
++        TransformationMatrix {
++            rotation_scale: [row0, row1],
++            translation,
++        },
++        perspective,
++    ))
++}
+--- a/src/elements/img.rs
++++ b/src/elements/img.rs
+@@ -526,7 +526,13 @@
+ impl StatefulInteractiveElement for Img {}
+ 
+ impl ImageSource {
+-    pub(crate) fn use_data(
++    /// Resolve this source into its decoded frames through the same asset
++    /// cache the [`Img`] element uses, kicking the decode off when it
++    /// hasn't run yet: None until it lands, then the cached image.
++    ///
++    /// rox patch: public so canvas-level paints (`paint_image_quad`) can
++    /// ride the element cache instead of decoding their own copy.
++    pub fn use_data(
+         &self,
+         cache: Option<AnyImageCache>,
+         window: &mut Window,
+--- a/src/platform/blade/shaders.wgsl
++++ b/src/platform/blade/shaders.wgsl
+@@ -1204,6 +1204,15 @@
+     tile: AtlasTile,
+     // rox patch: the same per-sprite transform MonochromeSprite carries.
+     transformation: TransformationMatrix,
++    // rox patch: vec4 alignment for the fields below.
++    pad2: vec2<f32>,
++    // rox patch: the homography's perspective row as (gx, gy, w0, 0) with
++    // w = w0 + gx * px + gy * py ((0, 0, 1, 0) = affine), the per-corner
++    // alpha ramp (tl, tr, br, bl), and a straight-alpha wash mixed over
++    // the sample - paint_image_quad's keystone, fade, and turn shading.
++    perspective: vec4<f32>,
++    fade: vec4<f32>,
++    wash: vec4<f32>,
+ }
+ var<storage, read> b_poly_sprites: array<PolychromeSprite>;
+ 
+@@ -1215,7 +1224,10 @@
+     // corner SDF: the screen position no longer maps onto the bounds once
+     // the sprite is rotated or scaled.
+     @location(2) local_position: vec2<f32>,
+-    @location(3) clip_distances: vec4<f32>,
++    // rox patch: linear, not perspective-correct: the mask is a screen
++    // rect, and once w varies across the quad the default interpolation
++    // would bend a screen-space distance.
++    @location(3) @interpolate(linear) clip_distances: vec4<f32>,
+ }
+ 
+ @vertex
+@@ -1224,11 +1236,21 @@
+     let sprite = b_poly_sprites[instance_id];
+ 
+     var out = PolySpriteVarying();
+-    out.position = to_device_position_transformed(unit_vertex, sprite.bounds, sprite.transformation);
++    // rox patch: the affine transform plus the homography's perspective
++    // row. w stays 1 for affine sprites, where this is exactly the old
++    // path; with perspective the hardware divide keystones the quad and
++    // interpolates the texture perspective-correct on its own. The clip
++    // position keeps the viewport map linear in (s, w):
++    // device(s / w) * w = s * scale + offset * w.
++    let p = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
++    let s = transpose(sprite.transformation.rotation_scale) * p + sprite.transformation.translation;
++    let w = sprite.perspective.z + dot(sprite.perspective.xy, p);
++    let dp = s / globals.viewport_size * vec2<f32>(2.0, -2.0);
++    out.position = vec4<f32>(dp + vec2<f32>(-1.0, 1.0) * w, 0.0, w);
+     out.tile_position = to_tile_position(unit_vertex, sprite.tile);
+     out.sprite_id = instance_id;
+-    out.local_position = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
+-    out.clip_distances = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds, sprite.content_mask, sprite.transformation);
++    out.local_position = p;
++    out.clip_distances = distance_from_clip_rect_impl(s / w, sprite.content_mask);
+     return out;
+ }
+ 
+@@ -1248,7 +1270,16 @@
+         let grayscale = dot(color.rgb, GRAYSCALE_FACTORS);
+         color = vec4<f32>(vec3<f32>(grayscale), sample.a);
+     }
+-    return blend_color(color, sprite.opacity * saturate(0.5 - distance));
++    // rox patch: the wash tints toward its color by its alpha, and the
++    // corner fade ramps the alpha bilinearly across the face.
++    color = vec4<f32>(mix(color.rgb, sprite.wash.rgb, sprite.wash.a), color.a);
++    let uvq = (input.local_position - sprite.bounds.origin) / sprite.bounds.size;
++    let fade = saturate(mix(
++        mix(sprite.fade.x, sprite.fade.y, uvq.x),
++        mix(sprite.fade.w, sprite.fade.z, uvq.x),
++        uvq.y,
++    ));
++    return blend_color(color, sprite.opacity * fade * saturate(0.5 - distance));
+ }
+ 
+ // --- surfaces --- //
+--- a/src/platform/mac/shaders.metal
++++ b/src/platform/mac/shaders.metal
+@@ -688,14 +688,35 @@
+ 
+   float2 unit_vertex = unit_vertices[unit_vertex_id];
+   PolychromeSprite sprite = sprites[sprite_id];
+-  float4 device_position =
+-      to_device_position_transformed(unit_vertex, sprite.bounds, sprite.transformation, viewport_size);
+-  float4 clip_distance = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds,
+-                                                 sprite.content_mask.bounds, sprite.transformation);
+-  float2 tile_position = to_tile_position(unit_vertex, sprite.tile, atlas_size);
+   float2 local_position =
+       unit_vertex * float2(sprite.bounds.size.width, sprite.bounds.size.height) +
+       float2(sprite.bounds.origin.x, sprite.bounds.origin.y);
++  // rox patch: the affine transform plus the homography's perspective row.
++  // w stays 1 for affine sprites, exactly the old path; with perspective
++  // the hardware divide keystones the quad and interpolates the texture
++  // perspective-correct on its own. The clip position keeps the viewport
++  // map linear in (s, w): device(s / w) * w = s * scale + offset * w.
++  float2 transformed;
++  transformed.x = local_position.x * sprite.transformation.rotation_scale[0][0] +
++      local_position.y * sprite.transformation.rotation_scale[0][1] +
++      sprite.transformation.translation[0];
++  transformed.y = local_position.x * sprite.transformation.rotation_scale[1][0] +
++      local_position.y * sprite.transformation.rotation_scale[1][1] +
++      sprite.transformation.translation[1];
++  float w = sprite.perspective[2] + sprite.perspective[0] * local_position.x +
++      sprite.perspective[1] * local_position.y;
++  float2 viewport = float2((float)viewport_size->width, (float)viewport_size->height);
++  float2 dp = transformed / viewport * float2(2.0, -2.0);
++  float4 device_position = float4(dp + float2(-1.0, 1.0) * w, 0.0, w);
++  // Clip distances come off the projected position and scale back by w,
++  // so the hardware's homogeneous interpolation lands on the screen rect.
++  float2 projected = transformed / w;
++  Bounds_ScaledPixels mask = sprite.content_mask.bounds;
++  float4 clip_distance = float4(projected.x - mask.origin.x,
++                                mask.origin.x + mask.size.width - projected.x,
++                                projected.y - mask.origin.y,
++                                mask.origin.y + mask.size.height - projected.y) * w;
++  float2 tile_position = to_tile_position(unit_vertex, sprite.tile, atlas_size);
+   return PolychromeSpriteVertexOutput{
+       device_position,
+       tile_position,
+@@ -723,7 +744,16 @@
+     color.g = grayscale;
+     color.b = grayscale;
+   }
+-  color.a *= sprite.opacity * saturate(0.5 - distance);
++  // rox patch: the wash tints toward its color by its alpha, and the
++  // corner fade ramps the alpha bilinearly across the face.
++  float2 uvq = (input.local_position -
++                float2(sprite.bounds.origin.x, sprite.bounds.origin.y)) /
++      float2(sprite.bounds.size.width, sprite.bounds.size.height);
++  color.rgb = mix(color.rgb, float3(sprite.wash[0], sprite.wash[1], sprite.wash[2]),
++                  sprite.wash[3]);
++  float fade = saturate(mix(mix(sprite.fade[0], sprite.fade[1], uvq.x),
++                            mix(sprite.fade[3], sprite.fade[2], uvq.x), uvq.y));
++  color.a *= sprite.opacity * fade * saturate(0.5 - distance);
+   return color;
+ }
+ 
+--- a/src/platform/windows/shaders.hlsl
++++ b/src/platform/windows/shaders.hlsl
+@@ -1136,6 +1136,15 @@
+     AtlasTile tile;
+     // rox patch: the same per-sprite transform MonochromeSprite carries.
+     TransformationMatrix transformation;
++    // rox patch: vec4 alignment for the fields below.
++    float2 pad2;
++    // rox patch: the homography's perspective row as (gx, gy, w0, 0) with
++    // w = w0 + gx * px + gy * py ((0, 0, 1, 0) = affine), the per-corner
++    // alpha ramp (tl, tr, br, bl), and a straight-alpha wash mixed over
++    // the sample - paint_image_quad's keystone, fade, and turn shading.
++    float4 perspective;
++    float4 fade;
++    float4 wash;
+ };
+ 
+ struct PolychromeSpriteVertexOutput {
+@@ -1161,12 +1170,22 @@
+ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexID, uint sprite_id: SV_InstanceID) {
+     float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+     PolychromeSprite sprite = poly_sprites[sprite_id];
+-    float4 device_position =
+-        to_device_position_transformed(unit_vertex, sprite.bounds, sprite.transformation);
+-    float4 clip_distance = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds,
+-                                                    sprite.content_mask, sprite.transformation);
+-    float2 tile_position = to_tile_position(unit_vertex, sprite.tile);
+     float2 local_position = unit_vertex * sprite.bounds.size + sprite.bounds.origin;
++    // rox patch: the affine transform plus the homography's perspective
++    // row. w stays 1 for affine sprites, exactly the old path; with
++    // perspective the hardware divide keystones the quad and interpolates
++    // the texture perspective-correct on its own. The clip position keeps
++    // the viewport map linear in (s, w): device(s / w) * w = s * scale +
++    // offset * w, and the clip distances come off the projected position
++    // scaled back by w for the homogeneous interpolation.
++    float2 transformed =
++        mul(local_position, sprite.transformation.rotation_scale) + sprite.transformation.translation;
++    float w = sprite.perspective.z + dot(sprite.perspective.xy, local_position);
++    float2 dp = transformed / global_viewport_size * float2(2.0, -2.0);
++    float4 device_position = float4(dp + float2(-1.0, 1.0) * w, 0.0, w);
++    float2 projected = transformed / w;
++    float4 clip_distance = distance_from_clip_rect_impl(projected, sprite.content_mask) * w;
++    float2 tile_position = to_tile_position(unit_vertex, sprite.tile);
+ 
+     PolychromeSpriteVertexOutput output;
+     output.position = device_position;
+@@ -1187,6 +1206,12 @@
+         float3 grayscale = dot(color.rgb, GRAYSCALE_FACTORS);
+         color = float4(grayscale, sample.a);
+     }
+-    color.a *= sprite.opacity * saturate(0.5 - distance);
++    // rox patch: the wash tints toward its color by its alpha, and the
++    // corner fade ramps the alpha bilinearly across the face.
++    float2 uvq = (input.local_position - sprite.bounds.origin) / sprite.bounds.size;
++    color.rgb = lerp(color.rgb, sprite.wash.rgb, sprite.wash.a);
++    float fade = saturate(lerp(lerp(sprite.fade.x, sprite.fade.y, uvq.x),
++                               lerp(sprite.fade.w, sprite.fade.z, uvq.x), uvq.y));
++    color.a *= sprite.opacity * fade * saturate(0.5 - distance);
+     return color;
+ }

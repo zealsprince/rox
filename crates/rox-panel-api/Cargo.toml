@@ -34,6 +34,9 @@ serde_json = "1"
 log = "0.4"
 # The surface shader hashes its source for the approval gate.
 sha2 = "0.10"
+# The images a shader chain declares arrive as encoded files and reach the
+# window as rgba8.
+image = "0.25"
 # The tag suggestions ride the input widget's completion menu, whose
 # provider trait speaks these types; already in the tree through
 # gpui-component.

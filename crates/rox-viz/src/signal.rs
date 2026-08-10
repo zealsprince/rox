@@ -1,7 +1,7 @@
 //! The app's shared modulation layer: named signals over the playback
 //! spectrum that any parameter anywhere can ride. A [`Signal`] is one
 //! source (a frequency band's energy, the whole mix's level, a transient
-//! detector, or a running total of another signal) with its response
+//! detector, a threshold trigger, or a running total of another signal) with its response
 //! smoothing and its gate; a [`Route`] attaches one signal to one
 //! host-defined parameter with an output span. The pool
 //! lives in a [`SignalHub`] evaluated once per frame off the shared
@@ -59,6 +59,13 @@ pub enum Source {
     /// past its own recent average, decaying at the response rate. The
     /// signal a hit rides, where Band is the signal a swell rides.
     Onset { lo: f32, hi: f32 },
+    /// A pulse when the band reaches a line the user drew: 1 the moment it
+    /// crosses the signal's threshold, decaying at the response rate,
+    /// armed again once the band falls back under. Onset with the
+    /// judgment moved from a moving reference to a fixed level, for
+    /// material where the reference never gets to drop - a kick over
+    /// sustained sub fires here where Onset arms once and goes quiet.
+    Trigger { lo: f32, hi: f32 },
     /// A running total of another signal's output: music-driven time. It
     /// climbs by `of`'s value times `rate` each second and wraps at 1, so
     /// a shader reads it as a phase (`sin(TAU * s)` runs straight through
@@ -77,7 +84,7 @@ impl Source {
     /// can't invert the band or walk off the spectrum.
     fn bins(&self, sample_rate: u32, half: usize) -> (usize, usize) {
         let (lo, hi) = match *self {
-            Source::Band { lo, hi } | Source::Onset { lo, hi } => {
+            Source::Band { lo, hi } | Source::Onset { lo, hi } | Source::Trigger { lo, hi } => {
                 let lo = lo.clamp(BAND_MIN_HZ, BAND_MAX_HZ);
                 (lo, hi.clamp(lo * 1.01, BAND_MAX_HZ))
             }
@@ -105,7 +112,8 @@ pub struct Signal {
     pub name: String,
     pub source: Source,
     /// Response smoothing, 0 to 1: 0 snaps to the music, 1 drifts after
-    /// it. On an onset source this is the pulse's decay instead.
+    /// it. On an onset or trigger source this is the pulse's decay
+    /// instead.
     pub smooth: f32,
     /// The gate: anything under this reads as nothing, 0 to 1 against the
     /// signal's own output, 0 for no gate. What it buys is silence between
@@ -115,7 +123,8 @@ pub struct Signal {
     /// smoothstep of it across what's left of the range, 0 at the cross
     /// and 1 at full scale, so clearing the gate hands over nothing rather
     /// than a jump, and a level hovering right on it ripples instead of
-    /// strobing.
+    /// strobing. On a trigger source this is the fire level instead of a
+    /// gate: the pulse fires the moment the band reaches it.
     pub threshold: f32,
     /// Aggregates only: drain back to zero when the track changes, so a
     /// phase doesn't carry a song's worth of accumulation into the next
@@ -162,7 +171,9 @@ impl Signal {
     /// loses nothing. Gated remaps the span above the threshold to the
     /// whole output, through a smoothstep so both ends land flat: the
     /// cross hands over zero rather than a jump, and full scale still
-    /// reads as full. A pure curve of the value, no state, which is what
+    /// reads as full. Triggers step around it entirely: their threshold
+    /// is the fire level and their pulse leaves whole. A pure curve of
+    /// the value, no state, which is what
     /// lets the value's own smoothing be the only clock involved.
     pub fn gated(&self, value: f32) -> f32 {
         let threshold = self.threshold();
@@ -194,6 +205,7 @@ impl Signal {
         match self.source {
             Source::Band { lo, hi } => format!("Band {} - {} Hz", hz(lo), hz(hi)),
             Source::Onset { lo, hi } => format!("Onset {} - {} Hz", hz(lo), hz(hi)),
+            Source::Trigger { lo, hi } => format!("Trigger {} - {} Hz", hz(lo), hz(hi)),
             Source::Level => "Level".to_string(),
             // What it follows can't be named from here without the pool,
             // so the rate is what distinguishes two of them at a glance.
@@ -243,8 +255,9 @@ const RELEASE_FAST: f32 = 12.0;
 const RELEASE_SLOW: f32 = 1.0;
 
 /// The onset detector's shape: the pulse decay rates the response knob
-/// spans, how fast the reference envelope chases the band, how far past
-/// the reference the band must jump to read as a hit, and the level below
+/// spans (shared with the trigger, whose pulse rings the same way), how
+/// fast the reference envelope chases the band, how far past the
+/// reference the band must jump to read as a hit, and the level below
 /// which nothing counts, so the noise floor can't fire it.
 const ONSET_DECAY_FAST: f32 = 16.0;
 const ONSET_DECAY_SLOW: f32 = 1.5;
@@ -252,6 +265,17 @@ const ONSET_REF_ATTACK: f32 = 2.5;
 const ONSET_REF_RELEASE: f32 = 2.0;
 const ONSET_MARGIN: f32 = 0.12;
 const ONSET_FLOOR: f32 = 0.15;
+
+/// The trigger's hysteresis: the fraction of the fire level the band must
+/// fall back under before the trigger can fire again. Without it a level
+/// rippling across the line machine-guns; with it each hit is one pulse,
+/// because the band dips between hits relative to the line the user drew.
+const TRIGGER_REARM: f32 = 0.75;
+
+/// Where a falling value stops counting as motion. An exponential release
+/// never actually lands on zero, so the tail needs a floor to end at or a
+/// surface drawing it out would never park.
+const SETTLED: f32 = 0.004;
 
 /// How fast a flushed aggregate falls back to zero, and how near zero ends
 /// the fall. Quick enough to read as the cycle collapsing rather than as a
@@ -265,15 +289,17 @@ struct Slot {
     value: f32,
     /// The onset detector's slow reference envelope; idle otherwise.
     reference: f32,
-    /// Whether an onset slot is ready to fire again.
+    /// Whether an onset or trigger slot is ready to fire again.
     armed: bool,
     /// An aggregate on its way back to zero: set by a flush or a track
     /// change, cleared when it lands. Accumulation pauses while it drains,
     /// so a flush during a loud passage still gets there.
     draining: bool,
     /// What actually leaves the slot: the value through its signal's gate
-    /// curve. Written on the tick rather than derived at read time only
-    /// because the readers don't carry the pool; it's a cache, not state.
+    /// curve, or on a trigger the pulse itself, where the value is the
+    /// band the fire level judges. Written on the tick rather than
+    /// derived at read time only because the readers don't carry the
+    /// pool; for a trigger it's real state, the ringing pulse.
     output: f32,
 }
 
@@ -314,6 +340,22 @@ impl Signals {
     /// is for the meter, which draws what the gate is holding back.
     pub fn output(&self, id: u64) -> Option<f32> {
         self.slots.get(&id).map(|slot| slot.output)
+    }
+
+    /// Whether anything in the pool is still on its way down. An aggregate
+    /// parks wherever its phase stopped and never falls, so it only counts
+    /// while it's draining; everything else releases toward zero, and the
+    /// release is exactly what a consumer has to keep drawing through.
+    pub fn settling(&self, pool: &[Signal]) -> bool {
+        pool.iter().any(|signal| {
+            let Some(slot) = self.slots.get(&signal.id) else {
+                return false;
+            };
+            if signal.aggregate().is_some() {
+                return slot.draining;
+            }
+            slot.value > SETTLED || slot.output > SETTLED
+        })
     }
 
     /// Fold one frame into the signals. `mags` is the newest half-spectrum
@@ -381,6 +423,31 @@ impl Signals {
                         slot.armed = true;
                     }
                 }
+                Source::Trigger { .. } => {
+                    // The pulse lives in the output and rings down every
+                    // frame; the value stays the band itself, so the
+                    // meter shows the level the fire line is judging and
+                    // the mark reads as "fires here". No threshold set
+                    // means nothing to cross, so the trigger idles.
+                    let decay =
+                        ONSET_DECAY_FAST * (ONSET_DECAY_SLOW / ONSET_DECAY_FAST).powf(smooth);
+                    slot.output -= slot.output * (decay * dt).min(1.0);
+                    if let Some(raw) = raw {
+                        slot.value = raw;
+                        let threshold = signal.threshold();
+                        if threshold > 0.0 {
+                            if slot.armed && raw >= threshold {
+                                slot.output = 1.0;
+                                slot.armed = false;
+                            } else if !slot.armed && raw < threshold * TRIGGER_REARM {
+                                slot.armed = true;
+                            }
+                        }
+                    } else if stopped {
+                        slot.value -= slot.value * (RELEASE_FAST * dt).min(1.0);
+                        slot.armed = true;
+                    }
+                }
                 // Handled in the second pass, which needs the values the
                 // first one just wrote.
                 Source::Aggregate { .. } => {}
@@ -394,6 +461,12 @@ impl Signals {
             let Some(slot) = self.slots.get_mut(&signal.id) else {
                 continue;
             };
+            // A trigger's output is its pulse, written in the first pass;
+            // its threshold is the fire level, not a gate, so the curve
+            // would eat the ringing tail the moment it dropped under.
+            if matches!(signal.source, Source::Trigger { .. }) {
+                continue;
+            }
             slot.output = signal.gated(slot.value);
         }
         // Third pass: the aggregates, reading what the sources landed on
@@ -579,6 +652,16 @@ impl SignalHub {
         self.inner.lock().unwrap().engine.flush(id);
     }
 
+    /// Whether the pool still has a falling tail in it once the feed has
+    /// gone quiet. [`SignalHub::live`] goes false the moment the audio
+    /// stops, which is well before a smoothed signal has finished
+    /// releasing, so anything that stops drawing on `!live` freezes the
+    /// fade partway down instead of playing it out.
+    pub fn settling(&self) -> bool {
+        let hub = self.inner.lock().unwrap();
+        hub.engine.settling(&hub.pool)
+    }
+
     /// Whether audio has moved recently enough that meters reading the hub
     /// should keep asking for frames.
     pub fn live(&self) -> bool {
@@ -669,6 +752,69 @@ mod tests {
         assert!(engine.value(1).unwrap() < 0.05, "stop should release");
     }
 
+    /// The release is motion, and a surface riding a signal has to keep
+    /// drawing for as long as it lasts. Without this the fade a smoothed
+    /// signal exists to give you is the one thing nobody ever sees: the
+    /// audio stops, the frames stop with it, and the effect freezes at
+    /// whatever the last live push happened to carry.
+    #[test]
+    fn a_falling_signal_reads_as_settling_until_it_lands() {
+        let mut engine = Signals::new();
+        let mut mags = vec![0.0f32; 2048];
+        mags[100] = 1.0;
+        // Smoothed hard, the way a presence envelope is: a long tail is
+        // exactly the case where parking early shows.
+        let pool = vec![Signal {
+            smooth: 0.85,
+            ..band(1, 800.0, 2000.0)
+        }];
+        for _ in 0..60 {
+            engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+        }
+        assert!(engine.settling(&pool), "a signal that's up is still motion");
+
+        // A second in, the tail is well under way and nowhere near done.
+        for _ in 0..60 {
+            engine.step(None, 48_000, true, 0.016, &pool);
+        }
+        assert!(
+            engine.value(1).unwrap() < 0.5,
+            "the release should be falling"
+        );
+        assert!(engine.settling(&pool), "and it isn't down yet");
+
+        for _ in 0..600 {
+            engine.step(None, 48_000, true, 0.016, &pool);
+        }
+        assert!(!engine.settling(&pool), "a landed signal parks");
+
+        // An aggregate holds its phase wherever the music left it, so it
+        // never reads as motion; treating a parked phase as a falling tail
+        // would keep the frames coming for as long as the app is up.
+        let pool = vec![
+            Signal {
+                smooth: 0.85,
+                ..band(1, 800.0, 2000.0)
+            },
+            Signal {
+                id: 2,
+                source: Source::Aggregate { of: 1, rate: 0.5 },
+                ..Signal::default()
+            },
+        ];
+        for _ in 0..60 {
+            engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+        }
+        for _ in 0..600 {
+            engine.step(None, 48_000, true, 0.016, &pool);
+        }
+        assert!(
+            engine.value(2).unwrap() > 0.0,
+            "the phase stays where it stopped"
+        );
+        assert!(!engine.settling(&pool), "and a parked phase isn't motion");
+    }
+
     #[test]
     fn onset_fires_once_decays_and_rearms() {
         let mut engine = Signals::new();
@@ -702,6 +848,79 @@ mod tests {
         }
         engine.step(Some(&loud), 48_000, false, 0.016, &pool);
         assert!(engine.value(7).unwrap() > 0.9, "onset should re-arm");
+    }
+
+    fn trigger(id: u64, threshold: f32) -> Signal {
+        Signal {
+            id,
+            source: Source::Trigger {
+                lo: 800.0,
+                hi: 2000.0,
+            },
+            smooth: 0.0,
+            threshold,
+            ..Signal::default()
+        }
+    }
+
+    #[test]
+    fn a_trigger_fires_at_its_line_holds_fire_above_it_and_rearms_under_it() {
+        let mut engine = Signals::new();
+        let pool = vec![trigger(5, 0.5)];
+        let quiet = vec![0.0f32; 2048];
+        let mut loud = vec![0.0f32; 2048];
+        loud[100] = 1.0;
+
+        engine.step(Some(&quiet), 48_000, false, 0.016, &pool);
+        engine.step(Some(&loud), 48_000, false, 0.016, &pool);
+        assert!(
+            engine.output(5).unwrap() > 0.9,
+            "crossing the line should fire the pulse"
+        );
+        assert!(
+            engine.value(5).unwrap() > 0.9,
+            "the value stays the band, for the meter the line is drawn on"
+        );
+
+        // Pinned above the line: the pulse rings down and nothing refires,
+        // which is the whole difference from a gate.
+        for _ in 0..60 {
+            engine.step(Some(&loud), 48_000, false, 0.016, &pool);
+        }
+        assert!(
+            engine.output(5).unwrap() < 0.1,
+            "holding above the line should not hold the pulse"
+        );
+
+        // Back under the line rearms it, and the next cross fires again.
+        for _ in 0..10 {
+            engine.step(Some(&quiet), 48_000, false, 0.016, &pool);
+        }
+        engine.step(Some(&loud), 48_000, false, 0.016, &pool);
+        assert!(
+            engine.output(5).unwrap() > 0.9,
+            "dipping under the line should rearm the trigger"
+        );
+    }
+
+    #[test]
+    fn a_trigger_without_a_line_stays_silent() {
+        let mut engine = Signals::new();
+        let pool = vec![trigger(5, 0.0)];
+        let mut loud = vec![0.0f32; 2048];
+        loud[100] = 1.0;
+        for _ in 0..30 {
+            engine.step(Some(&loud), 48_000, false, 0.016, &pool);
+        }
+        assert_eq!(
+            engine.output(5).unwrap(),
+            0.0,
+            "no threshold means nothing to cross"
+        );
+        assert!(
+            engine.value(5).unwrap() > 0.9,
+            "the band still shows on the meter"
+        );
     }
 
     #[test]
@@ -899,6 +1118,19 @@ mod tests {
         let mags = vec![0.0f32; 1024];
         let pool = vec![band(1, 5000.0, 40.0), band(2, -10.0, 1e9)];
         engine.step(Some(&mags), 48_000, false, 0.016, &pool);
+    }
+
+    /// The Critters bundle ships a trigger, so the tag on disk is a
+    /// contract: this exact JSON has to keep parsing as a trigger.
+    #[test]
+    fn trigger_json_round_trips_unchanged() {
+        let old = r#"{"kind":"trigger","lo":35.0,"hi":130.0}"#;
+        let source: Source = serde_json::from_str(old).unwrap();
+        assert!(matches!(
+            source,
+            Source::Trigger { lo, hi } if lo == 35.0 && hi == 130.0
+        ));
+        assert_eq!(serde_json::to_string(&source).unwrap(), old);
     }
 
     /// A route on disk has to come back as exactly what it was, byte for

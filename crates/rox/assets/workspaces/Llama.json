@@ -703,6 +703,13 @@
     "text_on_accent": "#eaffea",
     "text_secondary": "#197519"
   },
+  "meta": {
+    "author": "zealsprince",
+    "description": "Winamp the way you remember it rather than the way it was. Tahoma, dark, no chrome, a dotted spectrum across the top, and a shade mode on the mini layout.",
+    "version": "1.0",
+    "created": "2026-07-23",
+    "updated": "2026-08-09"
+  },
   "appearance": {
     "surface_opacity": 1.0,
     "backdrop_strength": 1.0,

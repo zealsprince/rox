@@ -1,0 +1,2496 @@
+diff -x .rox-stamp -ruN a/src/platform/blade/blade_renderer.rs b/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs	2026-08-09 12:26:39.380712220 -0600
++++ b/src/platform/blade/blade_renderer.rs	2026-08-09 12:27:58.666816425 -0600
+@@ -7,6 +7,9 @@
+     PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, Underline, UserShader,
+     UserShaderRegion,
+ };
++// rox patch: the composed chain and its per-pass bindings, which is what the
++// pipeline layouts and the draw-time fill are built from.
++use crate::window::{ChainBinding, ChainPassDesc};
+ use blade_graphics as gpu;
+ use blade_util::{BufferBelt, BufferBeltDescriptor};
+ use bytemuck::{Pod, Zeroable};
+@@ -128,22 +131,81 @@
+ const _: () = assert!(std::mem::size_of::<ShaderParams>() == 128);
+ const _: () = assert!(std::mem::size_of::<UserShader>() == 160);
+ 
+-#[derive(blade_macros::ShaderData)]
+-struct ShaderPostData {
+-    params: ShaderParams,
+-    screen: gpu::TextureView,
+-    samp: gpu::Sampler,
++// What one binding of a chain pass carries at draw time. Blade matches the
++// bind group against the module's globals, and a pass only declares what its
++// source named, so the group is built per pass rather than derived.
++enum ChainBindValue {
++    Params(ShaderParams),
++    Texture(gpu::TextureView),
++    Sampler(gpu::Sampler),
++}
++
++// The hand-rolled counterpart to `blade_macros::ShaderData`. `bind` fills
++// against the layout the pipeline was built with and never asks the type for
++// one, so the values here only have to arrive in the order that layout lists.
++struct ChainShaderData<'a> {
++    values: &'a [ChainBindValue],
++}
++
++impl gpu::ShaderData for ChainShaderData<'_> {
++    fn layout() -> gpu::ShaderDataLayout {
++        // Never reached: chain pipelines are built from the layout stored on
++        // the pass, which is the thing `bind` fills against.
++        gpu::ShaderDataLayout::default()
++    }
++
++    fn fill(&self, mut context: gpu::PipelineContext) {
++        use gpu::ShaderBindable as _;
++
++        for (index, value) in self.values.iter().enumerate() {
++            let index = index as u32;
++            match value {
++                ChainBindValue::Params(params) => params.bind_to(&mut context, index),
++                ChainBindValue::Texture(view) => view.bind_to(&mut context, index),
++                ChainBindValue::Sampler(sampler) => sampler.bind_to(&mut context, index),
++            }
++        }
++    }
+ }
+ 
+-// Same pass, plus the shader's own previous output. A separate layout because
+-// blade matches the bind group against the module's globals, and the composed
+-// source only declares `prev` when the shader actually reads it.
+-#[derive(blade_macros::ShaderData)]
+-struct ShaderPostPrevData {
+-    params: ShaderParams,
+-    screen: gpu::TextureView,
+-    samp: gpu::Sampler,
+-    prev: gpu::TextureView,
++// Blade wants `&'static str` binding names and a chain's pass and asset names
++// come out of user text, so they leak once and every later chain that uses the
++// same name reuses the leak. Bounded by the registry's keep-forever policy: a
++// name only ever gets here from a chain that already registered.
++fn intern_binding_name(name: &str) -> &'static str {
++    use std::sync::{Mutex, OnceLock};
++
++    static NAMES: OnceLock<Mutex<std::collections::HashSet<&'static str>>> = OnceLock::new();
++    let mut names = NAMES
++        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
++        .lock()
++        .unwrap();
++    if let Some(interned) = names.get(name) {
++        return interned;
++    }
++    let interned: &'static str = Box::leak(name.to_string().into_boxed_str());
++    names.insert(interned);
++    interned
++}
++
++// The bind group layout for one pass, in the same pinned order the composed
++// module declares its globals in.
++fn chain_pass_layout(bindings: &[ChainBinding]) -> gpu::ShaderDataLayout {
++    gpu::ShaderDataLayout {
++        bindings: bindings
++            .iter()
++            .map(|binding| {
++                let kind = match binding {
++                    ChainBinding::Params => gpu::ShaderBinding::Plain {
++                        size: std::mem::size_of::<ShaderParams>() as u32,
++                    },
++                    ChainBinding::Sampler => gpu::ShaderBinding::Sampler,
++                    _ => gpu::ShaderBinding::Texture,
++                };
++                (intern_binding_name(binding.name()), kind)
++            })
++            .collect(),
++    }
+ }
+ 
+ #[derive(blade_macros::ShaderData)]
+@@ -218,38 +280,112 @@
+     clock: ShaderClock,
+ }
+ 
+-// The region variant. Its clock lives per instance instead, since two panels
+-// running the same shader each want their own.
+-struct RegionShaderPipeline {
++// One compiled pass of a chain. `source` and `layout` stay around so the
++// pipeline can be rebuilt when the surface is reconfigured.
++struct ChainPass {
+     pipeline: gpu::RenderPipeline,
+     source: String,
+-    uses_prev: bool,
++    layout: gpu::ShaderDataLayout,
++    scale: f32,
++    bindings: Vec<ChainBinding>,
++}
++
++impl ChainPass {
++    fn uses_prev(&self) -> bool {
++        self.bindings
++            .iter()
++            .any(|binding| matches!(binding, ChainBinding::Prev))
++    }
++}
++
++// A whole compiled program, post or region. One pass is the common case and
++// stays exactly what it was before chains: no intermediate targets, no extra
++// copies, the same pipeline.
++struct ShaderChain {
++    passes: Vec<ChainPass>,
++}
++
++impl ShaderChain {
++    // Scale and feedback per pass, which is all the target allocator needs.
++    fn target_shape(&self) -> Vec<(f32, bool)> {
++        self.passes
++            .iter()
++            .map(|pass| (pass.scale, pass.uses_prev()))
++            .collect()
++    }
++}
++
++// One pass's renderer-owned textures. The final pass draws into whatever the
++// program was aimed at, so it carries no `target`; every earlier pass gets one
++// at its scaled size, and any pass reading `prev` gets a feedback buffer
++// beside it. Recycled across frames, thrown away on a resize.
++#[derive(Default)]
++struct ChainPassTarget {
++    width: u32,
++    height: u32,
++    target: Option<(gpu::Texture, gpu::TextureView)>,
++    feedback: Option<(gpu::Texture, gpu::TextureView)>,
++}
++
++// The subset a draw needs, snapshotted so walking the chain doesn't hold a
++// borrow of the instance map. Both blade handles are `Copy`.
++#[derive(Clone, Copy, Default)]
++struct ChainPassViews {
++    width: u32,
++    height: u32,
++    target: Option<(gpu::Texture, gpu::TextureView)>,
++    feedback: Option<(gpu::Texture, gpu::TextureView)>,
++}
++
++impl ChainPassTarget {
++    fn views(&self) -> ChainPassViews {
++        ChainPassViews {
++            width: self.width,
++            height: self.height,
++            target: self.target,
++            feedback: self.feedback,
++        }
++    }
+ }
+ 
+ // Per-instance textures for the region pass: `scratch` holds the copy of the
+-// composed image the shader reads as `screen`, `feedback` last frame's output
+-// for shaders that read `prev`. Sized to the region's device pixels, so a
+-// resize throws both away and trails restart.
++// composed image the passes read as `screen`, `targets` the chain's own
++// intermediates and feedback buffers. Sized to the region's device pixels, so
++// a resize throws all of it away and trails restart.
+ struct RegionInstance {
+     shader_id: u32,
+     width: u32,
+     height: u32,
+     scratch: gpu::Texture,
+     scratch_view: gpu::TextureView,
+-    feedback: Option<(gpu::Texture, gpu::TextureView)>,
++    targets: Vec<ChainPassTarget>,
+     clock: ShaderClock,
+ }
+ 
+ struct PostShader {
+-    pipeline: gpu::RenderPipeline,
+-    // Kept so the pipeline can be rebuilt when the surface is reconfigured.
+-    source: String,
+-    uses_prev: bool,
++    chain: ShaderChain,
+     // Advanced by `set_post_signals`, so time freezes when the caller stops
+     // feeding signals rather than when the window stops drawing.
+     clock: ShaderClock,
+ }
+ 
++// An image the caller registered, waiting for the next frame's encoder to
++// carry its bytes to the GPU. Registration can land between frames, when
++// there's no encoder open, so uploads queue the way the atlas queues its own.
++struct PendingTextureUpload {
++    texture: gpu::Texture,
++    width: u32,
++    height: u32,
++    rgba8: Vec<u8>,
++}
++
++// A registered image. Lives until the window closes; v1 never evicts.
++#[derive(Clone, Copy)]
++struct UserTexture {
++    texture: gpu::Texture,
++    view: gpu::TextureView,
++}
++
+ #[derive(Clone, Debug, Eq, PartialEq)]
+ #[repr(C)]
+ struct PathSprite {
+@@ -490,13 +626,19 @@
+     // post shader actually asks for feedback.
+     post_prev: Option<[(gpu::Texture, gpu::TextureView); 2]>,
+     post_prev_index: usize,
++    // The post chain's own intermediates, one entry per pass. Window-sized, so
++    // they get thrown away with everything else on a resize.
++    post_targets: Vec<ChainPassTarget>,
+     post_signals: [f32; 16],
+     post_meta: [f32; 8],
+     post_mouse: [f32; 4],
+     blit_pipeline: Option<gpu::RenderPipeline>,
+     user_shaders: HashMap<u32, UserShaderPipeline>,
+-    region_shaders: HashMap<u32, RegionShaderPipeline>,
++    region_shaders: HashMap<u32, ShaderChain>,
+     region_instances: HashMap<u64, RegionInstance>,
++    user_textures: HashMap<u32, UserTexture>,
++    pending_texture_uploads: Vec<PendingTextureUpload>,
++    texture_belt: BufferBelt,
+     rendering_parameters: RenderingParameters,
+ }
+ 
+@@ -587,6 +729,7 @@
+             post_intermediate: None,
+             post_prev: None,
+             post_prev_index: 0,
++            post_targets: Vec::new(),
+             post_signals: [0.0; 16],
+             post_meta: [0.0; 8],
+             post_mouse: [0.0; 4],
+@@ -594,6 +737,13 @@
+             user_shaders: HashMap::default(),
+             region_shaders: HashMap::default(),
+             region_instances: HashMap::default(),
++            user_textures: HashMap::default(),
++            pending_texture_uploads: Vec::new(),
++            texture_belt: BufferBelt::new(BufferBeltDescriptor {
++                memory: gpu::Memory::Upload,
++                min_chunk_size: 0x10000,
++                alignment: 64, // Vulkan `optimalBufferCopyOffsetAlignment` on Intel Xe
++            }),
+             rendering_parameters,
+         })
+     }
+@@ -686,10 +836,11 @@
+                     gpu_size.height,
+                 ));
+             }
+-            // Feedback buffers are sized to what they were drawn over, so a
+-            // window resize restarts every trail, not just the ones whose
+-            // own bounds happened to change.
++            // Feedback buffers and pass targets are sized to what they were
++            // drawn over, so a window resize restarts every trail, not just
++            // the ones whose own bounds happened to change.
+             self.destroy_post_prev();
++            self.destroy_post_targets();
+             for instance in std::mem::take(&mut self.region_instances).into_values() {
+                 self.destroy_region_instance(instance);
+             }
+@@ -708,28 +859,24 @@
+                 self.surface.info(),
+                 self.rendering_parameters.path_sample_count,
+             );
++            let surface_info = self.surface.info();
++            let mut rebuild = |gpu: &gpu::Context, chain: &mut ShaderChain| {
++                for pass in &mut chain.passes {
++                    gpu.destroy_render_pipeline(&mut pass.pipeline);
++                    pass.pipeline =
++                        create_screen_shader_pipeline(gpu, surface_info, &pass.source, &pass.layout);
++                }
++            };
+             if let Some(post) = &mut self.post_shader {
+-                self.gpu.destroy_render_pipeline(&mut post.pipeline);
+-                post.pipeline = create_screen_shader_pipeline(
+-                    &self.gpu,
+-                    self.surface.info(),
+-                    &post.source,
+-                    post.uses_prev,
+-                );
++                rebuild(&self.gpu, &mut post.chain);
+             }
+             for entry in self.user_shaders.values_mut() {
+                 self.gpu.destroy_render_pipeline(&mut entry.pipeline);
+                 entry.pipeline =
+                     create_user_shader_pipeline(&self.gpu, self.surface.info(), &entry.source);
+             }
+-            for entry in self.region_shaders.values_mut() {
+-                self.gpu.destroy_render_pipeline(&mut entry.pipeline);
+-                entry.pipeline = create_screen_shader_pipeline(
+-                    &self.gpu,
+-                    self.surface.info(),
+-                    &entry.source,
+-                    entry.uses_prev,
+-                );
++            for chain in self.region_shaders.values_mut() {
++                rebuild(&self.gpu, chain);
+             }
+             if let Some(mut pipeline) = self.blit_pipeline.take() {
+                 self.gpu.destroy_render_pipeline(&mut pipeline);
+@@ -756,35 +903,69 @@
+         );
+     }
+ 
+-    /// Compiles the region variant of a user shader - the one that reads the
++    /// Compiles the region variant of a program - the chain that reads the
+     /// composed image under its bounds. Same expectations as
+-    /// `register_user_shader`: pre-validated source, second call is a no-op.
+-    pub fn register_screen_shader(&mut self, id: u32, source: &str, uses_prev: bool) {
++    /// `register_user_shader`: pre-validated sources, second call is a no-op.
++    pub fn register_screen_shader(&mut self, id: u32, chain: &[ChainPassDesc]) {
+         if self.region_shaders.contains_key(&id) {
+             return;
+         }
+-        let pipeline =
+-            create_screen_shader_pipeline(&self.gpu, self.surface.info(), source, uses_prev);
+-        self.region_shaders.insert(
+-            id,
+-            RegionShaderPipeline {
+-                pipeline,
+-                source: source.to_string(),
+-                uses_prev,
++        let chain = self.create_shader_chain(chain);
++        self.region_shaders.insert(id, chain);
++    }
++
++    /// Uploads a caller-provided image a chain can bind by name. The bytes
++    /// ride the next frame's encoder, so registration between frames is fine.
++    /// Registering an id twice is a no-op.
++    pub fn register_user_texture(&mut self, id: u32, width: u32, height: u32, rgba8: &[u8]) {
++        if self.user_textures.contains_key(&id) {
++            return;
++        }
++        let format = gpu::TextureFormat::Rgba8UnormSrgb;
++        let texture = self.gpu.create_texture(gpu::TextureDesc {
++            name: "user texture",
++            format,
++            size: gpu::Extent {
++                width,
++                height,
++                depth: 1,
++            },
++            array_layer_count: 1,
++            mip_level_count: 1,
++            sample_count: 1,
++            dimension: gpu::TextureDimension::D2,
++            usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
++            external: None,
++        });
++        let view = self.gpu.create_texture_view(
++            texture,
++            gpu::TextureViewDesc {
++                name: "user texture view",
++                format,
++                dimension: gpu::ViewDimension::D2,
++                subresources: &Default::default(),
+             },
+         );
++        self.user_textures.insert(id, UserTexture { texture, view });
++        self.pending_texture_uploads.push(PendingTextureUpload {
++            texture,
++            width,
++            height,
++            rgba8: rgba8.to_vec(),
++        });
+     }
+ 
+-    /// Installs or clears the whole-window post-process shader. The source is
+-    /// the full composed WGSL module; callers are expected to have validated
+-    /// it already, since blade panics on bad input.
+-    pub fn set_post_shader(&mut self, source: Option<&str>, uses_prev: bool) {
++    /// Installs or clears the whole-window post-process program. The sources
++    /// are full composed WGSL modules; callers are expected to have validated
++    /// them already, since blade panics on bad input.
++    pub fn set_post_shader(&mut self, chain: Option<&[ChainPassDesc]>) {
+         self.wait_for_gpu();
+-        if let Some(mut post) = self.post_shader.take() {
+-            self.gpu.destroy_render_pipeline(&mut post.pipeline);
++        if let Some(post) = self.post_shader.take() {
++            self.destroy_shader_chain(post.chain);
+         }
+         self.destroy_post_prev();
+-        let Some(source) = source else {
++        self.destroy_post_targets();
++        let Some(chain) = chain else {
+             // The intermediate is still what region passes render into, so it
+             // gets rebuilt on demand in `draw` rather than kept around here.
+             if let Some((texture, view)) = self.post_intermediate.take() {
+@@ -793,8 +974,7 @@
+             }
+             return;
+         };
+-        let pipeline =
+-            create_screen_shader_pipeline(&self.gpu, self.surface.info(), source, uses_prev);
++        let chain = self.create_shader_chain(chain);
+         if self.post_intermediate.is_none() {
+             self.post_intermediate = Some(create_post_intermediate_texture(
+                 &self.gpu,
+@@ -804,13 +984,43 @@
+             ));
+         }
+         self.post_shader = Some(PostShader {
+-            pipeline,
+-            source: source.to_string(),
+-            uses_prev,
++            chain,
+             clock: ShaderClock::default(),
+         });
+     }
+ 
++    /// Compiles every pass of a chain, each against the layout its own
++    /// bindings describe.
++    fn create_shader_chain(&self, chain: &[ChainPassDesc]) -> ShaderChain {
++        ShaderChain {
++            passes: chain
++                .iter()
++                .map(|pass| {
++                    let layout = chain_pass_layout(&pass.bindings);
++                    let pipeline = create_screen_shader_pipeline(
++                        &self.gpu,
++                        self.surface.info(),
++                        &pass.source,
++                        &layout,
++                    );
++                    ChainPass {
++                        pipeline,
++                        source: pass.source.clone(),
++                        layout,
++                        scale: pass.scale,
++                        bindings: pass.bindings.clone(),
++                    }
++                })
++                .collect(),
++        }
++    }
++
++    fn destroy_shader_chain(&self, mut chain: ShaderChain) {
++        for pass in &mut chain.passes {
++            self.gpu.destroy_render_pipeline(&mut pass.pipeline);
++        }
++    }
++
+     pub fn set_post_signals(&mut self, signals: [f32; 16], meta: [f32; 8], mouse: [f32; 4]) {
+         self.post_signals = signals;
+         self.post_meta = meta;
+@@ -820,6 +1030,13 @@
+         }
+     }
+ 
++    /// Move the post pass's mouse without advancing its clock: what an idle
++    /// repaint feeds, so a paused shader can follow the cursor while its
++    /// animation stays parked.
++    pub fn set_post_mouse(&mut self, mouse: [f32; 4]) {
++        self.post_mouse = mouse;
++    }
++
+     fn destroy_post_prev(&mut self) {
+         if let Some(pair) = self.post_prev.take() {
+             for (texture, view) in pair {
+@@ -830,13 +1047,64 @@
+         self.post_prev_index = 0;
+     }
+ 
++    fn destroy_post_targets(&mut self) {
++        for target in std::mem::take(&mut self.post_targets) {
++            self.destroy_chain_pass_target(target);
++        }
++    }
++
++    fn destroy_chain_pass_target(&self, target: ChainPassTarget) {
++        for (texture, view) in [target.target, target.feedback].into_iter().flatten() {
++            self.gpu.destroy_texture(texture);
++            self.gpu.destroy_texture_view(view);
++        }
++    }
++
+     fn destroy_region_instance(&mut self, instance: RegionInstance) {
+         self.gpu.destroy_texture(instance.scratch);
+         self.gpu.destroy_texture_view(instance.scratch_view);
+-        if let Some((texture, view)) = instance.feedback {
+-            self.gpu.destroy_texture(texture);
+-            self.gpu.destroy_texture_view(view);
++        for target in instance.targets {
++            self.destroy_chain_pass_target(target);
++        }
++    }
++
++    /// Builds a chain's per-pass targets over a `width` by `height` surface.
++    /// The final pass draws into whatever the program was aimed at, so it gets
++    /// no target of its own; the rest get one at their scale. A pass that
++    /// reads `prev` gets a feedback buffer too, except the final post pass,
++    /// which ping-pongs `post_prev` instead, hence `feedback_for_final`.
++    fn create_chain_targets(
++        &mut self,
++        shape: &[(f32, bool)],
++        width: u32,
++        height: u32,
++        name: &str,
++        feedback_for_final: bool,
++    ) -> Vec<ChainPassTarget> {
++        let format = self.surface.info().format;
++        let last = shape.len().saturating_sub(1);
++        let mut targets = Vec::with_capacity(shape.len());
++        for (index, (scale, uses_prev)) in shape.iter().enumerate() {
++            let is_last = index == last;
++            let pass_width = scaled_size(width, *scale);
++            let pass_height = scaled_size(height, *scale);
++            let make = |renderer: &mut Self| {
++                let pair =
++                    create_region_texture(&renderer.gpu, format, pass_width, pass_height, name);
++                renderer.command_encoder.init_texture(pair.0);
++                renderer.clear_texture(pair.1);
++                pair
++            };
++            let target = (!is_last).then(|| make(self));
++            let feedback = (*uses_prev && (!is_last || feedback_for_final)).then(|| make(self));
++            targets.push(ChainPassTarget {
++                width: pass_width,
++                height: pass_height,
++                target,
++                feedback,
++            });
+         }
++        targets
+     }
+ 
+     #[cfg_attr(
+@@ -951,8 +1219,8 @@
+         if let Some(msaa_view) = self.path_intermediate_msaa_texture_view {
+             self.gpu.destroy_texture_view(msaa_view);
+         }
+-        if let Some(mut post) = self.post_shader.take() {
+-            self.gpu.destroy_render_pipeline(&mut post.pipeline);
++        if let Some(post) = self.post_shader.take() {
++            self.destroy_shader_chain(post.chain);
+         }
+         if let Some((texture, view)) = self.post_intermediate.take() {
+             self.gpu.destroy_texture(texture);
+@@ -961,13 +1229,19 @@
+         for mut entry in std::mem::take(&mut self.user_shaders).into_values() {
+             self.gpu.destroy_render_pipeline(&mut entry.pipeline);
+         }
+-        for mut entry in std::mem::take(&mut self.region_shaders).into_values() {
+-            self.gpu.destroy_render_pipeline(&mut entry.pipeline);
++        for chain in std::mem::take(&mut self.region_shaders).into_values() {
++            self.destroy_shader_chain(chain);
+         }
+         for instance in std::mem::take(&mut self.region_instances).into_values() {
+             self.destroy_region_instance(instance);
+         }
++        for texture in std::mem::take(&mut self.user_textures).into_values() {
++            self.gpu.destroy_texture(texture.texture);
++            self.gpu.destroy_texture_view(texture.view);
++        }
++        self.texture_belt.destroy(&self.gpu);
+         self.destroy_post_prev();
++        self.destroy_post_targets();
+         if let Some(mut pipeline) = self.blit_pipeline.take() {
+             self.gpu.destroy_render_pipeline(&mut pipeline);
+         }
+@@ -1024,19 +1298,20 @@
+ 
+         self.ensure_region_instance(region, width, height);
+ 
+-        let shader = &self.region_shaders[&region.shader_id];
+         let Some(instance) = self.region_instances.get_mut(&region.instance) else {
+             return;
+         };
+         instance.clock.tick();
+-        let params = ShaderParams {
+-            time: instance.clock.time,
+-            delta: instance.clock.delta,
+-            resolution: [width as f32, height as f32],
+-            mouse: region.mouse,
+-            meta: bytemuck::cast(region.meta),
+-            signals: bytemuck::cast(region.signals),
+-        };
++        let (time, delta) = (instance.clock.time, instance.clock.delta);
++        let scratch = instance.scratch;
++        let scratch_view = instance.scratch_view;
++        // Snapshotted so walking the chain below doesn't hold the instance map
++        // borrowed while the encoder is in use.
++        let targets = instance
++            .targets
++            .iter()
++            .map(ChainPassTarget::views)
++            .collect::<Vec<_>>();
+ 
+         let copy_extent = gpu::Extent {
+             width: (copy_right - copy_left) as u32,
+@@ -1051,12 +1326,14 @@
+         };
+         let local_origin = [(copy_left - left) as u32, (copy_top - top) as u32, 0];
+ 
++        // One snapshot of the composed image per frame: every pass that reads
++        // `screen` reads this same scratch.
+         {
+             let mut transfers = self.command_encoder.transfer("shader region read");
+             transfers.copy_texture_to_texture(
+                 source_piece,
+                 gpu::TexturePiece {
+-                    texture: instance.scratch,
++                    texture: scratch,
+                     mip_level: 0,
+                     array_layer: 0,
+                     origin: local_origin,
+@@ -1065,81 +1342,145 @@
+             );
+         }
+ 
+-        // No blending: the pass replaces its rect outright, the way the whole
+-        // window post pass replaces the frame. The scissor is what bounds it.
+-        if let mut pass = self.command_encoder.render(
+-            "shader region",
+-            gpu::RenderTargetSet {
+-                colors: &[gpu::RenderTarget {
+-                    view: target_view,
+-                    init_op: gpu::InitOp::Load,
+-                    finish_op: gpu::FinishOp::Store,
+-                }],
+-                depth_stencil: None,
+-            },
+-        ) {
+-            let mut encoder = pass.with(&shader.pipeline);
+-            encoder.set_viewport(&gpu::Viewport {
+-                x: left as f32,
+-                y: top as f32,
+-                w: width as f32,
+-                h: height as f32,
+-                depth: 0.0..1.0,
+-            });
+-            encoder.set_scissor_rect(&gpu::ScissorRect {
+-                x: clip_left,
+-                y: clip_top,
+-                w: (clip_right - clip_left) as u32,
+-                h: (clip_bottom - clip_top) as u32,
+-            });
+-            match instance.feedback {
+-                Some((_, prev_view)) => encoder.bind(
+-                    0,
+-                    &ShaderPostPrevData {
+-                        params,
+-                        screen: instance.scratch_view,
+-                        samp: self.atlas_sampler,
+-                        prev: prev_view,
+-                    },
+-                ),
+-                None => encoder.bind(
+-                    0,
+-                    &ShaderPostData {
+-                        params,
+-                        screen: instance.scratch_view,
+-                        samp: self.atlas_sampler,
+-                    },
+-                ),
+-            }
+-            encoder.draw(0, 3, 0, 1);
+-        }
++        let chain = &self.region_shaders[&region.shader_id];
++        let Some(last) = chain.passes.len().checked_sub(1) else {
++            return;
++        };
++        for (index, pass) in chain.passes.iter().enumerate() {
++            let is_last = index == last;
++            let view = if is_last {
++                target_view
++            } else {
++                let Some((_, view)) = targets[index].target else {
++                    return;
++                };
++                view
++            };
++            let resolution = if is_last {
++                [width as f32, height as f32]
++            } else {
++                [targets[index].width as f32, targets[index].height as f32]
++            };
++            let params = ShaderParams {
++                time,
++                delta,
++                resolution,
++                mouse: region.mouse,
++                meta: bytemuck::cast(region.meta),
++                signals: bytemuck::cast(region.signals),
++            };
++            let Some(values) = bind_chain_pass(
++                pass,
++                params,
++                scratch_view,
++                self.atlas_sampler,
++                &targets,
++                index,
++                &self.user_textures,
++            ) else {
++                return;
++            };
+ 
+-        if let Some((feedback, _)) = instance.feedback {
+-            let mut transfers = self.command_encoder.transfer("shader region feedback");
+-            transfers.copy_texture_to_texture(
+-                source_piece,
+-                gpu::TexturePiece {
+-                    texture: feedback,
+-                    mip_level: 0,
+-                    array_layer: 0,
+-                    origin: local_origin,
++            // Intermediates draw onto their own cleared texture, where the
++            // pipeline's premultiplied blend is the identity. The final pass
++            // lands on the loaded frame, so a transparent program composites
++            // over the panel it rides and an opaque one replaces its rect the
++            // way it always did; the scissor keeps it inside its own lane.
++            if let mut render_pass = self.command_encoder.render(
++                "shader region",
++                gpu::RenderTargetSet {
++                    colors: &[gpu::RenderTarget {
++                        view,
++                        init_op: if is_last {
++                            gpu::InitOp::Load
++                        } else {
++                            gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack)
++                        },
++                        finish_op: gpu::FinishOp::Store,
++                    }],
++                    depth_stencil: None,
+                 },
+-                copy_extent,
+-            );
++            ) {
++                let mut encoder = render_pass.with(&pass.pipeline);
++                if is_last {
++                    encoder.set_viewport(&gpu::Viewport {
++                        x: left as f32,
++                        y: top as f32,
++                        w: width as f32,
++                        h: height as f32,
++                        depth: 0.0..1.0,
++                    });
++                    encoder.set_scissor_rect(&gpu::ScissorRect {
++                        x: clip_left,
++                        y: clip_top,
++                        w: (clip_right - clip_left) as u32,
++                        h: (clip_bottom - clip_top) as u32,
++                    });
++                }
++                encoder.bind(0, &ChainShaderData { values: &values });
++                encoder.draw(0, 3, 0, 1);
++            }
++
++            // Feedback is last frame's output, so the copy happens after the
++            // pass that produced this frame's. The final pass reads its rect
++            // back out of the intermediate it just drew into.
++            if let Some((feedback, _)) = targets[index].feedback {
++                let mut transfers = self.command_encoder.transfer("shader region feedback");
++                if is_last {
++                    transfers.copy_texture_to_texture(
++                        source_piece,
++                        gpu::TexturePiece {
++                            texture: feedback,
++                            mip_level: 0,
++                            array_layer: 0,
++                            origin: local_origin,
++                        },
++                        copy_extent,
++                    );
++                } else if let Some((pass_texture, _)) = targets[index].target {
++                    transfers.copy_texture_to_texture(
++                        gpu::TexturePiece {
++                            texture: pass_texture,
++                            mip_level: 0,
++                            array_layer: 0,
++                            origin: [0, 0, 0],
++                        },
++                        gpu::TexturePiece {
++                            texture: feedback,
++                            mip_level: 0,
++                            array_layer: 0,
++                            origin: [0, 0, 0],
++                        },
++                        gpu::Extent {
++                            width: targets[index].width,
++                            height: targets[index].height,
++                            depth: 1,
++                        },
++                    );
++                }
++            }
+         }
+     }
+ 
+-    /// Makes sure this instance has scratch (and, for a feedback shader,
+-    /// `prev`) textures at the region's current size. A size change, a
+-    /// different shader or a newly needed feedback buffer all rebuild from
+-    /// scratch, cleared: trails restart rather than smearing the old size.
++    /// Makes sure this instance has a scratch texture and the chain's pass
++    /// targets at the region's current size. A size change, a different
++    /// program or a newly needed feedback buffer all rebuild from scratch,
++    /// cleared: trails restart rather than smearing the old size.
+     fn ensure_region_instance(&mut self, region: &UserShaderRegion, width: u32, height: u32) {
++        let Some(chain) = self.region_shaders.get(&region.shader_id) else {
++            return;
++        };
++        let shape = chain.target_shape();
+         let stale = match self.region_instances.get(&region.instance) {
+             Some(instance) => {
+                 instance.width != width
+                     || instance.height != height
+                     || instance.shader_id != region.shader_id
+-                    || (region.uses_prev && instance.feedback.is_none())
++                    || (region.uses_prev
++                        && !instance
++                            .targets
++                            .iter()
++                            .any(|target| target.feedback.is_some()))
+             }
+             None => true,
+         };
+@@ -1156,14 +1497,8 @@
+         self.command_encoder.init_texture(scratch);
+         self.clear_texture(scratch_view);
+ 
+-        let mut feedback = None;
+-        if region.uses_prev {
+-            let pair =
+-                create_region_texture(&self.gpu, format, width, height, "shader region feedback");
+-            self.command_encoder.init_texture(pair.0);
+-            self.clear_texture(pair.1);
+-            feedback = Some(pair);
+-        }
++        let targets =
++            self.create_chain_targets(&shape, width, height, "shader region pass", true);
+ 
+         self.region_instances.insert(
+             region.instance,
+@@ -1173,87 +1508,170 @@
+                 height,
+                 scratch,
+                 scratch_view,
+-                feedback,
++                targets,
+                 clock: ShaderClock::default(),
+             },
+         );
+     }
+ 
+-    /// The whole-window pass. Without feedback it writes straight to the
+-    /// swapchain; with it, it ping-pongs two intermediates so `prev` is last
+-    /// frame's finished image, and blits the winner across.
++    /// The whole-window pass. Without feedback the final pass writes straight
++    /// to the swapchain; with it, it ping-pongs two intermediates so `prev` is
++    /// last frame's finished image, and blits the winner across. Earlier
++    /// passes of a chain draw into their own targets first.
+     fn draw_post_pass(&mut self, frame_view: gpu::TextureView, screen_view: gpu::TextureView) {
+         let Some(post) = &self.post_shader else {
+             return;
+         };
+-        let uses_prev = post.uses_prev;
+-        let params = ShaderParams {
+-            time: post.clock.time,
+-            delta: post.clock.delta,
+-            resolution: [
+-                self.surface_config.size.width as f32,
+-                self.surface_config.size.height as f32,
+-            ],
+-            mouse: self.post_mouse,
+-            meta: bytemuck::cast(self.post_meta),
+-            signals: bytemuck::cast(self.post_signals),
++        let (time, delta) = (post.clock.time, post.clock.delta);
++        let shape = post.chain.target_shape();
++        let Some(last) = shape.len().checked_sub(1) else {
++            return;
+         };
++        let uses_prev = shape[last].1;
++        // A chain that never reads the composed frame can't put it back, so
++        // its output alone would erase the app it was meant to ride. Those
++        // get the frame blitted under them and land on it loaded, where the
++        // pipeline's premultiplied blend composites the shader over it. A
++        // chain that reads `screen` composites for itself, and a feedback
++        // chain owns its ping-pong pair, so both keep the cleared target
++        // they always had.
++        let overlay = !uses_prev
++            && !post.chain.passes.iter().any(|pass| {
++                pass.bindings
++                    .iter()
++                    .any(|binding| matches!(binding, ChainBinding::Screen))
++            });
+ 
++        let width = self.surface_config.size.width;
++        let height = self.surface_config.size.height;
++        self.ensure_post_targets(&shape, width, height);
+         if uses_prev {
+             self.ensure_post_prev();
+         }
+         let feedback = uses_prev.then_some(()).and(self.post_prev);
+-        let (target_view, prev_view) = match feedback {
++        let (final_view, prev_view) = match feedback {
+             Some(pair) => (pair[self.post_prev_index].1, pair[1 - self.post_prev_index].1),
+             None => (frame_view, frame_view),
+         };
++        if overlay {
++            self.blit(final_view, screen_view);
++        }
++        let targets = self
++            .post_targets
++            .iter()
++            .map(ChainPassTarget::views)
++            .collect::<Vec<_>>();
+         let Some(post) = &self.post_shader else {
+             return;
+         };
+ 
+-        // Blending stays off: the shader's output is the final image, so
+-        // the surface's premultiplied alpha passes through untouched.
+-        if let mut pass = self.command_encoder.render(
+-            "post-process",
+-            gpu::RenderTargetSet {
+-                colors: &[gpu::RenderTarget {
+-                    view: target_view,
+-                    init_op: gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack),
+-                    finish_op: gpu::FinishOp::Store,
+-                }],
+-                depth_stencil: None,
+-            },
+-        ) {
+-            let mut encoder = pass.with(&post.pipeline);
+-            if feedback.is_some() {
+-                encoder.bind(
+-                    0,
+-                    &ShaderPostPrevData {
+-                        params,
+-                        screen: screen_view,
+-                        samp: self.atlas_sampler,
+-                        prev: prev_view,
+-                    },
+-                );
++        for (index, pass) in post.chain.passes.iter().enumerate() {
++            let is_last = index == last;
++            let view = if is_last {
++                final_view
+             } else {
+-                encoder.bind(
+-                    0,
+-                    &ShaderPostData {
+-                        params,
+-                        screen: screen_view,
+-                        samp: self.atlas_sampler,
++                let Some((_, view)) = targets[index].target else {
++                    return;
++                };
++                view
++            };
++            let resolution = if is_last {
++                [width as f32, height as f32]
++            } else {
++                [targets[index].width as f32, targets[index].height as f32]
++            };
++            let params = ShaderParams {
++                time,
++                delta,
++                resolution,
++                mouse: self.post_mouse,
++                meta: bytemuck::cast(self.post_meta),
++                signals: bytemuck::cast(self.post_signals),
++            };
++            // The final pass's `prev` is the ping-pong partner, not a copy:
++            // the finished frame is already sitting in the other half.
++            let final_prev = is_last.then_some(prev_view);
++            let Some(values) = bind_chain_pass_with_prev(
++                pass,
++                params,
++                screen_view,
++                self.atlas_sampler,
++                &targets,
++                index,
++                final_prev,
++                &self.user_textures,
++            ) else {
++                return;
++            };
++
++            // The final pass of an overlay chain draws over the frame the
++            // blit above put down; everything else draws onto a cleared
++            // target, where the pipeline's blend is the identity and the
++            // output passes through the way it always did.
++            if let mut render_pass = self.command_encoder.render(
++                "post-process",
++                gpu::RenderTargetSet {
++                    colors: &[gpu::RenderTarget {
++                        view,
++                        init_op: if is_last && overlay {
++                            gpu::InitOp::Load
++                        } else {
++                            gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack)
++                        },
++                        finish_op: gpu::FinishOp::Store,
++                    }],
++                    depth_stencil: None,
++                },
++            ) {
++                let mut encoder = render_pass.with(&pass.pipeline);
++                encoder.bind(0, &ChainShaderData { values: &values });
++                encoder.draw(0, 3, 0, 1);
++            }
++
++            if !is_last
++                && let (Some((pass_texture, _)), Some((feedback_texture, _))) =
++                    (targets[index].target, targets[index].feedback)
++            {
++                let mut transfers = self.command_encoder.transfer("post-process feedback");
++                transfers.copy_texture_to_texture(
++                    gpu::TexturePiece {
++                        texture: pass_texture,
++                        mip_level: 0,
++                        array_layer: 0,
++                        origin: [0, 0, 0],
++                    },
++                    gpu::TexturePiece {
++                        texture: feedback_texture,
++                        mip_level: 0,
++                        array_layer: 0,
++                        origin: [0, 0, 0],
++                    },
++                    gpu::Extent {
++                        width: targets[index].width,
++                        height: targets[index].height,
++                        depth: 1,
+                     },
+                 );
+             }
+-            encoder.draw(0, 3, 0, 1);
+         }
+ 
+         if feedback.is_some() {
+-            self.blit(frame_view, target_view);
++            self.blit(frame_view, final_view);
+             self.post_prev_index = 1 - self.post_prev_index;
+         }
+     }
+ 
++    /// The post chain's intermediates. A one-pass chain allocates nothing:
++    /// its only pass draws straight at the swapchain or the ping-pong pair.
++    fn ensure_post_targets(&mut self, shape: &[(f32, bool)], width: u32, height: u32) {
++        if self.post_targets.len() == shape.len() {
++            return;
++        }
++        self.destroy_post_targets();
++        self.post_targets =
++            self.create_chain_targets(shape, width, height, "post-process pass", false);
++    }
++
+     fn ensure_post_prev(&mut self) {
+         if self.post_prev.is_some() {
+             return;
+@@ -1317,9 +1735,36 @@
+         );
+     }
+ 
++    /// Carries any images registered since the last frame to the GPU. Same
++    /// shape as the atlas's own uploads: queued when they arrive, flushed
++    /// against the frame's encoder.
++    fn flush_texture_uploads(&mut self) {
++        for upload in std::mem::take(&mut self.pending_texture_uploads) {
++            self.command_encoder.init_texture(upload.texture);
++            let staging = self.texture_belt.alloc_bytes(&upload.rgba8, &self.gpu);
++            let mut transfers = self.command_encoder.transfer("user texture upload");
++            transfers.copy_buffer_to_texture(
++                staging,
++                upload.width * 4,
++                gpu::TexturePiece {
++                    texture: upload.texture,
++                    mip_level: 0,
++                    array_layer: 0,
++                    origin: [0, 0, 0],
++                },
++                gpu::Extent {
++                    width: upload.width,
++                    height: upload.height,
++                    depth: 1,
++                },
++            );
++        }
++    }
++
+     pub fn draw(&mut self, scene: &Scene) {
+         self.command_encoder.start();
+         self.atlas.before_frame(&mut self.command_encoder);
++        self.flush_texture_uploads();
+ 
+         let frame = {
+             profiling::scope!("acquire frame");
+@@ -1716,6 +2161,7 @@
+ 
+         profiling::scope!("finish");
+         self.instance_belt.flush(&sync_point);
++        self.texture_belt.flush(&sync_point);
+         self.atlas.after_frame(&sync_point);
+ 
+         self.wait_for_gpu();
+@@ -1723,6 +2169,60 @@
+     }
+ }
+ 
++/// A pass target's size at its scale, never smaller than one pixel.
++fn scaled_size(size: u32, scale: f32) -> u32 {
++    ((size as f32 * scale).round() as u32).max(1)
++}
++
++/// Gathers a pass's bind values in the pinned order its layout lists them.
++/// `None` when something it needs is missing, either an asset that was never
++/// registered or an intermediate that failed to allocate. That skips the whole
++/// program for the frame.
++///
++/// `prev_override` is how the final post pass reads its ping-pong partner
++/// instead of a copied-back buffer.
++#[allow(clippy::too_many_arguments)]
++fn bind_chain_pass_with_prev(
++    pass: &ChainPass,
++    params: ShaderParams,
++    screen: gpu::TextureView,
++    sampler: gpu::Sampler,
++    targets: &[ChainPassViews],
++    index: usize,
++    prev_override: Option<gpu::TextureView>,
++    textures: &HashMap<u32, UserTexture>,
++) -> Option<Vec<ChainBindValue>> {
++    let mut values = Vec::with_capacity(pass.bindings.len());
++    for binding in &pass.bindings {
++        values.push(match binding {
++            ChainBinding::Params => ChainBindValue::Params(params),
++            ChainBinding::Screen => ChainBindValue::Texture(screen),
++            ChainBinding::Sampler => ChainBindValue::Sampler(sampler),
++            ChainBinding::Prev => match prev_override {
++                Some(view) => ChainBindValue::Texture(view),
++                None => ChainBindValue::Texture(targets.get(index)?.feedback?.1),
++            },
++            ChainBinding::Pass { index: earlier, .. } => {
++                ChainBindValue::Texture(targets.get(*earlier)?.target?.1)
++            }
++            ChainBinding::Asset { id, .. } => ChainBindValue::Texture(textures.get(id)?.view),
++        });
++    }
++    Some(values)
++}
++
++fn bind_chain_pass(
++    pass: &ChainPass,
++    params: ShaderParams,
++    screen: gpu::TextureView,
++    sampler: gpu::Sampler,
++    targets: &[ChainPassViews],
++    index: usize,
++    textures: &HashMap<u32, UserTexture>,
++) -> Option<Vec<ChainBindValue>> {
++    bind_chain_pass_with_prev(pass, params, screen, sampler, targets, index, None, textures)
++}
++
+ fn create_path_intermediate_texture(
+     gpu: &gpu::Context,
+     format: gpu::TextureFormat,
+@@ -1793,23 +2293,18 @@
+ }
+ 
+ /// Builds the pipeline for a screen-reading pass. Post and region share it:
+-/// same template, same layout, same target format - a region pass just aims
+-/// its fullscreen triangle with a viewport instead of filling the window.
++/// same template, same target format - a region pass just aims its fullscreen
++/// triangle with a viewport instead of filling the window. The layout comes
++/// from the caller because it's built out of what the pass actually binds.
+ fn create_screen_shader_pipeline(
+     gpu: &gpu::Context,
+     surface_info: gpu::SurfaceInfo,
+     source: &str,
+-    uses_prev: bool,
++    layout: &gpu::ShaderDataLayout,
+ ) -> gpu::RenderPipeline {
+-    use gpu::ShaderData as _;
+-
+     let shader = gpu.create_shader(gpu::ShaderDesc { source });
+     shader.check_struct_size::<ShaderParams>();
+ 
+-    let with_prev = ShaderPostPrevData::layout();
+-    let without_prev = ShaderPostData::layout();
+-    let layout: &gpu::ShaderDataLayout = if uses_prev { &with_prev } else { &without_prev };
+-
+     gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+         name: "screen-shader",
+         data_layouts: &[layout],
+@@ -1821,9 +2316,15 @@
+         },
+         depth_stencil: None,
+         fragment: Some(shader.at("fs_post")),
++        // Premultiplied-over, the same compose the in-scene quad gets: it's
++        // what lets a transparent shader ride the frame under it wherever the
++        // target arrives loaded (the region final pass, the post pass behind
++        // an overlay blit). Everywhere else the target was just cleared to
++        // transparent black, where this blend is the identity, so an opaque
++        // pass draws exactly what it always drew.
+         color_targets: &[gpu::ColorTargetState {
+             format: surface_info.format,
+-            blend: None,
++            blend: Some(gpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+             write_mask: gpu::ColorWrites::default(),
+         }],
+         multisample_state: gpu::MultisampleState::default(),
+diff -x .rox-stamp -ruN a/src/platform/linux/wayland/window.rs b/src/platform/linux/wayland/window.rs
+--- a/src/platform/linux/wayland/window.rs	2026-08-09 12:26:39.381240574 -0600
++++ b/src/platform/linux/wayland/window.rs	2026-08-09 12:26:39.406942885 -0600
+@@ -39,6 +39,8 @@
+     },
+ };
+ use crate::{WindowKind, scene::Scene};
++// rox patch: the composed chain the shader entry points take.
++use crate::window::ChainPassDesc;
+ 
+ #[derive(Default)]
+ pub(crate) struct Callbacks {
+@@ -1102,14 +1104,18 @@
+         self.borrow_mut().renderer.register_user_shader(id, source);
+     }
+ 
+-    fn register_screen_shader(&self, id: u32, source: &str, uses_prev: bool) {
++    fn register_screen_shader(&self, id: u32, chain: &[ChainPassDesc]) {
++        self.borrow_mut().renderer.register_screen_shader(id, chain);
++    }
++
++    fn register_user_texture(&self, id: u32, width: u32, height: u32, rgba8: &[u8]) {
+         self.borrow_mut()
+             .renderer
+-            .register_screen_shader(id, source, uses_prev);
++            .register_user_texture(id, width, height, rgba8);
+     }
+ 
+-    fn set_post_shader(&self, source: Option<&str>, uses_prev: bool) {
+-        self.borrow_mut().renderer.set_post_shader(source, uses_prev);
++    fn set_post_shader(&self, chain: Option<&[ChainPassDesc]>) {
++        self.borrow_mut().renderer.set_post_shader(chain);
+     }
+ 
+     fn set_post_signals(&self, signals: [f32; 16], meta: [f32; 8], mouse: [f32; 4]) {
+@@ -1117,6 +1123,10 @@
+             .renderer
+             .set_post_signals(signals, meta, mouse);
+     }
++
++    fn set_post_mouse(&self, mouse: [f32; 4]) {
++        self.borrow_mut().renderer.set_post_mouse(mouse);
++    }
+ }
+ 
+ fn update_window(mut state: RefMut<WaylandWindowState>) {
+diff -x .rox-stamp -ruN a/src/platform/linux/x11/window.rs b/src/platform/linux/x11/window.rs
+--- a/src/platform/linux/x11/window.rs	2026-08-09 12:26:39.381480956 -0600
++++ b/src/platform/linux/x11/window.rs	2026-08-09 12:26:39.407347059 -0600
+@@ -9,6 +9,8 @@
+     Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+     WindowDecorations, WindowKind, WindowParams, X11ClientStatePtr, px, size,
+ };
++// rox patch: the composed chain the shader entry points take.
++use crate::window::ChainPassDesc;
+ 
+ use blade_graphics as gpu;
+ use raw_window_handle as rwh;
+@@ -1676,20 +1678,28 @@
+             .register_user_shader(id, source);
+     }
+ 
+-    fn register_screen_shader(&self, id: u32, source: &str, uses_prev: bool) {
++    fn register_screen_shader(&self, id: u32, chain: &[ChainPassDesc]) {
+         self.0
+             .state
+             .borrow_mut()
+             .renderer
+-            .register_screen_shader(id, source, uses_prev);
++            .register_screen_shader(id, chain);
+     }
+ 
+-    fn set_post_shader(&self, source: Option<&str>, uses_prev: bool) {
++    fn register_user_texture(&self, id: u32, width: u32, height: u32, rgba8: &[u8]) {
+         self.0
+             .state
+             .borrow_mut()
+             .renderer
+-            .set_post_shader(source, uses_prev);
++            .register_user_texture(id, width, height, rgba8);
++    }
++
++    fn set_post_shader(&self, chain: Option<&[ChainPassDesc]>) {
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .set_post_shader(chain);
+     }
+ 
+     fn set_post_signals(&self, signals: [f32; 16], meta: [f32; 8], mouse: [f32; 4]) {
+@@ -1699,4 +1709,8 @@
+             .renderer
+             .set_post_signals(signals, meta, mouse);
+     }
++
++    fn set_post_mouse(&self, mouse: [f32; 4]) {
++        self.0.state.borrow_mut().renderer.set_post_mouse(mouse);
++    }
+ }
+diff -x .rox-stamp -ruN a/src/platform.rs b/src/platform.rs
+--- a/src/platform.rs	2026-08-09 12:26:39.382238113 -0600
++++ b/src/platform.rs	2026-08-09 12:26:39.407751702 -0600
+@@ -43,6 +43,8 @@
+     ShapedRun, SharedString, Size, SvgRenderer, SvgSize, SystemWindowTab, Task, TaskLabel, Window,
+     WindowControlArea, hash, point, px, size,
+ };
++// rox patch: the composed chain the shader drivers hand across this boundary.
++use crate::window::ChainPassDesc;
+ use anyhow::Result;
+ use async_task::Runnable;
+ use futures::channel::oneshot;
+@@ -550,11 +552,14 @@
+ 
+     // User shaders, the region pass and the whole-window post-process pass;
+     // only the blade backends implement them. Validation happens in `Window`,
+-    // so by the time a source reaches here it has already passed naga.
++    // so by the time a source or a composed chain reaches here it has already
++    // passed naga.
+     fn register_user_shader(&self, _id: u32, _source: &str) {}
+-    fn register_screen_shader(&self, _id: u32, _source: &str, _uses_prev: bool) {}
+-    fn set_post_shader(&self, _source: Option<&str>, _uses_prev: bool) {}
++    fn register_screen_shader(&self, _id: u32, _chain: &[ChainPassDesc]) {}
++    fn register_user_texture(&self, _id: u32, _width: u32, _height: u32, _rgba8: &[u8]) {}
++    fn set_post_shader(&self, _chain: Option<&[ChainPassDesc]>) {}
+     fn set_post_signals(&self, _signals: [f32; 16], _meta: [f32; 8], _mouse: [f32; 4]) {}
++    fn set_post_mouse(&self, _mouse: [f32; 4]) {}
+ 
+     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
+ 
+diff -x .rox-stamp -ruN a/src/window.rs b/src/window.rs
+--- a/src/window.rs	2026-08-09 12:26:39.382985499 -0600
++++ b/src/window.rs	2026-08-09 12:26:39.407966094 -0600
+@@ -878,6 +878,9 @@
+     // rox patch: shaders registered through `register_user_shader`, ids local
+     // to this window because the pipelines live in this window's renderer.
+     pub(crate) user_shaders: UserShaderRegistry,
++    // rox patch: images registered through `register_user_texture`, ids local
++    // to this window for the same reason.
++    pub(crate) user_textures: UserTextureRegistry,
+     #[cfg(any(feature = "inspector", debug_assertions))]
+     inspector: Option<Entity<Inspector>>,
+ }
+@@ -1262,6 +1265,7 @@
+             prompt: None,
+             client_inset: None,
+             user_shaders: UserShaderRegistry::default(),
++            user_textures: UserTextureRegistry::default(),
+             mouse_buttons_down: [false; 2],
+             image_cache_stack: Vec::new(),
+             #[cfg(any(feature = "inspector", debug_assertions))]
+@@ -3270,14 +3274,39 @@
+     /// naga validation message verbatim. Backends without a shader pipeline
+     /// (anything but blade) return `Err("unsupported")`.
+     ///
++    /// This is [`Window::register_user_shader_chain`] with one pass named
++    /// `main` and no assets.
++    ///
+     /// rox patch: part of the user shader primitive.
+     pub fn register_user_shader(
+         &mut self,
+         source: &str,
+     ) -> std::result::Result<UserShaderId, String> {
++        self.register_user_shader_chain(&one_pass_chain(source))
++    }
++
++    /// Validates, compiles and caches a whole shader program: an ordered chain
++    /// of fragment stages plus the images they may sample.
++    ///
++    /// Each pass composes its own module, binding `params` and `samp` always,
++    /// then `screen`, `prev`, the passes ahead of it in the chain and the
++    /// declared assets, whichever of those it actually names. A pass that
++    /// reaches for a later pass, or for itself, fails registration the way any
++    /// unknown identifier does. `Err` carries naga's message prefixed with the
++    /// pass it came from.
++    ///
++    /// Registration is idempotent per chain content, so re-registering the
++    /// same passes and assets hands back the same id. Backends without a
++    /// shader pipeline return `Err("unsupported")`.
++    ///
++    /// rox patch: part of the shader chains.
++    pub fn register_user_shader_chain(
++        &mut self,
++        chain: &UserShaderChain,
++    ) -> std::result::Result<UserShaderId, String> {
+         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+         {
+-            let (id, is_new) = self.user_shaders.register(source)?;
++            let (id, is_new) = self.user_shaders.register_chain(chain)?;
+             let primitive = if is_new {
+                 self.user_shaders
+                     .primitive_source(id)
+@@ -3292,7 +3321,39 @@
+         }
+         #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+         {
+-            let _ = source;
++            let _ = chain;
++            Err("unsupported".to_string())
++        }
++    }
++
++    /// Uploads an image a shader chain can bind by name, handing back the id
++    /// the chain's asset list carries.
++    ///
++    /// `rgba8` is `width * height * 4` bytes of straight-alpha pixels, treated
++    /// as sRGB. The upload happens once: registration is keyed on the pixel
++    /// bytes, so the same image handed over twice hands back the same id. The
++    /// texture lives until the window closes. Backends without a shader
++    /// pipeline return `Err("unsupported")`.
++    ///
++    /// rox patch: part of the shader chains.
++    pub fn register_user_texture(
++        &mut self,
++        width: u32,
++        height: u32,
++        rgba8: &[u8],
++    ) -> std::result::Result<UserTextureId, String> {
++        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++        {
++            let (id, is_new) = self.user_textures.register(width, height, rgba8)?;
++            if is_new {
++                self.platform_window
++                    .register_user_texture(id.0, width, height, rgba8);
++            }
++            Ok(id)
++        }
++        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
++        {
++            let _ = (width, height, rgba8);
+             Err("unsupported".to_string())
+         }
+     }
+@@ -3381,9 +3442,8 @@
+             };
+             // Compiled on first use rather than at registration, so a shader
+             // that only ever runs as a primitive never pays for the variant.
+-            if let Some(source) = self.user_shaders.take_pending_screen_source(shader) {
+-                self.platform_window
+-                    .register_screen_shader(shader.0, &source, caps.uses_prev);
++            if let Some(chain) = self.user_shaders.take_pending_screen_source(shader) {
++                self.platform_window.register_screen_shader(shader.0, &chain);
+             }
+             let scale_factor = self.scale_factor();
+             let mouse = self.shader_mouse(bounds.origin, scale_factor);
+@@ -3459,14 +3519,10 @@
+     ///
+     /// rox patch: part of the post-process pass.
+     pub fn set_post_shader(&mut self, shader: Option<UserShaderId>) {
+-        let uses_prev = shader
+-            .and_then(|id| self.user_shaders.caps(id))
+-            .is_some_and(|caps| caps.uses_prev);
+-        let source = shader
+-            .and_then(|id| self.user_shaders.screen_source(id))
+-            .map(|source| source.to_string());
+-        self.platform_window
+-            .set_post_shader(source.as_deref(), uses_prev);
++        let chain = shader
++            .and_then(|id| self.user_shaders.chain(id))
++            .map(|passes| passes.to_vec());
++        self.platform_window.set_post_shader(chain.as_deref());
+     }
+ 
+     /// Feeds this frame's values for the post shader's 16 signal slots and 8
+@@ -3479,6 +3535,16 @@
+         self.platform_window.set_post_signals(signals, meta, mouse);
+     }
+ 
++    /// Moves the post shader's mouse without feeding signals, so the clock
++    /// stays parked. What an idle repaint calls: a paused shader's cursor
++    /// state keeps up while its animation holds still.
++    ///
++    /// rox patch: part of the post-process pass.
++    pub fn set_post_mouse(&mut self) {
++        let mouse = self.shader_mouse(Point::default(), self.scale_factor());
++        self.platform_window.set_post_mouse(mouse);
++    }
++
+     /// Add a node to the layout tree for the current frame. Takes the `Style` of the element for which
+     /// layout is being requested, along with the layout ids of any children. This method is called during
+     /// calls to the [`Element::request_layout`] trait method and enables any element to participate in layout.
+@@ -5431,31 +5497,114 @@
+     prev: bool,
+ }
+ 
++/// rox patch: one binding a chain pass can have in scope. The order a
++/// composed pass lists them in is pinned, and three things walk it in
++/// lockstep: the WGSL declarations, the pipeline's data layout, and the
++/// draw-time fill. That order is params, screen, samp, prev, the earlier
++/// passes of the chain, then the declared assets, referenced ones only.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub(crate) enum ChainBinding {
++    /// The uniform block. Always bound.
++    Params,
++    /// The composed frame under the program's bounds.
++    Screen,
++    /// The sampler every texture read goes through. Always bound.
++    Sampler,
++    /// This pass's own output from the previous frame, at the pass's size.
++    Prev,
++    /// An earlier pass of the same chain, at that pass's scaled size.
++    Pass {
++        /// Where the pass sits in the chain.
++        index: usize,
++        /// The name its author gave it, which is what the WGSL binds.
++        name: String,
++    },
++    /// A caller-registered image.
++    Asset {
++        /// The renderer-side texture id from `register_user_texture`.
++        id: u32,
++        /// The name the chain declared it under.
++        name: String,
++    },
++}
++
++impl ChainBinding {
++    /// The identifier the composed module declares this binding under.
++    pub(crate) fn name(&self) -> &str {
++        match self {
++            ChainBinding::Params => "params",
++            ChainBinding::Screen => "screen",
++            ChainBinding::Sampler => "samp",
++            ChainBinding::Prev => "prev",
++            ChainBinding::Pass { name, .. } | ChainBinding::Asset { name, .. } => name,
++        }
++    }
++
++    // How the declaration reads in WGSL. Everything that isn't the uniform
++    // block or the sampler is a plain 2D texture.
++    fn declaration(&self) -> (&'static str, &'static str) {
++        match self {
++            ChainBinding::Params => ("var<uniform> ", "ShaderParams"),
++            ChainBinding::Sampler => ("var ", "sampler"),
++            _ => ("var ", "texture_2d<f32>"),
++        }
++    }
++}
++
++/// rox patch: one composed pass of a registered chain: everything the
++/// renderer needs to build the pass's pipeline and bind it at draw time.
++#[derive(Clone, Debug)]
++pub(crate) struct ChainPassDesc {
++    /// The composed WGSL module, undecorated the way blade wants it.
++    pub source: String,
++    /// Resolution scale for this pass's target; the final pass is always 1.0.
++    pub scale: f32,
++    /// What the pass actually references, in the pinned order.
++    pub bindings: Vec<ChainBinding>,
++}
++
+ // Blade assigns bind points from the pipeline's data layout, while naga
+ // validation of a standalone module requires explicit ones, hence two variants.
+-fn compose_screen_shader_source(
++fn compose_chain_pass_source(
+     user_source: &str,
+     decorated: bool,
+-    bindings: ScreenBindings,
++    bindings: &[ChainBinding],
+ ) -> String {
+     let mut declarations = String::new();
+-    let mut slot = 0;
+-    let mut push = |declaration: &str, name: &str, kind: &str| {
++    for (slot, binding) in bindings.iter().enumerate() {
+         if decorated {
+             declarations.push_str(&format!("@group(0) @binding({slot}) "));
+         }
++        let (declaration, kind) = binding.declaration();
++        let name = binding.name();
+         declarations.push_str(&format!("{declaration}{name}: {kind};\n"));
+-        slot += 1;
+-    };
+-    push("var<uniform> ", "params", "ShaderParams");
++    }
++    format!("{SHADER_PARAMS_STRUCT}\n{SCREEN_SHADER_TEMPLATE}\n{declarations}\n{user_source}")
++}
++
++// The four bindings every screen pass starts from, in pinned order. A chain
++// pass appends its earlier neighbours and the declared assets to this.
++fn screen_pass_bindings(bindings: ScreenBindings) -> Vec<ChainBinding> {
++    let mut composed = vec![ChainBinding::Params];
+     if bindings.screen {
+-        push("var ", "screen", "texture_2d<f32>");
++        composed.push(ChainBinding::Screen);
+     }
+-    push("var ", "samp", "sampler");
++    composed.push(ChainBinding::Sampler);
+     if bindings.prev {
+-        push("var ", "prev", "texture_2d<f32>");
++        composed.push(ChainBinding::Prev);
+     }
+-    format!("{SHADER_PARAMS_STRUCT}\n{SCREEN_SHADER_TEMPLATE}\n{declarations}\n{user_source}")
++    composed
++}
++
++// The two-flag shape, which is what the composition tests reason about. A
++// one-pass chain with no assets composes to exactly this.
++#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
++fn compose_screen_shader_source(
++    user_source: &str,
++    decorated: bool,
++    bindings: ScreenBindings,
++) -> String {
++    compose_chain_pass_source(user_source, decorated, &screen_pass_bindings(bindings))
+ }
+ 
+ // Everything a screen pass can offer, which is what registration validates
+@@ -5603,33 +5752,164 @@
+     format!("{SHADER_PARAMS_STRUCT}\n{USER_SHADER_TEMPLATE}\n{bindings}\n{user_source}")
+ }
+ 
+-/// rox patch: one entry per registered shader. Both composed variants are
++/// rox patch: identifies an image registered with
++/// [`Window::register_user_texture`]. Like a shader id it's local to the
++/// window that handed it out, since the uploaded texture lives in that
++/// window's renderer.
++#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
++pub struct UserTextureId(pub u32);
++
++/// rox patch: one fragment stage of a shader program, as ADR 23 describes it.
++/// rox's `// @pass` splitter hands these over in declaration order.
++#[derive(Clone, Debug)]
++pub struct UserShaderPass {
++    /// What later passes bind this one's output under. Has to be a WGSL
++    /// identifier, unique across the chain's passes and assets, and none of
++    /// the template's own names.
++    pub name: String,
++    /// The WGSL fragment stage, same convention as a one-pass shader.
++    pub source: String,
++    /// Resolution scale for this pass's target: one of 1.0, 0.5, 0.25, 0.125.
++    /// The final pass is the program's output, so it has to be 1.0.
++    pub scale: f32,
++}
++
++/// rox patch: a whole shader program: an ordered chain of passes plus the
++/// images they can sample. One pass and no assets is every shader that
++/// existed before chains, and it still compiles to the same pipeline.
++#[derive(Clone, Debug, Default)]
++pub struct UserShaderChain {
++    /// The passes, in execution order. The last one draws the result.
++    pub passes: Vec<UserShaderPass>,
++    /// Images the passes may bind by name.
++    pub assets: Vec<(String, UserTextureId)>,
++}
++
++/// rox patch: one entry per registered program. The composed variants are
+ /// kept as text, because the renderer rebuilds pipelines whenever the surface
+ /// is reconfigured.
+ pub(crate) struct UserShaderEntry {
+-    // Serves both the whole-window post pass and the per-bounds region pass;
+-    // they share a template, a pipeline layout and a target format.
+-    screen_source: String,
+-    // `None` for a shader that samples the screen texture or reads `prev`:
+-    // neither exists in scene space, so it can only ever run as a screen pass.
++    // The chain, composed and classified. Serves both the whole-window post
++    // pass and the per-bounds region pass; they share a template, a target
++    // format and now a pass walk.
++    passes: Vec<ChainPassDesc>,
++    // `None` for a program that samples the screen texture, reads `prev`,
++    // binds an asset or runs more than one pass: none of that exists in scene
++    // space, so it can only ever run as a screen pass.
+     primitive_source: Option<String>,
+     caps: UserShaderCaps,
+-    // The region pipeline is compiled on first `paint_screen_shader`, so a
++    // The region pipelines are compiled on first `paint_screen_shader`, so a
+     // shader that only ever runs as a primitive never pays for the variant.
+     region_registered: bool,
+ }
+ 
+-/// rox patch: what registration worked out about a shader's source, from
+-/// [`Window::user_shader_caps`].
++/// rox patch: what registration worked out about a program, from
++/// [`Window::user_shader_caps`]. The screen and feedback flags are ORs across
++/// the chain: any pass reading `screen` marks the whole program.
+ #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+ pub struct UserShaderCaps {
+-    /// The source reads `screen`, the composed image under its bounds. Such a
+-    /// shader needs a screen pass; [`Window::paint_user_shader`] skips it.
++    /// Some pass reads `screen`, the composed image under its bounds. Such a
++    /// program needs a screen pass; [`Window::paint_user_shader`] skips it.
+     pub samples_screen: bool,
+-    /// The source reads `prev`, its own output from the previous frame. Such a
+-    /// shader gets a persistent feedback texture in a screen pass, and
+-    /// [`Window::paint_user_shader`] skips it for the same reason.
++    /// Some pass reads `prev`, its own output from the previous frame. Those
++    /// passes get a persistent feedback texture in a screen pass, and
++    /// [`Window::paint_user_shader`] skips the program for the same reason.
+     pub uses_prev: bool,
++    /// The program runs more than one pass. Intermediate targets only exist
++    /// in a screen pass, so this is screen-pass-only too.
++    pub multi_pass: bool,
++    /// Some pass binds one of the declared assets. The in-scene primitive has
++    /// no sampler, so an asset read rules it out as well.
++    pub uses_assets: bool,
++}
++
++impl UserShaderCaps {
++    /// Whether the program can only run as a screen pass, the four-way OR
++    /// the surface drivers fork on. `false` means the in-scene primitive fast
++    /// path is available.
++    ///
++    /// rox patch: part of the shader chains.
++    pub fn screen_pass_only(&self) -> bool {
++        self.samples_screen || self.uses_prev || self.multi_pass || self.uses_assets
++    }
++}
++
++/// rox patch: how many passes and assets one chain may declare. Past this the
++/// design being expressed wants a render graph, which ADR 23 refuses.
++const MAX_CHAIN_PASSES: usize = 8;
++const MAX_CHAIN_ASSETS: usize = 8;
++
++// The only scales a pass target is allowed, so the allocator's sizes stay
++// predictable. Halves all the way down, for pyramid work.
++const CHAIN_PASS_SCALES: [f32; 4] = [1.0, 0.5, 0.25, 0.125];
++
++// A WGSL identifier, which is what a pass or asset name has to be to survive
++// composition.
++fn is_binding_name(name: &str) -> bool {
++    let mut chars = name.chars();
++    match chars.next() {
++        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
++        _ => return false,
++    }
++    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
++}
++
++// rox patch: the shape rules a chain satisfies before any of it reaches naga.
++// rox's directive splitter enforces the same rules on the way in; this is what
++// keeps a hand-built chain from reaching the renderer malformed.
++fn validate_chain_shape(chain: &UserShaderChain) -> std::result::Result<(), String> {
++    if chain.passes.is_empty() {
++        return Err("a shader program needs at least one pass".to_string());
++    }
++    if chain.passes.len() > MAX_CHAIN_PASSES {
++        return Err(format!(
++            "a shader program is capped at {MAX_CHAIN_PASSES} passes, found {}",
++            chain.passes.len()
++        ));
++    }
++    if chain.assets.len() > MAX_CHAIN_ASSETS {
++        return Err(format!(
++            "a shader program is capped at {MAX_CHAIN_ASSETS} assets, found {}",
++            chain.assets.len()
++        ));
++    }
++
++    let mut seen = std::collections::HashSet::new();
++    let declared = chain
++        .passes
++        .iter()
++        .map(|pass| pass.name.as_str())
++        .chain(chain.assets.iter().map(|(name, _)| name.as_str()));
++    for name in declared {
++        if !is_binding_name(name) {
++            return Err(format!("`{name}` isn't a usable binding name"));
++        }
++        if matches!(name, "params" | "screen" | "samp" | "prev") {
++            return Err(format!(
++                "`{name}` is one of the template's own bindings, pick another name"
++            ));
++        }
++        if !seen.insert(name) {
++            return Err(format!("`{name}` is declared twice"));
++        }
++    }
++
++    let last = chain.passes.len() - 1;
++    for (index, pass) in chain.passes.iter().enumerate() {
++        if !CHAIN_PASS_SCALES.contains(&pass.scale) {
++            return Err(format!(
++                "pass '{}': scale {} isn't one of 1.0, 0.5, 0.25, 0.125",
++                pass.name, pass.scale
++            ));
++        }
++        if index == last && pass.scale != 1.0 {
++            return Err(format!(
++                "pass '{}': the final pass draws the result, so it has to be full size",
++                pass.name
++            ));
++        }
++    }
++    Ok(())
+ }
+ 
+ /// rox patch: this window's user shaders, keyed by source content so the same
+@@ -5649,109 +5929,200 @@
+         self.entry(id).map(|entry| entry.caps)
+     }
+ 
+-    /// The composed module for a screen pass, post or region.
++    /// The whole composed chain, which is what the post and region drivers
++    /// hand to the renderer.
++    pub(crate) fn chain(&self, id: UserShaderId) -> Option<&[ChainPassDesc]> {
++        self.entry(id).map(|entry| entry.passes.as_slice())
++    }
++
++    /// The composed module for the first pass. The drivers take the whole
++    /// chain; this is here for the tests that pin what one pass composes to.
++    #[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
+     pub(crate) fn screen_source(&self, id: UserShaderId) -> Option<&str> {
+-        self.entry(id).map(|entry| entry.screen_source.as_str())
++        self.entry(id)
++            .and_then(|entry| entry.passes.first())
++            .map(|pass| pass.source.as_str())
+     }
+ 
+-    /// The composed module for the in-scene primitive, absent for a shader
+-    /// that reads `screen` or `prev`.
++    /// The composed module for the in-scene primitive, absent for anything
++    /// [`UserShaderCaps::screen_pass_only`] applies to.
+     pub(crate) fn primitive_source(&self, id: UserShaderId) -> Option<&str> {
+         self.entry(id)
+             .and_then(|entry| entry.primitive_source.as_deref())
+     }
+ 
+-    /// Hands back the screen-pass module the first time a region wants it, and
+-    /// nothing on every call after. Keeps the region pipeline lazy without the
+-    /// caller tracking what has been compiled.
++    /// Hands back the composed chain the first time a region wants it, and
++    /// nothing on every call after. Keeps the region pipelines lazy without
++    /// the caller tracking what has been compiled.
+     #[cfg_attr(
+         not(any(target_os = "linux", target_os = "freebsd")),
+         allow(dead_code)
+     )]
+-    pub(crate) fn take_pending_screen_source(&mut self, id: UserShaderId) -> Option<String> {
++    pub(crate) fn take_pending_screen_source(
++        &mut self,
++        id: UserShaderId,
++    ) -> Option<Vec<ChainPassDesc>> {
+         let entry = self.entries.get_mut(id.0 as usize)?;
+         if entry.region_registered {
+             return None;
+         }
+         entry.region_registered = true;
+-        Some(entry.screen_source.clone())
++        Some(entry.passes.clone())
+     }
+ 
+-    /// Registers `source`, returning its id and whether this call is what
+-    /// created it. Re-registering the same text is a lookup, not a compile.
+-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++    /// Registers `source` as a one-pass program, the shape everything that
++    /// predates chains has. The drivers go through `Window`, which wraps the
++    /// same way; this is the shorthand the tests register with.
++    #[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
+     fn register(&mut self, source: &str) -> std::result::Result<(UserShaderId, bool), String> {
++        self.register_chain(&one_pass_chain(source))
++    }
++
++    /// Registers a whole chain, returning its id and whether this call is what
++    /// created it. Re-registering the same chain is a lookup, not a compile.
++    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
++    fn register_chain(
++        &mut self,
++        chain: &UserShaderChain,
++    ) -> std::result::Result<(UserShaderId, bool), String> {
+         use std::hash::{Hash as _, Hasher as _};
+ 
++        // Content key over the whole chain: names, sources, scales and the
++        // asset ids, so a program that differs only in which image it points
++        // at is a different program.
+         let mut hasher = std::collections::hash_map::DefaultHasher::new();
+-        source.hash(&mut hasher);
++        for pass in &chain.passes {
++            pass.name.hash(&mut hasher);
++            pass.source.hash(&mut hasher);
++            pass.scale.to_bits().hash(&mut hasher);
++        }
++        for (name, texture) in &chain.assets {
++            name.hash(&mut hasher);
++            texture.0.hash(&mut hasher);
++        }
+         let hash = hasher.finish();
+         if let Some(id) = self.by_hash.get(&hash) {
+             return Ok((*id, false));
+         }
+ 
+-        // The superset screen variant (params, screen, samp and prev all in
+-        // scope) is what decides whether the source is valid at all, and its
+-        // globals are what the guard below compares against.
+-        let superset = compose_screen_shader_source(source, true, SCREEN_SUPERSET);
+-        let module = validate_shader_source(&superset)?;
+-        // A shader declaring its own module-scope variables passes validation
+-        // and then panics blade's pipeline layout match, so it stops here.
+-        for variable in module.global_variables.iter() {
+-            let name = variable.1.name.as_deref().unwrap_or_default();
+-            if !matches!(name, "params" | "screen" | "samp" | "prev") {
+-                return Err(format!(
+-                    "user shaders can't declare module-scope variables, found `{name}`; \
+-                     the template provides params, screen, samp and prev"
+-                ));
++        validate_chain_shape(chain)?;
++
++        let mut passes = Vec::with_capacity(chain.passes.len());
++        let mut caps = UserShaderCaps {
++            samples_screen: false,
++            uses_prev: false,
++            multi_pass: chain.passes.len() > 1,
++            uses_assets: false,
++        };
++        for (index, pass) in chain.passes.iter().enumerate() {
++            // Everything this pass could possibly bind: the screen-pass four,
++            // then the passes ahead of it in the chain, then the declared
++            // assets. A reference to a later pass or to itself finds no
++            // declaration here and comes back as naga's unknown identifier.
++            let mut superset = screen_pass_bindings(SCREEN_SUPERSET);
++            superset.extend(chain.passes[..index].iter().enumerate().map(
++                |(earlier, neighbour)| ChainBinding::Pass {
++                    index: earlier,
++                    name: neighbour.name.clone(),
++                },
++            ));
++            superset.extend(
++                chain
++                    .assets
++                    .iter()
++                    .map(|(name, texture)| ChainBinding::Asset {
++                        id: texture.0,
++                        name: name.clone(),
++                    }),
++            );
++
++            // The superset variant is what decides whether the pass is valid
++            // at all, and its globals are what the guard below compares
++            // against.
++            let module =
++                validate_shader_source(&compose_chain_pass_source(&pass.source, true, &superset))
++                    .map_err(|err| format!("pass '{}': {err}", pass.name))?;
++            // A pass declaring its own module-scope variables passes
++            // validation and then panics blade's pipeline layout match, so it
++            // stops here.
++            for variable in module.global_variables.iter() {
++                let name = variable.1.name.as_deref().unwrap_or_default();
++                if !superset.iter().any(|binding| binding.name() == name) {
++                    let offered = superset
++                        .iter()
++                        .map(ChainBinding::name)
++                        .collect::<Vec<_>>()
++                        .join(", ");
++                    return Err(format!(
++                        "pass '{}': user shaders can't declare module-scope variables, found \
++                         `{name}`; the template provides {offered}",
++                        pass.name
++                    ));
++                }
++            }
++
++            // Classification by composition: drop a binding, and the pass only
++            // still resolves if it never referenced it. Cheaper to reason
++            // about than walking naga's usage graph, and it's the same trick
++            // S2 used to spot a screen-sampling source.
++            let mut bindings = Vec::with_capacity(superset.len());
++            for binding in &superset {
++                let referenced = match binding {
++                    // The uniform block and the sampler cost nothing and every
++                    // template mentions them, so they're always bound.
++                    ChainBinding::Params | ChainBinding::Sampler => true,
++                    _ => {
++                        let reduced = superset
++                            .iter()
++                            .filter(|candidate| candidate.name() != binding.name())
++                            .cloned()
++                            .collect::<Vec<_>>();
++                        validate_shader_source(&compose_chain_pass_source(
++                            &pass.source,
++                            true,
++                            &reduced,
++                        ))
++                        .is_err()
++                    }
++                };
++                if !referenced {
++                    continue;
++                }
++                match binding {
++                    ChainBinding::Screen => caps.samples_screen = true,
++                    ChainBinding::Prev => caps.uses_prev = true,
++                    ChainBinding::Asset { .. } => caps.uses_assets = true,
++                    _ => {}
++                }
++                bindings.push(binding.clone());
+             }
++
++            passes.push(ChainPassDesc {
++                source: compose_chain_pass_source(&pass.source, false, &bindings),
++                scale: pass.scale,
++                bindings,
++            });
+         }
+ 
+-        // Classification by composition: drop a binding, and the source only
+-        // still resolves if it never referenced it. Cheaper to reason about
+-        // than walking naga's usage graph, and it's the same trick S2 used to
+-        // spot a screen-sampling source.
+-        let without_prev = ScreenBindings {
+-            screen: true,
+-            prev: false,
+-        };
+-        let uses_prev = validate_shader_source(&compose_screen_shader_source(
+-            source,
+-            true,
+-            without_prev,
+-        ))
+-        .is_err();
+-        let without_screen = ScreenBindings {
+-            screen: false,
+-            prev: true,
+-        };
+-        let samples_screen = validate_shader_source(&compose_screen_shader_source(
+-            source,
+-            true,
+-            without_screen,
+-        ))
+-        .is_err();
+-
+-        // The primitive template offers neither screen nor prev nor a sampler,
+-        // so a source that touches any of them fails here - which is exactly
+-        // how a screen-pass-only shader identifies itself.
+-        let primitive_decorated = compose_user_shader_source(source, true);
+-        let primitive_source = validate_shader_source(&primitive_decorated)
+-            .ok()
+-            .map(|_| compose_user_shader_source(source, false));
++        // The primitive template offers neither screen nor prev nor a sampler
++        // nor any chain neighbour, so a source that touches any of them fails
++        // here - which is exactly how a screen-pass-only program identifies
++        // itself. Only a one-pass chain gets as far as trying.
++        let primitive_source = chain
++            .passes
++            .first()
++            .filter(|_| chain.passes.len() == 1)
++            .and_then(|pass| {
++                validate_shader_source(&compose_user_shader_source(&pass.source, true))
++                    .ok()
++                    .map(|_| compose_user_shader_source(&pass.source, false))
++            });
+ 
+-        let bindings = ScreenBindings {
+-            screen: true,
+-            prev: uses_prev,
+-        };
+         let id = UserShaderId(self.entries.len() as u32);
+         self.entries.push(UserShaderEntry {
+-            screen_source: compose_screen_shader_source(source, false, bindings),
++            passes,
+             primitive_source,
+-            caps: UserShaderCaps {
+-                samples_screen,
+-                uses_prev,
+-            },
++            caps,
+             region_registered: false,
+         });
+         self.by_hash.insert(hash, id);
+@@ -5759,6 +6130,69 @@
+     }
+ }
+ 
++/// rox patch: the one-pass shape a plain source registers as. Named `main`,
++/// full size, no assets, which is what every shader that predates chains is.
++fn one_pass_chain(source: &str) -> UserShaderChain {
++    UserShaderChain {
++        passes: vec![UserShaderPass {
++            name: "main".to_string(),
++            source: source.to_string(),
++            scale: 1.0,
++        }],
++        assets: Vec::new(),
++    }
++}
++
++/// rox patch: this window's caller-provided images, keyed by their pixel bytes
++/// so the same image registered twice uploads once.
++#[derive(Default)]
++pub(crate) struct UserTextureRegistry {
++    by_hash: std::collections::HashMap<u64, UserTextureId>,
++    count: u32,
++}
++
++impl UserTextureRegistry {
++    /// Registers an rgba8 image, returning its id and whether this call is
++    /// what created it.
++    #[cfg_attr(
++        not(any(target_os = "linux", target_os = "freebsd")),
++        allow(dead_code)
++    )]
++    fn register(
++        &mut self,
++        width: u32,
++        height: u32,
++        rgba8: &[u8],
++    ) -> std::result::Result<(UserTextureId, bool), String> {
++        use std::hash::{Hash as _, Hasher as _};
++
++        if width == 0 || height == 0 {
++            return Err("a user texture needs a non-zero width and height".to_string());
++        }
++        let expected = width as usize * height as usize * 4;
++        if rgba8.len() != expected {
++            return Err(format!(
++                "a {width}x{height} rgba8 image is {expected} bytes, got {}",
++                rgba8.len()
++            ));
++        }
++
++        let mut hasher = std::collections::hash_map::DefaultHasher::new();
++        width.hash(&mut hasher);
++        height.hash(&mut hasher);
++        rgba8.hash(&mut hasher);
++        let hash = hasher.finish();
++        if let Some(id) = self.by_hash.get(&hash) {
++            return Ok((*id, false));
++        }
++
++        let id = UserTextureId(self.count);
++        self.count += 1;
++        self.by_hash.insert(hash, id);
++        Ok((id, true))
++    }
++}
++
+ #[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
+ mod user_shader_registry_tests {
+     use super::*;
+@@ -5923,6 +6357,8 @@
+             Some(UserShaderCaps {
+                 samples_screen: false,
+                 uses_prev: false,
++                multi_pass: false,
++                uses_assets: false,
+             })
+         );
+         assert_eq!(registry.caps(UserShaderId(7)), None);
+@@ -5985,4 +6421,326 @@
+         };
+         assert_eq!(span, 160);
+     }
++
++    fn pass(name: &str, source: &str, scale: f32) -> UserShaderPass {
++        UserShaderPass {
++            name: name.to_string(),
++            source: source.to_string(),
++            scale,
++        }
++    }
++
++    fn chain(passes: Vec<UserShaderPass>) -> UserShaderChain {
++        UserShaderChain {
++            passes,
++            assets: Vec::new(),
++        }
++    }
++
++    #[test]
++    fn the_one_pass_wrapper_matches_a_hand_built_chain() {
++        let mut wrapped = UserShaderRegistry::default();
++        let (wrapped_id, _) = wrapped.register(SOLID).unwrap();
++        let mut built = UserShaderRegistry::default();
++        let (built_id, _) = built
++            .register_chain(&chain(vec![pass("main", SOLID, 1.0)]))
++            .unwrap();
++
++        assert_eq!(wrapped_id, built_id);
++        assert_eq!(wrapped.caps(wrapped_id), built.caps(built_id));
++        assert_eq!(
++            wrapped.screen_source(wrapped_id),
++            built.screen_source(built_id)
++        );
++        assert_eq!(
++            wrapped.primitive_source(wrapped_id),
++            built.primitive_source(built_id)
++        );
++        // A source that reads nothing pays for nothing beyond the two
++        // bindings every pass gets.
++        assert_eq!(
++            wrapped.entries[0].passes[0].bindings,
++            vec![ChainBinding::Params, ChainBinding::Sampler]
++        );
++    }
++
++    #[test]
++    fn a_pass_reading_an_earlier_one_binds_it_by_name() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry
++            .register_chain(&chain(vec![
++                pass(
++                    "blur",
++                    "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                         return textureSample(screen, samp, uv);
++                     }",
++                    0.5,
++                ),
++                pass(
++                    "out",
++                    "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                         return textureSample(blur, samp, uv) * 2.0;
++                     }",
++                    1.0,
++                ),
++            ]))
++            .unwrap();
++
++        let entry = &registry.entries[id.0 as usize];
++        assert_eq!(entry.passes.len(), 2);
++        assert_eq!(entry.passes[0].scale, 0.5);
++        assert_eq!(
++            entry.passes[0].bindings,
++            vec![
++                ChainBinding::Params,
++                ChainBinding::Screen,
++                ChainBinding::Sampler
++            ]
++        );
++        // The second pass never mentions `screen`, so it doesn't bind it, and
++        // the earlier pass lands after the sampler the way the order pins it.
++        assert_eq!(
++            entry.passes[1].bindings,
++            vec![
++                ChainBinding::Params,
++                ChainBinding::Sampler,
++                ChainBinding::Pass {
++                    index: 0,
++                    name: "blur".to_string()
++                },
++            ]
++        );
++        assert!(entry.passes[1].source.contains("blur: texture_2d<f32>"));
++    }
++
++    #[test]
++    fn a_pass_cant_read_a_later_one() {
++        let mut registry = UserShaderRegistry::default();
++        let error = registry
++            .register_chain(&chain(vec![
++                pass(
++                    "first",
++                    "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                         return textureSample(second, samp, uv);
++                     }",
++                    1.0,
++                ),
++                pass("second", SOLID, 1.0),
++            ]))
++            .unwrap_err();
++
++        assert!(error.starts_with("pass 'first': "), "{error}");
++        assert!(registry.entries.is_empty());
++    }
++
++    #[test]
++    fn a_naga_error_carries_the_pass_it_came_from() {
++        let mut registry = UserShaderRegistry::default();
++        let error = registry
++            .register_chain(&chain(vec![
++                pass("blur", SOLID, 0.5),
++                pass(
++                    "out",
++                    "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return uv; }",
++                    1.0,
++                ),
++            ]))
++            .unwrap_err();
++
++        assert!(error.starts_with("pass 'out': "), "{error}");
++        assert!(error.contains("error"), "{error}");
++        assert!(registry.entries.is_empty());
++    }
++
++    #[test]
++    fn caps_or_across_the_chain_and_drive_screen_pass_only() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry
++            .register_chain(&chain(vec![
++                pass("plate", SOLID, 1.0),
++                pass(
++                    "out",
++                    "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                         let now = textureSample(plate, samp, uv);
++                         return mix(now, textureSample(prev, samp, uv), 0.5);
++                     }",
++                    1.0,
++                ),
++            ]))
++            .unwrap();
++
++        // Neither pass reads `screen`, one reads `prev`, and the program runs
++        // two passes: the ORs pick that up and the fast path is off.
++        assert_eq!(
++            registry.caps(id),
++            Some(UserShaderCaps {
++                samples_screen: false,
++                uses_prev: true,
++                multi_pass: true,
++                uses_assets: false,
++            })
++        );
++        assert!(registry.caps(id).unwrap().screen_pass_only());
++        assert!(registry.primitive_source(id).is_none());
++
++        // The one-pass pure source is the only shape that keeps the fast path.
++        let (solid, _) = registry.register(SOLID).unwrap();
++        assert!(!registry.caps(solid).unwrap().screen_pass_only());
++        assert!(registry.primitive_source(solid).is_some());
++    }
++
++    #[test]
++    fn a_declared_asset_binds_only_where_a_pass_names_it() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry
++            .register_chain(&UserShaderChain {
++                passes: vec![pass(
++                    "main",
++                    "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                         return textureSample(plate, samp, uv);
++                     }",
++                    1.0,
++                )],
++                assets: vec![
++                    ("plate".to_string(), UserTextureId(3)),
++                    ("spare".to_string(), UserTextureId(4)),
++                ],
++            })
++            .unwrap();
++
++        let caps = registry.caps(id).unwrap();
++        assert!(caps.uses_assets);
++        assert!(!caps.multi_pass);
++        assert!(caps.screen_pass_only());
++        // No sampler in scene space, so an asset read rules out the primitive.
++        assert!(registry.primitive_source(id).is_none());
++        assert_eq!(
++            registry.entries[id.0 as usize].passes[0].bindings,
++            vec![
++                ChainBinding::Params,
++                ChainBinding::Sampler,
++                ChainBinding::Asset {
++                    id: 3,
++                    name: "plate".to_string()
++                },
++            ]
++        );
++    }
++
++    #[test]
++    fn scales_are_pinned_and_the_final_pass_is_full_size() {
++        let mut registry = UserShaderRegistry::default();
++        let odd = registry
++            .register_chain(&chain(vec![
++                pass("a", SOLID, 0.75),
++                pass("b", SOLID, 1.0),
++            ]))
++            .unwrap_err();
++        assert!(odd.contains("0.75"), "{odd}");
++
++        let shrunk = registry
++            .register_chain(&chain(vec![pass("only", SOLID, 0.5)]))
++            .unwrap_err();
++        assert!(shrunk.contains("full size"), "{shrunk}");
++        assert!(registry.entries.is_empty());
++
++        // Halves all the way down are what the pyramid work wants.
++        assert!(
++            registry
++                .register_chain(&chain(vec![
++                    pass("eighth", SOLID, 0.125),
++                    pass("out", SOLID, 1.0),
++                ]))
++                .is_ok()
++        );
++    }
++
++    #[test]
++    fn names_have_to_be_identifiers_unique_and_not_the_templates_own() {
++        let mut registry = UserShaderRegistry::default();
++        let reserved = registry
++            .register_chain(&chain(vec![pass("screen", SOLID, 1.0)]))
++            .unwrap_err();
++        assert!(reserved.contains("screen"), "{reserved}");
++
++        let punctuation = registry
++            .register_chain(&chain(vec![pass("two passes", SOLID, 1.0)]))
++            .unwrap_err();
++        assert!(punctuation.contains("usable binding name"), "{punctuation}");
++
++        let collision = registry
++            .register_chain(&UserShaderChain {
++                passes: vec![pass("plate", SOLID, 1.0)],
++                assets: vec![("plate".to_string(), UserTextureId(0))],
++            })
++            .unwrap_err();
++        assert!(collision.contains("twice"), "{collision}");
++        assert!(registry.entries.is_empty());
++    }
++
++    #[test]
++    fn a_chain_is_capped_at_eight_passes() {
++        let mut registry = UserShaderRegistry::default();
++        let passes = (0..9)
++            .map(|index| pass(&format!("p{index}"), SOLID, 1.0))
++            .collect();
++        let error = registry.register_chain(&chain(passes)).unwrap_err();
++        assert!(error.contains("8 passes"), "{error}");
++
++        let full = (0..8)
++            .map(|index| pass(&format!("p{index}"), SOLID, 1.0))
++            .collect();
++        assert!(registry.register_chain(&chain(full)).is_ok());
++    }
++
++    #[test]
++    fn the_same_chain_registers_once() {
++        let mut registry = UserShaderRegistry::default();
++        let built = chain(vec![pass("blur", SOLID, 0.5), pass("out", SOLID, 1.0)]);
++        let (first, first_new) = registry.register_chain(&built).unwrap();
++        let (second, second_new) = registry.register_chain(&built).unwrap();
++        assert_eq!(first, second);
++        assert!(first_new);
++        assert!(!second_new);
++        assert_eq!(registry.entries.len(), 1);
++
++        // The scale is part of the key, so the same text at another size is
++        // another program.
++        let rescaled = chain(vec![pass("blur", SOLID, 0.25), pass("out", SOLID, 1.0)]);
++        let (third, _) = registry.register_chain(&rescaled).unwrap();
++        assert_ne!(first, third);
++    }
++
++    #[test]
++    fn the_region_variant_hands_back_the_whole_chain_once() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry
++            .register_chain(&chain(vec![pass("blur", SOLID, 0.5), pass("out", SOLID, 1.0)]))
++            .unwrap();
++        let taken = registry.take_pending_screen_source(id).unwrap();
++        assert_eq!(taken.len(), 2);
++        assert_eq!(taken[0].scale, 0.5);
++        assert!(registry.take_pending_screen_source(id).is_none());
++    }
++
++    #[test]
++    fn textures_are_content_keyed_and_size_checked() {
++        let mut registry = UserTextureRegistry::default();
++        let pixels = vec![0u8; 2 * 2 * 4];
++        let (first, first_new) = registry.register(2, 2, &pixels).unwrap();
++        let (second, second_new) = registry.register(2, 2, &pixels).unwrap();
++        assert_eq!(first, UserTextureId(0));
++        assert_eq!(first, second);
++        assert!(first_new);
++        assert!(!second_new);
++
++        let mut different = pixels.clone();
++        different[0] = 255;
++        let (third, third_new) = registry.register(2, 2, &different).unwrap();
++        assert_eq!(third, UserTextureId(1));
++        assert!(third_new);
++
++        assert!(registry.register(2, 2, &pixels[..4]).is_err());
++        assert!(registry.register(0, 2, &[]).is_err());
++    }
+ }

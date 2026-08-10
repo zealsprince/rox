@@ -17,6 +17,7 @@ use gpui::{App, Context, Entity, Global, SharedString, Subscription, Task};
 use rox_core::settings::{
     GainModeSetting, ReplayGainSave, ReplayGainSettings, Settings, ShuffleMode,
 };
+use rox_core::QUEUE_CAP;
 use rox_library::cue::{Span, TrackKey};
 use rox_library::embeddings;
 use rox_library::store;
@@ -88,16 +89,41 @@ fn random_pool<'a>(scope: &'a continuation::Scope, library: &'a [i64]) -> &'a [i
     }
 }
 
-/// One random entry of `pool` resolved to a playable key. None when the
-/// pool is empty or the id it landed on has no file behind it any more.
+/// One random entry of `pool` with the run it sits in, and where in that run
+/// the draw landed. The draw is where playback starts, and the entries around
+/// it are what carries it on: Next walks down the rest of the album and the
+/// list behind it, Prev walks back. A press lands somewhere and keeps playing,
+/// the same as double clicking a row.
+///
+/// Bounded like a double click in a big view (`QUEUE_CAP`), with a share of
+/// the budget kept behind the draw for history. None when the pool is empty or
+/// the id it landed on has no file behind it any more.
+///
 /// Keys rather than paths, so landing on a cue track draws that track's span
 /// instead of the whole image it lives in.
-fn draw_one(library: &Library, pool: &[i64]) -> Option<Vec<TrackKey>> {
+fn draw_run(library: &Library, pool: &[i64]) -> Option<(Vec<TrackKey>, usize)> {
     if pool.is_empty() {
         return None;
     }
-    let id = pool[random_index(pool.len())];
-    library.keys_for(&[id]).ok().filter(|keys| !keys.is_empty())
+    let at = random_index(pool.len());
+    let drawn = library.keys_for(&[pool[at]]).ok()?.pop()?;
+    let (lo, hi) = run_window(at, pool.len());
+    let keys = library.keys_for(&pool[lo..hi]).ok()?;
+    // Ids whose files have left the library drop out of the resolve, so the
+    // cursor is found by the key rather than counted off the pool.
+    let start = keys.iter().position(|key| *key == drawn)?;
+    Some((keys, start))
+}
+
+/// The slice of a `len` entry pool a draw at `at` plays inside: at most
+/// `QUEUE_CAP` tracks, half the budget behind the draw so Prev has somewhere
+/// to walk, sliding forward against the end so the window stays full. A pool
+/// under the cap comes back whole.
+fn run_window(at: usize, len: usize) -> (usize, usize) {
+    let lo = at
+        .saturating_sub(QUEUE_CAP / 2)
+        .min(len.saturating_sub(QUEUE_CAP));
+    (lo, (lo + QUEUE_CAP).min(len))
 }
 
 /// Whether the queue has run close enough to its end to ask for more
@@ -1317,8 +1343,8 @@ impl Player {
     /// Counted from the audible cursor, not the decode cursor, which has run
     /// a track ahead for the gapless boundary and would fire a track early.
     /// The published cursor stands in before any frame has played, so a
-    /// session that comes up already short (a one-track queue, the random
-    /// button, Start Radio) fires on its first tick, which is the point.
+    /// session that comes up already short (a one-track queue, Start Radio)
+    /// fires on its first tick, which is the point.
     ///
     /// Asked twice for every batch, once to fire the query and again when the
     /// answer lands: a query is a hundred milliseconds, which is plenty of
@@ -1405,14 +1431,19 @@ impl Player {
         self.scope = scope;
     }
 
-    /// Play one track at random as a fresh one-track queue, drawn from the
+    /// Land on a track at random and play on from there, drawn from the
     /// context playback is already in: the view or playlist that started the
     /// session, the library at large when nothing named one. The scope is put
     /// back after the start, so a second press stays in the same list instead
     /// of escaping to the library the way a fresh session would.
+    ///
+    /// The run around the draw comes with it as playing context, so the press
+    /// lands somewhere and then keeps going down that album and that list.
+    /// Shuffle scatters what follows the way it does for any other start, and
+    /// continuation (ADR 17) still takes over at the end of the run.
     pub fn play_random(&mut self, library: &Entity<Library>, cx: &mut Context<Self>) {
         let scope = self.scope.clone();
-        let keys = {
+        let drawn = {
             let library = library.read(cx);
             let all: &[i64] = library
                 .projection()
@@ -1422,10 +1453,10 @@ impl Player {
             // the draw takes the library at large rather than dropping the
             // press on the floor. A scope that already is the library just
             // gets a second try.
-            draw_one(library, random_pool(&scope, all)).or_else(|| draw_one(library, all))
+            draw_run(library, random_pool(&scope, all)).or_else(|| draw_run(library, all))
         };
-        let Some(keys) = keys else { return };
-        self.play(keys, cx);
+        let Some((keys, start)) = drawn else { return };
+        self.play_at(keys, start, cx);
         // After the play, never before: starting a session clears the scope
         // back to the library at large.
         self.scope = scope;
@@ -2663,6 +2694,37 @@ mod tests {
         assert_eq!(random_pool(&empty, &all), all.as_slice());
         // An empty library on top of it has nothing to offer either way.
         assert!(random_pool(&empty, &[]).is_empty());
+    }
+
+    /// A random press plays the run around what it drew, so the track it
+    /// landed on is always inside the window and the entries after it are
+    /// there to carry on into. The window slides rather than shrinking, so a
+    /// draw near either end still comes with a full budget of music.
+    #[test]
+    fn a_random_draw_brings_the_run_around_it() {
+        // A pool under the cap travels whole, wherever the draw landed.
+        assert_eq!(run_window(0, 40), (0, 40));
+        assert_eq!(run_window(39, 40), (0, 40));
+
+        let len = QUEUE_CAP * 3;
+        // Room on both sides: half the budget behind the draw for Prev.
+        let (lo, hi) = run_window(len / 2, len);
+        assert_eq!((lo, hi), (len / 2 - QUEUE_CAP / 2, len / 2 + QUEUE_CAP / 2));
+        // Against the front, the window starts at the top of the pool rather
+        // than reaching behind it.
+        assert_eq!(run_window(10, len), (0, QUEUE_CAP));
+        // Against the back, it slides forward instead of coming up short.
+        let (lo, hi) = run_window(len - 1, len);
+        assert_eq!((lo, hi), (len - QUEUE_CAP, len));
+        // Whichever way it slid, the draw is inside it.
+        for at in [0, 1, QUEUE_CAP, len / 2, len - 2, len - 1] {
+            let (lo, hi) = run_window(at, len);
+            assert!(
+                lo <= at && at < hi,
+                "the draw at {at} sits outside {lo}..{hi}"
+            );
+            assert_eq!(hi - lo, QUEUE_CAP, "a full window either side of {at}");
+        }
     }
 
     /// Every index the draw can produce is inside the pool, which is the one

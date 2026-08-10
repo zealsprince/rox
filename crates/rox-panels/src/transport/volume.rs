@@ -381,22 +381,15 @@ fn fmt_db(volume: f32) -> String {
 }
 
 /// One wheel step over the volume panel, wherever the pointer sits on the
-/// strip. A notch arrives as 3 lines, so one notch steps 5%; the range is
-/// 0 to 100% and touching it unmutes.
+/// strip. The step itself is shared with the playback strip's speaker
+/// button, so the two never drift apart.
 fn volume_scroll(
     this: &mut VolumePanel,
     event: &gpui::ScrollWheelEvent,
     _window: &mut Window,
     cx: &mut Context<VolumePanel>,
 ) {
-    let lines = match event.delta {
-        gpui::ScrollDelta::Lines(lines) => lines.y,
-        gpui::ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 20.0,
-    };
-    this.state.player.update(cx, |player, cx| {
-        let volume = (player.volume() + lines / 3.0 * 0.05).clamp(0.0, 1.0);
-        player.set_volume(volume, cx);
-    });
+    super::volume_wheel(&this.state.player, event, cx);
 }
 
 impl Render for VolumePanel {

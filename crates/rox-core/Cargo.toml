@@ -19,6 +19,8 @@ gpui = { workspace = true }
 # The settings file itself.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Shader assets ride the bundle as encoded bytes, and the bundle is JSON.
+base64 = "0.22"
 # Platform data dir, the anchor everything else here hangs off.
 dirs = "5"
 # The logging facade the whole tree writes through; our backend fans each

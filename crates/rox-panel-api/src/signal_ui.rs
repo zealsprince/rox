@@ -196,7 +196,9 @@ pub fn open_bands<P: SignalHost>(host: &P) -> Vec<BandMark> {
         .filter(|signal| ui.open.contains(&signal.id))
         .filter_map(|signal| {
             let (lo, hi) = match signal.source {
-                Source::Band { lo, hi } | Source::Onset { lo, hi } => (lo, hi),
+                Source::Band { lo, hi } | Source::Onset { lo, hi } | Source::Trigger { lo, hi } => {
+                    (lo, hi)
+                }
                 Source::Level | Source::Aggregate { .. } => return None,
             };
             let scrubs = ui.signal_scrubs.get(&signal.id);
@@ -237,6 +239,7 @@ enum SourceKind {
     Band,
     Level,
     Onset,
+    Trigger,
     Aggregate,
 }
 
@@ -244,8 +247,14 @@ const SOURCE_CHOICES: &[(&str, SourceKind)] = &[
     ("Band", SourceKind::Band),
     ("Level", SourceKind::Level),
     ("Onset", SourceKind::Onset),
+    ("Trigger", SourceKind::Trigger),
     ("Total", SourceKind::Aggregate),
 ];
+
+/// Where a trigger's fire line lands for a signal that had no threshold
+/// when it switched kinds. A trigger with no line never fires, so the
+/// switch seeds one mid-meter for the user to drag into place.
+const TRIGGER_SEED: f32 = 0.5;
 
 /// What a fresh aggregate rides and how fast, for a signal switched to
 /// Total with nothing picked yet: the first other signal in the pool at a
@@ -301,7 +310,9 @@ fn edit_signal(hub: &Arc<SignalHub>, id: u64, edit: impl FnOnce(&mut Signal), cx
 /// The bar is the value before the gate, dimmed while the gate is eating
 /// it. A bar that just vanished under the threshold would be no help at
 /// all for placing the threshold, which is the one thing this meter is
-/// looked at for.
+/// looked at for. A trigger reads the same way for free: the bar is the
+/// band its fire line judges, flashing bright as each pulse fires and
+/// dimming as it rings down.
 pub fn meter(hub: Arc<SignalHub>, id: u64, fill: Rgba, marker: Option<f32>) -> Div {
     div().h(px(6.)).w_full().child(
         canvas(
@@ -694,6 +705,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
     let (kind, freq_lo, freq_hi) = match signal.source {
         Source::Band { lo, hi } => (SourceKind::Band, lo, hi),
         Source::Onset { lo, hi } => (SourceKind::Onset, lo, hi),
+        Source::Trigger { lo, hi } => (SourceKind::Trigger, lo, hi),
         Source::Level => (SourceKind::Level, 30.0, 120.0),
         Source::Aggregate { .. } => (SourceKind::Aggregate, 30.0, 120.0),
     };
@@ -712,6 +724,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
             Some(
                 "What the signal listens to: Band follows one frequency range, \
                  Level the whole mix, Onset pulses on each hit in the range, \
+                 Trigger fires a pulse when the range reaches its threshold, \
                  Total adds up another signal over time",
             ),
             panel::choices(
@@ -735,7 +748,9 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                         id,
                         |signal| {
                             let (lo, hi) = match signal.source {
-                                Source::Band { lo, hi } | Source::Onset { lo, hi } => (lo, hi),
+                                Source::Band { lo, hi }
+                                | Source::Onset { lo, hi }
+                                | Source::Trigger { lo, hi } => (lo, hi),
                                 Source::Level | Source::Aggregate { .. } => (30.0, 120.0),
                             };
                             let (of, rate) = match signal.source {
@@ -745,9 +760,15 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                             signal.source = match kind {
                                 SourceKind::Band => Source::Band { lo, hi },
                                 SourceKind::Onset => Source::Onset { lo, hi },
+                                SourceKind::Trigger => Source::Trigger { lo, hi },
                                 SourceKind::Level => Source::Level,
                                 SourceKind::Aggregate => Source::Aggregate { of, rate },
                             };
+                            // A trigger with no line never fires; seed one
+                            // for the switch to land doing something.
+                            if kind == SourceKind::Trigger && signal.threshold <= 0.0 {
+                                signal.threshold = TRIGGER_SEED;
+                            }
                         },
                         cx,
                     );
@@ -773,8 +794,9 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                             this.hub(),
                             id,
                             |signal| {
-                                if let Source::Band { lo, hi } | Source::Onset { lo, hi } =
-                                    &mut signal.source
+                                if let Source::Band { lo, hi }
+                                | Source::Onset { lo, hi }
+                                | Source::Trigger { lo, hi } = &mut signal.source
                                 {
                                     let ceil = (*hi / MIN_RATIO).max(SLIDER_MIN_HZ);
                                     *lo = frac_to_hz(fraction).clamp(SLIDER_MIN_HZ, ceil);
@@ -802,8 +824,9 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                             this.hub(),
                             id,
                             |signal| {
-                                if let Source::Band { lo, hi } | Source::Onset { lo, hi } =
-                                    &mut signal.source
+                                if let Source::Band { lo, hi }
+                                | Source::Onset { lo, hi }
+                                | Source::Trigger { lo, hi } = &mut signal.source
                                 {
                                     let floor = (*lo * MIN_RATIO).min(SLIDER_MAX_HZ);
                                     *hi = frac_to_hz(fraction).clamp(floor, SLIDER_MAX_HZ);
@@ -820,7 +843,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
         .when(spectral, |d| {
             d.child(setting_row(
                 "Response",
-                Some(if kind == SourceKind::Onset {
+                Some(if matches!(kind, SourceKind::Onset | SourceKind::Trigger) {
                     "How long each pulse rings before it dies away"
                 } else {
                     "0 snaps to the music, 100 drifts after it"
@@ -848,11 +871,15 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
             ))
             .child(setting_row(
                 "Threshold",
-                Some(
+                Some(if kind == SourceKind::Trigger {
+                    "The level the range has to reach to fire the pulse; it can't \
+                     fire again until the level falls back under the mark on the \
+                     meter above"
+                } else {
                     "Under this the signal reads as nothing, and above it the output \
                      climbs from zero again, so the quiet parts leave the knob alone; \
-                     the mark on the meter above is where it sits",
-                ),
+                     the mark on the meter above is where it sits"
+                }),
                 panel::value_slider_edit(
                     &scrubs.threshold,
                     host.value_edit(),

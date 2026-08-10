@@ -238,3 +238,63 @@
  
      float4 color = sample;
      if ((sprite.grayscale & 0xFFu) != 0u) {
+--- a/src/elements/img.rs
++++ b/src/elements/img.rs
+@@ -3,7 +3,7 @@
+     Entity, GlobalElementId, Hitbox, Image, ImageCache, InspectorElementId, InteractiveElement,
+     Interactivity, IntoElement, LayoutId, Length, ObjectFit, Pixels, RenderImage, Resource,
+     SMOOTH_SVG_SCALE_FACTOR, SharedString, SharedUri, StyleRefinement, Styled, SvgSize, Task,
+-    Window, px, swap_rgba_pa_to_bgra,
++    Transformation, Window, px, swap_rgba_pa_to_bgra,
+ };
+ use anyhow::{Context as _, Result};
+ 
+@@ -191,6 +191,9 @@
+     source: ImageSource,
+     style: ImageStyle,
+     image_cache: Option<AnyImageCache>,
++    // rox patch: rides paint_image_transformed, the polychrome pipeline's
++    // per-sprite transform.
++    transformation: Option<Transformation>,
+ }
+ 
+ /// Create a new image element.
+@@ -201,6 +204,7 @@
+         source: source.into(),
+         style: ImageStyle::default(),
+         image_cache: None,
++        transformation: None,
+     }
+ }
+ 
+@@ -230,6 +234,15 @@
+             ..self
+         }
+     }
++
++    /// Paint the image with a transformation applied about the center of its
++    /// bounds, the same semantics as [`Svg::with_transformation`].
++    ///
++    /// rox patch: the element-level face of `paint_image_transformed`.
++    pub fn with_transformation(mut self, transformation: Transformation) -> Self {
++        self.transformation = Some(transformation);
++        self
++    }
+ }
+ 
+ impl Deref for Stateful<Img> {
+@@ -473,12 +486,13 @@
+                         .to_pixels(window.rem_size())
+                         .clamp_radii_for_quad_size(new_bounds.size);
+                     window
+-                        .paint_image(
++                        .paint_image_transformed(
+                             new_bounds,
+                             corner_radii,
+                             data,
+                             layout_state.frame_index,
+                             self.style.grayscale,
++                            self.transformation.unwrap_or_default(),
+                         )
+                         .log_err();
+                 } else if let Some(replacement) = &mut layout_state.replacement {

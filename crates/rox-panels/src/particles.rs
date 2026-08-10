@@ -289,15 +289,15 @@ impl Default for Emitter {
             burst: 24.0,
             size: 4.0,
             life: 2.5,
-            shape: Shape::Line,
+            shape: Shape::Point,
             x: 0.5,
-            y: 1.0,
+            y: 0.5,
             width: 1.0,
             height: 0.2,
             rotation: 0.0,
             aim: Aim::Fixed,
             direction: 0.0,
-            cone: 30.0,
+            cone: 360.0,
             speed: 200.0,
             color: None,
         }
@@ -389,7 +389,7 @@ pub struct Scene {
 impl Default for Scene {
     fn default() -> Self {
         Scene {
-            gravity: 140.0,
+            gravity: 0.0,
             gravity_angle: 180.0,
             drag: 0.4,
             round: true,
@@ -425,9 +425,9 @@ pub struct Forces {
 impl Default for Forces {
     fn default() -> Self {
         Forces {
-            turbulence: 0.0,
+            turbulence: 280.0,
             turbulence_scale: 220.0,
-            turbulence_speed: 0.4,
+            turbulence_speed: 1.0,
         }
     }
 }
@@ -2017,6 +2017,7 @@ impl Panel for ParticlesPanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }

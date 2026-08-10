@@ -568,6 +568,7 @@ impl Panel for EqWidgetPanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }

@@ -5,7 +5,8 @@
 //! popped-out panel is the same entity rehosted in its own OS window, no
 //! cross-window messaging needed.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
 
 use gpui::{
     anchored, deferred, div, linear_color_stop, linear_gradient, prelude::*, px, relative, size,
@@ -331,10 +332,16 @@ pub fn popout_item<P: Panel>(
     panel: &Entity<P>,
     tab_panel: Option<WeakEntity<TabPanel>>,
     state: AppState,
+    window: &Window,
 ) -> PopupMenu {
-    // No tab strip means the panel is popped out into its own window; there
-    // the item that belongs here is the way home, not another Pop Out.
+    // No tab strip means the panel is either in a window of its own or
+    // hosted in a composite's slot. In a window it popped out into, the item
+    // that belongs here is the way home rather than another Pop Out;
+    // anywhere else there is no home to name, so the tail ends here.
     let Some(tabs) = tab_panel.clone() else {
+        if !dock_back_offered(window) {
+            return menu;
+        }
         return dock_back_item(menu, Arc::new(panel.clone()), state);
     };
     let pop_panel = panel.clone();
@@ -381,13 +388,19 @@ pub fn popout_item<P: Panel>(
 /// copy opens configured the same. Each panel's `new` takes a different
 /// shape, so `make` reconstructs the copy from the source panel - typically
 /// cloning its state and config, then calling the panel's own constructor.
-/// A popped-out panel has no tab strip to add to, so the entry no-ops.
+///
+/// A panel with no tab strip - popped out into a window, or hosted in a
+/// composite's slot - has nowhere to put the copy, so it gets no entry at
+/// all. The row used to draw there and do nothing on click.
 pub fn duplicate_item<P: Panel>(
     menu: PopupMenu,
     panel: &Entity<P>,
     tab_panel: Option<WeakEntity<TabPanel>>,
     make: impl Fn(&Entity<P>, &mut Window, &mut Context<P>) -> P + 'static,
 ) -> PopupMenu {
+    if tab_panel.is_none() {
+        return menu;
+    }
     let weak = panel.downgrade();
     menu.item(
         PopupMenuItem::new("Duplicate")
@@ -599,6 +612,39 @@ pub fn pop_out<P: Panel>(
 /// The window title comes from the panel's rename when one is set, its
 /// built-in name otherwise.
 pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
+    panel_window(panel, state, false, cx);
+}
+
+/// Open a panel straight into a window of its own, never having been in a
+/// layout: the Window menu's New Window from Panel. The same window as a
+/// pop-out apart from the way back, which this one has no use for - the
+/// panel didn't come out of a dock, so there is nowhere to send it back to.
+pub fn open_panel_window(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
+    panel_window(panel, state, true, cx);
+}
+
+/// The windows hosting a single panel, and whether that panel came out of a
+/// dock: true for a pop-out, false for one opened straight into a window.
+/// Only the first has somewhere to go back to. Read from menu builders that
+/// have a window and no `App`, which is why it's a static rather than a gpui
+/// global; entries go when the window's host drops.
+static PANEL_WINDOWS: RwLock<BTreeMap<u64, bool>> = RwLock::new(BTreeMap::new());
+
+/// Whether a menu built in `window` should offer the way back into a dock:
+/// only in a panel window, and only one the panel was popped out into. A
+/// panel with no tab strip that isn't in one of these is a composite's
+/// hosted child, sitting in a window full of other panels - Dock Back there
+/// would close the window out from under all of them.
+fn dock_back_offered(window: &Window) -> bool {
+    PANEL_WINDOWS
+        .read()
+        .unwrap()
+        .get(&window.window_handle().window_id().as_u64())
+        .copied()
+        .unwrap_or(false)
+}
+
+fn panel_window(panel: Arc<dyn PanelView>, state: AppState, fresh: bool, cx: &mut App) {
     let name = panel
         .tab_name(cx)
         .unwrap_or_else(|| display_name(panel.panel_name(cx)).into());
@@ -620,6 +666,8 @@ pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
         // A popped-out panel keeps its surface shader, so this window needs
         // the hub and player its slots read from.
         shader::note_window(window, &state, cx);
+        let window_id = window.window_handle().window_id().as_u64();
+        PANEL_WINDOWS.write().unwrap().insert(window_id, !fresh);
         let host = cx.new(|cx| {
             // A popped-out window pumps its own frames, so the backdrop
             // needs its own wake on a new bake.
@@ -630,6 +678,7 @@ pub fn pop_out_view(panel: Arc<dyn PanelView>, state: AppState, cx: &mut App) {
                 backdrop: WindowBackdrop::default(),
                 context_menu: None,
                 focus: cx.focus_handle(),
+                window_id,
                 _backdrop_changed,
             }
         });
@@ -1303,9 +1352,9 @@ pub fn transport_strip<P: 'static>(
         .child(random)
 }
 
-/// A popped-out panel's window content: the moved panel view, full-size, on
-/// the same base styling the workspace root applies. Right-click offers the
-/// way back into the dock.
+/// A panel in a window of its own: the panel view, full-size, on the same
+/// base styling the workspace root applies. Right-click serves the panel's
+/// own menu, the one its tab would drop down in the dock.
 struct PopoutHost {
     panel_view: Arc<dyn PanelView>,
     state: AppState,
@@ -1319,19 +1368,30 @@ struct PopoutHost {
     /// dispatch path in this window even before the hosted panel takes
     /// focus. Mirrors the main workspace's fallback focus.
     focus: FocusHandle,
+    /// The window this host fills, so closing it can drop the window's entry
+    /// from [`PANEL_WINDOWS`].
+    window_id: u64,
     _backdrop_changed: Subscription,
 }
 
+impl Drop for PopoutHost {
+    fn drop(&mut self) {
+        PANEL_WINDOWS.write().unwrap().remove(&self.window_id);
+    }
+}
+
 impl PopoutHost {
-    /// Open the right-click menu. Dock Back moves the panel into the newest
-    /// live tab group of the workspace and closes this window; cross-window
-    /// drags can't work (a held button pins pointer events to its window,
-    /// and Wayland hides window positions), so this is the way home.
+    /// Open the right-click menu: the panel's own dropdown, everything its
+    /// tab would offer in the dock - its content entries, Save As Preset,
+    /// Rename, Panel Settings - ending in Dock Back, which moves the panel
+    /// into the workspace's newest live tab group and closes this window.
+    /// Cross-window drags can't work (a held button pins pointer events to
+    /// its window, and Wayland hides window positions), so that row is the
+    /// way home; a window the panel was opened straight into leaves it out.
     fn open_menu(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.panel_view.clone();
-        let state = self.state.clone();
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            dock_back_item(menu, panel, state)
+        let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
+            panel.dropdown_menu(menu, window, cx)
         });
         menu.focus_handle(cx).focus(window);
         let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
@@ -1379,10 +1439,10 @@ impl Render for PopoutHost {
                 .bg(palette::bg_elevated())
                 .text_color(palette::text_bright())
                 .text_sm()
-                // A panel that serves its own content menu already carries
-                // Dock Back in that menu's Panel tail, so the window's own
-                // right-click would only stack a second menu on top. Install
-                // it only as the fallback for panels with no content menu.
+                // A panel that serves its own content menu already ends it
+                // with the same panel tail this one would show, so the
+                // window's own right-click would only stack a second menu on
+                // top. Install it only for panels with no content menu.
                 .when(!self.panel_view.content_context_menu(cx), |body| {
                     body.on_mouse_down(
                         MouseButton::Right,

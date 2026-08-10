@@ -281,10 +281,8 @@ pub fn unapproved_shaders(bundle: &WorkspaceBundle) -> Vec<PendingShader> {
                 .is_none_or(|name| !bundle.shaders.iter().any(|shader| shader.name == name))
         })
         .map(|post| (None, post.source.clone()));
-    let dumps = bundle
-        .layouts
-        .iter()
-        .flat_map(|layout| settings::dump_shader_sources(&layout.dump))
+    let dumps = bundle_dumps(bundle)
+        .flat_map(settings::dump_shader_sources)
         .map(|source| (None, source));
 
     let mut seen = BTreeSet::new();
@@ -305,6 +303,84 @@ pub fn unapproved_shaders(bundle: &WorkspaceBundle) -> Vec<PendingShader> {
     out
 }
 
+/// The line a confirm prints about the screen shader a look wears, or None
+/// when the bundle brings none that would actually run: no shader at all, the
+/// switch off, or a pass with nothing behind it (a pool name that resolves to
+/// nothing, an author's own file path that didn't travel). A pass that paints
+/// nothing shouldn't announce itself.
+///
+/// This is separate from [`unapproved_shaders`] on purpose. That one is about
+/// trust and goes quiet once a source is approved, which every shipped look's
+/// is at startup; this one is about the look, and a screen shader covers the
+/// whole window whether or not the machine has met it before.
+fn screen_shader_line(bundle: &WorkspaceBundle) -> Option<SharedString> {
+    let post = bundle.post_shader.as_ref().filter(|post| post.enabled)?;
+    // The same resolution the runtime runs: a pool name wins and resolves
+    // exactly or not at all, the inline copy only counts with no name set.
+    if let Some(name) = post.name.as_deref() {
+        return bundle
+            .shaders
+            .iter()
+            .any(|entry| entry.name == name)
+            .then(|| format!("Wears the {name} overlay shader over the whole window.").into());
+    }
+    (!post.source.trim().is_empty())
+        .then(|| "Wears an overlay shader over the whole window.".into())
+}
+
+/// Whether the look wears a shader once it lands: the overlay over the whole
+/// window, or a panel in one of its layouts wearing one as chrome or being the
+/// Shader panel outright.
+///
+/// This is the question the apply confirm's two yeses hang off, and it's
+/// deliberately about what runs rather than about what this machine trusts.
+/// [`unapproved_shaders`] goes quiet the moment a source is approved, so once
+/// a look had been applied one time its shaders stopped being a choice and
+/// just came along. A shader changes how the whole thing looks whether or not
+/// you've met it before, so the choice stays.
+///
+/// The pool on its own doesn't count. It travels either way and nothing in it
+/// paints until something wears it.
+pub fn wears_shaders(bundle: &WorkspaceBundle) -> bool {
+    screen_shader_line(bundle).is_some() || bundle_dumps(bundle).any(settings::dump_wears_shader)
+}
+
+/// Every panel dump a bundle carries: its layouts' and its panel presets'.
+/// The two are the same shape and a preset's panel wears a shader exactly
+/// like a layout's does, so everything that reads what a look would paint
+/// reads both through here.
+fn bundle_dumps(bundle: &WorkspaceBundle) -> impl Iterator<Item = &serde_json::Value> {
+    bundle
+        .layouts
+        .iter()
+        .map(|layout| &layout.dump)
+        .chain(bundle.panel_presets.iter().map(|preset| &preset.panel))
+}
+
+/// The same look with nothing painting a shader: the overlay off and every
+/// layout's shaders parked. What the apply confirm's Without Shaders lands.
+///
+/// Everything the look brought rides along with its switch off: the pool,
+/// the screen shader, and each panel's own. Nothing paints when it lands, and
+/// every piece is one toggle away on the surface that wears it, which is the
+/// difference between a look applied quiet and a look applied gutted.
+pub fn without_shaders(bundle: &WorkspaceBundle) -> WorkspaceBundle {
+    let mut bare = bundle.clone();
+    if let Some(post) = bare.post_shader.as_mut() {
+        post.enabled = false;
+    }
+    for layout in &mut bare.layouts {
+        settings::strip_dump_shaders(&mut layout.dump);
+    }
+    // A saved panel is a panel of the look like any other, so a preset that
+    // wears a shader lands parked too rather than smuggling one back in the
+    // first time it's added.
+    for preset in &mut bare.panel_presets {
+        settings::strip_dump_shaders(&mut preset.panel);
+    }
+    bare
+}
+
 /// What a confirm says about the workspace behind it: the name it applies
 /// under, the card its author filled in, and the shaders this machine would
 /// have to agree to first.
@@ -322,6 +398,13 @@ pub struct ApplyCard {
     pub description: Option<SharedString>,
     /// The code riding along that nobody here has agreed to run.
     pub shaders: Vec<PendingShader>,
+    /// The line about the screen shader the look wears, when it brings one
+    /// that will actually run. None otherwise, which is most looks.
+    pub screen_shader: Option<SharedString>,
+    /// Whether anything in the look would paint a shader, trusted or not.
+    /// What splits the dialog's yes in two, every time it's applied. See
+    /// [`wears_shaders`].
+    pub wears_shaders: bool,
 }
 
 impl ApplyCard {
@@ -336,6 +419,8 @@ impl ApplyCard {
                 byline: None,
                 description: None,
                 shaders: Vec::new(),
+                screen_shader: None,
+                wears_shaders: false,
             },
         }
     }
@@ -357,6 +442,8 @@ impl ApplyCard {
                 .filter(|d| !d.is_empty())
                 .map(|d| SharedString::from(d.to_string())),
             shaders: unapproved_shaders(bundle),
+            screen_shader: screen_shader_line(bundle),
+            wears_shaders: wears_shaders(bundle),
         }
     }
 
@@ -382,6 +469,14 @@ impl ApplyCard {
             )
             .into(),
         )
+    }
+
+    /// Whether the dialog offers two ways to say yes. Anything the look
+    /// wears splits it, and so does code riding in the pool that this machine
+    /// hasn't agreed to: even with nothing wearing it yet, installing it is
+    /// the moment to ask.
+    pub fn splits_apply(&self) -> bool {
+        self.wears_shaders || !self.shaders.is_empty()
     }
 
     /// Agree to run every shader the bundle brought. The apply side never
@@ -631,6 +726,80 @@ mod tests {
         );
     }
 
+    /// Every pool shader a shipped bundle carries splits cleanly, and every
+    /// image one declares is actually in the entry and actually decodes. The
+    /// splitter and the assets only run at registration, on a window, so
+    /// without this a mistyped `// @pass` or a mangled plate ships as a panel
+    /// that comes up blank on somebody else's machine.
+    ///
+    /// The WGSL itself is naga's gate, not this one; this is the half that
+    /// lives on our side of the window.
+    #[test]
+    fn every_shipped_shader_splits_and_finds_its_images() {
+        for (stem, bytes) in assets::shipped_workspaces() {
+            let bundle: WorkspaceBundle =
+                serde_json::from_slice(&bytes).unwrap_or_else(|err| panic!("{stem}: {err}"));
+            for pool in &bundle.shaders {
+                let where_ = format!("{stem}: shader '{}'", pool.name);
+                let spec = shader::parse_chain(&pool.source)
+                    .unwrap_or_else(|err| panic!("{where_}: {err}"));
+                assert!(
+                    !spec.passes.is_empty(),
+                    "{where_}: a program needs at least one pass"
+                );
+                for asset in &spec.assets {
+                    // The cover binding has no bytes to carry; the player
+                    // feeds it at registration.
+                    if asset.is_cover() {
+                        continue;
+                    }
+                    let carried = pool
+                        .assets
+                        .iter()
+                        .find(|held| held.file == asset.file)
+                        .unwrap_or_else(|| {
+                            panic!("{where_}: declares {} and doesn't carry it", asset.file)
+                        });
+                    let bytes = carried.decode().unwrap_or_else(|err| {
+                        panic!("{where_}: {} is not base64: {err}", asset.file)
+                    });
+                    let image = image::load_from_memory(&bytes).unwrap_or_else(|err| {
+                        panic!("{where_}: {} won't decode: {err}", asset.file)
+                    });
+                    assert!(
+                        image.width() > 0 && image.height() > 0,
+                        "{where_}: {} decoded to nothing",
+                        asset.file
+                    );
+                }
+            }
+            // A bundle that installs a screen shader hands the whole window
+            // to it, so that one has to be an overlay: anything else covers
+            // the app the moment the look is applied, and a shipped look is
+            // exactly the case where nobody chose the shader deliberately.
+            let Some(post) = &bundle.post_shader else {
+                continue;
+            };
+            let source = match post.name.as_deref() {
+                Some(name) => bundle
+                    .shaders
+                    .iter()
+                    .find(|entry| entry.name == name)
+                    .map(|entry| entry.source.clone())
+                    .unwrap_or_else(|| panic!("{stem}: overlay shader '{name}' isn't in the pool")),
+                None => post.source.clone(),
+            };
+            if source.trim().is_empty() {
+                continue;
+            }
+            assert!(
+                shader::overlay(&source),
+                "{stem}: the overlay shader covers the window; it needs `// @overlay` \
+                 (and to actually leave the app readable)"
+            );
+        }
+    }
+
     /// The trust pass has to find every shader a bundle carries, wherever it
     /// rides: the pool, the screen shader, panel chrome inside a dump, and a
     /// Shader panel's own config. One missed and that panel comes up blank on
@@ -642,6 +811,7 @@ mod tests {
                 name: "Grain".into(),
                 source: "// the pool entry".into(),
                 path: None,
+                assets: Vec::new(),
             }],
             post_shader: Some(rox_core::settings::PostShaderConfig {
                 enabled: true,
@@ -705,16 +875,19 @@ mod tests {
                     name: "Grain".into(),
                     source: "// grain".into(),
                     path: None,
+                    assets: Vec::new(),
                 },
                 NamedShader {
                     name: "Bloom".into(),
                     source: "// bloom".into(),
                     path: None,
+                    assets: Vec::new(),
                 },
                 NamedShader {
                     name: "Old".into(),
                     source: agreed.into(),
                     path: None,
+                    assets: Vec::new(),
                 },
             ],
             post_shader: Some(rox_core::settings::PostShaderConfig {
@@ -779,6 +952,165 @@ mod tests {
         assert!(unapproved_shaders(&WorkspaceBundle::default()).is_empty());
     }
 
+    /// The with-or-without choice is about the look, not about trust, so a
+    /// bundle whose shaders are all agreed to still says it wears them. This
+    /// is the regression the split fixes: the review going quiet used to take
+    /// the choice with it, and the second apply of a look just wore whatever
+    /// it brought.
+    #[test]
+    fn an_agreed_look_still_says_it_wears_shaders() {
+        let source = "// worn everywhere";
+        let bundle = WorkspaceBundle {
+            shaders: vec![NamedShader {
+                name: "Lace".into(),
+                source: source.into(),
+                path: None,
+                assets: Vec::new(),
+            }],
+            post_shader: Some(rox_core::settings::PostShaderConfig {
+                enabled: true,
+                name: Some("Lace".into()),
+                ..Default::default()
+            }),
+            layouts: vec![rox_core::settings::NamedLayout {
+                name: "one".into(),
+                size: None,
+                dump: serde_json::json!({
+                    "panel_name": "waveform",
+                    "info": { "panel": { "shader": { "name": "Lace" }}},
+                }),
+            }],
+            ..WorkspaceBundle::default()
+        };
+
+        settings::note_approved(&shader::fingerprint(source));
+        let card = ApplyCard::of(&bundle);
+        assert!(card.shaders.is_empty(), "nothing left to agree to");
+        assert!(card.wears_shaders);
+        assert!(card.splits_apply(), "the dialog still offers both yeses");
+        settings::forget_approved(&shader::fingerprint(source));
+
+        // A look with nothing wearing a shader keeps the plain single yes.
+        assert!(!ApplyCard::of(&WorkspaceBundle::default()).splits_apply());
+    }
+
+    /// Without Shaders lands the look quiet: nothing paints, and everything
+    /// it brought is still on the config with its switch down, so each piece
+    /// is one toggle away on the surface that wears it.
+    #[test]
+    fn applying_without_shaders_parks_them_rather_than_dropping_them() {
+        let bundle = WorkspaceBundle {
+            shaders: vec![NamedShader {
+                name: "Lace".into(),
+                source: "// lace".into(),
+                path: None,
+                assets: Vec::new(),
+            }],
+            post_shader: Some(rox_core::settings::PostShaderConfig {
+                enabled: true,
+                name: Some("Lace".into()),
+                ..Default::default()
+            }),
+            layouts: vec![rox_core::settings::NamedLayout {
+                name: "one".into(),
+                size: None,
+                dump: serde_json::json!({
+                    "panel_name": "StackPanel",
+                    "children": [
+                        {
+                            "panel_name": "waveform",
+                            "info": { "panel": { "shader": { "name": "Lace" }}},
+                        },
+                        {
+                            "panel_name": "shader",
+                            "info": { "panel": { "source": "// its own" }},
+                        },
+                    ],
+                }),
+            }],
+            panel_presets: vec![rox_core::settings::PanelPreset {
+                name: "Scope".into(),
+                panel: serde_json::json!({
+                    "panel_name": "spectrum",
+                    "info": { "panel": { "shader": { "source": "// a preset's own" }}},
+                }),
+            }],
+            ..WorkspaceBundle::default()
+        };
+
+        // A saved panel's shader counts as one the look wears, and shows on
+        // the confirm like a layout's does.
+        assert!(unapproved_shaders(&bundle)
+            .iter()
+            .any(|pending| pending.source == "// a preset's own"));
+
+        let bare = without_shaders(&bundle);
+        assert!(!wears_shaders(&bare));
+        // The preset keeps its shader, parked, the way the layouts do.
+        let preset = &bare.panel_presets[0].panel["info"]["panel"]["shader"];
+        assert_eq!(preset["enabled"], false);
+        assert_eq!(preset["source"], "// a preset's own");
+        // The screen shader is off rather than gone, so the Shader page still
+        // says which one the look came with.
+        let post = bare.post_shader.as_ref().expect("the overlay travels");
+        assert!(!post.enabled);
+        assert_eq!(post.name.as_deref(), Some("Lace"));
+        assert_eq!(bare.shaders.len(), 1, "the pool travels either way");
+        assert_eq!(bare.shaders[0].source, "// lace");
+        // The layouts themselves survive: it's the painting that stops, not
+        // the arrangement or what it was wearing.
+        assert_eq!(bare.layouts.len(), 1);
+        let panels = bare.layouts[0].dump["children"]
+            .as_array()
+            .expect("children");
+        assert_eq!(panels.len(), 2);
+        let worn = &panels[0]["info"]["panel"]["shader"];
+        assert_eq!(worn["enabled"], false);
+        assert_eq!(worn["name"], "Lace", "the panel still knows what it wore");
+        let own = &panels[1]["info"]["panel"];
+        assert_eq!(own["enabled"], false);
+        assert_eq!(own["source"], "// its own");
+        assert!(wears_shaders(&bundle), "the original is left alone");
+    }
+
+    /// Approval is over code, and a plate isn't code. Swapping the images a
+    /// pool entry carries leaves the review empty and the trust prints
+    /// identical, so a look that only redresses its assets never reopens a
+    /// dialog somebody already answered (ADR 23).
+    #[test]
+    fn assets_are_data_and_never_ask_for_approval() {
+        let source = "// @asset plate: plate.png";
+        let bundle = |assets: Vec<rox_core::settings::ShaderAsset>| WorkspaceBundle {
+            shaders: vec![NamedShader {
+                name: "Serpent".into(),
+                source: source.into(),
+                path: None,
+                assets,
+            }],
+            ..WorkspaceBundle::default()
+        };
+
+        settings::note_approved(&shader::fingerprint(source));
+        let bare = bundle(Vec::new());
+        let plated = bundle(vec![rox_core::settings::ShaderAsset::from_bytes(
+            "plate.png",
+            &[1u8, 2, 3],
+        )]);
+        assert!(unapproved_shaders(&plated).is_empty(), "a plate isn't code");
+        assert_eq!(
+            bundle_fingerprints(&bare),
+            bundle_fingerprints(&plated),
+            "the same source hashes the same however it's dressed"
+        );
+
+        settings::forget_approved(&shader::fingerprint(source));
+        // Unapproved, the source asks once, and it asks for the source: the
+        // plate rides along with it rather than counting as its own item.
+        let pending = unapproved_shaders(&plated);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].label, "Serpent");
+    }
+
     /// The card a bundle carries is what the confirm reads out: who made it
     /// and what they say it is, folded into a byline the dialog can print.
     #[test]
@@ -803,6 +1135,54 @@ mod tests {
         let plain = ApplyCard::of(&named_bundle("Plain"));
         assert!(plain.byline.is_none());
         assert!(plain.description.is_none());
+    }
+
+    /// The screen shader line is about the look, not about trust: it prints
+    /// whenever the bundle wears a pass that would actually run, named after
+    /// the pool entry when it points at one, and stays quiet for a pass that
+    /// paints nothing.
+    #[test]
+    fn the_confirm_names_the_screen_shader_a_look_wears() {
+        let mut bundle = named_bundle("Inked");
+        bundle.shaders = vec![NamedShader {
+            name: "Dither".into(),
+            source: "// dither".into(),
+            path: None,
+            assets: Vec::new(),
+        }];
+        bundle.post_shader = Some(rox_core::settings::PostShaderConfig {
+            enabled: true,
+            name: Some("Dither".into()),
+            ..Default::default()
+        });
+        let line = ApplyCard::of(&bundle).screen_shader.expect("a shader line");
+        assert!(line.contains("Dither"), "{line}");
+
+        // An inline source with no pool name still announces itself, just
+        // namelessly.
+        bundle.post_shader = Some(rox_core::settings::PostShaderConfig {
+            enabled: true,
+            source: "// inline".into(),
+            ..Default::default()
+        });
+        assert!(ApplyCard::of(&bundle).screen_shader.is_some());
+
+        // Quiet where nothing would run: the switch off, a name that
+        // resolves to no pool entry, or no pass at all.
+        bundle.post_shader = Some(rox_core::settings::PostShaderConfig {
+            enabled: false,
+            name: Some("Dither".into()),
+            ..Default::default()
+        });
+        assert!(ApplyCard::of(&bundle).screen_shader.is_none());
+        bundle.post_shader = Some(rox_core::settings::PostShaderConfig {
+            enabled: true,
+            name: Some("Gone".into()),
+            ..Default::default()
+        });
+        assert!(ApplyCard::of(&bundle).screen_shader.is_none());
+        bundle.post_shader = None;
+        assert!(ApplyCard::of(&bundle).screen_shader.is_none());
     }
 
     /// Saving over a workspace keeps the card the file already carried, so an
@@ -875,16 +1255,19 @@ mod tests {
                 name: "Grain".into(),
                 source: "// grain".into(),
                 path: None,
+                assets: Vec::new(),
             },
             NamedShader {
                 name: "Bloom".into(),
                 source: "// bloom".into(),
                 path: None,
+                assets: Vec::new(),
             },
             NamedShader {
                 name: "Gone".into(),
                 source: "// gone".into(),
                 path: None,
+                assets: Vec::new(),
             },
         ];
         assert!(relink_ejected_in(&root, "Nightfall", &mut pool));

@@ -55,6 +55,16 @@ carrying plates stay small in practice because the aesthetic that wants plates i
 1-bit imagery, which compresses to almost nothing; a soft size warning at export
 beats a hard cap that a legitimate look would hit.
 
+One asset value is reserved rather than being a file: `// @asset art: @cover` binds
+the playing track's cover under the declared name. The bytes come off the window's
+player at registration and the program re-registers when the track turns over, one
+split and one compile per switch, nothing per frame. A track without art binds a
+flat dark plate, so the binding always samples something, and a shader that arrived
+inline still resolves it, since the art belongs to the player rather than to a
+folder. Registered covers are downscaled to a 512 cap on the long edge because the
+renderer never evicts textures within a window's life; eviction is the follow-up
+this trades against, not a redesign.
+
 ShaderToy's multi-buffer model (BufferA through BufferD feeding an Image pass) is
 the same shape and confirms the semantics; ours differs in letting the author name
 the passes and in keeping one file. A node-graph compositor was considered and

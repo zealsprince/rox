@@ -25,15 +25,34 @@ use rox_services::player::Player;
 
 use super::{AppState, PanelChrome};
 
+mod chain;
+
+pub use chain::{
+    fallback_cover, parse_chain, register_program, resolve_assets, uses_cover, AssetImage,
+    AssetRef, ChainSpec, PassSpec, ProgramCtx, COVER_SOURCE,
+};
+
 /// How many signal slots a shader sees, the uniform block's width.
 pub const SLOTS: usize = 16;
 
 /// The builtins, shared by both shader surfaces: the Shader panel offers
-/// them as presets, and the gate below trusts them by construction. One of
-/// each kind on purpose - Plasma is a pure primitive, Trails reads its own
-/// last frame and proves the region pass.
+/// them as presets, and the gate below trusts them by construction. Each one
+/// demonstrates a different part of the contract, so together they double as
+/// the authoring reference: Plasma is a pure primitive, Trails reads its own
+/// last frame and proves the region pass, Sheen is a transparent overlay
+/// meant to ride another panel's body, Cover and Badge bind the playing
+/// track's art, Lamp reads the mouse, Cube fakes a third dimension from
+/// uniforms alone, Bloom is a two-pass chain, and Tube samples the screen
+/// under it.
 pub const PLASMA: &str = include_str!("shader/plasma.wgsl");
 pub const TRAILS: &str = include_str!("shader/trails.wgsl");
+pub const SHEEN: &str = include_str!("shader/sheen.wgsl");
+pub const COVER: &str = include_str!("shader/cover.wgsl");
+pub const BADGE: &str = include_str!("shader/badge.wgsl");
+pub const LAMP: &str = include_str!("shader/lamp.wgsl");
+pub const CUBE: &str = include_str!("shader/cube.wgsl");
+pub const BLOOM: &str = include_str!("shader/bloom.wgsl");
+pub const TUBE: &str = include_str!("shader/tube.wgsl");
 
 /// One shipped example: what to call it, the one line the settings pages
 /// print under it once it's picked, and the WGSL itself.
@@ -41,6 +60,11 @@ pub const TRAILS: &str = include_str!("shader/trails.wgsl");
 /// The blurb rides the entry rather than sitting in a section note, so
 /// adding an example stays a file plus a line here instead of a file, a
 /// line, and a sentence somebody has to remember to edit somewhere else.
+/// Whether this shader rides content or replaces it isn't a field here: it
+/// rides the source as an `// @overlay` line, read by [`overlay`]. A pool
+/// shader out of somebody's bundle has no Rust struct to carry a flag on,
+/// and the picker groups both lists by the same read, so the answer lives
+/// in the one place both kinds of shader have.
 pub struct Preset {
     pub label: &'static str,
     pub blurb: &'static str,
@@ -57,6 +81,42 @@ pub const PRESETS: &[Preset] = &[
         label: "Trails",
         blurb: "Smears its own last frame, which puts it on the screen pass.",
         source: TRAILS,
+    },
+    Preset {
+        label: "Sheen",
+        blurb:
+            "A vignette and a drifting gleam, transparent overlay for a panel that already draws.",
+        source: SHEEN,
+    },
+    Preset {
+        label: "Cover",
+        blurb: "The playing track's art, letterboxed over a wash of its own color.",
+        source: COVER,
+    },
+    Preset {
+        label: "Badge",
+        blurb: "The cover as a small card parked in a corner, with a slot to walk it around.",
+        source: BADGE,
+    },
+    Preset {
+        label: "Lamp",
+        blurb: "A light that follows the cursor and answers the buttons, transparent overlay.",
+        source: LAMP,
+    },
+    Preset {
+        label: "Cube",
+        blurb: "A wireframe cube tumbling in fake 3D, drawn as added light.",
+        source: CUBE,
+    },
+    Preset {
+        label: "Bloom",
+        blurb: "Drifting orbs bloomed through a half-size second pass, the chain in miniature.",
+        source: BLOOM,
+    },
+    Preset {
+        label: "Tube",
+        blurb: "Replays the panel under it through a curved CRT face, scanlines and all.",
+        source: TUBE,
     },
 ];
 
@@ -307,16 +367,25 @@ pub fn eject(name: &str, source: &str) -> std::io::Result<PathBuf> {
         &live_workspace(),
         name,
         source,
+        &[],
     )
 }
 
-/// [`eject`] under a given root, which is what the tests write into rather
-/// than the folder the running app ejects to.
+/// [`eject`] under a given root and with the images the shader carries,
+/// which is what the tests write into rather than the folder the running
+/// app ejects to.
+///
+/// The images land beside the `.wgsl` under their own file names, and those
+/// are overwritten rather than slid down to a variant. A plate is data the
+/// shader points at by name, so two shaders naming the same file mean the
+/// same file, and a numbered copy would only leave the second shader
+/// sampling the first one's image.
 pub fn eject_in(
     root: &Path,
     workspace: &str,
     name: &str,
     source: &str,
+    assets: &[rox_core::settings::ShaderAsset],
 ) -> std::io::Result<PathBuf> {
     let print = fingerprint(source);
     for variant in 1..=EJECT_VARIANTS {
@@ -337,6 +406,7 @@ pub fn eject_in(
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&path, source)?;
+        write_assets(path.parent(), assets)?;
         return Ok(path);
     }
     Err(std::io::Error::new(
@@ -345,9 +415,29 @@ pub fn eject_in(
     ))
 }
 
+/// Write a shader's images out beside its `.wgsl`. A name that decodes to
+/// nothing is the entry being hand-edited into something that isn't an
+/// image, which reads out here rather than at the next registration.
+fn write_assets(
+    dir: Option<&Path>,
+    assets: &[rox_core::settings::ShaderAsset],
+) -> std::io::Result<()> {
+    let Some(dir) = dir else {
+        return Ok(());
+    };
+    for asset in assets {
+        let bytes = asset
+            .decode()
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        std::fs::write(dir.join(&asset.file), bytes)?;
+    }
+    Ok(())
+}
+
 /// Eject a pool entry and bookmark the file on the entry, so [`poll_pool`]
 /// watches it from then on and every panel wearing the name picks up the
-/// edits. Answers the file it wrote.
+/// edits. Answers the file it wrote, with the shader's images written
+/// beside it.
 pub fn eject_pool_entry(name: &str) -> std::io::Result<PathBuf> {
     let Some(entry) = rox_core::settings::shader_pool_get(name) else {
         return Err(std::io::Error::new(
@@ -355,7 +445,13 @@ pub fn eject_pool_entry(name: &str) -> std::io::Result<PathBuf> {
             format!("{name} isn't in this workspace's shaders"),
         ));
     };
-    let path = eject(name, &entry.source)?;
+    let path = eject_in(
+        &rox_core::settings::shaders_dir(),
+        &live_workspace(),
+        name,
+        &entry.source,
+        &entry.assets,
+    )?;
     let mut pool = rox_core::settings::shader_pool();
     if let Some(entry) = pool.iter_mut().find(|entry| entry.name == name) {
         entry.path = Some(path.clone());
@@ -387,13 +483,27 @@ pub fn eject_name(label: &str, source: &str) -> String {
 /// drops the bookmark it had, because that file still holds the old shader
 /// and leaving the two linked would have the pool watch pull it straight
 /// back over what was just saved.
+///
+/// A shader promoted out of a file takes the images it declares with it,
+/// read from beside that file. Without that the entry would travel as a
+/// look with holes in it, since the plates only ever sat on this machine.
 pub fn save_to_pool(name: &str, source: &str, path: Option<PathBuf>) -> bool {
     approve(source);
+    let captured = sibling_assets(source, path.as_deref());
     let mut pool = rox_core::settings::shader_pool();
     let replaced = match pool.iter_mut().find(|entry| entry.name == name) {
         Some(entry) => {
             entry.source = source.to_string();
             entry.path = path;
+            // Additive: what's on disk wins for the files it holds, and
+            // anything the entry already carried stays, since a plate is
+            // still a plate while its `@asset` line is being edited.
+            for asset in captured {
+                match entry.assets.iter_mut().find(|held| held.file == asset.file) {
+                    Some(held) => *held = asset,
+                    None => entry.assets.push(asset),
+                }
+            }
             true
         }
         None => {
@@ -401,12 +511,36 @@ pub fn save_to_pool(name: &str, source: &str, path: Option<PathBuf>) -> bool {
                 name: name.to_string(),
                 source: source.to_string(),
                 path,
+                assets: captured,
             });
             false
         }
     };
     rox_core::settings::set_shader_pool(pool);
     replaced
+}
+
+/// The images a source declares, read from the folder it came from. Empty
+/// for a source with no file behind it, and for one that declares nothing,
+/// so the common promotion costs a parse and no syscalls.
+fn sibling_assets(source: &str, path: Option<&Path>) -> Vec<rox_core::settings::ShaderAsset> {
+    let Some(dir) = path.and_then(Path::parent) else {
+        return Vec::new();
+    };
+    let Ok(spec) = parse_chain(source) else {
+        return Vec::new();
+    };
+    spec.assets
+        .iter()
+        .filter(|asset| !asset.is_cover())
+        .filter_map(|asset| {
+            let bytes = std::fs::read(dir.join(&asset.file)).ok()?;
+            Some(rox_core::settings::ShaderAsset::from_bytes(
+                asset.file.clone(),
+                &bytes,
+            ))
+        })
+        .collect()
 }
 
 /// The pool's own hot reload, and the app's only copy of it.
@@ -424,11 +558,31 @@ struct PoolWatch {
     /// The last sweep, so the whole thing costs an elapsed check per frame
     /// rather than a stat per bookmarked entry.
     checked: Option<Instant>,
-    /// Each bookmarked entry's last size and mtime, by name. An entry with
-    /// no stamp yet reads its file once, the same rule the per-panel watch
+    /// Each bookmarked entry's last look at its files, by name. An entry
+    /// with no stamp yet reads them once, the same rule the per-panel watch
     /// keeps: an edit made while rox was closed should land on open rather
     /// than on the edit after it.
-    stamps: HashMap<String, (u64, i64)>,
+    stamps: HashMap<String, EntryStamps>,
+}
+
+/// The size and mtime of everything one pool entry watches: its `.wgsl` and
+/// each image it declares, which sit beside it after an eject.
+#[derive(Default)]
+struct EntryStamps {
+    source: Option<(u64, i64)>,
+    /// By file name, the way the `@asset` line names it.
+    assets: HashMap<String, (u64, i64)>,
+}
+
+/// What one sweep of the pool's files turned up.
+#[derive(Default)]
+struct PoolEdits {
+    /// Sources that came back changed, for the caller to approve.
+    fresh: Vec<String>,
+    /// Whether anything moved at all. An image edit changes no source and
+    /// still has to be written back, since writing the pool is what
+    /// re-registers every panel wearing the name.
+    changed: bool,
 }
 
 /// Stat the pool's bookmarked files and pull any edits into their entries.
@@ -452,14 +606,14 @@ pub fn poll_pool() {
     }
     watch.checked = Some(now);
     let mut pool = rox_core::settings::shader_pool();
-    let fresh = pool_reload(&mut watch.stamps, &mut pool);
+    let edits = pool_reload(&mut watch.stamps, &mut pool);
     // Outside the lock: approving and writing the pool both touch the
     // settings files, and no other panel's paint should wait on that.
     drop(watch);
-    if fresh.is_empty() {
+    if !edits.changed {
         return;
     }
-    for source in &fresh {
+    for source in &edits.fresh {
         approve(source);
     }
     rox_core::settings::set_shader_pool(pool);
@@ -467,41 +621,78 @@ pub fn poll_pool() {
 
 /// The stat-and-read half of the pool watch, over a pool handed in so a
 /// test can point it at files of its own. Writes what moved into `pool` and
-/// answers with those sources, so the caller can approve them; an empty
-/// answer means nothing needs writing back.
+/// answers with what needs approving and whether anything moved at all.
+///
+/// An ejected entry's images sit beside its `.wgsl`, so they're watched the
+/// same way, and the list of them comes off the source's own `@asset`
+/// lines. That way declaring a new image and dropping the file next to the
+/// shader is one save, rather than something the entry has to be taught
+/// about first.
 fn pool_reload(
-    stamps: &mut HashMap<String, (u64, i64)>,
+    stamps: &mut HashMap<String, EntryStamps>,
     pool: &mut [rox_core::settings::NamedShader],
-) -> Vec<String> {
-    let mut fresh = Vec::new();
+) -> PoolEdits {
+    let mut edits = PoolEdits::default();
     for entry in pool.iter_mut() {
         let Some(path) = entry.path.clone() else {
             continue;
         };
+        let marks = stamps.entry(entry.name.clone()).or_default();
         // A file that has gone leaves the entry alone, since the source is
         // what runs and the file is only the working copy. The stamp stays
         // put, so the file coming back reads as news.
-        let Some(stamp) = rox_core::settings::file_stamp(&path) else {
+        if let Some(stamp) = rox_core::settings::file_stamp(&path) {
+            if marks.source != Some(stamp) {
+                marks.source = Some(stamp);
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if text.trim() != entry.source.trim() {
+                        entry.source = text.clone();
+                        edits.fresh.push(text);
+                        edits.changed = true;
+                    }
+                }
+            }
+        }
+        let (Some(dir), Ok(spec)) = (path.parent(), parse_chain(&entry.source)) else {
             continue;
         };
-        if stamps.get(&entry.name) == Some(&stamp) {
-            continue;
+        for asset in &spec.assets {
+            // The cover binding has no file behind it; the player feeds it.
+            if asset.is_cover() {
+                continue;
+            }
+            let file = dir.join(&asset.file);
+            let Some(stamp) = rox_core::settings::file_stamp(&file) else {
+                continue;
+            };
+            if marks.assets.get(&asset.file) == Some(&stamp) {
+                continue;
+            }
+            marks.assets.insert(asset.file.clone(), stamp);
+            let Ok(bytes) = std::fs::read(&file) else {
+                continue;
+            };
+            let fresh = rox_core::settings::ShaderAsset::from_bytes(asset.file.clone(), &bytes);
+            match entry.assets.iter_mut().find(|held| held.file == asset.file) {
+                // The first sweep after an eject stats a file that already
+                // says what the entry does, which is nothing to write back.
+                Some(held) if held.data == fresh.data => {}
+                Some(held) => {
+                    *held = fresh;
+                    edits.changed = true;
+                }
+                None => {
+                    entry.assets.push(fresh);
+                    edits.changed = true;
+                }
+            }
         }
-        stamps.insert(entry.name.clone(), stamp);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if text.trim() == entry.source.trim() {
-            continue;
-        }
-        entry.source = text.clone();
-        fresh.push(text);
     }
     // Entries that left the pool (a workspace switch, a renamed shader)
     // shouldn't hold a stamp that would make their file's next edit look
     // like old news if the name comes back.
     stamps.retain(|name, _| pool.iter().any(|entry| entry.name == *name));
-    fresh
+    edits
 }
 
 /// The mtime watch behind hot reload, worn by both shader surfaces: the
@@ -567,6 +758,28 @@ pub fn slot_target(slot: usize) -> String {
 pub fn target_slot(id: &str) -> Option<usize> {
     let slot: usize = id.strip_prefix("slot")?.parse().ok()?;
     (slot < SLOTS).then_some(slot)
+}
+
+/// Whether a shader says it leaves the surface under it usable, off a bare
+/// `// @overlay` line in its source.
+///
+/// The one question a picker has to answer before somebody hands their whole
+/// window to a shader: does the app survive this. Two shapes claim it, and
+/// they look nothing alike. Sheen and Lamp are transparent, so the frame
+/// blends through them; Dither and Tube are opaque and read `screen`, so they
+/// print the frame themselves. What they share is the only thing that
+/// matters here, which is that you can still read your library afterwards.
+///
+/// It can't be derived, which is why it's declared. Binding `screen` proves
+/// a shader *can* pass the frame through and nothing more, since a chain is
+/// free to sample it and throw it away. Transparency is worse: alpha is a
+/// value the fragment stage computes per pixel, so the only way to know is to
+/// run it. So the shader's author says, and a shader that says nothing is
+/// taken at its most disruptive, which is the safe way to be wrong.
+pub fn overlay(source: &str) -> bool {
+    source
+        .lines()
+        .any(|line| chain::directive(line, "@overlay").is_some())
 }
 
 /// The slot names a shader declares, read off `// @slot n: name` comments
@@ -678,6 +891,12 @@ pub fn note_window(window: &Window, state: &AppState, cx: &mut App) {
     feeds
         .0
         .retain(|window, feed| live.contains(window) && feed.player.upgrade().is_some());
+    // The cover feeds ride the same liveness: a closed window's art has
+    // nobody left to sample it.
+    COVERS
+        .write()
+        .unwrap()
+        .retain(|window, _| live.iter().any(|id| id.as_u64() == *window));
     feeds.0.insert(
         id,
         Feed {
@@ -685,6 +904,134 @@ pub fn note_window(window: &Window, state: &AppState, cx: &mut App) {
             player: state.player.downgrade(),
         },
     );
+}
+
+/// The playing track's cover art, per window, for the programs binding
+/// [`COVER_SOURCE`]. Per window rather than app-global because each
+/// workspace window has a player of its own, and two windows sitting on
+/// different tracks would otherwise fight over one slot and re-register
+/// each other's programs every frame.
+struct CoverFeed {
+    /// The playing file the image was read for. Two cue tracks of one
+    /// image share a path and share their art, so the path is the right
+    /// identity here even though it's the wrong one everywhere a track is
+    /// named.
+    path: Option<PathBuf>,
+    /// Bumped when the path turns over, which is what the program keys
+    /// hash so a track change re-registers exactly the programs that bind
+    /// the art.
+    rev: u64,
+    image: Option<Arc<AssetImage>>,
+}
+
+static COVERS: LazyLock<RwLock<HashMap<u64, CoverFeed>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// The registered cover's cap on its long edge. Registered textures live
+/// until the window closes (the patch never evicts), so a session that
+/// walks a few hundred albums holds a few hundred of these; at this size
+/// that's a megabyte each instead of sixteen, and no shader effect over a
+/// panel resolves finer anyway.
+const COVER_EDGE: u32 = 512;
+
+/// Point a window's cover feed at the playing file, loading and decoding
+/// its art when the path turns over. Answers the feed's revision either
+/// way, which is what the caller folds into its program key. Costs a map
+/// read and a path compare until the track changes, then one art
+/// extraction and decode.
+pub fn note_cover(window: u64, path: Option<&Path>) -> u64 {
+    {
+        let covers = COVERS.read().unwrap();
+        if let Some(feed) = covers.get(&window) {
+            if feed.path.as_deref() == path {
+                return feed.rev;
+            }
+        } else if path.is_none() {
+            // No entry and nothing playing is the fresh-window steady
+            // state; writing a rev-0 entry for it would only grow the map.
+            return 0;
+        }
+    }
+    // Load outside the lock: another window's paint shouldn't wait on a
+    // decode. Paint runs on the main thread, so nobody races the write.
+    let image = path.and_then(load_cover).map(Arc::new);
+    let mut covers = COVERS.write().unwrap();
+    let feed = covers.entry(window).or_insert(CoverFeed {
+        path: None,
+        rev: 0,
+        image: None,
+    });
+    if feed.path.as_deref() != path {
+        feed.path = path.map(Path::to_path_buf);
+        feed.image = image;
+        feed.rev += 1;
+    }
+    feed.rev
+}
+
+/// [`note_cover`] fed from the window's own player: the playing file, or
+/// None with the player idle. A window with no feed registered (a child
+/// window under the all-windows post shader) leaves its entry alone -
+/// [`adopt_cover`] is what fills those.
+pub fn poll_cover(window: &Window, cx: &App) -> u64 {
+    let id = window.window_handle().window_id().as_u64();
+    let Some((_, player)) = window_feed(window, cx) else {
+        return COVERS.read().unwrap().get(&id).map_or(0, |feed| feed.rev);
+    };
+    let path = player
+        .read(cx)
+        .now_playing()
+        .map(|now| now.path().to_path_buf());
+    note_cover(id, path.as_deref())
+}
+
+/// Copy one window's cover feed onto another, for the child-window sweep:
+/// a child wears the primary workspace's program, so it wears its art too.
+pub fn adopt_cover(from: u64, to: u64) {
+    let mut covers = COVERS.write().unwrap();
+    let Some(source) = covers
+        .get(&from)
+        .map(|feed| (feed.path.clone(), feed.image.clone()))
+    else {
+        return;
+    };
+    let feed = covers.entry(to).or_insert(CoverFeed {
+        path: None,
+        rev: 0,
+        image: None,
+    });
+    if feed.path != source.0 {
+        (feed.path, feed.image) = source;
+        feed.rev += 1;
+    }
+}
+
+/// What a window's [`COVER_SOURCE`] binding samples, for registration.
+pub(crate) fn window_cover(window: u64) -> Option<Arc<AssetImage>> {
+    COVERS.read().unwrap().get(&window)?.image.clone()
+}
+
+/// A track's front cover as registration-ready pixels, downscaled to
+/// [`COVER_EDGE`]. None is a track with no art anywhere, which binds the
+/// fallback plate instead.
+fn load_cover(path: &Path) -> Option<AssetImage> {
+    let (bytes, _mime) = rox_library::art::cover_art_of(path, rox_library::art::ArtKind::Front)?;
+    let image = image::load_from_memory(&bytes).ok()?;
+    let image = if image.width().max(image.height()) > COVER_EDGE {
+        image.resize(
+            COVER_EDGE,
+            COVER_EDGE,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        image
+    };
+    let image = image.to_rgba8();
+    Some(AssetImage {
+        width: image.width(),
+        height: image.height(),
+        rgba8: image.into_raw(),
+    })
 }
 
 /// The last compile message per panel, for its settings window's readout.
@@ -727,6 +1074,30 @@ fn source_hash(source: &str) -> u64 {
     hasher.finish()
 }
 
+/// What a failed registration memoizes under: the window, the source, where
+/// its images come from, the pool's generation, and the cover feed's.
+///
+/// The generation rides along because a program can fail over its images
+/// rather than its code, and fixing an image changes no source text: the
+/// pool watch pulls the new bytes in and bumps the pool, which is what has
+/// to clear the memo. Without it a panel would sit on an error nobody could
+/// clear short of editing the shader.
+///
+/// `cover` is the window's cover revision for a source that binds
+/// [`COVER_SOURCE`], and zero for the rest, so a track change re-registers
+/// exactly the programs wearing the art.
+fn program_key(window: u64, source: &str, ctx: &ProgramCtx, cover: u64) -> (u64, u64) {
+    use std::hash::{Hash as _, Hasher as _};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hasher);
+    ctx.name.hash(&mut hasher);
+    ctx.path.hash(&mut hasher);
+    rox_core::settings::shader_pool_rev().hash(&mut hasher);
+    cover.hash(&mut hasher);
+    (window, hasher.finish())
+}
+
 /// What a panel's surface is running, per window it draws in. The wrapper
 /// paints from an element with nothing but the panel's entity id to hand,
 /// so the watch and the last good registration live out here rather than on
@@ -740,10 +1111,14 @@ struct Live {
     watch: SourceWatch,
     /// The file's text, once a reload has moved past the config's copy.
     hot: Option<String>,
-    /// The last registration that compiled clean, kept painting while a
-    /// fresh edit is broken so an authoring loop doesn't strobe the panel
-    /// off and on with every unfinished save.
-    good: Option<UserShaderId>,
+    /// The last registration that compiled clean and the program key it
+    /// came from. Kept painting while a fresh edit is broken, so an
+    /// authoring loop doesn't strobe the panel off and on with every
+    /// unfinished save, and skipped past entirely while the key holds
+    /// still: a program that hasn't moved has a known id, and splitting it
+    /// and decoding its images again every frame would be work with an
+    /// answer already in hand.
+    good: Option<(u64, UserShaderId)>,
     /// Last time the entry was painted from, so entries for panels that
     /// closed don't hold their sources forever.
     touched: Instant,
@@ -772,6 +1147,9 @@ pub fn hot_source(panel: EntityId) -> Option<String> {
 /// chrome and carried by the [`Themed`](super::themed) wrapper.
 pub struct PanelSurface {
     source: String,
+    /// The pool entry the source came from, so a program declaring images
+    /// finds the bytes the look carries for them.
+    name: Option<String>,
     /// The file the source was last read from, watched for edits.
     path: Option<PathBuf>,
     routes: Vec<Route>,
@@ -802,6 +1180,7 @@ impl PanelSurface {
         }
         Some(PanelSurface {
             source,
+            name: shader.name.clone(),
             // A named surface doesn't watch a file. Its text belongs to the
             // pool, and the panel's own bookmark points at whatever was
             // inlined before the name went on, so reloading it would pull
@@ -823,25 +1202,42 @@ impl PanelSurface {
         let panel = window.current_view();
         let window_id = window.window_handle().window_id().as_u64();
         let (source, last_good) = self.current(window_id, panel);
-        let key = (window_id, source_hash(&source));
-        let failed = FAILED.read().unwrap().get(&key).cloned();
-        let shader = match failed {
-            Some(message) => {
-                note_error(panel, Some(message));
-                last_good
+        let ctx = ProgramCtx::of(self.name.as_deref(), self.path.as_deref());
+        // A program wearing the track's art follows the track: the poll
+        // moves the feed when the playing file turns over, the rev moves
+        // the key, and the key re-registers the program with the new art.
+        let cover = if uses_cover(&source) {
+            poll_cover(window, cx)
+        } else {
+            0
+        };
+        let key = program_key(window_id, &source, &ctx, cover);
+        let shader = match last_good {
+            // Same program as the last frame's, so its id is too. Nothing
+            // about it has moved: not the text, not where its images come
+            // from, not the pool's generation.
+            Some((seen, shader)) if seen == key.1 => Some(shader),
+            _ => {
+                let last_good = last_good.map(|(_, shader)| shader);
+                match FAILED.read().unwrap().get(&key).cloned() {
+                    Some(message) => {
+                        note_error(panel, Some(message));
+                        last_good
+                    }
+                    None => match register_program(window, &source, &ctx) {
+                        Ok(shader) => {
+                            note_error(panel, None);
+                            self.note_good(window_id, panel, key.1, shader);
+                            Some(shader)
+                        }
+                        Err(message) => {
+                            FAILED.write().unwrap().insert(key, message.clone());
+                            note_error(panel, Some(message));
+                            last_good
+                        }
+                    },
+                }
             }
-            None => match window.register_user_shader(&source) {
-                Ok(shader) => {
-                    note_error(panel, None);
-                    self.note_good(window_id, panel, shader);
-                    Some(shader)
-                }
-                Err(message) => {
-                    FAILED.write().unwrap().insert(key, message.clone());
-                    note_error(panel, Some(message));
-                    last_good
-                }
-            },
         };
         // Nothing has ever compiled here, so there is nothing to keep on
         // screen either. The message is on its way to the settings window.
@@ -851,14 +1247,14 @@ impl PanelSurface {
         let (signals, live) = self.signals(window, cx);
         let meta = meta_slots(window, cx);
         let bounds = body_rect(bounds, self.inset);
-        // Caps decide the path: a shader that reads the screen under it or
-        // its own last frame needs the region pass, and one that draws from
-        // nothing but its uniforms is a plain in-scene quad. Getting this
-        // backwards paints nothing at all, since each call skips what it
-        // can't run.
+        // Caps decide the path: a program that reads the screen under it,
+        // its own last frame, an image, or runs more than one pass needs the
+        // region pass, and one that draws from nothing but its uniforms is a
+        // plain in-scene quad. Getting this backwards paints nothing at all,
+        // since each call skips what it can't run.
         let screen = window
             .user_shader_caps(shader)
-            .is_some_and(|caps| caps.samples_screen || caps.uses_prev);
+            .is_some_and(|caps| caps.screen_pass_only());
         if screen {
             window.paint_screen_shader(bounds, shader, panel.as_u64(), signals, meta);
         } else {
@@ -883,7 +1279,7 @@ impl PanelSurface {
     /// The reload only happens for a surface that is already painting, which
     /// means already approved. A pending source never gets here, so a bundle
     /// can't have rox read a path of its choosing and trust what comes back.
-    fn current(&self, window: u64, panel: EntityId) -> (String, Option<UserShaderId>) {
+    fn current(&self, window: u64, panel: EntityId) -> (String, Option<(u64, UserShaderId)>) {
         // The pool's watch rides along here: it's throttled and app-wide, so
         // whichever surface paints first in a frame pays for it and the rest
         // cost an elapsed check. A named surface doesn't watch a file of its
@@ -943,10 +1339,10 @@ impl PanelSurface {
 
     /// Remember a clean registration as this surface's fallback, and drop
     /// the entries of panels that stopped drawing a while back.
-    fn note_good(&self, window: u64, panel: EntityId, shader: UserShaderId) {
+    fn note_good(&self, window: u64, panel: EntityId, key: u64, shader: UserShaderId) {
         let mut live = LIVE.write().unwrap();
         if let Some(entry) = live.get_mut(&(window, panel)) {
-            entry.good = Some(shader);
+            entry.good = Some((key, shader));
         }
         if live.len() > 32 {
             let now = Instant::now();
@@ -954,10 +1350,13 @@ impl PanelSurface {
         }
     }
 
-    /// This frame's slot values, and whether the hub is moving. The tick
-    /// happens here because a panel shader can be the only thing in the
-    /// window watching the audio; it's deduped inside the hub, so several
-    /// shaded panels cost one.
+    /// This frame's slot values, and whether the hub is moving. Moving
+    /// covers the release too: the audio stopping is where a smoothed
+    /// signal starts falling, so a surface that parked on the last live
+    /// frame would hold the fade halfway down. The tick happens here
+    /// because a panel shader can be the only thing in the window watching
+    /// the audio; it's deduped inside the hub, so several shaded panels
+    /// cost one.
     fn signals(&self, window: &Window, cx: &App) -> ([f32; SLOTS], bool) {
         let mut targets = SlotTargets::default();
         let Some((hub, player)) = window_feed(window, cx) else {
@@ -968,7 +1367,7 @@ impl PanelSurface {
             hub.tick(&player.feed(), player.playing_entry());
         }
         signal_ui::apply_routes(&self.routes, &hub, &mut targets);
-        (targets.slots, hub.live())
+        (targets.slots, hub.live() || hub.settling())
     }
 }
 
@@ -997,9 +1396,10 @@ fn window_feed(window: &Window, cx: &App) -> Option<(Arc<SignalHub>, gpui::Entit
 
 /// The eight `meta` floats every rox shader can count on, the convention
 /// the Shader panel shares: volume, where the track sits, whether audio is
-/// moving, how long the track runs, and how dark the theme is. The last
-/// three are reserved and read zero, so a shader written against them
-/// today keeps working when they fill in.
+/// moving, how long the track runs, how dark the theme renders, and which
+/// theme the user actually picked. The last two are reserved and read
+/// zero, so a shader written against them today keeps working when they
+/// fill in.
 pub fn meta_slots(window: &Window, cx: &App) -> [f32; 8] {
     let mut meta = [0.0f32; 8];
     // The active palette's root background as luma, 0 pitch black to 1
@@ -1008,6 +1408,16 @@ pub fn meta_slots(window: &Window, cx: &App) -> [f32; 8] {
     // check: the theme is known even in a window no player registered.
     let bg = rox_design::palette::bg_root_opaque();
     meta[4] = (0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b).clamp(0.0, 1.0);
+    // The theme pick itself, same polarity as the luma beside it: 1 light,
+    // 0 dark. Not the same fact as slot 4 and not derivable from it - song
+    // theming can swap the rendered side out from under a cover, and it
+    // moves the luma around within a side too, so a shader that wants a
+    // clean "which theme am I in" reads this and a shader that wants "how
+    // bright is the page right now" reads slot 4.
+    meta[5] = match rox_design::palette::mode() {
+        rox_design::palette::Mode::Light => 1.0,
+        rox_design::palette::Mode::Dark => 0.0,
+    };
     let Some((_, player)) = window_feed(window, cx) else {
         return meta;
     };
@@ -1029,6 +1439,13 @@ pub fn meta_slots(window: &Window, cx: &App) -> [f32; 8] {
     meta[2] = if player.is_playing() { 1.0 } else { 0.0 };
     meta
 }
+
+/// The shader pool is app-global, and the tests in this file and in
+/// [`chain`] both swap it out from under themselves. Anything that touches
+/// it takes this first, so a parallel run doesn't have one test asserting
+/// against another's pool.
+#[cfg(test)]
+static POOL_GUARD: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -1124,6 +1541,39 @@ mod tests {
         );
     }
 
+    /// The cover feed turns over with the playing file, not with the
+    /// frames asking about it, and the child sweep's adoption follows the
+    /// same rule.
+    #[test]
+    fn the_cover_feed_revs_only_when_the_track_turns_over() {
+        // Ids no real window takes, since the feed map is app-global.
+        let window = u64::MAX - 7;
+        let child = u64::MAX - 8;
+        assert_eq!(
+            note_cover(window, None),
+            0,
+            "idle from the start writes nothing"
+        );
+        let a = PathBuf::from("/nowhere/a.flac");
+        assert_eq!(note_cover(window, Some(&a)), 1);
+        assert_eq!(note_cover(window, Some(&a)), 1, "same track holds still");
+        assert_eq!(
+            note_cover(window, Some(&PathBuf::from("/nowhere/b.flac"))),
+            2
+        );
+        assert_eq!(note_cover(window, None), 3, "stopping is a change too");
+        // Tracks nothing holds art for read as no image, which is what
+        // binds the fallback plate at registration.
+        assert!(window_cover(window).is_none());
+
+        note_cover(window, Some(&a));
+        adopt_cover(window, child);
+        let rev = |id: u64| COVERS.read().unwrap().get(&id).map(|feed| feed.rev);
+        assert_eq!(rev(child), Some(1));
+        adopt_cover(window, child);
+        assert_eq!(rev(child), Some(1), "adopting the same art moves nothing");
+    }
+
     /// Every example carries its own line for the page to print, so adding
     /// one stays a file plus a row in the table.
     #[test]
@@ -1145,10 +1595,12 @@ mod tests {
     /// be worse than a blank panel.
     #[test]
     fn resolve_source_reads_the_pool_before_the_inline_copy() {
+        let _pool = POOL_GUARD.lock().unwrap_or_else(|held| held.into_inner());
         rox_core::settings::note_shader_pool(vec![rox_core::settings::NamedShader {
             name: "Grain".to_string(),
             source: "// the pool's grain".to_string(),
             path: None,
+            assets: Vec::new(),
         }]);
 
         assert_eq!(
@@ -1467,33 +1919,33 @@ mod tests {
         let root = eject_root("collision");
         let named = |stem: &str| rox_core::settings::shader_eject_path_in(&root, "Nightfall", stem);
 
-        let first = eject_in(&root, "Nightfall", "Grain", "// one").expect("eject");
+        let first = eject_in(&root, "Nightfall", "Grain", "// one", &[]).expect("eject");
         assert_eq!(first, named("Grain"));
         assert_eq!(std::fs::read_to_string(&first).unwrap(), "// one");
 
         // The same shader, give or take the newline an editor leaves: the
         // file already says it, so it keeps its name.
-        let again = eject_in(&root, "Nightfall", "Grain", "\n// one\n").expect("eject");
+        let again = eject_in(&root, "Nightfall", "Grain", "\n// one\n", &[]).expect("eject");
         assert_eq!(again, first);
 
         // A different shader under a taken name gets its own file, and the
         // one that was there is left exactly as it was.
-        let second = eject_in(&root, "Nightfall", "Grain", "// two").expect("eject");
+        let second = eject_in(&root, "Nightfall", "Grain", "// two", &[]).expect("eject");
         assert_eq!(second, named("Grain-2"));
         assert_eq!(std::fs::read_to_string(&first).unwrap(), "\n// one\n");
 
-        let third = eject_in(&root, "Nightfall", "Grain", "// three").expect("eject");
+        let third = eject_in(&root, "Nightfall", "Grain", "// three", &[]).expect("eject");
         assert_eq!(third, named("Grain-3"));
         // And the one that already has a numbered file lands back on it
         // rather than walking further down every time.
         assert_eq!(
-            eject_in(&root, "Nightfall", "Grain", "// two").expect("eject"),
+            eject_in(&root, "Nightfall", "Grain", "// two", &[]).expect("eject"),
             named("Grain-2")
         );
 
         // Names double as path components, so a name that can't be one
         // folds through the shared sanitizer.
-        let awkward = eject_in(&root, "Nightfall", "a/b", "// slashed").expect("eject");
+        let awkward = eject_in(&root, "Nightfall", "a/b", "// slashed", &[]).expect("eject");
         assert_eq!(awkward, named("a b"));
         std::fs::remove_dir_all(&root).ok();
     }
@@ -1512,6 +1964,7 @@ mod tests {
                 name: name.to_string(),
                 source: source.to_string(),
                 path,
+                assets: Vec::new(),
             };
         let mut pool = vec![
             entry("Grain", "// one", Some(path.clone())),
@@ -1521,23 +1974,118 @@ mod tests {
 
         // The first sweep reads the file whatever the stamp says, and it
         // holds what the entry does, so nothing moves.
-        assert!(pool_reload(&mut stamps, &mut pool).is_empty());
+        assert!(!pool_reload(&mut stamps, &mut pool).changed);
 
         std::fs::write(&path, "// one, and then some more").expect("rewrite");
         assert_eq!(
-            pool_reload(&mut stamps, &mut pool),
+            pool_reload(&mut stamps, &mut pool).fresh,
             vec!["// one, and then some more".to_string()]
         );
         assert_eq!(pool[0].source, "// one, and then some more");
         // Quiet again once the stamp has caught up, and the entry with no
         // file behind it was never in play.
-        assert!(pool_reload(&mut stamps, &mut pool).is_empty());
+        assert!(!pool_reload(&mut stamps, &mut pool).changed);
         assert_eq!(pool[1].source, "// bloom");
 
         // An entry that leaves the pool drops its stamp, so the same file
         // coming back under that name reads as news rather than old.
-        assert!(pool_reload(&mut stamps, &mut Vec::new()).is_empty());
+        assert!(!pool_reload(&mut stamps, &mut Vec::new()).changed);
         assert!(stamps.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A 1x1 PNG, and a second one that differs by a byte, so an edit is
+    /// something the stamp can see.
+    fn plate(red: u8) -> Vec<u8> {
+        let mut image = image::RgbaImage::new(1, 1);
+        image.put_pixel(0, 0, image::Rgba([red, 0, 0, 255]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("encode");
+        bytes.into_inner()
+    }
+
+    /// Eject writes a shader's images beside its `.wgsl`, so the authoring
+    /// loop is an editor for the code and an image editor for the plates.
+    #[test]
+    fn ejecting_writes_the_images_beside_the_shader() {
+        let root = eject_root("assets");
+        let source = "// @asset plate: plate.png\nfn fs_user() {}";
+        let assets = vec![rox_core::settings::ShaderAsset::from_bytes(
+            "plate.png",
+            &plate(200),
+        )];
+        let path = eject_in(&root, "Nightfall", "Stamp", source, &assets).expect("eject");
+        let beside = path.parent().unwrap().join("plate.png");
+        assert_eq!(std::fs::read(&beside).unwrap(), plate(200));
+
+        // Images overwrite rather than sliding down to a variant: the file
+        // name is what the shader binds by, so a numbered copy would only
+        // leave the shader sampling the old plate.
+        std::fs::write(&beside, b"scribbled on").expect("write");
+        let again = eject_in(&root, "Nightfall", "Stamp", source, &assets).expect("eject");
+        assert_eq!(again, path);
+        assert_eq!(std::fs::read(&beside).unwrap(), plate(200));
+
+        // An entry hand-edited into something that isn't base64 reads out
+        // here rather than at the next registration.
+        let broken = vec![rox_core::settings::ShaderAsset {
+            file: "plate.png".to_string(),
+            data: "not base64 at all!!".to_string(),
+        }];
+        assert!(eject_in(&root, "Nightfall", "Stamp", source, &broken).is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The watch stats a bookmarked entry's images too, and the list of them
+    /// comes off the source's own `@asset` lines: declaring a new image and
+    /// dropping the file next to the shader is one save.
+    #[test]
+    fn the_pool_watch_pulls_an_image_edit_into_its_entry() {
+        let dir = eject_root("pool-assets");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("stamp.wgsl");
+        let source = "// @asset plate: plate.png\nfn fs_user() {}";
+        std::fs::write(&path, source).expect("write");
+        std::fs::write(dir.join("plate.png"), plate(10)).expect("write");
+
+        let mut pool = vec![rox_core::settings::NamedShader {
+            name: "Stamp".to_string(),
+            source: source.to_string(),
+            path: Some(path.clone()),
+            assets: Vec::new(),
+        }];
+        let mut stamps = HashMap::new();
+
+        // The first sweep takes the image the entry never carried, which is
+        // an ejected shader growing a plate.
+        let edits = pool_reload(&mut stamps, &mut pool);
+        assert!(edits.changed, "a new image is news");
+        assert!(edits.fresh.is_empty(), "and it approves nothing: it's data");
+        assert_eq!(pool[0].assets.len(), 1);
+        assert_eq!(pool[0].assets[0].file, "plate.png");
+        assert_eq!(pool[0].assets[0].decode().unwrap(), plate(10));
+
+        // Quiet once the stamp has caught up.
+        assert!(!pool_reload(&mut stamps, &mut pool).changed);
+
+        // An edit in an image editor lands the same way a shader edit does.
+        // The stamp is size and mtime and mtime only resolves to the second,
+        // so the change here is a length.
+        std::fs::write(dir.join("plate.png"), [plate(10), plate(240)].concat()).expect("rewrite");
+        assert!(pool_reload(&mut stamps, &mut pool).changed);
+        assert_eq!(
+            pool[0].assets[0].decode().unwrap(),
+            [plate(10), plate(240)].concat()
+        );
+
+        // A file the source stopped declaring is left where it is, and an
+        // entry with no bookmark is never stat'd for one.
+        std::fs::write(&path, "fn fs_user() {}").expect("rewrite");
+        let edits = pool_reload(&mut stamps, &mut pool);
+        assert_eq!(edits.fresh, vec!["fn fs_user() {}".to_string()]);
+        assert_eq!(pool[0].assets.len(), 1, "the bytes stay with the entry");
         std::fs::remove_dir_all(&dir).ok();
     }
 

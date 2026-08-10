@@ -71,6 +71,11 @@ pub(crate) enum PanelPlacement {
 /// everything else ignores it.
 pub(crate) struct PanelDef {
     pub label: &'static str,
+    /// The panel's registry name, the string its `panel_name` returns and
+    /// `workspace::register_panels` registers its builder under. The label
+    /// doesn't derive from it ("art view" shows as Album Carousel), so a
+    /// dump-shaped thing - a panel preset - finds its entry through this.
+    pub name: &'static str,
     pub icon: &'static str,
     pub placement: PanelPlacement,
     pub build: fn(&AppState, WeakEntity<Workspace>, &mut Window, &mut App) -> Arc<dyn PanelView>,
@@ -94,6 +99,7 @@ pub(crate) static CATALOGUE: PanelSection =
         panels: &[
             PanelDef {
                 label: "Library",
+                name: "library",
                 icon: icons::LIST_MUSIC,
                 placement: PanelPlacement::Center,
                 build: |state, _, window, cx| {
@@ -104,6 +110,7 @@ pub(crate) static CATALOGUE: PanelSection =
             },
             PanelDef {
                 label: "Search",
+                name: "search",
                 icon: icons::SEARCH,
                 placement: PanelPlacement::Top,
                 build: |state, _, window, cx| {
@@ -114,6 +121,7 @@ pub(crate) static CATALOGUE: PanelSection =
             },
             PanelDef {
                 label: "Filter",
+                name: "filter",
                 icon: icons::FUNNEL,
                 placement: PanelPlacement::Center,
                 build: |state, _, window, cx| {
@@ -124,6 +132,7 @@ pub(crate) static CATALOGUE: PanelSection =
             },
             PanelDef {
                 label: "Folder Tree",
+                name: "folder tree",
                 icon: icons::FOLDER,
                 placement: PanelPlacement::Center,
                 build: |state, _, window, cx| {
@@ -134,6 +143,7 @@ pub(crate) static CATALOGUE: PanelSection =
             },
             PanelDef {
                 label: "Album Grid",
+                name: "album grid",
                 icon: icons::LAYOUT_GRID,
                 placement: PanelPlacement::Center,
                 build: |state, _, window, cx| {
@@ -146,6 +156,7 @@ pub(crate) static CATALOGUE: PanelSection =
             },
             PanelDef {
                 label: "Artist Grid",
+                name: "artist grid",
                 icon: icons::USER,
                 placement: PanelPlacement::Center,
                 build: |state, _, window, cx| {
@@ -156,6 +167,7 @@ pub(crate) static CATALOGUE: PanelSection =
             },
             PanelDef {
                 label: "Genre Grid",
+                name: "genre grid",
                 icon: icons::TAG,
                 placement: PanelPlacement::Center,
                 build: |state, _, window, cx| {
@@ -166,6 +178,7 @@ pub(crate) static CATALOGUE: PanelSection =
             },
             PanelDef {
                 label: "Album Carousel",
+                name: "art view",
                 icon: icons::GALLERY,
                 placement: PanelPlacement::Center,
                 build: |state, _, window, cx| {
@@ -176,6 +189,7 @@ pub(crate) static CATALOGUE: PanelSection =
             },
             PanelDef {
                 label: "Playlists",
+                name: "playlists",
                 icon: icons::LIST_MUSIC,
                 placement: PanelPlacement::Center,
                 build: |state, _, window, cx| {
@@ -186,6 +200,7 @@ pub(crate) static CATALOGUE: PanelSection =
             },
             PanelDef {
                 label: "Queue",
+                name: "queue",
                 icon: icons::LIST_MUSIC,
                 placement: PanelPlacement::Center,
                 build: |state, _, window, cx| {
@@ -196,6 +211,7 @@ pub(crate) static CATALOGUE: PanelSection =
             },
             PanelDef {
                 label: "History",
+                name: "history",
                 icon: icons::CLOCK,
                 placement: PanelPlacement::Center,
                 build: |state, _, window, cx| {
@@ -214,6 +230,7 @@ pub(crate) static DETAILS: PanelSection = PanelSection {
     panels: &[
         PanelDef {
             label: "Cover Art",
+            name: "cover art",
             icon: icons::IMAGE,
             placement: PanelPlacement::Center,
             build: |state, _, _, cx| {
@@ -222,6 +239,7 @@ pub(crate) static DETAILS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Metadata",
+            name: "metadata",
             icon: icons::FILE_TEXT,
             placement: PanelPlacement::Center,
             build: |state, _, _, cx| {
@@ -232,6 +250,7 @@ pub(crate) static DETAILS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Lyrics",
+            name: "lyrics",
             icon: icons::MIC,
             placement: PanelPlacement::Center,
             build: |state, _, _, cx| {
@@ -240,6 +259,7 @@ pub(crate) static DETAILS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Biography",
+            name: "biography",
             icon: icons::USER,
             placement: PanelPlacement::Center,
             build: |state, _, _, cx| {
@@ -250,6 +270,7 @@ pub(crate) static DETAILS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Output",
+            name: "output",
             icon: icons::VOLUME_2,
             placement: PanelPlacement::Center,
             build: |state, _, _, cx| {
@@ -266,6 +287,7 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
     panels: &[
         PanelDef {
             label: "Drawer",
+            name: "drawer",
             icon: icons::PANEL_BOTTOM,
             placement: PanelPlacement::Center,
             build: |state, ws, _, cx| {
@@ -276,6 +298,7 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Group",
+            name: "group",
             icon: icons::COLUMNS_2,
             placement: PanelPlacement::Center,
             build: |state, ws, _, cx| {
@@ -286,6 +309,7 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Overlay",
+            name: "overlay",
             icon: icons::LAYERS,
             placement: PanelPlacement::Center,
             build: |state, ws, _, cx| {
@@ -296,6 +320,7 @@ pub(crate) static ARRANGEMENT: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Slide",
+            name: "slide",
             icon: icons::GALLERY,
             placement: PanelPlacement::Center,
             build: |state, ws, _, cx| {
@@ -312,6 +337,7 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
     panels: &[
         PanelDef {
             label: "Menu",
+            name: "menu",
             icon: icons::MENU,
             placement: PanelPlacement::Bottom,
             build: |state, ws, _, cx| {
@@ -320,6 +346,7 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Drag Anchor",
+            name: "drag anchor",
             icon: icons::MOVE,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -332,6 +359,7 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Spacer",
+            name: "spacer",
             icon: icons::SQUARE_DASHED,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -340,6 +368,7 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Window Controls",
+            name: "window controls",
             icon: icons::APP_WINDOW,
             placement: PanelPlacement::Bottom,
             build: |state, ws, _, cx| {
@@ -350,6 +379,7 @@ pub(crate) static APPLICATION: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Mini Toggle",
+            name: "mini toggle",
             icon: icons::MINIMIZE,
             placement: PanelPlacement::Bottom,
             build: |state, ws, _, cx| {
@@ -366,6 +396,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
     panels: &[
         PanelDef {
             label: "Track Info",
+            name: "track info",
             icon: icons::INFO,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -376,6 +407,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Status",
+            name: "status",
             icon: icons::CHART_PIE,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -384,6 +416,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Playback",
+            name: "playback",
             icon: icons::PLAY,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -394,6 +427,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Seek",
+            name: "seek",
             icon: icons::FAST_FORWARD,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -402,6 +436,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Volume",
+            name: "volume",
             icon: icons::VOLUME_2,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -410,6 +445,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Rating",
+            name: "rating",
             icon: icons::STAR,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -418,6 +454,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Favourite",
+            name: "favourite",
             icon: icons::HEART,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -428,6 +465,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Queue Widget",
+            name: "queue widget",
             icon: icons::LIST_MUSIC,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -438,6 +476,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "EQ Widget",
+            name: "eq widget",
             icon: icons::AUDIO_LINES,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -448,6 +487,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Stats Widget",
+            name: "stats widget",
             icon: icons::CHART_PIE,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -458,6 +498,7 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Theme Toggle",
+            name: "theme toggle",
             icon: icons::CONTRAST,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -474,6 +515,7 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
     panels: &[
         PanelDef {
             label: "Spectrum",
+            name: "spectrum",
             icon: icons::AUDIO_LINES,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -484,6 +526,7 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Waveform",
+            name: "waveform",
             icon: icons::AUDIO_WAVEFORM,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -494,6 +537,7 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
         },
         PanelDef {
             label: "VU Meter",
+            name: "vu meter",
             icon: icons::GAUGE,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -512,6 +556,7 @@ pub(crate) static EXPERIMENTAL: PanelSection = PanelSection {
     panels: &[
         PanelDef {
             label: "Particles",
+            name: "particles",
             icon: icons::STAR,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -522,6 +567,7 @@ pub(crate) static EXPERIMENTAL: PanelSection = PanelSection {
         },
         PanelDef {
             label: "Shader",
+            name: "shader",
             icon: icons::BLEND,
             placement: PanelPlacement::Bottom,
             build: |state, _, _, cx| {
@@ -584,4 +630,54 @@ pub(crate) fn sections() -> impl Iterator<Item = &'static &'static PanelSection>
     CATALOG
         .iter()
         .filter(move |section| experimental || !is_experimental(section))
+}
+
+/// The catalog entry for a registry name, for the surfaces that start from a
+/// dump rather than a pick: a panel preset knows what it is by name, and
+/// needs the icon and placement that name's entry carries. Ungated on
+/// purpose - the experimental flag hides panels from the pickers, it doesn't
+/// unmake a preset somebody already saved.
+pub(crate) fn def_for(name: &str) -> Option<&'static PanelDef> {
+    CATALOG
+        .iter()
+        .flat_map(|section| section.panels.iter())
+        .find(|def| def.name == name)
+}
+
+/// The section a registry name sits in, for the pickers that gate by section.
+/// The composite slot menus gray out the arrangement panels, and a preset of
+/// one has to gray out with them.
+pub(crate) fn section_for(name: &str) -> Option<&'static PanelSection> {
+    CATALOG
+        .iter()
+        .copied()
+        .find(|section| section.panels.iter().any(|def| def.name == name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every entry's registry name is a distinct lowercase string, and
+    /// [`def_for`] finds each one. Names are what a saved dump carries, so a
+    /// duplicate or a stray capital costs a preset its panel.
+    #[test]
+    fn names_are_unique_and_resolvable() {
+        let mut seen = std::collections::HashSet::new();
+        for section in CATALOG {
+            for def in section.panels {
+                assert_eq!(
+                    def.name,
+                    def.name.to_lowercase(),
+                    "{} has a capital in its registry name",
+                    def.label
+                );
+                assert!(seen.insert(def.name), "two entries claim {}", def.name);
+                let found = def_for(def.name).expect("its own name resolves");
+                assert_eq!(found.label, def.label);
+                assert!(section_for(def.name).is_some());
+            }
+        }
+        assert!(def_for("no such panel").is_none());
+    }
 }

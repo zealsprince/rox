@@ -11,6 +11,7 @@ pub mod art;
 pub mod artist_grid;
 pub mod biography;
 pub mod cover;
+pub mod discs;
 pub mod drag_anchor;
 pub mod eq_widget;
 pub mod favourite;

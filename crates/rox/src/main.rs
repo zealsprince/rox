@@ -22,6 +22,7 @@ mod lastfm;
 mod lyrics;
 mod matching;
 mod panel_catalog;
+mod panel_presets;
 mod panel_settings;
 mod panels;
 mod pass_prompt;

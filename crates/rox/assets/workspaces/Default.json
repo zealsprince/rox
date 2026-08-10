@@ -1020,6 +1020,13 @@
   ],
   "primary_layout": "Default",
   "mini_layout": "Default Mini",
+  "meta": {
+    "author": "zealsprince",
+    "description": "What rox looks like out of the box: translucent surfaces over the desktop, no window chrome, art tinting off. The starting point every other look here is a departure from.",
+    "version": "1.0",
+    "created": "2026-07-24",
+    "updated": "2026-08-09"
+  },
   "appearance": {
     "surface_opacity": 0.6036,
     "backdrop_strength": 0.8,

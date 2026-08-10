@@ -37,7 +37,7 @@ use crate::signal_ui::{self, routes::RouteEditState};
 use rox_core::settings::{BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX};
 use rox_dock::TabPanel;
 use rox_panel_kit::ui::{
-    self as settings_ui, grid_columns, section, sidebar, small_button, SECTION_GAP,
+    self as settings_ui, grid_columns, kbd_line, section, sidebar, small_button, Seg, SECTION_GAP,
 };
 use rox_viz::signal::Route;
 
@@ -66,6 +66,37 @@ pub fn settings_item<P: PanelSettings>(menu: PopupMenu, panel: &Entity<P>, cx: &
             }),
     );
     crate::openers::host_settings_item(menu, child, cx)
+}
+
+/// The page a settings window should land on, keyed by the panel it
+/// edits. Set by [`open_page`] and taken by the window's next render, so a
+/// window that was already open jumps to the page too instead of sitting
+/// on whatever was last read.
+#[derive(Default)]
+struct RequestedPage(HashMap<EntityId, usize>);
+
+impl Global for RequestedPage {}
+
+/// Open a panel's settings window on one of the panel's own pages, named
+/// by the label it declares in [`PanelSettings::pages`]. What a panel body
+/// points at when it has something to say about its own config: an
+/// Inspect button lands on the page holding the thing rather than on
+/// Appearance, which is where a plain [`open`] starts.
+///
+/// A label the panel doesn't declare opens the window as usual.
+pub fn open_page<P: PanelSettings>(panel: Entity<P>, page: &str, cx: &mut App) {
+    let index = panel
+        .read(cx)
+        .pages()
+        .iter()
+        .position(|(label, _)| *label == page);
+    if let Some(index) = index {
+        // The shared pages lead the nav, so a panel's own pages start at 3.
+        cx.default_global::<RequestedPage>()
+            .0
+            .insert(panel.entity_id(), index + 3);
+    }
+    open(panel, cx);
 }
 
 /// Open a panel's settings window, or bring its open one to the front.
@@ -126,12 +157,16 @@ const PENDING_LINES: usize = 400;
 /// Read-only on purpose. rox has no code editor, and a box that let the
 /// source be edited before approving would only be a slower way to reach
 /// the same yes.
+///
+/// Saying no parks the shader rather than deleting it: the source, the
+/// name and the routes stay on the config with the switch off, so a look
+/// somebody wasn't sure about is one toggle away rather than gone.
 pub fn pending_shader(
     id: &'static str,
     source: &str,
     path: Option<&Path>,
     approve: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-    discard: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    turn_off: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
     let lines: Vec<String> = source
         .lines()
@@ -188,7 +223,7 @@ pub fn pending_shader(
                 .items_center()
                 .gap(tokens::SPACE_SM)
                 .child(small_button("Approve", icons::CHECK, false, approve))
-                .child(small_button("Discard", icons::TRASH, false, discard)),
+                .child(small_button("Turn Off", icons::CLOSE, false, turn_off)),
         )
 }
 
@@ -317,6 +352,25 @@ fn save_block<P: 'static>(
     )
 }
 
+/// The runs the shader picker lists, as `(overlay, examples heading,
+/// workspace heading)`. Pulled out of the menu closure so the one rule that
+/// decides what a surface may wear is a value a test can read.
+///
+/// Unfiltered, the headings name what a shader does to the surface under it,
+/// because that's the question a panel's picker leaves open. Filtered to
+/// overlays there's only one kind left to offer, so the split has nothing to
+/// tell apart and the headings go back to naming where a shader came from.
+fn shader_groups(overlays_only: bool) -> &'static [(bool, &'static str, &'static str)] {
+    if overlays_only {
+        &[(true, "Examples", "This Workspace")]
+    } else {
+        &[
+            (false, "Scenes", "Workspace Scenes"),
+            (true, "Overlays", "Workspace Overlays"),
+        ]
+    }
+}
+
 /// The picker both shader surfaces lead with, and the rows that follow from
 /// whatever it's showing.
 ///
@@ -343,6 +397,16 @@ pub struct ShaderSource<'a, P: 'static> {
     /// Clearing the shader, for a surface where having none is a state
     /// worth offering. Some puts a None entry at the top of the list.
     pub clear: Option<fn(&mut P, &mut Context<P>)>,
+    /// Offer only shaders that declare `// @overlay`. Set by the surface
+    /// that hands over the whole window, where a scene doesn't decorate the
+    /// app so much as replace it. A panel leaves this false: covering a
+    /// panel's own body is a normal thing to want, and the Shader panel is
+    /// nothing but that.
+    ///
+    /// It filters what can be picked, never what's installed. A config that
+    /// arrived holding a scene keeps running and keeps its name on the
+    /// closed picker; it just isn't a thing this list offers again.
+    pub overlays_only: bool,
     pub use_example: fn(&mut P, usize, &mut Context<P>),
     pub use_named: fn(&mut P, String, &mut Context<P>),
     pub choose_file: fn(&mut P, &mut Window, &mut Context<P>),
@@ -364,6 +428,7 @@ impl<P: 'static> ShaderSource<'_, P> {
             path,
             resolved,
             clear,
+            overlays_only,
             use_example,
             use_named,
             choose_file,
@@ -377,8 +442,10 @@ impl<P: 'static> ShaderSource<'_, P> {
         let choice = shader::pick(name, path, resolved);
 
         // The list, grouped the way the app's other grouped menus are: a
-        // label item over each run of entries, and the one action that
-        // isn't a choice sitting under a separator at the bottom.
+        // label item over each run of entries. From File sits at the top
+        // with the None entry rather than under the long example list,
+        // since pointing rox at a file of your own is the authoring loop's
+        // front door and shouldn't take a scroll to reach.
         let pool = settings::shader_pool();
         let current = choice.clone();
         let host = cx.entity().downgrade();
@@ -401,22 +468,56 @@ impl<P: 'static> ShaderSource<'_, P> {
                         }),
                 );
             }
-            menu = menu.item(PopupMenuItem::label("Examples"));
-            for (index, preset) in shader::PRESETS.iter().enumerate() {
+            {
                 let host = host.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(preset.label)
-                        .checked(current == shader::Pick::Example(index))
-                        .on_click(move |_, _, cx| {
-                            if let Some(host) = host.upgrade() {
-                                host.update(cx, |this, cx| use_example(this, index, cx));
-                            }
-                        }),
-                );
+                menu = menu
+                    .item(
+                        PopupMenuItem::new("From File...")
+                            .icon(Icon::default().path(icons::FOLDER))
+                            .on_click(move |_, window, cx| {
+                                if let Some(host) = host.upgrade() {
+                                    host.update(cx, |this, cx| choose_file(this, window, cx));
+                                }
+                            }),
+                    )
+                    .separator();
             }
-            if !pool.is_empty() {
-                menu = menu.item(PopupMenuItem::label("This Workspace"));
-                for entry in &pool {
+            // Both lists split the same way, by what the shader does to
+            // the surface under it: a scene replaces it, an overlay leaves
+            // it usable. Surfacing that here is what keeps "where did my
+            // library go" from being how anyone learns the difference, and
+            // it's why a workspace's own shaders get the split too rather
+            // than one flat run somebody has to have read the WGSL to sort.
+            //
+            // Filtered to overlays there's only one kind left, so the split
+            // has nothing to tell apart and the headings go back to saying
+            // where a shader came from, which is the question still open.
+            for &(overlay, examples, workspace) in shader_groups(overlays_only) {
+                menu = menu.item(PopupMenuItem::label(examples));
+                for (index, preset) in shader::PRESETS.iter().enumerate() {
+                    if shader::overlay(preset.source) != overlay {
+                        continue;
+                    }
+                    let host = host.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(preset.label)
+                            .checked(current == shader::Pick::Example(index))
+                            .on_click(move |_, _, cx| {
+                                if let Some(host) = host.upgrade() {
+                                    host.update(cx, |this, cx| use_example(this, index, cx));
+                                }
+                            }),
+                    );
+                }
+                let worn: Vec<_> = pool
+                    .iter()
+                    .filter(|entry| shader::overlay(&entry.source) == overlay)
+                    .collect();
+                if worn.is_empty() {
+                    continue;
+                }
+                menu = menu.item(PopupMenuItem::label(workspace));
+                for entry in worn {
                     let host = host.clone();
                     let entry_name = entry.name.clone();
                     let checked = matches!(
@@ -435,16 +536,7 @@ impl<P: 'static> ShaderSource<'_, P> {
                     );
                 }
             }
-            let host = host.clone();
-            menu.separator().item(
-                PopupMenuItem::new("From File...")
-                    .icon(Icon::default().path(icons::FOLDER))
-                    .on_click(move |_, window, cx| {
-                        if let Some(host) = host.upgrade() {
-                            host.update(cx, |this, cx| choose_file(this, window, cx));
-                        }
-                    }),
-            )
+            menu
         });
 
         let note: SharedString = match &choice {
@@ -461,17 +553,19 @@ impl<P: 'static> ShaderSource<'_, P> {
             )
             .into(),
             shader::Pick::Named { .. } => {
-                "Shared across this workspace. Editing it updates every panel that uses it.".into()
+                "Shared across this workspace. Editing it updates every surface that uses it."
+                    .into()
             }
             shader::Pick::File(path) => format!(
-                "{}. Your saves reload while the panel draws, and the source travels \
-                 inside the layout, so the panel keeps its shader on a machine that \
-                 never had the file.",
+                "{}. Your saves reload while the shader draws, and the source travels \
+                 inside layouts and bundles, so it survives a machine that never had \
+                 the file.",
                 path.display()
             )
             .into(),
-            shader::Pick::Custom => "This source travels inside the layout with no file behind \
-                                     it. Edit as File writes it back out and picks up your saves."
+            shader::Pick::Custom => "This source travels inside its layout or bundle with no \
+                                     file behind it. Edit as File writes it back out and picks \
+                                     up your saves."
                 .into(),
         };
 
@@ -534,12 +628,15 @@ struct OpenRenames(HashMap<EntityId, WindowHandle<Root>>);
 impl Global for OpenRenames {}
 
 /// The head of a panel's dropdown tail: the Add Panel flyout above the
-/// Panel-section divider, then the section's "Panel" header, then Rename.
-/// Every panel routes into its tail through here, so this one call opens
-/// the section for all of them - which is why it owns the leading
-/// separator (callers pass their content items straight in, no separator
-/// of their own) and why Add Panel, a sibling into this group rather than
-/// an op on this panel, sits above the divider that starts the section.
+/// Panel-section divider, then the section's "Panel" header, then Save As
+/// Preset and Rename. Every panel routes into its tail through here, so this
+/// one call opens the section for all of them - which is why it owns the
+/// leading separator (callers pass their content items straight in, no
+/// separator of their own) and why Add Panel, a sibling into this group
+/// rather than an op on this panel, sits above the divider that starts the
+/// section. Save As Preset is the first thing under it: it reads as the
+/// answer to the flyout above, and it is an op on this panel, so it belongs
+/// below the divider rather than beside the flyout.
 pub fn rename_item<P: PanelSettings>(
     menu: PopupMenu,
     panel: &Entity<P>,
@@ -548,14 +645,24 @@ pub fn rename_item<P: PanelSettings>(
     cx: &mut App,
 ) -> PopupMenu {
     let menu = crate::openers::add_panel_submenu(menu, tab_panel, window, cx);
+    let saving = panel.clone();
     let panel = panel.clone();
-    menu.separator().label("Panel").item(
-        PopupMenuItem::new("Rename")
-            .icon(Icon::default().path(icons::PENCIL))
-            .on_click(move |_, _, cx| {
-                open_rename(panel.clone(), cx);
-            }),
-    )
+    menu.separator()
+        .label("Panel")
+        .item(
+            PopupMenuItem::new("Save As Preset")
+                .icon(Icon::default().path(icons::DOWNLOAD))
+                .on_click(move |_, _, cx| {
+                    open_save_preset(saving.clone(), cx);
+                }),
+        )
+        .item(
+            PopupMenuItem::new("Rename")
+                .icon(Icon::default().path(icons::PENCIL))
+                .on_click(move |_, _, cx| {
+                    open_rename(panel.clone(), cx);
+                }),
+        )
 }
 
 /// Open a panel's rename window, or bring its open one to the front. The
@@ -664,6 +771,201 @@ impl<P: PanelSettings> Render for RenameWindow<P> {
                     .text_xs()
                     .text_color(palette::text_muted())
                     .child("Shown as the panel's tab; empty goes back to the built-in name"),
+            )
+    }
+}
+
+/// The open save-as-preset windows, keyed by the panel being saved; the same
+/// replace-a-stale-handle story as [`OpenPanelSettings`].
+#[derive(Default)]
+struct OpenPresetSaves(HashMap<EntityId, WindowHandle<Root>>);
+
+impl Global for OpenPresetSaves {}
+
+/// Open a panel's save-as-preset window, or bring its open one to the front.
+/// Holds the panel weakly like the rename window, so closing the panel
+/// underneath the dialog leaves a window that saves nothing rather than a
+/// dangling entity.
+fn open_save_preset<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
+    let id = panel.entity_id();
+    if let Some(handle) = cx
+        .try_global::<OpenPresetSaves>()
+        .and_then(|open| open.0.get(&id).copied())
+    {
+        if handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+        {
+            return;
+        }
+    }
+    let title = SharedString::from(format!(
+        "rox - save {} as preset",
+        panel::display_name(panel.read(cx).panel_name())
+    ));
+    let bounds = Bounds::centered(None, size(px(420.), px(195.)), cx);
+    let state = panel.read(cx).state();
+    let handle = crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
+        cx.new(|cx| SavePresetWindow::new(panel, state, window, cx))
+    });
+    cx.default_global::<OpenPresetSaves>().0.insert(id, handle);
+}
+
+/// The save-as-preset window: one name field over the panel it was opened
+/// from. Committing dumps the panel exactly the way a layout save does and
+/// files that dump in the workspace's presets, so adding the preset back
+/// anywhere rebuilds this panel with its config, its rename, and whatever
+/// children a composite holds.
+struct SavePresetWindow<P: PanelSettings> {
+    panel: WeakEntity<P>,
+    input: Entity<InputState>,
+    /// The panel's built-in name, what an empty field saves under.
+    fallback: SharedString,
+    /// The preset names the workspace already carries, read once at open so
+    /// the "this replaces one" note costs a lookup rather than a file read
+    /// every time the window paints.
+    taken: Vec<String>,
+    /// The shared state, for the window's own backdrop.
+    state: AppState,
+    backdrop: WindowBackdrop,
+    _input_events: Subscription,
+    /// This window pumps its own frames, so the backdrop needs its own
+    /// wake on a new bake.
+    _backdrop_changed: Subscription,
+}
+
+impl<P: PanelSettings> SavePresetWindow<P> {
+    fn new(panel: Entity<P>, state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Start from what the panel is called: a renamed panel already
+        // carries the name its preset wants, and an unnamed one gets its
+        // kind, which is at least a name you can edit rather than a blank.
+        let (current, fallback) = {
+            let panel = panel.read(cx);
+            let fallback = panel::display_name(panel.panel_name());
+            (
+                panel
+                    .custom_title()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| fallback.clone()),
+                fallback,
+            )
+        };
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(fallback.clone())
+                .default_value(current)
+        });
+        let _input_events = cx.subscribe_in(
+            &input,
+            window,
+            |this, _, event: &InputEvent, window, cx| match event {
+                // The note under the field says whether this name replaces a
+                // preset, so it has to re-read on every keystroke.
+                InputEvent::Change => cx.notify(),
+                InputEvent::PressEnter { .. } => this.commit(window, cx),
+                _ => {}
+            },
+        );
+        let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        window.focus(&input.read(cx).focus_handle(cx));
+        let taken = settings::panel_presets::all(&settings::Settings::load())
+            .into_iter()
+            .map(|preset| preset.name)
+            .collect();
+        SavePresetWindow {
+            panel: panel.downgrade(),
+            input,
+            fallback: fallback.into(),
+            taken,
+            state,
+            backdrop: WindowBackdrop::default(),
+            _input_events,
+            _backdrop_changed,
+        }
+    }
+
+    /// The name a save lands under: what's typed, or the built-in name when
+    /// the field is empty, matching what the placeholder promises.
+    fn name(&self, cx: &App) -> String {
+        let typed = self.input.read(cx).value().trim().to_string();
+        if typed.is_empty() {
+            self.fallback.to_string()
+        } else {
+            typed
+        }
+    }
+
+    /// Dump the panel under the typed name and close. A panel that went away
+    /// while the dialog stood open closes without writing.
+    fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.name(cx);
+        if let Some(panel) = self.panel.upgrade() {
+            let dump = panel.read(cx).dump(cx);
+            match serde_json::to_value(&dump) {
+                Ok(value) => settings::panel_presets::save(name, value),
+                Err(e) => log::warn!("panel presets: {name} would not serialize: {e}"),
+            }
+        }
+        window.remove_window();
+    }
+}
+
+impl<P: PanelSettings> Render for SavePresetWindow<P> {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = self.name(cx);
+        let replaces = self.taken.iter().any(|taken| taken == &name);
+        let note: SharedString = if replaces {
+            format!("Replaces the preset this workspace already calls {name}").into()
+        } else {
+            format!("Saves this panel and its settings as {name}").into()
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_XS)
+            .p(tokens::SPACE_MD)
+            .bg(palette::bg_elevated())
+            .text_color(palette::text_bright())
+            .text_sm()
+            // The backdrop paints first, under the input, like every
+            // other window over the shared state.
+            .children(self.backdrop.layer(&self.state.now_art, window, cx))
+            .child(Input::new(&self.input).w_full())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(tokens::SPACE_XS)
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(note)
+                    // The menu path it comes back through, in keycaps so the
+                    // two labels read as things to click rather than prose.
+                    .child(kbd_line([
+                        Seg::Text("Add it back from".into()),
+                        Seg::Key("Add Panel".into()),
+                        Seg::Text("then".into()),
+                        Seg::Key("Presets".into()),
+                        Seg::Text(
+                            "in any panel menu. Presets ride this workspace only, so another \
+                             workspace won't carry it."
+                                .into(),
+                        ),
+                    ])),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .pt(tokens::SPACE_XS)
+                    .child(small_button(
+                        if replaces { "Replace" } else { "Save Preset" },
+                        icons::DOWNLOAD,
+                        false,
+                        cx.listener(|this, _, window, cx| this.commit(window, cx)),
+                    )),
             )
     }
 }
@@ -1429,7 +1731,6 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         // until it's read and approved here.
         let pending = (!running.trim().is_empty() && !shader::approved(&running)).then(|| {
             let approving = running.clone();
-            let named = shader.name.is_some();
             pending_shader(
                 "panel-shader-pending",
                 &running,
@@ -1440,23 +1741,24 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     // bundle. If this one happens to have something there,
                     // the watch would pull it over the text just approved,
                     // so an imported shader keeps no bookmark.
-                    this.edit_shader(|shader| shader.path = None, cx);
-                }),
-                cx.listener(move |this, _, _, cx| {
+                    //
+                    // Approving is saying run it, so it also flips a switch
+                    // an earlier Turn Off left down.
                     this.edit_shader(
-                        move |shader| {
-                            // Saying no to a pool shader takes the panel off
-                            // it rather than emptying an inline source it
-                            // wasn't running anyway. The entry stays in the
-                            // workspace for whatever else wears it.
-                            if named {
-                                shader.name = None;
-                            }
-                            shader.source = String::new();
+                        |shader| {
                             shader.path = None;
+                            shader.enabled = true;
                         },
                         cx,
-                    )
+                    );
+                }),
+                cx.listener(move |this, _, _, cx| {
+                    // Saying no parks the shader, it doesn't delete it. The
+                    // source, the name and the routes all stay where they
+                    // are with the switch off, so the picker still says what
+                    // this panel was wearing and turning it back on is one
+                    // toggle plus the approval above.
+                    this.edit_shader(move |shader| shader.enabled = false, cx)
                 }),
             )
         });
@@ -1489,6 +1791,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             // A panel is allowed to carry no surface shader at all, unlike
             // the Shader panel, whose whole body is the thing.
             clear: Some(|this: &mut Self, cx| this.clear_shader(cx)),
+            // A panel's own body is a fine thing to cover: that's what Wall
+            // and Sleeve do in Critters. The window is the surface where
+            // that stops being a look and starts being a problem.
+            overlays_only: false,
             use_example: |this: &mut Self, index, cx| this.use_shader_example(index, cx),
             use_named: |this: &mut Self, name, cx| this.use_pool_shader(name, cx),
             choose_file: |this: &mut Self, window, cx| this.pick_shader_file(window, cx),
@@ -1749,6 +2055,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 shader.name = Some(name);
                 shader.source = String::new();
                 shader.path = None;
+                // Picking a shader is asking to see it. A panel an earlier
+                // Turn Off parked would otherwise take the new one and go on
+                // painting nothing.
+                shader.enabled = true;
             },
             cx,
         );
@@ -1769,6 +2079,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 shader.source = source;
                 shader.name = None;
                 shader.path = None;
+                shader.enabled = true;
             },
             cx,
         );
@@ -1834,6 +2145,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     shader.source = source;
                     shader.name = None;
                     shader.path = Some(path);
+                    shader.enabled = true;
                 },
                 cx,
             ),
@@ -2160,6 +2472,19 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let columns = grid_columns(window);
 
+        // A page somebody asked for from the panel's own body, taken here
+        // rather than at construction so it works on a window that was
+        // already open.
+        if let Some(panel) = self.panel.upgrade() {
+            if let Some(page) = cx
+                .default_global::<RequestedPage>()
+                .0
+                .remove(&panel.entity_id())
+            {
+                self.page = page;
+            }
+        }
+
         // The window renders under the player's art tint like the
         // workspace that opened it, and claims the widget theme while it
         // holds focus, so the panel's settings read in the playing track's
@@ -2330,5 +2655,60 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                 )
                 .into_any_element()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The window is the one surface a scene can't be picked for, and this
+    /// is the rule that enforces it. Read off the group table rather than
+    /// off the menu, which needs a window to build.
+    #[test]
+    fn the_window_is_only_offered_overlays() {
+        let offered = |overlays_only| -> Vec<&'static str> {
+            shader_groups(overlays_only)
+                .iter()
+                .flat_map(|&(overlay, _, _)| {
+                    shader::PRESETS
+                        .iter()
+                        .filter(move |preset| shader::overlay(preset.source) == overlay)
+                        .map(|preset| preset.label)
+                })
+                .collect()
+        };
+        let window = offered(true);
+        assert!(
+            window.contains(&"Sheen"),
+            "an overlay is offered: {window:?}"
+        );
+        assert!(window.contains(&"Tube"));
+        for scene in ["Plasma", "Trails", "Cover", "Bloom"] {
+            assert!(
+                !window.contains(&scene),
+                "{scene} covers the window and mustn't be offered for it"
+            );
+        }
+        // A panel is welcome to wear either, so its picker still lists all
+        // of them, and every example lands in exactly one run.
+        let panel = offered(false);
+        assert_eq!(panel.len(), shader::PRESETS.len());
+        for preset in shader::PRESETS {
+            assert!(
+                panel.contains(&preset.label),
+                "{} went missing",
+                preset.label
+            );
+        }
+    }
+
+    /// Filtered, the split has one side left, so a heading naming it would
+    /// be labelling a distinction the list no longer draws.
+    #[test]
+    fn the_filtered_list_drops_the_split() {
+        assert_eq!(shader_groups(true).len(), 1);
+        assert_eq!(shader_groups(true)[0].1, "Examples");
+        assert_eq!(shader_groups(false).len(), 2);
     }
 }

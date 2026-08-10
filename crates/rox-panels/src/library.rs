@@ -3503,6 +3503,7 @@ impl Panel for LibraryPanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }

@@ -139,6 +139,10 @@ pub enum Cmd {
 /// once; the UI's slider tops out here and the engine clamps to it.
 pub const CROSSFADE_MAX_SECS: f32 = 12.0;
 
+/// How far short of a track's end a seek is allowed to land. See
+/// [`Source::inside_track`]: the last frame is not a place a reader can go.
+const SEEK_END_MARGIN_SECS: f64 = 0.1;
+
 /// What happens when a track or the queue runs out. Lives on the decode
 /// thread only; the RT callback never looks at it.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -442,8 +446,20 @@ impl Engine {
             while let Ok(cmd) = self.rx.try_recv() {
                 match cmd {
                     Cmd::TogglePause => {
-                        let now = self.shared.playing.load(Ordering::Relaxed);
-                        self.shared.playing.store(!now, Ordering::Relaxed);
+                        // At the ended state there is nothing coming out to
+                        // pause, so the button can only mean play again: the
+                        // finished track comes back from its start through the
+                        // nav path, which clears ended on the way. Without this
+                        // the flag flips under a source that isn't there and
+                        // the transport sits dead once the queue plays out.
+                        if source.is_none() && self.shared.ended.load(Ordering::Relaxed) {
+                            self.shared.playing.store(true, Ordering::Relaxed);
+                            nav_pos = Some(self.audible_pos());
+                            flush_to = None;
+                        } else {
+                            let now = self.shared.playing.load(Ordering::Relaxed);
+                            self.shared.playing.store(!now, Ordering::Relaxed);
+                        }
                     }
                     Cmd::Volume(v) => {
                         let v = v.clamp(0.0, 2.0);
@@ -572,36 +588,7 @@ impl Engine {
                         source = self.skip_to(source.take(), pos, back);
                     }
                     FlushAction::Seek(secs) => {
-                        // The decode cursor leads the audible track by up to a
-                        // ring during the gapless preroll, so the open source
-                        // is already the next track and seeking it would scrub
-                        // inside the following track. Reopen the audible track
-                        // first, the same anchor Next/Prev use.
-                        let ap = self.audible_pos();
-                        let mut reopened = None;
-                        if ap != self.pos {
-                            // A reopen that fails leaves the open source on
-                            // the wrong track (the pre-rolled next one), so
-                            // it's dropped either way rather than scrubbing
-                            // audio the user isn't hearing.
-                            reopened = self.open_file_at(ap);
-                            source = None;
-                        }
-                        // The seek is the expensive half and it doesn't
-                        // depend on the cut, so it runs here too, while the
-                        // ring is still playing.
-                        let landed = match reopened.as_mut() {
-                            Some((src, _, _)) => src.seek(secs),
-                            None => source.as_mut().and_then(|src| src.seek(secs)),
-                        };
-                        self.flush_ring();
-                        if let Some((src, at, info)) = reopened {
-                            self.adopt(at, info, 0);
-                            source = Some(src);
-                        }
-                        if let Some(landed) = landed {
-                            self.register_segment(landed);
-                        }
+                        source = self.seek_to(source.take(), secs);
                     }
                 }
                 continue;
@@ -998,6 +985,49 @@ impl Engine {
         let midpoint = self.install_skip_fade(leaving, cut, back);
         self.adopt(at, info, midpoint);
         Some(src)
+    }
+
+    /// Scrub the audible track to `secs` and cut the ring so the listener
+    /// lands there. A seek cuts rather than fades: scrubbing is meant to be
+    /// heard as a jump.
+    ///
+    /// The decode cursor leads the audible track by up to a ring during the
+    /// gapless preroll, so the open source is already the next track and
+    /// seeking it would scrub inside the following track. Reopen the audible
+    /// track first, the same anchor Next and Prev use.
+    ///
+    /// No source at all is the ended state (or the drain ahead of a landing
+    /// stop-after), and that same reopen is what brings the played-out track
+    /// back under the strip. Without it the seek has nothing to seek and a
+    /// click on a finished queue does nothing at all.
+    fn seek_to(&mut self, mut source: Option<Source>, secs: f64) -> Option<Source> {
+        let ap = self.audible_pos();
+        let mut reopened = None;
+        if ap != self.pos || source.is_none() {
+            // A reopen that fails leaves the open source on the wrong track
+            // (the pre-rolled next one), so it's dropped either way rather
+            // than scrubbing audio the user isn't hearing.
+            reopened = self.open_file_at(ap);
+            source = None;
+        }
+        // The seek is the expensive half and it doesn't depend on the cut, so
+        // it runs here too, while the ring is still playing.
+        let landed = match reopened.as_mut() {
+            Some((src, _, _)) => src.seek(secs),
+            None => source.as_mut().and_then(|src| src.seek(secs)),
+        };
+        self.flush_ring();
+        if let Some((src, at, info)) = reopened {
+            self.adopt(at, info, 0);
+            // A seek that revived a played-out queue is playing again, so
+            // nothing downstream should still read as finished.
+            self.shared.ended.store(false, Ordering::Relaxed);
+            source = Some(src);
+        }
+        if let Some(landed) = landed {
+            self.register_segment(landed);
+        }
+        source
     }
 
     /// Wind the track a skip is leaving back to the spot the listener has
@@ -2070,15 +2100,16 @@ impl Source {
     }
 
     /// Accurate seek. Returns the track position actually landed on, in
-    /// seconds, which can differ from the request. None when the seek failed
-    /// and the reader never moved, so the caller doesn't register a segment
-    /// that jumps the position display to a spot playback never reached.
+    /// seconds, which can differ from the request. None when the seek failed,
+    /// so the caller doesn't register a segment that jumps the position
+    /// display to a spot playback never reached.
     ///
     /// Both the request and the answer are track-relative, so a span's 0:00
     /// is its own first frame rather than the image file's. That's what
     /// keeps the seek strip and the position clock reading a cue track the
     /// way they read a plain file, with no arithmetic of their own.
     fn seek(&mut self, secs: f64) -> Option<f64> {
+        let secs = self.inside_track(secs);
         let Some(span) = self.span else {
             let landed = self.seek_file(secs)?;
             // The track position moved, so the fade window's countdown
@@ -2100,6 +2131,24 @@ impl Source {
         let rel = (landed - start).max(0.0);
         self.pos_frames = (rel * self.device_rate as f64).round() as u64;
         Some(rel)
+    }
+
+    /// Pull a seek target back inside the track. The last frame is not
+    /// somewhere a reader can land: the seek comes back "unexpected end of
+    /// file" and the attempt leaves the reader parked at the end, so the next
+    /// chunk reads as the track finishing. Dragging the seek strip to its
+    /// right edge asks for exactly the duration, so that scrub would end the
+    /// track, and the whole queue with it on the last entry.
+    ///
+    /// The margin lands inside the final packet either way, which is where a
+    /// drag to the edge means to go. A track that never claimed a length has
+    /// no ceiling to clamp against and goes through as asked.
+    fn inside_track(&self, secs: f64) -> f64 {
+        let Some(total) = self.total_frames else {
+            return secs;
+        };
+        let end = total as f64 / self.device_rate as f64 - SEEK_END_MARGIN_SECS;
+        secs.min(end.max(0.0))
     }
 
     /// The seek itself, against the file's own timeline: move the reader,
@@ -2133,8 +2182,10 @@ impl Source {
             }
             Err(e) => {
                 log::warn!("seek failed: {e}");
-                // Position is unchanged; the reader never moved, so report no
-                // landing and let the caller leave the clock where it was.
+                // No landing to report, so the caller leaves the clock where
+                // it was. The reader itself may well have moved (a target past
+                // the last frame parks it at the end), which is why the target
+                // is clamped inside the track before it gets here.
                 None
             }
         }
@@ -2914,6 +2965,65 @@ mod tests {
         assert!(e.shared.flush_seq.load(Ordering::Acquire) > seq, "cut");
     }
 
+    /// The queue played out and the last track's decoder is long gone, so a
+    /// click on the seek strip has nothing open to scrub. It reopens the
+    /// track the listener is looking at and lands there, instead of leaving
+    /// the transport dead until something else revives the session.
+    #[test]
+    fn a_seek_out_of_the_ended_state_reopens_the_finished_track() {
+        let fx = Fixtures::new("seek-ended");
+        let mut e = engine_over(vec![fx.wav("a.wav", 1.0), fx.wav("b.wav", 1.0)]);
+        // Both tracks played, the ring drained, nothing decoding: the ended
+        // state exactly as the run loop leaves it.
+        e.pos = 1;
+        e.pushed_playable = 96_000;
+        e.shared.frames_consumed.store(96_000, Ordering::Relaxed);
+        e.shared.flush_ack.store(u64::MAX, Ordering::Release);
+        e.shared.ended.store(true, Ordering::Relaxed);
+
+        let after = e.seek_to(None, 0.5);
+
+        assert!(after.is_some(), "the finished track opens again");
+        assert!(
+            !e.shared.ended.load(Ordering::Relaxed),
+            "playing again, so nothing downstream still reads as finished"
+        );
+        assert_eq!(e.pos, 1, "the seek stays on the track that was showing");
+        // Where it lands is the nearest packet boundary the decoder can
+        // start on, not the sample the click named, so this asks for the
+        // neighborhood rather than the frame.
+        let segments = e.shared.segments.lock().unwrap();
+        let landed = segments.last().map(|s| s.track_frame).expect("a segment");
+        assert!(
+            landed.abs_diff(24_000) < 4_800,
+            "the clock lands where the click asked, half a second in, got {landed}"
+        );
+    }
+
+    /// Dragging the seek strip to its right edge asks for exactly the
+    /// duration, and the reader has no frame to land on there: the seek comes
+    /// back end-of-file and leaves it parked at the end, so the run loop reads
+    /// the very next chunk as the track finishing. On the last entry of a
+    /// queue that's the whole thing stopping on a scrub.
+    #[test]
+    fn a_seek_to_the_very_end_lands_inside_the_track() {
+        let fx = Fixtures::new("seek-edge");
+        let path = fx.wav("a.wav", 1.0);
+        for target in [1.0, 1.5, 60.0] {
+            let (mut src, info) = Source::open(&path, 48_000, None).expect("the fixture opens");
+            let landed = src.seek(target).expect("a seek inside the track");
+            assert!(
+                landed < info.duration_secs.expect("the fixture states its length"),
+                "seeking to {target} landed on {landed}, at or past the end"
+            );
+            let mut chunk = Vec::new();
+            assert!(
+                src.next_chunk(48_000, &mut chunk) && !chunk.is_empty(),
+                "seeking to {target} left the track with audio to play"
+            );
+        }
+    }
+
     /// A cue span, written the way a sheet gives one: milliseconds in, an
     /// open end for the last track of an image.
     fn span(start_ms: u32, end_ms: Option<u32>) -> Span {
@@ -3023,10 +3133,15 @@ mod tests {
 
         // Well past the span's end: it clamps into this track rather than
         // scrubbing on into the next one, which is the same file a few
-        // seconds along.
+        // seconds along. Short of the end by the seek margin, so what it
+        // lands on is a spot with music left rather than the track's own
+        // finish line.
         let landed = src.seek(30.0).expect("the wav seeks");
         assert!(landed <= 2.0, "landed at {landed}, past the span's end");
-        assert!(2.0 - landed < 0.05, "and not short of it either");
+        assert!(
+            2.0 - landed < SEEK_END_MARGIN_SECS + 0.05,
+            "landed at {landed}, well short of the span's end"
+        );
         let left = src.remaining().expect("the span states its length");
         // From there the track has exactly its own tail left: the end is a
         // spot in the file, so a coarse landing shortens the decode instead

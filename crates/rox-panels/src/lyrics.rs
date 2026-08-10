@@ -1195,6 +1195,7 @@ impl Panel for LyricsPanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }
@@ -1575,7 +1576,7 @@ impl LyricsPanel {
     /// The rows a synced list asks for: blank pad rows at the ends, and
     /// between them each timed line at a height that tracks the text size,
     /// the active one lit (faded in and built word by word when those are
-    /// on), the rest muted, all clickable to seek. Full width, so the
+    /// on), the rest muted and clickable to seek. Full width, so the
     /// alignment knob actually centers the text.
     fn line_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         // The woven sheet synced_face built this frame, rests and all.
@@ -1700,8 +1701,11 @@ impl LyricsPanel {
                     palette::text_muted()
                 })
                 .child(content);
-                // A timed line seeks to its own time on click.
-                let row = row.when_some(at, |d, at| {
+                // A timed line seeks to its own time on click. The line
+                // that's already playing is where we are, so clicking it
+                // does nothing rather than yanking the song back to its
+                // start.
+                let row = row.when_some(at.filter(|_| !is_active), |d, at| {
                     d.cursor_pointer()
                         .hover(|d| d.text_color(palette::text_bright()))
                         .on_mouse_down(

@@ -18,22 +18,25 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    canvas, div, img, prelude::*, px, relative, svg, Along, AnyElement, App, Axis, Bounds, Context,
-    Div, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, MouseUpEvent,
-    ObjectFit, Pixels, ScrollWheelEvent, SharedString, Size, Subscription, WeakEntity, Window,
+    canvas, div, hsla, img, point, prelude::*, px, relative, size, svg, Along, AnyElement, App,
+    Axis, Bounds, BoxShadow, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
+    ImageSource, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, Pixels, RenderImage,
+    ScrollWheelEvent, SharedString, Size, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Side};
+use image::Frame;
 use rox_core::QUEUE_CAP;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
-use rox_panel_kit::config::is_zero;
+use rox_panel_kit::config::{default_true, is_zero};
 use rox_panel_kit::wall::{default_dim, TILE_DIM_MAX};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
+use crate::discs::{self, DiscCache, DiscShape, DiscStyle};
 use crate::panel::{
     self, setting_row, toggle, AppState, FlickState, PanelChrome, PanelSettings, ResumeIdle,
     ScrubState,
@@ -75,6 +78,21 @@ const MIN_OP: f32 = 0.2;
 /// The label strip's height under the hero, reserved out of the panel so
 /// the covers sit above it.
 const LABEL_H: f32 = 40.;
+
+/// The reflection floor: how far a cover's mirror reaches past its lower
+/// edge, as a fraction of the cover, and how bright the mirror starts
+/// before it fades to nothing.
+const REFL: f32 = 0.32;
+const REFL_OP: f32 = 0.45;
+/// The seam between a cover and its mirror, in px.
+const REFL_GAP: f32 = 2.;
+
+/// The perspective turn: how far a flank cover rotates about its cross
+/// axis, in radians, and the projection's focal length in hero edges.
+/// The tilt reaches its full angle one step out, like the squash it
+/// replaces.
+const TILT: f32 = 0.96;
+const FOCAL: f32 = 2.8;
 
 /// Wheel travel, in px, that advances the carousel by one cover.
 const WHEEL_STEP: f32 = 40.;
@@ -137,6 +155,29 @@ pub struct ArtConfig {
     /// covers square, 100 rounds each into a circle.
     #[serde(default)]
     pub rounding: f32,
+    /// Mirror each cover past its lower edge, fading into the background:
+    /// the shelf's glass floor. On by default; it's the look the carousel
+    /// is for.
+    #[serde(default = "default_true")]
+    pub reflection: bool,
+    /// A soft shadow under every cover.
+    #[serde(default)]
+    pub shadow: bool,
+    /// An accent-tinted pool of light behind the centered cover. The accent
+    /// follows the art tint, so with the tint on the glow takes the playing
+    /// album's color by itself.
+    #[serde(default)]
+    pub glow: bool,
+    /// Dress every cover as a disc: off, CD, or vinyl, the cover panel's
+    /// styles on the whole rack. The rounding knob stands down while a
+    /// style is on; a disc is already round.
+    #[serde(default)]
+    pub disc_style: DiscStyle,
+    /// Turn the side covers in real 3D: a projected keystone through the
+    /// sprite pipeline instead of the flat squash. On by default; off is
+    /// the old squash-and-scrim look, which also keeps art rounding.
+    #[serde(default = "default_true")]
+    pub perspective: bool,
     /// The album at the center when the layout was saved, so a relaunch
     /// reopens the shelf where it was left. A cell index.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -159,6 +200,11 @@ impl Default for ArtConfig {
             dim_always: false,
             dim: default_dim(),
             rounding: 0.,
+            reflection: true,
+            shadow: false,
+            glow: false,
+            disc_style: DiscStyle::Off,
+            perspective: true,
             center: 0,
         }
     }
@@ -177,6 +223,58 @@ struct Cell {
     dim: Option<f32>,
 }
 
+/// A quad's axis-aligned box: what the interactive div spans while the
+/// canvas inside paints the keystone.
+fn quad_aabb(quad: &[[f32; 2]; 4]) -> (f32, f32, f32, f32) {
+    let (mut min_x, mut min_y) = (quad[0][0], quad[0][1]);
+    let (mut max_x, mut max_y) = (min_x, min_y);
+    for [x, y] in quad {
+        min_x = min_x.min(*x);
+        min_y = min_y.min(*y);
+        max_x = max_x.max(*x);
+        max_y = max_y.max(*y);
+    }
+    (min_x, min_y, max_x - min_x, max_y - min_y)
+}
+
+/// The centered square of an image as the fractional source rect
+/// `paint_image_quad` crops to: what `ObjectFit::Cover` shows in the
+/// shelf's square boxes, since thumbs cap their longest side rather than
+/// baking square.
+fn square_source(data: &RenderImage) -> Bounds<f32> {
+    let size_px = data.size(0);
+    let (iw, ih) = (size_px.width.0 as f32, size_px.height.0 as f32);
+    if iw <= 0. || ih <= 0. {
+        return Bounds {
+            origin: point(0., 0.),
+            size: size(1., 1.),
+        };
+    }
+    if iw > ih {
+        Bounds {
+            origin: point((1. - ih / iw) / 2., 0.),
+            size: size(ih / iw, 1.),
+        }
+    } else {
+        Bounds {
+            origin: point(0., (1. - iw / ih) / 2.),
+            size: size(1., iw / ih),
+        }
+    }
+}
+
+/// Where a cover paints and how, shared by the cover and its mirror.
+struct Placement {
+    left: f32,
+    top: f32,
+    w: f32,
+    h: f32,
+    /// The distance fade, before the dim mode multiplies in.
+    fade: f32,
+    /// How far the cover has turned away: 0 at the hero, 1 a full step out.
+    turn: f32,
+}
+
 pub struct ArtPanel {
     state: AppState,
     config: ArtConfig,
@@ -191,6 +289,9 @@ pub struct ArtPanel {
     /// steps just these plus the visible window instead of scanning every
     /// cover in a big library each frame.
     dimming: HashSet<usize>,
+    /// The baked disc faces while a disc style is on, keyed by art path
+    /// and filled off-thread as covers come into view.
+    discs: DiscCache,
     /// The query editor, the shared search box; `config.query` mirrors its
     /// value via change events.
     search: Entity<SearchBox>,
@@ -331,6 +432,7 @@ impl ArtPanel {
             view: Arc::new(Vec::new()),
             cells: Vec::new(),
             dimming: HashSet::new(),
+            discs: DiscCache::default(),
             search,
             selected: HashSet::new(),
             hovered: None,
@@ -744,11 +846,19 @@ impl ArtPanel {
     fn hero_side(&self) -> f32 {
         let (w, h) = self.frame();
         let avail_h = h - LABEL_H;
+        // The mirrors take their strips out of the cross axis: a row has
+        // one floor below, a column mirrors both side edges, so covers
+        // and reflections fit together either way.
+        let (floor, sides) = if self.config.reflection {
+            (1.0 + REFL, 1.0 + 2.0 * REFL)
+        } else {
+            (1.0, 1.0)
+        };
         match self.axis() {
             // A row: covers as tall as the band, capped by the width.
-            Axis::Horizontal => (avail_h * 0.9).min(w * 0.42),
+            Axis::Horizontal => (avail_h * 0.9 / floor).min(w * 0.42),
             // A column: covers as wide as the panel, capped by its length.
-            Axis::Vertical => (w * 0.86).min(avail_h * 0.42),
+            Axis::Vertical => (w * 0.86 / sides).min(avail_h * 0.42),
         }
         .max(48.)
     }
@@ -783,6 +893,197 @@ impl ArtPanel {
     /// Whether a cover paints grayscale under the desaturate mode.
     fn desaturated(&self, ix: usize) -> bool {
         self.config.desaturate_playing && self.receded(ix)
+    }
+
+    /// The disc face for a cover, baked from its thumb off-thread: a hit
+    /// comes back at once, a miss claims one bake and comes back None
+    /// until it lands. The bytes are the thumb's own, so the face is as
+    /// sharp as the flat cover it replaces and the bake stays a few
+    /// milliseconds.
+    fn disc_of(
+        &mut self,
+        path: PathBuf,
+        image: Arc<gpui::Image>,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<RenderImage>> {
+        if let Some(disc) = self.discs.ready(&path) {
+            return Some(disc);
+        }
+        let shape = match self.config.disc_style {
+            DiscStyle::Cd => DiscShape::Cd,
+            DiscStyle::Vinyl => DiscShape::Vinyl,
+            DiscStyle::Off => return None,
+        };
+        if !self.discs.begin(&path) {
+            return None;
+        }
+        cx.spawn(async move |this, cx| {
+            let baked = cx
+                .background_executor()
+                .spawn(async move {
+                    discs::bake_disc(&image.bytes, shape)
+                        .map(|disc| Arc::new(RenderImage::new(vec![Frame::new(disc)])))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.discs.finish(&path, baked);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        None
+    }
+
+    /// The canvas that paints a face onto a projected quad through
+    /// `paint_image_quad`: a disc bake paints directly, a thumb resolves
+    /// through the img element's own asset cache and center-crops square,
+    /// the crop `ObjectFit::Cover` would take. The quad arrives relative
+    /// to the canvas' top-left; the paint hook re-anchors it to wherever
+    /// the div actually lands.
+    fn quad_canvas(
+        quad: [[f32; 2]; 4],
+        image: Arc<gpui::Image>,
+        bake: Option<Arc<RenderImage>>,
+        grayscale: bool,
+        fade: [f32; 4],
+        wash: gpui::Hsla,
+        flip: Option<Axis>,
+    ) -> AnyElement {
+        canvas(
+            |_, _, _| (),
+            move |bounds: Bounds<Pixels>, _, window, cx| {
+                let full = Bounds {
+                    origin: point(0., 0.),
+                    size: size(1., 1.),
+                };
+                let data = match &bake {
+                    Some(bake) => Some((bake.clone(), full)),
+                    None => ImageSource::from(image.clone())
+                        .use_data(None, window, cx)
+                        .and_then(|result| result.ok())
+                        .map(|data| {
+                            let source = square_source(&data);
+                            (data, source)
+                        }),
+                };
+                let Some((data, mut source)) = data else {
+                    return;
+                };
+                // A mirror samples backwards instead of inverting its
+                // corners, so the vertex map stays orientation-true. A
+                // row's floor flips the rows, a column's side mirrors
+                // flip the columns.
+                match flip {
+                    Some(Axis::Horizontal) => {
+                        source.origin.y += source.size.height;
+                        source.size.height = -source.size.height;
+                    }
+                    Some(Axis::Vertical) => {
+                        source.origin.x += source.size.width;
+                        source.size.width = -source.size.width;
+                    }
+                    None => {}
+                }
+                let corners = quad
+                    .map(|[x, y]| gpui::point(bounds.origin.x + px(x), bounds.origin.y + px(y)));
+                let _ = window.paint_image_quad(corners, source, data, 0, grayscale, fade, wash);
+            },
+        )
+        .absolute()
+        .size_full()
+        .into_any_element()
+    }
+
+    /// Pick the disc dress-up. The bakes are per style, so flipping it
+    /// throws the cache and the shelf re-bakes as covers come into view.
+    fn set_disc_style(&mut self, style: DiscStyle, cx: &mut Context<Self>) {
+        if self.config.disc_style != style {
+            self.config.disc_style = style;
+            self.discs.clear();
+        }
+        cx.notify();
+    }
+
+    /// A cover's box at distance `d` from the center: position, size, the
+    /// distance fade before the dim mode multiplies in, and how far the
+    /// cover has turned away. The cover and its reflection read the same
+    /// numbers, which is what keeps the mirror under its cover through
+    /// every scrub frame.
+    fn placement(&self, d: f32, hero: f32, cx_px: f32, cy_px: f32) -> Placement {
+        let a = d.abs();
+        let scale = SHRINK.powf(a).max(MIN_SCALE);
+        // The turn ramps in over the first step out and holds; a turned
+        // cover is compressed to TURN_EDGE of its face along the scroll axis.
+        let turn = a.clamp(0., 1.);
+        let turn_factor = 1.0 - turn * (1.0 - TURN_EDGE);
+        // The face across the scroll axis keeps the scale; the one along it
+        // squashes with the turn. A row squashes the width, a column the
+        // height, so either way the cover looks turned away from you.
+        let cross_size = hero * scale;
+        let along_size = cross_size * turn_factor;
+        let off = Self::offset_units(d) * hero;
+        let (cover_x, cover_y, w, h) = match self.axis() {
+            Axis::Horizontal => (cx_px + off, cy_px, along_size, cross_size),
+            Axis::Vertical => (cx_px, cy_px + off, cross_size, along_size),
+        };
+        Placement {
+            left: cover_x - w / 2.0,
+            top: cover_y - h / 2.0,
+            w,
+            h,
+            fade: (1.0 - a * FADE).max(MIN_OP),
+            turn,
+        }
+    }
+
+    /// A cover's projected quad at distance `d`: corners clockwise from
+    /// the texture's top-left, in shelf coordinates. The cover rotates
+    /// about its cross axis through its center, inner edge toward the
+    /// viewer, and projects with a focal length a few covers deep - the
+    /// keystone the squash was faking. The shrink keeps the near edge
+    /// under the hero's height, so the flanks never outgrow the band.
+    fn quad(&self, d: f32, hero: f32, cx_px: f32, cy_px: f32) -> [[f32; 2]; 4] {
+        let a = d.abs();
+        let scale = SHRINK.powf(a).max(MIN_SCALE);
+        let half = hero * scale / 2.0;
+        let theta = TILT * a.clamp(0., 1.) * d.signum();
+        let (sin, cos) = theta.sin_cos();
+        let focal = hero * FOCAL;
+        let off = Self::offset_units(d) * hero;
+        // An edge at offset `u` along the scroll axis sits at depth
+        // u * sin, so the inner edge swings toward the viewer and grows
+        // while the outer one recedes.
+        let edge = |u: f32| {
+            let s = focal / (focal + u * sin);
+            // The projection can push a flank's near edge a hair past
+            // the hero's band; the cap keeps every cover inside it, so
+            // the floor seams hold one clean line under the shelf.
+            let s = s.min(hero / 2.0 / half);
+            (u * cos * s, half * s)
+        };
+        let (near, near_half) = edge(-half);
+        let (far, far_half) = edge(half);
+        match self.axis() {
+            Axis::Horizontal => {
+                let cx0 = cx_px + off;
+                [
+                    [cx0 + near, cy_px - near_half],
+                    [cx0 + far, cy_px - far_half],
+                    [cx0 + far, cy_px + far_half],
+                    [cx0 + near, cy_px + near_half],
+                ]
+            }
+            Axis::Vertical => {
+                let cy0 = cy_px + off;
+                [
+                    [cx_px - near_half, cy0 + near],
+                    [cx_px + near_half, cy0 + near],
+                    [cx_px + far_half, cy0 + far],
+                    [cx_px - far_half, cy0 + far],
+                ]
+            }
+        }
     }
 
     /// A cover's center offset from the hero, in units of the hero's edge:
@@ -823,35 +1124,52 @@ impl ArtPanel {
                 target
             }
         };
-        let a = d.abs();
-        let scale = SHRINK.powf(a).max(MIN_SCALE);
-        // The turn ramps in over the first step out and holds; a turned
-        // cover is compressed to TURN_EDGE of its face along the scroll axis.
-        let turn = a.clamp(0., 1.);
-        let turn_factor = 1.0 - turn * (1.0 - TURN_EDGE);
-        // The face across the scroll axis keeps the scale; the one along it
-        // squashes with the turn. A row squashes the width, a column the
-        // height, so either way the cover looks turned away from you.
-        let cross_size = hero * scale;
-        let along_size = cross_size * turn_factor;
-        let off = Self::offset_units(d) * hero;
-        let (cover_x, cover_y, w, h) = match self.axis() {
-            Axis::Horizontal => (cx_px + off, cy_px, along_size, cross_size),
-            Axis::Vertical => (cx_px, cy_px + off, cross_size, along_size),
+        let Placement {
+            left: flat_left,
+            top: flat_top,
+            w: flat_w,
+            h: flat_h,
+            fade,
+            turn,
+        } = self.placement(d, hero, cx_px, cy_px);
+        let opacity = fade * dim;
+        let disc_on = self.config.disc_style != DiscStyle::Off;
+        let persp = self.config.perspective;
+        // With perspective on the div spans the keystone's box and the
+        // canvas inside paints the real shape; off, the flat squash rect.
+        let quad = persp.then(|| self.quad(d, hero, cx_px, cy_px));
+        let (left, top, w, h) = match &quad {
+            Some(quad) => quad_aabb(quad),
+            None => (flat_left, flat_top, flat_w, flat_h),
         };
-        let left = cover_x - w / 2.0;
-        let top = cover_y - h / 2.0;
-        let opacity = (1.0 - a * FADE).max(MIN_OP) * dim;
-        let radius = px(w.min(h) * (self.config.rounding / 200.));
-        let is_hero = a < 0.5;
+        // A keystone can't clip rounded, so perspective paints square; a
+        // disc pins the radius to the pill hugging the bake's circle, so
+        // the ring and the shadow follow the disc's outline; otherwise
+        // the rounding knob has its say.
+        let radius = if persp {
+            px(0.)
+        } else if disc_on {
+            px(w.min(h) / 2.)
+        } else {
+            px(w.min(h) * (self.config.rounding / 200.))
+        };
+        let is_hero = d.abs() < 0.5;
 
         let path = self.art_path(ix, cx);
-        let thumb = match path {
+        let thumb = match &path {
             Some(path) => self
                 .state
                 .thumbs
-                .update(cx, |thumbs, cx| thumbs.get(&path, cx)),
+                .update(cx, |thumbs, cx| thumbs.get(path, cx)),
             None => Thumb::Missing,
+        };
+        // The disc face once its bake lands; until then the flat thumb
+        // stands in behind the pill crop, so scrubbing never flashes.
+        let baked = match (&thumb, &path, disc_on) {
+            (Thumb::Ready(image), Some(path), true) => {
+                self.disc_of(path.clone(), image.clone(), cx)
+            }
+            _ => None,
         };
         // The hero keeps its aspect (Cover crops to the square); turned
         // covers Fill, which stretches the whole art into the compressed
@@ -862,8 +1180,26 @@ impl ArtPanel {
             ObjectFit::Fill
         };
         let desaturated = self.desaturated(ix);
-        let content: AnyElement = match thumb {
-            Thumb::Ready(image) => img(image)
+        let disc_shown = baked.is_some();
+        let quad_painted = quad.is_some() && matches!(thumb, Thumb::Ready(_));
+        let content: AnyElement = match (&quad, thumb, baked) {
+            // The keystone: the face rides the canvas onto the projected
+            // quad, and the wash bakes the turn scrim into the sprite,
+            // shaped to the quad the way an overlay div can't be.
+            (Some(quad), Thumb::Ready(image), bake) => {
+                let wash = palette::alpha(palette::bg_root(), (turn * 90.) as u8).into();
+                let rel = quad.map(|[x, y]| [x - left, y - top]);
+                Self::quad_canvas(rel, image, bake, desaturated, [1.; 4], wash, None)
+            }
+            // The bake is square with the disc touching its edges and
+            // carrying its own alpha, so the fill stretch is what turns it
+            // with the box and nothing needs clipping into shape.
+            (None, Thumb::Ready(_), Some(disc)) => img(disc)
+                .size_full()
+                .object_fit(ObjectFit::Fill)
+                .grayscale(desaturated)
+                .into_any_element(),
+            (None, Thumb::Ready(image), None) => img(image)
                 .size_full()
                 // Cover only crops if something masks it; gpui paints the
                 // overrun otherwise, and the hero would spill onto the
@@ -895,8 +1231,23 @@ impl ArtPanel {
             .h(px(h))
             .overflow_hidden()
             .rounded(radius)
-            .bg(palette::bg_elevated())
+            // A landed disc face carries its own alpha, and a keystone
+            // leaves its box's corners bare; backdrop behind either would
+            // show where it shouldn't.
+            .when(!disc_shown && !quad_painted, |el| {
+                el.bg(palette::bg_elevated())
+            })
             .opacity(opacity)
+            // A contact shadow scaled to the cover, so far covers cast
+            // smaller ones and the shelf keeps one light.
+            .when(self.config.shadow, |el| {
+                el.shadow(vec![BoxShadow {
+                    color: hsla(0., 0., 0., 0.35),
+                    offset: point(px(0.), px(h * 0.05)),
+                    blur_radius: px(h * 0.10),
+                    spread_radius: px(0.),
+                }])
+            })
             .cursor_pointer()
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 let target = hovered.then_some(ix);
@@ -927,8 +1278,9 @@ impl ArtPanel {
             )
             .child(content)
             // A dark scrim deepens with the turn, so an angled cover reads as
-            // lit from the front like the hero.
-            .when(turn > 0.02, |d| {
+            // lit from the front like the hero. Perspective covers carry the
+            // same shading in their wash instead.
+            .when(!quad_painted && turn > 0.02, |d| {
                 d.child(
                     div()
                         .absolute()
@@ -947,6 +1299,221 @@ impl ArtPanel {
                         .border_color(palette::accent()),
                 )
             })
+            .into_any_element()
+    }
+
+    /// A cover's mirrors: the same face painted through the quad
+    /// pipeline, flipped past the cover's edge and fading to nothing by
+    /// [`REFL`] of the way out - a true alpha fade, so the glow and
+    /// whatever else lies underneath shows through. A row gets the one
+    /// floor below; a column has no floor to stand on, so it mirrors both
+    /// side edges and stays symmetric. With perspective on the mirrors
+    /// keystone with their cover, each column reflected past its own
+    /// edge, which is exactly the 3D mirror. Only real art reflects; a
+    /// placeholder's floor stays bare so a landing cover's mirror fills
+    /// in with it.
+    fn reflection(
+        &mut self,
+        ix: usize,
+        d: f32,
+        hero: f32,
+        cx_px: f32,
+        cy_px: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let path = self.art_path(ix, cx)?;
+        let thumb = self
+            .state
+            .thumbs
+            .update(cx, |thumbs, cx| thumbs.get(&path, cx));
+        let Thumb::Ready(image) = thumb else {
+            return None;
+        };
+        let Placement {
+            left,
+            top,
+            w,
+            h,
+            fade,
+            turn: _,
+        } = self.placement(d, hero, cx_px, cy_px);
+        // The dim as the cover painted it; before a first paint the target
+        // stands in, read-only, so the mirror never races the fade.
+        let dim = self
+            .cells
+            .get(ix)
+            .and_then(|cell| cell.dim)
+            .unwrap_or_else(|| self.dim_target(ix));
+        // The mirror shows what its cover shows: the disc face once that
+        // bake has landed (read-only here, the cover above claims the
+        // bakes), the flat thumb until then.
+        let disc_on = self.config.disc_style != DiscStyle::Off;
+        let baked = if disc_on {
+            self.discs.ready(&path)
+        } else {
+            None
+        };
+        // The cover's quad, or its flat rect worn as one: either way the
+        // mirror is the same paint call, corners and fade doing the work
+        // the strip-and-scrim used to.
+        let quad = if self.config.perspective {
+            self.quad(d, hero, cx_px, cy_px)
+        } else {
+            [
+                [left, top],
+                [left + w, top],
+                [left + w, top + h],
+                [left, top + h],
+            ]
+        };
+        // The fade runs 1 at the seam to 0 at REFL of the way out; the
+        // far corners sit past zero so the ramp lands there, and the
+        // shader clamps the rest of the face to nothing.
+        let spent = 1.0 - 1.0 / REFL;
+        let desaturated = self.desaturated(ix);
+        // Mirrors are see-through, so overlapping ones double-expose
+        // instead of occluding. The floor has to tile the way the shelf
+        // does: each mirror clips to the slice of its cover the nearer
+        // neighbor toward the center leaves visible, and the seams land
+        // exactly on the shelf's own occlusion edges.
+        let axis = self.axis();
+        let (clip_lo, clip_hi) = if d.abs() > 0.5 {
+            let occluder = self.quad(d - d.signum(), hero, cx_px, cy_px);
+            let (ol, ot, ow, oh) = quad_aabb(&occluder);
+            match axis {
+                Axis::Horizontal if d > 0. => (ol + ow, f32::INFINITY),
+                Axis::Horizontal => (f32::NEG_INFINITY, ol),
+                Axis::Vertical if d > 0. => (ot + oh, f32::INFINITY),
+                Axis::Vertical => (f32::NEG_INFINITY, ot),
+            }
+        } else {
+            (f32::NEG_INFINITY, f32::INFINITY)
+        };
+        // One positioned mirror: a masked div over the visible slice, the
+        // full quad canvas inside. The quads keep their natural screen
+        // orientation - the flip happens in the canvas' texture sampling -
+        // so a mirror sprite is the same orientation-true map as any
+        // cover, and the mask clips it without touching the mapping.
+        let mirror_el = |mirror: [[f32; 2]; 4], fade_corners: [f32; 4]| {
+            let (rl, rt, rw, rh) = quad_aabb(&mirror);
+            let (mut cl, mut ct, mut cw, mut ch) = (rl, rt, rw, rh);
+            match axis {
+                Axis::Horizontal => {
+                    let left = rl.max(clip_lo);
+                    let right = (rl + rw).min(clip_hi);
+                    cl = left;
+                    cw = right - left;
+                }
+                Axis::Vertical => {
+                    let top = rt.max(clip_lo);
+                    let bottom = (rt + rh).min(clip_hi);
+                    ct = top;
+                    ch = bottom - top;
+                }
+            }
+            if cw <= 0. || ch <= 0. {
+                return None;
+            }
+            let rel = mirror.map(|[x, y]| [x - cl, y - ct]);
+            Some(
+                div()
+                    .absolute()
+                    .left(px(cl))
+                    .top(px(ct))
+                    .w(px(cw))
+                    .h(px(ch))
+                    .overflow_hidden()
+                    .child(Self::quad_canvas(
+                        rel,
+                        image.clone(),
+                        baked.clone(),
+                        desaturated,
+                        fade_corners,
+                        palette::alpha(palette::bg_root(), 0).into(),
+                        Some(axis),
+                    )),
+            )
+        };
+        let element = match axis {
+            // A row has one floor: each column reflects across its own
+            // bottom edge, so the mirror meets its cover exactly however
+            // the keystone leans. Seam on top, faded far edge below.
+            Axis::Horizontal => mirror_el(
+                [
+                    [quad[3][0], quad[3][1] + REFL_GAP],
+                    [quad[2][0], quad[2][1] + REFL_GAP],
+                    [quad[2][0], 2. * quad[2][1] - quad[1][1] + REFL_GAP],
+                    [quad[3][0], 2. * quad[3][1] - quad[0][1] + REFL_GAP],
+                ],
+                [1., 1., spent, spent],
+            )
+            .map(|el| el.into_any_element()),
+            // Sideways has no floor, so a column shelf mirrors both side
+            // edges and stays symmetric; each row reflects past its own
+            // edge, left and right, seams inward.
+            Axis::Vertical => {
+                let left = mirror_el(
+                    [
+                        [2. * quad[0][0] - quad[1][0] - REFL_GAP, quad[0][1]],
+                        [quad[0][0] - REFL_GAP, quad[0][1]],
+                        [quad[3][0] - REFL_GAP, quad[3][1]],
+                        [2. * quad[3][0] - quad[2][0] - REFL_GAP, quad[3][1]],
+                    ],
+                    [spent, 1., 1., spent],
+                );
+                let right = mirror_el(
+                    [
+                        [quad[1][0] + REFL_GAP, quad[1][1]],
+                        [2. * quad[1][0] - quad[0][0] + REFL_GAP, quad[1][1]],
+                        [2. * quad[2][0] - quad[3][0] + REFL_GAP, quad[2][1]],
+                        [quad[2][0] + REFL_GAP, quad[2][1]],
+                    ],
+                    [1., spent, spent, 1.],
+                );
+                if left.is_none() && right.is_none() {
+                    None
+                } else {
+                    Some(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .when_some(left, |el, mirror| el.child(mirror))
+                            .when_some(right, |el, mirror| el.child(mirror))
+                            .into_any_element(),
+                    )
+                }
+            }
+        };
+        let element = element?;
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .opacity(fade * dim * REFL_OP)
+                .child(element)
+                .into_any_element(),
+        )
+    }
+
+    /// The accent pool behind the hero: an unpainted circle whose blurred
+    /// shadow is the glow, the cheap radial gradient. The accent follows
+    /// the art tint, so the glow takes the playing album's color on its
+    /// own.
+    fn glow(&self, hero: f32, cx_px: f32, cy_px: f32) -> AnyElement {
+        let side = hero * 0.9;
+        div()
+            .absolute()
+            .left(px(cx_px - side / 2.))
+            .top(px(cy_px - side / 2.))
+            .w(px(side))
+            .h(px(side))
+            .rounded_full()
+            .shadow(vec![BoxShadow {
+                color: palette::alpha(palette::accent(), 0x40).into(),
+                offset: point(px(0.), px(0.)),
+                blur_radius: px(hero * 0.45),
+                spread_radius: px(hero * 0.08),
+            }])
             .into_any_element()
     }
 
@@ -1205,15 +1772,80 @@ impl PanelSettings for ArtPanel {
                     .flex_col()
                     .gap(tokens::SPACE_MD)
                     .child(setting_row(
-                        "Art Rounding",
-                        Some("Round each cover's corners; 100% is a circle"),
-                        settings_ui::scalar(
-                            &self.rounding_scrub,
-                            &self.value_edit,
-                            rounding,
-                            settings_ui::span(0., TILE_ROUNDING_MAX, "%").hard(),
-                            |this: &mut Self, value, cx| {
-                                this.config.rounding = value;
+                        "Perspective",
+                        Some("Turn the side covers in real 3D instead of the flat squash"),
+                        toggle(
+                            self.config.perspective,
+                            |this: &mut Self, on, cx| {
+                                this.config.perspective = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(setting_row(
+                        "Disc Style",
+                        Some("Dress every cover as a CD or as a vinyl record's label"),
+                        panel::choices(
+                            &discs::DISC_STYLES,
+                            self.config.disc_style,
+                            |this: &mut Self, style, cx| this.set_disc_style(style, cx),
+                            cx,
+                        ),
+                    ))
+                    // A disc is already round and a keystone can't clip
+                    // rounded, so the knob only shows while the covers
+                    // paint flat and square.
+                    .when(
+                        self.config.disc_style == DiscStyle::Off && !self.config.perspective,
+                        |page| {
+                        page.child(setting_row(
+                            "Art Rounding",
+                            Some("Round each cover's corners; 100% is a circle"),
+                            settings_ui::scalar(
+                                &self.rounding_scrub,
+                                &self.value_edit,
+                                rounding,
+                                settings_ui::span(0., TILE_ROUNDING_MAX, "%").hard(),
+                                |this: &mut Self, value, cx| {
+                                    this.config.rounding = value;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                    })
+                    .child(setting_row(
+                        "Reflections",
+                        Some("Mirror each cover into the floor below the shelf"),
+                        toggle(
+                            self.config.reflection,
+                            |this: &mut Self, on, cx| {
+                                this.config.reflection = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(setting_row(
+                        "Shadows",
+                        Some("A soft shadow under every cover"),
+                        toggle(
+                            self.config.shadow,
+                            |this: &mut Self, on, cx| {
+                                this.config.shadow = on;
+                                cx.notify();
+                            },
+                            cx,
+                        ),
+                    ))
+                    .child(setting_row(
+                        "Glow",
+                        Some("Pool the accent color behind the centered cover; with the art tint on it takes the playing album's color"),
+                        toggle(
+                            self.config.glow,
+                            |this: &mut Self, on, cx| {
+                                this.config.glow = on;
                                 cx.notify();
                             },
                             cx,
@@ -1459,6 +2091,7 @@ impl Panel for ArtPanel {
             &cx.entity(),
             self.tab_panel.clone(),
             self.state.clone(),
+            window,
         )
     }
 }
@@ -1595,9 +2228,16 @@ impl ArtPanel {
             let hero = self.hero_side();
             let axis = self.axis();
             // The scroll axis carries the stacking offset; the other holds
-            // the covers centered. `cover` maps this pair onto x and y.
-            let cx_px = w / 2.0;
-            let cy_px = (h - LABEL_H) / 2.0;
+            // the covers centered. `cover` maps this pair onto x and y. A
+            // row's floor shifts the covers up by half its strip so cover
+            // and mirror center as one block; a column mirrors both sides
+            // and stays centered on its own.
+            let refl_shift = if self.config.reflection && axis == Axis::Horizontal {
+                (hero * REFL + REFL_GAP) / 2.0
+            } else {
+                0.0
+            };
+            let (cx_px, cy_px) = (w / 2.0, (h - LABEL_H) / 2.0 - refl_shift);
             let center = self.pos.round().max(0.) as usize;
 
             // The visible window around the center, painted far covers first
@@ -1612,6 +2252,23 @@ impl ArtPanel {
             });
 
             let mut shelf = div().relative().flex_1().min_h_0().overflow_hidden();
+            if self.config.glow {
+                shelf = shelf.child(self.glow(hero, cx_px, cy_px));
+            }
+            // The floor is its own layer: every mirror paints far to near
+            // first, then every cover over all of them. Interleaving
+            // mirror and cover per index let a near mirror and a far
+            // cover fight over the same pixels, which read as a mirror
+            // clipped mid-face; as a strict underlayer the mirrors only
+            // ever sit beneath the shelf, the way a floor should.
+            if self.config.reflection {
+                for &ix in &order {
+                    let d = ix as f32 - self.pos;
+                    if let Some(mirror) = self.reflection(ix as usize, d, hero, cx_px, cy_px, cx) {
+                        shelf = shelf.child(mirror);
+                    }
+                }
+            }
             for ix in order {
                 let d = ix as f32 - self.pos;
                 shelf = shelf.child(self.cover(ix as usize, d, hero, cx_px, cy_px, cx));

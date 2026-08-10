@@ -6221,6 +6221,7 @@ dependencies = [
 name = "rox-core"
 version = "1.14.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
  "gpui",
@@ -6292,6 +6293,7 @@ dependencies = [
  "anyhow",
  "gpui",
  "gpui-component",
+ "image",
  "log",
  "lsp-types",
  "rox-core",

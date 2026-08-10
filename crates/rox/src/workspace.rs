@@ -8,7 +8,7 @@
 //! playback's sake.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,7 @@ use crate::composite;
 use crate::integrations::media_controls::MediaSession;
 use crate::integrations::tray;
 use crate::panel_catalog::{self as catalog, PanelDef, PanelPlacement, PanelSection};
+use crate::panel_presets;
 use crate::panels::drawer::DrawerPanel;
 use crate::panels::group::GroupPanel;
 use crate::panels::menu::{MenuConfig, MenuPanel};
@@ -51,6 +52,7 @@ use rox_design::{palette, tokens};
 use rox_panel_api::panel::{self, AppState, TabHosts};
 use rox_panel_api::query::shared_query::SharedQuery;
 use rox_panel_api::track_ui::track_drag::PlayDrag;
+use rox_panel_kit::ui::{chord, kbd_line, Seg};
 use rox_panels::art::{ArtConfig, ArtPanel};
 use rox_panels::artist_grid::{ArtistGridConfig, ArtistGridPanel};
 use rox_panels::biography::BiographyPanel;
@@ -155,6 +157,14 @@ pub(crate) fn post_shader_error() -> Option<String> {
     POST_SHADER_ERROR.read().unwrap().clone()
 }
 
+/// Put a line in that readout from outside the compile path, which is how
+/// the settings page's own failures (an eject that won't write) land in
+/// the same place a broken shader's message does. The next apply clears
+/// or overwrites it the way it always did.
+pub(crate) fn note_post_shader_error(message: String) {
+    *POST_SHADER_ERROR.write().unwrap() = Some(message);
+}
+
 /// The shader switch as it currently stands, mirroring the settings file.
 /// A live static like `hide_menubar`'s, because the Appearance toggle, the
 /// menu row, and the hotkey all flip it and all have to show one state.
@@ -162,6 +172,25 @@ static POST_SHADER_ON: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn post_shader_on() -> bool {
     POST_SHADER_ON.load(Ordering::Relaxed)
+}
+
+/// The screen shader's config as the last apply read it off the file, with
+/// a counter that moves every time it does. The settings window's Shader
+/// page mirrors the config so it isn't reading five shards per render, and
+/// a workspace apply swaps the whole thing from outside that window - which
+/// left the picker naming the shader the old look wore. Watching the
+/// counter is an atomic load per render; the config only gets cloned on the
+/// frames where it actually moved.
+static POST_SHADER_GEN: AtomicU64 = AtomicU64::new(0);
+static POST_SHADER_APPLIED: RwLock<Option<PostShaderConfig>> = RwLock::new(None);
+
+pub(crate) fn post_shader_gen() -> u64 {
+    POST_SHADER_GEN.load(Ordering::Relaxed)
+}
+
+/// The config behind that counter, for a mirror that has fallen behind it.
+pub(crate) fn post_shader_applied() -> Option<PostShaderConfig> {
+    POST_SHADER_APPLIED.read().unwrap().clone()
 }
 
 /// The screen shader's routes as the frame loop sees them. Live rather
@@ -198,6 +227,26 @@ pub(crate) fn post_shader_slot_labels() -> Vec<Option<String>> {
     POST_SHADER_LABELS.read().unwrap().clone()
 }
 
+/// Whether what's installed says it leaves the window usable, published
+/// beside the labels and for the same reason: the settings page has to say
+/// what the shader does to the UI without opening a file per render, and in
+/// file mode the driver's read is the only place the source is ever in
+/// hand. Under search that page rebuilds on every keystroke, so a read here
+/// would be a syscall per character typed anywhere in settings.
+///
+/// Three states, because "nothing is installed" and "a scene is installed"
+/// want opposite words on screen: 0 nothing, 1 a scene, 2 an overlay.
+static POST_SHADER_COVERAGE: AtomicU8 = AtomicU8::new(0);
+
+/// What the installed screen shader does to the window: None with nothing
+/// running, `Some(true)` for a shader that leaves the app usable under it.
+pub(crate) fn post_shader_overlay() -> Option<bool> {
+    match POST_SHADER_COVERAGE.load(Ordering::Relaxed) {
+        0 => None,
+        code => Some(code == 2),
+    }
+}
+
 /// Flip the screen shader everywhere: the menu row and the hotkey. This is
 /// the escape hatch for a shader that makes windows unusable, so it binds
 /// unscoped, applies immediately, and never prompts in either direction.
@@ -209,11 +258,13 @@ pub(crate) fn toggle_post_shader(cx: &mut App) {
 }
 
 /// The child windows currently wearing the shader under the all-windows
-/// option, and the composed source they wear. Workspace windows never
-/// appear here; they keep their own [`PostShaderDriver`]s.
+/// option, and the program they wear: the composed source plus where its
+/// images come from, since a child registers the same program the
+/// workspace windows do. Workspace windows never appear here; they keep
+/// their own [`PostShaderDriver`]s.
 #[derive(Default)]
 struct ShadedChildren {
-    source: Option<String>,
+    program: Option<(String, panel::shader::ProgramCtx)>,
     windows: Vec<AnyWindowHandle>,
 }
 
@@ -240,8 +291,8 @@ pub(crate) fn note_confirm_window(handle: Option<AnyWindowHandle>, cx: &mut App)
 const UNAPPROVED_POST_SHADER: &str =
     "this shader arrived with a workspace and hasn't been approved on this machine";
 
-/// The WGSL the screen shader actually runs, resolved the way a panel
-/// surface resolves its own.
+/// The WGSL the screen shader actually runs and where it came from,
+/// resolved the way a panel surface resolves its own.
 ///
 /// A pool name wins outright: a hit runs the pool's copy, and a miss runs
 /// nothing rather than falling through to whatever inline text happens to
@@ -254,9 +305,18 @@ const UNAPPROVED_POST_SHADER: &str =
 /// read doesn't: picking a file is the agreement, and the pick already
 /// recorded it.
 ///
+/// The origin rides along because a program's images resolve from it: the
+/// pool entry's carried bytes, or files beside the source. It's decided
+/// here rather than by the drivers so there's one reading of where a
+/// shader came from instead of one per surface.
+///
 /// `Ok(None)` is nothing to run, `Err` a line for the settings page's
 /// readout.
-pub(crate) fn post_shader_source(config: &PostShaderConfig) -> Result<Option<String>, String> {
+pub(crate) fn post_shader_program(
+    config: &PostShaderConfig,
+) -> Result<Option<(String, panel::shader::ProgramCtx)>, String> {
+    use panel::shader::ProgramCtx;
+
     // Empty text is nothing to run, whichever way in it arrived, and the
     // gate reads it as approved for the same reason.
     let gated = |source: String| match panel::shader::approved(&source) {
@@ -265,19 +325,27 @@ pub(crate) fn post_shader_source(config: &PostShaderConfig) -> Result<Option<Str
     };
     if let Some(name) = config.name.as_deref() {
         return match settings::shader_pool_get(name) {
-            Some(entry) => gated(entry.source),
+            Some(entry) => Ok(gated(entry.source)?.map(|s| (s, ProgramCtx::named(name)))),
             None => Ok(None),
         };
     }
     if !config.source.trim().is_empty() {
-        return gated(config.source.clone());
+        // Detached: an inline source arrived inside a layout, so there is
+        // nothing on this machine holding the images it might declare.
+        return Ok(gated(config.source.clone())?.map(|s| (s, ProgramCtx::detached())));
     }
     let Some(path) = config.path.as_ref() else {
         return Ok(None);
     };
     std::fs::read_to_string(path)
-        .map(Some)
+        .map(|source| Some((source, ProgramCtx::file(path))))
         .map_err(|e| format!("reading {}: {e}", path.display()))
+}
+
+/// Just the text, for the callers comparing one config's shader against
+/// another's rather than compiling it.
+pub(crate) fn post_shader_source(config: &PostShaderConfig) -> Result<Option<String>, String> {
+    Ok(post_shader_program(config)?.map(|(source, _)| source))
 }
 
 /// The file behind the screen shader, which is the only source hot reload
@@ -301,6 +369,10 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
     cx.defer(|cx| {
         let config = Settings::load().post_shader;
         POST_SHADER_ON.store(config.enabled, Ordering::Relaxed);
+        // Publish what the file said before any window compiles it, so a
+        // settings window open over this apply can catch up its mirrors.
+        *POST_SHADER_APPLIED.write().unwrap() = Some(config.clone());
+        POST_SHADER_GEN.fetch_add(1, Ordering::Relaxed);
         let open: Vec<(AnyWindowHandle, Entity<Workspace>)> = cx
             .default_global::<WorkspaceWindows>()
             .open
@@ -310,21 +382,22 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
         for (handle, workspace) in open {
             handle
                 .update(cx, |_, window, cx| {
-                    workspace.update(cx, |workspace, _| workspace.apply_post_shader(window));
+                    workspace.update(cx, |workspace, cx| workspace.apply_post_shader(window, cx));
                 })
                 .ok();
         }
-        // The child pass: cache the source and shade every eligible window,
+        // The child pass: cache the program and shade every eligible window,
         // or strip the ones shaded before. Resolved through the same order
         // the workspace windows use, so a child never wears something the
         // workspace isn't wearing. Errors fall through as None here; the
         // workspace pass above already surfaced them.
-        let source = (config.enabled && config.all_windows)
-            .then(|| post_shader_source(&config).ok().flatten())
+        let program = (config.enabled && config.all_windows)
+            .then(|| post_shader_program(&config).ok().flatten())
             .flatten();
         let previous = std::mem::take(&mut cx.default_global::<ShadedChildren>().windows);
-        cx.default_global::<ShadedChildren>().source = source.clone();
-        if source.is_some() {
+        let shading = program.is_some();
+        cx.default_global::<ShadedChildren>().program = program;
+        if shading {
             sweep_shaded_children(cx);
         } else {
             for handle in previous {
@@ -348,7 +421,7 @@ pub(crate) fn apply_post_shader(cx: &mut App) {
 /// sweep. Workspace windows keep their own drivers, and the confirm
 /// dialog is always skipped.
 fn sweep_shaded_children(cx: &mut App) {
-    let Some(source) = cx.default_global::<ShadedChildren>().source.clone() else {
+    let Some((source, ctx)) = cx.default_global::<ShadedChildren>().program.clone() else {
         return;
     };
     let workspaces: Vec<AnyWindowHandle> = cx
@@ -359,13 +432,35 @@ fn sweep_shaded_children(cx: &mut App) {
         .collect();
     let confirm = cx.default_global::<PostShaderConfirmWindow>().0;
     let shaded = cx.default_global::<ShadedChildren>().windows.clone();
+    // A child has no player to feed a `@cover` binding, so it borrows the
+    // primary workspace's art - the same window whose frame loop pushes the
+    // children their signals.
+    let cover_from = panel::shader::uses_cover(&source)
+        .then(|| {
+            cx.default_global::<WorkspaceWindows>()
+                .open
+                .iter()
+                .min_by_key(|w| w.opened)
+                .map(|w| w.handle.window_id().as_u64())
+        })
+        .flatten();
     for handle in cx.windows() {
         if workspaces.contains(&handle) || Some(handle) == confirm || shaded.contains(&handle) {
             continue;
         }
         let installed = handle
             .update(cx, |_, window, _| {
-                match window.register_user_shader(&source) {
+                if let Some(primary) = cover_from {
+                    panel::shader::adopt_cover(
+                        primary,
+                        window.window_handle().window_id().as_u64(),
+                    );
+                }
+                // Whole program, so a child wears the same chain and the
+                // same images the workspace windows do. A failure here is
+                // silent on purpose: the workspace pass compiled the same
+                // text and already put the message in the readout.
+                match panel::shader::register_program(window, &source, &ctx) {
                     Ok(id) => {
                         window.set_post_shader(Some(id));
                         true
@@ -397,6 +492,26 @@ fn push_child_signals(signals: [f32; 16], meta: [f32; 8], cx: &mut App) {
         let alive = handle
             .update(cx, |root, window, cx| {
                 window.set_post_signals(signals, meta);
+                cx.notify(root.entity_id());
+            })
+            .is_ok();
+        if !alive {
+            cx.default_global::<ShadedChildren>()
+                .windows
+                .retain(|h| *h != handle);
+        }
+    }
+}
+
+/// The idle half of [`push_child_signals`]: move each shaded child's mouse
+/// and keep its frames coming without feeding signals, so a paused lamp
+/// tracks the cursor there too while the clocks stay parked.
+fn push_child_mouse(cx: &mut App) {
+    let shaded = cx.default_global::<ShadedChildren>().windows.clone();
+    for handle in shaded {
+        let alive = handle
+            .update(cx, |root, window, cx| {
+                window.set_post_mouse();
                 cx.notify(root.entity_id());
             })
             .is_ok();
@@ -470,11 +585,22 @@ struct PostShaderDriver {
     /// uniforms mid-song. Starts true: the first update after an apply
     /// delivers signals and meta once even into a silent app.
     was_live: bool,
+    /// The meta floats the last push carried. A parked hub still pushes
+    /// when these move, so a theme swap or an easing art tint reaches the
+    /// pass while the music sits paused instead of waiting for it.
+    meta: [f32; 8],
     /// The config's idle switch, held here so the frame loop doesn't read
     /// the settings file per frame. Frames keep coming while the audio is
     /// silent; the uniforms don't move, so only per-draw state (the mouse)
     /// follows along.
     run_when_idle: bool,
+    /// Whether the program binds `@cover`, so the frame loop only watches
+    /// the cover feed for a shader that asked for the art.
+    uses_cover: bool,
+    /// The cover feed's revision the program registered with. The panel
+    /// surfaces re-key per frame and follow the track by themselves; this
+    /// pass registers on apply, so a moved rev is what re-applies it.
+    cover: u64,
 }
 
 /// Tear down a workspace window's app-level state: persist its layout, drop
@@ -616,6 +742,35 @@ fn loose_keys(paths: Vec<PathBuf>) -> Vec<TrackKey> {
         .collect()
 }
 
+/// Whether the caller already told the user a screen shader was coming.
+/// The apply confirms name the shader and the hotkey that turns it off, so
+/// the keep-or-revert window after the fact would be the same warning
+/// twice. The welcome window's tiles apply straight off a click with
+/// nothing in between, so there that window is the only thing that says the
+/// look brought one, and it's also the way back out of a look whose menubar
+/// is hidden.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShaderNotice {
+    /// A confirm already read the shader out. Land it and say nothing.
+    Told,
+    /// Nothing did. Open the keep-or-revert window over the fresh look.
+    Ask,
+}
+
+/// Which of the apply confirm's two yeses ran, for a look that brings
+/// shaders. Every apply of such a look asks, not just the first one: what a
+/// shader does to a look is a matter of taste, and taste is allowed to change
+/// between two applies of the same workspace.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApplyShaders {
+    /// Wear what the look brought, agreeing to any of it this machine hasn't
+    /// met before.
+    Wear,
+    /// Land the look bare: no overlay, no panel wearing one. The shader pool
+    /// still travels, so anything the bundle named is a picker click away.
+    Skip,
+}
+
 /// Apply a named workspace to the frontmost workspace window from app
 /// level, the same path the settings window's Apply takes. The welcome
 /// window's quick-start tiles land here: they live in their own OS window,
@@ -629,7 +784,9 @@ pub(crate) fn apply_workspace_to_front(name: &str, cx: &mut App) {
     if let Some((handle, ws)) = found {
         let name = name.to_string();
         let _ = handle.update(cx, |_, window, cx| {
-            ws.update(cx, |ws, cx| ws.apply_workspace(&name, window, cx));
+            ws.update(cx, |ws, cx| {
+                ws.apply_workspace(&name, ApplyShaders::Wear, ShaderNotice::Ask, window, cx)
+            });
         });
     }
 }
@@ -681,17 +838,33 @@ pub(crate) fn add_panel_submenu(
         return menu;
     };
     let handle = window.window_handle();
-    let Some(workspace) = cx
+    let Some(entity) = cx
         .default_global::<WorkspaceWindows>()
         .open
         .iter()
         .find(|w| w.handle == handle)
         .and_then(|w| typed_workspace(&w.workspace))
-        .map(|ws| ws.downgrade())
     else {
         return menu;
     };
+    let dock = entity.read(cx).dock.downgrade();
+    let workspace = entity.downgrade();
     let submenu = PopupMenu::build(window, cx, move |mut menu, window, cx| {
+        // The saved panels lead: a preset is a panel you already decided on,
+        // so it sits above the catalog it was built out of.
+        let tabs_for_preset = tabs.clone();
+        menu = panel_presets::pick_submenu(
+            menu,
+            dock.clone(),
+            false,
+            window,
+            cx,
+            move |panel, window, cx| {
+                if let Some(tabs) = tabs_for_preset.upgrade() {
+                    tabs.update(cx, |tabs, cx| tabs.add_panel(panel, window, cx));
+                }
+            },
+        );
         for section in catalog::sections() {
             match section.group {
                 None => {
@@ -1335,6 +1508,24 @@ fn run_menu_command(command: &str, cx: &mut App) {
         "layout-apply" => with_front_workspace(cx, move |ws, _, cx| {
             ws.run_layout(name, LayoutTarget::Apply, cx)
         }),
+        "panel-preset" => with_front_workspace(cx, move |ws, window, cx| {
+            ws.run_panel_preset(name, PanelTarget::Open, window, cx)
+        }),
+        "panel-preset-window" => with_front_workspace(cx, move |ws, window, cx| {
+            ws.run_panel_preset(name, PanelTarget::NewWindow, window, cx)
+        }),
+        // A catalog panel straight into a window of its own, the Window
+        // menu's half of the same flyout. Keyed by label like "panel:".
+        "panel-window" => {
+            if let Some(def) = catalog::sections()
+                .flat_map(|section| section.panels.iter())
+                .find(|def| def.label == name)
+            {
+                with_front_workspace(cx, move |ws, window, cx| {
+                    ws.open_panel_window(def, window, cx)
+                });
+            }
+        }
         // "panel:<label>" and anything else that carries a colon.
         _ => {
             if let Some(action) = MenuAction::from_command_id(command) {
@@ -1365,6 +1556,14 @@ pub(crate) enum LayoutTarget {
     Apply,
 }
 
+/// What picking a panel in a presets or panel flyout does: land it in this
+/// window's layout, or open it in a window of its own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PanelTarget {
+    Open,
+    NewWindow,
+}
+
 /// What picking a workspace in a workspaces flyout does.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorkspaceTarget {
@@ -1391,6 +1590,22 @@ pub(crate) enum MenuEntry {
         /// Lead the flyout with a "New..." row that opens the save dialog,
         /// the Save Layout submenu's way to a fresh preset.
         with_new: bool,
+    },
+    /// A panel-presets flyout whose items are the saved panels, read at open
+    /// time; picking one builds that panel configured and does the flyout's
+    /// `target` with it.
+    PresetsSubmenu {
+        label: &'static str,
+        icon: &'static str,
+        target: PanelTarget,
+    },
+    /// The whole panel picker as a two-level flyout: the saved presets, then
+    /// the catalog's own groups, each flying out into its panels. Every pick
+    /// opens the panel in a window of its own, which is the one thing this
+    /// flyout is for.
+    PanelWindowsSubmenu {
+        label: &'static str,
+        icon: &'static str,
     },
     /// A workspaces flyout whose items are the saved and shipped workspaces,
     /// read at open time; picking one does the flyout's `target` with that
@@ -1506,6 +1721,13 @@ pub(crate) const MENUS: &[Menu] = &[
                 icon: icons::SQUARE_DASHED,
                 action: MenuAction::EmptyWindow,
             }),
+            // One panel in a window of its own: a saved preset arrives
+            // configured, a catalog pick bare, both the shape a panel dragged
+            // out of the dock lands in.
+            MenuEntry::PanelWindowsSubmenu {
+                label: "New Window from Panel",
+                icon: icons::EXTERNAL_LINK,
+            },
             MenuEntry::Section("Interface"),
             MenuEntry::Item(MenuItem {
                 label: "Hide Menubar",
@@ -1523,7 +1745,7 @@ pub(crate) const MENUS: &[Menu] = &[
                 action: MenuAction::ToggleArtTheming,
             }),
             MenuEntry::Item(MenuItem {
-                label: "Screen Shader",
+                label: "Overlay Shader",
                 icon: icons::BLEND,
                 action: MenuAction::TogglePostShader,
             }),
@@ -1585,6 +1807,12 @@ pub(crate) const MENUS: &[Menu] = &[
     Menu {
         label: "Panels",
         entries: &[
+            // The panels you already configured lead the ones you haven't.
+            MenuEntry::PresetsSubmenu {
+                label: "Presets",
+                icon: icons::COPY,
+                target: PanelTarget::Open,
+            },
             MenuEntry::Panels(&catalog::APPLICATION),
             MenuEntry::Panels(&catalog::ARRANGEMENT),
             MenuEntry::Panels(&catalog::CONTROLS),
@@ -1698,6 +1926,10 @@ pub struct Workspace {
     /// Which submenu entry of the open dropdown is flown out, by entry
     /// index. Hovering an entry moves it, closing the menu clears it.
     open_submenu: Option<usize>,
+    /// The second level, for the one flyout that has groups inside it: the
+    /// Window menu's panel picker, whose rows are the presets and the catalog
+    /// groups. Indexed within that flyout, cleared with the level above it.
+    open_subgroup: Option<usize>,
     /// A mouse button is held down somewhere in the window. Alt+drag is
     /// the compositor's window move/resize, so an alt-revealed menubar
     /// stays hidden while a button is down: the overlay must not sit in
@@ -2177,6 +2409,7 @@ impl Workspace {
         let mut this = Workspace {
             open_menu: None,
             open_submenu: None,
+            open_subgroup: None,
             pointer_down: false,
             state,
             focus,
@@ -2210,7 +2443,7 @@ impl Workspace {
         panel::shader::note_window(window, &this.state, cx);
         // The configured screen shader goes on as the window opens, so a
         // restart wears it without a trip through the settings window.
-        this.apply_post_shader(window);
+        this.apply_post_shader(window, cx);
         // With the all-windows option on, the per-window apply above isn't
         // enough: the app-level pass has to run once to cache the source
         // for the child sweeps, or children opened later stay bare.
@@ -2225,7 +2458,7 @@ impl Workspace {
     /// The resolve and compile happen here, synchronously: a failure logs,
     /// lands its message in the shared readout, and leaves whatever compiled
     /// last still running, so a broken edit never blanks the effect.
-    fn apply_post_shader(&mut self, window: &mut Window) {
+    fn apply_post_shader(&mut self, window: &mut Window, cx: &App) {
         let config = Settings::load().post_shader;
         // Keep the live switch and the slot feeds in step; the startup path
         // lands here before any app-level apply has run.
@@ -2234,6 +2467,18 @@ impl Workspace {
         set_post_shader_manual(config.manual.clone());
         if !config.enabled {
             self.clear_post_shader(window);
+            // The switch being off doesn't unname the slots. Those names come
+            // off the source the config points at rather than off anything
+            // that's running, and the Shader page goes on showing the slots
+            // as hand-set knobs while the pass is parked - so without this,
+            // flipping the shader off turned every row from "bend" back into
+            // "slot 0". A config pointing nowhere still leaves them bare,
+            // which is the [`clear_post_shader`] case above.
+            *POST_SHADER_LABELS.write().unwrap() = post_shader_source(&config)
+                .ok()
+                .flatten()
+                .map(|source| panel::shader::slot_labels(&source))
+                .unwrap_or_default();
             return;
         }
         let mut driver = PostShaderDriver {
@@ -2245,11 +2490,14 @@ impl Workspace {
                 .as_ref()
                 .is_some_and(|driver| driver.active),
             was_live: true,
+            meta: [0.0; 8],
             run_when_idle: config.run_when_idle,
+            uses_cover: false,
+            cover: 0,
         };
         driver.stamp = driver.path.as_deref().and_then(settings::file_stamp);
-        let source = match post_shader_source(&config) {
-            Ok(Some(source)) => source,
+        let (source, ctx) = match post_shader_program(&config) {
+            Ok(Some(program)) => program,
             // A pool name nothing answers to, or a config pointing nowhere.
             // Same teardown as the switch being off: there is nothing to
             // run, and leaving the last one up would be running something
@@ -2269,7 +2517,26 @@ impl Workspace {
         // The slot names travel with the source, so the settings window's
         // route editor names them the way a panel's does.
         *POST_SHADER_LABELS.write().unwrap() = panel::shader::slot_labels(&source);
-        match window.register_user_shader(&source) {
+        POST_SHADER_COVERAGE.store(
+            if panel::shader::overlay(&source) {
+                2
+            } else {
+                1
+            },
+            Ordering::Relaxed,
+        );
+        // A program binding `@cover` registers with the art the feed holds
+        // right now, and the frame loop measures track changes against the
+        // revision it took.
+        driver.uses_cover = panel::shader::uses_cover(&source);
+        if driver.uses_cover {
+            driver.cover = panel::shader::poll_cover(window, cx);
+        }
+        // The whole program: the text splits into its passes here and its
+        // images are read from wherever the source resolved from, so a
+        // split or an unreadable image lands in the same readout a naga
+        // error does.
+        match panel::shader::register_program(window, &source, &ctx) {
             Ok(id) => {
                 window.set_post_shader(Some(id));
                 driver.active = true;
@@ -2292,6 +2559,7 @@ impl Workspace {
         }
         *POST_SHADER_ERROR.write().unwrap() = None;
         *POST_SHADER_LABELS.write().unwrap() = Vec::new();
+        POST_SHADER_COVERAGE.store(0, Ordering::Relaxed);
     }
 
     /// The screen shader's frame loop, run from render: re-read the file
@@ -2334,6 +2602,33 @@ impl Workspace {
                 cx.defer(sweep_shaded_children);
             }
         }
+        // A program wearing the track's art follows the track. The poll
+        // costs a map read and a path compare per frame until the playing
+        // file turns over; then this window re-applies with the new art,
+        // and the primary re-shades the children wearing the same program.
+        if self
+            .post_shader
+            .as_ref()
+            .is_some_and(|driver| driver.uses_cover)
+        {
+            let rev = panel::shader::poll_cover(window, cx);
+            if self
+                .post_shader
+                .as_ref()
+                .is_some_and(|driver| driver.cover != rev)
+            {
+                self.apply_post_shader(window, cx);
+                if primary {
+                    cx.defer(|cx| {
+                        // The children hold ids registered with the old
+                        // art; forgotten, the sweep re-registers them and
+                        // the new registration replaces the old in place.
+                        cx.default_global::<ShadedChildren>().windows.clear();
+                        sweep_shaded_children(cx);
+                    });
+                }
+            }
+        }
         if !self
             .post_shader
             .as_ref()
@@ -2356,10 +2651,29 @@ impl Workspace {
             hub.tick(&player.feed(), player.playing_entry());
         }
         let live = hub.live();
+        // The release tail. Live goes false the moment the audio stops, but
+        // a smoothed signal is still falling for a second or two after
+        // that, and a shader riding one wants those frames: without them
+        // the last push is the one that lands and the effect freezes
+        // wherever it was rather than fading out.
+        let settling = !live && hub.settling();
         let was_live = std::mem::replace(
             &mut self.post_shader.as_mut().expect("checked above").was_live,
             live,
         );
+        let signals = post_shader_signals(&hub);
+        let meta = panel::shader::meta_slots(window, cx);
+        // Meta isn't audio. The theme can flip, the art tint can ease, the
+        // volume can move, all while the hub sits parked, and a shader
+        // tuning itself to the palette has to hear about it or it wears
+        // the theme it was last pushed under until the music moves again.
+        // So a changed meta counts as something to say, same as a live
+        // hub. It settles by itself: the push stores what it sent, and the
+        // next idle frame compares equal and goes back to sleep.
+        let stale_meta = self
+            .post_shader
+            .as_ref()
+            .is_some_and(|driver| driver.meta != meta);
         // A hub gone quiet still owes the shader one last word: without it
         // the uniforms freeze mid-song, and a paused window keeps wearing
         // the play state on every repaint. The push after the last live
@@ -2368,16 +2682,24 @@ impl Workspace {
         // the idle switch keeps its frames coming: the uniforms hold
         // still, and the frames are for the state that updates per draw,
         // which is the mouse.
-        if !live && !was_live {
+        if !live && !was_live && !settling && !stale_meta {
             if run_when_idle {
+                // The uniforms hold still, but the mouse is stored beside
+                // them rather than read per draw, so an idle frame has to
+                // carry it across itself or the lamp freezes mid-pause.
+                window.set_post_mouse();
                 window.request_animation_frame();
+                if primary {
+                    cx.defer(push_child_mouse);
+                }
             }
             return;
         }
-        let signals = post_shader_signals(&hub);
-        let meta = panel::shader::meta_slots(window, cx);
+        if let Some(driver) = self.post_shader.as_mut() {
+            driver.meta = meta;
+        }
         window.set_post_signals(signals, meta);
-        if live || run_when_idle {
+        if live || settling || run_when_idle {
             window.request_animation_frame();
         }
         if primary {
@@ -2578,11 +2900,21 @@ impl Workspace {
     pub(crate) fn apply_workspace(
         &mut self,
         name: &str,
+        shaders: ApplyShaders,
+        notice: ShaderNotice,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(bundle) = crate::workspaces::resolve(name) else {
             return;
+        };
+        // Without Shaders takes them out here, before anything reads the
+        // bundle: the overlay and every panel wearing one, the pool left
+        // alone. Everything downstream then applies a look that simply
+        // doesn't have any, so there's no second reading of the choice.
+        let bundle = match shaders {
+            ApplyShaders::Wear => bundle,
+            ApplyShaders::Skip => crate::workspaces::without_shaders(&bundle),
         };
         // What the screen shader is running right now, read before anything
         // moves: it's both the revert target for the countdown below and the
@@ -2618,16 +2950,18 @@ impl Workspace {
         let persist = incoming.clone();
         Settings::update(move |s| s.post_shader = persist);
         apply_post_shader(cx);
-        // A shader that came in with the look gets the same countdown a
-        // risky apply from the settings page does, since it can bury the
-        // controls that would undo it. Only a change worth proving: an apply
-        // that turns the shader off, or lands the same source that was
-        // already running, prompts nothing.
+        // A shader that came in with the look gets the keep-or-revert window
+        // a risky apply from the settings page does, but only where nothing
+        // said it was coming: the confirms name the shader and the hotkey
+        // that turns it off, and asking again the moment it lands is the
+        // second warning for one decision. Either way it's only a change
+        // worth proving: an apply that turns the shader off, or lands the
+        // same source that was already running, prompts nothing.
         let landed = incoming
             .enabled
             .then(|| post_shader_source(&incoming).ok().flatten())
             .flatten();
-        if landed.is_some() && landed != prior_source {
+        if notice == ShaderNotice::Ask && landed.is_some() && landed != prior_source {
             let player = self.state.player.entity_id();
             crate::settings::shader_confirm::open(prior, player, |_| {}, cx);
         }
@@ -2674,6 +3008,47 @@ impl Workspace {
     /// what is actually showing.
     pub(crate) fn on_mini(&self) -> bool {
         self.mini_layout.is_some() && self.active_layout == self.mini_layout
+    }
+
+    /// A presets-flyout pick, shared with the menu panel: build the saved
+    /// panel and either land it in this window, where its kind says panels of
+    /// that sort go, or open it in a window of its own. A preset deleted
+    /// while the menu stood open does nothing.
+    pub(crate) fn run_panel_preset(
+        &mut self,
+        name: String,
+        target: PanelTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(preset) = rox_core::settings::panel_presets::resolve(&Settings::load(), &name)
+        else {
+            return;
+        };
+        let dock = self.dock.downgrade();
+        let Some(panel) = panel_presets::build(&preset, dock, window, cx) else {
+            return;
+        };
+        match target {
+            PanelTarget::Open => match panel_presets::placement_for(&preset) {
+                PanelPlacement::Center => self.add_center(panel, window, cx),
+                PanelPlacement::Bottom => self.add_bottom(panel, window, cx),
+                PanelPlacement::Top => self.add_top(panel, window, cx),
+            },
+            PanelTarget::NewWindow => panel::open_panel_window(panel, self.state.clone(), cx),
+        }
+    }
+
+    /// A catalog pick from the Window menu's panel flyout: the panel with its
+    /// stock config, in a window of its own.
+    pub(crate) fn open_panel_window(
+        &mut self,
+        def: &'static PanelDef,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel = (def.build)(&self.state, cx.entity().downgrade(), window, cx);
+        panel::open_panel_window(panel, self.state.clone(), cx);
     }
 
     /// A layouts-flyout pick, shared with the menu panel: open a preset
@@ -2785,27 +3160,26 @@ impl Workspace {
     }
 
     /// Apply the pending workspace to this window, the confirm dialog's yes.
-    /// `approve` is the difference between the dialog's two yes buttons: it
-    /// agrees to the shaders the bundle brought, which is the one click on
-    /// this whole path that may write the approved list. Applying without it
-    /// still lands the look, the surfaces wearing unapproved code just paint
-    /// nothing until somebody approves them one at a time.
+    /// `shaders` is the difference between the dialog's two yes buttons: the
+    /// wearing one agrees to whatever code the bundle brought, which is the
+    /// one click on this whole path that may write the approved list, and the
+    /// bare one strips the shaders out of the look on the way in.
     fn apply_workspace_confirmed(
         &mut self,
-        approve: bool,
+        shaders: ApplyShaders,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let name = match &self.layout_dialog {
             Some(LayoutDialog::ConfirmApplyWorkspace { card, .. }) => {
-                if approve {
+                if shaders == ApplyShaders::Wear {
                     card.approve_shaders();
                 }
                 card.name.clone()
             }
             _ => return,
         };
-        self.apply_workspace(&name, window, cx);
+        self.apply_workspace(&name, shaders, ShaderNotice::Told, window, cx);
         self.close_layout_dialog(window, cx);
     }
 
@@ -3766,6 +4140,11 @@ impl Workspace {
                 imported,
             } => {
                 let shaders = bundle_card.shader_line();
+                let screen = bundle_card.screen_shader.clone();
+                // Whether the yes splits in two. Code nobody has agreed to
+                // splits it, and so does a look that simply wears shaders,
+                // however many times it's been applied before.
+                let split = bundle_card.splits_apply();
                 let line = |text: SharedString| {
                     div()
                         .text_xs()
@@ -3773,9 +4152,10 @@ impl Workspace {
                         .child(text)
                 };
                 card
-                    // The shader list needs the room; a plain apply keeps the
-                    // dialogs' shared width.
-                    .when(shaders.is_some(), |d| d.w(px(380.)))
+                    // The shader list and the screen shader's hotkey line both
+                    // need the room; a plain apply keeps the dialogs' shared
+                    // width.
+                    .when(split || screen.is_some(), |d| d.w(px(380.)))
                     .child(div().child(SharedString::from(if *imported {
                         format!("Imported \"{}\"", bundle_card.name)
                     } else {
@@ -3790,16 +4170,38 @@ impl Workspace {
                     } else {
                         "This replaces the whole look: layouts, palette, appearance.".into()
                     }))
+                    // A screen shader covers the whole window, so it gets said
+                    // before the apply rather than asked about after, and the
+                    // way back off comes with it.
+                    .children(screen.clone().map(line))
+                    .children(screen.map(|_| {
+                        kbd_line([
+                            Seg::Text("Turn it off any time with".into()),
+                            Seg::Key(chord("Shift+X")),
+                            Seg::Text("or".into()),
+                            Seg::Key("Window".into()),
+                            Seg::Text("then".into()),
+                            Seg::Key("Overlay Shader".into()),
+                        ])
+                        .text_xs()
+                    }))
                     .children(shaders.clone().map(line))
                     // Shaders that came with a look are somebody else's code,
                     // so the yes that runs them says so, and the yes that
-                    // doesn't is right beside it.
-                    .children(shaders.is_some().then(|| {
-                        line(
+                    // doesn't is right beside it. Once they're agreed to the
+                    // question is only about the look, and the line says that
+                    // instead.
+                    .children(split.then(|| {
+                        line(if shaders.is_some() {
                             "Approving lets them run on this machine. Applying without them \
-                             leaves the surfaces wearing them blank."
-                                .into(),
-                        )
+                             leaves the look bare, with the shaders still in its pool."
+                                .into()
+                        } else {
+                            SharedString::from(
+                                "Applying without them leaves the look bare, with the shaders \
+                                 still in its pool.",
+                            )
+                        })
                     }))
                     .child(
                         div()
@@ -3815,22 +4217,26 @@ impl Workspace {
                                 }),
                             ))
                             .child(dialog_button(
-                                if shaders.is_some() {
-                                    "Without Shaders"
-                                } else {
-                                    "Apply"
-                                },
-                                shaders.is_none(),
+                                if split { "Without Shaders" } else { "Apply" },
+                                !split,
                                 cx.listener(|this, _, window, cx| {
-                                    this.apply_workspace_confirmed(false, window, cx)
+                                    this.apply_workspace_confirmed(ApplyShaders::Skip, window, cx)
                                 }),
                             ))
-                            .children(shaders.is_some().then(|| {
+                            .children(split.then(|| {
                                 dialog_button(
-                                    "Approve and Apply",
+                                    if shaders.is_some() {
+                                        "Approve and Apply"
+                                    } else {
+                                        "With Shaders"
+                                    },
                                     true,
                                     cx.listener(|this, _, window, cx| {
-                                        this.apply_workspace_confirmed(true, window, cx)
+                                        this.apply_workspace_confirmed(
+                                            ApplyShaders::Wear,
+                                            window,
+                                            cx,
+                                        )
                                     }),
                                 )
                             })),
@@ -4427,5 +4833,75 @@ mod shader_feed_tests {
         );
         set_post_shader_manual(Vec::new());
         set_post_shader_routes(Vec::new());
+    }
+}
+
+#[cfg(test)]
+mod post_shader_program_tests {
+    use super::*;
+    use panel::shader::ProgramCtx;
+
+    const SOURCE: &str = "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }";
+
+    /// The screen shader's images resolve from wherever its text came
+    /// from, so the resolve hands both back together rather than leaving
+    /// each driver to work the origin out again.
+    #[test]
+    fn the_post_program_carries_where_its_source_came_from() {
+        // The cache alone, so a test run leaves no agreement behind in the
+        // settings file.
+        settings::note_approved(&panel::shader::fingerprint(SOURCE));
+
+        // Inline, the way a shader arrives inside a look: detached, since
+        // nothing on this machine holds what it might declare.
+        let inline = PostShaderConfig {
+            source: SOURCE.to_string(),
+            ..PostShaderConfig::default()
+        };
+        assert_eq!(
+            post_shader_program(&inline).expect("inline resolves"),
+            Some((SOURCE.to_string(), ProgramCtx::detached()))
+        );
+
+        // A name wins over the inline copy, and it's the pool entry that
+        // the images then come out of.
+        settings::note_shader_pool(vec![settings::NamedShader {
+            name: "Grain".to_string(),
+            source: SOURCE.to_string(),
+            path: None,
+            assets: Vec::new(),
+        }]);
+        let named = PostShaderConfig {
+            name: Some("Grain".to_string()),
+            source: "// the config's own".to_string(),
+            ..PostShaderConfig::default()
+        };
+        assert_eq!(
+            post_shader_program(&named).expect("the pool resolves"),
+            Some((SOURCE.to_string(), ProgramCtx::named("Grain")))
+        );
+        // And a name nothing answers to is nothing to run, images or not.
+        settings::note_shader_pool(Vec::new());
+        assert_eq!(
+            post_shader_program(&named).expect("a miss isn't an error"),
+            None
+        );
+
+        // A file, whose folder is where its images are looked for.
+        let dir = std::env::temp_dir().join("rox-post-shader-origin");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("post.wgsl");
+        std::fs::write(&path, SOURCE).expect("write");
+        let file = PostShaderConfig {
+            path: Some(path.clone()),
+            ..PostShaderConfig::default()
+        };
+        assert_eq!(
+            post_shader_program(&file).expect("the file resolves"),
+            Some((SOURCE.to_string(), ProgramCtx::file(&path)))
+        );
+        std::fs::remove_dir_all(&dir).ok();
+
+        settings::forget_approved(&panel::shader::fingerprint(SOURCE));
     }
 }

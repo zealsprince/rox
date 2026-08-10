@@ -237,17 +237,24 @@ fn workspace_tile(
         .hover(|d| d.opacity(0.85))
         .on_mouse_down(MouseButton::Left, on_click)
         .child(picture)
-        .child(div().text_color(palette::text_muted()).child(name))
-        // Somebody made this look; their name rides under it wherever it
-        // shows, quieter than the workspace's own.
-        .when_some(author, |d, author| {
-            d.child(
-                div()
-                    .text_xs()
-                    .text_color(palette::text_faint())
-                    .child(SharedString::from(format!("by {author}"))),
-            )
-        })
+        .child(
+            // Somebody made this look; their name rides on the same line as
+            // the workspace's, quieter and off the baseline it sits on.
+            div()
+                .flex()
+                .flex_row()
+                .items_baseline()
+                .gap(tokens::SPACE_XS)
+                .child(div().text_color(palette::text_muted()).child(name))
+                .when_some(author, |d, author| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_faint())
+                            .child(SharedString::from(format!("by {author}"))),
+                    )
+                }),
+        )
 }
 
 impl Render for WelcomeWindow {

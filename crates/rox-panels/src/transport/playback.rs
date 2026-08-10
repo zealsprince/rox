@@ -5,24 +5,29 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, svg, AnyElement, App, Context, DismissEvent, Div,
-    Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Point, Stateful,
+    anchored, canvas, deferred, div, prelude::*, px, svg, AnyElement, App, Context, DismissEvent,
+    Div, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Point, Stateful,
     Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Side};
 use rox_dock::{Panel, PanelEvent, TabPanel};
+use rox_library::cue::TrackKey;
 use serde::{Deserialize, Serialize};
 
 use rox_playback::engine::LoopMode;
 
 use crate::assets::icons;
+use crate::catalog::LibraryEvent;
 use crate::continuation;
 use crate::design::{palette, tokens};
-use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
+use crate::panel::{
+    self, align_row, justify, Align, AppState, PanelChrome, PanelSettings, ScrubState,
+};
 use crate::panel_settings;
 use crate::player::observe_view;
 use crate::settings::ShuffleMode;
+use crate::source::TrackSource;
 use rox_panel_api::actions::{TogglePlayback, PLAYBACK_TIP_SCOPE};
 
 use super::{default_true, transport_panel};
@@ -44,6 +49,10 @@ pub enum PlaybackItem {
     Next,
     /// The stop button that ejects the playing track.
     Stop,
+    /// The speaker button: a click mutes, the wheel nudges the level, and a
+    /// right-click opens the slider. The volume strip without the strip,
+    /// for a transport that only has room for the one button.
+    Volume,
     /// The loop button that cycles off, all, one.
     Repeat,
     /// The shuffle button.
@@ -59,6 +68,9 @@ pub enum PlaybackItem {
     /// The stop-after-current toggle: armed, the playing track ends the
     /// motion and the next one cues up paused.
     StopAfter,
+    /// The heart over the playing track, the same toggle the favourite
+    /// panel and the library's heart column run.
+    Favourite,
     /// A flexible gap that pushes the buttons around it apart. One per
     /// strip under the unique-item model.
     Spacer,
@@ -98,6 +110,11 @@ const ITEMS: &[panel::ArrangeSpec<PlaybackItem>] = &[
         value: PlaybackItem::Stop,
     },
     panel::ArrangeSpec {
+        label: "Volume",
+        icon: Some(icons::VOLUME_2),
+        value: PlaybackItem::Volume,
+    },
+    panel::ArrangeSpec {
         label: "Loop",
         icon: Some(icons::REPEAT),
         value: PlaybackItem::Repeat,
@@ -128,6 +145,11 @@ const ITEMS: &[panel::ArrangeSpec<PlaybackItem>] = &[
         value: PlaybackItem::StopAfter,
     },
     panel::ArrangeSpec {
+        label: "Favourite",
+        icon: Some(icons::HEART),
+        value: PlaybackItem::Favourite,
+    },
+    panel::ArrangeSpec {
         label: "Spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: PlaybackItem::Spacer,
@@ -156,8 +178,9 @@ pub struct TransportConfig {
 impl Default for TransportConfig {
     fn default() -> Self {
         // The stock strip in the order it always rendered: nudges around
-        // play, the modes trailing. Stop, random, continue, crossfade and
-        // stop-after are opt-in from the panel's menu.
+        // play, the modes trailing. Stop, volume, random, continue,
+        // crossfade, stop-after and the heart are opt-in from the panel's
+        // menu.
         //
         // Continue is opt-in even though continuation ships on (ADR 17). Its
         // strategy is picked on the Behavior page, where each one explains
@@ -231,10 +254,11 @@ impl From<TransportConfigDump> for TransportConfig {
                 on(dump.stop, PlaybackItem::Stop);
                 on(dump.repeat, PlaybackItem::Repeat);
                 on(dump.shuffle, PlaybackItem::Shuffle);
-                // Continue and crossfade aren't here: neither ships in the
-                // stock strip, so a layout from before those buttons existed
-                // comes back looking exactly like a fresh install rather than
-                // growing controls nobody asked for.
+                // Continue, crossfade, volume and the heart aren't here: none
+                // of them ships in the stock strip, so a layout from before
+                // those buttons existed comes back looking exactly like a
+                // fresh install rather than growing controls nobody asked
+                // for.
                 on(dump.random, PlaybackItem::Random);
                 items
             }
@@ -294,7 +318,26 @@ pub struct TransportPanel {
     /// gpui-component context menu opens on right-click and can't be asked
     /// to open by anything else.
     mode_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
+    /// Where the volume slider hangs while it's open, the point the
+    /// right-click on the speaker landed. None while it's closed.
+    volume_at: Option<Point<Pixels>>,
+    /// The volume slider's painted bounds and drag state.
+    volume_scrub: ScrubState,
+    /// The playing track's heart, cached so a frame never turns into a
+    /// database lookup.
+    heart: Option<Heart>,
     _player_changed: Subscription,
+    _library_changed: Subscription,
+}
+
+/// The track the heart currently sits over: the key it was resolved from,
+/// that key's catalog id (None for a file the library does not know), and
+/// whether the id is favourited. The favourite panel keeps the same shape,
+/// for the same reason.
+struct Heart {
+    key: TrackKey,
+    id: Option<i64>,
+    on: bool,
 }
 
 /// A button whose click toggles something and whose hold opens the shades of
@@ -364,17 +407,49 @@ fn length_label(secs: f32) -> String {
 /// doesn't feel broken.
 const SHUFFLE_HOLD: Duration = Duration::from_millis(350);
 
+/// How wide the slider behind the speaker button is. Short of the volume
+/// strip's own cap: this one hangs over the transport rather than sitting
+/// in it, and it only has to be long enough to aim at.
+const VOLUME_POP_W: Pixels = px(120.);
+
 /// A fade that got at least this far before disappearing finished; anything
 /// earlier was cancelled by a stop or a seek and shouldn't celebrate. Short
 /// of 1.0 because the observer wakes per quantized step and the last step
 /// may never be seen.
 const OUTRO_FROM: f32 = 0.85;
 
+/// The layer an open flyout hangs over: window-sized, so every press that
+/// isn't on the flyout itself lands here and closes it. Sized off the window
+/// rather than `size_full`, which would only span this panel; the transport
+/// is a short strip, so a click anywhere else in the app missed the layer
+/// entirely and left the flyout stuck open. The enclosing `anchored` snaps
+/// the layer back over the window from wherever the strip sits.
+fn overlay_layer(window: &Window) -> Div {
+    div()
+        .w(window.bounds().size.width)
+        .h(window.bounds().size.height)
+        .occlude()
+}
+
 impl TransportPanel {
     pub fn new(state: AppState, config: TransportConfig, cx: &mut Context<Self>) -> Self {
         // Play state, loop, and shuffle change on a user action, never on
         // the position tick, so ride the gated observe.
         let _player_changed = observe_view(&state.player, cx);
+        // The heart moves on any playlist change, this strip's own click
+        // included; a rescan can rewrite the id -> path mapping under it, so
+        // that drops the cache entirely.
+        let _library_changed = cx.subscribe(
+            &state.library,
+            |this: &mut Self, _, event: &LibraryEvent, cx| match event {
+                LibraryEvent::PlaylistsChanged => this.refresh_favourite(cx),
+                LibraryEvent::Updated => {
+                    this.heart = None;
+                    cx.notify();
+                }
+                _ => {}
+            },
+        );
         TransportPanel {
             state,
             config,
@@ -384,8 +459,12 @@ impl TransportPanel {
             outro: None,
             press: None,
             mode_menu: None,
+            volume_at: None,
+            volume_scrub: ScrubState::default(),
+            heart: None,
             press_seq: 0,
             _player_changed,
+            _library_changed,
         }
     }
 
@@ -396,10 +475,12 @@ impl TransportPanel {
         let mut menu = menu;
         for (name, value) in [
             ("Stop Button", PlaybackItem::Stop),
+            ("Volume Button", PlaybackItem::Volume),
             ("Continue Button", PlaybackItem::Continue),
             ("Crossfade Button", PlaybackItem::Crossfade),
             ("Random Button", PlaybackItem::Random),
             ("Stop After Button", PlaybackItem::StopAfter),
+            ("Favourite Button", PlaybackItem::Favourite),
         ] {
             let weak = cx.entity().downgrade();
             menu = menu.item(
@@ -663,9 +744,206 @@ impl TransportPanel {
         })
     }
 
-    /// Pick one track at random and play it as a fresh one-track queue. The
-    /// player draws it from whatever context is playing, so this only hands
-    /// over the library to draw from.
+    /// The speaker button: a click mutes, the wheel nudges the level, and a
+    /// right-click opens the slider. The glyph reads the way the volume
+    /// strip's does, crossed out while muted and down to one wave low, so
+    /// the two never say different things about the same level.
+    ///
+    /// Its own control rather than [`panel::icon_control`] because that one
+    /// only carries a left click, and this button answers three gestures.
+    fn volume_control(&self, volume: f32, muted: bool, cx: &mut Context<Self>) -> Stateful<Div> {
+        let (speaker, color) = if muted {
+            (icons::VOLUME_X, palette::text_faint())
+        } else if volume <= 0.5 {
+            (icons::VOLUME_1, palette::text())
+        } else {
+            (icons::VOLUME_2, palette::text())
+        };
+        // Click mutes, so the tip leads with that. The level rides behind
+        // it because nothing beside this button carries a readout, and the
+        // right-click gets named since a slider nobody finds is a slider
+        // nobody uses.
+        let tip = format!(
+            "{}, {}%. Right-click for the slider",
+            if muted { "Unmute" } else { "Mute" },
+            (volume * 100.0).round() as u32
+        );
+        panel::Tip::keyed("volume", tip).apply(
+            div()
+                .flex_none()
+                .p(tokens::ICON_PAD)
+                .rounded(tokens::RADIUS)
+                .hover(|d| d.bg(palette::bg_control()))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this: &mut Self, _, _, cx| {
+                        this.state
+                            .player
+                            .update(cx, |player, cx| player.toggle_mute(cx));
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this: &mut Self, event: &gpui::MouseDownEvent, _, cx| {
+                        // The tab panel answers a right-click on its body
+                        // with the panel dropdown, so swallow this one or
+                        // the slider opens stacked under a menu.
+                        cx.stop_propagation();
+                        this.volume_at = Some(event.position);
+                        cx.notify();
+                    }),
+                )
+                .on_scroll_wheel(cx.listener(
+                    |this: &mut Self, event: &gpui::ScrollWheelEvent, _, cx| {
+                        super::volume_wheel(&this.state.player, event, cx);
+                    },
+                ))
+                .child(svg().path(speaker).size(px(16.)).text_color(color)),
+        )
+    }
+
+    /// The volume slider hung off the speaker button: a short strip with
+    /// the level beside it, over the occluding layer that takes the click
+    /// closing it. The mode menu's arrangement, drawn by hand rather than
+    /// built as a menu because a slider isn't a list of picks.
+    fn volume_slider(
+        &self,
+        at: Point<Pixels>,
+        volume: f32,
+        muted: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let scrub = self.volume_scrub.clone();
+        let player = self.state.player.clone();
+        let card = div()
+            // The card takes its own clicks, so a press on the slider
+            // doesn't reach the layer below and close what it's dragging.
+            .occlude()
+            .flex()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .p(tokens::SPACE_SM)
+            .rounded(tokens::RADIUS)
+            .bg(palette::bg_menu())
+            .border_1()
+            .border_color(palette::border())
+            .shadow_md()
+            .child(
+                div()
+                    // Fixed, not flexible: this hangs over the strip rather
+                    // than in it, so there's no width to fill.
+                    .w(VOLUME_POP_W)
+                    .flex_none()
+                    .h(tokens::CONTROL_H)
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut Self, event: &gpui::MouseDownEvent, _, cx| {
+                            this.volume_scrub.begin();
+                            if let Some(fraction) = this.volume_scrub.fraction(event.position.x) {
+                                this.state
+                                    .player
+                                    .update(cx, |player, cx| player.set_volume(fraction, cx));
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        canvas(
+                            {
+                                let scrub = scrub.clone();
+                                move |bounds, _, _| scrub.set_bounds(bounds)
+                            },
+                            move |bounds, _, window, _| {
+                                panel::paint_slider(volume, muted, bounds, window);
+                                panel::scrub_on_paint(&scrub, window, {
+                                    let player = player.clone();
+                                    move |fraction, cx| {
+                                        player.update(cx, |player, cx| {
+                                            player.set_volume(fraction, cx)
+                                        })
+                                    }
+                                });
+                            },
+                        )
+                        .size_full(),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .text_color(palette::text_muted())
+                    .child(format!("{}%", (volume * 100.0).round() as u32)),
+            );
+        deferred(
+            anchored().child(
+                overlay_layer(window)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut Self, _, _, cx| this.close_volume(cx)),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this: &mut Self, _, _, cx| this.close_volume(cx)),
+                    )
+                    .child(
+                        anchored()
+                            .position(at)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(card),
+                    ),
+            ),
+        )
+        .with_priority(1)
+        .into_any_element()
+    }
+
+    /// Put the volume slider away, dropping any drag with it.
+    fn close_volume(&mut self, cx: &mut Context<Self>) {
+        self.volume_at = None;
+        self.volume_scrub.end();
+        cx.notify();
+    }
+
+    /// The playing track's id and favourite state, resolving and caching on
+    /// a track change. No id while nothing plays, or while the file isn't
+    /// one the library carries.
+    fn current_heart(&mut self, cx: &App) -> (Option<i64>, bool) {
+        let Some(key) = TrackSource::Playing.resolve(&self.state, cx) else {
+            self.heart = None;
+            return (None, false);
+        };
+        if self.heart.as_ref().map(|heart| &heart.key) != Some(&key) {
+            let library = self.state.library.read(cx);
+            let id = library.id_for_key(&key);
+            let on = id.is_some_and(|id| library.is_favourite(id));
+            self.heart = Some(Heart { key, id, on });
+        }
+        self.heart
+            .as_ref()
+            .map_or((None, false), |heart| (heart.id, heart.on))
+    }
+
+    /// Re-read the shown track's favourite state after a playlist change,
+    /// here or on another surface. The id stays put, so this costs one
+    /// single-track query rather than a resolve.
+    fn refresh_favourite(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.heart.as_ref().and_then(|heart| heart.id) else {
+            return;
+        };
+        let on = self.state.library.read(cx).is_favourite(id);
+        if let Some(heart) = self.heart.as_mut() {
+            heart.on = on;
+        }
+        cx.notify();
+    }
+
+    /// Land on a track at random and play on from there. The player draws it
+    /// from whatever context is playing, so this only hands over the library
+    /// to draw from.
     fn play_random(&mut self, cx: &mut Context<Self>) {
         let library = self.state.library.clone();
         self.state
@@ -759,7 +1037,7 @@ impl PanelSettings for TransportPanel {
 impl Render for TransportPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        let body = panel::themed(&chrome, || self.body(cx));
+        let body = panel::themed(&chrome, || self.body(window, cx));
         // The afterglow runs after the fade the observer was watching is
         // gone, so nothing else wakes this panel; it asks for its own
         // frames until the glow lands at zero.
@@ -771,10 +1049,12 @@ impl Render for TransportPanel {
 }
 
 impl TransportPanel {
-    fn body(&mut self, cx: &mut Context<Self>) -> Div {
+    fn body(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         let player = self.state.player.read(cx);
         let playing = player.is_playing();
         let active = player.is_active();
+        let volume = player.volume();
+        let muted = player.muted();
         // Loop state reads through the button itself: dim while off, the
         // accent while on, the one-track glyph for single-track loop. The
         // tooltip carries the same state in words, since a dim glyph and an
@@ -862,6 +1142,14 @@ impl TransportPanel {
         if outro.is_none() {
             self.outro = None;
         }
+        // Only while the heart is actually up: resolving costs a lookup the
+        // first time a track comes round, and a strip without the button
+        // has no reason to pay it.
+        let (heart_id, heart_on) = if self.config.items.contains(&PlaybackItem::Favourite) {
+            self.current_heart(cx)
+        } else {
+            (None, false)
+        };
 
         // The strip renders the config's list as-is: each shown button in
         // its place, whatever order the arrange editor left them in.
@@ -972,6 +1260,7 @@ impl TransportPanel {
                     cx,
                 )
                 .into_any_element(),
+                PlaybackItem::Volume => self.volume_control(volume, muted, cx).into_any_element(),
                 PlaybackItem::Repeat => panel::icon_control(
                     loop_icon,
                     loop_color,
@@ -1043,6 +1332,57 @@ impl TransportPanel {
                     cx,
                 )
                 .into_any_element(),
+                // The heart over the playing track, the same catalog toggle
+                // the favourite panel and the library's heart column run,
+                // so the state matches wherever else it shows.
+                PlaybackItem::Favourite => {
+                    // A dead heart gets a tip too: dimmed and unclickable
+                    // says something is wrong with the button, where
+                    // "nothing to favourite" says there's no track under it.
+                    let tip = match (heart_id.is_some(), heart_on) {
+                        (false, _) => "Nothing to favourite",
+                        (true, true) => "Remove from favourites",
+                        (true, false) => "Add to favourites",
+                    };
+                    panel::Tip::keyed("favourite", tip)
+                        .apply(
+                            div()
+                                .flex_none()
+                                .p(tokens::ICON_PAD)
+                                .rounded(tokens::RADIUS)
+                                .child(
+                                    svg()
+                                        .path(if heart_on {
+                                            icons::HEART_FILLED
+                                        } else {
+                                            icons::HEART
+                                        })
+                                        .size(px(16.))
+                                        .text_color(if heart_on {
+                                            palette::accent()
+                                        } else {
+                                            palette::text_faint()
+                                        }),
+                                )
+                                // Nothing to favourite: the heart stays up,
+                                // dimmed and dead, so the strip holds its
+                                // shape while the queue turns over.
+                                .when(heart_id.is_none(), |d| d.opacity(0.4))
+                                .when_some(heart_id, |d, id| {
+                                    d.cursor_pointer()
+                                        .hover(|d| d.bg(palette::bg_control()))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this: &mut Self, _, _, cx| {
+                                                this.state.library.update(cx, |library, cx| {
+                                                    library.set_favourites(&[id], !heart_on, cx)
+                                                });
+                                            }),
+                                        )
+                                }),
+                        )
+                        .into_any_element()
+                }
                 PlaybackItem::Spacer => div().flex_1().into_any_element(),
             });
         }
@@ -1063,7 +1403,7 @@ impl TransportPanel {
                 strip.child(
                     deferred(
                         anchored().child(
-                            div().size_full().occlude().child(
+                            overlay_layer(window).child(
                                 anchored()
                                     .position(*at)
                                     .snap_to_window_with_margin(px(8.))
@@ -1073,6 +1413,11 @@ impl TransportPanel {
                     )
                     .with_priority(1),
                 )
+            })
+            // The volume slider, pinned where the right-click on the speaker
+            // landed, over the same kind of occluding layer.
+            .when_some(self.volume_at, |strip, at| {
+                strip.child(self.volume_slider(at, volume, muted, window, cx))
             })
     }
 }
@@ -1161,6 +1506,36 @@ mod tests {
                     PlaybackItem::Crossfade
                 ]
         );
+    }
+
+    /// The speaker and the heart are opt-in too, so nothing that existed
+    /// before them grows one; a layout that names them keeps them where it
+    /// put them, and they survive a save.
+    #[test]
+    fn volume_and_favourite_are_opt_in() {
+        let stock = TransportConfig::default();
+        assert!(!stock.items.contains(&PlaybackItem::Volume));
+        assert!(!stock.items.contains(&PlaybackItem::Favourite));
+
+        let legacy: TransportConfig =
+            serde_json::from_str(r#"{"stop": true, "random": true}"#).unwrap();
+        assert!(!legacy.items.contains(&PlaybackItem::Volume));
+        assert!(!legacy.items.contains(&PlaybackItem::Favourite));
+
+        let picked: TransportConfig =
+            serde_json::from_str(r#"{"items": ["volume", "play", "favourite"]}"#).unwrap();
+        assert!(
+            picked.items
+                == vec![
+                    PlaybackItem::Volume,
+                    PlaybackItem::Play,
+                    PlaybackItem::Favourite
+                ]
+        );
+
+        let saved = serde_json::to_value(&picked).unwrap();
+        let back: TransportConfig = serde_json::from_value(saved).unwrap();
+        assert!(back.items == picked.items);
     }
 
     /// A layout that carries the list uses it as-is, duplicates dropped,

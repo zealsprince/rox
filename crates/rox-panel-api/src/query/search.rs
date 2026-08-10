@@ -18,7 +18,7 @@ use gpui::{
     Window,
 };
 use gpui_component::input::{
-    CompletionProvider, Enter, IndentInline, Input, InputEvent, InputState,
+    CompletionProvider, Enter, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp,
 };
 use gpui_component::{ActiveTheme, Icon, Sizable};
 
@@ -224,6 +224,23 @@ impl SearchBox {
             // default meaning.
             .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
                 if !this.menu_action(Box::new(Enter { secondary: false }), window, cx) {
+                    cx.propagate();
+                }
+            }))
+            // Arrows walk the suggestion list. The input only wires its own
+            // up/down handlers on a multi-line box, so on a one-line search
+            // box nothing ever hands the arrows to the menu; do it here.
+            // With the menu closed they propagate untouched, so a host that
+            // drives its own list off the arrows still sees them - and a
+            // host that captures them higher up, like the play launcher,
+            // never reaches this at all.
+            .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
+                if !this.menu_action(Box::new(MoveUp), window, cx) {
+                    cx.propagate();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
+                if !this.menu_action(Box::new(MoveDown), window, cx) {
                     cx.propagate();
                 }
             }))

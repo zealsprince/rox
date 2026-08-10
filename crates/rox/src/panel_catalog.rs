@@ -562,19 +562,17 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
 /// belongs in, and nothing else about it changes.
 pub(crate) static EXPERIMENTAL: PanelSection = PanelSection {
     group: Some(("Experimental", icons::FLASK)),
-    panels: &[
-        PanelDef {
-            label: "Particles",
-            name: "particles",
-            icon: icons::STAR,
-            placement: PanelPlacement::Bottom,
-            build: |state, _, _, cx| {
-                Arc::new(
-                    cx.new(|cx| ParticlesPanel::new(state.clone(), ParticlesConfig::default(), cx)),
-                )
-            },
+    panels: &[PanelDef {
+        label: "Particles",
+        name: "particles",
+        icon: icons::STAR,
+        placement: PanelPlacement::Bottom,
+        build: |state, _, _, cx| {
+            Arc::new(
+                cx.new(|cx| ParticlesPanel::new(state.clone(), ParticlesConfig::default(), cx)),
+            )
         },
-    ],
+    }],
 };
 
 /// Whether a section holds the composition hosts (group, overlay, slide).

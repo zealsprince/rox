@@ -49,6 +49,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme, Placement};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use dock::*;
 pub use panel::*;
@@ -62,6 +63,23 @@ pub fn init(cx: &mut App) {
 }
 
 actions!(rox_dock, [ToggleZoom, ClosePanel]);
+
+/// rox addition: whether the app is in design mode, the state where the
+/// layout can be rearranged. Off, every tab group reads as locked - no
+/// drag, no drop, no close - so a finished workspace stops offering the
+/// builder's handles. A static like the seams flag, since the dock has no
+/// path to app settings; the host seeds it and repaints. On by default, so
+/// nothing is hidden until it's turned off.
+static DESIGN_MODE: AtomicBool = AtomicBool::new(true);
+
+pub fn design_mode() -> bool {
+    DESIGN_MODE.load(Ordering::Relaxed)
+}
+
+/// Flip design mode. Repainting open windows is the caller's.
+pub fn set_design_mode(on: bool) {
+    DESIGN_MODE.store(on, Ordering::Relaxed);
+}
 
 pub enum DockEvent {
     /// The layout of the dock has changed, subscribers this to save the layout.

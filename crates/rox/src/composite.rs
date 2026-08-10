@@ -29,6 +29,7 @@ use rox_dock::{DockArea, Panel, PanelRegistry, PanelState, PanelView};
 use crate::panel_catalog::{self as catalog, PanelDef};
 use crate::panel_settings;
 use crate::workspace::Workspace;
+use rox_core::settings;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::{AppState, PanelSettings};
@@ -277,7 +278,9 @@ fn pick_item(
 }
 
 /// An empty slot's body: a dashed stand-in with an Add Panel dropdown
-/// over the catalog. Fills whatever cell the host gives it.
+/// over the catalog. Fills whatever cell the host gives it. Out of design
+/// mode the button goes and the dashed mark stands alone: filling the slot
+/// is a layout edit, and the Workspace page's tree still does it.
 pub fn empty_slot(
     id: &'static str,
     state: AppState,
@@ -297,23 +300,25 @@ pub fn empty_slot(
                 .size(px(28.))
                 .text_color(palette::text_faint()),
         )
-        .child(
-            Button::new(id)
-                .icon(Icon::default().path(icons::PLUS))
-                .label("Add Panel")
-                .small()
-                .outline()
-                .dropdown_menu(move |menu, window, cx| {
-                    pick_items(
-                        menu,
-                        state.clone(),
-                        workspace.clone(),
-                        window,
-                        cx,
-                        on_pick.clone(),
-                    )
-                }),
-        )
+        .when(settings::design_mode(), |this| {
+            this.child(
+                Button::new(id)
+                    .icon(Icon::default().path(icons::PLUS))
+                    .label("Add Panel")
+                    .small()
+                    .outline()
+                    .dropdown_menu(move |menu, window, cx| {
+                        pick_items(
+                            menu,
+                            state.clone(),
+                            workspace.clone(),
+                            window,
+                            cx,
+                            on_pick.clone(),
+                        )
+                    }),
+            )
+        })
 }
 
 /// Hold a slot's cell to the size the child asks for. A host lays its

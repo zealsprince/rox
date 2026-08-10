@@ -167,7 +167,7 @@ impl GroupPanel {
         // Workspace settings page.
         let controls = self.slots[ix]
             .clone()
-            .filter(|_| !self.config.chrome.hide_controls)
+            .filter(|_| !self.config.chrome.controls_hidden())
             .map(|child| {
                 composite::corner_controls().child(composite::slot_button(
                     ("group-slot", ix),
@@ -225,14 +225,16 @@ impl GroupPanel {
 
         // The split draws at the panel's own frame border width, so a
         // bordered group divides in the same stroke (and the same border
-        // role color, which the panel's theme can recolor). Borderless
-        // groups keep the 1px hairline.
+        // role color, which the panel's theme can recolor). A border
+        // that differs side to side lends its widest, since the divider
+        // is one line and has to pick. Borderless groups keep the 1px
+        // hairline.
         let split = self
             .config
             .chrome
             .theme
-            .border
-            .unwrap_or_else(|| rox_core::settings::app_frame().border)
+            .border_sides(rox_core::settings::app_frame().border)
+            .max()
             .clamp(1.0, DIVIDER_W);
         let divider_line = div()
             .flex_none()
@@ -255,7 +257,7 @@ impl GroupPanel {
                 Axis::Vertical => d.h(px(split)).w_full(),
             }));
 
-        let parent = (!self.config.chrome.hide_controls)
+        let parent = (!self.config.chrome.controls_hidden())
             .then(|| composite::parent_controls().child(composite::parent_button("Group", cx)));
         div()
             .size_full()

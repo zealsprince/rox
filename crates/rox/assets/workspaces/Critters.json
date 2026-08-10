@@ -22,8 +22,9 @@
                         "panel": {
                           "locked": true,
                           "anchor": true,
-                          "max_width": 24.0,
+                          "max_width": 96.0,
                           "max_height": 24.0,
+                          "min_width": 96.0,
                           "align": "left"
                         }
                       }
@@ -105,8 +106,8 @@
               "info": {
                 "stack": {
                   "sizes": [
-                    28.0,
-                    936.0,
+                    96.0,
+                    868.0,
                     96.0
                   ],
                   "axis": 0

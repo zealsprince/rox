@@ -156,6 +156,7 @@ fn native_label(item: MenuItem, playing: bool) -> String {
         // actually does to the thing it names.
         MenuAction::ToggleMenubar => showing(!settings::hide_menubar(), "Menubar"),
         MenuAction::ToggleDecorations => showing(settings::os_decorations(), "OS Decorations"),
+        MenuAction::ToggleDesignMode => switching(settings::design_mode(), "Design Mode"),
         MenuAction::ToggleArtTheming => switching(palette::art_theming(), "Song Theming"),
         MenuAction::TogglePostShader => {
             switching(crate::workspace::post_shader_on(), "Overlay Shader")

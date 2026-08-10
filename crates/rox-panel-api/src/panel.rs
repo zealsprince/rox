@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actions::{SeekBackward, SeekForward, TogglePlayback};
 use crate::query::shared_query::SharedQuery;
+use rox_core::settings;
 use rox_design::assets::icons;
 use rox_design::palette::PanelTheme;
 use rox_design::{palette, tokens};
@@ -342,8 +343,16 @@ pub fn popout_item<P: Panel>(
         if !dock_back_offered(window) {
             return menu;
         }
+        // Kept out of design mode, unlike the two rows below: a panel in a
+        // window of its own has no other menu and no menubar behind it, so
+        // dropping this would leave it with no way back into the layout at
+        // all. It's the exit from a stranded window rather than a way to
+        // rearrange a finished one.
         return dock_back_item(menu, Arc::new(panel.clone()), state);
     };
+    if !settings::design_mode() {
+        return menu;
+    }
     let pop_panel = panel.clone();
     let pop_tabs = tab_panel;
     let menu = menu.item(
@@ -398,7 +407,7 @@ pub fn duplicate_item<P: Panel>(
     tab_panel: Option<WeakEntity<TabPanel>>,
     make: impl Fn(&Entity<P>, &mut Window, &mut Context<P>) -> P + 'static,
 ) -> PopupMenu {
-    if tab_panel.is_none() {
+    if tab_panel.is_none() || !settings::design_mode() {
         return menu;
     }
     let weak = panel.downgrade();
@@ -810,6 +819,17 @@ pub struct PanelChrome {
     pub shader: Option<PanelShader>,
 }
 
+impl PanelChrome {
+    /// Whether the panel's in-place editing controls stay off this frame:
+    /// its own [`hide_controls`](Self::hide_controls), or design mode being
+    /// off, which says the same thing about every panel at once. The one
+    /// place that decides, so a panel only ever asks this rather than
+    /// reading the field.
+    pub fn controls_hidden(&self) -> bool {
+        self.hide_controls || !settings::design_mode()
+    }
+}
+
 /// The panel's size cap as a [`Size`], reading the chrome's optional
 /// width/height limits over the panel's own minimum, so a cap can never
 /// drop below what the panel needs. An unset axis stays unbounded. Every
@@ -1069,7 +1089,8 @@ fn arm_window_move(root: Div) -> Div {
 /// div chain is built); the wrapper element re-enters it for layout,
 /// prepaint, and paint, which is when hover styles and canvas paint
 /// closures actually read the palette. The theme's frame knobs apply
-/// here too: padding, rounding, and border style the body's root div -
+/// here too, each of them side by side: padding, rounding, and border
+/// style the body's root div -
 /// the radius must land on the body's own background quad, since gpui
 /// content masks stay rectangular and a wrapper's corners would be
 /// painted over, and padding on the body keeps the gap in the panel's
@@ -1085,14 +1106,15 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
     // an explicit zero over a rounded app default squares this one
     // panel back off, the same as rounding's absence.
     let app = rox_core::settings::app_frame();
-    let margin = theme.margin.unwrap_or(app.margin);
+    // Every knob comes through `positive`: the app frame is clamped on
+    // load, but a panel's own knobs ride a layout dump nobody sanitizes,
+    // and a negative inset here would push the panel out of its cell.
+    let margin = theme.margin.unwrap_or(app.margin).positive();
     let frame = {
-        let padding = theme.padding.unwrap_or(app.padding);
+        let padding = theme.padding.unwrap_or(app.padding).positive();
         let rounding = theme.rounding.unwrap_or(app.rounding);
-        let border = theme.border.unwrap_or(app.border);
-        // The edge mask is the panel's alone; there is no app-wide one to
-        // inherit, so unset just means all four sides.
-        let edges = theme.border_edges.unwrap_or(palette::BorderEdges::ALL);
+        // Per side, an older config's edge mask folded in on the way.
+        let border = theme.border_sides(app.border).positive();
         let font = theme.font.clone();
         move || {
             let mut body = build();
@@ -1101,34 +1123,41 @@ pub fn themed(chrome: &PanelChrome, build: impl FnOnce() -> Div) -> AnyElement {
             if let Some(font) = font {
                 body = body.font_family(font);
             }
-            if padding > 0.0 {
-                body = body.p(px(padding));
+            if padding.any() {
+                body = body
+                    .pt(px(padding.top))
+                    .pr(px(padding.right))
+                    .pb(px(padding.bottom))
+                    .pl(px(padding.left));
             }
             if rounding > 0.0 {
                 body = body.rounded(px(rounding));
             }
-            if border > 0.0 && edges.any() {
-                let width: AbsoluteLength = px(border).into();
+            if border.any() {
                 let widths = &mut body.style().border_widths;
-                if edges.top {
-                    widths.top = Some(width);
-                }
-                if edges.right {
-                    widths.right = Some(width);
-                }
-                if edges.bottom {
-                    widths.bottom = Some(width);
-                }
-                if edges.left {
-                    widths.left = Some(width);
+                for (side, width) in [
+                    (&mut widths.top, border.top),
+                    (&mut widths.right, border.right),
+                    (&mut widths.bottom, border.bottom),
+                    (&mut widths.left, border.left),
+                ] {
+                    if width > 0.0 {
+                        *side = Some(AbsoluteLength::from(px(width)));
+                    }
                 }
                 body = body.border_color(palette::border());
             }
             // The outer element takes layout and, when the panel is an
             // anchor, the window-move drag. A margin wraps the body in an
             // outer cell; without one the body itself is the root.
-            let mut root = if margin > 0.0 {
-                div().size_full().p(px(margin)).child(body)
+            let mut root = if margin.any() {
+                div()
+                    .size_full()
+                    .pt(px(margin.top))
+                    .pr(px(margin.right))
+                    .pb(px(margin.bottom))
+                    .pl(px(margin.left))
+                    .child(body)
             } else {
                 body
             };
@@ -1515,6 +1544,7 @@ mod chrome_tests {
                 from: 0.0,
                 to: 1.0,
             }],
+            manual: vec![(4, 0.25)],
             run_when_idle: true,
         });
         let config = StubConfig { tile: 96.0, chrome };
@@ -1533,6 +1563,9 @@ mod chrome_tests {
         assert!(shader.source.contains("fs_user"));
         assert_eq!(shader.routes.len(), 1);
         assert_eq!(shader.routes[0].target, "slot1");
+        // The hand-set knobs ride the dump beside the routes, so a panel
+        // wearing a tuned shader comes back tuned.
+        assert_eq!(shader::manual_value(&shader.manual, 4), Some(0.25));
     }
 
     #[test]

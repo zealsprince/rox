@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use gpui::{App, Bounds, EntityId, Global, Pixels, UserShaderId, WeakEntity, Window, WindowId};
 use serde::{Deserialize, Serialize};
 
+use rox_design::palette::Sides;
 use rox_viz::signal::{Route, SignalHub};
 
 use crate::signal_ui::{self, RouteTargets};
@@ -152,6 +153,13 @@ pub struct PanelShader {
     pub path: Option<PathBuf>,
     /// The signal routes filling the shader's slots.
     pub routes: Vec<Route>,
+    /// Hand-set slot values, from the Shader page's slot rows: what a slot
+    /// reads with no route feeding it, which is how a shader's named
+    /// parameters get tweaked without a signal in sight. A route on the
+    /// same slot wins while it's there; the hand-set value comes back when
+    /// it goes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub manual: Vec<(u8, f32)>,
     /// Keep asking for frames with the hub silent. Off, a shader over a
     /// paused player freezes where it stands and the panel costs nothing.
     pub run_when_idle: bool,
@@ -165,6 +173,7 @@ impl Default for PanelShader {
             name: None,
             path: None,
             routes: Vec::new(),
+            manual: Vec::new(),
             run_when_idle: false,
         }
     }
@@ -846,6 +855,44 @@ impl SlotTargets {
     }
 }
 
+/// The WGSL accessor a slot arrives on, so a settings page can say where to
+/// read it rather than leaving the mapping to be counted out by hand.
+pub fn slot_accessor(slot: usize) -> String {
+    let lane = ["x", "y", "z", "w"][slot % 4];
+    format!("params.signals[{}].{lane}", slot / 4)
+}
+
+/// A slot's hand-set value, if one was set. Every surface reads its slots
+/// through the resolver, which sees these as seeds, so this is for the
+/// tests and for anything asking about one slot alone.
+pub fn manual_value(manual: &[(u8, f32)], slot: usize) -> Option<f32> {
+    manual
+        .iter()
+        .find(|(at, _)| *at as usize == slot)
+        .map(|(_, value)| *value)
+}
+
+/// Set or replace a slot's hand-set value, clamped to the 0..1 every slot
+/// carries.
+pub fn set_manual_value(manual: &mut Vec<(u8, f32)>, slot: usize, value: f32) {
+    let value = value.clamp(0.0, 1.0);
+    match manual.iter_mut().find(|(at, _)| *at as usize == slot) {
+        Some(entry) => entry.1 = value,
+        None => manual.push((slot as u8, value)),
+    }
+}
+
+/// Lay the hand-set values into the slots before the routes resolve over
+/// them: a route wins while it's there, and the hand-set value holds the
+/// slot when it isn't. Every shader surface starts a frame this way.
+pub fn seed_manual(targets: &mut SlotTargets, manual: &[(u8, f32)]) {
+    for (slot, value) in manual {
+        if let Some(entry) = targets.slots.get_mut(*slot as usize) {
+            *entry = value.clamp(0.0, 1.0);
+        }
+    }
+}
+
 impl RouteTargets for SlotTargets {
     fn targets(&self) -> Vec<(String, String)> {
         (0..SLOTS)
@@ -1176,10 +1223,12 @@ pub struct PanelSurface {
     /// The file the source was last read from, watched for edits.
     path: Option<PathBuf>,
     routes: Vec<Route>,
+    /// The hand-set slot values, seeded under the routes each frame.
+    manual: Vec<(u8, f32)>,
     run_when_idle: bool,
-    /// The chrome margin, so the shader covers the panel's body rect and
-    /// leaves the gutter the backdrop shows through alone.
-    inset: Pixels,
+    /// The chrome margin, side by side, so the shader covers the panel's
+    /// body rect and leaves the gutter the backdrop shows through alone.
+    inset: Sides,
 }
 
 impl PanelSurface {
@@ -1195,7 +1244,7 @@ impl PanelSurface {
     /// lookup off the frame loop and puts the pool's copy through the same
     /// approval gate as an inline one. A name the pool doesn't hold builds
     /// no surface at all.
-    pub fn build(chrome: &PanelChrome, margin: f32) -> Option<PanelSurface> {
+    pub fn build(chrome: &PanelChrome, margin: Sides) -> Option<PanelSurface> {
         let shader = chrome.shader.as_ref().filter(|s| s.runnable())?;
         let source = resolve_source(shader.name.as_deref(), &shader.source)?;
         if !approved(&source) {
@@ -1211,8 +1260,9 @@ impl PanelSurface {
             // entry keeps its own bookmark for that.
             path: shader.name.is_none().then(|| shader.path.clone()).flatten(),
             routes: shader.routes.clone(),
+            manual: shader.manual.clone(),
             run_when_idle: shader.run_when_idle,
-            inset: gpui::px(margin.max(0.0)),
+            inset: margin,
         })
     }
 
@@ -1381,7 +1431,11 @@ impl PanelSurface {
     /// the audio; it's deduped inside the hub, so several shaded panels
     /// cost one.
     fn signals(&self, window: &Window, cx: &App) -> ([f32; SLOTS], bool) {
+        // The hand-set values first, routes written over them: a slot
+        // nothing routes holds the knob the Shader page set, and a routed
+        // one is the route's outright.
         let mut targets = SlotTargets::default();
+        seed_manual(&mut targets, &self.manual);
         let Some((hub, player)) = window_feed(window, cx) else {
             return (targets.slots, false);
         };
@@ -1395,19 +1449,17 @@ impl PanelSurface {
 }
 
 /// The panel's body rect: the wrapper's bounds pulled in by the chrome
-/// margin, so the shader covers what the panel draws and not the gap
-/// around it.
-fn body_rect(bounds: Bounds<Pixels>, inset: Pixels) -> Bounds<Pixels> {
-    let inset = inset
-        .min(bounds.size.width / 2.0)
-        .min(bounds.size.height / 2.0)
-        .max(gpui::px(0.));
+/// margin, side by side, so the shader covers what the panel draws and
+/// not the gap around it. Each inset stops at half its axis, so a margin
+/// wider than the panel closes the rect instead of turning it inside out.
+fn body_rect(bounds: Bounds<Pixels>, inset: Sides) -> Bounds<Pixels> {
+    let hold = |value: f32, axis: Pixels| gpui::px(value.max(0.0)).min(axis / 2.0);
+    let (width, height) = (bounds.size.width, bounds.size.height);
+    let (top, bottom) = (hold(inset.top, height), hold(inset.bottom, height));
+    let (left, right) = (hold(inset.left, width), hold(inset.right, width));
     Bounds {
-        origin: bounds.origin + gpui::point(inset, inset),
-        size: gpui::size(
-            bounds.size.width - inset * 2.0,
-            bounds.size.height - inset * 2.0,
-        ),
+        origin: bounds.origin + gpui::point(left, top),
+        size: gpui::size(width - left - right, height - top - bottom),
     }
 }
 
@@ -2129,13 +2181,22 @@ mod tests {
             origin: gpui::point(gpui::px(10.), gpui::px(20.)),
             size: gpui::size(gpui::px(100.), gpui::px(50.)),
         };
-        let inner = body_rect(bounds, gpui::px(5.));
+        let inner = body_rect(bounds, Sides::all(5.0));
         assert_eq!(inner.origin.x, gpui::px(15.));
         assert_eq!(inner.origin.y, gpui::px(25.));
         assert_eq!(inner.size.width, gpui::px(90.));
         assert_eq!(inner.size.height, gpui::px(40.));
+        // Each side pulls in on its own, and only its own edge moves.
+        let lopsided = body_rect(
+            bounds,
+            Sides::ZERO.with(rox_design::palette::Side::Left, 8.0),
+        );
+        assert_eq!(lopsided.origin.x, gpui::px(18.));
+        assert_eq!(lopsided.origin.y, gpui::px(20.));
+        assert_eq!(lopsided.size.width, gpui::px(92.));
+        assert_eq!(lopsided.size.height, gpui::px(50.));
         // A margin wider than the panel can't invert the rect.
-        let squeezed = body_rect(bounds, gpui::px(400.));
+        let squeezed = body_rect(bounds, Sides::all(400.0));
         assert!(squeezed.size.width >= gpui::px(0.));
         assert!(squeezed.size.height >= gpui::px(0.));
     }

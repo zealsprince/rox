@@ -1,0 +1,110 @@
+--- a/src/platform/windows/window.rs
++++ b/src/platform/windows/window.rs
+@@ -76,6 +76,11 @@
+     // wants. Only read while the caption is hidden; with the OS drawing the
+     // frame it handles the hit test itself.
+     pub(crate) resize_border: Cell<bool>,
++    // rox patch: what the app last asked the window background to look like.
++    // gpui 0.2.2 handed this straight to the DWM accent policy and kept
++    // nothing, but the frame is drawn into a DirectComposition surface whose
++    // alpha the desktop honours, so the renderer has to know too.
++    pub(crate) background_appearance: Cell<WindowBackgroundAppearance>,
+     pub(crate) is_movable: bool,
+     pub(crate) executor: ForegroundExecutor,
+     pub(crate) windows_version: WindowsVersion,
+@@ -234,6 +239,7 @@
+             handle: context.handle,
+             hide_title_bar: Cell::new(context.hide_title_bar),
+             resize_border: Cell::new(true),
++            background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
+             is_movable: context.is_movable,
+             executor: context.executor.clone(),
+             windows_version: context.windows_version,
+@@ -850,6 +856,9 @@
+ 
+     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
+         let hwnd = self.0.hwnd;
++        // rox patch: kept for the clear color in `draw`, since the accent
++        // policy below says nothing about the app's own pixels.
++        self.0.background_appearance.set(background_appearance);
+ 
+         match background_appearance {
+             WindowBackgroundAppearance::Opaque => {
+@@ -935,7 +944,25 @@
+     }
+ 
+     fn draw(&self, scene: &Scene) {
+-        self.0.state.borrow_mut().renderer.draw(scene).log_err();
++        // rox patch: the frame goes into a DirectComposition surface, so the
++        // desktop shows through wherever the app painted below full alpha -
++        // there is no opaque backing the way an ordinary HWND has. Wayland
++        // hits the same thing and answers it by promising the compositor an
++        // opaque region for a server-decorated window with an opaque
++        // background, which drops the surface's alpha; the same two
++        // conditions pick the opaque clear here, so a translucent surface
++        // lands on black instead of the desktop and the two platforms agree
++        // pixel for pixel. A window drawing its own frame (client
++        // decorations) keeps the transparent clear: it needs it for the
++        // rounded corners and the shadow.
++        let opaque = self.0.background_appearance.get() == WindowBackgroundAppearance::Opaque
++            && !self.0.hide_title_bar.get();
++        self.0
++            .state
++            .borrow_mut()
++            .renderer
++            .draw(scene, opaque)
++            .log_err();
+     }
+ 
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+--- a/src/platform/windows/directx_renderer.rs
++++ b/src/platform/windows/directx_renderer.rs
+@@ -193,7 +193,7 @@
+         self.atlas.clone()
+     }
+ 
+-    fn pre_draw(&self) -> Result<()> {
++    fn pre_draw(&self, opaque: bool) -> Result<()> {
+         update_buffer(
+             &self.devices.device_context,
+             self.globals.global_params_buffer[0].as_ref().unwrap(),
+@@ -224,10 +224,20 @@
+                 pad: 0,
+             }],
+         )?;
++        // rox patch: an opaque window starts the frame on black at full alpha,
++        // so what the app paints translucent blends down to black the way it
++        // would on a composited surface the desktop treats as opaque. The
++        // blend states leave the destination alpha at one from there. A
++        // transparent window keeps the old clear, alpha and all.
++        let clear = if opaque {
++            [0.0, 0.0, 0.0, 1.0]
++        } else {
++            [0.0; 4]
++        };
+         unsafe {
+             self.devices
+                 .device_context
+-                .ClearRenderTargetView(self.main_target_view[0].as_ref().unwrap(), &[0.0; 4]);
++                .ClearRenderTargetView(self.main_target_view[0].as_ref().unwrap(), &clear);
+             self.devices
+                 .device_context
+                 .OMSetRenderTargets(Some(&self.main_target_view), None);
+@@ -328,7 +338,7 @@
+         Ok(())
+     }
+ 
+-    pub(crate) fn draw(&mut self, scene: &Scene) -> Result<()> {
++    pub(crate) fn draw(&mut self, scene: &Scene, opaque: bool) -> Result<()> {
+         // rox patch: a post shader wants the composed frame whole and a region
+         // entry wants rects of it read back, so either one moves the main pass
+         // into an offscreen scene target. With neither, this is the swapchain
+@@ -348,7 +358,7 @@
+         };
+         let offscreen = needs_scene_target && self.shaders.scene.is_some();
+ 
+-        self.pre_draw()?;
++        self.pre_draw(opaque)?;
+         // `Scene::finish` sorted the entries by paint order, which is the order
+         // they run in. Splitting the main pass at the overlay boundary costs an
+         // extra pass, so only do it when there's a region sequence to slot in.

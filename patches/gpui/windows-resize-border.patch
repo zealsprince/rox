@@ -1,0 +1,84 @@
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -558,6 +558,11 @@
+         WindowControls::default()
+     }
+     fn set_client_inset(&self, _inset: Pixels) {}
++
++    // rox patch: Windows only. Whether the frame's edges answer the hit test
++    // with the resize codes, which is what puts the resize cursor under the
++    // pointer on a window whose caption is hidden.
++    fn set_resize_border(&self, _enabled: bool) {}
+     fn gpu_specs(&self) -> Option<GpuSpecs>;
+ 
+     // User shaders, the region pass and the whole-window post-process pass.
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -1772,6 +1772,13 @@
+         self.platform_window.set_client_inset(inset);
+     }
+ 
++    /// Whether the window's edges resize it by drag (Windows only, and only
++    /// while the OS caption is hidden). Off keeps the frame, its shadow and
++    /// the snap behaviour, and drops the resize cursor and the edge drag.
++    pub fn set_resize_border(&self, enabled: bool) {
++        self.platform_window.set_resize_border(enabled);
++    }
++
+     /// Returns the client_inset value by [`Self::set_client_inset`].
+     pub fn client_inset(&self) -> Option<Pixels> {
+         self.client_inset
+--- a/src/platform/windows/window.rs
++++ b/src/platform/windows/window.rs
+@@ -70,6 +70,12 @@
+     // rox patch: Cell so request_decorations can flip the caption at runtime;
+     // gpui 0.2.2 fixed it at creation and shipped no Windows toggle.
+     pub(crate) hide_title_bar: Cell<bool>,
++    // rox patch: whether the frame's edges answer WM_NCHITTEST with the resize
++    // codes. Off leaves the window sized only from outside (snap, Win+arrow,
++    // the system menu, SetWindowPos), which is what a fully borderless window
++    // wants. Only read while the caption is hidden; with the OS drawing the
++    // frame it handles the hit test itself.
++    pub(crate) resize_border: Cell<bool>,
+     pub(crate) is_movable: bool,
+     pub(crate) executor: ForegroundExecutor,
+     pub(crate) windows_version: WindowsVersion,
+@@ -227,6 +233,7 @@
+             state,
+             handle: context.handle,
+             hide_title_bar: Cell::new(context.hide_title_bar),
++            resize_border: Cell::new(true),
+             is_movable: context.is_movable,
+             executor: context.executor.clone(),
+             windows_version: context.windows_version,
+@@ -798,6 +805,14 @@
+             .detach();
+     }
+ 
++    // rox patch: the borderless window keeps WS_THICKFRAME, so the DWM shadow,
++    // snap layouts and Win+arrow all still work, and only the edge hit test
++    // goes quiet. Nothing to invalidate: WM_NCHITTEST is asked fresh on every
++    // mouse move, so the cursor settles as soon as the pointer moves.
++    fn set_resize_border(&self, enabled: bool) {
++        self.0.resize_border.set(enabled);
++    }
++
+     fn start_window_move(&self) {
+         // gpui leaves this a no-op on Windows, so the app's drag grips never
+         // moved the window. Deferred to the executor: this runs inside the
+--- a/src/platform/windows/events.rs
++++ b/src/platform/windows/events.rs
+@@ -886,6 +886,13 @@
+             return None;
+         }
+ 
++        // rox patch: with the resize border off every point that isn't a
++        // window control is client area, so the frame's edges and the top
++        // strip below stop claiming the pointer and the cursor never flips.
++        if !self.resize_border.get() {
++            return Some(HTCLIENT as _);
++        }
++
+         // default handler for resize areas
+         let hit = unsafe { DefWindowProcW(handle, msg, wparam, lparam) };
+         if matches!(

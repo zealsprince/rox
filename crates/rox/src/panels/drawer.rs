@@ -700,7 +700,7 @@ impl DrawerPanel {
         // A layout that ships as finished furniture drops the builder's
         // buttons; its slots are still swapped from the tree on the
         // Workspace settings page.
-        if self.config.chrome.hide_controls {
+        if self.config.chrome.controls_hidden() {
             return root;
         }
 

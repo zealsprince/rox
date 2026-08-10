@@ -533,36 +533,41 @@ impl Palette {
 /// the app palette, never at the panel's own overrides, so there is
 /// nothing to recurse through. The frame knobs ride along: margin insets the panel
 /// from its cell, padding opens space inside its own surface, rounding
-/// and border shape its edge. They are geometry, not colors, so the
+/// and border shape its edge. Margin, padding, and border each carry a
+/// value per side, so a panel can sit tight against one edge and stand
+/// off another. They are geometry, not colors, so the
 /// themed wrapper applies them directly instead of going through the
 /// scope; the border draws in the border role's color, which the color
 /// grid already covers.
-#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize)]
 pub struct PanelTheme {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub colors: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_opacity: Option<f32>,
-    /// Space between the panel and its cell, in px; the backdrop shows
-    /// through the gap.
+    /// Space between the panel and its cell, per side in px; the backdrop
+    /// shows through the gap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub margin: Option<f32>,
-    /// Space inside the panel's edge, in px, kept in the panel's own
-    /// background; the content pulls in, the surface stays whole.
+    pub margin: Option<Sides>,
+    /// Space inside the panel's edge, per side in px, kept in the panel's
+    /// own background; the content pulls in, the surface stays whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub padding: Option<f32>,
+    pub padding: Option<Sides>,
     /// The panel's corner radius, in px.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rounding: Option<f32>,
-    /// A border around the panel, in px of width.
+    /// A border around the panel, per side in px of width. A side at zero
+    /// draws nothing, which is how a panel trims its border to one edge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub border: Option<f32>,
-    /// The sides the border draws on; unset draws all four. The mask
-    /// applies to whichever width wins, the panel's own or the app
-    /// default, so a panel can inherit the app border and still trim it
-    /// to one edge.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub border_edges: Option<BorderEdges>,
+    pub border: Option<Sides>,
+    /// The edge mask an older config trimmed its border with, folded over
+    /// whichever width wins - the panel's own or the app default - so a
+    /// panel that inherited the app border and cut a side keeps that look.
+    /// [`border_sides`](PanelTheme::border_sides) does the folding, and
+    /// touching the border in the settings window bakes it into the
+    /// per-side widths and clears this for good. [compat]
+    #[serde(skip_serializing)]
+    pub legacy_border_edges: Option<BorderEdges>,
     /// The panel's font family, overriding the app font just here. None
     /// follows the app font. A name that is not installed falls back at
     /// render, so a config moved between machines still shows.
@@ -577,7 +582,54 @@ pub struct PanelTheme {
     pub font_scale: Option<f32>,
 }
 
+/// The theme as a config file holds it. Hand-written on the reading side
+/// so the legacy border mask has somewhere to land; writing stays the
+/// derive on [`PanelTheme`] itself.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct PanelThemeRepr {
+    colors: BTreeMap<String, String>,
+    surface_opacity: Option<f32>,
+    margin: Option<Sides>,
+    padding: Option<Sides>,
+    rounding: Option<f32>,
+    border: Option<Sides>,
+    border_edges: Option<BorderEdges>,
+    font: Option<String>,
+    font_scale: Option<f32>,
+}
+
+impl<'de> Deserialize<'de> for PanelTheme {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<PanelTheme, D::Error> {
+        let repr = PanelThemeRepr::deserialize(deserializer)?;
+        Ok(PanelTheme {
+            colors: repr.colors,
+            surface_opacity: repr.surface_opacity,
+            margin: repr.margin,
+            padding: repr.padding,
+            rounding: repr.rounding,
+            border: repr.border,
+            // An all-on mask says nothing the widths don't, so it drops
+            // here instead of riding along as a no-op.
+            legacy_border_edges: repr.border_edges.filter(|edges| *edges != BorderEdges::ALL),
+            font: repr.font,
+            font_scale: repr.font_scale,
+        })
+    }
+}
+
 impl PanelTheme {
+    /// The border widths this panel actually draws, given the app-wide
+    /// default it falls back to: its own sides where it set them, with an
+    /// older config's edge mask folded over the result.
+    pub fn border_sides(&self, app: Sides) -> Sides {
+        let sides = self.border.unwrap_or(app);
+        match self.legacy_border_edges {
+            Some(edges) => sides.masked(edges),
+            None => sides,
+        }
+    }
+
     /// Whether the theme overrides nothing at all. Empty themes skip the
     /// scope entirely and serialize away, so an untouched panel's config
     /// stays what it was.
@@ -588,7 +640,7 @@ impl PanelTheme {
             && self.padding.is_none()
             && self.rounding.is_none()
             && self.border.is_none()
-            && self.border_edges.is_none()
+            && self.legacy_border_edges.is_none()
             && self.font.is_none()
             && self.font_scale.is_none()
     }
@@ -674,18 +726,194 @@ fn reference_role(name: &str) -> Option<fn(&Palette) -> Rgba> {
         .map(|role| role.get)
 }
 
-/// One side of a panel border, the edge toggles' currency.
-#[derive(Clone, Copy, PartialEq)]
-pub enum BorderEdge {
+/// One side of a panel's frame, the per-side knobs' currency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
     Top,
     Right,
     Bottom,
     Left,
 }
 
-/// Which sides a panel's border draws on. A missing field reads as on,
-/// so a hand-edited config only has to list the edges it turns off; all
-/// four on is the same look as carrying no mask at all.
+impl Side {
+    /// The four sides clockwise from the top, the order CSS reads them in
+    /// and the order the editors stack them.
+    pub const ALL: [Side; 4] = [Side::Top, Side::Right, Side::Bottom, Side::Left];
+}
+
+/// A frame knob's four sides, in px. Serializes as a bare number while
+/// every side matches, which is what a knob that was never split looks
+/// like, so configs written before the split - and hand-edited ones that
+/// only want one value - read straight through. Once the sides differ it
+/// writes the object form.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Sides {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl Sides {
+    /// The knob off on every side.
+    pub const ZERO: Sides = Sides::all(0.0);
+
+    /// One value on all four sides, the shape a linked knob holds.
+    pub const fn all(value: f32) -> Sides {
+        Sides {
+            top: value,
+            right: value,
+            bottom: value,
+            left: value,
+        }
+    }
+
+    /// The single value behind all four sides, or None once they differ.
+    /// What the editors read to know whether a knob is linked, and what
+    /// the serializer writes when it's the whole story.
+    pub fn uniform(self) -> Option<f32> {
+        (self.top == self.right && self.right == self.bottom && self.bottom == self.left)
+            .then_some(self.top)
+    }
+
+    /// Whether the knob does anything at all; all zero draws nothing and
+    /// the render path skips it.
+    pub fn any(self) -> bool {
+        self.top > 0.0 || self.right > 0.0 || self.bottom > 0.0 || self.left > 0.0
+    }
+
+    /// The widest side, the single number a caller that can only take one
+    /// has to work with.
+    pub fn max(self) -> f32 {
+        self.top.max(self.right).max(self.bottom).max(self.left)
+    }
+
+    /// One side's value.
+    pub fn get(self, side: Side) -> f32 {
+        match side {
+            Side::Top => self.top,
+            Side::Right => self.right,
+            Side::Bottom => self.bottom,
+            Side::Left => self.left,
+        }
+    }
+
+    /// The knob with one side set.
+    pub fn with(mut self, side: Side, value: f32) -> Sides {
+        match side {
+            Side::Top => self.top = value,
+            Side::Right => self.right = value,
+            Side::Bottom => self.bottom = value,
+            Side::Left => self.left = value,
+        }
+        self
+    }
+
+    /// Every side floored at zero and a non-finite one dropped, what the
+    /// render path applies: a hand-edited config can hold anything, and a
+    /// negative inset would push a panel out of its own cell.
+    pub fn positive(self) -> Sides {
+        self.clamped(f32::INFINITY)
+    }
+
+    /// The knob after one edit: the named side set, or every side at once
+    /// when the linked strip is what moved.
+    pub fn edited(self, side: Option<Side>, value: f32) -> Sides {
+        match side {
+            Some(side) => self.with(side, value),
+            None => Sides::all(value),
+        }
+    }
+
+    /// The knob linked back up: the widest side on all four, so relinking
+    /// keeps what's on screen rather than dropping to whichever side the
+    /// collapse happened to read.
+    pub fn linked(self) -> Sides {
+        Sides::all(self.max())
+    }
+
+    /// Every side held to the knob's ceiling, a non-finite one reset to
+    /// zero, for a hand-edited file.
+    pub fn clamped(self, max: f32) -> Sides {
+        let hold = |value: f32| {
+            if value.is_finite() {
+                value.clamp(0.0, max)
+            } else {
+                0.0
+            }
+        };
+        Sides {
+            top: hold(self.top),
+            right: hold(self.right),
+            bottom: hold(self.bottom),
+            left: hold(self.left),
+        }
+    }
+
+    /// The widths a legacy edge mask leaves behind: the sides it turned
+    /// off drop to zero, the rest keep their width. The fold that carries
+    /// pre-per-side border configs forward.
+    pub fn masked(self, edges: BorderEdges) -> Sides {
+        Sides {
+            top: if edges.top { self.top } else { 0.0 },
+            right: if edges.right { self.right } else { 0.0 },
+            bottom: if edges.bottom { self.bottom } else { 0.0 },
+            left: if edges.left { self.left } else { 0.0 },
+        }
+    }
+}
+
+/// The object form on the wire, and the deserializer's other arm.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct SidesRepr {
+    top: f32,
+    right: f32,
+    bottom: f32,
+    left: f32,
+}
+
+/// A number for all four sides or an object naming them, the two shapes a
+/// config can carry.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SidesIn {
+    All(f32),
+    Each(SidesRepr),
+}
+
+impl Serialize for Sides {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.uniform() {
+            Some(value) => value.serialize(serializer),
+            None => SidesRepr {
+                top: self.top,
+                right: self.right,
+                bottom: self.bottom,
+                left: self.left,
+            }
+            .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Sides {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Sides, D::Error> {
+        Ok(match SidesIn::deserialize(deserializer)? {
+            SidesIn::All(value) => Sides::all(value),
+            SidesIn::Each(each) => Sides {
+                top: each.top,
+                right: each.right,
+                bottom: each.bottom,
+                left: each.left,
+            },
+        })
+    }
+}
+
+/// Which sides a panel's border drew on, back when the width was one
+/// number for all four. Read from old configs and folded onto the
+/// per-side widths; nothing writes it any more. [compat]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BorderEdges {
     #[serde(default = "edge_on")]
@@ -703,40 +931,13 @@ fn edge_on() -> bool {
 }
 
 impl BorderEdges {
-    /// Every side on, the look an unmasked border draws.
+    /// Every side on, the look an unmasked border drew.
     pub const ALL: BorderEdges = BorderEdges {
         top: true,
         right: true,
         bottom: true,
         left: true,
     };
-
-    /// Whether any side draws at all; a mask with none skips the border
-    /// entirely.
-    pub fn any(self) -> bool {
-        self.top || self.right || self.bottom || self.left
-    }
-
-    /// One side's state.
-    pub fn get(self, edge: BorderEdge) -> bool {
-        match edge {
-            BorderEdge::Top => self.top,
-            BorderEdge::Right => self.right,
-            BorderEdge::Bottom => self.bottom,
-            BorderEdge::Left => self.left,
-        }
-    }
-
-    /// The mask with one side flipped.
-    pub fn toggled(mut self, edge: BorderEdge) -> BorderEdges {
-        match edge {
-            BorderEdge::Top => self.top = !self.top,
-            BorderEdge::Right => self.right = !self.right,
-            BorderEdge::Bottom => self.bottom = !self.bottom,
-            BorderEdge::Left => self.left = !self.left,
-        }
-        self
-    }
 }
 
 /// One override as the read path holds it: a literal reads as written
@@ -1822,30 +2023,61 @@ mod tests {
         }
     }
 
-    /// A hand-edited edge mask only names the sides it turns off; the
-    /// missing ones read as on, and a theme without a mask draws all
-    /// four. The settings window stores all-on as no mask, so the
-    /// normalized form must roundtrip too.
+    /// A knob written as one number covers all four sides, and one
+    /// written per side keeps them apart. Uniform knobs go back out as a
+    /// bare number, so a config that never split one doesn't grow an
+    /// object on the next save.
     #[test]
-    fn border_edges_parse() {
+    fn sides_parse() {
         let theme: PanelTheme =
+            serde_json::from_str(r#"{"margin": 4.0, "padding": {"top": 2.0, "left": 8.0}}"#)
+                .unwrap();
+        assert_eq!(theme.margin, Some(Sides::all(4.0)));
+        let padding = theme.padding.unwrap();
+        assert_eq!((padding.top, padding.left), (2.0, 8.0));
+        // The sides an object leaves out are off, not inherited: the knob
+        // is overridden whole or not at all.
+        assert_eq!((padding.right, padding.bottom), (0.0, 0.0));
+
+        let json = serde_json::to_string(&theme).unwrap();
+        assert!(json.contains(r#""margin":4.0"#), "{json}");
+        assert!(json.contains(r#""padding":{"#), "{json}");
+        let back: PanelTheme = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.margin, theme.margin);
+        assert_eq!(back.padding, theme.padding);
+    }
+
+    /// An older config trimmed its border with an edge mask beside a
+    /// single width, including one it inherited from the app. Both read
+    /// back as per-side widths, and the mask never goes out again.
+    #[test]
+    fn legacy_border_edges_fold() {
+        let own: PanelTheme =
             serde_json::from_str(r#"{"border": 2.0, "border_edges": {"top": false}}"#).unwrap();
-        let edges = theme.border_edges.unwrap();
-        assert!(!edges.top && edges.right && edges.bottom && edges.left);
-        assert!(edges.any());
-
-        let bare: PanelTheme = serde_json::from_str(r#"{"border": 2.0}"#).unwrap();
-        assert!(bare.border_edges.is_none());
-
-        let back: PanelTheme =
-            serde_json::from_str(&serde_json::to_string(&theme).unwrap()).unwrap();
-        assert_eq!(back.border_edges, theme.border_edges);
+        let sides = own.border_sides(Sides::all(1.0));
         assert_eq!(
-            BorderEdges::ALL
-                .toggled(BorderEdge::Top)
-                .toggled(BorderEdge::Top),
-            BorderEdges::ALL
+            (sides.top, sides.right, sides.bottom, sides.left),
+            (0.0, 2.0, 2.0, 2.0)
         );
+
+        // No width of its own: the mask still has to cut the app's.
+        let inherited: PanelTheme =
+            serde_json::from_str(r#"{"border_edges": {"top": false, "right": false}}"#).unwrap();
+        let sides = inherited.border_sides(Sides::all(1.0));
+        assert_eq!(
+            (sides.top, sides.right, sides.bottom, sides.left),
+            (0.0, 0.0, 1.0, 1.0)
+        );
+
+        // All four on says nothing the widths don't, so it drops on read.
+        let unmasked: PanelTheme = serde_json::from_str(
+            r#"{"border": 2.0, "border_edges": {"top": true, "right": true, "bottom": true, "left": true}}"#,
+        )
+        .unwrap();
+        assert!(unmasked.legacy_border_edges.is_none());
+
+        let json = serde_json::to_string(&own).unwrap();
+        assert!(!json.contains("border_edges"), "{json}");
     }
 
     /// A seed with only a primary color, at a cover lightness that keeps

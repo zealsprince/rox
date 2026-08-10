@@ -13,10 +13,10 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    actions, deferred, div, overlay_phase, prelude::*, px, svg, AnyElement, AnyWindowHandle, App,
-    Axis, Context, DismissEvent, Div, Entity, ExternalPaths, FocusHandle, Focusable as _,
-    FontFeatures, Global, KeyBinding, KeyDownEvent, MouseButton, PathPromptOptions, SharedString,
-    Subscription, Task, WeakEntity, Window, WindowBounds,
+    actions, canvas, deferred, div, overlay_phase, prelude::*, px, svg, AnyElement,
+    AnyWindowHandle, App, Axis, Bounds, Context, DismissEvent, Div, Entity, ExternalPaths,
+    FocusHandle, Focusable as _, FontFeatures, Global, KeyDownEvent, MouseButton,
+    PathPromptOptions, Pixels, SharedString, Subscription, Task, WeakEntity, Window, WindowBounds,
 };
 use rox_dock::{
     register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo, PanelView,
@@ -66,7 +66,7 @@ use rox_panels::genre_grid::{GenreGridConfig, GenreGridPanel};
 use rox_panels::grid::{GridConfig, GridPanel};
 use rox_panels::history::HistoryPanel;
 use rox_panels::library::{LibraryConfig, LibraryPanel};
-use rox_panels::lyrics::{LyricsPanel, StampLine};
+use rox_panels::lyrics::LyricsPanel;
 use rox_panels::metadata::MetadataPanel;
 use rox_panels::output::OutputPanel;
 use rox_panels::particles::ParticlesPanel;
@@ -142,6 +142,27 @@ pub(crate) fn apply_decorations(cx: &mut App) {
         // otherwise.
         for window in cx.windows() {
             window.update(cx, |_, window, _| window.refresh()).ok();
+        }
+    });
+}
+
+/// Push the live resize-border flag at every workspace window, the
+/// decorations apply's twin. A no-op off Windows, where gpui leaves the
+/// call unimplemented. Deferred for the same reason: the Window menu runs
+/// inside one of the windows this walks.
+pub(crate) fn apply_resize_border(cx: &mut App) {
+    cx.defer(|cx| {
+        let on = settings::resize_border();
+        let open: Vec<AnyWindowHandle> = cx
+            .default_global::<WorkspaceWindows>()
+            .open
+            .iter()
+            .map(|w| w.handle)
+            .collect();
+        for handle in open {
+            handle
+                .update(cx, |_, window, _| window.set_resize_border(on))
+                .ok();
         }
     });
 }
@@ -981,107 +1002,10 @@ actions!(
     ]
 );
 
-/// Bindings match key contexts along the focus path, so this scope holds
-/// anywhere inside a workspace window except while the library search box
-/// is focused: there space and arrows keep typing into the query. Bindings
-/// win over key listeners, the exclusion is what hands the keys back.
-const PLAYBACK_KEY_SCOPE: Option<&str> = Some("Workspace && !SearchInput");
-
-/// App-level key bindings; call once at startup.
+/// The action handlers that live above every window; call once at
+/// startup. The chords that reach them are the keymap module's, built
+/// from the settings file rather than written out here.
 pub fn init(cx: &mut App) {
-    // Quit binds unscoped so it fires in every window, popped-out panels
-    // and the search box included. The macOS system menu is not set, so
-    // Cmd+Q only exists through this binding.
-    let quit_keys = if cfg!(target_os = "macos") {
-        "cmd-q"
-    } else {
-        "alt-f4"
-    };
-    // Preferences shortcut follows the platform: Cmd+, on macOS, Ctrl+,
-    // elsewhere. Ctrl+I is a second binding on both. These carry modifiers,
-    // so they stay unscoped past the search box without stealing typing.
-    let settings_keys = if cfg!(target_os = "macos") {
-        "cmd-,"
-    } else {
-        "ctrl-,"
-    };
-    // The quick-play modal answers both the palette chord and the find
-    // chord; either habit lands in the same search.
-    let (quick_play_p, quick_play_f) = if cfg!(target_os = "macos") {
-        ("cmd-p", "cmd-f")
-    } else {
-        ("ctrl-p", "ctrl-f")
-    };
-    // Stats takes the shifted S so it stays clear of the settings and
-    // quick-play chords.
-    let stats_keys = if cfg!(target_os = "macos") {
-        "cmd-shift-s"
-    } else {
-        "ctrl-shift-s"
-    };
-    // Jump to the search box, the browser's address-bar chord. Modified, so
-    // it stays out of the way of typing in the box itself.
-    let focus_search_keys = if cfg!(target_os = "macos") {
-        "cmd-l"
-    } else {
-        "ctrl-l"
-    };
-    // Text-zoom chords, the browser's font shortcuts: Cmd/Ctrl with the +/-
-    // keys steps the app font size up and down, and 0 snaps it back to the
-    // stock size. The `=` key doubles for `+` so it works without reaching
-    // for shift, the way every browser binds it. Bound unscoped so they carry
-    // across every window - settings, about, popped-out panels - like Quit;
-    // the modifiers keep them out of the search boxes' typing.
-    let (zoom_in, zoom_in_shift, zoom_out, zoom_reset) = if cfg!(target_os = "macos") {
-        ("cmd-=", "cmd-+", "cmd--", "cmd-0")
-    } else {
-        ("ctrl-=", "ctrl-+", "ctrl--", "ctrl-0")
-    };
-    // Close-window chord: Cmd+W on macOS, Ctrl+W elsewhere. Unscoped like
-    // Quit so it fires in every window; the handler decides what a close
-    // means per window.
-    let close_window_keys = if cfg!(target_os = "macos") {
-        "cmd-w"
-    } else {
-        "ctrl-w"
-    };
-    // The screen shader kill switch, X as in fx. Unscoped on purpose: a
-    // hostile shader can bury every control this key would be reached by,
-    // so it has to fire from whichever window still has focus.
-    let post_shader_keys = if cfg!(target_os = "macos") {
-        "cmd-shift-x"
-    } else {
-        "ctrl-shift-x"
-    };
-    cx.bind_keys([
-        KeyBinding::new("space", TogglePlayback, PLAYBACK_KEY_SCOPE),
-        KeyBinding::new("left", SeekBackward, PLAYBACK_KEY_SCOPE),
-        KeyBinding::new("right", SeekForward, PLAYBACK_KEY_SCOPE),
-        KeyBinding::new(settings_keys, OpenSettings, Some("Workspace")),
-        KeyBinding::new("ctrl-i", OpenSettings, Some("Workspace")),
-        KeyBinding::new(stats_keys, OpenStats, Some("Workspace")),
-        KeyBinding::new(quick_play_p, OpenQuickPlay, Some("Workspace")),
-        KeyBinding::new(quick_play_f, OpenQuickPlay, Some("Workspace")),
-        KeyBinding::new(focus_search_keys, FocusSearch, Some("Workspace")),
-        KeyBinding::new(zoom_in, IncreaseFontSize, None),
-        KeyBinding::new(zoom_in_shift, IncreaseFontSize, None),
-        KeyBinding::new(zoom_out, DecreaseFontSize, None),
-        KeyBinding::new(zoom_reset, ResetFontSize, None),
-        // Fullscreens the last-clicked panel group over the whole dock
-        // area; the same chord or a plain escape backs out. Shift keeps
-        // it off the search boxes' bare-escape ladder. This is the dock's
-        // own action, so the zoom controls in every panel's menus render
-        // the chord next to "Zoom In".
-        KeyBinding::new("shift-escape", ToggleZoom, Some("Workspace")),
-        // Stamp the current time onto a lyric line, live only inside the
-        // lyrics editor (the LyricsEdit context). Shift+Enter is the same
-        // chord on every platform and the input leaves it unbound, unlike
-        // plain and secondary Enter which type a newline.
-        KeyBinding::new("shift-enter", StampLine, Some("LyricsEdit")),
-        KeyBinding::new(post_shader_keys, TogglePostShader, None),
-        KeyBinding::new(close_window_keys, CloseWindow, None),
-        KeyBinding::new(quit_keys, Quit, None),
-    ]);
     // Fallback for windows without a workspace in the focus path (popped-out
     // panels); workspace windows persist their layout first via their own
     // handler, which stops the action before it gets here.
@@ -1333,6 +1257,9 @@ pub(crate) enum MenuAction {
     OpenAbout,
     ToggleMenubar,
     ToggleDecorations,
+    /// Flip design mode: whether the layout can be rearranged where it
+    /// sits, or reads as finished furniture.
+    ToggleDesignMode,
     /// Flip song theming: the playing track's art tinting the palette.
     ToggleArtTheming,
     /// Flip the screen shader, the hotkey's menu twin. Never prompts.
@@ -1394,6 +1321,7 @@ impl MenuAction {
             MenuAction::OpenAbout => "about".into(),
             MenuAction::ToggleMenubar => "toggle-menubar".into(),
             MenuAction::ToggleDecorations => "toggle-decorations".into(),
+            MenuAction::ToggleDesignMode => "toggle-design-mode".into(),
             MenuAction::ToggleArtTheming => "toggle-art-theming".into(),
             MenuAction::TogglePostShader => "toggle-post-shader".into(),
             MenuAction::ImportWorkspace => "import-workspace".into(),
@@ -1807,6 +1735,16 @@ pub(crate) const MENUS: &[Menu] = &[
     Menu {
         label: "Panels",
         entries: &[
+            // The switch over the things it governs: every row under this one
+            // puts a panel into the layout, which is what design mode is about,
+            // and the menus that arrange panels are the place someone looks for
+            // it rather than the Window menu's interface knobs.
+            MenuEntry::Item(MenuItem {
+                label: "Design Mode",
+                icon: icons::LAYOUT_DASHBOARD,
+                action: MenuAction::ToggleDesignMode,
+            }),
+            MenuEntry::Section("Add"),
             // The panels you already configured lead the ones you haven't.
             MenuEntry::PresetsSubmenu {
                 label: "Presets",
@@ -1930,6 +1868,14 @@ pub struct Workspace {
     /// Window menu's panel picker, whose rows are the presets and the catalog
     /// groups. Indexed within that flyout, cleared with the level above it.
     open_subgroup: Option<usize>,
+    /// The painted bounds of the open dropdown ([0]) and the panel picker's
+    /// flyout ([1]), captured each frame they draw. The next frame's flyouts
+    /// read them to pick a side, the same measure-then-decide the
+    /// gpui-component menus run on.
+    menu_surfaces: [Option<Bounds<Pixels>>; 2],
+    /// The window width at the last menu paint, the other half of the
+    /// side decision.
+    menu_viewport_w: Pixels,
     /// A mouse button is held down somewhere in the window. Alt+drag is
     /// the compositor's window move/resize, so an alt-revealed menubar
     /// stays hidden while a button is down: the overlay must not sit in
@@ -2410,6 +2356,8 @@ impl Workspace {
             open_menu: None,
             open_submenu: None,
             open_subgroup: None,
+            menu_surfaces: [None; 2],
+            menu_viewport_w: Pixels::ZERO,
             pointer_down: false,
             state,
             focus,
@@ -2963,7 +2911,13 @@ impl Workspace {
             .flatten();
         if notice == ShaderNotice::Ask && landed.is_some() && landed != prior_source {
             let player = self.state.player.entity_id();
-            crate::settings::shader_confirm::open(prior, player, |_| {}, cx);
+            crate::settings::shader_confirm::open(
+                prior,
+                player,
+                self.state.now_art.clone(),
+                |_| {},
+                cx,
+            );
         }
         // A whole-look swap drops the previous layout's unsaved edits along
         // with the rest of the old look (apply_look cleared the store); forget
@@ -4373,6 +4327,43 @@ fn window_size(window: &Window) -> LayoutSize {
     LayoutSize {
         width: size.width.into(),
         height: size.height.into(),
+    }
+}
+
+/// Which side the flyout hanging off the surface at `level` should open:
+/// right of its parent by default, left when the window is out of room on
+/// the right, and still left while a flipped chain has room to keep going,
+/// so a deep flyout never doubles back over its grandparent. `surfaces` are
+/// the menu surfaces' painted bounds from the last frame, root first, one
+/// per open level; the estimate stands in for the flyout's own width, which
+/// is unknown until it paints. Shared by the menubar and the menu panel.
+pub(crate) fn flyout_leftward(
+    surfaces: &[Option<Bounds<Pixels>>],
+    level: usize,
+    viewport_w: Pixels,
+) -> bool {
+    let Some(&Some(bounds)) = surfaces.get(level) else {
+        return false;
+    };
+    let est = px(240.);
+    if bounds.origin.x < est {
+        return false;
+    }
+    let parent_flipped = level
+        .checked_sub(1)
+        .and_then(|parent| surfaces.get(parent))
+        .and_then(|parent| parent.as_ref())
+        .is_some_and(|parent| bounds.origin.x < parent.origin.x);
+    parent_flipped || bounds.right() + est > viewport_w
+}
+
+/// A flyout's horizontal anchor on its row, the side
+/// [`flyout_leftward`] picked.
+pub(crate) fn flyout_side(d: Div, leftward: bool) -> Div {
+    if leftward {
+        d.right_full()
+    } else {
+        d.left_full()
     }
 }
 

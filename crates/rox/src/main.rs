@@ -18,6 +18,7 @@ mod duplicates;
 mod embeddings;
 mod eq_window;
 mod integrations;
+mod keymap;
 mod lastfm;
 mod lyrics;
 mod matching;
@@ -45,11 +46,11 @@ use gpui::{
 use gpui_component::Root;
 
 use rox_core::settings::{
-    layouts, note_first_run, note_os_appearance, os_decorations, seed_os_appearance,
-    set_acoustic_analysis, set_app_font, set_app_frame, set_experimental, set_fold_case,
-    set_gain_mode, set_hide_menubar, set_os_decorations, set_quit_to_tray, set_rating_dots,
-    set_rating_style, set_seams, set_theme, set_workspace_migrator, window_decorations, Settings,
-    MIN_WINDOW_SIZE,
+    layouts, note_first_run, note_os_appearance, os_decorations, resize_border, seed_os_appearance,
+    set_acoustic_analysis, set_app_font, set_app_frame, set_design_mode, set_experimental,
+    set_fold_case, set_gain_mode, set_hide_menubar, set_os_decorations, set_quit_to_tray,
+    set_rating_dots, set_rating_style, set_resize_border, set_seams, set_theme,
+    set_workspace_migrator, window_decorations, Settings, MIN_WINDOW_SIZE,
 };
 use rox_core::{logging, APP_ID};
 use rox_design::assets::Assets;
@@ -176,6 +177,9 @@ fn open_workspace_window(
         // The Wayland backend ignores the creation-time titlebar title;
         // only set_window_title reaches the compositor.
         window.set_window_title("rox");
+        // No WindowOptions field for this one, so the fresh window starts
+        // with the platform default and takes the setting here.
+        window.set_resize_border(resize_border());
         // System-theme follow rides the OS appearance events, which only
         // reach us through a window. The window's own cached appearance
         // feeds the settings cache - the platform's read borrows the
@@ -303,6 +307,10 @@ fn main() {
         rox_dock::init(cx);
         workspace::init(cx);
         tags::editor::init(cx);
+        // Last of the four, and it has to stay last: a rebind rebuilds the
+        // whole keymap, and this is where the bindings already registered
+        // above get snapshotted so they survive one.
+        keymap::init(cx);
         // Startup theme wiring runs through the palette pipeline - the
         // same choke point every later palette change goes through. The
         // setters set the dark baseline and feed the widget theme tokens.
@@ -325,9 +333,11 @@ fn main() {
         set_rating_dots(settings.look.bundle.appearance.rating_dots, cx);
         set_hide_menubar(settings.look.bundle.appearance.hide_menubar, cx);
         set_os_decorations(settings.look.bundle.appearance.os_decorations);
+        set_resize_border(settings.look.bundle.appearance.resize_border);
         set_fold_case(settings.fold_case);
         rox_library::genre::set_split_compounds(settings.split_genre_compounds);
         set_quit_to_tray(settings.quit_to_tray);
+        set_design_mode(settings.design_mode, cx);
         set_experimental(settings.experimental, cx);
         set_acoustic_analysis(settings.acoustic_analysis, cx);
         set_gain_mode(settings.replay_gain.mode, cx);

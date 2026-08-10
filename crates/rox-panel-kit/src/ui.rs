@@ -12,7 +12,7 @@ use gpui::{
 use gpui_component::Selectable;
 
 use rox_design::assets::icons;
-use rox_design::palette::{self, ROLES};
+use rox_design::palette::{self, Side, Sides, ROLES};
 use rox_design::tokens;
 
 use crate as panel;
@@ -844,6 +844,103 @@ pub fn scalar_sized<P: 'static>(
         move |this, fraction, cx| apply(this, span.value(fraction), cx),
         cx,
     )
+}
+
+/// The scrub strips a four-sided knob needs: one for the linked slider,
+/// one per side for while it's split. The two sets never draw at once, so
+/// each strip still owns its own bounds.
+#[derive(Default)]
+pub struct SidesScrub {
+    linked: ScrubState,
+    sides: [ScrubState; 4],
+}
+
+/// The icon each side wears in a split knob, in [`Side::ALL`] order.
+const SIDE_ICONS: [&str; 4] = [
+    icons::PANEL_TOP,
+    icons::PANEL_RIGHT,
+    icons::PANEL_BOTTOM,
+    icons::PANEL_LEFT,
+];
+
+/// A four-sided frame knob's control: the link toggle, then either one
+/// strip driving all four sides or a strip per side. Linked is the
+/// everyday shape and reads exactly like any other scalar row; splitting
+/// stacks the sides under each other, clockwise from the top the way CSS
+/// writes them.
+///
+/// `apply` takes the side that moved, or None for the linked strip, so a
+/// caller wires one setter per knob instead of five. `split` is the
+/// caller's own state rather than something read back off the value: a
+/// knob whose sides happen to match is still split while the user has it
+/// open that way.
+#[allow(clippy::too_many_arguments)]
+pub fn sides_control<P: 'static>(
+    scrub: &SidesScrub,
+    edit: &panel::ValueEdit,
+    value: Sides,
+    split: bool,
+    span: Span,
+    on_split: impl Fn(&mut P, bool, &mut Context<P>) + Clone + 'static,
+    apply: impl Fn(&mut P, Option<Side>, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    // One segment, so the group reads as a toggle: filled while the sides
+    // are linked, hollow while they're apart.
+    const LINK: &[(&str, ())] = &[(icons::LINK, ())];
+    let link = panel::icon_toggles(
+        LINK,
+        move |_| !split,
+        move |this: &mut P, _, cx| on_split(this, !split, cx),
+        cx,
+    );
+    let control = if split {
+        let mut column = div().flex().flex_col().gap(tokens::SPACE_XS);
+        for (i, side) in Side::ALL.into_iter().enumerate() {
+            let apply = apply.clone();
+            column = column.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_XS)
+                    .child(
+                        svg()
+                            .path(SIDE_ICONS[i])
+                            .size(px(14.))
+                            .flex_none()
+                            .text_color(palette::text_muted()),
+                    )
+                    .child(scalar(
+                        &scrub.sides[i],
+                        edit,
+                        value.get(side),
+                        span,
+                        move |this: &mut P, v, cx| apply(this, Some(side), v, cx),
+                        cx,
+                    )),
+            );
+        }
+        column
+    } else {
+        // Linked, every side carries the same number, so the top one
+        // speaks for all four.
+        scalar(
+            &scrub.linked,
+            edit,
+            value.top,
+            span,
+            move |this: &mut P, v, cx| apply(this, None, v, cx),
+            cx,
+        )
+    };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_XS)
+        .child(link)
+        .child(control)
 }
 
 /// A percent slider whose readout doubles as an input: click, type,

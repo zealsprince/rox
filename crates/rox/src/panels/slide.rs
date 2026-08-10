@@ -323,7 +323,7 @@ impl SlidePanel {
                     }
                 },
             );
-            if self.config.chrome.hide_controls {
+            if self.config.chrome.controls_hidden() {
                 return root.child(empty);
             }
             let parent = composite::parent_button("Slide", cx);
@@ -512,7 +512,7 @@ impl SlidePanel {
         // buttons; its slides are still managed from the tree on the
         // Workspace settings page. The rail and dots stay either way, since
         // those are how the deck is read rather than how it is built.
-        if self.config.chrome.hide_controls {
+        if self.config.chrome.controls_hidden() {
             return root;
         }
 

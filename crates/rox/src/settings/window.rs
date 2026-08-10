@@ -43,7 +43,7 @@ use rox_core::settings::{
     BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
 };
 use rox_design::assets::icons;
-use rox_design::palette::{self, Palette, Role, ROLES};
+use rox_design::palette::{self, Palette, Role, Side, Sides, ROLES};
 use rox_design::tokens;
 use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
 use rox_library::store::{GainCoverage, Stats};
@@ -54,8 +54,8 @@ use rox_panel_api::panel_settings::{ShaderNameField, ShaderSource};
 use rox_panel_api::query::search::{SearchBox, SearchEvent};
 use rox_panel_api::signal_ui::{self, routes::RouteEditState};
 use rox_panel_kit::ui::{
-    self as settings_ui, chord, dialog_button, grid_columns, icon_button, kbd_line, sidebar,
-    small_button, PageBody, Query, Rows, Section, Seg, SECTION_GAP,
+    self as settings_ui, chord, dialog_button, grid_columns, icon_button, kbd, kbd_line, sidebar,
+    small_button, PageBody, Query, Rows, Section, Seg, SidesScrub, SECTION_GAP,
 };
 use rox_panel_kit::ScrubState;
 use rox_playback::continuation;
@@ -72,6 +72,7 @@ use rox_viz::signal::Route;
 /// The folder table's fixed columns: the rollup numbers and the remove
 /// control, the last sized to [`icon_button`]'s footprint so the header
 /// aligns.
+mod keymap_page;
 mod workspace_page;
 
 const TRACKS_COL_W: Pixels = px(56.);
@@ -151,6 +152,7 @@ enum Page {
     Audio,
     Behavior,
     Integrations,
+    Keymap,
     Library,
     MlModels,
     Providers,
@@ -176,6 +178,7 @@ const PAGES: &[(Page, &str, &str)] = &[
     (Page::Audio, "Audio", icons::AUDIO_LINES),
     (Page::Behavior, "Behavior", icons::SLIDERS),
     (Page::Integrations, "Integrations", icons::RADIO),
+    (Page::Keymap, "Keymap", icons::KEYBOARD),
     (Page::Library, "Library", icons::LIST_MUSIC),
     (Page::MlModels, "ML Models", icons::LAYERS),
     (Page::Providers, "Providers", icons::DOWNLOAD),
@@ -348,10 +351,17 @@ struct SettingsWindow {
     surface_scrub: ScrubState,
     backdrop_scrub: ScrubState,
     font_size_scrub: ScrubState,
-    margin_scrub: ScrubState,
-    padding_scrub: ScrubState,
+    margin_scrub: SidesScrub,
+    padding_scrub: SidesScrub,
     rounding_scrub: ScrubState,
-    border_scrub: ScrubState,
+    border_scrub: SidesScrub,
+    /// Which four-sided knobs the Frame rows have open per side. Window
+    /// state rather than settings: a knob whose sides match is still
+    /// split while it's being edited that way. Seeded from the knobs that
+    /// already differ, so reopening shows what's set.
+    margin_split: bool,
+    padding_split: bool,
+    border_split: bool,
     /// The one readout being typed into across this window's sliders.
     value_edit: panel::ValueEdit,
     /// The page body's scroll position, shared with the scrollbar so it
@@ -448,6 +458,14 @@ struct SettingsWindow {
     /// The confirm dialog waiting on the user, if any: an overwrite or a
     /// workspace apply. None when no dialog is up.
     pending: Option<Pending>,
+    /// The chords moved off their defaults, mirrored from the file so the
+    /// Keymap page doesn't load settings per render. Every edit on that
+    /// page writes the file and re-reads this.
+    keymap: BTreeMap<String, Vec<String>>,
+    /// The command whose next keystroke the Keymap page is waiting for,
+    /// while a row is recording. The interceptor below reads it to decide
+    /// whether to swallow a press.
+    recording: Option<&'static str>,
     /// Whether launch runs the daily update check, the Behavior page toggle.
     check_updates: bool,
     /// Whether the experimental panels show in the panel menus, the
@@ -596,6 +614,11 @@ struct SettingsWindow {
     /// can change underneath it. Gated on [`rox_services::player::PlayerView`], so
     /// it wakes on the press and not on the position clock.
     _player_view: Subscription,
+    /// Catches a keystroke for a recording Keymap row before the keymap
+    /// gets to resolve it. Live for the window's lifetime and gated on
+    /// `recording`, rather than subscribed per record: dropping a
+    /// subscription from inside its own callback is not a thing to do.
+    _record_keys: Subscription,
 }
 
 impl SettingsWindow {
@@ -658,6 +681,7 @@ impl SettingsWindow {
             },
         );
         let _library_repaint = cx.observe(&library, |_, _, cx| cx.notify());
+        let _record_keys = Self::record_keys(window, cx);
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         // The OS close button never runs a teardown of ours, so save the
         // frame through the should-close hook, the stats window's move.
@@ -743,6 +767,8 @@ impl SettingsWindow {
                 SearchEvent::Submitted | SearchEvent::FocusChanged => {}
             },
         );
+        // The Frame rows open split where a knob's sides already differ.
+        let appearance_frame = settings.look.bundle.appearance.frame;
         let mut pickers = Vec::with_capacity(ROLES.len());
         let mut _picker_changes = Vec::with_capacity(ROLES.len());
         for (index, role) in ROLES.iter().enumerate() {
@@ -767,7 +793,7 @@ impl SettingsWindow {
             surface_opacity: settings.look.bundle.appearance.surface_opacity,
             backdrop_strength: settings.look.bundle.appearance.backdrop_strength,
             font_size: settings.app_font_size,
-            frame: settings.look.bundle.appearance.frame,
+            frame: appearance_frame,
             restore_last_track: settings.restore_last_track,
             watch_library: settings.watch_library,
             fold_case: settings.fold_case,
@@ -783,10 +809,13 @@ impl SettingsWindow {
             surface_scrub: ScrubState::default(),
             backdrop_scrub: ScrubState::default(),
             font_size_scrub: ScrubState::default(),
-            margin_scrub: ScrubState::default(),
-            padding_scrub: ScrubState::default(),
+            margin_scrub: SidesScrub::default(),
+            padding_scrub: SidesScrub::default(),
             rounding_scrub: ScrubState::default(),
-            border_scrub: ScrubState::default(),
+            border_scrub: SidesScrub::default(),
+            margin_split: appearance_frame.margin.uniform().is_none(),
+            padding_split: appearance_frame.padding.uniform().is_none(),
+            border_split: appearance_frame.border.uniform().is_none(),
             value_edit: panel::ValueEdit::default(),
             scroll: ScrollHandle::new(),
             library,
@@ -866,6 +895,8 @@ impl SettingsWindow {
             manual_persist_gen: 0,
             persist_gen: 0,
             persist_palette: false,
+            keymap: settings.keymap.clone(),
+            recording: None,
             _picker_changes,
             _lastfm_changes,
             _scrobbler_changed,
@@ -876,6 +907,7 @@ impl SettingsWindow {
             _search_changes,
             _player_changed,
             _player_view,
+            _record_keys,
         }
     }
 
@@ -1145,6 +1177,15 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// The design-mode switch, the menubar's Window entry from this side.
+    /// Same route as the menubar's: the live flag repaints every window,
+    /// and the file keeps it across launches.
+    fn set_design_mode(&mut self, on: bool, cx: &mut Context<Self>) {
+        settings::set_design_mode(on, cx);
+        Settings::update(move |s| s.design_mode = on);
+        cx.notify();
+    }
+
     /// The seams switch: through the live static in the dock crate so
     /// every window's panel dividers repaint, and into the file. The
     /// toggle reads the static, like the menubar's.
@@ -1160,6 +1201,15 @@ impl SettingsWindow {
         settings::set_os_decorations(on);
         Settings::update(move |s| s.look.bundle.appearance.os_decorations = on);
         crate::workspace::apply_decorations(cx);
+        cx.notify();
+    }
+
+    /// The resize-border switch. Same shape as the decorations one above,
+    /// and only ever shown on Windows.
+    fn set_resize_border(&mut self, on: bool, cx: &mut Context<Self>) {
+        settings::set_resize_border(on);
+        Settings::update(move |s| s.look.bundle.appearance.resize_border = on);
+        crate::workspace::apply_resize_border(cx);
         cx.notify();
     }
 
@@ -1266,15 +1316,16 @@ impl SettingsWindow {
     }
 
     // The app-wide frame setters: whole px in, the new default every
-    // panel that sets no override of its own takes.
+    // panel that sets no override of its own takes. A side of None comes
+    // off the linked strip and moves all four together.
 
-    fn set_margin(&mut self, value: f32, cx: &mut Context<Self>) {
-        self.frame.margin = value;
+    fn set_margin(&mut self, side: Option<Side>, value: f32, cx: &mut Context<Self>) {
+        self.frame.margin = self.frame.margin.edited(side, value);
         self.frame_edited(cx);
     }
 
-    fn set_padding(&mut self, value: f32, cx: &mut Context<Self>) {
-        self.frame.padding = value;
+    fn set_padding(&mut self, side: Option<Side>, value: f32, cx: &mut Context<Self>) {
+        self.frame.padding = self.frame.padding.edited(side, value);
         self.frame_edited(cx);
     }
 
@@ -1283,8 +1334,35 @@ impl SettingsWindow {
         self.frame_edited(cx);
     }
 
-    fn set_border(&mut self, value: f32, cx: &mut Context<Self>) {
-        self.frame.border = value;
+    fn set_border(&mut self, side: Option<Side>, value: f32, cx: &mut Context<Self>) {
+        self.frame.border = self.frame.border.edited(side, value);
+        self.frame_edited(cx);
+    }
+
+    // The link toggles. Splitting only opens the sides up; linking
+    // flattens them onto the widest, so nothing on screen disappears.
+
+    fn split_margin(&mut self, split: bool, cx: &mut Context<Self>) {
+        self.margin_split = split;
+        if !split {
+            self.frame.margin = self.frame.margin.linked();
+        }
+        self.frame_edited(cx);
+    }
+
+    fn split_padding(&mut self, split: bool, cx: &mut Context<Self>) {
+        self.padding_split = split;
+        if !split {
+            self.frame.padding = self.frame.padding.linked();
+        }
+        self.frame_edited(cx);
+    }
+
+    fn split_border(&mut self, split: bool, cx: &mut Context<Self>) {
+        self.border_split = split;
+        if !split {
+            self.frame.border = self.frame.border.linked();
+        }
         self.frame_edited(cx);
     }
 
@@ -1312,6 +1390,31 @@ impl SettingsWindow {
             &self.value_edit,
             value,
             settings_ui::span(0., max, " px"),
+            apply,
+            cx,
+        )
+    }
+
+    /// [`frame_row`](Self::frame_row) for a four-sided knob: the link
+    /// toggle and, behind it, one strip or four.
+    #[allow(clippy::too_many_arguments)]
+    fn frame_sides_row(
+        &self,
+        scrub: &SidesScrub,
+        value: Sides,
+        split: bool,
+        max: f32,
+        on_split: fn(&mut Self, bool, &mut Context<Self>),
+        apply: fn(&mut Self, Option<Side>, f32, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> Div {
+        settings_ui::sides_control(
+            scrub,
+            &self.value_edit,
+            value,
+            split,
+            settings_ui::span(0., max, " px"),
+            on_split,
             apply,
             cx,
         )
@@ -1425,6 +1528,12 @@ impl SettingsWindow {
         PageBody::new()
             .section(Section::new(q, icons::MENU, "Interface", None, |rows| {
                 rows.keyed(
+                    &["edit", "layout", "rearrange", "lock"],
+                    "Design Mode",
+                    Some("Edit the layout where it sits: the panel menus' add, rename, duplicate, pop out and close rows, the controls a container floats over its slots, and tab dragging. Off reads as finished furniture and the Workspace page still edits the tree"),
+                    panel::toggle(settings::design_mode(), Self::set_design_mode, cx),
+                )
+                .keyed(
                     &["menu bar", "toolbar", "alt"],
                     "Hide Menubar",
                     Some("Keep the menubar hidden, floating it over the dock while alt is held"),
@@ -1436,6 +1545,17 @@ impl SettingsWindow {
                     Some("The OS titlebar and borders on the main windows; off leans on the window controls and drag anchor panels"),
                     panel::toggle(settings::os_decorations(), Self::set_os_decorations, cx),
                 )
+                // Windows only: on Linux and macOS the borderless window has
+                // no edge resize to take away, so the row would be a switch
+                // that does nothing.
+                .when(cfg!(target_os = "windows"), |rows| {
+                    rows.keyed(
+                        &["border", "edge", "frame", "borderless"],
+                        "Resize Border",
+                        Some("Resizing the main windows by dragging their edges; only applies with OS Decorations off, and switching it off leaves snapping and Win+arrow as the way to resize"),
+                        panel::toggle(settings::resize_border(), Self::set_resize_border, cx),
+                    )
+                })
             }))
             .section(Section::new(q, icons::CONTRAST, "Theming", None, |rows| {
                 rows.keyed(
@@ -1526,16 +1646,16 @@ impl SettingsWindow {
             }))
             .section(Section::new(q, icons::SQUARE_DASHED, "Frame", None, |rows| {
                 rows.keyed(
-                    &["spacing", "gap", "outside"],
+                    &["spacing", "gap", "outside", "sides"],
                     "Margin",
                     Some("Pull every panel in from its cell; a panel can override this in its own settings"),
-                    self.frame_row(&self.margin_scrub, self.frame.margin, MARGIN_MAX, Self::set_margin, cx),
+                    self.frame_sides_row(&self.margin_scrub, self.frame.margin, self.margin_split, MARGIN_MAX, Self::split_margin, Self::set_margin, cx),
                 )
                 .keyed(
-                    &["spacing", "inset", "inside"],
+                    &["spacing", "inset", "inside", "sides"],
                     "Padding",
                     Some("Space inside every panel's edge, kept in its own background"),
-                    self.frame_row(&self.padding_scrub, self.frame.padding, PADDING_MAX, Self::set_padding, cx),
+                    self.frame_sides_row(&self.padding_scrub, self.frame.padding, self.padding_split, PADDING_MAX, Self::split_padding, Self::set_padding, cx),
                 )
                 .keyed(
                     &["corner radius", "rounded"],
@@ -1544,10 +1664,10 @@ impl SettingsWindow {
                     self.frame_row(&self.rounding_scrub, self.frame.rounding, ROUNDING_MAX, Self::set_rounding, cx),
                 )
                 .keyed(
-                    &["outline", "stroke", "edge"],
+                    &["outline", "stroke", "edge", "sides"],
                     "Border",
-                    Some("A line around every panel's edge, in the Border role's color"),
-                    self.frame_row(&self.border_scrub, self.frame.border, BORDER_MAX, Self::set_border, cx),
+                    Some("A line around every panel's edge, in the Border role's color; a side at zero draws none"),
+                    self.frame_sides_row(&self.border_scrub, self.frame.border, self.border_split, BORDER_MAX, Self::split_border, Self::set_border, cx),
                 )
                 .keyed(
                     &["divider", "gutter", "grid lines"],
@@ -1641,29 +1761,22 @@ impl SettingsWindow {
         // declares them reads the same here as it does on a panel.
         let hub = self.signals.clone();
         let labels = crate::workspace::post_shader_slot_labels();
-        // This frame's resolved slot values, the Bindings page's readout
-        // over the app-wide list: hand-set values seeded first, routes
-        // written over them, so the rows say what actually reaches the
-        // shader rather than what was set.
-        let mut resolved = panel::shader::SlotTargets::default();
-        for (slot, value) in &self.post_shader_manual {
-            if let Some(entry) = resolved.slots.get_mut(*slot as usize) {
-                *entry = *value;
-            }
+        // The Bindings page's slot list over the app-wide config: a routed
+        // slot shows the value reaching the shader, an unrouted one is a
+        // hand-set knob, which is how a screen shader's named parameters get
+        // tuned without editing WGSL.
+        let slots = signal_ui::slots::SlotList {
+            hub: &hub,
+            routes: &self.post_shader_routes,
+            manual: &self.post_shader_manual,
+            labels: &labels,
+            value_edit: &self.value_edit,
+            scrubs: &self.post_shader_slot_scrubs,
+            set: Arc::new(|this: &mut Self, slot, value, cx| {
+                this.set_post_shader_manual(slot, value, cx)
+            }),
         }
-        signal_ui::apply_routes(&self.post_shader_routes, &hub, &mut resolved);
-        let routed: Vec<bool> = (0..panel::shader::SLOTS)
-            .map(|slot| {
-                self.post_shader_routes.iter().any(|route| {
-                    route.enabled && panel::shader::target_slot(&route.target) == Some(slot)
-                })
-            })
-            .collect();
-        let scrubs = &self.post_shader_slot_scrubs;
-        let value_edit = &self.value_edit;
-        // Its own copy: the editor below borrows `labels` for the length
-        // of the section closure.
-        let slot_labels = labels.clone();
+        .render(cx);
         let editor = signal_ui::routes::RouteEditor {
             id: "screen-shader-route",
             hub: &hub,
@@ -1792,35 +1905,6 @@ impl SettingsWindow {
                             "With nothing routed the pool feeds the slots in its own \
                                      order: the first signal into slot 0, the second into slot 1, \
                                      and so on. The first route you add takes over the whole feed.",
-                        ));
-                    }
-                    // The Bindings page's slot list over the app-wide
-                    // config: a routed slot shows the value reaching the
-                    // shader, an unrouted one is a hand-set knob, which is
-                    // how a screen shader's named parameters get tuned
-                    // without editing WGSL.
-                    let mut slots = div().flex().flex_col().gap(tokens::SPACE_MD);
-                    for (slot, routed) in routed.iter().copied().enumerate() {
-                        let value = resolved.slots.get(slot).copied().unwrap_or(0.0);
-                        let control = match (routed, scrubs.get(slot)) {
-                            (false, Some(scrub)) => panel::value_slider_edit(
-                                scrub,
-                                value_edit,
-                                value,
-                                format!("{value:.2}"),
-                                format!("{value:.2}"),
-                                |typed| typed,
-                                move |this: &mut Self, fraction, cx| {
-                                    this.set_post_shader_manual(slot, fraction, cx);
-                                },
-                                cx,
-                            ),
-                            _ => slot_readout(value),
-                        };
-                        slots = slots.child(panel::setting_row_dyn(
-                            panel::shader::slot_label(&slot_labels, slot),
-                            Some(slot_accessor(slot).into()),
-                            control,
                         ));
                     }
                     div()
@@ -2118,6 +2202,7 @@ impl SettingsWindow {
         crate::settings::shader_confirm::open(
             prior,
             self.player,
+            self.now_art.clone(),
             move |cx| {
                 weak.update(cx, |this, cx| {
                     let config = Settings::load().post_shader;
@@ -4987,6 +5072,7 @@ impl SettingsWindow {
             Page::Audio => self.audio_page(q, cx),
             Page::Behavior => self.behavior_page(q, cx),
             Page::Integrations => self.integrations_page(q, cx),
+            Page::Keymap => self.keymap_page(q, cx),
             Page::Library => self.library_page(q, cx),
             Page::MlModels => self.ml_models_page(q, cx),
             Page::Providers => self.providers_page(q, cx),
@@ -5222,54 +5308,6 @@ fn coverage_note(text: String) -> Div {
 /// A setting row's value where a control would sit.
 fn readout(value: String) -> Div {
     div().text_color(palette::text_muted()).child(value)
-}
-
-/// The WGSL accessor a slot arrives on, so the Slots list says where to
-/// read it rather than leaving the mapping to be counted out by hand. The
-/// Shader panel's Bindings page keeps its own copy of this pair.
-fn slot_accessor(slot: usize) -> String {
-    let lane = ["x", "y", "z", "w"][slot % 4];
-    format!("params.signals[{}].{lane}", slot / 4)
-}
-
-/// A routed slot's live value: a readout rather than a control, since the
-/// route is the whole value while it feeds the slot. The signal glyph up
-/// front is what says "connected" at a glance against the sliders around it.
-fn slot_readout(value: f32) -> Div {
-    const BAR: f32 = 64.0;
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(tokens::SPACE_XS)
-        .child(
-            gpui::svg()
-                .path(icons::AUDIO_WAVEFORM)
-                .size(px(12.))
-                .flex_none()
-                .text_color(palette::accent()),
-        )
-        .child(
-            div()
-                .w(px(28.))
-                .text_xs()
-                .text_color(palette::text_faint())
-                .child(format!("{value:.2}")),
-        )
-        .child(
-            div()
-                .w(px(BAR))
-                .h(px(6.))
-                .rounded(px(3.))
-                .bg(palette::bg_control())
-                .child(
-                    div()
-                        .h_full()
-                        .w(px(BAR * value.clamp(0.0, 1.0)))
-                        .rounded(px(3.))
-                        .bg(palette::accent()),
-                ),
-        )
 }
 
 /// The exclusive toggle as the output layer's mode. The two device lists
@@ -5601,6 +5639,7 @@ mod tests {
             Page::Appearance => "Appearance",
             Page::Audio => "Audio",
             Page::Behavior => "Behavior",
+            Page::Keymap => "Keymap",
             Page::Integrations => "Integrations",
             Page::Library => "Library",
             Page::MlModels => "ML Models",
@@ -5617,6 +5656,7 @@ mod tests {
         Page::Audio,
         Page::Behavior,
         Page::Integrations,
+        Page::Keymap,
         Page::Library,
         Page::MlModels,
         Page::Providers,

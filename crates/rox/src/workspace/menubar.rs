@@ -54,6 +54,7 @@ impl Workspace {
                 Settings::update(move |s| s.look.bundle.appearance.hide_menubar = on);
                 native_menu::rebuild(cx);
             }
+            MenuAction::ToggleDesignMode => toggle_design_mode(cx),
             MenuAction::ToggleDecorations => {
                 let on = !settings::os_decorations();
                 settings::set_os_decorations(on);
@@ -299,6 +300,31 @@ impl Workspace {
             })
     }
 
+    /// A paint-time capture of a menu surface's bounds into
+    /// [`Workspace::menu_surfaces`], with the viewport width alongside:
+    /// what the next frame's flyout side decisions read.
+    fn menu_surface_capture(&self, level: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        canvas(
+            move |bounds, window, cx| {
+                let viewport_w = window.viewport_size().width;
+                view.update(cx, |this, _| {
+                    this.menu_surfaces[level] = Some(bounds);
+                    this.menu_viewport_w = viewport_w;
+                })
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full()
+    }
+
+    /// The side decision for a flyout off the surface at `level`, from the
+    /// bounds captured at the last paint.
+    fn flyout_left(&self, level: usize) -> bool {
+        flyout_leftward(&self.menu_surfaces, level, self.menu_viewport_w)
+    }
+
     fn dropdown(&self, menu: &'static Menu, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .absolute()
@@ -313,6 +339,7 @@ impl Workspace {
             .border_color(palette::border_light())
             .shadow_md()
             .occlude()
+            .child(self.menu_surface_capture(0, cx))
             .children(menu.entries.iter().enumerate().map(|(i, entry)| {
                 match entry {
                     MenuEntry::Item(item) => self
@@ -394,6 +421,7 @@ impl Workspace {
         // its check live.
         let checked = match action {
             MenuAction::ToggleMenubar => settings::hide_menubar(),
+            MenuAction::ToggleDesignMode => settings::design_mode(),
             MenuAction::ToggleDecorations => settings::os_decorations(),
             MenuAction::ToggleQuitToTray => settings::quit_to_tray(),
             MenuAction::ToggleArtTheming => palette::art_theming(),
@@ -515,9 +543,7 @@ impl Workspace {
                     // Top offset backs out the parent's padding and the
                     // dropdown border so the first item lines up with the
                     // parent row.
-                    div()
-                        .absolute()
-                        .left_full()
+                    flyout_side(div().absolute(), self.flyout_left(0))
                         .top(px(-5.))
                         .min_w(px(160.))
                         .flex()
@@ -596,9 +622,7 @@ impl Workspace {
                 // Read the presets only once the flyout opens, not on every
                 // parent-menu paint.
                 let presets = rox_core::settings::layouts::all(&Settings::load());
-                let mut flyout = div()
-                    .absolute()
-                    .left_full()
+                let mut flyout = flyout_side(div().absolute(), self.flyout_left(0))
                     .top(px(-5.))
                     .min_w(px(180.))
                     .flex()
@@ -719,7 +743,7 @@ impl Workspace {
             // Read the presets only once the flyout opens, not on every
             // parent-menu paint.
             let presets = panel_presets::saved();
-            let flyout = flyout_box();
+            let flyout = flyout_box(self.flyout_left(0));
             d.child(if presets.is_empty() {
                 flyout.child(flyout_note("No presets"))
             } else {
@@ -747,7 +771,10 @@ impl Workspace {
         let open = self.open_submenu == Some(index);
         submenu_shell(index, label, icon, open, cx).when(open, |d| {
             let presets = panel_presets::saved();
-            let mut flyout = flyout_box();
+            // This flyout hosts the group flyouts, so it captures its own
+            // bounds for their side decision.
+            let mut flyout =
+                flyout_box(self.flyout_left(0)).child(self.menu_surface_capture(1, cx));
             // Group 0 is the presets when there are any, so the catalog's
             // groups start one along and the two levels never share an index.
             if !presets.is_empty() {
@@ -833,7 +860,9 @@ impl Workspace {
                     .size_3()
                     .text_color(palette::text_muted()),
             )
-            .when(open, |d| d.child(flyout_box().children(rows)))
+            .when(open, |d| {
+                d.child(flyout_box(self.flyout_left(1)).children(rows))
+            })
     }
 
     /// A catalog row in the panel picker: closes the menu, then opens that
@@ -951,9 +980,7 @@ impl Workspace {
                 if target == WorkspaceTarget::Overwrite {
                     entries.retain(|entry| !entry.builtin);
                 }
-                let mut flyout = div()
-                    .absolute()
-                    .left_full()
+                let mut flyout = flyout_side(div().absolute(), self.flyout_left(0))
                     .top(px(-5.))
                     .min_w(px(180.))
                     .flex()
@@ -1066,6 +1093,17 @@ impl Workspace {
     }
 }
 
+/// Flip design mode, from wherever it was asked for: the Window menu's row,
+/// the Appearance page's toggle, or the row at the top of every panel menu.
+/// The live flag repaints every window, the file keeps it across launches,
+/// and the native bar redraws its label.
+pub(crate) fn toggle_design_mode(cx: &mut App) {
+    let on = !settings::design_mode();
+    settings::set_design_mode(on, cx);
+    Settings::update(move |s| s.design_mode = on);
+    native_menu::rebuild(cx);
+}
+
 /// A flyout row's own chrome: the icon, the label, the chevron, and the hover
 /// that opens it at `index`. The flyout itself is the caller's, chained onto
 /// what comes back - it's the part that differs between a static group and a
@@ -1119,13 +1157,11 @@ fn submenu_shell(
         )
 }
 
-/// The panel a flyout's items sit in, anchored to the right of the row that
-/// opened it. The top offset backs out the parent's padding and the dropdown
-/// border so the first item lines up with that row.
-fn flyout_box() -> Div {
-    div()
-        .absolute()
-        .left_full()
+/// The panel a flyout's items sit in, beside the row that opened it on the
+/// side [`flyout_leftward`] picked. The top offset backs out the parent's
+/// padding and the dropdown border so the first item lines up with that row.
+fn flyout_box(leftward: bool) -> Div {
+    flyout_side(div().absolute(), leftward)
         .top(px(-5.))
         .min_w(px(180.))
         .flex()

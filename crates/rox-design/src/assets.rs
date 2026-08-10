@@ -148,6 +148,8 @@ pub mod icons {
     /// the panel menu's experimental group. Both wear the flask, so the two
     /// surfaces read as the same thing.
     pub const FLASK: &str = "icons/flask-conical.svg";
+    /// The settings sidebar's Keymap page, and the chord chips on it.
+    pub const KEYBOARD: &str = "icons/keyboard.svg";
     /// The theme toggle panel's glyphs, the side a click lands on; both
     /// resolve from the bundled widget set, no file of ours needed.
     pub const SUN: &str = "icons/sun.svg";
@@ -272,6 +274,7 @@ pub mod icons {
         MAXIMIZE,
         SQUARE_DASHED,
         FLASK,
+        KEYBOARD,
         SUN,
         MOON,
         MINUS,

@@ -1070,6 +1070,8 @@ impl MetadataPanel {
         // Same show rule as the suffix: hidden while the panel shows no
         // track, unless an edit is already open. The chrome's finished-
         // furniture flag drops it too, for a slot in a shipped layout.
+        // Deliberately the panel's own flag rather than `controls_hidden`:
+        // this one edits tags, not the layout, so design mode leaves it be.
         let show_toggle = !self.config.chrome.hide_controls
             && (self.edit.is_some()
                 || self

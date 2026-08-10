@@ -625,7 +625,9 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     settings::set_rating_dots(a.rating_dots, cx);
     settings::set_hide_menubar(a.hide_menubar, cx);
     settings::set_os_decorations(a.os_decorations);
+    settings::set_resize_border(a.resize_border);
     crate::workspace::apply_decorations(cx);
+    crate::workspace::apply_resize_border(cx);
 }
 
 /// The file a saved workspace is actually in: the one the list matched, so a

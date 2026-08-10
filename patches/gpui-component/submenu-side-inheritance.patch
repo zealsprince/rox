@@ -1,0 +1,44 @@
+--- a/src/menu/popup_menu.rs
++++ b/src/menu/popup_menu.rs
+@@ -1000,10 +1000,30 @@
+     }
+ 
+     /// Calculate the anchor corner and left offset for child submenu
+-    fn update_submenu_menu_anchor(&mut self, window: &Window) {
++    fn update_submenu_menu_anchor(&mut self, window: &Window, cx: &App) {
+         let bounds = self.bounds;
+         let max_width = self.max_width();
+-        let (anchor, left) = if max_width + bounds.origin.x > window.bounds().size.width {
++        // rox patch: a chain that flipped leftward keeps opening leftward
++        // while there's room, instead of flipping back over its grandparent.
++        // Submenus paint inside their parent's element tree, so an ancestor's
++        // later rows paint over an overlapping child and the child reads as
++        // translucent. Room on the left is estimated with this menu's own
++        // width, since the child's is unknown until it renders.
++        let opened_leftward = self
++            .parent_menu
++            .as_ref()
++            .and_then(|parent| parent.upgrade())
++            .map(|parent| {
++                matches!(
++                    parent.read(cx).submenu_anchor.0,
++                    Corner::TopRight | Corner::BottomRight
++                )
++            })
++            .unwrap_or(false);
++        let room_left = bounds.origin.x + px(16.) >= bounds.size.width;
++        let (anchor, left) = if max_width + bounds.origin.x > window.bounds().size.width
++            || (opened_leftward && room_left)
++        {
+             (Corner::TopRight, -px(16.))
+         } else {
+             (Corner::TopLeft, bounds.size.width - px(8.))
+@@ -1248,7 +1268,7 @@
+ 
+ impl Render for PopupMenu {
+     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+-        self.update_submenu_menu_anchor(window);
++        self.update_submenu_menu_anchor(window, cx);
+ 
+         let view = cx.entity().clone();
+         let items_count = self.menu_items.len();

@@ -8,9 +8,9 @@
 //! the builder carries its handle.
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, svg, AnyElement, App, Context, Div, EventEmitter,
-    FocusHandle, Focusable, MouseButton, MouseDownEvent, Pixels, Point, SharedString, WeakEntity,
-    Window,
+    anchored, canvas, deferred, div, prelude::*, px, svg, AnyElement, App, Bounds, Context, Div,
+    EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, Pixels, Point, SharedString,
+    WeakEntity, Window,
 };
 use gpui_component::menu::PopupMenu;
 use rox_dock::{Panel, PanelEvent, TabPanel};
@@ -18,9 +18,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::panel_catalog::PanelDef;
 use crate::workspace::{
-    menu_item_display, menu_section, panel_menu_item, section_shows, shortcut_for, signal_marked,
-    LayoutTarget, Menu, MenuAction, MenuEntry, MenuItem, PanelTarget, Workspace, WorkspaceTarget,
-    MENUS,
+    flyout_leftward, flyout_side, menu_item_display, menu_section, panel_menu_item, section_shows,
+    shortcut_for, signal_marked, LayoutTarget, Menu, MenuAction, MenuEntry, MenuItem, PanelTarget,
+    Workspace, WorkspaceTarget, MENUS,
 };
 use rox_core::settings::{self, Settings};
 use rox_design::assets::icons;
@@ -62,6 +62,14 @@ pub struct MenuPanel {
     /// menu's panel picker. Indexed within that flyout, cleared with the
     /// level above it.
     open_subgroup: Option<usize>,
+    /// The painted bounds of the open surfaces - the root menu, the open top
+    /// menu's flyout, and the panel picker's flyout - captured each frame
+    /// they draw. The next frame's flyouts read them to pick a side, the
+    /// same measure-then-decide the gpui-component menus run on.
+    menu_surfaces: [Option<Bounds<Pixels>>; 3],
+    /// The window width at the last menu paint, the other half of the side
+    /// decision.
+    menu_viewport_w: Pixels,
 }
 
 impl MenuPanel {
@@ -81,7 +89,34 @@ impl MenuPanel {
             open_top: None,
             open_sub: None,
             open_subgroup: None,
+            menu_surfaces: [None; 3],
+            menu_viewport_w: Pixels::ZERO,
         }
+    }
+
+    /// A paint-time capture of a menu surface's bounds into
+    /// [`MenuPanel::menu_surfaces`], with the viewport width alongside:
+    /// what the next frame's flyout side decisions read.
+    fn menu_surface_capture(&self, level: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        canvas(
+            move |bounds, window, cx| {
+                let viewport_w = window.viewport_size().width;
+                view.update(cx, |this, _| {
+                    this.menu_surfaces[level] = Some(bounds);
+                    this.menu_viewport_w = viewport_w;
+                })
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full()
+    }
+
+    /// The side decision for a flyout off the surface at `level`, from the
+    /// bounds captured at the last paint.
+    fn flyout_left(&self, level: usize) -> bool {
+        flyout_leftward(&self.menu_surfaces, level, self.menu_viewport_w)
     }
 
     fn open_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
@@ -105,12 +140,14 @@ impl MenuPanel {
     /// content out to the side. Unlike the menubar the top menus stack
     /// vertically here, but the flyouts are the same hand-drawn dropdowns.
     fn root_menu(&self, cx: &mut Context<Self>) -> Div {
-        dropdown(px(160.)).children(
-            MENUS
-                .iter()
-                .enumerate()
-                .map(|(i, menu)| self.top_row(i, menu, cx)),
-        )
+        dropdown(px(160.))
+            .child(self.menu_surface_capture(0, cx))
+            .children(
+                MENUS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, menu)| self.top_row(i, menu, cx)),
+            )
     }
 
     /// A root row for a top menu: flies out that menu's dropdown on hover,
@@ -138,7 +175,7 @@ impl MenuPanel {
             .child(menu.label)
             .child(chevron())
             .when(open, |d| {
-                d.child(self.menu_flyout(menu, cx).left_full().top(px(-5.)))
+                d.child(flyout_side(self.menu_flyout(menu, cx), self.flyout_left(0)).top(px(-5.)))
             })
     }
 
@@ -147,6 +184,7 @@ impl MenuPanel {
     fn menu_flyout(&self, menu: &'static Menu, cx: &mut Context<Self>) -> Div {
         dropdown(px(180.))
             .absolute()
+            .child(self.menu_surface_capture(1, cx))
             .children(menu.entries.iter().enumerate().map(|(i, entry)| {
                 match entry {
                     MenuEntry::Item(item) => self
@@ -228,6 +266,7 @@ impl MenuPanel {
         // their check live.
         let checked = match action {
             MenuAction::ToggleMenubar => settings::hide_menubar(),
+            MenuAction::ToggleDesignMode => settings::design_mode(),
             MenuAction::ToggleDecorations => settings::os_decorations(),
             MenuAction::ToggleQuitToTray => settings::quit_to_tray(),
             MenuAction::ToggleArtTheming => palette::art_theming(),
@@ -305,9 +344,7 @@ impl MenuPanel {
             .child(chevron())
             .when(open, |d| {
                 d.child(
-                    dropdown(px(160.))
-                        .absolute()
-                        .left_full()
+                    flyout_side(dropdown(px(160.)).absolute(), self.flyout_left(1))
                         .top(px(-5.))
                         .children(
                             panels
@@ -349,7 +386,8 @@ impl MenuPanel {
             .when(open, |d| {
                 // Read the presets only once the flyout opens.
                 let presets = rox_core::settings::layouts::all(&Settings::load());
-                let mut flyout = dropdown(px(180.)).absolute().left_full().top(px(-5.));
+                let mut flyout =
+                    flyout_side(dropdown(px(180.)).absolute(), self.flyout_left(1)).top(px(-5.));
                 if with_new {
                     flyout = flyout.child(self.new_row(cx));
                 }
@@ -429,7 +467,8 @@ impl MenuPanel {
             .when(open, |d| {
                 // Read the presets only once the flyout opens.
                 let presets = crate::panel_presets::saved();
-                let flyout = dropdown(px(180.)).absolute().left_full().top(px(-5.));
+                let flyout =
+                    flyout_side(dropdown(px(180.)).absolute(), self.flyout_left(1)).top(px(-5.));
                 d.child(if presets.is_empty() {
                     flyout.child(
                         div()
@@ -463,7 +502,11 @@ impl MenuPanel {
         self.sub_row(index, label, icon_path, open, cx)
             .when(open, |d| {
                 let presets = crate::panel_presets::saved();
-                let mut flyout = dropdown(px(180.)).absolute().left_full().top(px(-5.));
+                // This flyout hosts the group flyouts, so it captures its
+                // own bounds for their side decision.
+                let mut flyout = flyout_side(dropdown(px(180.)).absolute(), self.flyout_left(1))
+                    .top(px(-5.))
+                    .child(self.menu_surface_capture(2, cx));
                 // Group 0 is the presets when there are any, so the catalog's
                 // groups start one along and the two levels never share an index.
                 if !presets.is_empty() {
@@ -523,9 +566,7 @@ impl MenuPanel {
             .child(chevron())
             .when(open, |d| {
                 d.child(
-                    dropdown(px(160.))
-                        .absolute()
-                        .left_full()
+                    flyout_side(dropdown(px(160.)).absolute(), self.flyout_left(2))
                         .top(px(-5.))
                         .children(rows),
                 )
@@ -643,7 +684,8 @@ impl MenuPanel {
                 if target == WorkspaceTarget::Overwrite {
                     entries.retain(|entry| !entry.builtin);
                 }
-                let mut flyout = dropdown(px(180.)).absolute().left_full().top(px(-5.));
+                let mut flyout =
+                    flyout_side(dropdown(px(180.)).absolute(), self.flyout_left(1)).top(px(-5.));
                 if with_new {
                     flyout = flyout.child(self.new_workspace_row(cx));
                 }

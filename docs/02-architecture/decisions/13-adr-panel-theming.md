@@ -6,11 +6,15 @@ Decision: a panel can carry its own look as a `PanelTheme`, a sparse map of
 palette-role overrides plus an optional surface opacity and the frame knobs -
 margin off the panel's cell with the backdrop in the gap, padding inside the
 panel's own surface, corner rounding, a border width - stored on the panel's
-config and persisted through the layout dump like every other per-view knob. The frame knobs are geometry, not colors, so the wrapper
-element applies them straight to the panel body instead of through the
-scope; the border draws in the border role's color, which the override map
-already covers. The read path stays the plain accessors of ADR 10: while a
-panel renders, a thread-local scope stack holds its resolved theme, and each
+config and persisted through the layout dump like every other per-view
+knob. Margin, padding, and border each carry a value per side, written as
+one number while the four match, so the everyday case is still one slider
+and a config that never split a knob reads exactly as it did before. The
+frame knobs are geometry, not colors, so the wrapper element applies them
+straight to the panel body instead of through the scope; the border draws
+in the border role's color, which the override map already covers. The read
+path stays the plain accessors of ADR 10: while a panel renders, a
+thread-local scope stack holds its resolved theme, and each
 accessor answers with the scope's value for an overridden role before
 falling through to the process-global palette. A wrapper element pushes the
 scope for the render build and re-enters it for layout, prepaint, and paint,
@@ -40,9 +44,13 @@ song theming is the point - a pinned role holds still while the app moves -
 and skipping derivation for them keeps the scope a read-time lookup instead
 of a second derivation pipeline. gpui-component widget chrome (table
 striping, tab bars) projects from the global theme only, so a panel override
-recolors the panel's own drawing, not the widget skeleton under it. Rounding
-styles the body's own background quad because gpui content masks stay
-rectangular: content pressed hard into a corner still paints square, which
-small radii keep unnoticeable - except covers, which run edge to edge, so
-the art surfaces round their images directly. Tokens stay ADR 12 consts; the frame knobs
-shape the panel's edge, not the spacing and radii inside it.
+recolors the panel's own drawing, not the widget skeleton under it. The
+border's old per-side on/off mask folded into the widths themselves: a side
+at zero draws nothing, so one control says what two used to. Configs still
+carrying a mask read, and it folds over whichever width wins until the
+border is next edited. Rounding styles the body's own background quad
+because gpui content masks stay rectangular: content pressed hard into a
+corner still paints square, which small radii keep unnoticeable - except
+covers, which run edge to edge, so the art surfaces round their images
+directly. Tokens stay ADR 12 consts; the frame knobs shape the panel's
+edge, not the spacing and radii inside it.

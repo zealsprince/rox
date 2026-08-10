@@ -416,6 +416,12 @@ impl TabPanel {
             return false;
         }
 
+        // rox addition: closing a panel is a layout edit. Checked here as
+        // well as through the lock below, since Tiles waives that one.
+        if !crate::design_mode() {
+            return false;
+        }
+
         // Locked groups (zoomed, or detached from any stack) keep their
         // panels - except in Tiles, where panels always may close.
         if self.is_locked(cx) && !self.in_tiles {
@@ -549,6 +555,11 @@ impl TabPanel {
     }
 
     fn is_locked(&self, cx: &App) -> bool {
+        // rox addition: out of design mode the whole layout is furniture.
+        if !crate::design_mode() {
+            return true;
+        }
+
         let Some(dock_area) = self.dock_area.upgrade() else {
             return true;
         };

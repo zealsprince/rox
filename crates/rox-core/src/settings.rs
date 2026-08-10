@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use rox_playback::engine::LoopMode;
 use rox_viz::signal::{Route, Signal};
 
-use rox_design::palette::{self, Palette};
+use rox_design::palette::{self, Palette, Sides};
 
 use crate::acoustic;
 use crate::continuation;
@@ -518,6 +518,16 @@ pub struct Settings {
     /// back in. Off quits, the default. Ignored on Windows until a tray
     /// backend exists there; a headless process would have no way back.
     pub quit_to_tray: bool,
+    /// Whether the layout can be edited where it sits: the panel menus'
+    /// Add Panel, Rename, Duplicate, Pop Out and Close rows, the controls a
+    /// composition host floats over its slots, and the dock's own tab drag
+    /// and drop. On by default, since a first look at the app is also the
+    /// only place these actions announce themselves. Off, the layout reads
+    /// as finished furniture and is still edited from the Workspace page's
+    /// tree in Settings. A preference rather than part of the workspace
+    /// bundle: it's how someone works, not how a look is built, so applying
+    /// a workspace leaves it alone.
+    pub design_mode: bool,
     /// Whether launch checks GitHub for a newer release, at most once a
     /// day. The About page's toggle flips it; off leaves only the manual
     /// button.
@@ -577,6 +587,16 @@ pub struct Settings {
     /// The whole-window post-process shader, the Shader settings page's Screen
     /// shader section.
     pub post_shader: PostShaderConfig,
+    /// The chords that have been moved off their defaults, by command id
+    /// (rox's keymap registry). Only what differs is written: a command
+    /// with no entry here runs the chords it ships with, so a default that
+    /// changes in a later build reaches everyone who never touched it.
+    ///
+    /// An entry holding an empty list is a command bound to nothing on
+    /// purpose. That's the state the absent entry can't express, and it's
+    /// why unbinding writes the empty list instead of removing the key.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub keymap: BTreeMap<String, Vec<String>>,
 }
 
 /// A weights file outside the catalog, as the settings file carries it. The
@@ -1047,6 +1067,21 @@ pub fn set_os_decorations(on: bool) {
     OS_DECORATIONS.store(on, Ordering::Relaxed);
 }
 
+/// The live resize-border flag, the decorations flag's twin. Windows only:
+/// everywhere else the edges of a borderless window already do nothing, so
+/// there's no border to take away and the flag never reaches a window.
+static RESIZE_BORDER: AtomicBool = AtomicBool::new(true);
+
+pub fn resize_border() -> bool {
+    RESIZE_BORDER.load(Ordering::Relaxed)
+}
+
+/// Flip the live flag. Persisting is the caller's, and so is pushing it at
+/// the open workspace windows (`workspace::apply_resize_border`).
+pub fn set_resize_border(on: bool) {
+    RESIZE_BORDER.store(on, Ordering::Relaxed);
+}
+
 /// The live panel-seams flag lives in the dock crate, where the resize
 /// handles render; these wrappers keep the settings surface in one place.
 pub fn seams() -> bool {
@@ -1057,6 +1092,26 @@ pub fn seams() -> bool {
 /// is the caller's, startup seeds from the file through here too.
 pub fn set_seams(on: bool, cx: &mut App) {
     rox_dock::resizable::set_seams(on);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
+/// The live design-mode flag, kept in the dock crate for the same reason
+/// the seams flag is: the tab groups read it per frame and can't reach app
+/// settings from there. These wrappers keep the settings surface in one
+/// place.
+pub fn design_mode() -> bool {
+    rox_dock::design_mode()
+}
+
+/// Flip design mode and repaint. Every surface that offers a layout edit -
+/// the panel menus, the in-panel controls, the dock's own drag and close -
+/// reads the flag as it renders, so the repaint is all it takes.
+/// Persisting is the caller's, startup seeds from the file through here
+/// too.
+pub fn set_design_mode(on: bool, cx: &mut App) {
+    rox_dock::set_design_mode(on);
     for window in cx.windows() {
         window.update(cx, |_, window, _| window.refresh()).ok();
     }
@@ -1221,7 +1276,9 @@ fn clamp_knob(value: f32, max: f32) -> f32 {
 }
 
 /// ADR 13's frame knobs lifted to the app: the cell margin, the inner
-/// padding, the corner rounding, and the border width, all in px. These
+/// padding, the corner rounding, and the border width, all in px. Margin,
+/// padding, and border carry a value per side, written as one number
+/// while the four match. These
 /// are the defaults every panel inherits; a panel's own [`PanelTheme`]
 /// overrides any of them knob for knob. Zero each by default, so a fresh
 /// look carries no frame until asked, matching what an unthemed panel drew
@@ -1229,29 +1286,29 @@ fn clamp_knob(value: f32, max: f32) -> f32 {
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Frame {
-    pub margin: f32,
-    pub padding: f32,
+    pub margin: Sides,
+    pub padding: Sides,
     pub rounding: f32,
-    pub border: f32,
+    pub border: Sides,
 }
 
 impl Frame {
     /// Every knob off.
     pub const DEFAULT: Frame = Frame {
-        margin: 0.0,
-        padding: 0.0,
+        margin: Sides::ZERO,
+        padding: Sides::ZERO,
         rounding: 0.0,
-        border: 0.0,
+        border: Sides::ZERO,
     };
 
     /// The knobs held to their ceilings, a non-finite one reset to zero,
     /// for a hand-edited file.
     pub fn clamped(self) -> Frame {
         Frame {
-            margin: clamp_knob(self.margin, MARGIN_MAX),
-            padding: clamp_knob(self.padding, PADDING_MAX),
+            margin: self.margin.clamped(MARGIN_MAX),
+            padding: self.padding.clamped(PADDING_MAX),
             rounding: clamp_knob(self.rounding, ROUNDING_MAX),
-            border: clamp_knob(self.border, BORDER_MAX),
+            border: self.border.clamped(BORDER_MAX),
         }
     }
 }
@@ -2308,6 +2365,12 @@ pub struct AppearanceBundle {
     /// missing buttons. Child windows (settings, popouts, editors) keep
     /// the OS chrome either way.
     pub os_decorations: bool,
+    /// Whether the main windows resize by dragging their edges. Windows
+    /// only, and only once the OS decorations are off: with them on the OS
+    /// owns the frame and its border. Off keeps the frame itself, so the
+    /// shadow, snap layouts and Win+arrow still work, and only the resize
+    /// cursor at the edges goes away.
+    pub resize_border: bool,
 }
 
 impl Default for AppearanceBundle {
@@ -2325,6 +2388,7 @@ impl Default for AppearanceBundle {
             quick_play: QuickPlayConfig::default(),
             hide_menubar: false,
             os_decorations: true,
+            resize_border: true,
         }
     }
 }
@@ -2822,6 +2886,7 @@ impl Default for Settings {
             replay_gain: ReplayGainSettings::default(),
             output: OutputSettings::default(),
             quit_to_tray: false,
+            design_mode: true,
             check_updates: true,
             experimental: false,
             acoustic_analysis: false,
@@ -2831,6 +2896,7 @@ impl Default for Settings {
             acoustic_ml_model: acoustic::PANNS_CNN10.to_string(),
             acoustic_local_model: None,
             post_shader: PostShaderConfig::default(),
+            keymap: BTreeMap::new(),
         }
     }
 }
@@ -3103,10 +3169,10 @@ mod tests {
         });
         look.appearance.surface_opacity = 0.5;
         look.appearance.frame = Frame {
-            margin: 4.0,
-            padding: 8.0,
+            margin: Sides::all(4.0),
+            padding: Sides::all(8.0),
             rounding: 12.0,
-            border: 1.0,
+            border: Sides::all(1.0),
         };
         look.appearance.art_theming = true;
         look.appearance.keep_theme = true;
@@ -3131,7 +3197,7 @@ mod tests {
         assert_eq!(look.name, "mine");
         assert_eq!(look.appearance.surface_opacity, 0.5);
         assert_eq!(look.appearance.frame.rounding, 12.0);
-        assert_eq!(look.appearance.frame.padding, 8.0);
+        assert_eq!(look.appearance.frame.padding, Sides::all(8.0));
         // The theme pick is the user's alone; a bundle never moves it.
         assert!(dst.theme == Theme::default());
         // Nor the font size: a readability choice, not a look to hand around.
@@ -3913,17 +3979,21 @@ mod tests {
     #[test]
     fn frame_clamps_each_knob_to_its_ceiling() {
         let clamped = Frame {
-            margin: MARGIN_MAX + 100.0,
-            padding: -5.0,
+            margin: Sides::all(MARGIN_MAX + 100.0),
+            padding: Sides::all(-5.0),
             rounding: ROUNDING_MAX + 1.0,
-            border: BORDER_MAX + 10.0,
+            // A split knob is held side by side, not by its widest.
+            border: Sides::all(1.0).with(palette::Side::Top, BORDER_MAX + 10.0),
         }
         .clamped();
-        assert_eq!(clamped.margin, MARGIN_MAX);
+        assert_eq!(clamped.margin, Sides::all(MARGIN_MAX));
         // A negative knob floors at zero, not its ceiling.
-        assert_eq!(clamped.padding, 0.0);
+        assert_eq!(clamped.padding, Sides::ZERO);
         assert_eq!(clamped.rounding, ROUNDING_MAX);
-        assert_eq!(clamped.border, BORDER_MAX);
+        assert_eq!(
+            clamped.border,
+            Sides::all(1.0).with(palette::Side::Top, BORDER_MAX)
+        );
     }
 
     /// A non-finite knob resets to zero rather than propagating NaN into a
@@ -3931,17 +4001,17 @@ mod tests {
     #[test]
     fn frame_resets_non_finite_knobs() {
         let clamped = Frame {
-            margin: f32::NAN,
-            padding: f32::INFINITY,
+            margin: Sides::all(f32::NAN),
+            padding: Sides::all(f32::INFINITY),
             rounding: 6.0,
-            border: 2.0,
+            border: Sides::all(2.0),
         }
         .clamped();
-        assert_eq!(clamped.margin, 0.0);
-        assert_eq!(clamped.padding, 0.0);
+        assert_eq!(clamped.margin, Sides::ZERO);
+        assert_eq!(clamped.padding, Sides::ZERO);
         // Finite, in-range knobs stand.
         assert_eq!(clamped.rounding, 6.0);
-        assert_eq!(clamped.border, 2.0);
+        assert_eq!(clamped.border, Sides::all(2.0));
     }
 
     /// A round-trip through the JSON file format preserves the fields a
@@ -4248,6 +4318,11 @@ mod tests {
         // A field absent from the file falls back to its default.
         assert!(s.watch_library);
         assert!(s.theme == Theme::default());
+        // Design mode in particular: every settings file written before it
+        // existed is missing the key, and those installs must keep the
+        // editing controls they have always had rather than lose them to a
+        // default of off.
+        assert!(s.design_mode);
 
         // And the same for a shard, where a missing volume must not read as
         // silence.

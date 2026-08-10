@@ -4,7 +4,7 @@
 //! its catalog, or its windows - a builder takes what it draws and a
 //! handler to call, and the caller owns everything else.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -26,6 +26,9 @@ pub mod axis;
 pub mod config;
 
 pub mod wall;
+
+mod font_picker;
+pub use font_picker::font_picker;
 
 mod gesture;
 pub use gesture::*;
@@ -1089,12 +1092,19 @@ where
     let label = picked.map(|(_, label)| label.clone()).unwrap_or_default();
     let current = picked.map(|(key, _)| key.clone());
     let weak = cx.entity().downgrade();
+    // A list past a screenful runs off the bottom of the window and clips,
+    // with nothing to reach the rest. gpui-component only
+    // turns the scrollbar on for menus built through its own `with_menu_items`,
+    // which the builder below doesn't go through, so cap the height and hand it
+    // a scrollbar here. Same threshold upstream uses.
+    let scrollable = options.len() > 20;
     Button::new(id)
         .label(label)
         .small()
         .outline()
         .disabled(disabled)
         .dropdown_menu(move |mut menu, _, _| {
+            menu = menu.scrollable(scrollable);
             for (key, label) in options.iter() {
                 let checked = current.as_ref() == Some(key);
                 let key = key.clone();
@@ -1112,37 +1122,6 @@ where
             }
             menu
         })
-}
-
-/// A font-family picker: the shared dropdown over the installed families,
-/// with a Default at the head that clears the override back to the app
-/// font. `current` is the panel's stored family, None meaning inherit.
-pub fn font_picker<P: 'static>(
-    id: &'static str,
-    current: Option<String>,
-    apply: impl Fn(&mut P, Option<String>, &mut Context<P>) + Clone + 'static,
-    cx: &mut Context<P>,
-) -> impl IntoElement {
-    // The installed families don't change over a session, so enumerate and sort
-    // them once and share the list. This runs on every settings render, slider
-    // scrubs included, where re-listing and re-sorting every font each frame was
-    // pure waste.
-    static FONTS: OnceLock<Arc<Vec<SharedString>>> = OnceLock::new();
-    let fonts = FONTS
-        .get_or_init(|| {
-            let mut fonts = cx.text_system().all_font_names();
-            fonts.sort();
-            fonts.dedup();
-            Arc::new(fonts.into_iter().map(SharedString::from).collect())
-        })
-        .clone();
-    let mut options: Vec<(Option<String>, SharedString)> = vec![(None, "Default".into())];
-    options.extend(
-        fonts
-            .iter()
-            .map(|name| (Some(name.to_string()), name.clone())),
-    );
-    picker(id, current, options, false, apply, cx)
 }
 
 /// The chrome shared by the segmented pickers and the toggle groups: a

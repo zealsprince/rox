@@ -13,8 +13,8 @@
 //! shader it exists to undo.
 
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, EntityId, Global, WeakEntity, Window,
-    WindowHandle,
+    div, prelude::*, px, size, App, Bounds, Context, Entity, EntityId, Global, Subscription,
+    WeakEntity, Window, WindowHandle,
 };
 use gpui_component::Root;
 
@@ -23,6 +23,7 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel;
 use rox_panel_kit::ui::{chord, kbd_line, small_button, Seg};
+use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 
 /// The caller's after-revert refresh, boxed for the entity to carry.
 type OnReverted = Box<dyn FnOnce(&mut App)>;
@@ -37,11 +38,13 @@ struct OpenConfirm(Option<(WindowHandle<Root>, WeakEntity<ShaderConfirm>)>);
 impl Global for OpenConfirm {}
 
 /// Open the confirm for a change whose pre-apply state was `prior`, or
-/// bring the open one forward. `on_reverted` runs after a revert so the
+/// bring the open one forward. `now_art` is the shared art bake this
+/// window's backdrop paints from. `on_reverted` runs after a revert so the
 /// caller can refresh whatever mirrors the reverted fields.
 pub fn open(
     prior: PostShaderConfig,
     player: EntityId,
+    now_art: Entity<NowPlayingArt>,
     on_reverted: impl FnOnce(&mut App) + 'static,
     cx: &mut App,
 ) {
@@ -58,7 +61,7 @@ pub fn open(
     let handle = {
         let view = view.clone();
         rox_panel_api::panel::open_fixed_window(cx, "rox - Overlay Shader", bounds, move |_, cx| {
-            let entity = cx.new(|cx| ShaderConfirm::new(prior, player, on_reverted, cx));
+            let entity = cx.new(|cx| ShaderConfirm::new(prior, player, now_art, on_reverted, cx));
             *view.borrow_mut() = Some(entity.clone());
             entity
         })
@@ -104,25 +107,37 @@ struct ShaderConfirm {
     prior: PostShaderConfig,
     /// The front workspace's player, for the window tint.
     player: EntityId,
+    /// The shared art bake and this window's slice of the backdrop, so it
+    /// backs with the playing track's art like every other window.
+    now_art: Entity<NowPlayingArt>,
+    backdrop: WindowBackdrop,
     /// Set by Keep alone. The release hook reads it to tell a confirmed
     /// close from every other way the window can go away.
     kept: bool,
     /// The caller's after-revert refresh, taken by the release hook.
     on_reverted: Option<OnReverted>,
+    /// This window pumps its own frames, so the backdrop needs its own
+    /// wake on a new bake.
+    _backdrop_changed: Subscription,
 }
 
 impl ShaderConfirm {
     fn new(
         prior: PostShaderConfig,
         player: EntityId,
+        now_art: Entity<NowPlayingArt>,
         on_reverted: impl FnOnce(&mut App) + 'static,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Self {
+        let _backdrop_changed = cx.observe(&now_art, |_, _, cx| cx.notify());
         ShaderConfirm {
             prior,
             player,
+            now_art,
+            backdrop: WindowBackdrop::default(),
             kept: false,
             on_reverted: Some(Box::new(on_reverted)),
+            _backdrop_changed,
         }
     }
 
@@ -149,50 +164,61 @@ impl Render for ShaderConfirm {
                 .flex()
                 .flex_col()
                 .size_full()
-                .p(tokens::SPACE_MD)
-                .gap(tokens::SPACE_MD)
                 .bg(palette::bg_elevated())
                 .text_color(palette::text_bright())
                 .text_sm()
                 .when_some(rox_core::settings::app_font(), |d, font| {
                     d.font_family(font)
                 })
-                .child("Keep this screen shader?")
-                .child(
-                    kbd_line([
-                        Seg::Text(
-                            "A shader can make windows hard to use. Revert or close this \
-                             window to go back to how things were."
-                                .into(),
-                        ),
-                        Seg::Key(chord("Shift+X")),
-                        Seg::Text("toggles the shader from anywhere.".into()),
-                    ])
-                    .text_xs(),
-                )
-                .child(div().flex_1())
+                // The backdrop paints first, under the copy, so a thinned
+                // surface backs with the playing track's art like every
+                // other window rather than sinking into black.
+                .children(self.backdrop.layer(&self.now_art, window, cx))
                 .child(
                     div()
+                        .flex_1()
+                        .min_h_0()
                         .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_end()
-                        .gap(tokens::SPACE_SM)
-                        .child(small_button(
-                            "Revert",
-                            icons::CLOSE,
-                            false,
-                            cx.listener(|this, _, _, cx| this.close(cx)),
-                        ))
-                        .child(small_button(
-                            "Keep",
-                            icons::CHECK,
-                            false,
-                            cx.listener(|this, _, _, cx| {
-                                this.kept = true;
-                                this.close(cx);
-                            }),
-                        )),
+                        .flex_col()
+                        .p(tokens::SPACE_MD)
+                        .gap(tokens::SPACE_MD)
+                        .child("Keep this screen shader?")
+                        .child(
+                            kbd_line([
+                                Seg::Text(
+                                    "A shader can make windows hard to use. Revert or close \
+                                     this window to go back to how things were."
+                                        .into(),
+                                ),
+                                Seg::Key(chord("Shift+X")),
+                                Seg::Text("toggles the shader from anywhere.".into()),
+                            ])
+                            .text_xs(),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_end()
+                                .gap(tokens::SPACE_SM)
+                                .child(small_button(
+                                    "Revert",
+                                    icons::CLOSE,
+                                    false,
+                                    cx.listener(|this, _, _, cx| this.close(cx)),
+                                ))
+                                .child(small_button(
+                                    "Keep",
+                                    icons::CHECK,
+                                    false,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.kept = true;
+                                        this.close(cx);
+                                    }),
+                                )),
+                        ),
                 )
                 .into_any_element()
         })

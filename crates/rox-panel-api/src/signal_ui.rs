@@ -12,10 +12,12 @@
 //!
 //! Shader slots don't route through [`bindable_row`] - a slot has no knob
 //! of its own to hang a route under, and three different windows edit the
-//! same list. That editor is [`routes`], built over a borrowed slice and a
-//! write-back closure rather than a host trait.
+//! same list. That editor is [`routes`], with [`slots`] under it for the
+//! live readout and the hand-set knobs, both built over a borrowed slice
+//! and a write-back closure rather than a host trait.
 
 pub mod routes;
+pub mod slots;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};

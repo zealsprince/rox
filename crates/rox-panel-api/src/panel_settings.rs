@@ -27,7 +27,7 @@ use gpui_component::{Icon, Root, Sizable as _};
 use crate::panel::{self, shader, AppState, PanelSettings, ScrubState};
 use rox_core::settings;
 use rox_design::assets::icons;
-use rox_design::palette::{self, BorderEdge, BorderEdges, Palette, PanelTheme, ROLES};
+use rox_design::palette::{self, Palette, PanelTheme, Side, Sides, ROLES};
 use rox_design::tokens;
 use rox_services::backdrop::WindowBackdrop;
 // The frame sliders' ceilings live in settings, shared with the app
@@ -37,7 +37,8 @@ use crate::signal_ui::{self, routes::RouteEditState};
 use rox_core::settings::{BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX};
 use rox_dock::TabPanel;
 use rox_panel_kit::ui::{
-    self as settings_ui, grid_columns, kbd_line, section, sidebar, small_button, Seg, SECTION_GAP,
+    self as settings_ui, grid_columns, kbd_line, section, sidebar, small_button, Seg, SidesScrub,
+    SECTION_GAP,
 };
 use rox_viz::signal::Route;
 
@@ -397,11 +398,11 @@ pub struct ShaderSource<'a, P: 'static> {
     /// Clearing the shader, for a surface where having none is a state
     /// worth offering. Some puts a None entry at the top of the list.
     pub clear: Option<fn(&mut P, &mut Context<P>)>,
-    /// Offer only shaders that declare `// @overlay`. Set by the surface
-    /// that hands over the whole window, where a scene doesn't decorate the
-    /// app so much as replace it. A panel leaves this false: covering a
-    /// panel's own body is a normal thing to want, and the Shader panel is
-    /// nothing but that.
+    /// Offer only shaders that declare `// @overlay`. Set by every surface
+    /// that has an app underneath it to lose: the whole window, and a
+    /// panel whose own body is the thing a scene would paint over. The
+    /// Shader panel is the one caller that leaves this false, because
+    /// covering that body is the entire point of it.
     ///
     /// It filters what can be picked, never what's installed. A config that
     /// arrived holding a scene keeps running and keeps its name on the
@@ -644,6 +645,13 @@ pub fn rename_item<P: PanelSettings>(
     window: &mut Window,
     cx: &mut App,
 ) -> PopupMenu {
+    // Out of design mode the section opens on Panel Settings alone: the
+    // flyout that adds a sibling and the two rows that reshape this panel
+    // are layout edits, and the divider and header still earn their place
+    // separating the panel's own rows from the one that survives.
+    if !settings::design_mode() {
+        return menu.separator().label("Panel");
+    }
     let menu = crate::openers::add_panel_submenu(menu, tab_panel, window, cx);
     let saving = panel.clone();
     let panel = panel.clone();
@@ -981,6 +989,22 @@ struct SizeLimits {
     max_height: Option<f32>,
 }
 
+/// Flatten a knob's sides onto the widest of them. A knob already
+/// uniform stays exactly as it was, override or not, so linking one that
+/// was only ever linked doesn't quietly fork it off the app default.
+fn link_knob(own: &mut Option<Sides>, app: Sides) {
+    let shown = own.unwrap_or(app);
+    if shown.uniform().is_none() {
+        *own = Some(shown.linked());
+    }
+}
+
+/// Whether a knob opens split: the sides already differ, so the row has
+/// to show them apart or the numbers on screen would be a lie.
+fn split_knob(value: Sides) -> bool {
+    value.uniform().is_none()
+}
+
 /// The window content: the panel's own pages, then the shared Appearance
 /// page the window itself provides.
 struct PanelSettingsWindow<P: PanelSettings> {
@@ -995,15 +1019,26 @@ struct PanelSettingsWindow<P: PanelSettings> {
     opacity_scrub: ScrubState,
     /// The one readout being typed into across this window's sliders.
     value_edit: panel::ValueEdit,
-    margin_scrub: ScrubState,
-    padding_scrub: ScrubState,
+    margin_scrub: SidesScrub,
+    padding_scrub: SidesScrub,
     rounding_scrub: ScrubState,
-    border_scrub: ScrubState,
+    border_scrub: SidesScrub,
+    /// Which four-sided knobs the user has open per side. The window's
+    /// own state, not the panel's: a knob whose sides happen to match is
+    /// still split while it's being edited that way. Seeded from the
+    /// knobs that already differ, so reopening shows what's set.
+    margin_split: bool,
+    padding_split: bool,
+    border_split: bool,
     font_scale_scrub: ScrubState,
     /// The Shader page's route editor state: span sliders and which rows
     /// stand open, kept in step with the panel's route list. Ephemeral on
     /// purpose - a fold is where you are, not what you set.
     shader_routes: RouteEditState,
+    /// One drag state per shader slot, for the Shader page's hand-set
+    /// knobs. Sized once at [`SLOTS`](shader::SLOTS), since the slot count
+    /// is the uniform block's width rather than anything the config says.
+    shader_slots: Vec<ScrubState>,
     /// The name a save-to-pool would land under, while it's being typed.
     shader_name: ShaderNameField,
     /// The size limit fields, typed in px; empty means no limit.
@@ -1116,18 +1151,25 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         let _min_height_events = watch(&min_height_input, Self::apply_min_height, window, cx);
         let _max_width_events = watch(&max_width_input, Self::apply_max_width, window, cx);
         let _max_height_events = watch(&max_height_input, Self::apply_max_height, window, cx);
+        // The frame rows open split where the knob's sides already differ,
+        // whether the panel set them or inherited them.
+        let app_frame = settings::app_frame();
         PanelSettingsWindow {
             panel,
             page: 0,
             pickers,
             opacity_scrub: ScrubState::default(),
             value_edit: panel::ValueEdit::default(),
-            margin_scrub: ScrubState::default(),
-            padding_scrub: ScrubState::default(),
+            margin_scrub: SidesScrub::default(),
+            padding_scrub: SidesScrub::default(),
             rounding_scrub: ScrubState::default(),
-            border_scrub: ScrubState::default(),
+            border_scrub: SidesScrub::default(),
+            margin_split: split_knob(chrome.theme.margin.unwrap_or(app_frame.margin)),
+            padding_split: split_knob(chrome.theme.padding.unwrap_or(app_frame.padding)),
+            border_split: split_knob(chrome.theme.border_sides(app_frame.border)),
             font_scale_scrub: ScrubState::default(),
             shader_routes: RouteEditState::default(),
+            shader_slots: (0..shader::SLOTS).map(|_| ScrubState::default()).collect(),
             shader_name: ShaderNameField::default(),
             min_width_input,
             min_height_input,
@@ -1348,24 +1390,86 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     }
 
     // The frame setters: the strip fraction mapped onto whole px, forked
-    // as this panel's own override. Zero is a real override, not a clear -
-    // it squares the panel back off over a rounded app default; the reset
-    // button is the way back to following the app.
+    // as this panel's own override. A side of None comes off the linked
+    // strip and sets all four; a side names the one that moved, and the
+    // rest fork at whatever the row was already showing. Zero is a real
+    // override, not a clear - it squares the panel back off over a
+    // rounded app default; the reset button is the way back to following
+    // the app.
 
-    fn set_margin(&mut self, value: f32, cx: &mut Context<Self>) {
-        self.update_theme(|theme| theme.margin = Some(value), cx);
+    fn set_margin(&mut self, side: Option<Side>, value: f32, cx: &mut Context<Self>) {
+        let app = settings::app_frame().margin;
+        self.update_theme(
+            move |theme| theme.margin = Some(theme.margin.unwrap_or(app).edited(side, value)),
+            cx,
+        );
     }
 
-    fn set_padding(&mut self, value: f32, cx: &mut Context<Self>) {
-        self.update_theme(|theme| theme.padding = Some(value), cx);
+    fn set_padding(&mut self, side: Option<Side>, value: f32, cx: &mut Context<Self>) {
+        let app = settings::app_frame().padding;
+        self.update_theme(
+            move |theme| theme.padding = Some(theme.padding.unwrap_or(app).edited(side, value)),
+            cx,
+        );
     }
 
     fn set_rounding(&mut self, value: f32, cx: &mut Context<Self>) {
         self.update_theme(|theme| theme.rounding = Some(value), cx);
     }
 
-    fn set_border(&mut self, value: f32, cx: &mut Context<Self>) {
-        self.update_theme(|theme| theme.border = Some(value), cx);
+    /// The border's setter, and where an older config's edge mask stops
+    /// being a mask: what it was trimming bakes into the widths that land
+    /// here, so the panel keeps its look with nothing left to fold.
+    fn set_border(&mut self, side: Option<Side>, value: f32, cx: &mut Context<Self>) {
+        let app = settings::app_frame().border;
+        self.update_theme(
+            move |theme| {
+                theme.border = Some(theme.border_sides(app).edited(side, value));
+                theme.legacy_border_edges = None;
+            },
+            cx,
+        );
+    }
+
+    // The link toggles: splitting only opens the sides up, so nothing
+    // moves until one does. Linking is a real edit - it flattens the
+    // sides onto the widest of them, forking the knob if the panel was
+    // still following a split app default.
+
+    fn split_margin(&mut self, split: bool, cx: &mut Context<Self>) {
+        self.margin_split = split;
+        let app = settings::app_frame().margin;
+        if !split {
+            self.update_theme(move |theme| link_knob(&mut theme.margin, app), cx);
+        }
+        cx.notify();
+    }
+
+    fn split_padding(&mut self, split: bool, cx: &mut Context<Self>) {
+        self.padding_split = split;
+        let app = settings::app_frame().padding;
+        if !split {
+            self.update_theme(move |theme| link_knob(&mut theme.padding, app), cx);
+        }
+        cx.notify();
+    }
+
+    fn split_border(&mut self, split: bool, cx: &mut Context<Self>) {
+        self.border_split = split;
+        let app = settings::app_frame().border;
+        if !split {
+            self.update_theme(
+                move |theme| {
+                    let shown = theme.border_sides(app);
+                    if shown.uniform().is_none() {
+                        theme.border = Some(shown.linked());
+                    }
+                    theme.legacy_border_edges = None;
+                },
+                cx,
+            );
+        }
+        cx.notify();
     }
 
     // The per-knob resets: drop just this knob's override so it follows
@@ -1384,16 +1488,10 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
     }
 
     fn reset_border(&mut self, cx: &mut Context<Self>) {
-        self.update_theme(|theme| theme.border = None, cx);
-    }
-
-    /// Flip one side of the border mask. All four on is the default
-    /// look, so it stores as no mask at all and the config stays clean.
-    fn toggle_border_edge(&mut self, edge: BorderEdge, cx: &mut Context<Self>) {
         self.update_theme(
             |theme| {
-                let edges = theme.border_edges.unwrap_or(BorderEdges::ALL).toggled(edge);
-                theme.border_edges = (edges != BorderEdges::ALL).then_some(edges);
+                theme.border = None;
+                theme.legacy_border_edges = None;
             },
             cx,
         );
@@ -1488,6 +1586,50 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .child(slider)
     }
 
+    /// One four-sided frame knob's row: the link toggle and its slider or
+    /// sliders, with the reset that drops the whole knob back to
+    /// following the app once it's forked. `shown` is what the row draws,
+    /// the panel's own knob or the app default under it.
+    #[allow(clippy::too_many_arguments)]
+    fn frame_sides(
+        &self,
+        scrub: &SidesScrub,
+        shown: Sides,
+        overridden: bool,
+        split: bool,
+        max: f32,
+        on_split: fn(&mut Self, bool, &mut Context<Self>),
+        apply: fn(&mut Self, Option<Side>, f32, &mut Context<Self>),
+        reset: fn(&mut Self, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let control = settings_ui::sides_control(
+            scrub,
+            &self.value_edit,
+            shown,
+            split,
+            // The strip's top is the everyday reach, not the law: a typed
+            // value runs past it and the setters take what lands.
+            settings_ui::span(0., max, " px"),
+            on_split,
+            apply,
+            cx,
+        );
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .when(overridden, |row| {
+                row.child(settings_ui::icon_button(
+                    icons::REFRESH_CW,
+                    false,
+                    cx.listener(move |this, _, _, cx| reset(this, cx)),
+                ))
+            })
+            .child(control)
+    }
+
     /// Drop every color override: the panel follows the app palette
     /// whole again, and the swatches show the inherited colors. The
     /// frame and opacity keep their own resets, so recoloring can start
@@ -1562,7 +1704,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 theme.padding = None;
                 theme.rounding = None;
                 theme.border = None;
-                theme.border_edges = None;
+                theme.legacy_border_edges = None;
             },
             cx,
         );
@@ -1791,10 +1933,11 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             // A panel is allowed to carry no surface shader at all, unlike
             // the Shader panel, whose whole body is the thing.
             clear: Some(|this: &mut Self, cx| this.clear_shader(cx)),
-            // A panel's own body is a fine thing to cover: that's what Wall
-            // and Sleeve do in Critters. The window is the surface where
-            // that stops being a look and starts being a problem.
-            overlays_only: false,
+            // A shader here rides a panel that's already drawing something
+            // - a queue, a cover, a set of transport buttons - so a scene
+            // doesn't decorate that body, it hides it. The Shader panel is
+            // where a full-cover look belongs, and it offers every shader.
+            overlays_only: true,
             use_example: |this: &mut Self, index, cx| this.use_shader_example(index, cx),
             use_named: |this: &mut Self, name, cx| this.use_pool_shader(name, cx),
             choose_file: |this: &mut Self, window, cx| this.pick_shader_file(window, cx),
@@ -1822,6 +1965,17 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ),
             ))
             .child(picked);
+        // The filter above only decides what can be picked, so a config
+        // that arrived from a bundle or an older build can still be wearing
+        // a scene. Say so rather than leaving someone to wonder why the
+        // panel under it went missing.
+        if enabled && !running.trim().is_empty() && !shader::overlay(&running) {
+            source = source.child(div().text_xs().text_color(palette::text_muted()).child(
+                "This shader is a scene, so it covers the panel's body rather than \
+                         drawing over it. It came from a bundle or an older config; the list \
+                         above only offers shaders that leave the panel readable.",
+            ));
+        }
         if let Some(error) = error {
             source = source.child(
                 div()
@@ -1865,6 +2019,22 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         };
         let add = editor.add_button(cx);
 
+        // The same slot list the Shader panel's Bindings page and the app's
+        // Overlay Shader section wear, over this panel's own config: the
+        // routed slots read out live, the rest are hand-set knobs.
+        let slots = signal_ui::slots::SlotList {
+            hub: &hub,
+            routes: &shader.routes,
+            manual: &shader.manual,
+            labels: &labels,
+            value_edit: &self.value_edit,
+            scrubs: &self.shader_slots,
+            set: Arc::new(|this: &mut Self, slot, value, cx| {
+                this.set_shader_manual(slot, value, cx)
+            }),
+        }
+        .render(cx);
+
         div()
             .flex()
             .flex_col()
@@ -1876,6 +2046,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 Some(add.into_any_element()),
                 editor.list(cx),
             ))
+            .child(section("Slots", None, slots))
     }
 
     /// Write a hot-reloaded source back into the panel's config, so the
@@ -1934,6 +2105,26 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             this.update(cx, |_, cx| cx.notify()).ok();
         })
         .detach();
+    }
+
+    /// One hand-set slot edit, straight onto the panel's shader config.
+    /// Not through [`edit_shader`](Self::edit_shader): that clears the
+    /// stored compile message because the source moved under it, and a knob
+    /// drag moves no source - a broken shader would go quiet mid-drag and
+    /// have nothing to make it speak up again.
+    fn set_shader_manual(&mut self, slot: usize, value: f32, cx: &mut Context<Self>) {
+        let Some(panel) = self.panel.upgrade() else {
+            return;
+        };
+        panel.update(cx, |panel, cx| {
+            let shader = panel
+                .chrome_mut()
+                .shader
+                .get_or_insert_with(shader::PanelShader::default);
+            shader::set_manual_value(&mut shader.manual, slot, value);
+            cx.notify();
+        });
+        cx.notify();
     }
 
     /// Browse for a shader file. The source is copied into the panel's
@@ -2208,11 +2399,13 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .child(panel::setting_row(
                 "Margin",
                 Some("Pull the panel in from its cell, the backdrop showing through the gap"),
-                self.frame_slider(
+                self.frame_sides(
                     &self.margin_scrub,
-                    theme.margin,
-                    app.margin,
+                    theme.margin.unwrap_or(app.margin),
+                    theme.margin.is_some(),
+                    self.margin_split,
                     MARGIN_MAX,
+                    Self::split_margin,
                     Self::set_margin,
                     Self::reset_margin,
                     cx,
@@ -2221,11 +2414,13 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .child(panel::setting_row(
                 "Padding",
                 Some("Space inside the panel's edge, kept in its own background"),
-                self.frame_slider(
+                self.frame_sides(
                     &self.padding_scrub,
-                    theme.padding,
-                    app.padding,
+                    theme.padding.unwrap_or(app.padding),
+                    theme.padding.is_some(),
+                    self.padding_split,
                     PADDING_MAX,
+                    Self::split_padding,
                     Self::set_padding,
                     Self::reset_padding,
                     cx,
@@ -2246,34 +2441,18 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             ))
             .child(panel::setting_row(
                 "Border",
-                Some("A line around the panel's edge, in the Border role's color"),
-                self.frame_slider(
+                Some("A line around the panel's edge, in the Border role's color; a side at zero draws none"),
+                self.frame_sides(
                     &self.border_scrub,
-                    theme.border,
-                    app.border,
+                    theme.border_sides(app.border),
+                    theme.border.is_some() || theme.legacy_border_edges.is_some(),
+                    self.border_split,
                     BORDER_MAX,
+                    Self::split_border,
                     Self::set_border,
                     Self::reset_border,
                     cx,
                 ),
-            ))
-            .child(panel::setting_row(
-                "Border edges",
-                Some("Which sides the border draws on"),
-                {
-                    let edges = theme.border_edges.unwrap_or(BorderEdges::ALL);
-                    panel::icon_toggles(
-                        &[
-                            (icons::PANEL_LEFT, BorderEdge::Left),
-                            (icons::PANEL_TOP, BorderEdge::Top),
-                            (icons::PANEL_BOTTOM, BorderEdge::Bottom),
-                            (icons::PANEL_RIGHT, BorderEdge::Right),
-                        ],
-                        move |edge| edges.get(edge),
-                        Self::toggle_border_edge,
-                        cx,
-                    )
-                },
             ));
 
         let overridden = |name: &str| theme.colors.contains_key(name);

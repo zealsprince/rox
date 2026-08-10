@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    canvas, div, prelude::*, px, svg, AnyElement, App, Context, Div, EntityId, EventEmitter,
+    canvas, div, prelude::*, px, AnyElement, App, Context, Div, EntityId, EventEmitter,
     FocusHandle, Focusable, PathPromptOptions, SharedString, Subscription, UserShaderId,
     WeakEntity, Window,
 };
@@ -44,7 +44,7 @@ use crate::panel::{
 };
 use crate::panel_settings;
 use crate::settings::ui::{self as settings_ui, section, SECTION_GAP};
-use crate::signal_ui::{self, routes::RouteEditState, RouteTargets};
+use crate::signal_ui::{self, routes::RouteEditState};
 
 /// The builtin shaders, so a fresh panel draws something before anyone has
 /// written a line of WGSL. They live beside the surface shader's pieces
@@ -112,37 +112,6 @@ impl Default for ShaderConfig {
             routes: Vec::new(),
             manual: Vec::new(),
             run_when_idle: false,
-        }
-    }
-}
-
-/// The hand-set value a slot holds, if one was set. The page reads slots
-/// through the resolver, which sees these as seeds, so only the tests ask
-/// directly.
-#[cfg(test)]
-fn manual_value(manual: &[(u8, f32)], slot: usize) -> Option<f32> {
-    manual
-        .iter()
-        .find(|(at, _)| *at as usize == slot)
-        .map(|(_, value)| *value)
-}
-
-/// Set or replace a slot's hand-set value.
-fn set_manual_value(manual: &mut Vec<(u8, f32)>, slot: usize, value: f32) {
-    let value = value.clamp(0.0, 1.0);
-    match manual.iter_mut().find(|(at, _)| *at as usize == slot) {
-        Some(entry) => entry.1 = value,
-        None => manual.push((slot as u8, value)),
-    }
-}
-
-/// Lay the hand-set values into the slots before the routes resolve over
-/// them: a route wins while it's there, and the hand-set value holds the
-/// slot when it isn't.
-fn seed_manual(targets: &mut SlotTargets, manual: &[(u8, f32)]) {
-    for (slot, value) in manual {
-        if let Some(entry) = targets.slots.get_mut(*slot as usize) {
-            *entry = value.clamp(0.0, 1.0);
         }
     }
 }
@@ -867,11 +836,6 @@ impl ShaderPanel {
         // slot names rather than the inline copy it left behind.
         let running = self.running();
         let labels = surface::slot_labels(&running);
-        // This frame's resolved values, so the readout says what is
-        // actually reaching the shader rather than what was set.
-        let mut resolved = SlotTargets::default();
-        seed_manual(&mut resolved, &self.config.manual);
-        signal_ui::apply_routes(&self.config.routes, &self.state.signals, &mut resolved);
         self.routes_ui.sync(self.config.routes.len());
 
         let hub = self.state.signals.clone();
@@ -892,44 +856,19 @@ impl ShaderPanel {
         };
         let add = editor.add_button(cx);
 
-        // Every slot the shader can read is worth showing whether anything
-        // feeds it or not - that's what says where a value lands in the
-        // WGSL. A slot a route feeds shows the live value it's getting; one
-        // nothing feeds is a hand-set knob, typed or dragged, which is how
-        // a shader's named parameters get exposed without a signal.
-        let mut slots = div().flex().flex_col().gap(tokens::SPACE_MD);
-        for (slot, (_, label)) in SlotTargets::labelled(&running)
-            .targets()
-            .into_iter()
-            .enumerate()
-        {
-            let value = resolved.slots.get(slot).copied().unwrap_or(0.0);
-            let routed =
-                self.config.routes.iter().any(|route| {
-                    route.enabled && surface::target_slot(&route.target) == Some(slot)
-                });
-            let control = match (routed, self.slot_scrubs.get(slot)) {
-                (false, Some(scrub)) => panel::value_slider_edit(
-                    scrub,
-                    &self.value_edit,
-                    value,
-                    format!("{value:.2}"),
-                    format!("{value:.2}"),
-                    |typed| typed,
-                    move |this: &mut Self, fraction, cx| {
-                        set_manual_value(&mut this.config.manual, slot, fraction);
-                        cx.notify();
-                    },
-                    cx,
-                ),
-                _ => slot_readout(value),
-            };
-            slots = slots.child(panel::setting_row_dyn(
-                label,
-                Some(slot_accessor(slot).into()),
-                control,
-            ));
+        let slots = signal_ui::slots::SlotList {
+            hub: &hub,
+            routes: &self.config.routes,
+            manual: &self.config.manual,
+            labels: &labels,
+            value_edit: &self.value_edit,
+            scrubs: &self.slot_scrubs,
+            set: Arc::new(|this: &mut Self, slot, value, cx| {
+                surface::set_manual_value(&mut this.config.manual, slot, value);
+                cx.notify();
+            }),
         }
+        .render(cx);
 
         div()
             .flex()
@@ -942,55 +881,6 @@ impl ShaderPanel {
             ))
             .child(section("Slots", None, slots))
     }
-}
-
-/// The WGSL accessor a slot arrives on, so the settings page says where to
-/// read it rather than leaving the mapping to be counted out by hand.
-fn slot_accessor(slot: usize) -> String {
-    let lane = ["x", "y", "z", "w"][slot % 4];
-    format!("params.signals[{}].{lane}", slot / 4)
-}
-
-/// A routed slot's live value. While a route feeds the slot, the route is
-/// the whole value, so what belongs here is a readout rather than a
-/// control; the unrouted slots get the hand-set slider instead. The signal
-/// glyph up front is what says "connected" at a glance against the sliders
-/// around it.
-fn slot_readout(value: f32) -> Div {
-    const BAR: f32 = 64.0;
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(tokens::SPACE_XS)
-        .child(
-            svg()
-                .path(icons::AUDIO_WAVEFORM)
-                .size(px(12.))
-                .flex_none()
-                .text_color(palette::accent()),
-        )
-        .child(
-            div()
-                .w(px(28.))
-                .text_xs()
-                .text_color(palette::text_faint())
-                .child(format!("{value:.2}")),
-        )
-        .child(
-            div()
-                .w(px(BAR))
-                .h(px(6.))
-                .rounded(px(3.))
-                .bg(palette::bg_control())
-                .child(
-                    div()
-                        .h_full()
-                        .w(px(BAR * value.clamp(0.0, 1.0)))
-                        .rounded(px(3.))
-                        .bg(palette::accent()),
-                ),
-        )
 }
 
 impl EventEmitter<PanelEvent> for ShaderPanel {}
@@ -1315,7 +1205,7 @@ fn paint(
     };
 
     let mut targets = SlotTargets::default();
-    seed_manual(&mut targets, manual);
+    surface::seed_manual(&mut targets, manual);
     // The tick is deduped inside the hub, so several panels riding the pool
     // cost one.
     hub.tick(feed, track);
@@ -1444,14 +1334,14 @@ mod tests {
     #[test]
     fn hand_set_values_hold_slots_no_route_feeds() {
         let mut manual = Vec::new();
-        set_manual_value(&mut manual, 3, 0.5);
-        set_manual_value(&mut manual, 0, 2.0);
+        surface::set_manual_value(&mut manual, 3, 0.5);
+        surface::set_manual_value(&mut manual, 0, 2.0);
         // A second write replaces, and typed values clamp to the slot's
         // 0..1.
-        set_manual_value(&mut manual, 3, 0.75);
-        assert_eq!(manual_value(&manual, 3), Some(0.75));
-        assert_eq!(manual_value(&manual, 0), Some(1.0));
-        assert_eq!(manual_value(&manual, 5), None);
+        surface::set_manual_value(&mut manual, 3, 0.75);
+        assert_eq!(surface::manual_value(&manual, 3), Some(0.75));
+        assert_eq!(surface::manual_value(&manual, 0), Some(1.0));
+        assert_eq!(surface::manual_value(&manual, 5), None);
 
         // Seeded under the routes: a live route writes over its slot, the
         // hand-set value holds the ones nothing feeds.
@@ -1464,7 +1354,7 @@ mod tests {
             to: 1.0,
         }];
         let mut targets = SlotTargets::default();
-        seed_manual(&mut targets, &manual);
+        surface::seed_manual(&mut targets, &manual);
         signal_ui::apply_routes(&routes, &hub, &mut targets);
         // The route's signal is gone from the pool, so it contributes
         // nothing and the seed survives even on the routed slot.
@@ -1844,9 +1734,12 @@ mod tests {
     /// page prints beside each row.
     #[test]
     fn slot_accessors_walk_the_uniform_block() {
-        assert_eq!(slot_accessor(0), "params.signals[0].x");
-        assert_eq!(slot_accessor(3), "params.signals[0].w");
-        assert_eq!(slot_accessor(4), "params.signals[1].x");
-        assert_eq!(slot_accessor(surface::SLOTS - 1), "params.signals[3].w");
+        assert_eq!(surface::slot_accessor(0), "params.signals[0].x");
+        assert_eq!(surface::slot_accessor(3), "params.signals[0].w");
+        assert_eq!(surface::slot_accessor(4), "params.signals[1].x");
+        assert_eq!(
+            surface::slot_accessor(surface::SLOTS - 1),
+            "params.signals[3].w"
+        );
     }
 }

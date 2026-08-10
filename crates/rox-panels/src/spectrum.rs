@@ -20,7 +20,7 @@ use gpui::{
     Focusable, Path, Rgba, SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::PopupMenu;
 use gpui_component::Sizable as _;
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_panel_kit::axis::{fmt_axis_hz, fmt_hz};
@@ -256,19 +256,6 @@ impl<'de> Deserialize<'de> for Labels {
                 _ => Labels::Off,
             },
         })
-    }
-}
-
-impl Labels {
-    /// The mode a menu row lands on when it's picked: the one it names, or
-    /// off when that's already what's up, so a check row still reads as a
-    /// switch rather than a one-way pick.
-    fn toggled(self, pick: Labels) -> Labels {
-        if self == pick {
-            Labels::Off
-        } else {
-            pick
-        }
     }
 }
 
@@ -1231,14 +1218,6 @@ fn band_mark(orientation: Orientation, frac: f32, text: &str, color: Rgba, far: 
     }
 }
 
-/// A labelled config toggle for the Display menu: the row label, a getter for
-/// its current state, and a setter that flips it.
-type ConfigToggle = (
-    &'static str,
-    fn(&SpectrumPanel) -> bool,
-    fn(&mut SpectrumPanel),
-);
-
 pub struct SpectrumPanel {
     state: AppState,
     config: SpectrumConfig,
@@ -1371,62 +1350,6 @@ impl SpectrumPanel {
             apply,
             cx,
         )
-    }
-
-    /// The panel's own dropdown entries: a Display flyout of the toggles the
-    /// customize window also holds, for a quick flip without opening it.
-    fn config_menu(
-        &self,
-        menu: PopupMenu,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> PopupMenu {
-        let mut toggles: Vec<ConfigToggle> = vec![
-            (
-                "Peak Caps",
-                |this| this.config.caps,
-                |this| this.config.caps = !this.config.caps,
-            ),
-            // Two rows for the one setting: a check row per scale, and
-            // ticking the one that's already up takes the marks away.
-            (
-                "Pitch Labels",
-                |this| this.config.labels == Labels::Pitch,
-                |this| this.config.labels = this.config.labels.toggled(Labels::Pitch),
-            ),
-            (
-                "Frequency Labels",
-                |this| this.config.labels == Labels::Freq,
-                |this| this.config.labels = this.config.labels.toggled(Labels::Freq),
-            ),
-        ];
-        // Outlines only apply to the bar style; the flyout drops the toggle
-        // with the other styles the way the settings page hides it.
-        if self.config.style == SpectrumStyle::Bars {
-            toggles.insert(
-                0,
-                (
-                    "Outline Bars",
-                    |this| this.config.outline,
-                    |this| this.config.outline = !this.config.outline,
-                ),
-            );
-        }
-        let panel = cx.entity();
-        let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
-            panel::follow_panel(&panel, cx);
-            for (label, is_on, set) in toggles {
-                submenu = submenu.item(panel::check_row(
-                    label,
-                    None,
-                    is_on,
-                    move |this, _| set(this),
-                    &panel,
-                ));
-            }
-            submenu
-        });
-        menu.item(PopupMenuItem::submenu("Display", submenu))
     }
 }
 
@@ -1827,9 +1750,6 @@ impl Panel for SpectrumPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        // The config block: the panel's quick toggles and the settings
-        // window, apart from the core panel items.
-        let menu = self.config_menu(menu, window, cx);
         let menu =
             panel_settings::rename_item(menu, &cx.entity(), self.tab_panel.clone(), window, cx);
         let menu = panel_settings::settings_item(menu, &cx.entity(), cx);

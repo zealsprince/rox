@@ -544,6 +544,15 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
                 Arc::new(cx.new(|cx| VuPanel::new(state.clone(), VuConfig::default(), cx)))
             },
         },
+        PanelDef {
+            label: "Shader",
+            name: "shader",
+            icon: icons::BLEND,
+            placement: PanelPlacement::Bottom,
+            build: |state, _, _, cx| {
+                Arc::new(cx.new(|cx| ShaderPanel::new(state.clone(), ShaderConfig::default(), cx)))
+            },
+        },
     ],
 };
 
@@ -563,15 +572,6 @@ pub(crate) static EXPERIMENTAL: PanelSection = PanelSection {
                 Arc::new(
                     cx.new(|cx| ParticlesPanel::new(state.clone(), ParticlesConfig::default(), cx)),
                 )
-            },
-        },
-        PanelDef {
-            label: "Shader",
-            name: "shader",
-            icon: icons::BLEND,
-            placement: PanelPlacement::Bottom,
-            build: |state, _, _, cx| {
-                Arc::new(cx.new(|cx| ShaderPanel::new(state.clone(), ShaderConfig::default(), cx)))
             },
         },
     ],

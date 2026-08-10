@@ -1223,8 +1223,7 @@ impl SettingsWindow {
     fn persist_appearance_soon(&mut self, cx: &mut Context<Self>) {
         self.persist_gen += 1;
         let gen = self.persist_gen;
-        let (surface, backdrop, frame) =
-            (self.surface_opacity, self.backdrop_strength, self.frame);
+        let (surface, backdrop, frame) = (self.surface_opacity, self.backdrop_strength, self.frame);
         let palette = self
             .persist_palette
             .then(|| (self.editor_mode, self.base.to_map()));

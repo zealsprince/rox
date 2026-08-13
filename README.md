@@ -123,18 +123,20 @@ click away on the welcome window or in settings:
 
 <table>
   <tr>
-    <th colspan="2">CaTRoX</th>
+    <th width="50%">CaTRoX</th>
+    <th width="50%">Critters</th>
   </tr>
   <tr>
-    <td colspan="2"><img src="crates/rox/assets/workspaces/CaTRoX_Dark.png" alt="CaTRoX" width="100%"></td>
+    <td valign="top"><img src="crates/rox/assets/workspaces/CaTRoX_Dark.png" alt="CaTRoX" width="100%"></td>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Critters_Dark.png" alt="Critters" width="100%"></td>
   </tr>
   <tr>
-    <th width="50%">Foobar</th>
-    <th width="50%">Llama (WinAmp)</th>
+    <th>Foobar</th>
+    <th>Llama (WinAmp)</th>
   </tr>
   <tr>
-    <td><img src="crates/rox/assets/workspaces/Foobar_Light.png" alt="Foobar" width="100%"></td>
-    <td><img src="crates/rox/assets/workspaces/Llama_Dark.png" alt="Llama" width="100%"></td>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Foobar_Light.png" alt="Foobar" width="100%"></td>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Llama_Dark.png" alt="Llama" width="100%"></td>
   </tr>
   <tr>
     <th>Metro</th>
@@ -144,14 +146,7 @@ click away on the welcome window or in settings:
     <td valign="top"><img src="crates/rox/assets/workspaces/Metro_Dark.png" alt="Metro" width="100%"></td>
     <td valign="top"><img src="crates/rox/assets/workspaces/Phosphor_Dark.png" alt="Phosphor" width="100%"></td>
   </tr>
-  <tr>
-    <th colspan="2">Critters</th>
-  </tr>
-  <tr>
-    <td colspan="2"><img src="crates/rox/assets/workspaces/Critters_Dark.png" alt="Critters" width="100%"></td>
-  </tr>
 </table>
-
 
 ## Download
 

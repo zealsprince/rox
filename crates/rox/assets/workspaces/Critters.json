@@ -681,9 +681,17 @@
                       "locked": true,
                       "max_height": 24.0,
                       "align": "center",
-                      "stop": true,
-                      "random": false,
-                      "play_highlight": "none"
+                      "play_highlight": "none",
+                      "items": [
+                        "prev",
+                        "seekback",
+                        "play",
+                        "seekforward",
+                        "next",
+                        "stop",
+                        "repeat",
+                        "shuffle"
+                      ]
                     }
                   }
                 }
@@ -704,9 +712,13 @@
                     "panel": {
                       "locked": true,
                       "max_height": 20.0,
-                      "timings": true,
                       "show_total": false,
-                      "scrobble_marker": false
+                      "scrobble_marker": false,
+                      "items": [
+                        "elapsed",
+                        "strip",
+                        "ending"
+                      ]
                     }
                   }
                 }

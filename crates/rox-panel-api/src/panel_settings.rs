@@ -749,10 +749,8 @@ impl<P: PanelSettings> RenameWindow<P> {
                 .placeholder(placeholder)
                 .default_value(current)
         });
-        let _input_events = cx.subscribe_in(
-            &input,
-            window,
-            |this, input, event: &InputEvent, _, cx| {
+        let _input_events =
+            cx.subscribe_in(&input, window, |this, input, event: &InputEvent, _, cx| {
                 if let InputEvent::Change = event {
                     let value = input.read(cx).value().trim().to_string();
                     let title = (!value.is_empty()).then_some(value);
@@ -760,8 +758,7 @@ impl<P: PanelSettings> RenameWindow<P> {
                         panel.update(cx, |panel, cx| panel.set_custom_title(title, cx));
                     }
                 }
-            },
-        );
+            });
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         window.focus(&input.read(cx).focus_handle(cx));
         RenameWindow {
@@ -938,18 +935,13 @@ impl<P: PanelSettings> SavePresetWindow<P> {
                 .placeholder(fallback.clone())
                 .default_value(current)
         });
-        let _input_events =
-            cx.subscribe_in(
-                &input,
-                window,
-                |_, _, event: &InputEvent, _, cx| {
-                    // The footer says whether this name replaces a preset, so
-                    // it has to re-read on every keystroke.
-                    if let InputEvent::Change = event {
-                        cx.notify()
-                    }
-                },
-            );
+        let _input_events = cx.subscribe_in(&input, window, |_, _, event: &InputEvent, _, cx| {
+            // The footer says whether this name replaces a preset, so
+            // it has to re-read on every keystroke.
+            if let InputEvent::Change = event {
+                cx.notify()
+            }
+        });
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         window.focus(&input.read(cx).focus_handle(cx));
         let taken = settings::panel_presets::all(&settings::Settings::load())

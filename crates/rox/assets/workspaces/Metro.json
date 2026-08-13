@@ -617,9 +617,13 @@
                       "info": {
                         "panel": {
                           "max_height": 24.0,
-                          "timings": true,
                           "show_total": false,
-                          "scrobble_marker": false
+                          "scrobble_marker": false,
+                          "items": [
+                            "elapsed",
+                            "strip",
+                            "ending"
+                          ]
                         }
                       }
                     }
@@ -640,15 +644,15 @@
                         "panel": {
                           "max_height": 24.0,
                           "align": "center",
-                          "prev": true,
-                          "play": true,
-                          "next": true,
-                          "seek": false,
-                          "repeat": true,
-                          "shuffle": true,
-                          "stop": true,
-                          "random": false,
-                          "play_highlight": "circle"
+                          "play_highlight": "circle",
+                          "items": [
+                            "prev",
+                            "play",
+                            "next",
+                            "stop",
+                            "repeat",
+                            "shuffle"
+                          ]
                         }
                       }
                     }
@@ -673,9 +677,9 @@
                           "min_width": 48.0,
                           "align": "left",
                           "stretch": false,
-                          "icon": true,
-                          "slider": false,
-                          "percent": false
+                          "items": [
+                            "icon"
+                          ]
                         }
                       }
                     }
@@ -780,9 +784,13 @@
                     "panel": {
                       "locked": true,
                       "max_height": 20.0,
-                      "timings": true,
                       "show_total": false,
-                      "scrobble_marker": false
+                      "scrobble_marker": false,
+                      "items": [
+                        "elapsed",
+                        "strip",
+                        "ending"
+                      ]
                     }
                   }
                 }
@@ -807,15 +815,12 @@
                           "locked": true,
                           "max_height": 24.0,
                           "align": "center",
-                          "prev": true,
-                          "play": true,
-                          "next": true,
-                          "seek": false,
-                          "repeat": false,
-                          "shuffle": false,
-                          "stop": false,
-                          "random": false,
-                          "play_highlight": "circle"
+                          "play_highlight": "circle",
+                          "items": [
+                            "prev",
+                            "play",
+                            "next"
+                          ]
                         }
                       }
                     }

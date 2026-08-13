@@ -172,15 +172,18 @@
                               "max_height": 24.0,
                               "min_width": 300.0,
                               "align": "right",
-                              "prev": true,
-                              "play": true,
-                              "next": true,
-                              "seek": true,
-                              "repeat": true,
-                              "shuffle": true,
-                              "stop": true,
-                              "random": true,
-                              "play_highlight": "square"
+                              "play_highlight": "square",
+                              "items": [
+                                "prev",
+                                "seekback",
+                                "play",
+                                "seekforward",
+                                "next",
+                                "stop",
+                                "repeat",
+                                "shuffle",
+                                "random"
+                              ]
                             }
                           }
                         }
@@ -618,9 +621,13 @@
                       "info": {
                         "panel": {
                           "max_height": 24.0,
-                          "timings": true,
                           "show_total": false,
-                          "scrobble_marker": true
+                          "scrobble_marker": true,
+                          "items": [
+                            "elapsed",
+                            "strip",
+                            "ending"
+                          ]
                         }
                       }
                     }
@@ -643,9 +650,11 @@
                           "min_width": 200.0,
                           "align": "right",
                           "stretch": false,
-                          "icon": true,
-                          "slider": true,
-                          "percent": true
+                          "items": [
+                            "icon",
+                            "slider",
+                            "percent"
+                          ]
                         }
                       }
                     }

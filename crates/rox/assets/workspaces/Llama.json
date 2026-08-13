@@ -192,9 +192,13 @@
                     "panel": {
                       "locked": true,
                       "max_height": 20.0,
-                      "timings": true,
                       "show_total": false,
-                      "scrobble_marker": false
+                      "scrobble_marker": false,
+                      "items": [
+                        "elapsed",
+                        "strip",
+                        "ending"
+                      ]
                     }
                   }
                 }
@@ -220,12 +224,18 @@
                           "min_width": 310.0,
                           "max_height": 24.0,
                           "align": "left",
-                          "seek": true,
-                          "repeat": true,
-                          "shuffle": true,
-                          "stop": true,
-                          "random": true,
-                          "play_highlight": "none"
+                          "play_highlight": "none",
+                          "items": [
+                            "prev",
+                            "seekback",
+                            "play",
+                            "seekforward",
+                            "next",
+                            "stop",
+                            "repeat",
+                            "shuffle",
+                            "random"
+                          ]
                         }
                       }
                     }
@@ -250,9 +260,9 @@
                           "max_height": 24.0,
                           "align": "right",
                           "stretch": false,
-                          "icon": false,
-                          "slider": true,
-                          "percent": false
+                          "items": [
+                            "slider"
+                          ]
                         }
                       }
                     }
@@ -550,9 +560,13 @@
                     "panel": {
                       "locked": true,
                       "max_height": 20.0,
-                      "timings": true,
                       "show_total": false,
-                      "scrobble_marker": false
+                      "scrobble_marker": false,
+                      "items": [
+                        "elapsed",
+                        "strip",
+                        "ending"
+                      ]
                     }
                   }
                 }
@@ -578,9 +592,18 @@
                           "min_width": 310.0,
                           "max_height": 24.0,
                           "align": "left",
-                          "stop": true,
-                          "random": true,
-                          "play_highlight": "none"
+                          "play_highlight": "none",
+                          "items": [
+                            "prev",
+                            "seekback",
+                            "play",
+                            "seekforward",
+                            "next",
+                            "stop",
+                            "repeat",
+                            "shuffle",
+                            "random"
+                          ]
                         }
                       }
                     }
@@ -605,9 +628,9 @@
                           "max_height": 24.0,
                           "align": "right",
                           "stretch": false,
-                          "icon": false,
-                          "slider": true,
-                          "percent": false
+                          "items": [
+                            "slider"
+                          ]
                         }
                       }
                     }

@@ -36,7 +36,7 @@ use rox_library::duplicates::match_duplicates;
 
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
-use rox_panel_kit::ui::{checkbox, small_button, MIN_SIZE};
+use rox_panel_kit::ui::{block_header, checkbox, section, small_button, MIN_SIZE};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 use rox_services::thumbs::{Thumb, Thumbs};
@@ -561,23 +561,17 @@ impl Duplicates {
         .detach();
     }
 
-    /// The section header: the "Duplicates" label with the scan and trash
-    /// controls trailing it, on the border the settings sections wear.
-    fn header(&self, cx: &mut Context<Self>) -> Div {
+    /// What rides the heading's right edge: finding the duplicates, which
+    /// only ever looks at the library, so it sits with the view rather
+    /// than with the trash down in the footer.
+    fn scan_controls(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.scanning || self.trashing;
-        let count = self.visible_checked_count();
-        let controls = div()
+        div()
             .flex()
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_SM)
-            .when(busy, |d| {
-                let label = if self.scanning {
-                    "Scanning...".to_string()
-                } else {
-                    let at = (self.trash_done + 1).min(self.trash_total);
-                    format!("Trashing {}/{}...", at, self.trash_total)
-                };
+            .when(self.scanning, |d| {
                 d.child(
                     div()
                         .flex()
@@ -587,7 +581,7 @@ impl Duplicates {
                         .text_xs()
                         .text_color(palette::text_muted())
                         .child(Spinner::new().with_size(Size::Small))
-                        .child(label),
+                        .child("Scanning..."),
                 )
             })
             .child(small_button(
@@ -596,6 +590,58 @@ impl Duplicates {
                 busy,
                 cx.listener(|this, _, window, cx| this.scan(window, cx)),
             ))
+    }
+
+    /// The window's one destructive action, with what's marked and
+    /// whatever stands in the way of it reading left of the button.
+    fn footer(&self, cx: &mut Context<Self>) -> Div {
+        let busy = self.scanning || self.trashing;
+        let count = self.visible_checked_count();
+        // Worst news first: a failure outlives the run that raised it, and
+        // a run in flight outranks a count that is about to change under
+        // it.
+        let warn: Option<SharedString> = if let Some(error) = self.error.clone() {
+            Some(error)
+        } else if self.trashing {
+            let at = (self.trash_done + 1).min(self.trash_total);
+            Some(format!("Trashing {}/{}...", at, self.trash_total).into())
+        } else if count == 0 && !self.groups.is_empty() {
+            Some("Check copies to trash them".into())
+        } else {
+            None
+        };
+        let result = self.result.clone().filter(|_| !self.trashing);
+        let left = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .text_xs()
+            .when(count > 0, |d| {
+                d.child(
+                    div()
+                        .text_color(palette::text_muted())
+                        .child(format!("{count} selected")),
+                )
+            })
+            .when_some(result, |d, result| {
+                d.child(div().text_color(palette::text_muted()).child(result))
+            })
+            .when_some(warn, |d, warn| {
+                d.child(div().text_color(palette::tone_warn()).child(warn))
+            });
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_SM)
+            .border_t_1()
+            .border_color(palette::border())
+            .bg(palette::bg_panel())
+            .child(left)
             .child(small_button(
                 if count > 0 {
                     format!("Trash ({count})")
@@ -605,22 +651,7 @@ impl Duplicates {
                 icons::TRASH,
                 busy || count == 0,
                 cx.listener(|this, _, window, cx| this.trash(window, cx)),
-            ));
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .pb(tokens::SPACE_XS)
-            .border_b_1()
-            .border_color(palette::border())
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child("Duplicates"),
-            )
-            .child(controls)
+            ))
     }
 
     /// The toolbar under the header: the filter box beside the keep-policy
@@ -689,40 +720,34 @@ impl Duplicates {
         let extras: usize = self.groups.iter().map(|g| g.members.len() - 1).sum();
         let this = cx.entity().downgrade();
         region
-            .child(
+            .gap(tokens::SPACE_SM)
+            .child(block_header(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .pb(tokens::SPACE_XS)
-                    .border_b_1()
-                    .border_color(palette::border())
                     .text_xs()
                     .text_color(palette::text_muted())
                     .child(if groups == 1 {
                         format!("1 group, {extras} extra copies")
                     } else {
                         format!("{groups} groups, {extras} extra copies")
-                    })
-                    .child(small_button(
-                        if count > 0 {
-                            "Select none"
+                    }),
+                small_button(
+                    if count > 0 {
+                        "Select none"
+                    } else {
+                        "Auto-select"
+                    },
+                    icons::CHECK,
+                    self.trashing,
+                    cx.listener(move |this, _, _, cx| {
+                        if this.checked_count() > 0 {
+                            this.select_none();
                         } else {
-                            "Auto-select"
-                        },
-                        icons::CHECK,
-                        self.trashing,
-                        cx.listener(move |this, _, _, cx| {
-                            if this.checked_count() > 0 {
-                                this.select_none();
-                            } else {
-                                this.auto_select();
-                            }
-                            cx.notify();
-                        }),
-                    )),
-            )
+                            this.auto_select();
+                        }
+                        cx.notify();
+                    }),
+                ),
+            ))
             .child(
                 div()
                     .flex_1()
@@ -969,25 +994,37 @@ fn cover_tile(thumb: Thumb) -> Div {
 
 impl Render for Duplicates {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The header, toolbar, and summary stay fixed; only the group list
+        // The heading, toolbar, and summary stay fixed; only the group list
         // scrolls, and it virtualizes, so a library-wide result stays
         // responsive however many copies it turns up.
-        let page = div()
-            .id("duplicates-page")
-            .size_full()
+        let body = div()
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
             .gap(tokens::SPACE_SM)
-            .p(tokens::SPACE_MD)
-            .child(self.header(cx))
             .child(self.toolbar(cx))
-            .child(self.results(cx))
-            .when_some(self.result.clone(), |d, result| {
-                d.child(div().text_color(palette::text_muted()).child(result))
-            })
-            .when_some(self.error.clone(), |d, error| {
-                d.child(div().text_color(palette::text_muted()).child(error))
-            });
+            .child(self.results(cx));
+        let page = div()
+            .id("duplicates-page")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .p(tokens::SPACE_MD)
+            // The page's own surface, a second elevated layer over the
+            // window's, the same as the settings page. It stops at the page
+            // so the footer below composes against one layer, not two.
+            .bg(palette::bg_elevated())
+            .child(
+                section(
+                    "Duplicates",
+                    Some(self.scan_controls(cx).into_any_element()),
+                    body,
+                )
+                .flex_1()
+                .min_h_0(),
+            );
 
         div()
             .size_full()
@@ -1004,8 +1041,10 @@ impl Render for Duplicates {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .bg(palette::bg_elevated())
-                    .child(page),
+                    .flex()
+                    .flex_col()
+                    .child(page)
+                    .child(self.footer(cx)),
             )
     }
 }

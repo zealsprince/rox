@@ -1,0 +1,62 @@
+--- a/src/elements/text.rs
++++ b/src/elements/text.rs
+@@ -316,6 +316,7 @@
+     lines: SmallVec<[WrappedLine; 1]>,
+     line_height: Pixels,
+     wrap_width: Option<Pixels>,
++    truncate_width: Option<Pixels>,
+     size: Option<Size<Pixels>>,
+     bounds: Option<Bounds<Pixels>>,
+ }
+@@ -334,7 +335,7 @@
+             .line_height
+             .to_pixels(font_size.into(), window.rem_size());
+ 
+-        let mut runs = if let Some(runs) = runs {
++        let runs = if let Some(runs) = runs {
+             runs
+         } else {
+             vec![text_style.to_run(text.len())]
+@@ -370,14 +371,26 @@
+                         (None, "".into())
+                     };
+ 
++                // rox patch: a truncated measure never comes from the cache.
++                // With nowrap, wrap_width is always None, so the first
++                // probe's result used to answer every later one; a probe at
++                // a tiny width shaped a bare ellipsis and that poisoned the
++                // final layout. Fixed the same way on zed main after 0.2.2,
++                // drop this when a release carries it.
+                 if let Some(text_layout) = element_state.0.borrow().as_ref()
+                     && text_layout.size.is_some()
+                     && (wrap_width.is_none() || wrap_width == text_layout.wrap_width)
++                    && truncate_width.is_none()
++                    && text_layout.truncate_width.is_none()
+                 {
+                     return text_layout.size.unwrap();
+                 }
+ 
+                 let mut line_wrapper = cx.text_system().line_wrapper(text_style.font(), font_size);
++                // Truncation rewrites the runs to fit, and the closure now
++                // runs once per probe, so work on a copy or the second probe
++                // cuts down runs the first already cut.
++                let mut runs = runs.clone();
+                 let text = if let Some(truncate_width) = truncate_width {
+                     line_wrapper.truncate_line(
+                         text.clone(),
+@@ -406,6 +419,7 @@
+                         len: 0,
+                         line_height,
+                         wrap_width,
++                        truncate_width,
+                         size: Some(Size::default()),
+                         bounds: None,
+                     });
+@@ -424,6 +438,7 @@
+                     len,
+                     line_height,
+                     wrap_width,
++                    truncate_width,
+                     size: Some(size),
+                     bounds: None,
+                 });

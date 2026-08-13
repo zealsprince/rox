@@ -51,6 +51,7 @@ pub mod mel;
 pub mod models;
 pub mod panns;
 pub mod resample;
+pub mod tempo;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -58,8 +59,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rox_core::pace::Pace;
+use rox_core::settings::AcousticSave;
 use rox_library::embeddings::{self, Pending};
-use rox_library::store;
+use rox_library::{embed_tag, store, writer};
 use rox_viz::analysis::{self, Analyzer};
 
 use crate::models::Model;
@@ -232,6 +234,17 @@ impl Extractor {
         Ok(Extractor::Panns(Box::new(net)))
     }
 
+    /// How wide this extractor's vectors are. What the tag read-back checks
+    /// a stored value against: a vector of another width came from a model
+    /// whose output changed under the same name, and taking it would put two
+    /// coordinate systems in one table.
+    fn dim(&self) -> usize {
+        match self {
+            Extractor::Dsp => DIM,
+            Extractor::Panns(_) => panns::DIM,
+        }
+    }
+
     /// One track's vector, or why this file didn't produce one.
     fn describe(&self, path: &Path, duration_ms: u32) -> Result<Vec<f32>, String> {
         let vector = match self {
@@ -338,9 +351,13 @@ impl Progress {
 /// worker-second per second, so the number needs no correcting for the pool
 /// it was measured under.
 ///
-/// The vectors it produces are kept. They're the same vectors the pass would
-/// have written for those tracks, so throwing them away to keep the probe
-/// tidy would mean decoding them twice for nothing.
+/// The vectors it produces are kept, in the database only. They're the same
+/// vectors the pass would have written for those tracks, so throwing them
+/// away to keep the probe tidy would mean decoding them twice for nothing.
+/// No tag is written even with the setting on, for the reason the ReplayGain
+/// probe writes nothing at all: rewriting three of someone's audio files is
+/// not what a button called Estimate should do. The cost is that those few
+/// tracks carry no tag until something clears their rows.
 ///
 /// Blocking, and slow enough to want a background thread: it decodes and
 /// describes real files, which is the whole point.
@@ -381,9 +398,26 @@ pub fn measure_pace(source: &Source, db_path: &Path) -> Result<f32, String> {
     Ok(per as f32)
 }
 
+/// What a finished pass leaves behind: how many tracks it described, and
+/// which files it rewrote getting there.
+///
+/// The paths matter to the caller for one reason: rox watches its own library
+/// folders, and a tag write it doesn't know about comes back through the
+/// watcher as a change to reindex. The app notes them as its own before the
+/// watch batch lands. Empty in database mode, which rewrites nothing.
+#[derive(Debug, Default)]
+pub struct Analyzed {
+    pub described: usize,
+    pub tagged: Vec<PathBuf>,
+}
+
 /// The blocking half: walk what's missing, analyze in batches, write each
 /// batch in one transaction. Resumes by construction, since the work list is
 /// whatever has no vector yet.
+///
+/// Every track's vector goes into the database. `save` only decides whether
+/// a second copy goes into the file's own tags on the way past; see
+/// [`AcousticSave`] for what that buys and what it costs.
 ///
 /// Blocking, and long: this is the whole pass, and the caller is expected to
 /// be a background thread with the `progress` handle shared out to whatever
@@ -392,8 +426,9 @@ pub fn run(
     source: &Source,
     db_path: &Path,
     workers: usize,
+    save: AcousticSave,
     progress: &Progress,
-) -> Result<usize, String> {
+) -> Result<Analyzed, String> {
     // Before the work list, so a model whose weights went missing between
     // the settings page reading them and the pass starting says so instead
     // of counting a library's worth of work it can't do.
@@ -403,16 +438,49 @@ pub fn run(
     progress.total.store(pending.len(), Ordering::Relaxed);
     progress.pace.begin();
 
-    let mut written = 0;
+    let mut out = Analyzed::default();
     for batch in pending.chunks(BATCH) {
         if !progress.keep_going() {
             break;
         }
-        let vectors = analyze_batch(&extractor, batch, workers, progress);
-        written += vectors.len();
+        let (vectors, tagged) =
+            analyze_batch(&extractor, source.id(), batch, workers, save, progress);
+        out.described += vectors.len();
+        out.tagged.extend(tagged);
         embeddings::upsert_many(&mut conn, source.id(), &vectors).map_err(|e| e.to_string())?;
     }
-    Ok(written)
+    Ok(out)
+}
+
+/// Whether this track's vector may go into its own file.
+///
+/// Three things have to hold, and all three fail quietly: the pass was asked
+/// for tags, the file is a format the writer handles ([`embed_tag::writable`]
+/// is MP3 and FLAC), and the track is a file rather than a slice of one. A
+/// cue subsong is the interesting refusal: twelve tracks share one image, so
+/// the last one to finish would leave the whole disc claiming to sound like
+/// itself. Those tracks keep their database row and nothing more, which is
+/// the same deal every unsupported format gets.
+fn tags_this_track(save: AcousticSave, item: &Pending) -> bool {
+    save == AcousticSave::Tags
+        && writer::writes_to_file(item.sub)
+        && embed_tag::writable(Path::new(&item.path))
+}
+
+/// A vector already in the file, or None to go and work one out.
+///
+/// Tried before every decode, whatever `save` says, because a tag rox wrote
+/// last month is worth reading whether or not this pass would write one: a
+/// wiped database, a folder copied off another machine, and a library
+/// rebuilt from scratch all land here, and the alternative is thirty seconds
+/// of decoding per track to recompute something the file is holding. The
+/// value carries the model and the width and is refused unless both match,
+/// so a hit is the same vector the extractor would have produced, to f16.
+fn recover(extractor: &Extractor, model: &str, item: &Pending) -> Option<Vec<f32>> {
+    if !writer::writes_to_file(item.sub) || !embed_tag::writable(Path::new(&item.path)) {
+        return None;
+    }
+    embed_tag::read(Path::new(&item.path), model, extractor.dim())
 }
 
 /// One batch through a bounded pool. Every track is independent, so the
@@ -427,12 +495,15 @@ pub fn run(
 /// scales by running more tracks at once.
 fn analyze_batch(
     extractor: &Extractor,
+    model: &str,
     batch: &[Pending],
     workers: usize,
+    save: AcousticSave,
     progress: &Progress,
-) -> Vec<(i64, Vec<f32>)> {
+) -> (Vec<(i64, Vec<f32>)>, Vec<PathBuf>) {
     let cursor = AtomicUsize::new(0);
     let out = Mutex::new(Vec::with_capacity(batch.len()));
+    let tagged = Mutex::new(Vec::new());
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
@@ -448,8 +519,32 @@ fn analyze_batch(
                     break;
                 };
                 *progress.current.lock().unwrap() = item.path.clone();
+                // The file's own tag first: a hit is a description this
+                // library already paid for, and taking it skips the decode
+                // entirely. Nothing is written back on a hit, since what
+                // would be written is what was just read.
+                if let Some(vector) = recover(extractor, model, item) {
+                    out.lock().unwrap().push((item.id, vector));
+                    progress.done.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 match extractor.describe(Path::new(&item.path), item.duration_ms) {
-                    Ok(vector) => out.lock().unwrap().push((item.id, vector)),
+                    Ok(vector) => {
+                        if tags_this_track(save, item) {
+                            let path = PathBuf::from(&item.path);
+                            match writer::commit_embedding(&path, model, &vector) {
+                                Ok(()) => tagged.lock().unwrap().push(path),
+                                // The vector is good and the row below takes
+                                // it either way, so a file that wouldn't take
+                                // a tag costs its tag and nothing else. Not
+                                // counted as a failure: the track is
+                                // described, which is what the readout is
+                                // counting.
+                                Err(e) => log::warn!("acoustic: tagging {}: {e}", item.path),
+                            }
+                        }
+                        out.lock().unwrap().push((item.id, vector));
+                    }
                     Err(e) => {
                         log::warn!("acoustic: {}: {e}", item.path);
                         progress.failed.fetch_add(1, Ordering::Relaxed);
@@ -459,7 +554,7 @@ fn analyze_batch(
             });
         }
     });
-    out.into_inner().unwrap()
+    (out.into_inner().unwrap(), tagged.into_inner().unwrap())
 }
 
 /// One track's vector: three windows decoded, described, and averaged.
@@ -534,19 +629,15 @@ fn features(mono: &[f32]) -> Option<Vec<f32>> {
     let mut per_band: Vec<Vec<f32>> = (0..BANDS).map(|_| Vec::new()).collect();
     let mut centroid = Vec::new();
     let mut rolloff = Vec::new();
-    let mut flux = Vec::new();
+    let mut flux = Flux::default();
     let mut energy = Vec::new();
-    // None until the second frame: the first has nothing behind it, and
-    // measuring it against silence would score the window's own opening edge
-    // as the loudest onset in the track.
-    let mut previous: Option<Vec<f32>> = None;
 
     let mut start = 0;
     while start + FFT <= mono.len() {
         let frame = &mono[start..start + FFT];
         start += HOP;
         energy.push((frame.iter().map(|s| s * s).sum::<f32>() / FFT as f32).sqrt());
-        let mags = analyzer.magnitudes(frame).to_vec();
+        let mags = analyzer.magnitudes(frame);
 
         for (values, &(lo, hi)) in per_band.iter_mut().zip(&bands) {
             let sum: f32 = mags[lo..hi].iter().sum();
@@ -575,18 +666,9 @@ fn features(mono: &[f32]) -> Option<Vec<f32>> {
             rolloff.push((edge as f32 * bin_hz + 1.0).ln());
         }
 
-        // Half-wave rectified: what appeared since the last frame, not what
-        // faded out. A note starting is an onset, a note ending isn't.
-        if let Some(previous) = &previous {
-            let rise: f32 = mags
-                .iter()
-                .zip(previous)
-                .map(|(m, p)| (m - p).max(0.0))
-                .sum();
-            flux.push(rise / half as f32);
-        }
-        previous = Some(mags);
+        flux.push(mags);
     }
+    let flux = flux.curve;
     if flux.len() < 2 {
         return None;
     }
@@ -609,6 +691,67 @@ fn features(mono: &[f32]) -> Option<Vec<f32>> {
     out.push(mean_std(&energy).1);
     debug_assert_eq!(out.len(), DIM);
     Some(out)
+}
+
+/// The novelty curve as it builds up, one frame's half-spectrum at a time.
+///
+/// A struct fed frame by frame rather than a function over the samples,
+/// because [`features`] is already walking the frames for its own
+/// statistics and there's no reason it should pay for a second transform of
+/// the same audio: it hands the magnitudes it already has straight here.
+/// [`novelty`] is that same walk for callers who want nothing else out of
+/// the window.
+#[derive(Default)]
+struct Flux {
+    /// One value per hop after the first: how much magnitude appeared since
+    /// the frame before, averaged over the bins.
+    curve: Vec<f32>,
+    /// None until the second frame: the first has nothing behind it, and
+    /// measuring it against silence would score the window's own opening
+    /// edge as the loudest onset in the track.
+    previous: Option<Vec<f32>>,
+}
+
+impl Flux {
+    /// Take one frame's magnitudes. Half-wave rectified: what appeared since
+    /// the last frame, not what faded out. A note starting is an onset, a
+    /// note ending isn't.
+    fn push(&mut self, mags: &[f32]) {
+        if let Some(previous) = &self.previous {
+            let rise: f32 = mags
+                .iter()
+                .zip(previous)
+                .map(|(m, p)| (m - p).max(0.0))
+                .sum();
+            self.curve.push(rise / mags.len() as f32);
+        }
+        match &mut self.previous {
+            Some(previous) => {
+                previous.clear();
+                previous.extend_from_slice(mags);
+            }
+            None => self.previous = Some(mags.to_vec()),
+        }
+    }
+}
+
+/// One mono window's novelty curve: [`Flux`] over every frame of it, one
+/// value per [`HOP`] and so one every 23 ms at [`RATE`].
+///
+/// This is the rhythm signal the whole crate reads. [`features`] reduces it
+/// to a mean, a spread and an onset rate; [`tempo`] looks for the lag it
+/// repeats at. Cost is one [`FFT`]-wide transform per hop, which is the
+/// same order as describing the window, so a caller wanting both should
+/// expect to pay twice.
+fn novelty(mono: &[f32]) -> Vec<f32> {
+    let mut analyzer = Analyzer::new(FFT);
+    let mut flux = Flux::default();
+    let mut start = 0;
+    while start + FFT <= mono.len() {
+        flux.push(analyzer.magnitudes(&mono[start..start + FFT]));
+        start += HOP;
+    }
+    flux.curve
 }
 
 /// Whether a vector is worth storing at all.
@@ -666,6 +809,36 @@ fn onset_rate(flux: &[f32], secs: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pending(path: &str, sub: u16) -> Pending {
+        Pending {
+            id: 1,
+            path: path.into(),
+            duration_ms: 200_000,
+            sub,
+        }
+    }
+
+    /// Which tracks a tags-mode pass actually writes into. The three
+    /// refusals are the ones that would otherwise be discovered by a user:
+    /// an OGG library where nothing seemed to save, a cue rip where every
+    /// track stamped the same image, and a database-mode pass rewriting
+    /// files nobody asked it to touch.
+    #[test]
+    fn only_whole_files_in_a_writable_format_are_offered_a_tag() {
+        use AcousticSave::{Database, Tags};
+
+        assert!(tags_this_track(Tags, &pending("/m/a.mp3", 0)));
+        assert!(tags_this_track(Tags, &pending("/m/a.flac", 0)));
+        // Database mode never touches a file, whatever it is.
+        assert!(!tags_this_track(Database, &pending("/m/a.mp3", 0)));
+        // A format the writer has no path for keeps its row and nothing more.
+        assert!(!tags_this_track(Tags, &pending("/m/a.ogg", 0)));
+        assert!(!tags_this_track(Tags, &pending("/m/a.wav", 0)));
+        // A cue subsong is a span of an image twelve tracks share, so there
+        // is nowhere on disk that means "track four sounds like this".
+        assert!(!tags_this_track(Tags, &pending("/m/disc.flac", 4)));
+    }
 
     fn tone(hz: f32, secs: f32) -> Vec<f32> {
         let n = (secs * RATE as f32) as usize;
@@ -781,6 +954,104 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// [`features`] over [`pulses`] at eight a second, as it described that
+    /// signal before the flux curve was pulled out into [`Flux`] and
+    /// [`novelty`] for the tempo estimator to share.
+    ///
+    /// Written down because a library's vectors are only comparable to each
+    /// other: a change here that shifts a number by a hundredth doesn't
+    /// break anything visibly, it quietly makes every track analyzed after
+    /// it a slightly different distance from every track analyzed before,
+    /// and there is nothing in the app that would say so.
+    const BEFORE_THE_FLUX_MOVED: [f32; DIM] = [
+        -15.965477,
+        -15.965543,
+        -15.965543,
+        -15.966264,
+        -15.9669695,
+        -15.966479,
+        -15.963373,
+        -15.959001,
+        -15.956571,
+        -15.956884,
+        -15.948458,
+        -15.942306,
+        -15.931433,
+        -15.921043,
+        -15.903531,
+        -15.881925,
+        -15.851968,
+        -15.806578,
+        -15.749245,
+        -15.657156,
+        -15.514209,
+        -15.214363,
+        -14.532366,
+        -15.310902,
+        -15.710731,
+        -15.948189,
+        -16.123562,
+        -16.263449,
+        6.1063194,
+        6.1047564,
+        6.1047564,
+        6.102757,
+        6.1013722,
+        6.1017203,
+        6.1052575,
+        6.1093645,
+        6.1091866,
+        6.106963,
+        6.1148543,
+        6.1175547,
+        6.1279283,
+        6.1366906,
+        6.1538215,
+        6.1755953,
+        6.2045255,
+        6.2501903,
+        6.3124237,
+        6.408907,
+        6.566268,
+        6.8987045,
+        7.7230873,
+        6.7881427,
+        6.3496385,
+        6.096466,
+        5.912886,
+        5.7709303,
+        8.687916,
+        0.12176962,
+        8.972943,
+        0.27300486,
+        0.00045497756,
+        0.0009282503,
+        6.0,
+        0.050930053,
+    ];
+
+    /// The description is what it was, to the bit.
+    #[test]
+    fn pulling_the_flux_curve_out_didnt_move_a_number() {
+        assert_eq!(features(&pulses(8.0, 2.0)).unwrap(), BEFORE_THE_FLUX_MOVED);
+    }
+
+    /// And the curve [`novelty`] hands the tempo estimator is the same
+    /// curve [`features`] reduced, rather than a second one computed
+    /// alongside it. The flux mean, the flux spread and the onset rate are
+    /// the three numbers in the vector that come off it, so all three
+    /// landing exactly is the whole claim.
+    #[test]
+    fn the_curve_the_tempo_estimator_reads_is_the_one_the_vector_came_from() {
+        let audio = pulses(8.0, 2.0);
+        let vector = features(&audio).unwrap();
+        let curve = novelty(&audio);
+        let (mean, std) = mean_std(&curve);
+        assert_eq!((mean, std), (vector[DIM - 4], vector[DIM - 3]));
+        let secs = audio.len() as f32 / RATE as f32;
+        assert_eq!(onset_rate(&curve, secs), vector[DIM - 2]);
     }
 
     /// The onset rate is what tells a beat from a drone at the same

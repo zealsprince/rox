@@ -862,6 +862,13 @@ impl SettingsWindow {
                         .into(),
                     "Apply",
                 ),
+                Pending::ClearEmbeddings(model) => (
+                    format!("Clear what \"{model}\" described?"),
+                    "The descriptions go and the space comes back. Having them again means the \
+                     analysis pass listening to every track in the library over."
+                        .into(),
+                    "Clear",
+                ),
             };
         let line = |text: SharedString| {
             div()
@@ -992,6 +999,7 @@ impl SettingsWindow {
                 }
                 self.apply_workspace(&card.name, shaders, window, cx);
             }
+            Some(Pending::ClearEmbeddings(model)) => self.clear_embeddings(&model, cx),
             None => {}
         }
     }

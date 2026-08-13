@@ -145,6 +145,7 @@ mod tests {
             bit_depth: 0,
             rating: 0,
             replay_gain: Default::default(),
+            bpm: None,
             size: 0,
             mtime: 0,
         }

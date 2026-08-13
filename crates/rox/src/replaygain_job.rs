@@ -24,7 +24,7 @@ use rox_library::{replaygain, store, writer};
 use rox_playback::analysis::{self, AlbumAnalysis};
 
 use rox_core::settings::{ReplayGainSave, Settings};
-use rox_services::catalog::Library;
+use rox_services::catalog::{Library, LibraryJob};
 
 /// Files a pass must get through before its rate is worth remembering as
 /// this machine's pace, the acoustic pass's `PACE_FLOOR`'s twin.
@@ -178,10 +178,16 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
                 }
             }
             library.update(cx, |library, cx| match written {
-                Ok(paths) => {
-                    // Database mode wrote the columns itself and has nothing
-                    // on disk to re-read, so it hands back an empty list and
-                    // only the readouts refresh.
+                // Database mode put the gains straight onto rows the
+                // projection holds a packed copy of, and nothing on disk
+                // moved, so the cheap reload is the whole refresh: without
+                // it the Gain column keeps drawing the blanks the pass just
+                // filled in.
+                Ok((_, stored)) if stored > 0 => library.reload_projection(cx),
+                // Tags mode has files to re-read. A pass that wrote nothing
+                // either way hands back an empty list, where this is only
+                // the readouts refreshing.
+                Ok((paths, _)) => {
                     library.reindex_written(paths, cx);
                 }
                 Err(e) => {
@@ -191,6 +197,28 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
             });
         })
         .ok();
+    })
+    .detach();
+}
+
+/// Follow a library's watch syncs, so a library with the switch on stays
+/// measured as it grows instead of waiting for someone to open the settings
+/// and press Measure Missing.
+///
+/// The switch is read here rather than inside [`start`], because the button
+/// has to keep working with the switch off: this is the only caller the
+/// setting speaks for. Nothing else needs guarding - the pass no-ops while
+/// one is already running, and its work list is whatever has no gain, so a
+/// settle that brought nothing measurable starts a pass that finds nothing.
+///
+/// Only what the watcher brought in, deliberately. The backlog a library
+/// starts with is priced and agreed to when the switch goes on; after that
+/// every settle only ever sees the delta, which is the case this exists for.
+pub fn follow(library: &Entity<Library>, cx: &mut App) {
+    App::subscribe(cx, library, |library, event, cx| {
+        if matches!(event, LibraryJob::WatchSettled) && Settings::load().replay_gain.auto {
+            start(library, cx);
+        }
     })
     .detach();
 }
@@ -263,7 +291,9 @@ fn measures_album(grouped: bool, measured: usize, album_total: usize) -> bool {
 }
 
 /// The blocking half: walk the albums, measure, write. Returns the paths
-/// whose files were rewritten, which is empty in database mode.
+/// whose files were rewritten, which is empty in database mode, and the rows
+/// that took a gain, which is zero in tags mode. Each save mode reports
+/// through its own half, and the caller refreshes off whichever spoke.
 ///
 /// Album-parallel through a bounded pool, the acoustic pass's shape. The
 /// album is the unit rather than the file because an album gain is measured
@@ -279,7 +309,7 @@ fn run(
     save: ReplayGainSave,
     workers: usize,
     progress: &Progress,
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<(Vec<PathBuf>, usize), String> {
     let conn = store::open(db_path).map_err(|e| e.to_string())?;
     let albums = store::albums_missing_replaygain(&conn).map_err(|e| e.to_string())?;
     progress.total.store(
@@ -290,6 +320,10 @@ fn run(
 
     let conn = Mutex::new(conn);
     let rewritten = Mutex::new(Vec::new());
+    // Rows that actually took a gain in database mode, counted so a pass
+    // that measured nothing doesn't buy a projection reload it has no use
+    // for - the auto pass runs off every watch settle.
+    let stored = AtomicUsize::new(0);
     // The first write that failed, which ends the pass: a database that
     // won't take a row won't take the next one either, and grinding through
     // a library's worth of decoding to write none of it helps nobody.
@@ -309,7 +343,7 @@ fn run(
                 let Some(album) = albums.get(cursor.fetch_add(1, Ordering::Relaxed)) else {
                     break;
                 };
-                if let Err(e) = measure_album(album, save, &conn, &rewritten, progress) {
+                if let Err(e) = measure_album(album, save, &conn, &rewritten, &stored, progress) {
                     *failure.lock().unwrap() = Some(e);
                     break;
                 }
@@ -319,7 +353,7 @@ fn run(
     if let Some(e) = failure.into_inner().unwrap() {
         return Err(e);
     }
-    Ok(rewritten.into_inner().unwrap())
+    Ok((rewritten.into_inner().unwrap(), stored.into_inner()))
 }
 
 /// One album measured and written. Errors are the database's alone: a file
@@ -330,6 +364,7 @@ fn measure_album(
     save: ReplayGainSave,
     conn: &Mutex<rox_library::rusqlite::Connection>,
     rewritten: &Mutex<Vec<PathBuf>>,
+    stored: &AtomicUsize,
     progress: &Progress,
 ) -> Result<(), String> {
     let mut program = AlbumAnalysis::new();
@@ -379,8 +414,11 @@ fn measure_album(
                 .map(String::as_str)
                 .zip(gains.iter().copied())
                 .collect();
-            store::set_measured_replaygain(&mut conn.lock().unwrap(), &rows)
+            // Rows that already carry a gain are skipped by the store, so
+            // the count is what actually took rather than what was offered.
+            let took = store::set_measured_replaygain(&mut conn.lock().unwrap(), &rows)
                 .map_err(|e| e.to_string())?;
+            stored.fetch_add(took, Ordering::Relaxed);
         }
         ReplayGainSave::Tags => {
             for (path, gain) in measured.iter().zip(gains) {

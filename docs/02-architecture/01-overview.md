@@ -125,3 +125,9 @@ Each ADR records the call, the alternatives weighed, and what it costs. They liv
 | [18 - Tag editor](decisions/18-adr-tag-editor.md) | Shared batch form plus a per-file table, not foobar's per-field step-in | Decided |
 | [19 - Processing chain](decisions/19-adr-processing-chain.md) | DSP chain pre-ring on the decode thread, exclusive output behind the seam | Decided |
 | [20 - Settings split](decisions/20-adr-settings-split.md) | Preferences, look, windows, session, and accounts each in a file of their own | Decided |
+| [21 - CUE subsongs](decisions/21-adr-cue-subsongs.md) | Cue tracks as ordinary rows under a subsong id, spans in a side table | Decided |
+| [22 - Control surface](decisions/22-adr-control-surface.md) | Machine interface on a local JSON-RPC socket, never a bundled web server | Decided |
+| [23 - Shader pipeline](decisions/23-adr-shader-pipeline.md) | Comment directives split one shader into a pass chain, assets in the bundle | Decided |
+| [24 - Script panels](decisions/24-adr-script-panels.md) | Rhai script panels returning a node tree, behind the shader approval gate | Proposed |
+| [25 - Shader stacks](decisions/25-adr-shader-stacks.md) | Every shader surface holds an ordered stack, composed into one chain | Proposed |
+| [26 - Last.fm sessions](decisions/26-adr-lastfm-sessions.md) | One session per api key, so builds stop invalidating each other | Decided |

@@ -19,9 +19,12 @@
 //! exactly one track. A playlist survives its files leaving and returning,
 //! even at a new path.
 
-use rusqlite::{Connection, OptionalExtension};
+use std::sync::Arc;
 
-use crate::projection::{Filterable, TrackFields};
+use rusqlite::{Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+
+use crate::projection::{FilterSet, Filterable, Projection, SortKey, TrackFields};
 
 /// The playlists and their member rows beside the tracks they key to. No
 /// foreign key on purpose, matching the listens table: deleting a track keeps
@@ -108,6 +111,20 @@ pub(crate) fn add_path_snapshot(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// The store ladder's smart-playlists step: every playlist row learns
+/// which kind it is and, for a smart one, what query stands in for its
+/// members. Widening `playlists` rather than opening a side table follows
+/// the favourite column above - kind is something every row answers, and
+/// [`list`] keeps reading both kinds in one pass. The default 0 leaves
+/// every existing playlist static with a NULL definition, which is
+/// exactly what they are.
+pub(crate) fn add_smart_columns(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE playlists ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE playlists ADD COLUMN definition TEXT;",
+    )
+}
+
 /// Match member rows back to the catalog after a scan. A member keys to its
 /// track by rowid, which survives rescans and renames (ADR 5) but dies with
 /// a prune: a drive missing at scan time, an album deleted and restored, a
@@ -147,16 +164,119 @@ pub fn reattach(conn: &Connection) -> rusqlite::Result<usize> {
     Ok(by_path + by_tags)
 }
 
+/// Which kind of list a playlist row is. A static playlist owns member
+/// rows; a smart one owns a query and no members at all, and materializes
+/// against the projection whenever something asks what's in it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlaylistKind {
+    #[default]
+    Static,
+    Smart,
+}
+
+impl PlaylistKind {
+    /// The `kind` column's integer. Anything unknown reads as static: an
+    /// older binary pointed at a newer file must still show the row, and a
+    /// list with no members it can explain is the safe reading.
+    fn from_column(value: i64) -> PlaylistKind {
+        match value {
+            1 => PlaylistKind::Smart,
+            _ => PlaylistKind::Static,
+        }
+    }
+
+    fn column(self) -> i64 {
+        match self {
+            PlaylistKind::Static => 0,
+            PlaylistKind::Smart => 1,
+        }
+    }
+}
+
+/// What a smart playlist is: the saved query, in the same syntax the
+/// search boxes speak, plus the structured filter, sort, and cap a view
+/// carries. Held as JSON in the playlist row's `definition` column and
+/// evaluated live, so a smart playlist never holds member rows and never
+/// goes stale against the catalog.
+///
+/// `sort` is a column and whether it runs descending, the pair
+/// [`crate::view::ViewSpec`] takes; None keeps the canonical browse order.
+/// `limit` caps the result after the sort, so "my top 50" is a rating sort
+/// with a 50.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SmartDef {
+    pub query: String,
+    pub filter: FilterSet,
+    pub sort: Option<(SortKey, bool)>,
+    pub limit: Option<u32>,
+}
+
+impl SmartDef {
+    /// The track ids this definition names, in the order it asks for. The
+    /// whole of what a smart playlist "holds": there are no member rows, so
+    /// every read that wants its tracks runs this.
+    ///
+    /// The kernel is the same [`crate::view::view_for`] the library table
+    /// runs, so a saved query means exactly what the same string typed into
+    /// a search box means. Nothing is cached - a pass is one walk of the
+    /// projection, and a cache would need invalidating on every rating,
+    /// play, and scan.
+    pub fn ids(&self, projection: &Projection, order: Arc<Vec<u32>>) -> Vec<i64> {
+        self.rows(projection, order)
+            .iter()
+            .filter_map(|&row| projection.db_id.get(row as usize).copied())
+            .collect()
+    }
+
+    /// The same pass as [`SmartDef::ids`] stopped one step earlier: the
+    /// projection rows, before they turn into db ids. What a caller wants
+    /// when it draws the tracks rather than hands them on, since drawing a
+    /// row is resolving it, and going through ids would mean mapping every
+    /// one back to the row it came from.
+    pub fn rows(&self, projection: &Projection, order: Arc<Vec<u32>>) -> Vec<u32> {
+        let (rows, _) = crate::view::view_for(
+            projection,
+            order,
+            &crate::view::ViewSpec {
+                query: &self.query,
+                filter: &self.filter,
+                similar: None,
+                sort: self.sort,
+                grouping: None,
+            },
+        );
+        let mut rows: Vec<u32> = rows
+            .iter()
+            .filter_map(|row| match row {
+                crate::view::Row::Track(row) => Some(*row),
+                _ => None,
+            })
+            .collect();
+        // The cap lands after the sort, so "top 50" means the first fifty of
+        // the order the definition asked for.
+        if let Some(limit) = self.limit {
+            rows.truncate(limit as usize);
+        }
+        rows
+    }
+}
+
 /// A playlist in the sidebar list: its id, name, and how many tracks it holds.
 /// `favourite` marks the one default playlist behind the heart column and the
 /// Favourites menu; the panel pins it to the top and shields it from delete
 /// and rename.
+///
+/// `tracks` counts member rows, so a smart playlist always reports 0 here:
+/// it has no members to count and the real number costs a projection pass.
+/// The panel fills that in from the materialization it already ran.
 #[derive(Clone)]
 pub struct Playlist {
     pub id: i64,
     pub name: String,
     pub tracks: u64,
     pub favourite: bool,
+    pub kind: PlaylistKind,
 }
 
 /// One member's line in a playlist view. `member_id` addresses this exact
@@ -216,6 +336,61 @@ pub fn create(conn: &Connection, name: &str, now: i64) -> rusqlite::Result<i64> 
     Ok(conn.last_insert_rowid())
 }
 
+/// Create a smart playlist around a definition, returning its id. `now` is
+/// unix seconds.
+pub fn create_smart(
+    conn: &Connection,
+    name: &str,
+    def: &SmartDef,
+    now: i64,
+) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO playlists (name, created, updated, kind, definition)
+         VALUES (?1, ?2, ?2, ?3, ?4)",
+        rusqlite::params![name, now, PlaylistKind::Smart.column(), encode(def)],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Rewrite a smart playlist's definition and stamp it updated. Also flips
+/// the row to smart, so the one call covers both a saved edit and the
+/// first definition a row is given.
+pub fn set_definition(
+    conn: &Connection,
+    id: i64,
+    def: &SmartDef,
+    now: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE playlists SET definition = ?2, kind = ?3, updated = ?4 WHERE id = ?1",
+        rusqlite::params![id, encode(def), PlaylistKind::Smart.column(), now],
+    )?;
+    Ok(())
+}
+
+/// One playlist's definition, None when it is static or its stored JSON
+/// no longer parses. An unreadable definition reads as none rather than an
+/// error: the row is still a playlist, it just resolves to nothing until
+/// the editor writes it again.
+pub fn definition(conn: &Connection, id: i64) -> rusqlite::Result<Option<SmartDef>> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT definition FROM playlists WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(stored.and_then(|json| serde_json::from_str(&json).ok()))
+}
+
+/// A definition as the JSON the `definition` column holds. A `SmartDef` is
+/// plain data, so the encode cannot fail; an empty string would read back
+/// as no definition, which is the harmless answer if it somehow did.
+fn encode(def: &SmartDef) -> String {
+    serde_json::to_string(def).unwrap_or_default()
+}
+
 /// Rename a playlist and stamp it updated.
 pub fn rename(conn: &Connection, id: i64, name: &str, now: i64) -> rusqlite::Result<()> {
     conn.execute(
@@ -239,7 +414,7 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Playlist>> {
     let mut stmt = conn.prepare_cached(
         "SELECT p.id, p.name,
                 (SELECT COUNT(*) FROM playlist_tracks m WHERE m.playlist_id = p.id),
-                p.favourite
+                p.favourite, p.kind
          FROM playlists p
          ORDER BY p.favourite DESC, p.updated DESC, p.id DESC",
     )?;
@@ -249,6 +424,7 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Playlist>> {
             name: row.get(1)?,
             tracks: row.get::<_, i64>(2)? as u64,
             favourite: row.get::<_, i64>(3)? != 0,
+            kind: PlaylistKind::from_column(row.get(4)?),
         })
     })?;
     rows.collect()
@@ -728,6 +904,7 @@ mod tests {
             bit_depth: 0,
             rating: 0,
             replay_gain: Default::default(),
+            bpm: None,
             size: 0,
             mtime: 0,
         }
@@ -746,6 +923,208 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+        conn.prepare(&format!(
+            "SELECT 1 FROM pragma_table_info('{table}') WHERE name = '{column}'"
+        ))
+        .unwrap()
+        .exists([])
+        .unwrap()
+    }
+
+    /// The smart-playlists rung lands its columns on a fresh database and on
+    /// one written before the step existed. The ladder is forward-only and
+    /// additive, so the older file has to converge by running the tail, not
+    /// by being rebuilt.
+    #[test]
+    fn the_smart_columns_land_on_a_fresh_db_and_an_older_one() {
+        let fresh = Connection::open_in_memory().unwrap();
+        store::init_schema(&fresh).unwrap();
+        assert!(has_column(&fresh, "playlists", "kind"));
+        assert!(has_column(&fresh, "playlists", "definition"));
+
+        // What a binary from before the step wrote: the ladder run up to the
+        // rung and stopped there, rather than a current file wound back,
+        // which would leave every later rung's columns in place for the
+        // rerun to trip over.
+        let conn = Connection::open_in_memory().unwrap();
+        store::run_ladder_before(&conn, "smart-playlists").unwrap();
+        assert!(!has_column(&conn, "playlists", "kind"));
+        create(&conn, "From The Old Build", 100).unwrap();
+
+        store::init_schema(&conn).unwrap();
+        assert!(has_column(&conn, "playlists", "kind"));
+        assert!(has_column(&conn, "playlists", "definition"));
+        let existing = list(&conn).unwrap();
+        assert_eq!(existing.len(), 1);
+        assert_eq!(
+            existing[0].kind,
+            PlaylistKind::Static,
+            "a playlist from before the step is a plain one"
+        );
+    }
+
+    /// A definition survives the trip through the column, filter and all.
+    #[test]
+    fn a_definition_round_trips_through_the_row() {
+        let conn = seed();
+        let def = SmartDef {
+            query: "rating:>=4 plays:0".into(),
+            filter: FilterSet {
+                fields: vec![(
+                    crate::projection::FilterField::Genre,
+                    vec!["Shoegaze".into(), "Dream Pop".into()],
+                )],
+                ids: None,
+            },
+            sort: Some((SortKey::Rating, true)),
+            limit: Some(50),
+        };
+        let id = create_smart(&conn, "Best Of", &def, 100).unwrap();
+
+        assert_eq!(definition(&conn, id).unwrap().as_ref(), Some(&def));
+        let row = list(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(row.kind, PlaylistKind::Smart);
+        assert_eq!(row.tracks, 0, "a smart playlist holds no member rows");
+
+        // An edit rewrites it whole.
+        let edited = SmartDef {
+            query: "artist:air".into(),
+            ..SmartDef::default()
+        };
+        set_definition(&conn, id, &edited, 110).unwrap();
+        assert_eq!(definition(&conn, id).unwrap().as_ref(), Some(&edited));
+
+        // A static playlist has none, and unreadable JSON reads as none
+        // rather than an error.
+        let plain = create(&conn, "Plain", 100).unwrap();
+        assert_eq!(definition(&conn, plain).unwrap(), None);
+        conn.execute(
+            "UPDATE playlists SET definition = 'not json' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        assert_eq!(definition(&conn, id).unwrap(), None);
+    }
+
+    /// The saved query evaluates against the projection, and the limit cuts
+    /// the sorted result rather than the order it was read in.
+    #[test]
+    fn a_smart_definition_resolves_to_the_tracks_it_names() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        let mut loved = track("/m/1.mp3", "Loved", "A", "First");
+        loved.rating = 100;
+        let mut liked = track("/m/2.mp3", "Liked", "B", "Second");
+        liked.rating = 80;
+        let mut played = track("/m/3.mp3", "Played", "C", "Third");
+        played.rating = 100;
+        let plain = track("/m/4.mp3", "Plain", "D", "Fourth");
+        store::insert_batch(&mut conn, &[loved, liked, played, plain]).unwrap();
+        crate::listens::append(
+            &conn,
+            &crate::listens::Listen {
+                track_id: 3,
+                played_at: 1_700_000_000,
+                title: "Played".into(),
+                artist: "C".into(),
+                album: "Third".into(),
+                genre: String::new(),
+                path: "/m/3.mp3".into(),
+            },
+        )
+        .unwrap();
+        let projection = Projection::load_serial(&conn, false).unwrap();
+        let order = Arc::new(projection.sort_canonical());
+
+        let def = SmartDef {
+            query: "rating:>=4 plays:0".into(),
+            ..SmartDef::default()
+        };
+        assert_eq!(
+            def.ids(&projection, order.clone()),
+            [1, 2],
+            "the four-star-and-up tracks nobody has played"
+        );
+
+        // The limit takes the head of the sort it asked for, not of the
+        // canonical order: descending by title puts Loved first.
+        let capped = SmartDef {
+            query: "rating:>=4".into(),
+            sort: Some((SortKey::Title, true)),
+            limit: Some(2),
+            ..SmartDef::default()
+        };
+        assert_eq!(capped.ids(&projection, order.clone()), [3, 1]);
+
+        // An empty query is the whole library through the sort.
+        let everything = SmartDef {
+            limit: Some(1),
+            ..SmartDef::default()
+        };
+        assert_eq!(everything.ids(&projection, order).len(), 1);
+    }
+
+    /// The "never played" list, which is the whole promise of the feature:
+    /// a track that gets played leaves it on the next materialization, with
+    /// nothing written to any playlist row. Nothing invalidates in between,
+    /// so the panel showing the old answer until it refreshes is the known
+    /// cost, not a bug in the evaluation.
+    #[test]
+    fn a_never_played_list_drops_a_track_once_it_plays() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        store::insert_batch(
+            &mut conn,
+            &[
+                track("/m/1.mp3", "One", "A", "First"),
+                track("/m/2.mp3", "Two", "A", "First"),
+            ],
+        )
+        .unwrap();
+        let def = SmartDef {
+            query: "plays:0".into(),
+            ..SmartDef::default()
+        };
+        let id = create_smart(&conn, "Never Played", &def, 100).unwrap();
+
+        let materialize = |conn: &Connection| -> Vec<i64> {
+            let def = definition(conn, id).unwrap().unwrap();
+            let projection = Projection::load_serial(conn, false).unwrap();
+            let order = Arc::new(projection.sort_canonical());
+            def.ids(&projection, order)
+        };
+        assert_eq!(materialize(&conn), [1, 2]);
+
+        crate::listens::append(
+            &conn,
+            &crate::listens::Listen {
+                track_id: 1,
+                played_at: 1_700_000_000,
+                title: "One".into(),
+                artist: "A".into(),
+                album: "First".into(),
+                genre: String::new(),
+                path: "/m/1.mp3".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            materialize(&conn),
+            [2],
+            "the played track leaves the list on the next pass"
+        );
+        assert_eq!(
+            list(&conn).unwrap()[0].tracks,
+            0,
+            "and no member row was written either way"
+        );
     }
 
     #[test]

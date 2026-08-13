@@ -333,9 +333,10 @@ fn weighted_ids(conn: &Connection, seen: &HashSet<i64>, count: usize) -> Vec<i64
 /// Radio (#39): keep drawing what sounds like the seed, library-wide.
 ///
 /// Off the acoustic vectors rather than the genre and artist strings the
-/// issue first proposed, because #40 landed: `embeddings::scores` answers the
+/// issue first proposed, because #40 landed: `embeddings::ranked` answers the
 /// same question without trusting the least consistent field in any real
-/// library.
+/// library, and marks a track down for running at a tempo the seed doesn't
+/// share.
 ///
 /// This is selection, and the Similar shuffle mode in the player is ordering:
 /// radio decides which tracks join the queue, Similar decides what order the
@@ -370,7 +371,7 @@ fn radio_ids(conn: &Connection, seed: &Seed, seen: &HashSet<i64>) -> Vec<i64> {
     let Some(track) = seed.track else {
         return Vec::new();
     };
-    let Ok(mut scored) = embeddings::scores(conn, track, &seed.model) else {
+    let Ok(mut scored) = embeddings::ranked(conn, track, &seed.model) else {
         return Vec::new();
     };
     // Nearest first, ties by id so the ranking is the same between calls;
@@ -595,6 +596,55 @@ mod tests {
             .collect();
         for id in batch {
             assert!(near.contains(&id), "a pick came from outside the band");
+        }
+    }
+
+    /// The draw runs on `embeddings::ranked`, so a track the vectors put
+    /// closest to the seed loses its place in the band for running at a tempo
+    /// the seed doesn't share.
+    ///
+    /// Same circle as the test above, with the two tracks either side of the
+    /// seed measured half an octave off it, which is as far apart as two
+    /// tempos get. They stay in the ranking and they stay near the top of it,
+    /// they just no longer sit inside a band of one, and what the draw hands
+    /// back is the nearest pair that does share the seed's tempo.
+    #[test]
+    fn radio_passes_over_the_nearest_track_at_the_wrong_tempo() {
+        const N: usize = 40;
+        let conn = library(N);
+        let all = ids(&conn);
+        for (step, id) in all.iter().enumerate() {
+            let angle = step as f32 / N as f32 * std::f32::consts::TAU;
+            embeddings::upsert(&conn, *id, MODEL, &[angle.cos(), angle.sin()]).unwrap();
+        }
+        let bpm = |id: i64, bpm: f32| {
+            conn.execute(
+                "UPDATE tracks SET bpm = ?2 WHERE id = ?1",
+                rox_library::rusqlite::params![id, bpm],
+            )
+            .unwrap();
+        };
+        bpm(all[0], 140.0);
+        bpm(all[1], 198.0);
+        bpm(all[N - 1], 198.0);
+
+        // A band of one batch: the two nearest by vector alone, which is
+        // exactly the pair being marked down.
+        let nearest = [all[1], all[N - 1]];
+        let compatible: HashSet<i64> = [all[2], all[3], all[N - 2], all[N - 3]]
+            .into_iter()
+            .collect();
+        for _ in 0..8 {
+            let batch = picked(Radio.next(&conn, &seed(Scope::Library, vec![all[0]], 1)));
+            assert_eq!(batch.len(), 1);
+            assert!(
+                !nearest.contains(&batch[0]),
+                "the draw took the nearest track despite its tempo"
+            );
+            assert!(
+                compatible.contains(&batch[0]),
+                "the draw wandered past the tracks that share the tempo"
+            );
         }
     }
 

@@ -81,6 +81,28 @@ pub fn set_design_mode(on: bool) {
     DESIGN_MODE.store(on, Ordering::Relaxed);
 }
 
+/// rox addition: whether resizing is reserved for design mode. Off by
+/// default, so the seams stay draggable whatever the mode; on, a finished
+/// layout only resizes while design mode is, and a drag near a seam can't
+/// nudge it. A static like design mode above; the host seeds it and
+/// repaints.
+static RESIZE_LOCK: AtomicBool = AtomicBool::new(false);
+
+pub fn resize_lock() -> bool {
+    RESIZE_LOCK.load(Ordering::Relaxed)
+}
+
+/// Flip the resize lock. Repainting open windows is the caller's.
+pub fn set_resize_lock(on: bool) {
+    RESIZE_LOCK.store(on, Ordering::Relaxed);
+}
+
+/// Whether resizing is refused right now: the lock on and design mode
+/// off. What every resize handle asks before offering itself.
+pub fn resize_locked() -> bool {
+    resize_lock() && !design_mode()
+}
+
 pub enum DockEvent {
     /// The layout of the dock has changed, subscribers this to save the layout.
     ///

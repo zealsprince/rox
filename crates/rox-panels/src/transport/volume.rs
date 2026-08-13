@@ -45,8 +45,8 @@ pub enum VolumeItem {
     /// The percent readout. While it is hidden the speaker icon carries
     /// the number in a tooltip instead.
     Percent,
-    /// A flexible gap that pushes the pieces around it apart. One per
-    /// strip under the unique-item model.
+    /// A flexible gap that pushes the pieces around it apart; the strip
+    /// holds as many as the layout wants.
     Spacer,
 }
 
@@ -57,21 +57,25 @@ const ITEMS: &[panel::ArrangeSpec<VolumeItem>] = &[
         label: "Icon",
         icon: Some(icons::VOLUME_2),
         value: VolumeItem::Icon,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Slider",
         icon: Some(icons::SLIDERS),
         value: VolumeItem::Slider,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Percent",
         icon: None,
         value: VolumeItem::Percent,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: VolumeItem::Spacer,
+        repeats: true,
     },
 ];
 
@@ -162,7 +166,7 @@ fn piece_on() -> PieceDump {
 impl From<VolumeConfigDump> for VolumeConfig {
     fn from(dump: VolumeConfigDump) -> Self {
         let items = match dump.items {
-            Some(items) => panel::dedup(items),
+            Some(items) => panel::dedup(ITEMS, items),
             None => {
                 // The side pickers fold in the order the strip rendered
                 // them: each piece on its side of the slider, a right-set

@@ -71,8 +71,8 @@ pub enum PlaybackItem {
     /// The heart over the playing track, the same toggle the favourite
     /// panel and the library's heart column run.
     Favourite,
-    /// A flexible gap that pushes the buttons around it apart. One per
-    /// strip under the unique-item model.
+    /// A flexible gap that pushes the buttons around it apart; the strip
+    /// holds as many as the layout wants.
     Spacer,
 }
 
@@ -83,76 +83,91 @@ const ITEMS: &[panel::ArrangeSpec<PlaybackItem>] = &[
         label: "Previous",
         icon: Some(icons::SKIP_BACK),
         value: PlaybackItem::Prev,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Seek Back",
         icon: Some(icons::REWIND),
         value: PlaybackItem::SeekBack,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Play",
         icon: Some(icons::PLAY),
         value: PlaybackItem::Play,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Seek Forward",
         icon: Some(icons::FAST_FORWARD),
         value: PlaybackItem::SeekForward,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Next",
         icon: Some(icons::SKIP_FORWARD),
         value: PlaybackItem::Next,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Stop",
         icon: Some(icons::STOP),
         value: PlaybackItem::Stop,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Volume",
         icon: Some(icons::VOLUME_2),
         value: PlaybackItem::Volume,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Loop",
         icon: Some(icons::REPEAT),
         value: PlaybackItem::Repeat,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Shuffle",
         icon: Some(icons::SHUFFLE),
         value: PlaybackItem::Shuffle,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Continue",
         icon: Some(icons::INFINITY),
         value: PlaybackItem::Continue,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Crossfade",
         icon: Some(icons::BLEND),
         value: PlaybackItem::Crossfade,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Random",
         icon: Some(icons::DICE),
         value: PlaybackItem::Random,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Stop After",
         icon: Some(icons::SQUARE_DASHED),
         value: PlaybackItem::StopAfter,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Favourite",
         icon: Some(icons::HEART),
         value: PlaybackItem::Favourite,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: PlaybackItem::Spacer,
+        repeats: true,
     },
 ];
 
@@ -173,6 +188,9 @@ pub struct TransportConfig {
     pub play_highlight: PlayHighlight,
     /// The shown buttons in display order; one not listed is hidden.
     pub items: Vec<PlaybackItem>,
+    /// What the draw button's press does: a track from anywhere, or one
+    /// that sounds like the playing track.
+    pub random_mode: RandomMode,
 }
 
 impl Default for TransportConfig {
@@ -199,6 +217,7 @@ impl Default for TransportConfig {
                 PlaybackItem::Repeat,
                 PlaybackItem::Shuffle,
             ],
+            random_mode: RandomMode::default(),
         }
     }
 }
@@ -217,6 +236,8 @@ struct TransportConfigDump {
     play_highlight: PlayHighlight,
     #[serde(default)]
     items: Option<Vec<PlaybackItem>>,
+    #[serde(default)]
+    random_mode: RandomMode,
     #[serde(default = "default_true")]
     prev: bool,
     #[serde(default = "default_true")]
@@ -238,7 +259,7 @@ struct TransportConfigDump {
 impl From<TransportConfigDump> for TransportConfig {
     fn from(dump: TransportConfigDump) -> Self {
         let items = match dump.items {
-            Some(items) => panel::dedup(items),
+            Some(items) => panel::dedup(ITEMS, items),
             None => {
                 let mut items = Vec::new();
                 let mut on = |on, item| {
@@ -268,8 +289,35 @@ impl From<TransportConfigDump> for TransportConfig {
             align: dump.align,
             play_highlight: dump.play_highlight,
             items,
+            random_mode: dump.random_mode,
         }
     }
+}
+
+/// What the draw button draws. A layout from before the button had a
+/// dropdown reads as Random, which is the only thing it ever did.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RandomMode {
+    /// A track from anywhere in the playing context, the dice roll.
+    #[default]
+    Random,
+    /// A track that sounds like the playing one, off the acoustic vectors.
+    /// Needs the library analyzed to do anything.
+    Similar,
+}
+
+impl RandomMode {
+    /// The label the dropdown shows.
+    fn label(self) -> &'static str {
+        match self {
+            RandomMode::Random => "Random",
+            RandomMode::Similar => "Play Similar",
+        }
+    }
+
+    /// Both draws in menu order.
+    const ALL: [RandomMode; 2] = [RandomMode::Random, RandomMode::Similar];
 }
 
 /// The play button's accent highlight: the filled disc it ships with, a
@@ -340,18 +388,20 @@ struct Heart {
     on: bool,
 }
 
-/// A button whose click toggles something and whose hold opens the shades of
-/// it. Two of them: shuffle picks the order it puts the queue in, crossfade
-/// picks how long one track lies over the next.
+/// A button whose click does something and whose hold opens the shades of
+/// it. Three of them: shuffle picks the order it puts the queue in,
+/// crossfade picks how long one track lies over the next, and the draw
+/// button picks what a press pulls out of the library.
 ///
 /// Continue isn't one. Its strategies differ in kind rather than degree and
 /// they need a sentence each, which is what the Behavior page is for; these
-/// two are a short list of shades of the same thing, which is what a hold
-/// menu is good at.
+/// are short lists of shades of the same thing, which is what a hold menu is
+/// good at.
 #[derive(Clone, Copy, PartialEq)]
 enum ModeButton {
     Shuffle,
     Crossfade,
+    Random,
 }
 
 /// A press on a mode button that hasn't been released yet.
@@ -374,6 +424,17 @@ fn mode_icon(mode: ShuffleMode) -> &'static str {
     match mode {
         ShuffleMode::Random => icons::SHUFFLE,
         ShuffleMode::Similar => icons::RADIO,
+    }
+}
+
+/// The glyph a draw wears. Random keeps the dice the button has always been.
+/// Similar takes the waveform, the shape of the thing it draws by, and
+/// deliberately not the radio the shuffle order wears: two buttons in one
+/// strip carrying the same glyph would read as the same switch twice.
+fn draw_icon(mode: RandomMode) -> &'static str {
+    match mode {
+        RandomMode::Random => icons::DICE,
+        RandomMode::Similar => icons::AUDIO_WAVEFORM,
     }
 }
 
@@ -513,16 +574,26 @@ impl TransportPanel {
         tip: String,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let key = match button {
+            ModeButton::Shuffle => "shuffle",
+            ModeButton::Crossfade => "crossfade",
+            ModeButton::Random => "random",
+        };
         // A button whose menu would hold one row isn't a button with a menu.
-        // Shuffle loses its hold while nothing has been described, since
-        // Random is then the only order there is, and crossfade never has
-        // one to lose.
-        if button == ModeButton::Shuffle && !crate::settings::similarity_ready() {
+        // Shuffle and the draw button both lose their hold while nothing has
+        // been described, since the random half is then the only half either
+        // list has; crossfade never has one to lose.
+        if button != ModeButton::Crossfade && !crate::settings::similarity_ready() {
             return panel::icon_control(
                 icon,
                 color,
-                panel::Tip::keyed("shuffle", tip),
-                |this: &mut Self, cx| this.state.player.update(cx, |p, cx| p.toggle_shuffle(cx)),
+                panel::Tip::keyed(key, tip),
+                move |this: &mut Self, cx| match button {
+                    ModeButton::Random => this.play_draw(cx),
+                    // Crossfade never gets here, it keeps its menu whatever
+                    // the library has been described with.
+                    _ => this.state.player.update(cx, |p, cx| p.toggle_shuffle(cx)),
+                },
                 cx,
             );
         }
@@ -530,13 +601,11 @@ impl TransportPanel {
         // corner chevron can only hint that there's something there. The
         // tooltip is where it gets said.
         let tip = panel::Tip::keyed(
-            match button {
-                ModeButton::Shuffle => "shuffle",
-                ModeButton::Crossfade => "crossfade",
-            },
+            key,
             match button {
                 ModeButton::Shuffle => format!("{tip}. Hold to pick an order"),
                 ModeButton::Crossfade => format!("{tip}. Hold to pick a length"),
+                ModeButton::Random => format!("{tip}. Hold to pick a draw"),
             },
         );
         tip.apply(
@@ -610,7 +679,7 @@ impl TransportPanel {
     }
 
     /// Finish a press. A hold already did its work and swallows the click;
-    /// anything shorter is the plain toggle.
+    /// anything shorter is the plain press.
     fn release_mode(&mut self, cx: &mut Context<Self>) {
         let Some(press) = self.press.take() else {
             return;
@@ -618,12 +687,19 @@ impl TransportPanel {
         if press.opened {
             return;
         }
-        self.state
-            .player
-            .update(cx, |player, cx| match press.button {
-                ModeButton::Shuffle => player.toggle_shuffle(cx),
-                ModeButton::Crossfade => player.toggle_crossfade(cx),
-            });
+        match press.button {
+            ModeButton::Shuffle => self
+                .state
+                .player
+                .update(cx, |player, cx| player.toggle_shuffle(cx)),
+            ModeButton::Crossfade => self
+                .state
+                .player
+                .update(cx, |player, cx| player.toggle_crossfade(cx)),
+            // The draw isn't a toggle: a press does whichever draw the
+            // dropdown last left it on.
+            ModeButton::Random => self.play_draw(cx),
+        }
     }
 
     /// The mode menu, hung from where the press started.
@@ -637,6 +713,7 @@ impl TransportPanel {
         let menu = match button {
             ModeButton::Shuffle => self.shuffle_menu(window, cx),
             ModeButton::Crossfade => self.crossfade_menu(window, cx),
+            ModeButton::Random => self.random_menu(window, cx),
         };
         menu.focus_handle(cx).focus(window);
         let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
@@ -671,6 +748,38 @@ impl TransportPanel {
                         .checked(mode == current)
                         .on_click(move |_, _, cx| {
                             player.update(cx, |player, cx| player.set_shuffle_mode(mode, cx));
+                        }),
+                );
+            }
+            menu
+        })
+    }
+
+    /// What the draw button pulls out of the library: a track from anywhere,
+    /// or one that sounds like the playing track.
+    ///
+    /// The pick belongs to the panel rather than the player, unlike shuffle's
+    /// order: nothing else in the app reads it, and a strip that carries two
+    /// draw buttons should be able to have one of each.
+    fn random_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Entity<PopupMenu> {
+        let current = self.random_mode();
+        let weak = cx.entity().downgrade();
+        PopupMenu::build(window, cx, move |menu, _, _| {
+            // The check on the right, so it joins the glyph instead of
+            // replacing it; see `shuffle_menu`.
+            let mut menu = menu.check_side(Side::Right);
+            for mode in RandomMode::ALL {
+                let weak = weak.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(mode.label())
+                        .icon(Icon::default().path(draw_icon(mode)))
+                        .checked(mode == current)
+                        .on_click(move |_, _, cx| {
+                            let Some(this) = weak.upgrade() else { return };
+                            this.update(cx, |this, cx| {
+                                this.config.random_mode = mode;
+                                cx.notify();
+                            });
                         }),
                 );
             }
@@ -941,14 +1050,28 @@ impl TransportPanel {
         cx.notify();
     }
 
-    /// Land on a track at random and play on from there. The player draws it
-    /// from whatever context is playing, so this only hands over the library
-    /// to draw from.
-    fn play_random(&mut self, cx: &mut Context<Self>) {
+    /// Which draw the button does: the config's pick, with the fallback the
+    /// shuffle mode has for the same reason. Similar needs vectors to draw
+    /// by, so it reads as Random until something has been described; the pick
+    /// itself is left alone, so analyzing the library later brings it back
+    /// without asking twice.
+    fn random_mode(&self) -> RandomMode {
+        if self.config.random_mode == RandomMode::Similar && !crate::settings::similarity_ready() {
+            return RandomMode::Random;
+        }
+        self.config.random_mode
+    }
+
+    /// The draw button's press: a track from anywhere, or one that sounds
+    /// like the playing track. The player does both draws, so this only hands
+    /// over the library to draw from.
+    fn play_draw(&mut self, cx: &mut Context<Self>) {
         let library = self.state.library.clone();
-        self.state
-            .player
-            .update(cx, |player, cx| player.play_random(&library, cx));
+        let mode = self.random_mode();
+        self.state.player.update(cx, |player, cx| match mode {
+            RandomMode::Random => player.play_random(&library, cx),
+            RandomMode::Similar => player.play_similar(&library, cx),
+        });
     }
 }
 
@@ -1105,6 +1228,14 @@ impl TransportPanel {
             format!("Crossfade {}", length_label(crossfade_secs))
         } else {
             "Crossfade off".to_string()
+        };
+        // The draw button carries no on/off state, so nothing about it is
+        // dim; what changes is which draw a press does, in the glyph and in
+        // the words.
+        let random_mode = self.random_mode();
+        let random_tip = match random_mode {
+            RandomMode::Random => "Play a random track",
+            RandomMode::Similar => "Play a track like this one",
         };
         // Stop-after too: dim until armed, the accent while it waits.
         let stop_after_color = if player.stop_after() {
@@ -1312,14 +1443,18 @@ impl TransportPanel {
                         cx,
                     )
                     .into_any_element(),
-                PlaybackItem::Random => panel::icon_control(
-                    icons::DICE,
-                    palette::text(),
-                    "Play a random track",
-                    |this: &mut Self, cx| this.play_random(cx),
-                    cx,
-                )
-                .into_any_element(),
+                // The draw button holds like shuffle: the dropdown swaps what
+                // a press pulls out, and the glyph follows the pick so the
+                // button says which draw it is before you press it.
+                PlaybackItem::Random => self
+                    .mode_control(
+                        ModeButton::Random,
+                        draw_icon(random_mode),
+                        palette::text(),
+                        random_tip.to_string(),
+                        cx,
+                    )
+                    .into_any_element(),
                 PlaybackItem::StopAfter => panel::icon_control(
                     icons::SQUARE_DASHED,
                     stop_after_color,
@@ -1433,7 +1568,9 @@ transport_panel!(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_length, length_label, PlaybackItem, TransportConfig, CROSSFADE_LENGTHS};
+    use super::{
+        is_length, length_label, PlaybackItem, RandomMode, TransportConfig, CROSSFADE_LENGTHS,
+    };
 
     /// The hold menu has to be able to mark a length the Audio page's scrub
     /// wrote, which is the case the presets alone can't cover: a 4.3 is not
@@ -1536,6 +1673,24 @@ mod tests {
         let saved = serde_json::to_value(&picked).unwrap();
         let back: TransportConfig = serde_json::from_value(saved).unwrap();
         assert!(back.items == picked.items);
+    }
+
+    /// The draw button's pick survives a save, and a layout from before the
+    /// dropdown existed comes back on Random, the only draw it ever did.
+    #[test]
+    fn the_draw_mode_defaults_to_random_and_round_trips() {
+        assert!(TransportConfig::default().random_mode == RandomMode::Random);
+
+        let legacy: TransportConfig = serde_json::from_str(r#"{"random": true}"#).unwrap();
+        assert!(legacy.random_mode == RandomMode::Random);
+
+        let picked: TransportConfig =
+            serde_json::from_str(r#"{"items": ["random"], "random_mode": "similar"}"#).unwrap();
+        assert!(picked.random_mode == RandomMode::Similar);
+
+        let saved = serde_json::to_value(&picked).unwrap();
+        let back: TransportConfig = serde_json::from_value(saved).unwrap();
+        assert!(back.random_mode == RandomMode::Similar);
     }
 
     /// A layout that carries the list uses it as-is, duplicates dropped,

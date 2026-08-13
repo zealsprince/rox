@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use gpui::{
     div, point, prelude::*, px, size, App, Bounds, ClipboardItem, Context, Div, EntityId, Global,
-    Rgba, ScrollHandle, SharedString, Window, WindowHandle,
+    MouseButton, MouseDownEvent, Rgba, ScrollHandle, SharedString, Window, WindowHandle,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{Icon, Root, Sizable as _};
@@ -210,25 +210,32 @@ impl ConsoleWindow {
         out
     }
 
-    /// One level filter toggle: outlined while its level shows, ghost when
-    /// hidden, so the row reads which levels are on at a glance.
-    fn level_toggle(
+    /// One toolbar toggle: the kit's tick box with its label beside it, the
+    /// checkbox row the settings windows use. The press lands on the pair,
+    /// so the label is part of the target.
+    fn toggle(
         &self,
         id: &'static str,
         label: &'static str,
         on: bool,
         set: fn(&mut Self, &mut Context<Self>),
         cx: &mut Context<Self>,
-    ) -> Button {
-        let button = Button::new(id)
-            .label(label)
-            .small()
-            .on_click(cx.listener(move |this, _, _, cx| set(this, cx)));
-        if on {
-            button.outline()
-        } else {
-            button.ghost()
-        }
+    ) -> gpui::Stateful<Div> {
+        div()
+            .id(id)
+            .flex()
+            .flex_row()
+            .flex_none()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .text_xs()
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseDownEvent, _, cx| set(this, cx)),
+            )
+            .child(settings_ui::checkbox(on))
+            .child(div().text_color(palette::text_muted()).child(label))
     }
 
     /// The action row: the level filters, the follow toggle, and the copy,
@@ -256,7 +263,7 @@ impl ConsoleWindow {
                         n => format!("{n} lines"),
                     })),
             )
-            .child(self.level_toggle(
+            .child(self.toggle(
                 "console-error",
                 "Error",
                 self.show_error,
@@ -266,7 +273,7 @@ impl ConsoleWindow {
                 },
                 cx,
             ))
-            .child(self.level_toggle(
+            .child(self.toggle(
                 "console-warn",
                 "Warn",
                 self.show_warn,
@@ -276,7 +283,7 @@ impl ConsoleWindow {
                 },
                 cx,
             ))
-            .child(self.level_toggle(
+            .child(self.toggle(
                 "console-info",
                 "Info",
                 self.show_info,
@@ -286,56 +293,43 @@ impl ConsoleWindow {
                 },
                 cx,
             ))
-            .child({
-                // Outlined while following, ghost when off, so the button
-                // reads its own state.
-                let follow = Button::new("console-follow")
-                    .icon(Icon::default().path(icons::ARROW_DOWN))
-                    .label("Follow")
-                    .small()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.follow = !this.follow;
-                        cx.notify();
-                    }));
-                if self.follow {
-                    follow.outline()
-                } else {
-                    follow.ghost()
-                }
-            })
-            .child(
-                Button::new("console-copy")
-                    .icon(Icon::default().path(icons::COPY))
-                    .label("Copy")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(this.as_text()));
-                    })),
-            )
-            .child(
-                Button::new("console-reveal")
-                    .icon(Icon::default().path(icons::FILE_TEXT))
-                    .label("Reveal")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        cx.reveal_path(&logging::log_path());
-                    })),
-            )
-            .child(
-                Button::new("console-clear")
-                    .icon(Icon::default().path(icons::TRASH))
-                    .label("Clear")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        logging::clear();
-                        this.lines.clear();
-                        this.seen = logging::seq();
-                        cx.notify();
-                    })),
-            )
+            .child(self.toggle(
+                "console-follow",
+                "Follow",
+                self.follow,
+                |this, cx| {
+                    this.follow = !this.follow;
+                    cx.notify();
+                },
+                cx,
+            ))
+            .child(settings_ui::small_button(
+                "Copy",
+                icons::COPY,
+                false,
+                cx.listener(|this, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(this.as_text()));
+                }),
+            ))
+            .child(settings_ui::small_button(
+                "Reveal",
+                icons::FILE_TEXT,
+                false,
+                cx.listener(|_, _, _, cx| {
+                    cx.reveal_path(&logging::log_path());
+                }),
+            ))
+            .child(settings_ui::small_button(
+                "Clear",
+                icons::TRASH,
+                false,
+                cx.listener(|this, _, _, cx| {
+                    logging::clear();
+                    this.lines.clear();
+                    this.seen = logging::seq();
+                    cx.notify();
+                }),
+            ))
     }
 
     /// The scrolling log body: one row per shown line, the time muted and the

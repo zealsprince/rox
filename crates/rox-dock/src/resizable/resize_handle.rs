@@ -124,6 +124,12 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
         let neg_offset = -HANDLE_PADDING;
         let axis = self.axis;
 
+        // rox addition: while the resize lock holds, the handle is only
+        // the seam. No cursor, no drag, no occluding hit strip, so a
+        // pointer crossing a panel edge neither flickers nor grabs the
+        // layout.
+        let live = !crate::resize_locked();
+
         window.with_element_state(id.unwrap(), |state, window| {
             let state = state.unwrap_or(ResizeHandleState::default());
 
@@ -137,21 +143,23 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
 
             let mut el = div()
                 .id(self.id.clone())
-                .occlude()
+                .when(live, |this| this.occlude())
                 .absolute()
                 .flex_shrink_0()
                 .group("handle")
-                .when_some(self.on_drag.clone(), |this, on_drag| {
-                    this.on_drag(
-                        self.drag_value.clone().unwrap(),
-                        move |_, position, window, cx| on_drag(&position, window, cx),
-                    )
+                .when(live, |this| {
+                    this.when_some(self.on_drag.clone(), |this, on_drag| {
+                        this.on_drag(
+                            self.drag_value.clone().unwrap(),
+                            move |_, position, window, cx| on_drag(&position, window, cx),
+                        )
+                    })
                 })
                 .map(|this| match self.placement {
                     Some(DockPlacement::Left) => {
                         // Special for Left Dock
                         //  FIXME: Improve this to let the scroll bar have px(HANDLE_PADDING)
-                        this.cursor_col_resize()
+                        this.when(live, |this| this.cursor_col_resize())
                             .top_0()
                             .right(px(1.))
                             .h_full()
@@ -160,7 +168,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
                     }
                     _ => this
                         .when(axis.is_horizontal(), |this| {
-                            this.cursor_col_resize()
+                            this.when(live, |this| this.cursor_col_resize())
                                 .top_0()
                                 .left(neg_offset)
                                 .h_full()
@@ -168,7 +176,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
                                 .px(HANDLE_PADDING)
                         })
                         .when(axis.is_vertical(), |this| {
-                            this.cursor_row_resize()
+                            this.when(live, |this| this.cursor_row_resize())
                                 .top(neg_offset)
                                 .left_0()
                                 .w_full()
@@ -214,6 +222,13 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
         cx: &mut App,
     ) {
         request_layout.paint(window, cx);
+
+        // rox addition: a locked handle takes no part in the mouse, so a
+        // click landing where the strip would be doesn't flash the seam
+        // into its drag color.
+        if crate::resize_locked() {
+            return;
+        }
 
         window.with_element_state(id.unwrap(), |state: Option<ResizeHandleState>, window| {
             let state = state.unwrap_or(ResizeHandleState::default());

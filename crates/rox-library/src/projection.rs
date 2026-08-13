@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 
 use memchr::memmem;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::store;
 
@@ -213,6 +214,31 @@ pub fn unpack_gain(cdb: i16) -> Option<f32> {
     (cdb != NO_GAIN).then(|| cdb as f32 / 100.)
 }
 
+/// What the tempo column holds for a row nothing has filled a tempo for.
+/// Zero, since no track runs at no beats a minute: it sorts ahead of every
+/// real value the way an unrated row does, and decodes back to None.
+pub const NO_BPM: u16 = 0;
+
+/// A tempo packed for the projection: hundredths of a beat a minute in a
+/// u16. The store only holds tempos inside [`crate::tempo::SLOWEST`]..=
+/// [`crate::tempo::FASTEST`], so the integer holds the value exactly and
+/// leaves most of its range spare, at two bytes a row instead of four plus
+/// a present flag. Nothing, and anything outside that range, packs to
+/// [`NO_BPM`].
+fn pack_bpm(bpm: Option<f32>) -> u16 {
+    match bpm {
+        Some(bpm) if (crate::tempo::SLOWEST..=crate::tempo::FASTEST).contains(&bpm) => {
+            (bpm * 100.).round() as u16
+        }
+        _ => NO_BPM,
+    }
+}
+
+/// The tempo back out of a packed one.
+pub fn unpack_bpm(cbpm: u16) -> Option<f32> {
+    (cbpm != NO_BPM).then(|| cbpm as f32 / 100.)
+}
+
 /// One shard of rows being loaded; also the whole library when loading serially.
 #[derive(Default)]
 pub struct Builder {
@@ -235,6 +261,8 @@ pub struct Builder {
     added: Vec<i64>,
     track_gain: Vec<i16>,
     album_gain: Vec<i16>,
+    bpm: Vec<u16>,
+    bpm_source: Vec<crate::tempo::Source>,
     sub: Vec<u16>,
     folder: Vec<u32>,
     artists: Interner,
@@ -260,54 +288,33 @@ impl Builder {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn push(
-        &mut self,
-        id: i64,
-        path: &str,
-        title: &str,
-        artist: &str,
-        album_artist: &str,
-        album: &str,
-        genre: &str,
-        year: u16,
-        disc_no: u16,
-        track_no: u16,
-        duration_ms: u32,
-        codec: &str,
-        bitrate_kbps: u16,
-        sample_rate_hz: u32,
-        bit_depth: u8,
-        rating: u8,
-        added: i64,
-        track_gain_db: Option<f32>,
-        album_gain_db: Option<f32>,
-        sub: u16,
-    ) {
-        self.db_id.push(id);
-        self.title.push(title);
-        self.title_lower.push_lowercased(title);
-        self.artist.push(self.artists.intern(artist));
+    fn push(&mut self, row: store::ScanRow<'_>) {
+        self.db_id.push(row.id);
+        self.title.push(row.title);
+        self.title_lower.push_lowercased(row.title);
+        self.artist.push(self.artists.intern(row.artist));
         self.album_artist
-            .push(self.album_artists.intern(album_artist));
-        self.album.push(self.albums.intern(album));
-        self.genre.push(self.genres.intern(genre));
-        self.year.push(year);
-        self.disc_no.push(disc_no);
-        self.track_no.push(track_no);
-        self.duration_ms.push(duration_ms);
-        self.codec.push(self.codecs.intern(codec));
-        self.bitrate_kbps.push(bitrate_kbps);
-        self.sample_rate_hz.push(sample_rate_hz);
-        self.bit_depth.push(bit_depth);
-        self.rating.push(rating);
-        self.added.push(added);
-        self.track_gain.push(pack_gain(track_gain_db));
-        self.album_gain.push(pack_gain(album_gain_db));
-        self.sub.push(sub);
+            .push(self.album_artists.intern(row.album_artist));
+        self.album.push(self.albums.intern(row.album));
+        self.genre.push(self.genres.intern(row.genre));
+        self.year.push(row.year);
+        self.disc_no.push(row.disc_no);
+        self.track_no.push(row.track_no);
+        self.duration_ms.push(row.duration_ms);
+        self.codec.push(self.codecs.intern(row.codec));
+        self.bitrate_kbps.push(row.bitrate_kbps);
+        self.sample_rate_hz.push(row.sample_rate_hz);
+        self.bit_depth.push(row.bit_depth);
+        self.rating.push(row.rating);
+        self.added.push(row.added);
+        self.track_gain.push(pack_gain(row.track_gain_db));
+        self.album_gain.push(pack_gain(row.album_gain_db));
+        self.bpm.push(pack_bpm(row.bpm));
+        self.bpm_source.push(row.bpm_source);
+        self.sub.push(row.sub);
         // Interned per album directory, so it stays cheap even at ten
         // million rows; an empty parent (a bare filename) folds to "".
-        let folder = Path::new(path)
+        let folder = Path::new(row.path)
             .parent()
             .map(|p| p.to_string_lossy())
             .unwrap_or_default();
@@ -359,6 +366,13 @@ pub struct Projection {
     /// library sorts or reads by them, so they stay in the database.
     pub track_gain: Vec<i16>,
     pub album_gain: Vec<i16>,
+    /// What each row runs at, packed to centi-bpm per [`pack_bpm`] with
+    /// [`NO_BPM`] for a track nothing has filled a tempo for.
+    pub bpm: Vec<u16>,
+    /// Which of the two sources filled the tempo beside it: the file's own
+    /// tags, or rox's estimate. One byte a row, so a UI can mark an
+    /// estimate as one without going back to the database per visible row.
+    pub bpm_source: Vec<crate::tempo::Source>,
     /// Which subsong of its file each row is: 0 for a plain file, the cue
     /// sheet's 1-based track number for a span of an image. Dense because
     /// it's two bytes a track and every TrackKey the UI builds needs it.
@@ -424,6 +438,12 @@ pub struct RowView<'a> {
     /// The file's own ReplayGain figures in dB, None where it carries none.
     pub track_gain_db: Option<f32>,
     pub album_gain_db: Option<f32>,
+    /// What the row runs at in beats a minute, None where nothing has
+    /// filled a tempo for it.
+    pub bpm: Option<f32>,
+    /// Where that tempo came from, so a display can tell an estimate from
+    /// what a tagger wrote.
+    pub bpm_source: crate::tempo::Source,
     pub folder: &'a str,
     /// Which subsong of its file the row is, 0 for a plain file.
     pub sub: u16,
@@ -457,6 +477,23 @@ pub enum QueryField {
     Year,
     Folder,
     Codec,
+    /// The three numeric pins, which take a comparison rather than a
+    /// substring: `rating:>=4`, `plays:0`, `added:<90d`. Pin-only, like
+    /// folder and codec - a bare number is a plausible title or year, and
+    /// matching it here would bury the real hit.
+    Rating,
+    Plays,
+    Added,
+}
+
+impl QueryField {
+    /// Whether the field takes a numeric comparison instead of a substring.
+    pub fn numeric(self) -> bool {
+        matches!(
+            self,
+            QueryField::Rating | QueryField::Plays | QueryField::Added
+        )
+    }
 }
 
 /// The `field:` prefixes the query syntax accepts, shared with the
@@ -470,12 +507,109 @@ pub const QUERY_FIELDS: &[(&str, QueryField)] = &[
     ("year", QueryField::Year),
     ("folder", QueryField::Folder),
     ("codec", QueryField::Codec),
+    ("rating", QueryField::Rating),
+    ("plays", QueryField::Plays),
+    ("added", QueryField::Added),
 ];
 
+/// How a numeric term compares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NumOp {
+    Eq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// A parsed numeric term: the comparison and the number behind it. The
+/// number means the column's own value for `rating:` (whole stars, 0
+/// unrated) and `plays:`, and an age in days for `added:`, so
+/// `added:<90d` is "added in the last 90 days".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NumTerm {
+    pub op: NumOp,
+    pub value: i64,
+}
+
+/// A comparison nothing satisfies, the fallback for a numeric pin that
+/// somehow reached a matcher without its number. [`parse_query`] never
+/// builds one - it drops back to a free term instead - so this only keeps
+/// the matchers total.
+const NUM_NEVER: NumTerm = NumTerm {
+    op: NumOp::Lt,
+    value: i64::MIN,
+};
+
+impl NumTerm {
+    /// Whether a column value satisfies the comparison.
+    pub fn holds(&self, n: i64) -> bool {
+        match self.op {
+            NumOp::Eq => n == self.value,
+            NumOp::Lt => n < self.value,
+            NumOp::Le => n <= self.value,
+            NumOp::Gt => n > self.value,
+            NumOp::Ge => n >= self.value,
+        }
+    }
+}
+
+/// Split a numeric field's value into its comparison and number. The
+/// operator is optional and defaults to equality, so `rating:3` is
+/// `rating:=3`; a trailing `d` (the `added:` day suffix) is accepted and
+/// dropped. None when what follows isn't a plain number, which sends the
+/// whole token back to being a free text term.
+fn parse_num(value: &str) -> Option<NumTerm> {
+    let value = value.trim();
+    let (op, rest) = if let Some(rest) = value.strip_prefix(">=") {
+        (NumOp::Ge, rest)
+    } else if let Some(rest) = value.strip_prefix("<=") {
+        (NumOp::Le, rest)
+    } else if let Some(rest) = value.strip_prefix('>') {
+        (NumOp::Gt, rest)
+    } else if let Some(rest) = value.strip_prefix('<') {
+        (NumOp::Lt, rest)
+    } else if let Some(rest) = value.strip_prefix('=') {
+        (NumOp::Eq, rest)
+    } else {
+        (NumOp::Eq, value)
+    };
+    let rest = rest.trim();
+    let digits = rest.strip_suffix('d').unwrap_or(rest);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok().map(|value| NumTerm { op, value })
+}
+
+/// The whole stars a stored 0-100 rating reads as, 0 for unrated. What a
+/// `rating:` term compares against, so the query speaks the same 0-5 the
+/// star cells draw.
+fn rating_stars(value: u8) -> i64 {
+    if value == 0 {
+        0
+    } else {
+        crate::rating::stars(value) as i64
+    }
+}
+
+/// Unix seconds now, the clock a bare [`Projection::search`] resolves
+/// `added:` ages against. The matcher itself takes the timestamp.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// One parsed query term: a lowercased needle, maybe pinned to one field.
+/// A term pinned to a numeric field carries its comparison in `num` and
+/// leaves the needle as the raw value text.
 pub struct Term {
     pub field: Option<QueryField>,
     pub needle: String,
+    /// The comparison behind a numeric pin; None for every text term.
+    pub num: Option<NumTerm>,
 }
 
 /// Split a query into terms. Whitespace separates, double quotes keep a
@@ -483,6 +617,12 @@ pub struct Term {
 /// field; every term must match for a row to hit. So
 /// `stronger artist:"daft punk"` is a free term and an artist term, and
 /// an unknown prefix like `ac:dc` stays one free term.
+///
+/// The numeric fields take a comparison instead of a substring:
+/// `rating:>=4`, `plays:0`, `added:<90d`. A numeric pin whose value isn't
+/// a number (`rating:great`) falls back to a free term, the same rule an
+/// unknown prefix follows. Operators on a text field stay literal, so
+/// `year:>1990` looks for the characters ">1990" and finds nothing.
 pub fn parse_query(query: &str) -> Vec<Term> {
     let mut tokens: Vec<String> = Vec::new();
     let mut token = String::new();
@@ -514,16 +654,24 @@ pub fn parse_query(query: &str) -> Vec<Term> {
                 if !name.contains('"') {
                     let name = name.to_lowercase();
                     if let Some(&(_, field)) = QUERY_FIELDS.iter().find(|(n, _)| *n == name) {
-                        return Term {
-                            field: Some(field),
-                            needle: strip(&raw[i + 1..]).to_lowercase(),
-                        };
+                        let needle = strip(&raw[i + 1..]).to_lowercase();
+                        let num = field.numeric().then(|| parse_num(&needle));
+                        // A numeric pin with nothing numeric behind it is
+                        // not a filter anybody meant; let it read as text.
+                        if !matches!(num, Some(None)) {
+                            return Term {
+                                field: Some(field),
+                                needle,
+                                num: num.flatten(),
+                            };
+                        }
                     }
                 }
             }
             Term {
                 field: None,
                 needle: strip(raw).to_lowercase(),
+                num: None,
             }
         })
         .filter(|t| !t.needle.is_empty())
@@ -533,7 +681,7 @@ pub fn parse_query(query: &str) -> Vec<Term> {
 /// A field the structured filter can pin exact values to: the interned
 /// columns plus the year. Titles stay out; a text term already reaches
 /// them, and a filter over ten million distinct titles filters nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterField {
     Artist,
     AlbumArtist,
@@ -559,7 +707,8 @@ pub enum FilterField {
 /// below reaches all of them at once. `None` is no id restriction at all;
 /// `Some` of an empty list matches nothing, which is what an emptied
 /// selection should show.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FilterSet {
     pub fields: Vec<(FilterField, Vec<String>)>,
     pub ids: Option<Vec<i64>>,
@@ -767,6 +916,13 @@ pub trait Filterable {
 /// match title, artist, album artist, album, or genre; a pinned term only its
 /// field, the same rule [`Projection::search`] applies over the catalog.
 /// Terms AND together; needles come lowercased from [`parse_query`].
+///
+/// The numeric pins read columns a plain row list doesn't carry - rating,
+/// play count, and added date live on the projection - so they match
+/// nothing here. A `rating:>=4` typed into the queue or playlists box
+/// comes back empty rather than quietly ignoring the term; the catalog's
+/// own views (and smart playlists) run through [`Projection::search`],
+/// where the columns exist.
 pub fn track_matches(terms: &[Term], fields: &TrackFields) -> bool {
     terms.iter().all(|t| match t.field {
         None => {
@@ -784,11 +940,12 @@ pub fn track_matches(terms: &[Term], fields: &TrackFields) -> bool {
         Some(QueryField::Folder) => contains_fold(&fields.folder(), &t.needle),
         Some(QueryField::Codec) => contains_fold(fields.codec, &t.needle),
         Some(QueryField::Year) => fields.year.to_string().contains(t.needle.as_str()),
+        Some(QueryField::Rating | QueryField::Plays | QueryField::Added) => false,
     })
 }
 
 /// A sortable column of the projection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SortKey {
     Title,
     Artist,
@@ -811,6 +968,8 @@ pub enum SortKey {
     TrackGain,
     /// The same the other way round, for the Album mode.
     AlbumGain,
+    /// How fast the track runs, whichever source wrote the number.
+    Bpm,
 }
 
 impl Projection {
@@ -828,54 +987,7 @@ impl Projection {
     pub fn load_serial(conn: &rusqlite::Connection, fold: bool) -> rusqlite::Result<Self> {
         let max = store::max_rowid(conn)?;
         let mut b = Builder::new(fold);
-        store::scan_range(
-            conn,
-            0,
-            max,
-            |id,
-             path,
-             title,
-             artist,
-             album_artist,
-             album,
-             genre,
-             year,
-             dn,
-             tn,
-             dur,
-             codec,
-             kbps,
-             hz,
-             bits,
-             rating,
-             added,
-             track_gain,
-             album_gain,
-             sub| {
-                b.push(
-                    id,
-                    path,
-                    title,
-                    artist,
-                    album_artist,
-                    album,
-                    genre,
-                    year,
-                    dn,
-                    tn,
-                    dur,
-                    codec,
-                    kbps,
-                    hz,
-                    bits,
-                    rating,
-                    added,
-                    track_gain,
-                    album_gain,
-                    sub,
-                );
-            },
-        )?;
+        store::scan_range(conn, 0, max, |row| b.push(row))?;
         let mut projection = Self::merge(vec![b], fold);
         projection.fill_plays(conn)?;
         projection.fill_spans(conn)?;
@@ -898,54 +1010,7 @@ impl Projection {
                     scope.spawn(move || {
                         let conn = store::open(db_path)?;
                         let mut b = Builder::new(fold);
-                        store::scan_range(
-                            &conn,
-                            lo,
-                            hi,
-                            |id,
-                             path,
-                             title,
-                             artist,
-                             album_artist,
-                             album,
-                             genre,
-                             year,
-                             dn,
-                             tn,
-                             dur,
-                             codec,
-                             kbps,
-                             hz,
-                             bits,
-                             rating,
-                             added,
-                             track_gain,
-                             album_gain,
-                             sub| {
-                                b.push(
-                                    id,
-                                    path,
-                                    title,
-                                    artist,
-                                    album_artist,
-                                    album,
-                                    genre,
-                                    year,
-                                    dn,
-                                    tn,
-                                    dur,
-                                    codec,
-                                    kbps,
-                                    hz,
-                                    bits,
-                                    rating,
-                                    added,
-                                    track_gain,
-                                    album_gain,
-                                    sub,
-                                );
-                            },
-                        )?;
+                        store::scan_range(&conn, lo, hi, |row| b.push(row))?;
                         Ok(b)
                     })
                 })
@@ -1024,6 +1089,8 @@ impl Projection {
         out.added.reserve(total);
         out.track_gain.reserve(total);
         out.album_gain.reserve(total);
+        out.bpm.reserve(total);
+        out.bpm_source.reserve(total);
         out.sub.reserve(total);
         out.folder.reserve(total);
 
@@ -1058,6 +1125,8 @@ impl Projection {
             out.added.extend_from_slice(&shard.added);
             out.track_gain.extend_from_slice(&shard.track_gain);
             out.album_gain.extend_from_slice(&shard.album_gain);
+            out.bpm.extend_from_slice(&shard.bpm);
+            out.bpm_source.extend_from_slice(&shard.bpm_source);
             out.sub.extend_from_slice(&shard.sub);
             out.folder
                 .extend(shard.folder.iter().map(|&s| map_f[s as usize]));
@@ -1084,6 +1153,8 @@ impl Projection {
             added: out.added,
             track_gain: out.track_gain,
             album_gain: out.album_gain,
+            bpm: out.bpm,
+            bpm_source: out.bpm_source,
             sub: out.sub,
             // Filled after the merge by fill_spans, which needs a connection
             // and reads a table the shard loaders never touch.
@@ -1129,6 +1200,8 @@ impl Projection {
             added: self.added[i],
             track_gain_db: unpack_gain(self.track_gain[i]),
             album_gain_db: unpack_gain(self.album_gain[i]),
+            bpm: unpack_bpm(self.bpm[i]),
+            bpm_source: self.bpm_source[i],
             folder: &self.folders.strings[self.folder[i] as usize],
             sub: self.sub[i],
         }
@@ -1145,7 +1218,18 @@ impl Projection {
     /// album, or genre; a pinned term only its field. Terms AND together.
     /// Symbol tables are matched whole first; the row scan then only does
     /// per-title memmem plus table lookups.
+    ///
+    /// `added:` ages resolve against the clock here. A caller that needs
+    /// the same query to mean the same thing twice (a test, a saved smart
+    /// playlist evaluated twice in a run) takes [`Projection::search_at`]
+    /// and passes its own timestamp.
     pub fn search(&self, query: &str) -> Vec<u32> {
+        self.search_at(query, now_secs())
+    }
+
+    /// [`Projection::search`] with the now-timestamp handed in: unix
+    /// seconds, what an `added:<90d` term measures its age against.
+    pub fn search_at(&self, query: &str, now: i64) -> Vec<u32> {
         let terms = parse_query(query);
         if terms.is_empty() {
             return (0..self.len() as u32).collect();
@@ -1166,6 +1250,10 @@ impl Projection {
             },
             Title(memmem::Finder<'a>),
             Year(Vec<bool>),
+            /// A numeric pin: which column to read, and the comparison it
+            /// has to satisfy. Nothing to precompute, the columns are
+            /// already numbers.
+            Num(QueryField, NumTerm),
         }
 
         let hit = |table: &SymTable, q: &str| -> Vec<bool> {
@@ -1223,6 +1311,9 @@ impl Projection {
                             .collect(),
                     )
                 }
+                Some(field @ (QueryField::Rating | QueryField::Plays | QueryField::Added)) => {
+                    Hits::Num(field, t.num.unwrap_or(NUM_NEVER))
+                }
             })
             .collect();
 
@@ -1244,6 +1335,17 @@ impl Projection {
                 Hits::Sym { column, mask } => mask[column[i] as usize],
                 Hits::Title(finder) => finder.find(self.title_lower.get(i).as_bytes()).is_some(),
                 Hits::Year(mask) => mask[self.year[i] as usize],
+                Hits::Num(field, num) => num.holds(match field {
+                    QueryField::Rating => rating_stars(self.rating[i].load(Ordering::Relaxed)),
+                    QueryField::Plays => self.plays[i].load(Ordering::Relaxed) as i64,
+                    // Days since the row was scanned in, so the query
+                    // reads forward ("added in the last 90 days") while
+                    // the column counts backward. A row with no added
+                    // stamp (0) is ancient and drops out of every
+                    // recency term, which is the right answer for a
+                    // library that never got one.
+                    _ => (now - self.added[i]) / 86_400,
+                }),
             })
         })
     }
@@ -1700,6 +1802,10 @@ impl Projection {
             // unrated track sits too.
             SortKey::TrackGain => self.order_view(view, descending, |i| self.gain_key(i, false)),
             SortKey::AlbumGain => self.order_view(view, descending, |i| self.gain_key(i, true)),
+            // Packed centi-bpm sorts as-is, and NO_BPM being zero puts the
+            // tracks with no tempo first ascending, where the untagged
+            // gains and the unrated tracks sit too.
+            SortKey::Bpm => self.order_view(view, descending, |i| self.bpm[i]),
         }
     }
 
@@ -1787,7 +1893,7 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TrackRow;
+    use crate::{listens, TrackRow};
 
     fn row(path: &str, album: &str, disc_no: u16, track_no: u16) -> TrackRow {
         TrackRow {
@@ -1809,6 +1915,7 @@ mod tests {
             bit_depth: 0,
             rating: 0,
             replay_gain: Default::default(),
+            bpm: None,
             size: 0,
             mtime: 0,
         }
@@ -1834,6 +1941,7 @@ mod tests {
             bit_depth: 0,
             rating: 0,
             replay_gain: Default::default(),
+            bpm: None,
             size: 0,
             mtime: 0,
         }
@@ -1864,6 +1972,114 @@ mod tests {
             (terms[3].field, terms[3].needle.as_str()),
             (Some(QueryField::Year), "199")
         );
+    }
+
+    /// The numeric pins parse into a comparison and a number: every
+    /// operator, the bare form meaning equals, and the `added:` day suffix.
+    #[test]
+    fn query_parses_numeric_terms() {
+        let cases = [
+            ("rating:>=4", QueryField::Rating, NumOp::Ge, 4),
+            ("rating:3", QueryField::Rating, NumOp::Eq, 3),
+            ("rating:=5", QueryField::Rating, NumOp::Eq, 5),
+            ("rating:<=2", QueryField::Rating, NumOp::Le, 2),
+            ("plays:0", QueryField::Plays, NumOp::Eq, 0),
+            ("plays:>10", QueryField::Plays, NumOp::Gt, 10),
+            ("added:<90d", QueryField::Added, NumOp::Lt, 90),
+            // The day suffix is optional, and a quoted value survives the
+            // tokenizer the same way a quoted artist does.
+            ("added:>7", QueryField::Added, NumOp::Gt, 7),
+            (r#"rating:">= 4""#, QueryField::Rating, NumOp::Ge, 4),
+        ];
+        for (query, field, op, value) in cases {
+            let terms = parse_query(query);
+            assert_eq!(terms.len(), 1, "{query} is one term");
+            assert_eq!(terms[0].field, Some(field), "{query} pins its field");
+            assert_eq!(
+                terms[0].num,
+                Some(NumTerm { op, value }),
+                "{query} carries its comparison"
+            );
+        }
+    }
+
+    /// An operator only means something on a numeric field. On a text one
+    /// it stays literal, and a numeric pin with nothing numeric behind it
+    /// drops back to a free term, the rule an unknown prefix follows.
+    #[test]
+    fn operators_stay_literal_off_the_numeric_fields() {
+        let terms = parse_query("year:>1990");
+        assert_eq!(terms[0].field, Some(QueryField::Year));
+        assert_eq!(terms[0].needle, ">1990");
+        assert_eq!(terms[0].num, None);
+
+        let terms = parse_query("rating:great");
+        assert_eq!(
+            (terms[0].field, terms[0].needle.as_str()),
+            (None, "rating:great"),
+            "an unparseable number reads as free text, colon and all"
+        );
+    }
+
+    /// The numeric columns the projection carries, compared the way the
+    /// query spells them: whole stars for a rating, the raw count for
+    /// plays, and an age in days for added, resolved against a timestamp
+    /// the caller passes so the test has no clock in it.
+    #[test]
+    fn numeric_pins_compare_the_projection_columns() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init_schema(&conn).unwrap();
+        let mut rated = track("/m/1.mp3", "Loved", "A", 2001);
+        rated.rating = 100;
+        let mut liked = track("/m/2.mp3", "Liked", "B", 2002);
+        liked.rating = 80;
+        let plain = track("/m/3.mp3", "Plain", "C", 2003);
+        store::insert_batch(&mut conn, &[rated, liked, plain]).unwrap();
+
+        // A fixed now, and added stamps a known distance behind it.
+        let now = 1_700_000_000;
+        let day = 86_400;
+        conn.execute(
+            "UPDATE tracks SET added = ?1 WHERE id = 1",
+            [now - day * 10],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE tracks SET added = ?1 WHERE id IN (2, 3)",
+            [now - day * 400],
+        )
+        .unwrap();
+        // One listen on the middle track, so the play counts differ.
+        listens::append(
+            &conn,
+            &listens::Listen {
+                track_id: 2,
+                played_at: now,
+                title: "Liked".into(),
+                artist: "B".into(),
+                album: String::new(),
+                genre: String::new(),
+                path: "/m/2.mp3".into(),
+            },
+        )
+        .unwrap();
+        let p = Projection::load_serial(&conn, false).unwrap();
+
+        let titles = |query: &str| -> Vec<String> {
+            p.search_at(query, now)
+                .iter()
+                .map(|&i| p.title.get(i as usize).to_string())
+                .collect()
+        };
+        assert_eq!(titles("rating:>=4"), ["Loved", "Liked"]);
+        assert_eq!(titles("rating:5"), ["Loved"]);
+        assert_eq!(titles("rating:0"), ["Plain"], "unrated is zero stars");
+        assert_eq!(titles("plays:0"), ["Loved", "Plain"]);
+        assert_eq!(titles("plays:>0"), ["Liked"]);
+        assert_eq!(titles("added:<90d"), ["Loved"]);
+        assert_eq!(titles("added:>=90d"), ["Liked", "Plain"]);
+        // Terms still AND, numeric beside text.
+        assert_eq!(titles("rating:>=4 plays:0"), ["Loved"]);
     }
 
     /// A pinned term narrows to its field only, and terms AND together,
@@ -2166,6 +2382,104 @@ mod tests {
         assert_eq!(parallel.album_gain, p.album_gain);
     }
 
+    /// The tempo loads into the projection, comes back as the beats a
+    /// minute the row holds, and carries which source filled it so a display
+    /// can mark an estimate. A row with no tempo stays None rather than
+    /// reading as a track that stands still.
+    #[test]
+    fn tempo_loads_with_the_source_that_filled_it() {
+        let dir = std::env::temp_dir().join("rox-projection-tempo");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("library.db");
+        let mut conn = store::open(&db).unwrap();
+        store::init_schema(&conn).unwrap();
+        let at = |path, title, bpm| {
+            let mut row = track(path, title, "A", 2000);
+            row.bpm = bpm;
+            row
+        };
+        store::insert_batch(
+            &mut conn,
+            &[
+                at("/m/1.flac", "Tagged", Some(174.0)),
+                at("/m/2.flac", "Fractional", Some(128.25)),
+                at("/m/3.flac", "Untagged", None),
+            ],
+        )
+        .unwrap();
+        store::set_measured_bpm(&mut conn, &[("/m/3.flac", 0, 92.5)]).unwrap();
+
+        let p = Projection::load_serial(&conn, false).unwrap();
+        let row_of = |title: &str| (0..p.len()).find(|&i| p.title.get(i) == title).unwrap() as u32;
+        assert_eq!(p.resolve(row_of("Tagged")).bpm, Some(174.0));
+        assert_eq!(
+            p.resolve(row_of("Tagged")).bpm_source,
+            crate::tempo::Source::Tags
+        );
+        // The packing holds a fraction of a beat exactly.
+        assert_eq!(p.resolve(row_of("Fractional")).bpm, Some(128.25));
+        let estimated = p.resolve(row_of("Untagged"));
+        assert_eq!(estimated.bpm, Some(92.5));
+        assert_eq!(estimated.bpm_source, crate::tempo::Source::Measured);
+
+        // A tempo outside what the store will hold reads as none rather than
+        // as a number to sort or mix by.
+        assert_eq!(pack_bpm(Some(0.0)), NO_BPM);
+        assert_eq!(pack_bpm(Some(900.0)), NO_BPM);
+        assert_eq!(pack_bpm(None), NO_BPM);
+        assert_eq!(unpack_bpm(NO_BPM), None);
+
+        // The sharded load merges to the same columns.
+        let parallel = Projection::load_parallel(&db, 3, false).unwrap();
+        assert_eq!(parallel.bpm, p.bpm);
+        assert_eq!(parallel.bpm_source, p.bpm_source);
+    }
+
+    /// The BPM column sorts slowest first, with the tracks nothing has a
+    /// tempo for ahead of them: the packed zero is the floor, which is where
+    /// an untagged gain and an unrated track sit too.
+    #[test]
+    fn tempo_sorts_slowest_first_with_the_untimed_ahead() {
+        let dir = std::env::temp_dir().join("rox-projection-tempo-sort");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("library.db");
+        let mut conn = store::open(&db).unwrap();
+        store::init_schema(&conn).unwrap();
+        let at = |path, title, bpm| {
+            let mut row = track(path, title, "A", 2000);
+            row.bpm = bpm;
+            row
+        };
+        store::insert_batch(
+            &mut conn,
+            &[
+                at("/m/1.flac", "Fast", Some(174.0)),
+                at("/m/2.flac", "Slow", Some(90.0)),
+                at("/m/3.flac", "Untimed", None),
+            ],
+        )
+        .unwrap();
+
+        let p = Projection::load_serial(&conn, false).unwrap();
+        let view: Vec<u32> = (0..p.len() as u32).collect();
+        let titles = |order: Vec<u32>| -> Vec<String> {
+            order
+                .iter()
+                .map(|&i| p.title.get(i as usize).to_string())
+                .collect()
+        };
+        assert_eq!(
+            titles(p.sort_view(&view, SortKey::Bpm, false)),
+            ["Untimed", "Slow", "Fast"]
+        );
+        assert_eq!(
+            titles(p.sort_view(&view, SortKey::Bpm, true)),
+            ["Fast", "Slow", "Untimed"]
+        );
+    }
+
     /// `codec:` pins a term to the file's format, so one term narrows a
     /// query to the lossless copies. Case-folded like the other pins, and
     /// pin-only for the same reason `folder:` is: "flac" typed bare is a
@@ -2395,6 +2709,7 @@ mod tests {
                 bit_depth: 0,
                 rating: 0,
                 replay_gain: Default::default(),
+                bpm: None,
                 size: 0,
                 mtime: 0,
             }
@@ -2722,6 +3037,7 @@ mod tests {
                 bit_depth: 0,
                 rating: 0,
                 replay_gain: Default::default(),
+                bpm: None,
                 size: 0,
                 mtime: 0,
             }
@@ -2813,6 +3129,7 @@ mod tests {
                 bit_depth: 0,
                 rating: 0,
                 replay_gain: Default::default(),
+                bpm: None,
                 size: 0,
                 mtime: 0,
             }

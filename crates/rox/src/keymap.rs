@@ -428,6 +428,14 @@ pub fn reset_all(cx: &mut App) {
     apply(cx);
 }
 
+/// Put a whole override map back, the undo for a reset: the page snapshots
+/// the map before it clears, and this writes the snapshot over whatever
+/// the file holds now.
+pub fn restore(map: BTreeMap<String, Vec<String>>, cx: &mut App) {
+    Settings::update(move |settings| settings.keymap = map);
+    apply(cx);
+}
+
 /// Read a command's chords, change them, write them back, rebind. The
 /// read seeds from the defaults when the file has nothing yet, so the
 /// first edit to a command carries its other chords along instead of

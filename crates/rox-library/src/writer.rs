@@ -40,6 +40,7 @@ use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, Tag, TagItem};
 
 use crate::art;
+use crate::embed_tag;
 use crate::genre;
 use crate::rating;
 use crate::replaygain::{self, ReplayGain};
@@ -251,6 +252,14 @@ fn read_inner(path: &Path) -> Result<Vec<(Field, String)>, String> {
                     if f.description.eq_ignore_ascii_case(rating::FMPS_KEY) {
                         continue;
                     }
+                    // An acoustic vector is a few hundred numbers a pass
+                    // wrote for the similarity query to read back. Showing it
+                    // would put a screenful of base64 in the field list of
+                    // every analyzed file, so it stays out of the editor and
+                    // out of the metadata panel. Its own module owns it.
+                    if embed_tag::is_key(&f.description) {
+                        continue;
+                    }
                     out.push((
                         Field::Custom(f.description.to_string()),
                         f.content.to_string(),
@@ -274,6 +283,11 @@ fn read_inner(path: &Path) -> Result<Vec<(Field, String)>, String> {
                 {
                     continue;
                 }
+                // And an acoustic vector, for the reason above: it's a
+                // machine's note to itself, not a field anyone edits.
+                if embed_tag::is_key(key) {
+                    continue;
+                }
                 if ItemKey::from_key(lofty::tag::TagType::VorbisComments, key).is_none() {
                     out.push((Field::Custom(key.to_string()), value.to_string()));
                 }
@@ -285,6 +299,240 @@ fn read_inner(path: &Path) -> Result<Vec<(Field, String)>, String> {
         out.push((Field::Rating, rating::display(value)));
     }
     Ok(out)
+}
+
+/// One value in the unknown-tag list: text as the file spells it, or an
+/// opaque payload named by its size alone. Binary frames (PRIV, GEOB,
+/// UFID) never decode here. The display says how big they are and
+/// nothing else, because guessing at their shape would invent structure
+/// the tag never promised.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnknownValue {
+    Text(String),
+    Binary(usize),
+}
+
+impl UnknownValue {
+    /// The value as one line of display text.
+    pub fn display(&self) -> String {
+        match self {
+            UnknownValue::Text(text) => text.clone(),
+            UnknownValue::Binary(bytes) => format!("{} binary", human_bytes(*bytes)),
+        }
+    }
+}
+
+/// A byte count as a short size, decimal units like the file managers
+/// show.
+fn human_bytes(bytes: usize) -> String {
+    let mut value = bytes as f64;
+    let mut unit = "B";
+    for next in ["KB", "MB", "GB"] {
+        if value < 1000. {
+            break;
+        }
+        value /= 1000.;
+        unit = next;
+    }
+    match unit {
+        "B" => format!("{bytes} B"),
+        _ => format!("{value:.1} {unit}"),
+    }
+}
+
+/// Whether a format key stays out of the unknown list. The rating keys
+/// have their own field, an acoustic vector is a machine's note to
+/// itself, and ReplayGain shows in the library's own column. The
+/// writer keeps all three out of the editor, so the read-only list
+/// keeps them out too. ReplayGain is named here rather than left to
+/// each format because MP3 surfaces the four as TXXX descriptions while
+/// FLAC has lofty map them, and one list can't show a gain on one
+/// format and hide it on the other.
+fn unknown_excluded(key: &str) -> bool {
+    if key.eq_ignore_ascii_case(rating::FMPS_KEY) || embed_tag::is_key(key) {
+        return true;
+    }
+    ["RATING:", "REPLAYGAIN_"].iter().any(|prefix| {
+        key.get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    })
+}
+
+/// Whether a generic key stays out of the unknown list, the mapped-item
+/// side of [`unknown_excluded`]. The popularimeter is where both
+/// formats' rating tags land in the generic tag, and the four gains ride
+/// item keys of their own.
+fn unknown_item_excluded(key: ItemKey) -> bool {
+    matches!(
+        key,
+        ItemKey::Popularimeter
+            | ItemKey::ReplayGainTrackGain
+            | ItemKey::ReplayGainTrackPeak
+            | ItemKey::ReplayGainAlbumGain
+            | ItemKey::ReplayGainAlbumPeak
+    )
+}
+
+/// A file's tags the editor has no row for, read-only and display-only:
+/// the format's custom keys ([`read`]'s customs), the items lofty maps
+/// but rox has no field for (BPM, ISRC, the MusicBrainz ids, sort
+/// orders), and the ID3v2 frames that carry bytes rather than text. Kept
+/// apart from [`read`] on purpose: that one's output feeds the editor's
+/// field lookups and the save diff, and none of this is editable.
+/// Isolated the same way, so a parser panic costs an error, not the
+/// process.
+pub fn read_unknown(path: &Path) -> Result<Vec<(String, UnknownValue)>, String> {
+    catch_unwind(AssertUnwindSafe(|| read_unknown_inner(path)))
+        .unwrap_or_else(|_| Err(format!("tag parser panicked on {}", path.display())))
+}
+
+fn read_unknown_inner(path: &Path) -> Result<Vec<(String, UnknownValue)>, String> {
+    let kind = file_type(path)?;
+    let mut out = Vec::new();
+    match kind {
+        FileType::Mpeg => {
+            let (remainder, generic) = parse_mpeg(path)?
+                .id3v2()
+                .cloned()
+                .unwrap_or_default()
+                .split_tag();
+            mapped_unknowns(&generic, lofty::tag::TagType::Id3v2, None, &mut out);
+            // What the split couldn't map: TXXX descriptions, unmapped
+            // text frames, and the binary carriers.
+            for frame in &*remainder {
+                let (key, value) = match frame {
+                    Frame::UserText(f) => (
+                        f.description.to_string(),
+                        UnknownValue::Text(f.content.to_string()),
+                    ),
+                    Frame::UserUrl(f) => (
+                        f.description.to_string(),
+                        UnknownValue::Text(f.content.to_string()),
+                    ),
+                    Frame::Text(f) => (
+                        frame.id_str().to_string(),
+                        UnknownValue::Text(f.value.to_string()),
+                    ),
+                    Frame::Url(f) => (
+                        frame.id_str().to_string(),
+                        UnknownValue::Text(f.url().to_string()),
+                    ),
+                    Frame::Timestamp(f) => (
+                        frame.id_str().to_string(),
+                        UnknownValue::Text(f.timestamp.to_string()),
+                    ),
+                    // The owner names the frame here: a file carries
+                    // several PRIVs and they're only told apart by who
+                    // wrote them.
+                    Frame::Private(f) => (
+                        format!("PRIV:{}", f.owner),
+                        UnknownValue::Binary(f.private_data.len()),
+                    ),
+                    Frame::UniqueFileIdentifier(f) => (
+                        format!("UFID:{}", f.owner),
+                        UnknownValue::Binary(f.identifier.len()),
+                    ),
+                    Frame::Binary(f) => (
+                        frame.id_str().to_string(),
+                        UnknownValue::Binary(f.data.len()),
+                    ),
+                    // Pictures have the cover editor and a bare
+                    // popularimeter the rating field; the rest (RVA2,
+                    // OWNE, ETCO, TIPL) carry structure a one-line row
+                    // would lie about.
+                    _ => continue,
+                };
+                push_unknown(&mut out, key, value);
+            }
+        }
+        FileType::Flac => {
+            let tag = parse_flac(path)?
+                .vorbis_comments()
+                .cloned()
+                .unwrap_or_default();
+            let vendor = tag.vendor().to_string();
+            let (remainder, generic) = tag.split_tag();
+            mapped_unknowns(
+                &generic,
+                lofty::tag::TagType::VorbisComments,
+                Some(&vendor),
+                &mut out,
+            );
+            for (key, value) in remainder.items() {
+                push_unknown(
+                    &mut out,
+                    key.to_string(),
+                    UnknownValue::Text(value.to_string()),
+                );
+            }
+        }
+        _ => unreachable!("file_type only passes writable formats"),
+    }
+    out.retain(|(key, _)| !unknown_excluded(key));
+    Ok(out)
+}
+
+/// The generic items lofty mapped that rox has no field for. Labeled by
+/// the key the format itself writes them under, so a row reads the same
+/// as what another tagger shows for the file; the item key's own name
+/// stands in for the rare mapping that has no key on this format.
+/// Composer and lyrics are absent by construction: [`field_of`] answers
+/// for both, so they're writer-known fields waiting on rows of their
+/// own rather than unknowns.
+///
+/// `vendor` is the FLAC container's vendor string. The Vorbis split
+/// injects it as an EncoderSoftware item even when the file carries no
+/// such tag, and the encoder's signature is not a tag anyone wrote.
+fn mapped_unknowns(
+    generic: &Tag,
+    tag_type: lofty::tag::TagType,
+    vendor: Option<&str>,
+    out: &mut Vec<(String, UnknownValue)>,
+) {
+    for item in generic.items() {
+        let key = item.key();
+        if field_of(key).is_some() || unknown_item_excluded(key) {
+            continue;
+        }
+        let value = match item.value() {
+            ItemValue::Text(text) | ItemValue::Locator(text) => {
+                if key == ItemKey::EncoderSoftware && vendor == Some(text.as_str()) {
+                    continue;
+                }
+                UnknownValue::Text(text.clone())
+            }
+            ItemValue::Binary(bytes) => UnknownValue::Binary(bytes.len()),
+        };
+        let label = key
+            .map_key(tag_type)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{key:?}"));
+        push_unknown(out, label, value);
+    }
+}
+
+/// Add one row, folding a repeated key's text into the "; " list the
+/// named fields use for multi-value tags. Two binary frames under one
+/// key stay two rows; their sizes are the only thing telling them apart.
+fn push_unknown(out: &mut Vec<(String, UnknownValue)>, key: String, value: UnknownValue) {
+    if let UnknownValue::Text(text) = &value {
+        if let Some((_, UnknownValue::Text(existing))) = out
+            .iter_mut()
+            .find(|(k, v)| k == &key && matches!(v, UnknownValue::Text(_)))
+        {
+            existing.push_str("; ");
+            existing.push_str(text);
+            return;
+        }
+    }
+    out.push((key, value));
+}
+
+/// Whether the writer can read and write this file's tags at all. The
+/// editor asks before it blames a read failure on the file: an m4a is
+/// not a broken file, it's a format the writer hasn't grown a path for.
+pub fn supported(path: &Path) -> bool {
+    file_type(path).is_ok()
 }
 
 /// The named fields out of a split-off generic tag, in item order. Genre
@@ -472,6 +720,45 @@ pub fn commit_batch(edits: &[Edit]) -> Vec<(PathBuf, Result<(), String>)> {
 /// someone's file is worse than no gain at all.
 pub fn commit_replay_gain(path: &Path, gain: ReplayGain) -> Result<(), String> {
     commit(path, &replay_gain_changes(gain))
+}
+
+/// Write one model's acoustic vector into a file's tags, the opt-in half of
+/// the analysis pass's saving: the vectors go to the database always, and
+/// this is the second copy that lets a wiped library or a folder carried to
+/// another machine get its descriptions back without decoding everything
+/// again.
+///
+/// Rides [`commit`] through [`Field::Custom`], so the whole atomic layer
+/// applies - clone, verify, rename - and the vector lands as an ID3v2 TXXX
+/// frame or a Vorbis comment under [`crate::embed_tag`]'s key, which both
+/// formats spell the same way. Nothing else in the file moves.
+///
+/// MP3 and FLAC only, the formats this writer handles at all. Anything else
+/// comes back as the error [`file_type`] gives, and the pass treats that as
+/// a file that keeps its database row and nothing more.
+pub fn commit_embedding(path: &Path, model: &str, vec: &[f32]) -> Result<(), String> {
+    commit(
+        path,
+        &[Change {
+            field: Field::Custom(embed_tag::key(model)),
+            value: Some(embed_tag::encode(vec)),
+        }],
+    )
+}
+
+/// The same four values as sets alone, with the clears dropped. What
+/// [`crate::bake`] writes, and the one place the difference matters.
+///
+/// A measurement pass writes all four because it just measured all four, so
+/// an empty slot there means "this re-measure found no album figure" and
+/// clearing is right. An empty slot in a stored row only ever means the
+/// database never held that number, and clearing a file's album gain over it
+/// would be a tool that claims to add metadata deleting some.
+pub fn replay_gain_additions(gain: ReplayGain) -> Vec<Change> {
+    replay_gain_changes(gain)
+        .into_iter()
+        .filter(|change| change.value.is_some())
+        .collect()
 }
 
 /// The four changes a [`commit_replay_gain`] is: the measured value
@@ -1173,7 +1460,7 @@ fn hash_span(path: &Path, (start, end): (u64, u64)) -> Result<u64, String> {
 /// The tag fixtures, for the modules that write through this one and want
 /// a real file under their tests rather than a second copy of the bytes.
 #[cfg(test)]
-pub(crate) use tests::{flac_file, scratch};
+pub(crate) use tests::{flac_file, mp3_file, scratch};
 
 #[cfg(test)]
 mod tests {
@@ -1210,7 +1497,7 @@ mod tests {
         audio
     }
 
-    fn mp3_file(dir: &Path, name: &str) -> PathBuf {
+    pub(crate) fn mp3_file(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(name);
         fs::write(&path, mpeg_audio()).unwrap();
         path
@@ -1237,6 +1524,169 @@ mod tests {
             .iter()
             .find(|(f, _)| f == field)
             .map(|(_, v)| v.clone())
+    }
+
+    fn unknown_of(rows: &[(String, UnknownValue)], key: &str) -> Option<UnknownValue> {
+        rows.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    }
+
+    fn text_of(rows: &[(String, UnknownValue)], key: &str) -> Option<String> {
+        match unknown_of(rows, key) {
+            Some(UnknownValue::Text(text)) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// The unknown list's three tiers on one MP3: the TXXX descriptions
+    /// [`read`] already surfaces, the frames lofty maps to item keys rox
+    /// has no field for, and the binary carriers named by size alone.
+    /// The excluded families ride the same file, so a leak in any of
+    /// them fails here.
+    #[test]
+    fn mp3_unknown_tags_cover_the_three_tiers() {
+        use lofty::id3::v2::{
+            BinaryFrame, ExtendedTextFrame, FrameId, Id3v2Tag, PrivateFrame, TextInformationFrame,
+        };
+        use lofty::TextEncoding;
+        use std::borrow::Cow;
+
+        let dir = scratch("mp3-unknown");
+        let path = mp3_file(&dir, "track.mp3");
+        let txxx = |description: &str, content: &str| {
+            Frame::UserText(ExtendedTextFrame::new(
+                TextEncoding::UTF8,
+                description.to_string(),
+                content.to_string(),
+            ))
+        };
+        let mut tag = Id3v2Tag::default();
+        tag.insert(Frame::Text(TextInformationFrame::new(
+            FrameId::Valid(Cow::Borrowed("TIT2")),
+            TextEncoding::UTF8,
+            "Known",
+        )));
+        // Tier a: descriptions nothing maps.
+        tag.insert(txxx("MY NOTE", "kept"));
+        // Tier b: mapped, but the editor has no row for either.
+        tag.insert(Frame::Text(TextInformationFrame::new(
+            FrameId::Valid(Cow::Borrowed("TBPM")),
+            TextEncoding::UTF8,
+            "128",
+        )));
+        tag.insert(txxx("MusicBrainz Artist Id", "f4ab-1"));
+        // The exclusions.
+        tag.insert(txxx("REPLAYGAIN_TRACK_GAIN", "-7.35 dB"));
+        tag.insert(txxx(rating::FMPS_KEY, "0.8"));
+        tag.insert(txxx(&embed_tag::key("test-model"), "v1;dim=2;f16;AAAA"));
+        // Tier c: bytes, never decoded.
+        tag.insert(Frame::Private(PrivateFrame::new(
+            "rox.test",
+            vec![7u8; 1500],
+        )));
+        tag.insert(Frame::Binary(BinaryFrame::new(
+            FrameId::Valid(Cow::Borrowed("GEOB")),
+            vec![3u8; 2048],
+        )));
+        tag.save_to_path(&path, WriteOptions::default()).unwrap();
+
+        let rows = read_unknown(&path).unwrap();
+        assert_eq!(text_of(&rows, "MY NOTE").as_deref(), Some("kept"));
+        assert_eq!(text_of(&rows, "TBPM").as_deref(), Some("128"));
+        assert_eq!(
+            text_of(&rows, "MusicBrainz Artist Id").as_deref(),
+            Some("f4ab-1")
+        );
+        assert_eq!(
+            unknown_of(&rows, "PRIV:rox.test"),
+            Some(UnknownValue::Binary(1500))
+        );
+        assert_eq!(unknown_of(&rows, "GEOB"), Some(UnknownValue::Binary(2048)));
+        assert_eq!(
+            unknown_of(&rows, "PRIV:rox.test").unwrap().display(),
+            "1.5 KB binary"
+        );
+        // The title has a row of its own, and the three excluded
+        // families have no business here at all.
+        for key in [
+            "TIT2",
+            "REPLAYGAIN_TRACK_GAIN",
+            rating::FMPS_KEY,
+            &embed_tag::key("test-model"),
+        ] {
+            assert!(
+                unknown_of(&rows, key).is_none(),
+                "{key} must stay out of the unknown list"
+            );
+        }
+    }
+
+    /// The FLAC side of the same list, and the format asymmetry it
+    /// closes: lofty maps the ReplayGain keys here and leaves them as
+    /// TXXX descriptions on MP3, so only an explicit exclusion keeps
+    /// both formats showing the same thing.
+    #[test]
+    fn flac_unknown_tags_cover_the_tiers_and_exclusions() {
+        use lofty::ogg::VorbisComments;
+
+        let dir = scratch("flac-unknown");
+        let path = flac_file(&dir, "track.flac");
+        let mut tag = VorbisComments::default();
+        tag.push("TITLE".into(), "Known".into());
+        // Tier a, then tier b: unmapped key, then two lofty maps.
+        tag.push("MY NOTE".into(), "kept".into());
+        tag.push("BPM".into(), "128".into());
+        tag.push("MUSICBRAINZ_ARTISTID".into(), "f4ab-1".into());
+        // The exclusions, rating in both of its Vorbis shapes.
+        tag.push("REPLAYGAIN_TRACK_GAIN".into(), "-7.35 dB".into());
+        tag.push(rating::FMPS_KEY.into(), "0.8".into());
+        tag.push("RATING:rox@example.com".into(), "196".into());
+        tag.push(embed_tag::key("test-model"), "v1;dim=2;f16;AAAA".into());
+        tag.save_to_path(&path, WriteOptions::default()).unwrap();
+
+        let rows = read_unknown(&path).unwrap();
+        assert_eq!(text_of(&rows, "MY NOTE").as_deref(), Some("kept"));
+        assert_eq!(text_of(&rows, "BPM").as_deref(), Some("128"));
+        assert_eq!(
+            text_of(&rows, "MUSICBRAINZ_ARTISTID").as_deref(),
+            Some("f4ab-1")
+        );
+        for key in [
+            "TITLE",
+            "REPLAYGAIN_TRACK_GAIN",
+            rating::FMPS_KEY,
+            "RATING:rox@example.com",
+            &embed_tag::key("test-model"),
+            // The split hands the container's vendor string over as an
+            // encoder tag the file never carried.
+            "ENCODER",
+        ] {
+            assert!(
+                unknown_of(&rows, key).is_none(),
+                "{key} must stay out of the unknown list"
+            );
+        }
+    }
+
+    /// A format the writer has no path for answers plainly rather than
+    /// looking like a broken file.
+    #[test]
+    fn unknown_tags_refuse_an_unsupported_format() {
+        let dir = scratch("unknown-unsupported");
+        let path = dir.join("track.wav");
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend(36u32.to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16u32.to_le_bytes());
+        bytes.extend([1, 0, 1, 0]);
+        bytes.extend(44100u32.to_le_bytes());
+        bytes.extend(88200u32.to_le_bytes());
+        bytes.extend([2, 0, 16, 0]);
+        bytes.extend(b"data");
+        bytes.extend(0u32.to_le_bytes());
+        fs::write(&path, bytes).unwrap();
+
+        assert!(!supported(&path));
+        assert!(read_unknown(&path).is_err());
     }
 
     #[test]
@@ -1316,6 +1766,77 @@ mod tests {
             let rg = crate::scanner::read_one(&path).unwrap().replay_gain;
             assert_eq!(rg.track_db, Some(-7.35), "{}", path.display());
             assert_eq!(rg.track_peak, Some(0.987654), "{}", path.display());
+        }
+    }
+
+    /// The whole point of writing a vector into a file: the database can be
+    /// thrown away and the description comes back off the files, without a
+    /// second afternoon of decoding.
+    ///
+    /// Runs the real path both ways on both writable formats - the pass's
+    /// write, then the pick-up a pass does before it decodes anything - with
+    /// the row deleted in between, which is what a wiped library or a folder
+    /// carried to another machine looks like from here.
+    #[test]
+    fn a_vector_written_into_a_file_outlives_its_database_row() {
+        use crate::embeddings;
+
+        let dir = scratch("embedding-round-trip");
+        // Wide enough that the value is a real base64 blob rather than a few
+        // characters, and spread across the scales the raw features live on.
+        let vec: Vec<f32> = (0..64)
+            .map(|i| (i as f32 - 32.0) * 0.37 + (i as f32) * (i as f32) * 0.02)
+            .collect();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::init_schema(&conn).unwrap();
+
+        for path in [mp3_file(&dir, "track.mp3"), flac_file(&dir, "track.flac")] {
+            let name = path.display().to_string();
+            commit_embedding(&path, "builtin-v1", &vec).unwrap();
+
+            // The tag editor and the metadata panel never see it. Without
+            // the read skip every analyzed file grows a row of base64 here.
+            let fields = read(&path).unwrap();
+            assert!(
+                !fields
+                    .iter()
+                    .any(|(f, _)| matches!(f, Field::Custom(k) if embed_tag::is_key(k))),
+                "the vector must stay out of the field list, {name}"
+            );
+
+            // Analyzed once, into a database that then goes away.
+            conn.execute(
+                "INSERT INTO tracks (path, title, artist, album, genre, year, track_no,
+                    duration_ms, size, mtime)
+                 VALUES (?1, 'T', 'A', 'Al', 'g', 0, 1, 200000, 0, 0)",
+                rusqlite::params![name],
+            )
+            .unwrap();
+            let id = conn.last_insert_rowid();
+            embeddings::upsert(&conn, id, "builtin-v1", &vec).unwrap();
+            embeddings::clear(&conn, "builtin-v1").unwrap();
+            assert_eq!(embeddings::vector(&conn, id, "builtin-v1").unwrap(), None);
+
+            // The pick-up: what the pass tries before it opens a decoder.
+            let recovered = embed_tag::read(&path, "builtin-v1", vec.len())
+                .unwrap_or_else(|| panic!("no vector came back off {name}"));
+            embeddings::upsert(&conn, id, "builtin-v1", &recovered).unwrap();
+            let stored = embeddings::vector(&conn, id, "builtin-v1")
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.len(), vec.len(), "{name}");
+            for (a, b) in vec.iter().zip(&stored) {
+                let tolerance = (a.abs() * 1e-3).max(1e-6);
+                assert!((a - b).abs() <= tolerance, "{a} came back as {b}, {name}");
+            }
+
+            // Another model's key is a different key, so a file described by
+            // two models hands each one only its own.
+            assert!(embed_tag::read(&path, "panns-cnn10", vec.len()).is_none());
+            // And a model whose width changed under the same name is refused
+            // rather than half-read.
+            assert!(embed_tag::read(&path, "builtin-v1", vec.len() + 1).is_none());
         }
     }
 

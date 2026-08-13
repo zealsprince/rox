@@ -51,7 +51,25 @@ impl SettingsWindow {
                         icons::REFRESH_CW,
                         self.keymap.is_empty(),
                         cx.listener(|this, _, _, cx| {
+                            this.keymap_undo = Some(this.keymap.clone());
                             keymap::reset_all(cx);
+                            this.keymap_changed(cx);
+                        }),
+                    ),
+                )
+                .keyed(
+                    &["undo", "reset", "restore", "keymap"],
+                    "Undo the Last Reset",
+                    Some("Bring back the chords the last reset threw out, row or all"),
+                    small_button(
+                        "Undo",
+                        icons::SEEK_BACK,
+                        self.keymap_undo.is_none(),
+                        cx.listener(|this, _, _, cx| {
+                            let Some(map) = this.keymap_undo.take() else {
+                                return;
+                            };
+                            keymap::restore(map, cx);
                             this.keymap_changed(cx);
                         }),
                     ),
@@ -184,6 +202,7 @@ impl SettingsWindow {
                     if keymap::is_default(command, &this.keymap) {
                         return;
                     }
+                    this.keymap_undo = Some(this.keymap.clone());
                     keymap::reset(command.id, cx);
                     this.keymap_changed(cx);
                 }),
@@ -216,6 +235,9 @@ impl SettingsWindow {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
+                            // An edit on top of a reset outdates the undo
+                            // snapshot; undoing here would eat this change.
+                            this.keymap_undo = None;
                             keymap::remove(command.id, &held, cx);
                             this.keymap_changed(cx);
                         }),
@@ -271,6 +293,9 @@ impl SettingsWindow {
                     cx.notify();
                     return;
                 }
+                // Same as the chip's remove: a fresh recording outdates
+                // the undo snapshot.
+                this.keymap_undo = None;
                 keymap::add(id, keystroke.unparse(), cx);
                 this.keymap_changed(cx);
             });

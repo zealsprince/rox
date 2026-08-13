@@ -5,8 +5,10 @@
 //! reused these modules for its harness (git history, commit bd22dc1).
 
 pub mod art;
+pub mod bake;
 pub mod cue;
 pub mod duplicates;
+pub mod embed_tag;
 pub mod embeddings;
 pub mod folders;
 pub mod genre;
@@ -26,6 +28,7 @@ pub mod scanner;
 pub mod sort;
 pub mod store;
 pub mod tag_source;
+pub mod tempo;
 pub mod thumbs;
 pub mod view;
 pub mod watch;
@@ -104,6 +107,11 @@ pub struct TrackRow {
     /// none can get them from rox's own measurement pass, which writes past
     /// the scanner straight onto the row.
     pub replay_gain: replaygain::ReplayGain,
+    /// The tempo the file's tags claim, in beats a minute; None when it
+    /// carries none rox will believe (see [`tempo::parse`]). A file with
+    /// none can get one from rox's own analysis pass, which writes past the
+    /// scanner straight onto the row.
+    pub bpm: Option<f32>,
     pub size: u64,
     pub mtime: i64,
 }

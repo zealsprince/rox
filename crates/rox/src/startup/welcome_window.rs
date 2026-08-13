@@ -378,13 +378,7 @@ impl Render for WelcomeWindow {
                                 .into(),
                         ),
                     ]),
-                ))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_faint())
-                        .child("This window is here any time under Application > Welcome."),
-                );
+                ));
 
             // The tiles size to the column but the pan math needs pixels,
             // so a probe measures the laid-out width every paint and wakes
@@ -498,6 +492,32 @@ impl Render for WelcomeWindow {
                 .child(tour)
                 .child(quick_start);
 
+            // The tour's own way out, and where to find it again once it's
+            // gone.
+            let footer = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(tokens::SPACE_SM)
+                .px(tokens::SPACE_MD)
+                .py(tokens::SPACE_SM)
+                .border_t_1()
+                .border_color(palette::border())
+                .bg(palette::bg_panel())
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child("This window is here any time under Application > Welcome."),
+                )
+                .child(small_button(
+                    "Close",
+                    icons::CLOSE,
+                    false,
+                    cx.listener(|_, _, window, _| window.remove_window()),
+                ));
+
             div()
                 .size_full()
                 .flex()
@@ -522,6 +542,7 @@ impl Render for WelcomeWindow {
                         .p(tokens::SPACE_MD)
                         .child(page),
                 )
+                .child(footer)
                 .into_any_element()
         })
     }

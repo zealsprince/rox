@@ -14,11 +14,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    div, img, prelude::*, px, size, App, Bounds, Context, Div, Entity, Global, Image, ImageFormat,
-    MouseButton, ObjectFit, PathPromptOptions, SharedString, Subscription, Window, WindowHandle,
+    actions, div, img, prelude::*, px, size, App, Bounds, Context, Div, Entity, FocusHandle,
+    Global, Image, ImageFormat, KeyBinding, MouseButton, ObjectFit, PathPromptOptions,
+    SharedString, Subscription, Window, WindowHandle,
 };
-use gpui_component::spinner::Spinner;
-use gpui_component::{Root, Sizable, Size};
+use gpui_component::Root;
 
 use rox_core::fmt::fmt_ms;
 use rox_library::cue::TrackKey;
@@ -29,7 +29,7 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_net::providers;
 use rox_panel_api::panel::AppState;
-use rox_panel_kit::ui::{self as settings_ui, section, SECTION_GAP};
+use rox_panel_kit::ui::{self as settings_ui, kbd_line, section, Seg, SECTION_GAP};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 
@@ -50,6 +50,19 @@ const DEFAULT_SIZE: (f32, f32) = (560., 680.);
 /// over the card the pointer is on. One name for every card: group bounds
 /// resolve innermost-first, so each card scopes the hover to itself.
 const SLOT_GROUP: &str = "cover-slot";
+
+actions!(cover_editor, [Save]);
+
+/// The key context the window's own bindings scope to.
+const CONTEXT: &str = "CoverEditor";
+
+/// The editor's save binding; call once at startup, before
+/// [`crate::keymap::init`] snapshots what's bound. Nothing here takes
+/// typing, so the binding sits on the window root and the root holds the
+/// focus, which is what puts it on the dispatch path.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("enter", Save, Some(CONTEXT))]);
+}
 
 /// The open editors, each keyed by the sorted ids it opened on, so asking
 /// for one already open focuses it instead of stacking a twin - mirrors
@@ -140,7 +153,8 @@ pub struct CoverEditor {
     baselines: Option<Vec<FilePictures>>,
     /// One entry per [`SLOTS`], seeded once the baselines land.
     slots: Vec<Slot>,
-    /// A failed read or commit, shown inline over the buttons.
+    /// A failed read or commit, shown in the footer in place of the
+    /// shortcut.
     error: Option<SharedString>,
     /// A commit is in flight; the cards lock and the buttons hold still
     /// until it lands.
@@ -150,6 +164,9 @@ pub struct CoverEditor {
     /// stuck one shows where the batch is instead of a mute spinner.
     save_done: usize,
     save_total: usize,
+    /// The window root's own focus. No field here takes typing, so without
+    /// it the enter binding would have nothing to hang off.
+    focus: FocusHandle,
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
     _backdrop_changed: Subscription,
@@ -212,6 +229,8 @@ impl CoverEditor {
                 tracks
             };
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        let focus = cx.focus_handle();
+        window.focus(&focus);
         let this = CoverEditor {
             library: state.library,
             tracks,
@@ -227,6 +246,7 @@ impl CoverEditor {
             saving: false,
             save_done: 0,
             save_total: 0,
+            focus,
             now_art: state.now_art,
             backdrop: WindowBackdrop::default(),
             _backdrop_changed,
@@ -603,62 +623,21 @@ impl CoverEditor {
         section("Tracks", None, body)
     }
 
-    /// The cover art section: the slot cards, save and cancel on the header,
-    /// the error inline under the cards.
+    /// The cover art section: the slot cards under a header that carries
+    /// the online search.
     fn cover_section(&self, cx: &mut Context<Self>) -> Div {
-        let buttons = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_SM)
-            // A commit runs off the UI thread, so say it plainly: the
-            // spinner and a running count ride ahead of the buttons until
-            // the write lands or fails.
-            .when(self.saving, |d| {
-                let label = if self.save_total > 1 {
-                    let at = (self.save_done + 1).min(self.save_total);
-                    format!("Saving {}/{}...", at, self.save_total)
-                } else {
-                    "Saving...".to_string()
-                };
-                d.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(tokens::SPACE_XS)
-                        .text_xs()
-                        .text_color(palette::text_muted())
-                        .child(Spinner::new().with_size(Size::Small))
-                        .child(label),
-                )
-            })
-            // The online search rides the header, gated on a cover-art
-            // provider being on, and sets the front cover on apply.
-            .when(providers::art_online(), |d| {
-                d.child(settings_ui::small_button(
-                    "Search Online",
-                    icons::DOWNLOAD,
-                    self.saving || self.baselines.is_none(),
-                    cx.listener(|this, _, _, cx| this.search_online(cx)),
-                ))
-            })
-            .child(settings_ui::small_button(
-                "Save",
-                icons::CHECK,
+        // The online search rides the header as a tool of the section it
+        // fills, gated on a cover-art provider being on, and sets the front
+        // cover on apply.
+        let search = providers::art_online().then(|| {
+            settings_ui::small_button(
+                "Search Online",
+                icons::DOWNLOAD,
                 self.saving || self.baselines.is_none(),
-                cx.listener(|this, _, window, cx| this.save(window, cx)),
-            ))
-            // Cancel stays live through a save: a slow or wedged commit
-            // needs a way out, and the atomic writer leaves every original
-            // intact whether the batch finished or not.
-            .child(settings_ui::small_button(
-                "Cancel",
-                icons::CLOSE,
-                false,
-                cx.listener(|_, _, window, _| window.remove_window()),
-            ))
-            .into_any_element();
+                cx.listener(|this, _, _, cx| this.search_online(cx)),
+            )
+            .into_any_element()
+        });
         // Two cards a row, each growing to fill its half so the previews
         // scale with the window instead of sitting at a fixed size.
         let cards = div().flex().flex_col().gap(tokens::SPACE_MD).children(
@@ -679,28 +658,85 @@ impl CoverEditor {
         );
         section(
             "Cover Art",
-            Some(buttons),
-            div()
-                .flex()
-                .flex_col()
-                .child(
-                    // The cards lock while a commit is in flight: a
-                    // transparent occluder over them swallows clicks so no
-                    // slot edits out from under the write. Cancel sits above
-                    // it, on the header.
-                    div().relative().child(cards).when(self.saving, |d| {
-                        d.child(div().absolute().inset_0().occlude())
-                    }),
-                )
-                .when_some(self.error.clone(), |d, error| {
-                    d.child(
-                        div()
-                            .mt(tokens::SPACE_SM)
-                            .text_color(palette::text_muted())
-                            .child(error),
-                    )
-                }),
+            search,
+            // The cards lock while a commit is in flight: a transparent
+            // occluder over them swallows clicks so no slot edits out from
+            // under the write. Cancel sits below it, in the footer.
+            div().relative().child(cards).when(self.saving, |d| {
+                d.child(div().absolute().inset_0().occlude())
+            }),
         )
+    }
+
+    /// The window's own actions: the save, the shortcut for it, and what's
+    /// holding it up when something is - a read still landing, a commit in
+    /// flight, or the write that failed.
+    fn footer(&self, cx: &mut Context<Self>) -> Div {
+        let reason: Option<SharedString> = if let Some(error) = self.error.clone() {
+            Some(error)
+        } else if self.saving {
+            // A commit runs off the UI thread and a file at a time, so say
+            // where the batch is rather than sitting mute.
+            Some(if self.save_total > 1 {
+                let at = (self.save_done + 1).min(self.save_total);
+                format!("Saving {}/{}...", at, self.save_total).into()
+            } else {
+                "Saving...".into()
+            })
+        } else if self.baselines.is_none() {
+            Some("Reading current art...".into())
+        } else {
+            None
+        };
+        let hint = match reason {
+            Some(reason) => div()
+                .text_xs()
+                .text_color(palette::tone_warn())
+                .child(reason)
+                .into_any_element(),
+            None => kbd_line([
+                Seg::Text("Press".into()),
+                Seg::Key("Enter".into()),
+                Seg::Text("to save".into()),
+            ])
+            .text_xs()
+            .into_any_element(),
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_SM)
+            .border_t_1()
+            .border_color(palette::border())
+            .bg(palette::bg_panel())
+            .child(hint)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(settings_ui::small_button(
+                        "Save",
+                        icons::CHECK,
+                        self.saving || self.baselines.is_none(),
+                        cx.listener(|this, _, window, cx| this.save(window, cx)),
+                    ))
+                    // Cancel stays live through a save: a slow or wedged
+                    // commit needs a way out, and the atomic writer leaves
+                    // every original intact whether the batch finished or
+                    // not.
+                    .child(settings_ui::small_button(
+                        "Cancel",
+                        icons::CLOSE,
+                        false,
+                        cx.listener(|_, _, window, _| window.remove_window()),
+                    )),
+            )
     }
 
     /// One slot: a preview of the effective image (the pick, the pending
@@ -854,7 +890,10 @@ impl Render for CoverEditor {
         div()
             .size_full()
             .flex()
-            .flex_row()
+            .flex_col()
+            .key_context(CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &Save, window, cx| this.save(window, cx)))
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
@@ -865,8 +904,7 @@ impl Render for CoverEditor {
                 div()
                     .id("cover-editor-page")
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
+                    .min_h_0()
                     .overflow_y_scroll()
                     .bg(palette::bg_elevated())
                     .p(tokens::SPACE_MD)
@@ -879,5 +917,6 @@ impl Render for CoverEditor {
                             .child(self.track_section()),
                     ),
             )
+            .child(self.footer(cx))
     }
 }

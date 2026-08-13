@@ -38,7 +38,7 @@ use crate::query::search::{SearchBox, SearchEvent};
 use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
-use crate::settings::{GainModeSetting, ShuffleMode};
+use crate::settings::GainModeSetting;
 use crate::thumbs::Thumb;
 use crate::track_ui::track_cells;
 use crate::track_ui::track_drag::{PlayDrag, PlayDragPreview};
@@ -993,34 +993,20 @@ impl TableDelegate for TrackTable {
                         }),
                 );
             }
-            // Queue what sounds like the clicked track. Only offered once the
+            // Play what sounds like the clicked track. Only offered once the
             // pass has actually described something: the switch alone permits
-            // the vectors, it doesn't build them, and either action without
-            // them is a menu entry that does nothing.
+            // the vectors, it doesn't build them, and the action without them
+            // is a menu entry that does nothing.
             if crate::settings::similarity_ready() {
                 let similar_panel = panel.clone();
                 menu = menu.item(
                     PopupMenuItem::new("Play Similar")
-                        .icon(Icon::default().path(icons::RADIO))
+                        .icon(Icon::default().path(icons::AUDIO_WAVEFORM))
                         .on_click(move |_, _, cx| {
                             let Some(panel) = similar_panel.upgrade() else {
                                 return;
                             };
                             panel.update(cx, |panel, cx| panel.play_similar(row_ix, cx));
-                        }),
-                );
-                // Its endless cousin. Play Similar reorders the view you're
-                // standing in; this one leaves it, and keeps leaving it, for
-                // as long as you let it run.
-                let radio_panel = panel.clone();
-                menu = menu.item(
-                    PopupMenuItem::new("Start Radio")
-                        .icon(Icon::default().path(icons::INFINITY))
-                        .on_click(move |_, _, cx| {
-                            let Some(panel) = radio_panel.upgrade() else {
-                                return;
-                            };
-                            panel.update(cx, |panel, cx| panel.start_radio(row_ix, cx));
                         }),
                 );
             }
@@ -1122,6 +1108,16 @@ impl TableDelegate for TrackTable {
                 Some(db) => cell
                     .text_color(palette::text_muted())
                     .child(SharedString::from(format!("{db:+.2}"))),
+                None => cell,
+            },
+            // Whole beats a minute: the fraction under them is what the
+            // estimator worked out rather than anything a listener counts,
+            // and a column of 128.37s reads as noise. Blank for a track
+            // with no tempo from either source.
+            "bpm" => match v.bpm {
+                Some(bpm) => cell
+                    .text_color(palette::text_muted())
+                    .child(SharedString::from(format!("{}", bpm.round()))),
                 None => cell,
             },
             "rating" => {
@@ -1599,11 +1595,21 @@ impl LibraryPanel {
 
     /// Rescore the library against the playing track for the Similar column.
     ///
-    /// Off the UI thread on its own connection, the ReplayGain pass's move:
-    /// the scan touches every vector in the library, which is tens of
-    /// milliseconds on a large one. That's nothing per track change and far
-    /// too much for a paint. Skipped entirely while the column isn't shown,
-    /// so a panel without it pays nothing.
+    /// The raw cosine, `embeddings::scores`, not the ranking playback draws
+    /// from. This column is a look at the vectors, so a number here that had
+    /// been marked down for the track's tempo would read as the model hearing
+    /// something it didn't.
+    ///
+    /// Off the UI thread on its own connection, the ReplayGain pass's move.
+    /// The store keeps the standardized corpus in memory, so a track change
+    /// costs a dot product per track, ten milliseconds or so on a
+    /// fifty-thousand-track library. What it can cost is the first question
+    /// after the analysis pass writes something: that one rereads every
+    /// vector, a few hundred milliseconds, which is exactly why this doesn't
+    /// happen on the UI thread. A seed the transport already drew against
+    /// costs nothing at all, since the store holds the last few seeds'
+    /// scores. Skipped entirely while the column isn't shown, so a panel
+    /// without it pays nothing.
     fn refresh_similarity(&mut self, cx: &mut Context<Self>) {
         if !self.shown_columns(cx).contains("similar") {
             return;
@@ -2447,71 +2453,30 @@ impl LibraryPanel {
         }
     }
 
-    /// Play the clicked track and let the radio carry on from it: shuffle
-    /// switches to the similarity mode, and the rest of the view follows in
-    /// the order it sounds closest.
+    /// Play something that sounds like the clicked track, drawn library-wide
+    /// off the acoustic vectors.
     ///
-    /// The mode goes on before the play, not after. `play_from` draws from
-    /// the whole view once shuffle is on rather than only the rows below the
-    /// click, so setting it first is what makes the pool the library instead
-    /// of the remainder of it.
-    ///
-    /// Nothing is pushed into the queue here. An earlier cut queued the
-    /// thousand nearest tracks up front, which buried whatever was already
-    /// there and made one context-menu click a very large edit; now this is
-    /// the ordinary play the row would have done, with the ordering behind
-    /// it changed.
+    /// The clicked track itself doesn't play. The ask is for more like it,
+    /// and playing the row is what a double click already does; an earlier
+    /// cut played it and reordered the view behind it, which meant the entry
+    /// did nothing you could hear until the track after this one.
     fn play_similar(&mut self, row_ix: usize, cx: &mut Context<Self>) {
-        self.state.player.update(cx, |player, cx| {
-            player.shuffle_in_mode(ShuffleMode::Similar, cx)
-        });
-        self.play_from(row_ix, cx);
-    }
-
-    /// Play the clicked track alone and let continuation carry it (#39): the
-    /// radio provider takes over the moment the one-track queue runs dry, and
-    /// draws library-wide off the acoustic vectors.
-    ///
-    /// One track rather than the view. Radio's whole point is leaving the
-    /// filter you're standing in, so seeding it with the rows around the
-    /// click would spend the first hour inside exactly the view the listener
-    /// asked to leave. The scope stays at the library for the same reason,
-    /// which is what `play` (rather than `play_rows_at`) leaves it as.
-    fn start_radio(&mut self, row_ix: usize, cx: &mut Context<Self>) {
         let Some(row) = self.table.read(cx).delegate().track_at(row_ix) else {
             return;
         };
-        let keys = {
-            let library = self.state.library.read(cx);
-            let Some(projection) = library.projection() else {
-                return;
-            };
-            let Some(&id) = projection.db_id.get(row as usize) else {
-                return;
-            };
-            match library.keys_for(&[id]) {
-                Ok(keys) => keys,
-                Err(e) => {
-                    self.error = Some(format!("library: {e}").into());
-                    cx.notify();
-                    self.refresh_title_bar(cx);
-                    return;
-                }
-            }
+        let Some(&id) = self
+            .state
+            .library
+            .read(cx)
+            .projection()
+            .and_then(|projection| projection.db_id.get(row as usize))
+        else {
+            return;
         };
-        self.state.player.update(cx, |player, cx| {
-            // Radio is Similar shuffle plus a queue that doesn't end: the
-            // refill follows the order (`continuation::Mode::provider`), so
-            // this action is those two switches rather than a mode of its
-            // own. Continuation that's switched off is turned back on in
-            // whatever strategy it last used, since a radio that stops after
-            // one track isn't one.
-            player.shuffle_in_mode(ShuffleMode::Similar, cx);
-            if player.continuation_mode() == continuation::Mode::Off {
-                player.toggle_continuation(cx);
-            }
-            player.play(keys, cx);
-        });
+        let library = self.state.library.clone();
+        self.state
+            .player
+            .update(cx, |player, cx| player.play_similar_to(id, &library, cx));
     }
 
     /// Turn shuffle on, then queue `rows` from the front. The engine pins the

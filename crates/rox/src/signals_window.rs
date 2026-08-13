@@ -208,11 +208,15 @@ impl SignalsWindow {
             .flex_none()
             .gap(tokens::SPACE_SM)
             .child(
+                // The kit's section heading, hand-built: [`ui::section`]
+                // has no hook for the click, and hanging one off its
+                // result would fold the page away on any click in the
+                // body.
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(tokens::SPACE_XS)
+                    .justify_between()
                     .pb(tokens::SPACE_XS)
                     .border_b_1()
                     .border_color(palette::border())
@@ -225,17 +229,23 @@ impl SignalsWindow {
                         cx.listener(|this, _, _, cx| this.toggle_about(cx)),
                     )
                     .child(
-                        svg()
-                            .path(if open {
-                                icons::CHEVRON_DOWN
-                            } else {
-                                icons::CHEVRON_RIGHT
-                            })
-                            .size(px(12.))
-                            .flex_none()
-                            .text_color(palette::text_muted()),
-                    )
-                    .child("About Signals"),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(tokens::SPACE_XS)
+                            .child(
+                                svg()
+                                    .path(if open {
+                                        icons::CHEVRON_DOWN
+                                    } else {
+                                        icons::CHEVRON_RIGHT
+                                    })
+                                    .size(px(12.))
+                                    .flex_none(),
+                            )
+                            .child("About Signals"),
+                    ),
             )
             .when(open, |d| d.child(blurb()))
     }
@@ -388,22 +398,7 @@ impl Render for SignalsWindow {
                                 .overflow_y_scroll()
                                 .track_scroll(&self.scroll)
                                 .child(about)
-                                .child(page)
-                                // Nothing to read the music off, so the
-                                // meters would sit at nothing without
-                                // saying why.
-                                .when(orphaned, |d| {
-                                    d.child(
-                                        div()
-                                            .flex_none()
-                                            .text_xs()
-                                            .text_color(palette::text_muted())
-                                            .child(
-                                                "No library window is open, so these show no \
-                                                 audio. Edits still save.",
-                                            ),
-                                    )
-                                }),
+                                .child(page),
                         )
                         // Fades out when idle, same as the panels.
                         .child(
@@ -413,6 +408,26 @@ impl Render for SignalsWindow {
                                 .child(Scrollbar::vertical(&self.scroll)),
                         ),
                 )
+                // Nothing to read the music off, so the meters would sit at
+                // nothing without saying why. Pinned under the pool rather
+                // than in it, since a page scrolled down is exactly where
+                // the dead meters are.
+                .when(orphaned, |d| {
+                    d.child(
+                        div()
+                            .flex_none()
+                            .px(tokens::SPACE_MD)
+                            .py(tokens::SPACE_SM)
+                            .border_t_1()
+                            .border_color(palette::border())
+                            .text_xs()
+                            .text_color(palette::tone_warn())
+                            .child(
+                                "No library window is open, so these show no audio. Edits still \
+                                 save.",
+                            ),
+                    )
+                })
                 .into_any_element()
         })
     }

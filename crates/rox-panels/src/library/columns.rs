@@ -150,6 +150,18 @@ pub const COLUMNS: &[ColumnDef] = &[
         sort: SortKey::Duration,
     },
     ColumnDef {
+        // How fast the track runs, from its own tags or from the tempo
+        // pass. Only offered while tempo analysis is switched on, per
+        // [`offered`]; a layout that already holds it keeps drawing
+        // whatever the tags brought in.
+        key: "bpm",
+        label: "BPM",
+        default_width: 56.,
+        right: true,
+        default_on: false,
+        sort: SortKey::Bpm,
+    },
+    ColumnDef {
         key: "rating",
         label: "Rating",
         default_width: 110.,
@@ -206,9 +218,11 @@ pub const COLUMNS: &[ColumnDef] = &[
 /// to score against.
 pub fn offered() -> impl Iterator<Item = &'static ColumnDef> {
     let acoustic = crate::settings::acoustic_analysis();
+    let tempo = crate::settings::tempo_analysis();
     COLUMNS
         .iter()
         .filter(move |def| acoustic || def.key != "similar")
+        .filter(move |def| tempo || def.key != "bpm")
 }
 
 /// The registry entry for a key.
@@ -500,7 +514,7 @@ pub fn fold_head_lines(config: &LibraryConfig) -> (Vec<HeadPiece>, Vec<Vec<HeadP
         }
         row
     } else {
-        dedup(config.header_compact.clone())
+        dedup(group_head::PIECES, config.header_compact.clone())
     };
     let mut lines: Vec<Vec<HeadPiece>> = if config.header_lines.is_empty() {
         let mut name = group_head::stock_name_line();
@@ -517,7 +531,7 @@ pub fn fold_head_lines(config: &LibraryConfig) -> (Vec<HeadPiece>, Vec<Vec<HeadP
             .header_lines
             .iter()
             .take(HEAD_LINE_SLOTS)
-            .map(|line| dedup(line.clone()))
+            .map(|line| dedup(group_head::PIECES, line.clone()))
             .collect()
     };
     lines.resize(HEAD_LINE_SLOTS, Vec::new());

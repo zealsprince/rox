@@ -252,6 +252,18 @@ fn field_term(raw: &str) -> Option<(QueryField, usize)> {
     Some((*field, colon + 1))
 }
 
+/// The comparisons a numeric field suggests. Not every legal form, the
+/// handful worth one click: the rest of the syntax is a keystroke away
+/// once the shape is on screen.
+fn numeric_hints(field: QueryField) -> &'static [&'static str] {
+    match field {
+        QueryField::Rating => &[">=4", ">=3", "5", "0"],
+        QueryField::Plays => &["0", ">0", ">10"],
+        QueryField::Added => &["<7d", "<30d", "<90d", "<365d"],
+        _ => &[],
+    }
+}
+
 impl CompletionProvider for QuerySuggestions {
     fn completions(
         &self,
@@ -305,6 +317,29 @@ impl CompletionProvider for QuerySuggestions {
                                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                                     range: span,
                                     new_text: value,
+                                })),
+                                ..Default::default()
+                            })
+                            .collect(),
+                    )));
+                }
+                // The numeric pins have no table either, but they do have a
+                // syntax worth teaching: offer the comparisons people
+                // actually write, so `rating:` opens with ">=4" rather
+                // than a dead menu.
+                QueryField::Rating | QueryField::Plays | QueryField::Added => {
+                    return Task::ready(Ok(CompletionResponse::Array(
+                        numeric_hints(field)
+                            .iter()
+                            .filter(|hint| hint.starts_with(&typed))
+                            .map(|hint| CompletionItem {
+                                label: hint.to_string(),
+                                filter_text: Some(
+                                    hint[..matched_prefix_len(hint, &typed)].to_string(),
+                                ),
+                                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                                    range: span,
+                                    new_text: hint.to_string(),
                                 })),
                                 ..Default::default()
                             })

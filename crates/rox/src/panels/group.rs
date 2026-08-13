@@ -236,22 +236,32 @@ impl GroupPanel {
             .border_sides(rox_core::settings::app_frame().border)
             .max()
             .clamp(1.0, DIVIDER_W);
+        // While the resize lock holds the divider is only the line: no
+        // resize cursor, no drag, the same lock the dock's own handles
+        // follow.
+        let live = !rox_dock::resize_locked();
         let divider_line = div()
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
             .map(|d| match axis {
-                Axis::Horizontal => d.w(px(DIVIDER_W)).h_full().cursor_col_resize(),
-                Axis::Vertical => d.h(px(DIVIDER_W)).w_full().cursor_row_resize(),
+                Axis::Horizontal => d.w(px(DIVIDER_W)).h_full(),
+                Axis::Vertical => d.h(px(DIVIDER_W)).w_full(),
             })
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.divider.begin();
-                    cx.notify();
-                }),
-            )
+            .when(live, |d| {
+                d.map(|d| match axis {
+                    Axis::Horizontal => d.cursor_col_resize(),
+                    Axis::Vertical => d.cursor_row_resize(),
+                })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.divider.begin();
+                        cx.notify();
+                    }),
+                )
+            })
             .child(div().bg(palette::border()).map(|d| match axis {
                 Axis::Horizontal => d.w(px(split)).h_full(),
                 Axis::Vertical => d.h(px(split)).w_full(),

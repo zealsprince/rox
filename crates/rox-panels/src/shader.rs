@@ -1211,6 +1211,14 @@ fn paint(
     hub.tick(feed, track);
     signal_ui::apply_routes(routes, hub, &mut targets);
     let meta = surface::meta_slots(window, cx);
+    // A shader that reads the pointer keeps asking for frames while the
+    // pointer counts for anything, so presence eases off on a panel that
+    // would otherwise be parked, and the watch wakes the panel when the
+    // hand comes back to a shader that already faded out.
+    let cursor = surface::reads_cursor(source);
+    if cursor {
+        surface::watch_cursor(window);
+    }
 
     // Caps decide the path: a program that reads the screen under it, its
     // own last frame, an image, or runs more than one pass needs the region
@@ -1236,7 +1244,7 @@ fn paint(
     // Settling as well as live: the release runs on after the audio stops,
     // and a panel that parks on the last live frame holds its fade halfway
     // down instead of playing it out.
-    if hub.live() || hub.settling() || run_when_idle {
+    if hub.live() || hub.settling() || run_when_idle || (cursor && meta[6] > 0.0) {
         window.request_animation_frame();
     }
 }

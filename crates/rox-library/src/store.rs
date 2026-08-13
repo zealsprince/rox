@@ -165,10 +165,49 @@ const MIGRATIONS: &[crate::migrate::Migration] = &[
             )
         },
     },
+    // Smart playlists: a playlist row can hold a saved query instead of
+    // member rows. Two columns on playlists rather than a side table,
+    // following the favourite flag - every row answers which kind it is,
+    // and the sidebar keeps reading both kinds in one query.
+    crate::migrate::Migration {
+        name: "smart-playlists",
+        up: crate::playlists::add_smart_columns,
+    },
+    // What a track runs at in beats a minute, beside which of the two
+    // sources filled it: the file's own tags, or rox's estimate for a file
+    // whose tags said nothing. Nullable like the gains, since no number
+    // stands in for an absence here either, and a column that could not
+    // tell an unread row from a slow one would have to guess. The mtime
+    // reset comes with it, the same move every tag-filled column makes:
+    // without it the next scan skips unchanged files and the column stays
+    // empty forever.
+    crate::migrate::Migration {
+        name: "tempo",
+        up: |conn| {
+            conn.execute_batch(
+                "ALTER TABLE tracks ADD COLUMN bpm REAL;
+                 ALTER TABLE tracks ADD COLUMN bpm_source INTEGER;
+                 UPDATE tracks SET mtime = 0;",
+            )
+        },
+    },
 ];
 
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     crate::migrate::run(conn, MIGRATIONS)
+}
+
+/// Run the ladder up to but not including the named rung, the shape of a
+/// database written by the build before that step landed. For a test in
+/// another module of this crate; the ones in this module reach for
+/// [`MIGRATIONS`] directly.
+#[cfg(test)]
+pub(crate) fn run_ladder_before(conn: &Connection, name: &str) -> rusqlite::Result<()> {
+    let rung = MIGRATIONS
+        .iter()
+        .position(|m| m.name == name)
+        .unwrap_or_else(|| panic!("{name} is part of the ladder"));
+    crate::migrate::run(conn, &MIGRATIONS[..rung])
 }
 
 /// The baseline schema: the whole store as it stood before the version ladder,
@@ -274,6 +313,15 @@ pub fn count(conn: &Connection) -> rusqlite::Result<u64> {
 const KEEPS_MEASURED_GAIN: &str = "rg_source = 1
                     AND excluded.rg_track_gain IS NULL AND excluded.rg_album_gain IS NULL";
 
+/// The same rule for the tempo column, on the same terms: the stored number
+/// is rox's own estimate and the file being rescanned brought no tempo tag
+/// to replace it with, so the estimate stands. A tag always wins, since the
+/// file is the better authority on what it runs at, and a rescan that finds
+/// a tag-sourced tempo gone clears it rather than keep a number the file no
+/// longer claims. The literal 1 is [`crate::tempo::Source::Measured`]'s
+/// code, which SQL cannot ask for; `measured_code_matches_the_sql` pins it.
+const KEEPS_MEASURED_BPM: &str = "bpm_source = 1 AND excluded.bpm IS NULL";
+
 /// Insert or refresh one batch of local rows inside a single transaction. An
 /// existing (source, path, sub) row keeps its id, so projection db_ids stay
 /// valid across a rescan. A re-read file's rating imports like any tag, except
@@ -281,12 +329,16 @@ const KEEPS_MEASURED_GAIN: &str = "rg_source = 1
 /// file (wav, read-only media) must not vanish because the file changed.
 /// ReplayGain follows [`KEEPS_MEASURED_GAIN`]: tags overwrite anything,
 /// including a measurement, and only a measured row survives a rescan that
-/// found no tags.
+/// found no tags. The tempo follows [`KEEPS_MEASURED_BPM`], which is the
+/// same rule over one column.
 ///
 /// A row carrying a [`crate::CueSlice`] lands its span in `cue_tracks` beside
 /// the track; a plain row drops any side row left over from when that key was
 /// a cue track. Both are skipped outright where the library has no cue rows
 /// at all, so a plain library pays one question per batch and nothing per row.
+///
+/// An album that gains a file it has no gain for loses its measurements, so
+/// the next pass meters the record whole again; see [`grew_the_album`].
 pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Result<()> {
     // The scan time stamps first-seen rows only: the conflict update below
     // leaves `added` alone, so a rescan of an unchanged or edited file keeps
@@ -302,15 +354,24 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
             r.get::<_, i64>(0)
         })? == 1
     };
+    // Whether any measurement is at stake this batch. A library nobody has
+    // measured answers no once and skips the per-row question below, the same
+    // deal the cue check makes.
+    let measured_in_play = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM tracks WHERE source = 'local' AND rg_source = ?1)",
+        [crate::replaygain::Source::Measured.code()],
+        |r| r.get::<_, i64>(0),
+    )? == 1;
     let tx = conn.transaction()?;
     {
         let mut stmt = tx.prepare_cached(&format!(
             "INSERT INTO tracks
              (path, sub, title, artist, album_artist, album, genre, year, disc_no, track_no,
               duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added, size, mtime,
-              rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, rg_source)
+              rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, rg_source,
+              bpm, bpm_source)
              VALUES (?1, ?23, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                     ?17, ?18, ?19, ?20, ?21, ?22, 0)
+                     ?17, ?18, ?19, ?20, ?21, ?22, 0, ?24, 0)
              ON CONFLICT (source, path, sub) DO UPDATE SET
                 title = excluded.title, artist = excluded.artist,
                 album_artist = excluded.album_artist,
@@ -330,9 +391,12 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 rg_album_peak = CASE WHEN {keep} THEN rg_album_peak
                     ELSE excluded.rg_album_peak END,
                 rg_source = CASE WHEN {keep} THEN rg_source ELSE 0 END,
+                bpm = CASE WHEN {keep_bpm} THEN bpm ELSE excluded.bpm END,
+                bpm_source = CASE WHEN {keep_bpm} THEN bpm_source ELSE 0 END,
                 size = excluded.size,
                 mtime = excluded.mtime",
             keep = KEEPS_MEASURED_GAIN,
+            keep_bpm = KEEPS_MEASURED_BPM,
         ))?;
         // The upsert leaves no id behind on the conflict branch, so a row
         // that owes side work looks its id up. Only cue rows and the batches
@@ -349,7 +413,24 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 end_ms = excluded.end_ms",
         )?;
         let mut drop_span = tx.prepare_cached("DELETE FROM cue_tracks WHERE track_id = ?1")?;
+        // Whether the library already holds this key, asked before the upsert
+        // because after it the answer is always yes.
+        let mut is_known = tx.prepare_cached(
+            "SELECT EXISTS (SELECT 1 FROM tracks
+                WHERE source = 'local' AND path = ?1 AND sub = ?2)",
+        )?;
+        // The albums this batch grows, collected as it goes and cleared once
+        // at the end.
+        let mut grown: Vec<(String, String)> = Vec::new();
         for r in rows {
+            if measured_in_play
+                && grew_the_album(r)
+                && is_known
+                    .query_row(rusqlite::params![r.path, r.sub], |row| row.get::<_, i64>(0))?
+                    == 0
+            {
+                grown.push((r.album_artist.clone(), r.album.clone()));
+            }
             stmt.execute(rusqlite::params![
                 r.path,
                 r.title,
@@ -374,6 +455,7 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 r.replay_gain.album_db,
                 r.replay_gain.album_peak,
                 r.sub,
+                r.bpm,
             ])?;
             if !spans_in_play {
                 continue;
@@ -395,8 +477,64 @@ pub fn insert_batch(conn: &mut Connection, rows: &[TrackRow]) -> rusqlite::Resul
                 }
             }
         }
+        if !grown.is_empty() {
+            grown.sort();
+            grown.dedup();
+            for chunk in grown.chunks(CLEAR_ALBUMS_AT_ONCE) {
+                let list = std::iter::repeat_n("(?, ?)", chunk.len())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                // Every album of the batch in one statement: the table has no
+                // album index, so this reads it end to end, and a folder drop
+                // that brings in a thousand records should not read it a
+                // thousand times.
+                //
+                // Only rox's own numbers go, which the source filter is doing
+                // rather than a comment: a tag-sourced row is the file's, and
+                // clearing it would delete something no pass can put back. The
+                // codes come off the enum, so there is nothing to keep in step
+                // here the way `KEEPS_MEASURED_GAIN` has to.
+                let mut clear = tx.prepare_cached(&format!(
+                    "UPDATE tracks SET
+                        rg_track_gain = NULL, rg_track_peak = NULL,
+                        rg_album_gain = NULL, rg_album_peak = NULL,
+                        rg_source = {tags}
+                     WHERE source = 'local' AND rg_source = {measured}
+                       AND (album_artist, album) IN (VALUES {list})",
+                    tags = crate::replaygain::Source::Tags.code(),
+                    measured = crate::replaygain::Source::Measured.code(),
+                ))?;
+                clear.execute(rusqlite::params_from_iter(
+                    chunk.iter().flat_map(|(artist, album)| [artist, album]),
+                ))?;
+            }
+        }
     }
     tx.commit()
+}
+
+/// How many albums one clearing statement names. SQLite takes far more
+/// parameters than this, but the point of batching them is one read of the
+/// table per statement rather than per album, and past a few hundred the
+/// saving is already had.
+const CLEAR_ALBUMS_AT_ONCE: usize = 256;
+
+/// Whether a row arriving in the library is the kind that invalidates its
+/// album's measurements, given that it turns out to be new.
+///
+/// An album gain is metered over the whole record at once, so a record that
+/// grows after it was measured carries a figure for a different record than
+/// the one on disk. Dropping the album's measured rows puts all of it back on
+/// [`albums_missing_replaygain`], where the next pass meters it as a unit.
+///
+/// Three things keep that from firing where it would only do damage. A file
+/// arriving with a track gain of its own is never on the work list, so
+/// clearing for it would leave the album permanently short of a whole
+/// measurement. A cue subsong isn't measured at all, for the same reason the
+/// work list skips it: every track of a rip is one path. And a file with no
+/// album tag is its own unit with no record to re-meter.
+fn grew_the_album(r: &TrackRow) -> bool {
+    r.sub == 0 && !r.album.is_empty() && r.replay_gain.track_db.is_none()
 }
 
 /// Drop cue side rows whose track is gone. The table declares ON DELETE
@@ -605,6 +743,133 @@ pub fn replaygain_breakdown(conn: &Connection) -> rusqlite::Result<GainCoverage>
     )
 }
 
+/// The library's tempo coverage split three ways, the [`GainCoverage`] shape
+/// over the bpm column. Every track lands in exactly one bucket, so the three
+/// sum to the track count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BpmCoverage {
+    /// Tracks whose own file said what they run at.
+    pub tagged: u64,
+    /// Tracks rox estimated from the audio.
+    pub measured: u64,
+    /// Tracks with no tempo from either source. These are what an analysis
+    /// pass has left to do.
+    pub missing: u64,
+}
+
+impl BpmCoverage {
+    /// Every track counted, whatever its source.
+    pub fn total(self) -> u64 {
+        self.tagged + self.measured + self.missing
+    }
+
+    /// Tracks carrying a tempo at all, whichever source wrote it.
+    pub fn covered(self) -> u64 {
+        self.tagged + self.measured
+    }
+}
+
+/// The three-way tempo split, for a UI that distinguishes what a tagger
+/// wrote from what rox estimated. A row marked measured that somehow holds
+/// no tempo counts as missing: the marker never invents a number.
+pub fn bpm_breakdown(conn: &Connection) -> rusqlite::Result<BpmCoverage> {
+    conn.query_row(
+        "SELECT COUNT(CASE WHEN bpm IS NOT NULL AND COALESCE(bpm_source, 0) <> 1 THEN 1 END),
+                COUNT(CASE WHEN bpm IS NOT NULL AND COALESCE(bpm_source, 0) = 1 THEN 1 END),
+                COUNT(CASE WHEN bpm IS NULL THEN 1 END)
+         FROM tracks",
+        [],
+        |row| {
+            Ok(BpmCoverage {
+                tagged: row.get::<_, i64>(0)? as u64,
+                measured: row.get::<_, i64>(1)? as u64,
+                missing: row.get::<_, i64>(2)? as u64,
+            })
+        },
+    )
+}
+
+/// Where the library database's bytes went, one bucket per thing somebody
+/// reading a storage page would recognize. Each bucket carries its tables'
+/// own pages plus the pages of every index over them, so what a bucket says
+/// is what dropping the thing it names would give back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Storage {
+    /// The catalog itself: `tracks` and the cue spans beside it.
+    pub catalog: u64,
+    /// The acoustic vectors. On a library the analysis pass has been through
+    /// this is most of the file, a couple of kilobytes a track against a few
+    /// hundred bytes of tags.
+    pub acoustic: u64,
+    /// Playlists and their members.
+    pub playlists: u64,
+    /// The play history.
+    pub history: u64,
+    /// The library's genre opinions.
+    pub genres: u64,
+    /// SQLite's own schema table and anything no bucket above claims, so a
+    /// table added by a later migration still lands in the total rather than
+    /// going missing until this list learns its name.
+    pub other: u64,
+    /// Pages the file holds and nothing uses, which is what a VACUUM would
+    /// hand back to the filesystem. A big delete lands here rather than
+    /// shrinking the file: this database has auto_vacuum off and nothing
+    /// vacuums it on a schedule.
+    pub free: u64,
+}
+
+impl Storage {
+    /// What the tables are actually using, free pages left out.
+    pub fn used(self) -> u64 {
+        self.catalog + self.acoustic + self.playlists + self.history + self.genres + self.other
+    }
+
+    /// Every page the file holds, used or not, which is its size on disk
+    /// give or take whatever the WAL has yet to check in.
+    pub fn total(self) -> u64 {
+        self.used() + self.free
+    }
+}
+
+/// What each part of the database occupies, off SQLite's own page
+/// accounting rather than an estimate from row counts.
+///
+/// `dbstat` is a virtual table over the btrees, a row per table and per
+/// index with the pages it holds; the bundled build compiles it in. Index
+/// ownership comes off `sqlite_master` rather than a list of names here, so
+/// an index a later migration adds counts against its table without this
+/// function ever hearing about it.
+///
+/// It walks every page, which is around a tenth of a second on a library
+/// database of a couple hundred megabytes.
+pub fn storage_breakdown(conn: &Connection) -> rusqlite::Result<Storage> {
+    let mut out = Storage::default();
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(m.tbl_name, s.name), SUM(s.pgsize)
+         FROM dbstat('main', 1) s
+         LEFT JOIN sqlite_master m ON m.type = 'index' AND m.name = s.name
+         GROUP BY 1",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(0)?;
+        let bytes = row.get::<_, i64>(1)?.max(0) as u64;
+        let bucket = match name.as_str() {
+            "tracks" | "cue_tracks" => &mut out.catalog,
+            "embeddings" => &mut out.acoustic,
+            "playlists" | "playlist_tracks" => &mut out.playlists,
+            "listens" => &mut out.history,
+            "genre_meta" => &mut out.genres,
+            _ => &mut out.other,
+        };
+        *bucket += bytes;
+    }
+    let page: i64 = conn.pragma_query_value(None, "page_size", |r| r.get(0))?;
+    let free: i64 = conn.pragma_query_value(None, "freelist_count", |r| r.get(0))?;
+    out.free = (page.max(0) * free.max(0)) as u64;
+    Ok(out)
+}
+
 /// One album's worth of work for the measurement pass: the files under it
 /// that carry no track gain, grouped so an album gain can be measured over
 /// the album as a unit.
@@ -716,6 +981,132 @@ pub fn set_measured_replaygain(
     }
     tx.commit()?;
     Ok(written)
+}
+
+/// One track the tempo pass has yet to describe, what [`bpm_missing`] hands
+/// back a list of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BpmToMeasure {
+    pub id: i64,
+    pub path: String,
+    /// How long the track runs, so a pass can size its analysis window
+    /// without opening the file to ask.
+    pub duration_ms: u32,
+    /// Which slice of the file this track is: 0 for a file that is its own
+    /// track, higher for a cue subsong. The estimate is per track either
+    /// way; what the sub is for is a pass saving to tags, which a shared
+    /// file can't take.
+    pub sub: u16,
+}
+
+/// Every local track with no tempo from either source, in id order. What an
+/// analysis pass draws its work from.
+///
+/// Zero-duration rows are skipped, and streaming sources with them: the pass
+/// opens a path with a decoder, and a row claiming no running time has
+/// nothing to count beats over. Cue subsongs are in the list, unlike the
+/// ReplayGain work list: a span of an image decodes fine and runs at its own
+/// tempo, where an album gain measured per path would be measured once and
+/// written onto every track of the disc.
+pub fn bpm_missing(conn: &Connection) -> rusqlite::Result<Vec<BpmToMeasure>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path, duration_ms, sub FROM tracks
+         WHERE bpm IS NULL AND source = 'local' AND duration_ms > 0
+         ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(BpmToMeasure {
+            id: r.get(0)?,
+            path: r.get(1)?,
+            duration_ms: r.get::<_, i64>(2)? as u32,
+            sub: r.get::<_, i64>(3)? as u16,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Write one analysis pass's tempos onto the tracks it measured, marked as
+/// rox's own so a later rescan knows not to clear them. One transaction for
+/// the batch, the way [`set_measured_replaygain`] lands an album.
+///
+/// A row that picked up a tempo tag since [`bpm_missing`] listed it is
+/// skipped: the file's own number wins over an estimate that lost the race.
+/// Returns how many rows actually took the write.
+///
+/// Each write is counted against the embeddings write counter, since the
+/// acoustic side reads the tempo back as part of what it describes a track
+/// by, and a cache built before this pass ran would otherwise go on
+/// answering from the old numbers.
+pub fn set_measured_bpm(
+    conn: &mut Connection,
+    measured: &[(&str, u16, f32)],
+) -> rusqlite::Result<usize> {
+    let tx = conn.transaction()?;
+    let mut written = 0;
+    {
+        let mut stmt = tx.prepare_cached(
+            "UPDATE tracks SET bpm = ?3, bpm_source = ?4
+             WHERE source = 'local' AND path = ?1 AND sub = ?2
+               AND (bpm_source = ?4 OR bpm IS NULL)",
+        )?;
+        for (path, sub, bpm) in measured {
+            let took = stmt.execute(rusqlite::params![
+                path,
+                sub,
+                bpm,
+                crate::tempo::Source::Measured.code(),
+            ])?;
+            if took > 0 {
+                crate::embeddings::note_write(&tx);
+                written += took;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(written)
+}
+
+/// Every local file the library holds, each with the lowest subsong number
+/// on it: 0 for a file that is its own track, 1 for a cue image whose tracks
+/// are all spans inside it. One row per path rather than per track, which is
+/// what a caller working on files rather than tracks wants.
+pub fn local_paths(conn: &Connection) -> rusqlite::Result<Vec<(String, u16)>> {
+    let mut stmt = conn.prepare(
+        "SELECT path, MIN(sub) FROM tracks WHERE source = 'local' GROUP BY path ORDER BY path",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u16)))?;
+    rows.collect()
+}
+
+/// Every row carrying numbers rox measured itself, for [`crate::bake`].
+///
+/// Tag-sourced rows are left out on purpose: those values came off the file's
+/// own tags, so writing them back would be a rewrite that changes nothing.
+/// Peaks alone don't qualify either - a row with no gain has nothing to level
+/// by, and four tags saying so is not worth a file rewrite.
+pub fn measured_replaygain(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<(String, u16, crate::replaygain::ReplayGain)>> {
+    let mut stmt = conn.prepare(
+        "SELECT path, sub, rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
+         FROM tracks
+         WHERE source = 'local' AND rg_source = ?1
+           AND (rg_track_gain IS NOT NULL OR rg_album_gain IS NOT NULL)
+         ORDER BY path",
+    )?;
+    let rows = stmt.query_map([crate::replaygain::Source::Measured.code()], |r| {
+        Ok((
+            r.get(0)?,
+            r.get::<_, i64>(1)? as u16,
+            crate::replaygain::ReplayGain {
+                track_db: r.get(2)?,
+                track_peak: r.get(3)?,
+                album_db: r.get(4)?,
+                album_peak: r.get(5)?,
+            },
+        ))
+    })?;
+    rows.collect()
 }
 
 /// Drop every local track under one folder, for when it leaves the
@@ -961,6 +1352,23 @@ pub fn paths_for(conn: &Connection, ids: &[i64]) -> rusqlite::Result<Vec<String>
     for &id in ids {
         if let Ok(path) = stmt.query_row([id], |r| r.get::<_, String>(0)) {
             out.push(path);
+        }
+    }
+    Ok(out)
+}
+
+/// The same lookup keyed by id, for a caller resolving a whole list at
+/// once. [`paths_for`] drops ids it can't find, which is fine when the
+/// paths are all that's wanted and wrong when each one has to land beside
+/// the row it came from; a map says which id a path belongs to and leaves
+/// a pruned row without one. A smart playlist materializes through this,
+/// so the cost is one statement per refresh rather than per track.
+pub fn paths_by_id(conn: &Connection, ids: &[i64]) -> rusqlite::Result<HashMap<i64, String>> {
+    let mut stmt = conn.prepare_cached("SELECT path FROM tracks WHERE id = ?1")?;
+    let mut out = HashMap::with_capacity(ids.len());
+    for &id in ids {
+        if let Ok(path) = stmt.query_row([id], |r| r.get::<_, String>(0)) {
+            out.insert(id, path);
         }
     }
     Ok(out)
@@ -1229,71 +1637,85 @@ pub fn max_rowid(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT COALESCE(MAX(id), 0) FROM tracks", [], |r| r.get(0))
 }
 
-/// Stream the projection columns for one rowid range, in id order. The
-/// sink's argument order mirrors the SELECT: path, title, artist, album
-/// artist, album, genre, then codec and the stream numbers after the tag
-/// numbers, the rating and scan time, then the two ReplayGain figures and
-/// last the subsong number. The path rides so the projection can derive each
-/// track's folder; the sub rides so it can build a TrackKey. Spans do not:
-/// they are sparse, and the projection fills them from [`cue_spans`].
-#[allow(clippy::type_complexity)]
+/// One row of the projection load, borrowed straight off the statement.
+/// The strings point into SQLite's own buffer for the length of the sink
+/// call, so a sink that keeps one copies it; the projection interns or
+/// arena-copies every string it takes, so nothing does.
+///
+/// The field order mirrors the SELECT in [`scan_range`]: the tags, then the
+/// codec and stream numbers, the rating and scan time, the two ReplayGain
+/// figures, the tempo and where it came from, and last the subsong number.
+/// The path rides so the projection can derive each track's folder; the sub
+/// rides so it can build a TrackKey. Spans do not: they are sparse, and the
+/// projection fills them from [`cue_spans`].
+pub struct ScanRow<'a> {
+    pub id: i64,
+    pub path: &'a str,
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub album_artist: &'a str,
+    pub album: &'a str,
+    pub genre: &'a str,
+    pub year: u16,
+    pub disc_no: u16,
+    pub track_no: u16,
+    pub duration_ms: u32,
+    pub codec: &'a str,
+    pub bitrate_kbps: u16,
+    pub sample_rate_hz: u32,
+    pub bit_depth: u8,
+    pub rating: u8,
+    pub added: i64,
+    pub track_gain_db: Option<f32>,
+    pub album_gain_db: Option<f32>,
+    /// The row's tempo in beats a minute, None where nothing has filled it.
+    pub bpm: Option<f32>,
+    /// Which of the two filled it. Reads as `Tags` on a row with no tempo
+    /// at all, which is the reading nothing acts on.
+    pub bpm_source: crate::tempo::Source,
+    pub sub: u16,
+}
+
+/// Stream the projection columns for one rowid range, in id order, one
+/// [`ScanRow`] per row.
 pub fn scan_range(
     conn: &Connection,
     lo: i64,
     hi: i64,
-    mut sink: impl FnMut(
-        i64,
-        &str,
-        &str,
-        &str,
-        &str,
-        &str,
-        &str,
-        u16,
-        u16,
-        u16,
-        u32,
-        &str,
-        u16,
-        u32,
-        u8,
-        u8,
-        i64,
-        Option<f32>,
-        Option<f32>,
-        u16,
-    ),
+    mut sink: impl FnMut(ScanRow<'_>),
 ) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, path, title, artist, album_artist, album, genre, year, disc_no, track_no,
                 duration_ms, codec, bitrate, sample_rate, bit_depth, rating, added,
-                rg_track_gain, rg_album_gain, sub
+                rg_track_gain, rg_album_gain, bpm, bpm_source, sub
          FROM tracks WHERE id > ?1 AND id <= ?2 ORDER BY id",
     )?;
     let mut rows = stmt.query(rusqlite::params![lo, hi])?;
     while let Some(row) = rows.next()? {
-        sink(
-            row.get(0)?,
-            row.get_ref(1)?.as_str().unwrap_or(""),
-            row.get_ref(2)?.as_str().unwrap_or(""),
-            row.get_ref(3)?.as_str().unwrap_or(""),
-            row.get_ref(4)?.as_str().unwrap_or(""),
-            row.get_ref(5)?.as_str().unwrap_or(""),
-            row.get_ref(6)?.as_str().unwrap_or(""),
-            row.get::<_, i64>(7)? as u16,
-            row.get::<_, i64>(8)? as u16,
-            row.get::<_, i64>(9)? as u16,
-            row.get::<_, i64>(10)? as u32,
-            row.get_ref(11)?.as_str().unwrap_or(""),
-            row.get::<_, i64>(12)? as u16,
-            row.get::<_, i64>(13)? as u32,
-            row.get::<_, i64>(14)? as u8,
-            row.get::<_, i64>(15)? as u8,
-            row.get::<_, i64>(16)?,
-            row.get(17)?,
-            row.get(18)?,
-            row.get::<_, i64>(19)? as u16,
-        );
+        sink(ScanRow {
+            id: row.get(0)?,
+            path: row.get_ref(1)?.as_str().unwrap_or(""),
+            title: row.get_ref(2)?.as_str().unwrap_or(""),
+            artist: row.get_ref(3)?.as_str().unwrap_or(""),
+            album_artist: row.get_ref(4)?.as_str().unwrap_or(""),
+            album: row.get_ref(5)?.as_str().unwrap_or(""),
+            genre: row.get_ref(6)?.as_str().unwrap_or(""),
+            year: row.get::<_, i64>(7)? as u16,
+            disc_no: row.get::<_, i64>(8)? as u16,
+            track_no: row.get::<_, i64>(9)? as u16,
+            duration_ms: row.get::<_, i64>(10)? as u32,
+            codec: row.get_ref(11)?.as_str().unwrap_or(""),
+            bitrate_kbps: row.get::<_, i64>(12)? as u16,
+            sample_rate_hz: row.get::<_, i64>(13)? as u32,
+            bit_depth: row.get::<_, i64>(14)? as u8,
+            rating: row.get::<_, i64>(15)? as u8,
+            added: row.get::<_, i64>(16)?,
+            track_gain_db: row.get(17)?,
+            album_gain_db: row.get(18)?,
+            bpm: row.get(19)?,
+            bpm_source: crate::tempo::Source::from_code(row.get(20)?),
+            sub: row.get::<_, i64>(21)? as u16,
+        });
     }
     Ok(())
 }
@@ -1322,6 +1744,7 @@ mod tests {
             bit_depth: 0,
             rating: 0,
             replay_gain: Default::default(),
+            bpm: None,
             size,
             mtime: 0,
         }
@@ -1519,6 +1942,45 @@ mod tests {
         assert_eq!(mtime, 500, "no file is owed a re-read for this column");
     }
 
+    /// The tempo step adds its two columns, reading as an unfilled tempo
+    /// from tags, and resets every mtime: the number arrives by re-reading a
+    /// file's tags, so without the reset the next scan skips the files it
+    /// already knows and the column never fills.
+    #[test]
+    fn tempo_step_adds_the_columns_and_asks_for_a_rescan() {
+        let conn = Connection::open_in_memory().unwrap();
+        let rung = MIGRATIONS
+            .iter()
+            .position(|m| m.name == "tempo")
+            .expect("the tempo rung is part of the ladder");
+        crate::migrate::run(&conn, &MIGRATIONS[..rung]).unwrap();
+        conn.execute(
+            "INSERT INTO tracks (path, sub, title, artist, album_artist, album, genre, year,
+                track_no, duration_ms, codec, bitrate, sample_rate, bit_depth, size, mtime)
+             VALUES ('/m/1.flac', 0, 'One', 'A', 'A', 'Album', '', 0, 1, 0, 'flac', 1006,
+                     44100, 16, 10, 500)",
+            [],
+        )
+        .unwrap();
+
+        crate::migrate::run(&conn, &MIGRATIONS[..=rung]).unwrap();
+
+        let (bpm, source, mtime): (Option<f32>, Option<i64>, i64) = conn
+            .query_row(
+                "SELECT bpm, bpm_source, mtime FROM tracks WHERE path = '/m/1.flac'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(bpm, None, "the column defaults unread, not zero");
+        assert_eq!(
+            crate::tempo::Source::from_code(source),
+            crate::tempo::Source::Tags,
+            "an unset marker reads as the file's own"
+        );
+        assert_eq!(mtime, 0, "the row is owed a re-read");
+    }
+
     /// The subsong step rebuilds the tracks table around (source, path, sub).
     /// The rebuild is the risky half: ids have to survive it or every join in
     /// the database (playlists, listens, embeddings) points at nothing.
@@ -1610,11 +2072,15 @@ mod tests {
 
     /// The SQL in [`KEEPS_MEASURED_GAIN`] and the upsert spells the measured
     /// code as a literal, since a CASE cannot call a method. This is the pin.
+    /// [`KEEPS_MEASURED_BPM`] borrows the same two literals off its own enum,
+    /// so both are pinned here.
     #[test]
     fn measured_code_matches_the_sql() {
         use crate::replaygain::Source;
         assert_eq!(Source::Measured.code(), 1);
         assert_eq!(Source::Tags.code(), 0);
+        assert_eq!(crate::tempo::Source::Measured.code(), 1);
+        assert_eq!(crate::tempo::Source::Tags.code(), 0);
     }
 
     #[test]
@@ -1945,6 +2411,131 @@ mod tests {
         assert!(!work.iter().any(|a| a.album == "Album"));
     }
 
+    /// An album that grows after it was measured goes back on the work list
+    /// whole. Its album gain was metered over the tracks that were there, so
+    /// the record on disk now has never been measured as one.
+    #[test]
+    fn a_grown_album_loses_its_measurements() {
+        use crate::replaygain::{ReplayGain, Source};
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let track = |path: &str, no: u16| {
+            let mut r = row(path, "X", "Album", 100);
+            r.track_no = no;
+            r
+        };
+        insert_batch(&mut conn, &[track("/m/a/1.mp3", 1), track("/m/a/2.mp3", 2)]).unwrap();
+        let measured = ReplayGain {
+            track_db: Some(-6.5),
+            track_peak: Some(0.91),
+            album_db: Some(-6.0),
+            album_peak: Some(0.99),
+        };
+        set_measured_replaygain(
+            &mut conn,
+            &[("/m/a/1.mp3", measured), ("/m/a/2.mp3", measured)],
+        )
+        .unwrap();
+        assert!(albums_missing_replaygain(&conn).unwrap().is_empty());
+
+        // The third track shows up, through a watch sync or a later scan.
+        insert_batch(&mut conn, &[track("/m/a/3.mp3", 3)]).unwrap();
+
+        let work = albums_missing_replaygain(&conn).unwrap();
+        assert_eq!(work.len(), 1);
+        assert_eq!(
+            work[0].paths,
+            ["/m/a/1.mp3", "/m/a/2.mp3", "/m/a/3.mp3"],
+            "the whole album is work again, not just the new file"
+        );
+        assert_eq!(
+            work[0].total, 3,
+            "and the work covers it, so the next pass earns an album gain"
+        );
+        assert_eq!(
+            queue_meta_for_path(&conn, "/m/a/1.mp3")
+                .unwrap()
+                .replay_gain,
+            ReplayGain::default()
+        );
+        assert_eq!(gain_source(&conn, "/m/a/1.mp3"), Source::Tags);
+
+        // A rescan of the same three files is not growth: nothing is new, so
+        // what the pass writes next stays put.
+        set_measured_replaygain(
+            &mut conn,
+            &[
+                ("/m/a/1.mp3", measured),
+                ("/m/a/2.mp3", measured),
+                ("/m/a/3.mp3", measured),
+            ],
+        )
+        .unwrap();
+        insert_batch(&mut conn, &[track("/m/a/1.mp3", 1), track("/m/a/3.mp3", 3)]).unwrap();
+        assert!(albums_missing_replaygain(&conn).unwrap().is_empty());
+    }
+
+    /// The same growth leaves a tagger's numbers alone. Those are the file's,
+    /// and no pass can put them back.
+    #[test]
+    fn a_grown_album_keeps_its_tagged_gains() {
+        use crate::replaygain::{ReplayGain, Source};
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let tagged = ReplayGain {
+            track_db: Some(-7.0),
+            track_peak: Some(0.98),
+            album_db: Some(-7.5),
+            album_peak: Some(1.0),
+        };
+        let track = |path: &str, no: u16, gain: ReplayGain| {
+            let mut r = row(path, "X", "Album", 100);
+            r.track_no = no;
+            r.replay_gain = gain;
+            r
+        };
+        insert_batch(
+            &mut conn,
+            &[
+                track("/m/a/1.mp3", 1, tagged),
+                track("/m/a/2.mp3", 2, tagged),
+                // One measured row in another album, so the batch below has
+                // something at stake and takes the per-row question.
+                row("/m/b/1.mp3", "Y", "Other", 100),
+            ],
+        )
+        .unwrap();
+        set_measured_replaygain(
+            &mut conn,
+            &[(
+                "/m/b/1.mp3",
+                ReplayGain {
+                    track_db: Some(-5.0),
+                    ..Default::default()
+                },
+            )],
+        )
+        .unwrap();
+
+        insert_batch(&mut conn, &[track("/m/a/3.mp3", 3, ReplayGain::default())]).unwrap();
+
+        for path in ["/m/a/1.mp3", "/m/a/2.mp3"] {
+            assert_eq!(
+                queue_meta_for_path(&conn, path).unwrap().replay_gain,
+                tagged,
+                "a tag-sourced gain is the file's, not the pass's to clear"
+            );
+            assert_eq!(gain_source(&conn, path), Source::Tags);
+        }
+        let work = albums_missing_replaygain(&conn).unwrap();
+        assert_eq!(
+            work.iter().map(|a| a.paths.len()).sum::<usize>(),
+            1,
+            "only the new file is work"
+        );
+        assert_eq!(work[0].paths, ["/m/a/3.mp3"]);
+    }
+
     /// The three-way split the settings page reads: what a tagger wrote,
     /// what rox measured, and what nothing levels yet.
     #[test]
@@ -1997,6 +2588,157 @@ mod tests {
         );
         // Both sources count as covered; only the missing row doesn't.
         assert_eq!((split.covered(), split.total()), (2, 3));
+    }
+
+    /// A tempo off a file's tags rides the row in, and the estimate written
+    /// over an untagged one survives a rescan that still finds no tag. The
+    /// tag half of the rule is the other way round: a file that grows a
+    /// tempo tag takes it back off the estimate, and one that loses the tag
+    /// it had is cleared rather than left claiming a number.
+    #[test]
+    fn tag_and_estimate_take_turns_on_the_tempo_column() {
+        use crate::tempo::Source;
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let untagged = || row("/m/a/1.mp3", "X", "Album", 100);
+        let tagged = || {
+            let mut r = row("/m/a/2.mp3", "X", "Album", 100);
+            r.bpm = Some(174.0);
+            r
+        };
+        insert_batch(&mut conn, &[untagged(), tagged()]).unwrap();
+        assert_eq!(stored_bpm(&conn, "/m/a/1.mp3"), (None, Source::Tags));
+        assert_eq!(
+            stored_bpm(&conn, "/m/a/2.mp3"),
+            (Some(174.0), Source::Tags),
+            "a tempo the file carried is the file's"
+        );
+
+        // The pass fills the untagged one and declines the tagged one, which
+        // it was never offered but might race onto.
+        assert_eq!(
+            set_measured_bpm(
+                &mut conn,
+                &[("/m/a/1.mp3", 0, 128.5), ("/m/a/2.mp3", 0, 92.0)]
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            stored_bpm(&conn, "/m/a/1.mp3"),
+            (Some(128.5), Source::Measured)
+        );
+        assert_eq!(
+            stored_bpm(&conn, "/m/a/2.mp3"),
+            (Some(174.0), Source::Tags),
+            "an estimate never overwrites what the file itself claims"
+        );
+        assert_eq!(
+            bpm_breakdown(&conn).unwrap(),
+            BpmCoverage {
+                tagged: 1,
+                measured: 1,
+                missing: 0
+            }
+        );
+
+        // The rescan: the first file still carries no tempo tag, the second
+        // has lost the one it had, and the third arrives with one.
+        let mut grew_a_tag = row("/m/a/3.mp3", "X", "Album", 100);
+        grew_a_tag.bpm = Some(96.0);
+        insert_batch(
+            &mut conn,
+            &[untagged(), row("/m/a/2.mp3", "X", "Album", 100), grew_a_tag],
+        )
+        .unwrap();
+        assert_eq!(
+            stored_bpm(&conn, "/m/a/1.mp3"),
+            (Some(128.5), Source::Measured),
+            "nothing arrived to replace the estimate, so it stands"
+        );
+        assert_eq!(
+            stored_bpm(&conn, "/m/a/2.mp3"),
+            (None, Source::Tags),
+            "a tag-sourced tempo goes when the file stops claiming it"
+        );
+        assert_eq!(stored_bpm(&conn, "/m/a/3.mp3"), (Some(96.0), Source::Tags));
+
+        // And a rescan of the estimated file that does find a tag takes it:
+        // the file is the better authority on what it runs at.
+        let mut retagged = untagged();
+        retagged.bpm = Some(64.0);
+        insert_batch(&mut conn, &[retagged]).unwrap();
+        assert_eq!(stored_bpm(&conn, "/m/a/1.mp3"), (Some(64.0), Source::Tags));
+
+        let split = bpm_breakdown(&conn).unwrap();
+        assert_eq!((split.covered(), split.total()), (2, 3));
+    }
+
+    /// What the store holds for one path's tempo, and where it says it came
+    /// from.
+    fn stored_bpm(conn: &Connection, path: &str) -> (Option<f32>, crate::tempo::Source) {
+        conn.query_row(
+            "SELECT bpm, bpm_source FROM tracks WHERE path = ?1",
+            [path],
+            |r| {
+                Ok((
+                    r.get::<_, Option<f32>>(0)?,
+                    crate::tempo::Source::from_code(r.get(1)?),
+                ))
+            },
+        )
+        .unwrap()
+    }
+
+    /// The tempo pass's work list: every local row with no tempo yet, cue
+    /// subsongs included, and nothing that has one or has no running time to
+    /// count beats over.
+    #[test]
+    fn bpm_missing_lists_what_has_no_tempo_yet() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let timed = |path: &str, ms: u32| {
+            let mut r = row(path, "X", "Album", 100);
+            r.duration_ms = ms;
+            r
+        };
+        let mut has_a_tag = timed("/m/a/2.mp3", 200_000);
+        has_a_tag.bpm = Some(120.0);
+        let mut disc = cue_row("/m/a/disc.flac", 1, 0, Some(180_000));
+        disc.duration_ms = 180_000;
+        insert_batch(
+            &mut conn,
+            &[
+                timed("/m/a/1.mp3", 200_000),
+                has_a_tag,
+                // No running time, so there is nothing to count over.
+                timed("/m/a/3.mp3", 0),
+                disc,
+            ],
+        )
+        .unwrap();
+
+        let work = bpm_missing(&conn).unwrap();
+        assert_eq!(
+            work.iter().map(|w| w.path.as_str()).collect::<Vec<_>>(),
+            ["/m/a/1.mp3", "/m/a/disc.flac"]
+        );
+        assert_eq!(work[0].duration_ms, 200_000);
+        assert_eq!(work[0].sub, 0);
+        assert_eq!(work[1].sub, 1, "a cue subsong is measured like anything");
+        assert_eq!(
+            work[0].id,
+            id_for_path(&conn, "/m/a/1.mp3").unwrap().unwrap()
+        );
+
+        // Measuring the two takes them off the list, and the subsong's write
+        // lands on its own row rather than on the image's path at large.
+        set_measured_bpm(
+            &mut conn,
+            &[("/m/a/1.mp3", 0, 128.0), ("/m/a/disc.flac", 1, 174.0)],
+        )
+        .unwrap();
+        assert!(bpm_missing(&conn).unwrap().is_empty());
     }
 
     /// The scan timestamp stamps a row when it first lands and a rescan's
@@ -2175,6 +2917,54 @@ mod tests {
             Some(sibling_id),
             "a name-prefix sibling folder is not swept up"
         );
+    }
+
+    /// The db-only columns ride along with a move. The id surviving is what
+    /// makes this true, but the rename dialog moves whole albums on a
+    /// pattern, so the thing a user would actually notice going missing
+    /// gets asserted rather than implied.
+    #[test]
+    fn a_renamed_folder_keeps_its_ratings_and_added_stamps() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        insert_batch(
+            &mut conn,
+            &[
+                row("/m/Artist/Album/1.mp3", "Artist", "Album", 100),
+                row("/m/Artist/Album/2.mp3", "Artist", "Album", 200),
+            ],
+        )
+        .unwrap();
+        let one = id_for_path(&conn, "/m/Artist/Album/1.mp3")
+            .unwrap()
+            .unwrap();
+        set_rating(&conn, one, 9).unwrap();
+        let added: i64 = conn
+            .query_row("SELECT added FROM tracks WHERE id = ?1", [one], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        rename_within(
+            &mut conn,
+            Path::new("/m/Artist/Album"),
+            Path::new("/m/Boards/Geogaddi"),
+        )
+        .unwrap();
+
+        let moved = id_for_path(&conn, "/m/Boards/Geogaddi/1.mp3")
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved, one, "the row is the same row");
+        let (rating, stamp): (u8, i64) = conn
+            .query_row(
+                "SELECT rating, added FROM tracks WHERE id = ?1",
+                [one],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rating, 9, "the db-only rating rode along");
+        assert_eq!(stamp, added, "and so did the added stamp");
     }
 
     /// One image, several rows: the cue tracks share a path, keep their own
@@ -2385,6 +3175,99 @@ mod tests {
             (v.artist, v.album),
             ("Someone", "Album"),
             "untouched columns hold"
+        );
+    }
+
+    /// The storage page's numbers: every btree charged to the thing it
+    /// belongs to, indexes counted against the table they cover, and the
+    /// buckets plus the free pages accounting for the whole file. That last
+    /// part is what keeps the readout honest: a table no bucket claims
+    /// would otherwise just go missing from the total.
+    #[test]
+    fn the_storage_breakdown_accounts_for_every_page() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Enough rows that a table is more than the one page it starts on,
+        // and vectors as wide as the model rox ships, so the acoustic bucket
+        // dwarfs the catalog the way it does on a real library.
+        let rows: Vec<TrackRow> = (0..200)
+            .map(|i| row(&format!("/m/{i}.mp3"), "A", "Album", 100))
+            .collect();
+        insert_batch(&mut conn, &rows).unwrap();
+        let ids = all_ids(&conn).unwrap();
+        for id in &ids {
+            crate::embeddings::upsert(&conn, *id, "m", &vec![0.5; 512]).unwrap();
+        }
+        let list = crate::playlists::create(&conn, "Mix", 1).unwrap();
+        crate::playlists::add(&mut conn, list, &ids, 1).unwrap();
+        for id in &ids {
+            crate::listens::append(
+                &conn,
+                &crate::listens::Listen {
+                    track_id: *id,
+                    played_at: 1,
+                    title: "T".into(),
+                    artist: "A".into(),
+                    album: "Album".into(),
+                    genre: "g".into(),
+                    path: format!("/m/{id}.mp3"),
+                },
+            )
+            .unwrap();
+        }
+        crate::genre_meta::set_alias(&conn, "Rock", "rock").unwrap();
+
+        let page_size: u64 = conn
+            .pragma_query_value(None, "page_size", |r| r.get::<_, i64>(0))
+            .unwrap() as u64;
+        let file = |conn: &Connection| -> u64 {
+            conn.pragma_query_value(None, "page_count", |r| r.get::<_, i64>(0))
+                .unwrap() as u64
+                * page_size
+        };
+
+        let used = storage_breakdown(&conn).unwrap();
+        assert_eq!(used.total(), file(&conn), "every page lands in some bucket");
+        assert_eq!(used.free, 0, "a database nothing has deleted from");
+        assert!(
+            used.acoustic > used.catalog,
+            "512 floats a track outweighs the tags, got {} against {}",
+            used.acoustic,
+            used.catalog
+        );
+        for (name, bytes) in [
+            ("catalog", used.catalog),
+            ("playlists", used.playlists),
+            ("history", used.history),
+            ("genres", used.genres),
+        ] {
+            assert!(bytes > 0, "{name} holds rows and so holds pages");
+        }
+        // The catalog's own unique index is charged to the catalog rather
+        // than to a bucket of its own: what the page is answering is what
+        // dropping the tracks would give back.
+        let index: i64 = conn
+            .query_row(
+                "SELECT SUM(pgsize) FROM dbstat('main', 1)
+                 WHERE name = 'sqlite_autoindex_tracks_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(index > 0, "the unique index over tracks holds pages");
+        assert!(used.catalog > index as u64);
+
+        // A delete without a vacuum moves pages from a bucket to the free
+        // list and leaves the file exactly as big, which is the case the
+        // free number exists to explain.
+        let before = file(&conn);
+        conn.execute("DELETE FROM embeddings", []).unwrap();
+        let after = storage_breakdown(&conn).unwrap();
+        assert_eq!(after.total(), before, "the file kept every page");
+        assert!(after.acoustic < used.acoustic / 2);
+        assert!(
+            after.free > used.acoustic / 2,
+            "the vectors' pages are free"
         );
     }
 }

@@ -489,6 +489,10 @@ pub fn track_actions(
     let tag_ids = ids.clone();
     let tag_state = state.clone();
     let cover_state = state.clone();
+    let rename_ids = ids.clone();
+    let rename_state = state.clone();
+    let convert_ids = ids.clone();
+    let convert_state = state.clone();
     let next_state = state.clone();
     let next_ids = ids.clone();
     let queue_state = state.clone();
@@ -552,7 +556,15 @@ pub fn track_actions(
                     crate::openers::playlist_create(new_state.clone(), new_ids.clone(), cx);
                 }),
         );
-        let playlists = playlist_state.library.read(cx).playlists();
+        // Static lists only: a smart playlist holds what its query answers,
+        // so there is nothing here for a track to be added to.
+        let playlists: Vec<_> = playlist_state
+            .library
+            .read(cx)
+            .playlists()
+            .into_iter()
+            .filter(|playlist| playlist.kind == rox_library::playlists::PlaylistKind::Static)
+            .collect();
         if !playlists.is_empty() {
             submenu = submenu.separator();
         }
@@ -593,7 +605,30 @@ pub fn track_actions(
                 .on_click(move |_, _, cx| {
                     crate::openers::cover_editor(cover_state.clone(), ids.clone(), cx);
                 }),
+        )
+        // The other direction: tags into filenames. Renaming is a disk
+        // change rather than a tag edit, so it gets its own dialog with
+        // the whole plan on screen before anything moves.
+        .item(
+            PopupMenuItem::new("Rename Files...")
+                .icon(Icon::default().path(icons::FOLDER))
+                .on_click(move |_, _, cx| {
+                    crate::openers::rename_dialog(rename_state.clone(), rename_ids.clone(), cx);
+                }),
         );
+    // Converting writes new files somewhere else entirely, so it only shows
+    // up where the encoder to write them exists. No ffmpeg, no row.
+    let menu = if crate::openers::convert_available() {
+        menu.item(
+            PopupMenuItem::new("Convert...")
+                .icon(Icon::default().path(icons::AUDIO_LINES))
+                .on_click(move |_, _, cx| {
+                    crate::openers::convert_dialog(convert_state.clone(), convert_ids.clone(), cx);
+                }),
+        )
+    } else {
+        menu
+    };
     reveal_item(menu, state, reveal)
 }
 

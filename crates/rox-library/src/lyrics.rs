@@ -97,7 +97,7 @@ pub fn load(path: &Path, store_dir: Option<&Path>) -> Option<Lyrics> {
 /// or blank. Blank counts as missing throughout: a file that kept an empty
 /// USLT frame reads as a track with no lyrics, not a track with none of
 /// them.
-fn tag_lyrics(path: &Path) -> Option<String> {
+pub(crate) fn tag_lyrics(path: &Path) -> Option<String> {
     writer::read(path)
         .ok()?
         .into_iter()
@@ -283,8 +283,12 @@ fn build(text: String, source: Source) -> Lyrics {
     }
 }
 
-/// The sidecar paths to try for a track, in order.
-fn sidecar_candidates(path: &Path) -> Vec<PathBuf> {
+/// The sidecar paths to try for a track, in order. Public because a file
+/// that moves takes its lyrics with it: the rename walks this list for
+/// the old path and the new one and moves what it finds, position by
+/// position, so a `.mp3.lrc` lands as a `.flac.lrc` and not the other
+/// convention.
+pub fn sidecar_candidates(path: &Path) -> Vec<PathBuf> {
     let mut out = Vec::with_capacity(SIDECAR_EXTS.len() * 2);
     for ext in SIDECAR_EXTS {
         out.push(path.with_extension(ext));

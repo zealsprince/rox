@@ -30,10 +30,21 @@ pub struct Openers {
     pub tags_matcher: fn(Entity<Library>, Entity<NowPlayingArt>, TrackKey, &mut App),
     /// The cover editor over a track selection.
     pub cover_editor: fn(AppState, Vec<i64>, &mut App),
+    /// The rename-from-tags dialog over a track selection.
+    pub rename_dialog: fn(AppState, Vec<i64>, &mut App),
+    /// The convert dialog over a track selection.
+    pub convert_dialog: fn(AppState, Vec<i64>, &mut App),
+    /// Whether converting is possible on this machine at all, which is
+    /// whether ffmpeg is installed. The menus ask before they offer a
+    /// "Convert...", so a machine without it never sees one.
+    pub convert_available: fn() -> bool,
     /// The new-playlist prompt, seeded with the tracks to file into it.
     pub playlist_create: fn(AppState, Vec<i64>, &mut App),
     /// The rename prompt for an existing playlist.
     pub playlist_rename: fn(AppState, i64, String, &mut App),
+    /// The smart-playlist query editor: None for a new one, Some for the
+    /// playlist whose query is being edited.
+    pub smart_playlist: fn(AppState, Option<i64>, &mut App),
     /// The equalizer window.
     pub eq_window: fn(&mut App),
     /// The library stats page over a workspace's state.
@@ -110,6 +121,29 @@ pub fn cover_editor(state: AppState, ids: Vec<i64>, cx: &mut App) {
     }
 }
 
+/// Open the rename-from-tags dialog over `ids`.
+pub fn rename_dialog(state: AppState, ids: Vec<i64>, cx: &mut App) {
+    if let Some(openers) = openers("the rename dialog") {
+        (openers.rename_dialog)(state, ids, cx);
+    }
+}
+
+/// Open the convert dialog over `ids`.
+pub fn convert_dialog(state: AppState, ids: Vec<i64>, cx: &mut App) {
+    if let Some(openers) = openers("the convert dialog") {
+        (openers.convert_dialog)(state, ids, cx);
+    }
+}
+
+/// Whether this machine can convert audio. False before the app installs
+/// its table, which keeps the menus quiet in a unit test with no windows.
+pub fn convert_available() -> bool {
+    match OPENERS.get() {
+        Some(openers) => (openers.convert_available)(),
+        None => false,
+    }
+}
+
 /// Prompt for a new playlist holding `ids`.
 pub fn playlist_create(state: AppState, ids: Vec<i64>, cx: &mut App) {
     if let Some(openers) = openers("the new-playlist prompt") {
@@ -121,6 +155,13 @@ pub fn playlist_create(state: AppState, ids: Vec<i64>, cx: &mut App) {
 pub fn playlist_rename(state: AppState, id: i64, current: String, cx: &mut App) {
     if let Some(openers) = openers("the playlist rename prompt") {
         (openers.playlist_rename)(state, id, current, cx);
+    }
+}
+
+/// Open the smart-playlist editor, on `id` when editing one.
+pub fn smart_playlist(state: AppState, id: Option<i64>, cx: &mut App) {
+    if let Some(openers) = openers("the smart playlist editor") {
+        (openers.smart_playlist)(state, id, cx);
     }
 }
 

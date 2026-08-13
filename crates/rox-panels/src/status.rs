@@ -43,8 +43,8 @@ pub enum StatusItem {
     Artists,
     /// The scope's summed play count.
     Plays,
-    /// A flexible gap that pushes the readouts around it apart. One per
-    /// strip under the unique-item model.
+    /// A flexible gap that pushes the readouts around it apart; the
+    /// strip holds as many as the layout wants.
     Spacer,
 }
 
@@ -55,31 +55,37 @@ const ITEMS: &[panel::ArrangeSpec<StatusItem>] = &[
         label: "Count",
         icon: Some(icons::LIST_MUSIC),
         value: StatusItem::Count,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Time",
         icon: Some(icons::CLOCK),
         value: StatusItem::Time,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Albums",
         icon: Some(icons::DISC),
         value: StatusItem::Albums,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Artists",
         icon: Some(icons::MIC),
         value: StatusItem::Artists,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Plays",
         icon: Some(icons::CHART_PIE),
         value: StatusItem::Plays,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: StatusItem::Spacer,
+        repeats: true,
     },
 ];
 
@@ -131,7 +137,7 @@ impl From<StatusConfigDump> for StatusConfig {
         StatusConfig {
             chrome: dump.chrome,
             align: dump.align,
-            items: panel::dedup(dump.items),
+            items: panel::dedup(ITEMS, dump.items),
         }
     }
 }

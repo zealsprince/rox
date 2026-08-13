@@ -18,7 +18,7 @@ members = [
 default-members = ["crates/rox"]
 
 [workspace.package]
-version = "1.16.0"
+version = "1.17.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 
@@ -35,6 +35,16 @@ opt-level = 3
 # it profiles an order of magnitude heavier than release, same story as
 # Symphonia above.
 [profile.dev.package.rox-viz]
+opt-level = 3
+
+# Same reason a step further down: the similarity query dots a byte-quantized
+# corpus, twenty-five million multiply-adds for one "what sounds like this",
+# and it runs on every track change. Unoptimized that loop is 195ms against
+# 15ms optimized, and the one scan that fills the corpus is 3s against 0.4s.
+# Level 1 already buys all of it and 3 is within noise of it, but the compile
+# cost is the same 1.1s either way, so this matches rox-viz above rather than
+# inventing a third answer.
+[profile.dev.package.rox-library]
 opt-level = 3
 
 # Debug symbols are a third of the binary (68 MB down to 54 MB) and release

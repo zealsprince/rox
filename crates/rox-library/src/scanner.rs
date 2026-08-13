@@ -704,6 +704,11 @@ fn cue_rows(
                     album_db: image_tags.replay_gain.album_db,
                     album_peak: image_tags.replay_gain.album_peak,
                 },
+                // No tempo, even where the image's tag carries one: that
+                // number describes a whole disc, and handing it to every
+                // track would claim they all run at it. Each subsong lands
+                // on the analysis pass's list instead, which takes them.
+                bpm: None,
                 cue: Some(crate::CueSlice {
                     cue_path: cue_path.clone(),
                     span: track.span,
@@ -800,6 +805,10 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
         row.year = tag.date().map(|d| d.year).unwrap_or(0);
         row.disc_no = tag.disk().unwrap_or(0) as u16;
         row.track_no = tag.track().unwrap_or(0) as u16;
+        // What the file says it runs at, off the primary tag like everything
+        // else here. A file carrying nothing believable lands on the
+        // analysis pass's list instead (see [`crate::tempo`]).
+        row.bpm = crate::tempo::read(tag);
     }
     // What an analysis pass measured, whoever ran it. Read across every tag
     // on the file rather than off the primary one: mp3gain writes its four
@@ -869,6 +878,7 @@ fn fallback_row(path: &Path) -> TrackRow {
         bit_depth: 0,
         rating: 0,
         replay_gain: crate::replaygain::ReplayGain::default(),
+        bpm: None,
         size: 0,
         mtime: 0,
     }

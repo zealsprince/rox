@@ -417,34 +417,93 @@ impl CoverMatch {
         }
         grid
     }
+
+    /// What stands between the window and a cover, when something does.
+    /// The clauses run in the order a search clears them, so the footer
+    /// names the one step that is actually next, and Set Cover is live
+    /// exactly when nothing is left.
+    fn blocker(&self) -> Option<&'static str> {
+        if !matches!(self.phase, Phase::Ready(ref l) if !l.is_empty()) {
+            return Some(match self.phase {
+                Phase::Searching => "Searching...",
+                _ => "No cover to set",
+            });
+        }
+        if self.selected.is_none() {
+            return Some("Pick a cover to set it");
+        }
+        if self.applying {
+            return Some("Fetching the full image...");
+        }
+        None
+    }
+
+    /// The window's actions, and what's in their way. No enter shortcut
+    /// here: the query boxes own the key as "search now", and a window
+    /// binding would ride along on the same press and set a cover off
+    /// results the search is about to replace.
+    fn footer(&self, can_apply: bool, cx: &mut Context<Self>) -> Div {
+        let blocker = self.blocker();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_SM)
+            .border_t_1()
+            .border_color(palette::border())
+            .bg(palette::bg_panel())
+            .child(match blocker {
+                Some(reason) => div()
+                    .text_xs()
+                    .text_color(palette::tone_warn())
+                    .child(reason),
+                None => div(),
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(settings_ui::small_button(
+                        if self.applying {
+                            "Setting..."
+                        } else {
+                            "Set Cover"
+                        },
+                        icons::CHECK,
+                        !can_apply,
+                        cx.listener(|this, _, window, cx| this.apply(window, cx)),
+                    ))
+                    .child(settings_ui::small_button(
+                        "Cancel",
+                        icons::CLOSE,
+                        self.applying,
+                        cx.listener(|_, _, window, _| window.remove_window()),
+                    )),
+            )
+    }
 }
 
 impl Render for CoverMatch {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let can_apply = matches!(self.phase, Phase::Ready(ref l) if !l.is_empty())
-            && self.selected.is_some()
-            && !self.applying;
-        let buttons = div()
-            .flex()
-            .flex_row()
-            .gap(tokens::SPACE_SM)
-            .child(settings_ui::small_button(
-                if self.applying {
-                    "Setting..."
-                } else {
-                    "Set Cover"
-                },
-                icons::CHECK,
-                !can_apply,
-                cx.listener(|this, _, window, cx| this.apply(window, cx)),
-            ))
-            .child(settings_ui::small_button(
-                "Cancel",
-                icons::CLOSE,
-                self.applying,
-                cx.listener(|_, _, window, _| window.remove_window()),
-            ))
-            .into_any_element();
+        let can_apply = self.blocker().is_none();
+        let count = match &self.phase {
+            Phase::Ready(loaded) if !loaded.is_empty() => Some(
+                div()
+                    .text_xs()
+                    .text_color(palette::text())
+                    .child(SharedString::from(match loaded.len() {
+                        1 => "1 cover".to_string(),
+                        n => format!("{n} covers"),
+                    }))
+                    .into_any_element(),
+            ),
+            _ => None,
+        };
 
         let content = match &self.phase {
             Phase::Searching => note("Searching...").into_any_element(),
@@ -475,13 +534,22 @@ impl Render for CoverMatch {
                     .min_h_0()
                     .flex()
                     .flex_col()
+                    // The page's own surface over the root's, the same second
+                    // pass the settings page takes: the backdrop reads through
+                    // only as the surfaces thin.
+                    .bg(palette::bg_elevated())
                     .gap(SECTION_GAP)
                     .p(tokens::SPACE_MD)
-                    .child(section("Search", Some(buttons), self.search_fields()))
+                    .child(section("Search", None, self.search_fields()))
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))
                     })
-                    .child(div().flex_1().min_h_0().child(content)),
+                    .child(
+                        section("Covers", count, div().flex_1().min_h_0().child(content))
+                            .flex_1()
+                            .min_h_0(),
+                    ),
             )
+            .child(self.footer(can_apply, cx))
     }
 }

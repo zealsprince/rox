@@ -79,6 +79,14 @@ struct Files {
     thumb: PathBuf,
 }
 
+/// Drop every entry: bios, portraits, banners, and fanart. The next panel
+/// open refetches whatever it needs. Blocking on the directory walk; run
+/// off the UI thread. The folder itself goes with it, the way the peak
+/// cache's clear works; every write here makes it again on demand.
+pub fn clear() {
+    let _ = fs::remove_dir_all(artists_dir());
+}
+
 fn files_for(name: &str) -> Files {
     let folded = providers::normalize(name);
     // Punctuation-only names ("!!!", "+/-") fold to nothing and would all

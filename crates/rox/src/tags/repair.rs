@@ -24,9 +24,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::*, px, size, svg, uniform_list, App, Bounds, Context, Div, Entity, Global,
-    PathPromptOptions, SharedString, Stateful, Subscription, UniformListScrollHandle, Window,
-    WindowHandle,
+    actions, div, prelude::*, px, size, uniform_list, App, Bounds, Context, Div, Entity,
+    FocusHandle, Global, KeyBinding, PathPromptOptions, SharedString, Stateful, Subscription,
+    UniformListScrollHandle, Window, WindowHandle,
 };
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
@@ -36,7 +36,7 @@ use rox_library::writer::{self, Edit};
 
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
-use rox_panel_kit::ui::{small_button, MIN_SIZE};
+use rox_panel_kit::ui::{checkbox, kbd_line, section, small_button, Seg, MIN_SIZE};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 
@@ -48,6 +48,18 @@ const CHUNK: usize = 256;
 /// One file row's height. The list is a uniform_list, so every row agrees;
 /// two lines fit, the name over its containing folder.
 const ROW_H: f32 = 42.;
+
+actions!(tag_repair, [Repair]);
+
+/// The key context the window's own bindings scope to.
+const CONTEXT: &str = "TagRepair";
+
+/// The window's repair binding; call once at startup. Nothing here takes
+/// typing, so the binding sits on the window root and the root holds the
+/// focus, which is what puts it on the dispatch path.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("enter", Repair, Some(CONTEXT))]);
+}
 
 /// What a scan walks: every remembered library folder, or one folder the
 /// user pointed at.
@@ -120,7 +132,7 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut A
         "rox - Tag Repair",
         bounds,
         Some(MIN_SIZE),
-        move |_window, cx| cx.new(|cx| TagRepair::new(library, now_art, cx)),
+        move |window, cx| cx.new(|cx| TagRepair::new(library, now_art, window, cx)),
     );
     cx.set_global(OpenTagRepair(Some(handle)));
 }
@@ -149,6 +161,9 @@ pub struct TagRepair {
     /// A scan or repair failure, shown inline.
     error: Option<SharedString>,
     scroll: UniformListScrollHandle,
+    /// The window root's own focus. No field here takes typing, so without
+    /// it the enter binding would have nothing to hang off.
+    focus: FocusHandle,
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
     /// This window pumps its own frames, so the backdrop needs its own wake
@@ -160,9 +175,12 @@ impl TagRepair {
     fn new(
         library: Entity<Library>,
         now_art: Entity<NowPlayingArt>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let _backdrop_changed = cx.observe(&now_art, |_, _, cx| cx.notify());
+        let focus = cx.focus_handle();
+        window.focus(&focus);
         TagRepair {
             library,
             scope: Scope::Library,
@@ -178,6 +196,7 @@ impl TagRepair {
             result: None,
             error: None,
             scroll: UniformListScrollHandle::new(),
+            focus,
             now_art,
             backdrop: WindowBackdrop::default(),
             _backdrop_changed,
@@ -504,18 +523,19 @@ impl TagRepair {
 
     /// The results region under the scope row, filling the rest of the
     /// window: a centered hint before the first scan, a "none found" line
-    /// when a scan came up clean, or the select-all header over the
-    /// virtualized file list. Rows stream in during a scan, so the list
+    /// when a scan came up clean, or the count and select-all riding the
+    /// heading over the virtualized list. Rows stream in during a scan, so the list
     /// shows as soon as `found` has anything, before the scan finishes.
     fn results(&self, cx: &mut Context<Self>) -> Div {
-        let region = div().flex_1().min_h_0().flex().flex_col();
         if self.found.is_empty() {
             let message = if !self.scanned {
                 "Scan to find files with tag damage a rewrite repairs."
             } else {
                 "No affected files found."
             };
-            return region.child(
+            return section(
+                "Affected Files",
+                None,
                 div()
                     .flex_1()
                     .flex()
@@ -523,7 +543,9 @@ impl TagRepair {
                     .justify_center()
                     .text_color(palette::text_muted())
                     .child(message),
-            );
+            )
+            .flex_1()
+            .min_h_0();
         }
         let all = self.checked.iter().all(|&c| c);
         let count = self.found.len();
@@ -535,53 +557,49 @@ impl TagRepair {
             (false, n) => format!("{n} files"),
         };
         let this = cx.entity().downgrade();
-        region
+        let trailing = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .text_xs()
+            .text_color(palette::text_muted())
+            .child(count_label)
+            .child(small_button(
+                if all { "Select none" } else { "Select all" },
+                icons::CHECK,
+                self.repairing,
+                cx.listener(move |this, _, _, cx| this.select_all(!all, cx)),
+            ))
+            .into_any_element();
+        let list = div()
+            .flex_1()
+            .min_h_0()
+            .relative()
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .pb(tokens::SPACE_XS)
-                    .border_b_1()
-                    .border_color(palette::border())
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(count_label)
-                    .child(small_button(
-                        if all { "Select none" } else { "Select all" },
-                        icons::CHECK,
-                        self.repairing,
-                        cx.listener(move |this, _, _, cx| this.select_all(!all, cx)),
-                    )),
+                uniform_list("repair-files", count, move |range, _, cx| {
+                    this.upgrade()
+                        .map(|this| this.update(cx, |this, cx| this.file_rows(range, cx)))
+                        .unwrap_or_default()
+                })
+                .track_scroll(self.scroll.clone())
+                .size_full(),
             )
             .child(
                 div()
-                    .flex_1()
-                    .min_h_0()
-                    .relative()
-                    .child(
-                        uniform_list("repair-files", count, move |range, _, cx| {
-                            this.upgrade()
-                                .map(|this| this.update(cx, |this, cx| this.file_rows(range, cx)))
-                                .unwrap_or_default()
-                        })
-                        .track_scroll(self.scroll.clone())
-                        .size_full(),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .child(Scrollbar::vertical(&self.scroll)),
-                    )
-                    // The list locks while a repair runs: a transparent
-                    // occluder over it swallows clicks so nothing checks or
-                    // unchecks out from under the commits.
-                    .when(self.repairing, |d| {
-                        d.child(div().absolute().inset_0().occlude())
-                    }),
+                    .absolute()
+                    .inset_0()
+                    .child(Scrollbar::vertical(&self.scroll)),
             )
+            // The list locks while a repair runs: a transparent occluder
+            // over it swallows clicks so nothing checks or unchecks out
+            // from under the commits.
+            .when(self.repairing, |d| {
+                d.child(div().absolute().inset_0().occlude())
+            });
+        section("Affected Files", Some(trailing), list)
+            .flex_1()
+            .min_h_0()
     }
 
     /// The visible slice of file rows for the virtualized list: each a
@@ -637,26 +655,20 @@ impl TagRepair {
             .collect()
     }
 
-    /// The section header: the "Repair" label with the scan and repair
-    /// controls trailing it, on the same border the settings sections wear.
+    /// The scope pills under a heading that carries Scan, and the count a
+    /// running scan moves.
     fn header(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.scanning || self.repairing;
-        let count = self.checked_count();
         let controls = div()
             .flex()
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_SM)
-            .when(busy, |d| {
-                let label = if self.scanning {
-                    if self.scan_total > 0 {
-                        format!("Scanning {}/{}...", self.scan_done, self.scan_total)
-                    } else {
-                        "Scanning...".to_string()
-                    }
+            .when(self.scanning, |d| {
+                let label = if self.scan_total > 0 {
+                    format!("Scanning {}/{}...", self.scan_done, self.scan_total)
                 } else {
-                    let at = (self.repair_done + 1).min(self.repair_total);
-                    format!("Repairing {}/{}...", at, self.repair_total)
+                    "Scanning...".to_string()
                 };
                 d.child(
                     div()
@@ -676,31 +688,106 @@ impl TagRepair {
                 busy,
                 cx.listener(|this, _, window, cx| this.scan(window, cx)),
             ))
-            .child(small_button(
-                if count > 0 {
-                    format!("Repair ({count})")
+            .into_any_element();
+        section("Repair", Some(controls), self.scope_row(cx))
+    }
+
+    /// The window's actions, and what the shortcut is doing or why it is
+    /// off, over what the last repair left behind.
+    fn footer(&self, cx: &mut Context<Self>) -> Div {
+        let busy = self.scanning || self.repairing;
+        let count = self.checked_count();
+        let hint = if self.repairing {
+            let at = (self.repair_done + 1).min(self.repair_total);
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_XS)
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(Spinner::new().with_size(Size::Small))
+                .child(format!("Repairing {at}/{}...", self.repair_total))
+                .into_any_element()
+        } else if !self.scanned || count == 0 {
+            div()
+                .text_xs()
+                .text_color(palette::tone_warn())
+                .child(if self.scanned {
+                    "Check a file to repair it"
                 } else {
-                    "Repair".to_string()
-                },
-                icons::CHECK,
-                busy || count == 0,
-                cx.listener(|this, _, window, cx| this.repair(window, cx)),
-            ));
+                    "Scan first"
+                })
+                .into_any_element()
+        } else {
+            kbd_line([
+                Seg::Text("Press".into()),
+                Seg::Key("Enter".into()),
+                Seg::Text("to repair".into()),
+            ])
+            .text_xs()
+            .into_any_element()
+        };
         div()
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
-            .pb(tokens::SPACE_XS)
-            .border_b_1()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_SM)
+            .border_t_1()
             .border_color(palette::border())
+            .bg(palette::bg_panel())
             .child(
                 div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child("Repair"),
+                    .flex()
+                    .flex_col()
+                    .min_w_0()
+                    .gap(tokens::SPACE_XS)
+                    .child(hint)
+                    .when_some(self.result.clone(), |d, result| {
+                        d.child(
+                            div()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(result),
+                        )
+                    })
+                    .when_some(self.error.clone(), |d, error| {
+                        d.child(
+                            div()
+                                .truncate()
+                                .text_xs()
+                                .text_color(palette::tone_bad())
+                                .child(error),
+                        )
+                    }),
             )
-            .child(controls)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_none()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(small_button(
+                        if count > 0 {
+                            format!("Repair ({count})")
+                        } else {
+                            "Repair".to_string()
+                        },
+                        icons::CHECK,
+                        busy || count == 0,
+                        cx.listener(|this, _, window, cx| this.repair(window, cx)),
+                    ))
+                    .child(small_button(
+                        "Cancel",
+                        icons::CLOSE,
+                        false,
+                        cx.listener(|_, _, window, _| window.remove_window()),
+                    )),
+            )
     }
 }
 
@@ -741,73 +828,40 @@ fn pill(
         .child(label.into())
 }
 
-/// A checkbox glyph: an accent-filled box with a check when set, a hollow
-/// bordered box when clear.
-fn checkbox(checked: bool) -> Div {
-    div()
-        .size(px(16.))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(tokens::RADIUS)
-        .border_1()
-        .map(|d| {
-            if checked {
-                d.bg(palette::accent()).border_color(palette::accent())
-            } else {
-                d.border_color(palette::border())
-            }
-        })
-        .when(checked, |d| {
-            d.child(
-                svg()
-                    .path(icons::CHECK)
-                    .size(px(11.))
-                    .text_color(palette::text_on_accent()),
-            )
-        })
-}
-
 impl Render for TagRepair {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The header, scope, and summary stay fixed; only the file list
-        // scrolls, and it virtualizes, so a scan of the whole library stays
+        // The scope and the footer stay fixed; only the file list scrolls,
+        // and it virtualizes, so a scan of the whole library stays
         // responsive no matter how many files it turns up.
         let page = div()
             .id("tag-repair-page")
-            .size_full()
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
-            .gap(tokens::SPACE_SM)
+            .gap(tokens::SPACE_MD)
             .p(tokens::SPACE_MD)
+            // The page's own surface, a second elevated layer over the
+            // window's, the same as the settings page. Two layers is what
+            // the backdrop reads through everywhere.
+            .bg(palette::bg_elevated())
             .child(self.header(cx))
-            .child(self.scope_row(cx))
-            .child(self.results(cx))
-            .when_some(self.result.clone(), |d, result| {
-                d.child(div().text_color(palette::text_muted()).child(result))
-            })
-            .when_some(self.error.clone(), |d, error| {
-                d.child(div().text_color(palette::text_muted()).child(error))
-            });
+            .child(self.results(cx));
 
         div()
             .size_full()
             .flex()
-            .flex_row()
+            .flex_col()
+            .key_context(CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &Repair, window, cx| this.repair(window, cx)))
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
             // The backdrop paints first, under the page, so translucent
             // surfaces sink into the playing track's art like every window.
             .children(self.backdrop.layer(&self.now_art, window, cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .bg(palette::bg_elevated())
-                    .child(page),
-            )
+            .child(page)
+            .child(self.footer(cx))
     }
 }

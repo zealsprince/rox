@@ -304,6 +304,7 @@ mod tests {
             bit_depth,
             rating: 0,
             replay_gain: Default::default(),
+            bpm: None,
             size: 0,
             mtime: 0,
         }

@@ -9,9 +9,17 @@
 //! carries one. Captures trim their edges and must be non-empty. The
 //! editor previews every track through [`Pattern::apply`] before
 //! anything is written, so a bad pattern costs nothing.
+//!
+//! The same pattern runs the other way through [`Pattern::render`]: tag
+//! values in, a relative path out, which is what file renaming and
+//! conversion output naming are built on. Rendering is stricter than
+//! matching because it produces names rather than reads them, so %skip%
+//! is an error and every capture is sanitized into something a
+//! filesystem will actually take.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use rox_core::settings::safe_file_stem;
 use rox_library::writer::Field;
 
 /// One piece of a pattern component: text that must appear verbatim, a
@@ -97,6 +105,43 @@ pub fn parse(pattern: &str) -> Result<Pattern, String> {
     Ok(Pattern { components })
 }
 
+/// What a field renders as when the track has nothing for it. A rendered
+/// segment can never be empty, otherwise a missing album would collapse
+/// a folder level and drop the file somewhere it doesn't belong. These
+/// double as [`safe_file_stem`]'s fallback, so a value of pure
+/// punctuation lands here too.
+fn fallback_for(field: &Field) -> &'static str {
+    match field {
+        Field::Artist | Field::AlbumArtist => "Unknown Artist",
+        Field::Album => "Unknown Album",
+        Field::Title => "Untitled",
+        Field::TrackNo | Field::DiscNo => "00",
+        Field::Year => "Unknown Year",
+        Field::Genre => "Unknown Genre",
+        // No other field has a placeholder, so this is unreachable from
+        // a parsed pattern. Kept total rather than panicking.
+        _ => "Unknown",
+    }
+}
+
+/// A track or disc number as two digits, so 3 sorts before 12 in every
+/// file browser there is. ID3's "3/12" total form keeps only the number.
+/// Anything that isn't a plain number (a "A1" vinyl side) is left alone.
+fn padded(value: &str) -> String {
+    let head = value.split('/').next().unwrap_or(value).trim();
+    match head.parse::<u32>() {
+        Ok(n) => format!("{n:02}"),
+        Err(_) => value.trim().to_owned(),
+    }
+}
+
+/// Clean up an assembled segment's edges: the literal text around a
+/// capture can leave a trailing space or dot that Windows silently eats
+/// and that hides the file everywhere else.
+fn trim_segment(segment: &str) -> &str {
+    segment.trim().trim_matches('.').trim()
+}
+
 /// Match `tokens` against `text` from the front, non-greedy, collecting
 /// captures into `out`. On failure `out` is left as it was.
 fn match_tokens(tokens: &[Token], text: &str, out: &mut Vec<(Field, String)>) -> bool {
@@ -173,6 +218,46 @@ impl Pattern {
         }
         deduped.reverse();
         Some(deduped)
+    }
+
+    /// Run the pattern forwards: `values` in, a relative path out, one
+    /// component per "/" in the pattern and the deepest one the file
+    /// name. Literals emit verbatim, captures emit the tag value through
+    /// [`safe_file_stem`] so a slash in an artist name can't open a
+    /// folder, and a missing or empty value emits the field's fallback
+    /// instead of nothing. %skip% is an error here: it exists to swallow
+    /// text while matching, and there is nothing to swallow while
+    /// emitting. The extension belongs to the source file, so the caller
+    /// appends it; the path that comes back has none.
+    pub fn render(&self, values: &[(Field, String)]) -> Result<PathBuf, String> {
+        let mut path = PathBuf::new();
+        for tokens in &self.components {
+            let mut segment = String::new();
+            for token in tokens {
+                match token {
+                    Token::Literal(lit) => segment.push_str(lit),
+                    Token::Skip => return Err("%skip% has nothing to render".into()),
+                    Token::Capture(field) => {
+                        let raw = values
+                            .iter()
+                            .find(|(f, _)| f == field)
+                            .map(|(_, v)| v.as_str())
+                            .unwrap_or_default();
+                        let value = match field {
+                            Field::TrackNo | Field::DiscNo => padded(raw),
+                            _ => raw.trim().to_owned(),
+                        };
+                        segment.push_str(&safe_file_stem(&value, fallback_for(field)));
+                    }
+                }
+            }
+            let trimmed = trim_segment(&segment);
+            if trimmed.is_empty() {
+                return Err("pattern renders an empty folder or file name".into());
+            }
+            path.push(trimmed);
+        }
+        Ok(path)
     }
 }
 
@@ -267,6 +352,141 @@ mod tests {
                 (Field::Title, "Song".into())
             ]
         );
+    }
+
+    fn render(pattern: &str, values: &[(Field, &str)]) -> Result<String, String> {
+        let values: Vec<(Field, String)> = values
+            .iter()
+            .map(|(f, v)| (f.clone(), (*v).to_owned()))
+            .collect();
+        parse(pattern)
+            .unwrap()
+            .render(&values)
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn render_round_trips_through_apply() {
+        let pattern = "%albumartist%/%album%/%track% - %title%";
+        let values = [
+            (Field::AlbumArtist, "Boards of Canada".to_owned()),
+            (Field::Album, "Geogaddi".to_owned()),
+            (Field::TrackNo, "4".to_owned()),
+            (Field::Title, "Julie and Candy".to_owned()),
+        ];
+        let rendered = parse(pattern).unwrap().render(&values).unwrap();
+        assert_eq!(
+            rendered,
+            PathBuf::from("Boards of Canada/Geogaddi/04 - Julie and Candy")
+        );
+        let full = PathBuf::from("/music")
+            .join(&rendered)
+            .with_extension("flac");
+        let mut back = parse(pattern).unwrap().apply(&full).unwrap();
+        back.sort_by_key(|(f, _)| format!("{f:?}"));
+        let mut want: Vec<(Field, String)> = values.to_vec();
+        want[2].1 = "04".to_owned();
+        want.sort_by_key(|(f, _)| format!("{f:?}"));
+        assert_eq!(back, want);
+    }
+
+    #[test]
+    fn numbers_pad_to_two_digits() {
+        assert_eq!(
+            render(
+                "%disc%-%track% %title%",
+                &[
+                    (Field::DiscNo, "2"),
+                    (Field::TrackNo, "7/12"),
+                    (Field::Title, "Outro"),
+                ]
+            )
+            .unwrap(),
+            "02-07 Outro"
+        );
+        // Past two digits the number keeps its own width, and a side
+        // marker that isn't a number is left as it was typed.
+        assert_eq!(
+            render(
+                "%track% %title%",
+                &[(Field::TrackNo, "123"), (Field::Title, "X")]
+            )
+            .unwrap(),
+            "123 X"
+        );
+        assert_eq!(
+            render(
+                "%track% %title%",
+                &[(Field::TrackNo, "A1"), (Field::Title, "X")]
+            )
+            .unwrap(),
+            "A1 X"
+        );
+    }
+
+    #[test]
+    fn captures_cannot_escape_their_segment() {
+        assert_eq!(
+            render(
+                "%artist%/%title%",
+                &[(Field::Artist, "AC/DC"), (Field::Title, "Who Made Who?"),]
+            )
+            .unwrap(),
+            "AC DC/Who Made Who"
+        );
+        assert_eq!(
+            render(
+                "%artist% - %title%",
+                &[(Field::Artist, "../etc"), (Field::Title, "x:y|z"),]
+            )
+            .unwrap(),
+            "etc - x y z"
+        );
+    }
+
+    #[test]
+    fn empty_values_fall_back_instead_of_vanishing() {
+        assert_eq!(
+            render(
+                "%albumartist%/%album%/%track% %title%",
+                &[(Field::Title, "Song")]
+            )
+            .unwrap(),
+            "Unknown Artist/Unknown Album/00 Song"
+        );
+        // A value that sanitizes down to nothing takes the same road.
+        assert_eq!(
+            render(
+                "%artist% - %title%",
+                &[(Field::Artist, "///"), (Field::Title, "Song")]
+            )
+            .unwrap(),
+            "Unknown Artist - Song"
+        );
+    }
+
+    #[test]
+    fn segments_never_end_in_space_or_dot() {
+        assert_eq!(
+            render(
+                "%artist% - /%title%.",
+                &[(Field::Artist, "Name"), (Field::Title, "Song")]
+            )
+            .unwrap(),
+            "Name -/Song"
+        );
+    }
+
+    #[test]
+    fn render_rejects_skip_and_empty_segments() {
+        assert!(parse("%skip% - %title%")
+            .unwrap()
+            .render(&[(Field::Title, "Song".into())])
+            .is_err());
+        assert!(parse("%artist%//%title%")
+            .unwrap()
+            .render(&[(Field::Artist, "A".into()), (Field::Title, "B".into())])
+            .is_err());
     }
 
     #[test]

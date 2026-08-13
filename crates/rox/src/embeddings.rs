@@ -13,7 +13,6 @@
 
 pub mod models;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{App, Entity, Global};
@@ -65,16 +64,29 @@ pub fn stop(cx: &mut App) {
 /// a caller that could hand in a different one would be able to fill the
 /// table under a name nothing reads.
 ///
-/// The database path comes in rather than the library entity, so the pass
-/// carries nothing it would have to read back.
-pub fn start(db_path: PathBuf, cx: &mut App) {
+/// The library entity comes in rather than its database path, which it used
+/// to and which was the lighter thing to carry. In tags mode the pass writes
+/// audio files, and rox watches the folders those files are in, so every
+/// write comes straight back through the watcher as a change to reindex
+/// unless the library is told the writes were its own. That's
+/// [`Library::reindex_written`], and reaching it needs the entity. Database
+/// mode hands back an empty list and only the readouts refresh.
+///
+/// Safe to call from inside the library's own update, which the watch sync
+/// does: the entity isn't read until the spawned task, by which time the
+/// lease is gone. Reading a leased entity panics, so the `db_path` read
+/// deliberately happens down there rather than up here.
+pub fn start(library: Entity<Library>, cx: &mut App) {
     let settings = Settings::load();
     if progress(cx).is_some() || !settings.acoustic_analysis {
         return;
     }
     // Read once here rather than inside the pass: a pass keeps the worker
     // count it started with, and the next one picks up a changed setting.
+    // Where the vectors land is read the same way, so a mid-pass flip can't
+    // leave one album's tracks split between two destinations.
     let workers = settings.acoustic_workers.max(1);
+    let save = settings.acoustic_save;
     let source = rox_services::acoustic::acoustic_source();
     let progress = Arc::new(Progress::new(source.id()));
     cx.set_global(Running(Some(progress.clone())));
@@ -94,11 +106,17 @@ pub fn start(db_path: PathBuf, cx: &mut App) {
     .detach();
     cx.spawn(async move |cx| {
         let name = source.id().to_string();
+        // The library says where its database is, and asking here rather
+        // than up top is what keeps a caller inside its update safe. The
+        // read only fails with the app already on its way out.
+        let Ok(db_path) = cx.update(|cx| library.read(cx).db_path()) else {
+            return;
+        };
         let result = cx
             .background_executor()
             .spawn({
                 let progress = progress.clone();
-                async move { rox_acoustic::run(&source, &db_path, workers, &progress) }
+                async move { rox_acoustic::run(&source, &db_path, workers, save, &progress) }
             })
             .await;
         cx.update(|cx| {
@@ -117,13 +135,22 @@ pub fn start(db_path: PathBuf, cx: &mut App) {
                 }
             }
             match result {
-                Ok(written) => {
+                Ok(analyzed) => {
                     // The surfaces that offer ordering by sound are gated on
                     // there being vectors, and this is the moment there are.
-                    if written > 0 {
+                    if analyzed.described > 0 {
                         rox_core::settings::set_acoustic_described(true, cx);
                     }
-                    log::info!("acoustic: {written} tracks analyzed with {name}");
+                    log::info!(
+                        "acoustic: {} tracks analyzed with {name}, {} tagged",
+                        analyzed.described,
+                        analyzed.tagged.len()
+                    );
+                    // The files this pass rewrote, claimed as the app's own
+                    // before the watcher brings them back as changes.
+                    library.update(cx, |library, cx| {
+                        library.reindex_written(analyzed.tagged, cx)
+                    });
                 }
                 Err(e) => {
                     log::error!("acoustic: {e}");
@@ -147,8 +174,7 @@ pub fn start(db_path: PathBuf, cx: &mut App) {
 pub fn follow(library: &Entity<Library>, cx: &mut App) {
     App::subscribe(cx, library, |library, event, cx| {
         if matches!(event, LibraryJob::WatchSettled) {
-            let db_path = library.read(cx).db_path();
-            start(db_path, cx);
+            start(library, cx);
         }
     })
     .detach();

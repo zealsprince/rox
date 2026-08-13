@@ -27,11 +27,13 @@ use rox_services::player::Player;
 use super::{AppState, PanelChrome};
 
 mod chain;
+mod cursor;
 
 pub use chain::{
     fallback_cover, parse_chain, register_program, resolve_assets, uses_cover, AssetImage,
     AssetRef, ChainSpec, PassSpec, ProgramCtx, COVER_SOURCE,
 };
+pub use cursor::{cursor_presence, reads_cursor, watch_cursor, CURSOR_FADE, CURSOR_HOLD};
 
 /// How many signal slots a shader sees, the uniform block's width.
 pub const SLOTS: usize = 16;
@@ -161,7 +163,9 @@ pub struct PanelShader {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub manual: Vec<(u8, f32)>,
     /// Keep asking for frames with the hub silent. Off, a shader over a
-    /// paused player freezes where it stands and the panel costs nothing.
+    /// paused player freezes where it stands and the panel costs nothing,
+    /// bar the frames a cursor reader asks for itself while the pointer is
+    /// still worth something (see [`cursor_presence`]).
     pub run_when_idle: bool,
 }
 
@@ -1319,6 +1323,14 @@ impl PanelSurface {
         };
         let (signals, live) = self.signals(window, cx);
         let meta = meta_slots(window, cx);
+        // A shader that reads the pointer keeps its own frames coming
+        // while the pointer counts for anything, so the fade at the end of
+        // it plays out on a panel that would otherwise be parked, and the
+        // watch brings the panel back when the hand does.
+        let cursor = reads_cursor(&source);
+        if cursor {
+            watch_cursor(window);
+        }
         let bounds = body_rect(bounds, self.inset);
         // Caps decide the path: a program that reads the screen under it,
         // its own last frame, an image, or runs more than one pass needs the
@@ -1339,7 +1351,7 @@ impl PanelSurface {
         // notifies exactly this view, which is the cheap wake - a window
         // `refresh` would rebuild every view in the window uncached and
         // stall the whole frame loop.
-        if live || self.run_when_idle {
+        if live || self.run_when_idle || (cursor && meta[6] > 0.0) {
             window.request_animation_frame();
         }
     }
@@ -1418,6 +1430,7 @@ impl PanelSurface {
             entry.good = Some((key, shader));
         }
         if live.len() > 32 {
+            cursor::sweep_cursor();
             let now = Instant::now();
             live.retain(|_, entry| now.duration_since(entry.touched) < LIVE_TTL);
         }
@@ -1471,12 +1484,17 @@ fn window_feed(window: &Window, cx: &App) -> Option<(Arc<SignalHub>, gpui::Entit
 
 /// The eight `meta` floats every rox shader can count on, the convention
 /// the Shader panel shares: volume, where the track sits, whether audio is
-/// moving, how long the track runs, how dark the theme renders, and which
-/// theme the user actually picked. The last two are reserved and read
-/// zero, so a shader written against them today keeps working when they
-/// fill in.
+/// moving, how long the track runs, how dark the theme renders, which
+/// theme the user actually picked, and how much the cursor still counts
+/// for. The last one is reserved and reads zero, so a shader written
+/// against it today keeps working when it fills in.
 pub fn meta_slots(window: &Window, cx: &App) -> [f32; 8] {
     let mut meta = [0.0f32; 8];
+    // Cursor presence, 1 with a hand on the mouse and 0 once it's been
+    // still or off the window long enough. Set beside the theme rather
+    // than below the feed check: the pointer is the window's, not the
+    // player's, and a window with no player registered still has one.
+    meta[6] = cursor_presence(window);
     // The active palette's root background as luma, 0 pitch black to 1
     // paper white, so one shader can tune itself to both themes instead of
     // shipping for the one it was written against. Set before the feed

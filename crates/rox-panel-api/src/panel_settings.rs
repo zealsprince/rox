@@ -13,9 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, size, AnyElement, App, Bounds, Context, Div, Entity, EntityId,
-    Focusable as _, Global, Hsla, MouseDownEvent, PathPromptOptions, ScrollHandle, SharedString,
-    Subscription, WeakEntity, Window, WindowHandle,
+    actions, div, prelude::*, px, size, AnyElement, App, Bounds, Context, Div, Entity, EntityId,
+    Focusable as _, Global, Hsla, KeyBinding, MouseDownEvent, PathPromptOptions, ScrollHandle,
+    SharedString, Subscription, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
@@ -41,6 +41,24 @@ use rox_panel_kit::ui::{
     SECTION_GAP,
 };
 use rox_viz::signal::Route;
+
+actions!(panel_settings, [Rename, SavePreset]);
+
+/// The key contexts the rename and save-as-preset windows scope their
+/// own bindings to.
+const RENAME_CONTEXT: &str = "PanelRename";
+const PRESET_CONTEXT: &str = "PanelSavePreset";
+
+/// The two dialogs' enter bindings; call once at startup. They sit on
+/// each window's root rather than its field, so enter commits wherever
+/// focus is - a single-line input sees the key first and propagates it
+/// up.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("enter", Rename, Some(RENAME_CONTEXT)),
+        KeyBinding::new("enter", SavePreset, Some(PRESET_CONTEXT)),
+    ]);
+}
 
 /// The open panel settings windows, keyed by the panel they edit:
 /// opening a panel's settings again focuses its window instead of
@@ -692,7 +710,7 @@ fn open_rename<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
         "rox - rename {}",
         panel::display_name(panel.read(cx).panel_name())
     ));
-    let bounds = Bounds::centered(None, size(px(380.), px(112.)), cx);
+    let bounds = Bounds::centered(None, size(px(380.), px(195.)), cx);
     let state = panel.read(cx).state();
     let handle = crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
         cx.new(|cx| RenameWindow::new(panel, state, window, cx))
@@ -734,7 +752,7 @@ impl<P: PanelSettings> RenameWindow<P> {
         let _input_events = cx.subscribe_in(
             &input,
             window,
-            |this, input, event: &InputEvent, window, cx| match event {
+            |this, input, event: &InputEvent, _, cx| match event {
                 InputEvent::Change => {
                     let value = input.read(cx).value().trim().to_string();
                     let title = (!value.is_empty()).then_some(value);
@@ -742,7 +760,6 @@ impl<P: PanelSettings> RenameWindow<P> {
                         panel.update(cx, |panel, cx| panel.set_custom_title(title, cx));
                     }
                 }
-                InputEvent::PressEnter { .. } => window.remove_window(),
                 _ => {}
             },
         );
@@ -757,6 +774,49 @@ impl<P: PanelSettings> RenameWindow<P> {
             _backdrop_changed,
         }
     }
+
+    /// The window's own actions: the name already landed on the panel as
+    /// it was typed, so committing is closing.
+    fn footer(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_SM)
+            .border_t_1()
+            .border_color(palette::border())
+            .bg(palette::bg_panel())
+            .child(
+                kbd_line([
+                    Seg::Text("Press".into()),
+                    Seg::Key("Enter".into()),
+                    Seg::Text("to rename".into()),
+                ])
+                .text_xs(),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(small_button(
+                        "Rename",
+                        icons::CHECK,
+                        false,
+                        cx.listener(|_, _, window, _| window.remove_window()),
+                    ))
+                    .child(small_button(
+                        "Cancel",
+                        icons::CLOSE,
+                        false,
+                        cx.listener(|_, _, window, _| window.remove_window()),
+                    )),
+            )
+    }
 }
 
 impl<P: PanelSettings> Render for RenameWindow<P> {
@@ -765,21 +825,37 @@ impl<P: PanelSettings> Render for RenameWindow<P> {
             .size_full()
             .flex()
             .flex_col()
-            .gap(tokens::SPACE_XS)
-            .p(tokens::SPACE_MD)
+            .key_context(RENAME_CONTEXT)
+            .on_action(cx.listener(|_, _: &Rename, window, _| window.remove_window()))
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
             // The backdrop paints first, under the input, like every
             // other window over the shared state.
             .children(self.backdrop.layer(&self.state.now_art, window, cx))
-            .child(Input::new(&self.input).w_full())
             .child(
                 div()
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child("Shown as the panel's tab; empty goes back to the built-in name"),
+                    .flex_1()
+                    .min_h_0()
+                    // The page's own surface over the root's, the same second
+                    // pass the settings page takes: the backdrop reads through
+                    // only as the surfaces thin.
+                    .bg(palette::bg_elevated())
+                    .p(tokens::SPACE_MD)
+                    .child(section(
+                        "Name",
+                        None,
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_XS)
+                            .child(Input::new(&self.input).w_full())
+                            .child(div().text_xs().text_color(palette::text_muted()).child(
+                                "Shown as the panel's tab; empty goes back to the built-in name",
+                            )),
+                    )),
             )
+            .child(self.footer(cx))
     }
 }
 
@@ -811,7 +887,7 @@ fn open_save_preset<P: PanelSettings>(panel: Entity<P>, cx: &mut App) {
         "rox - save {} as preset",
         panel::display_name(panel.read(cx).panel_name())
     ));
-    let bounds = Bounds::centered(None, size(px(420.), px(195.)), cx);
+    let bounds = Bounds::centered(None, size(px(420.), px(230.)), cx);
     let state = panel.read(cx).state();
     let handle = crate::panel::open_child_window(cx, title, bounds, None, move |window, cx| {
         cx.new(|cx| SavePresetWindow::new(panel, state, window, cx))
@@ -863,17 +939,17 @@ impl<P: PanelSettings> SavePresetWindow<P> {
                 .placeholder(fallback.clone())
                 .default_value(current)
         });
-        let _input_events = cx.subscribe_in(
-            &input,
-            window,
-            |this, _, event: &InputEvent, window, cx| match event {
-                // The note under the field says whether this name replaces a
-                // preset, so it has to re-read on every keystroke.
-                InputEvent::Change => cx.notify(),
-                InputEvent::PressEnter { .. } => this.commit(window, cx),
-                _ => {}
-            },
-        );
+        let _input_events =
+            cx.subscribe_in(
+                &input,
+                window,
+                |_, _, event: &InputEvent, _, cx| match event {
+                    // The footer says whether this name replaces a preset, so
+                    // it has to re-read on every keystroke.
+                    InputEvent::Change => cx.notify(),
+                    _ => {}
+                },
+            );
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
         window.focus(&input.read(cx).focus_handle(cx));
         let taken = settings::panel_presets::all(&settings::Settings::load())
@@ -916,65 +992,117 @@ impl<P: PanelSettings> SavePresetWindow<P> {
         }
         window.remove_window();
     }
+
+    /// The window's own actions: the save, and either the shortcut for it
+    /// or the warning that this name lands on a preset that already
+    /// exists.
+    fn footer(&self, replaces: bool, name: &str, cx: &mut Context<Self>) -> Div {
+        let hint = if replaces {
+            div()
+                .text_xs()
+                .text_color(palette::tone_warn())
+                .child(format!(
+                    "Replaces the preset this workspace already calls {name}"
+                ))
+                .into_any_element()
+        } else {
+            kbd_line([
+                Seg::Text("Press".into()),
+                Seg::Key("Enter".into()),
+                Seg::Text("to save".into()),
+            ])
+            .text_xs()
+            .into_any_element()
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_SM)
+            .border_t_1()
+            .border_color(palette::border())
+            .bg(palette::bg_panel())
+            .child(hint)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(small_button(
+                        if replaces { "Replace" } else { "Save Preset" },
+                        icons::DOWNLOAD,
+                        false,
+                        cx.listener(|this, _, window, cx| this.commit(window, cx)),
+                    ))
+                    .child(small_button(
+                        "Cancel",
+                        icons::CLOSE,
+                        false,
+                        cx.listener(|_, _, window, _| window.remove_window()),
+                    )),
+            )
+    }
 }
 
 impl<P: PanelSettings> Render for SavePresetWindow<P> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.name(cx);
         let replaces = self.taken.iter().any(|taken| taken == &name);
-        let note: SharedString = if replaces {
-            format!("Replaces the preset this workspace already calls {name}").into()
-        } else {
-            format!("Saves this panel and its settings as {name}").into()
-        };
         div()
             .size_full()
             .flex()
             .flex_col()
-            .gap(tokens::SPACE_XS)
-            .p(tokens::SPACE_MD)
+            .key_context(PRESET_CONTEXT)
+            .on_action(cx.listener(|this, _: &SavePreset, window, cx| this.commit(window, cx)))
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
             // The backdrop paints first, under the input, like every
             // other window over the shared state.
             .children(self.backdrop.layer(&self.state.now_art, window, cx))
-            .child(Input::new(&self.input).w_full())
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap(tokens::SPACE_XS)
-                    .text_xs()
-                    .text_color(palette::text_muted())
-                    .child(note)
-                    // The menu path it comes back through, in keycaps so the
-                    // two labels read as things to click rather than prose.
-                    .child(kbd_line([
-                        Seg::Text("Add it back from".into()),
-                        Seg::Key("Add Panel".into()),
-                        Seg::Text("then".into()),
-                        Seg::Key("Presets".into()),
-                        Seg::Text(
-                            "in any panel menu. Presets ride this workspace only, so another \
-                             workspace won't carry it."
-                                .into(),
-                        ),
-                    ])),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_end()
-                    .pt(tokens::SPACE_XS)
-                    .child(small_button(
-                        if replaces { "Replace" } else { "Save Preset" },
-                        icons::DOWNLOAD,
-                        false,
-                        cx.listener(|this, _, window, cx| this.commit(window, cx)),
+                    .flex_1()
+                    .min_h_0()
+                    // The page's own surface over the root's, the same second
+                    // pass the settings page takes: the backdrop reads through
+                    // only as the surfaces thin.
+                    .bg(palette::bg_elevated())
+                    .p(tokens::SPACE_MD)
+                    .child(section(
+                        "Preset Name",
+                        None,
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_XS)
+                            .child(Input::new(&self.input).w_full())
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette::text_muted())
+                                    // The menu path it comes back through, in
+                                    // keycaps so the two labels read as things
+                                    // to click rather than prose.
+                                    .child(kbd_line([
+                                        Seg::Text("Add it back from".into()),
+                                        Seg::Key("Add Panel".into()),
+                                        Seg::Text("then".into()),
+                                        Seg::Key("Presets".into()),
+                                        Seg::Text(
+                                            "in any panel menu. Presets ride this workspace only, \
+                                             so another workspace won't carry it."
+                                                .into(),
+                                        ),
+                                    ])),
+                            ),
                     )),
             )
+            .child(self.footer(replaces, &name, cx))
     }
 }
 

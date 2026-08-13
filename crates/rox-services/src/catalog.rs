@@ -296,6 +296,12 @@ pub struct Library {
     /// writes do not bounce back as a redundant reindex of a file it just
     /// touched.
     self_writes: HashMap<PathBuf, std::time::Instant>,
+    /// Renames the app itself just made, with when it made them. The same
+    /// idea as `self_writes` for the pairs, which travel apart from the
+    /// plain paths and so need their own filter: rox moved the file and
+    /// moved the row in the same breath, so the watcher's echo of that
+    /// move has nothing left to do.
+    self_renames: HashMap<(PathBuf, PathBuf), std::time::Instant>,
 }
 
 impl EventEmitter<LibraryEvent> for Library {}
@@ -373,6 +379,7 @@ impl Library {
             pending: HashSet::new(),
             pending_renames: Vec::new(),
             self_writes: HashMap::new(),
+            self_renames: HashMap::new(),
         };
         // Watching only sees changes made while the app runs, so edits made
         // while it was closed still need one catch-up pass. When watch is on
@@ -575,6 +582,17 @@ impl Library {
             .unwrap_or_default()
     }
 
+    /// What the library knows about tempo, split into what the files
+    /// carried and what rox estimated. The Library page states this beside
+    /// the tempo switch, and the missing count is the tempo pass's work
+    /// list.
+    pub fn bpm_breakdown(&self) -> store::BpmCoverage {
+        self.conn
+            .as_ref()
+            .and_then(|conn| store::bpm_breakdown(conn).ok())
+            .unwrap_or_default()
+    }
+
     /// Whether the acoustic pass has described anything under `model` yet.
     /// What the modes that rank by sound are offered on: the switch being on
     /// only means the vectors are allowed to exist, and until a pass has run
@@ -594,6 +612,78 @@ impl Library {
             .as_ref()
             .and_then(|conn| embeddings::coverage(conn, model).ok())
             .unwrap_or_default()
+    }
+
+    /// Where the database's bytes went, for the storage page. On the
+    /// UI-side connection like the rest of the readouts: the page walk
+    /// behind it is a tenth of a second on a big library, which is a beat
+    /// on a page somebody just opened rather than a stall worth a
+    /// background hop.
+    pub fn storage_breakdown(&self) -> store::Storage {
+        self.conn
+            .as_ref()
+            .and_then(|conn| store::storage_breakdown(conn).ok())
+            .unwrap_or_default()
+    }
+
+    /// Every acoustic model with vectors in the library, whatever this
+    /// build's own model is. A renamed extractor leaves its old rows
+    /// behind, and the storage page is where they can be seen and cleared.
+    pub fn embedding_models(&self) -> Vec<embeddings::ModelRows> {
+        self.conn
+            .as_ref()
+            .and_then(|conn| embeddings::models(conn).ok())
+            .unwrap_or_default()
+    }
+
+    /// Drop one model's vectors and give the pages back to the filesystem.
+    ///
+    /// Its own connection on the background executor, the idiom the scans
+    /// and the measurement pass use: the delete is quick, and the VACUUM
+    /// behind it rewrites the whole file, which on a described library is
+    /// hundreds of megabytes and nothing a UI thread can sit on. Gated on
+    /// `busy` and holding the badge while it runs, the way a rescan is, so
+    /// a scan and a whole-file rewrite never land on the database together.
+    ///
+    /// What it can't gate is the analysis pass, which opens the library by
+    /// path on its own and would write vectors straight back in behind the
+    /// delete. Whoever offers the button is what knows a pass is running,
+    /// so refusing it there is the caller's job.
+    ///
+    /// Nothing the projection holds moves, so there's no reload to pay for:
+    /// [`Library::acoustic_coverage`] and [`Library::analyzed`] re-read the
+    /// table on the next repaint, and the mirror the ranking modes are gated
+    /// on is restamped here once the clear lands.
+    pub fn clear_embeddings(&mut self, model: &str, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        self.busy = Some("clearing vectors...".into());
+        let db_path = self.db_path.clone();
+        let model = model.to_owned();
+        cx.spawn(async move |this, cx| {
+            let dropped = cx
+                .background_executor()
+                .spawn(async move {
+                    let conn = store::open(&db_path)?;
+                    embeddings::clear(&conn, &model)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.busy = None;
+                this.status = match dropped {
+                    Ok(n) => format!("cleared {n} vectors").into(),
+                    Err(e) => format!("library: {e}").into(),
+                };
+                let described = this.analyzed(crate::acoustic::acoustic_source().id());
+                rox_core::settings::set_acoustic_described(described, cx);
+                cx.emit(LibraryEvent::Updated);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     /// The library database, for a background pass that opens its own
@@ -700,6 +790,32 @@ impl Library {
         }
     }
 
+    /// Note moves the app is about to make itself, so the watch batch that
+    /// echoes them lands on nothing. Called from the rename dialog before
+    /// each file moves, since [`Library::rename_files`] moves the row right
+    /// after and the echo would only re-do it.
+    ///
+    /// The echo is harmless either way (a second `rename_within` finds no
+    /// rows at the old path and returns 0), which is why
+    /// [`Library::remove_files`] deliberately doesn't suppress its
+    /// deletions. Renames get the opposite call because they arrive in
+    /// bulk: a pattern applied to an album is hundreds of pairs, and each
+    /// one that comes back queues a refresh cycle that reloads the whole
+    /// projection for no change. Both endpoints go into `self_writes` too,
+    /// since a move surfaces as a create and a delete alongside the pair
+    /// when the watcher can't correlate it.
+    pub fn note_self_rename<I>(&mut self, moves: I)
+    where
+        I: IntoIterator<Item = (PathBuf, PathBuf)>,
+    {
+        let now = std::time::Instant::now();
+        for (from, to) in moves {
+            self.self_writes.insert(from.clone(), now);
+            self.self_writes.insert(to.clone(), now);
+            self.self_renames.insert((from, to), now);
+        }
+    }
+
     /// Turn filesystem watching on or off and remember the choice. On arms a
     /// watcher over the current roots and starts folding live changes in; off
     /// drops it and any pending work, so updates stop until it is turned back
@@ -796,13 +912,23 @@ impl Library {
         let window = std::time::Duration::from_secs(5);
         self.self_writes
             .retain(|_, at| now.duration_since(*at) < window);
+        self.self_renames
+            .retain(|_, at| now.duration_since(*at) < window);
         self.pending.extend(
             batch
                 .paths
                 .into_iter()
                 .filter(|p| !self.self_writes.contains_key(p)),
         );
-        self.pending_renames.extend(batch.renames);
+        // The app's own moves drop out on the same window: rox already moved
+        // the row when it moved the file, so the echo would cost a full
+        // refresh cycle to change nothing.
+        self.pending_renames
+            .extend(batch.renames.into_iter().filter(|pair| {
+                !self
+                    .self_renames
+                    .contains_key(&(pair.0.clone(), pair.1.clone()))
+            }));
         self.pump_watch(cx);
     }
 
@@ -1018,8 +1144,13 @@ impl Library {
     }
 
     /// One playlist's playable track ids in order, what the panel hands the
-    /// player to start the whole list.
+    /// player to start the whole list. A smart playlist materializes here,
+    /// so play, export, and continuation all take the same route whichever
+    /// kind they were pointed at.
     pub fn playlist_ids(&self, id: i64) -> Vec<i64> {
+        if let Some(def) = self.playlist_definition(id) {
+            return self.smart_ids(&def);
+        }
         self.conn
             .as_ref()
             .and_then(|conn| playlists::ids(conn, id).ok())
@@ -1039,9 +1170,15 @@ impl Library {
             return Vec::new();
         };
         let Some(projection) = &self.projection else {
+            // A smart playlist is nothing but a query over the projection,
+            // so with none loaded there is nothing to write out; the
+            // store's own member rows still carry a static one.
             return playlists::export_rows(conn, id).unwrap_or_default();
         };
-        let ids = playlists::ids(conn, id).unwrap_or_default();
+        // An export of a smart playlist writes what it holds right now,
+        // the same materialization the panel is showing. The definition
+        // itself doesn't travel; an M3U has nowhere to put it.
+        let ids = self.playlist_ids(id);
         ids.iter()
             .filter_map(|&track_id| {
                 let &row = self.row_by_id.get(&track_id)?;
@@ -1060,6 +1197,85 @@ impl Library {
                     artist: view.artist.to_string(),
                     // Nearest second, the resolution #EXTINF wants.
                     duration_secs: (view.duration_ms as i64 + 500) / 1000,
+                })
+            })
+            .collect()
+    }
+
+    /// One playlist's saved query, None for a static playlist.
+    pub fn playlist_definition(&self, id: i64) -> Option<playlists::SmartDef> {
+        self.conn
+            .as_ref()
+            .and_then(|conn| playlists::definition(conn, id).ok())
+            .flatten()
+    }
+
+    /// Evaluate a smart playlist against the loaded projection: the track
+    /// ids its query, filter, and sort name, capped by its limit. Nothing
+    /// to evaluate against before the first projection lands, so that
+    /// reads as an empty list.
+    pub fn smart_ids(&self, def: &playlists::SmartDef) -> Vec<i64> {
+        match &self.projection {
+            Some(projection) => def.ids(projection, self.order.clone()),
+            None => Vec::new(),
+        }
+    }
+
+    /// A smart definition's projection rows, [`Library::smart_ids`] one
+    /// step earlier. The editor's preview reads these: it resolves the
+    /// handful of rows on screen straight off the projection, so a query
+    /// that takes the whole library costs one pass and nothing per row.
+    pub fn smart_rows(&self, def: &playlists::SmartDef) -> Vec<u32> {
+        match &self.projection {
+            Some(projection) => def.rows(projection, self.order.clone()),
+            None => Vec::new(),
+        }
+    }
+
+    /// A smart playlist's tracks as the display rows the panel draws,
+    /// resolved off the projection rather than member rows. Only the path
+    /// comes from the store, for the cover cell.
+    pub fn smart_tracks(&self, def: &playlists::SmartDef) -> Vec<playlists::PlaylistTrack> {
+        let Some(projection) = &self.projection else {
+            return Vec::new();
+        };
+        let ids = self.smart_ids(def);
+        // One read for the whole list rather than one per row: a smart
+        // playlist can be the size of the library, and this runs on every
+        // panel refresh.
+        let paths = self
+            .conn
+            .as_ref()
+            .and_then(|conn| store::paths_by_id(conn, &ids).ok())
+            .unwrap_or_default();
+        ids.iter()
+            .filter_map(|&track_id| {
+                let &row = self.row_by_id.get(&track_id)?;
+                if projection.db_id.get(row as usize) != Some(&track_id) {
+                    return None;
+                }
+                let view = projection.resolve(row);
+                let path = paths.get(&track_id).cloned().unwrap_or_default();
+                Some(playlists::PlaylistTrack {
+                    // A smart playlist has no member rows, so there is no
+                    // rowid to address one by. The panel keys its own
+                    // selection off the pair instead; nothing that edits
+                    // members ever reaches these rows.
+                    member_id: 0,
+                    track_id,
+                    title: view.title.to_string(),
+                    artist: view.artist.to_string(),
+                    album: view.album.to_string(),
+                    album_artist: view.album_artist.to_string(),
+                    year: view.year,
+                    genre: view.genre.to_string(),
+                    duration_ms: view.duration_ms,
+                    codec: view.codec.to_string(),
+                    bitrate_kbps: view.bitrate_kbps,
+                    sample_rate_hz: view.sample_rate_hz,
+                    bit_depth: view.bit_depth,
+                    rating: view.rating,
+                    path,
                 })
             })
             .collect()
@@ -1109,6 +1325,33 @@ impl Library {
         let id = playlists::create(conn, name, now_secs()).ok()?;
         cx.emit(LibraryEvent::PlaylistsChanged);
         Some(id)
+    }
+
+    /// Create a smart playlist around a saved query and return its id.
+    pub fn create_smart_playlist(
+        &mut self,
+        name: &str,
+        def: &playlists::SmartDef,
+        cx: &mut Context<Self>,
+    ) -> Option<i64> {
+        let conn = self.conn.as_ref()?;
+        let id = playlists::create_smart(conn, name, def, now_secs()).ok()?;
+        cx.emit(LibraryEvent::PlaylistsChanged);
+        Some(id)
+    }
+
+    /// Rewrite a smart playlist's query. The panel materializes again on the
+    /// event, so the tree shows the new result without a reload.
+    pub fn set_playlist_definition(
+        &mut self,
+        id: i64,
+        def: &playlists::SmartDef,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(conn) = &self.conn else { return };
+        if playlists::set_definition(conn, id, def, now_secs()).is_ok() {
+            cx.emit(LibraryEvent::PlaylistsChanged);
+        }
     }
 
     /// Rename a playlist.
@@ -1260,6 +1503,44 @@ impl Library {
             return;
         }
         self.reload(Refresh::Prune(paths), cx);
+    }
+
+    /// Move rows to follow files the rename dialog just moved on disk. The
+    /// ids stay put through [`store::rename_within`], so the `added` stamp,
+    /// the rating, and the playlist and listen joins ride along instead of
+    /// dying with the old path; a moved folder comes as its own pair and
+    /// takes its subtree with it.
+    ///
+    /// The two reattach passes follow because a path snapshot goes stale on
+    /// a move: a member or a listen event keeps pointing at a live row, but
+    /// the path it remembers for the day that row gets pruned would send it
+    /// to a file that isn't there any more. The watch path never runs them,
+    /// which is a gap this feature doesn't want to inherit. Then a reindex
+    /// over the new paths reconciles mtime and size from disk.
+    pub fn rename_files(&mut self, moves: Vec<(PathBuf, PathBuf)>, cx: &mut Context<Self>) {
+        if moves.is_empty() {
+            return;
+        }
+        let mut failure = None;
+        if let Some(conn) = self.conn.as_mut() {
+            for (from, to) in &moves {
+                if let Err(e) = store::rename_within(conn, from, to) {
+                    failure = Some(format!("library: {e}"));
+                    break;
+                }
+            }
+            if failure.is_none() {
+                if let Err(e) = playlists::reattach(conn).and_then(|_| listens::reattach(conn)) {
+                    failure = Some(format!("library: {e}"));
+                }
+            }
+        }
+        if let Some(e) = failure {
+            self.status = e.into();
+            cx.notify();
+        }
+        let paths: Vec<PathBuf> = moves.into_iter().map(|(_, to)| to).collect();
+        self.reload(Refresh::Reindex(paths), cx);
     }
 
     /// A rating click into the catalog: onto the track's database row, and
@@ -2026,6 +2307,7 @@ mod tests {
             bit_depth: 0,
             rating: 0,
             replay_gain: Default::default(),
+            bpm: None,
             size: 0,
             mtime: 0,
         }

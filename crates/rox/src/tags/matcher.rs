@@ -40,12 +40,15 @@ use rox_services::player::fmt_time;
 enum Sink {
     /// The metadata panel's lookup: commit straight to the track.
     Commit,
-    /// The tag editor's lookup: fill its form, the editor saves. The
-    /// window handle is the editor's own, needed to set its inputs from
-    /// this window; both weak, so a closed editor drops the fill.
+    /// The tag editor's lookup: fill it, the editor saves. The window
+    /// handle is the editor's own, needed to set its inputs from this
+    /// window; both weak, so a closed editor drops the fill. `track`
+    /// names which of its tracks this ran on, so a fill from one of the
+    /// table's rows lands in that row rather than over the batch.
     Fill {
         editor: WeakEntity<TagEditor>,
         window: AnyWindowHandle,
+        track: usize,
     },
 }
 
@@ -100,13 +103,15 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, key: Track
     open_with(library, now_art, key, Sink::Commit, cx);
 }
 
-/// Open a metadata compare that fills a tag editor's form on apply rather
-/// than writing, so the editor stays the one writer. The editor and its
-/// window are what the fill sets; both weak, so a closed editor no-ops.
+/// Open a metadata compare that fills a tag editor on apply rather than
+/// writing, so the editor stays the one writer. The editor and its window
+/// are what the fill sets; both weak, so a closed editor no-ops. `track`
+/// is the editor's index for the track this ran on.
 pub fn open_fill(
     library: Entity<Library>,
     now_art: Entity<NowPlayingArt>,
     key: TrackKey,
+    track: usize,
     editor: WeakEntity<TagEditor>,
     editor_window: AnyWindowHandle,
     cx: &mut App,
@@ -114,6 +119,7 @@ pub fn open_fill(
     let sink = Sink::Fill {
         editor,
         window: editor_window,
+        track,
     };
     open_with(library, now_art, key, sink, cx);
 }
@@ -401,12 +407,16 @@ impl TagMatch {
             Sink::Fill {
                 editor,
                 window: editor_window,
+                track,
             } => {
                 let editor = editor.clone();
+                let track = *track;
                 editor_window
                     .update(cx, |_, editor_win, cx| {
                         editor
-                            .update(cx, |editor, cx| editor.fill_fields(&fields, editor_win, cx))
+                            .update(cx, |editor, cx| {
+                                editor.fill_fields(track, &fields, editor_win, cx)
+                            })
                             .ok();
                     })
                     .ok();
@@ -642,27 +652,20 @@ fn value_or_dash(value: &str) -> SharedString {
 
 impl Render for TagMatch {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let can_apply = matches!(self.phase, Phase::Ready(ref f) if !f.is_empty())
-            && self.selected.is_some()
-            && self.armed.iter().any(|&a| a)
-            && !self.saving;
-        let buttons = div()
-            .flex()
-            .flex_row()
-            .gap(tokens::SPACE_SM)
-            .child(settings_ui::small_button(
-                "Apply",
-                icons::CHECK,
-                !can_apply,
-                cx.listener(|this, _, window, cx| this.apply(window, cx)),
-            ))
-            .child(settings_ui::small_button(
-                "Cancel",
-                icons::CLOSE,
-                self.saving,
-                cx.listener(|_, _, window, _| window.remove_window()),
-            ))
-            .into_any_element();
+        let can_apply = self.blocker().is_none();
+        let count = match &self.phase {
+            Phase::Ready(found) if !found.is_empty() => Some(
+                div()
+                    .text_xs()
+                    .text_color(palette::text())
+                    .child(SharedString::from(match found.len() {
+                        1 => "1 match".to_string(),
+                        n => format!("{n} matches"),
+                    }))
+                    .into_any_element(),
+            ),
+            _ => None,
+        };
 
         let content = match &self.phase {
             Phase::Searching => note("Searching..."),
@@ -725,16 +728,93 @@ impl Render for TagMatch {
                     .flex_col()
                     .gap(SECTION_GAP)
                     .p(tokens::SPACE_MD)
-                    .child(section("Search", Some(buttons), self.search_fields()))
+                    // The body's own surface, a second elevated layer over
+                    // the window's, the same as the settings page. Two
+                    // layers is what the backdrop reads through everywhere.
+                    .bg(palette::bg_elevated())
+                    .child(section("Search", None, self.search_fields()))
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))
                     })
-                    .child(div().flex_1().min_h_0().child(content)),
+                    .child(
+                        section("Matches", count, div().flex_1().min_h_0().child(content))
+                            .flex_1()
+                            .min_h_0(),
+                    ),
             )
+            .child(self.footer(can_apply, cx))
     }
 }
 
 impl TagMatch {
+    /// What stands between the window and a write, when something does.
+    /// The clauses run in the order a lookup clears them, so the footer
+    /// names the one step that is actually next, and Apply is live exactly
+    /// when nothing is left.
+    fn blocker(&self) -> Option<&'static str> {
+        if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
+            return Some(match self.phase {
+                Phase::Searching => "Searching...",
+                _ => "No match to apply",
+            });
+        }
+        if self.selected.is_none() {
+            return Some("Pick a match");
+        }
+        if !self.armed.iter().any(|&a| a) {
+            return Some("Arm a field to apply");
+        }
+        if self.saving {
+            return Some("Writing the tags...");
+        }
+        None
+    }
+
+    /// The window's actions, and what's in their way. No enter shortcut
+    /// here: the query boxes own the key as "search now", and a window
+    /// binding would ride along on the same press and apply against
+    /// results the search is about to replace.
+    fn footer(&self, can_apply: bool, cx: &mut Context<Self>) -> Div {
+        let blocker = self.blocker();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_SM)
+            .border_t_1()
+            .border_color(palette::border())
+            .bg(palette::bg_panel())
+            .child(match blocker {
+                Some(reason) => div()
+                    .text_xs()
+                    .text_color(palette::tone_warn())
+                    .child(reason),
+                None => div(),
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(settings_ui::small_button(
+                        "Apply",
+                        icons::CHECK,
+                        !can_apply,
+                        cx.listener(|this, _, window, cx| this.apply(window, cx)),
+                    ))
+                    .child(settings_ui::small_button(
+                        "Cancel",
+                        icons::CLOSE,
+                        self.saving,
+                        cx.listener(|_, _, window, _| window.remove_window()),
+                    )),
+            )
+    }
+
     /// The search area: the track being tagged for context, then the
     /// editable artist and title that drive the lookup. Editing either
     /// re-searches after a beat; Enter searches at once.

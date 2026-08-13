@@ -192,12 +192,33 @@ pub fn section(label: &'static str, trailing: Option<AnyElement>, body: impl Int
     section_with_icon(None, label, trailing, body)
 }
 
+/// [`section`] with a control riding beside the name on the left, for a
+/// tool that belongs to the heading itself rather than the right edge.
+pub fn section_with_control(
+    label: &'static str,
+    control: AnyElement,
+    trailing: Option<AnyElement>,
+    body: impl IntoElement,
+) -> Div {
+    build_section(None, label, Some(control), trailing, body)
+}
+
 /// [`section`] led by a header icon, the sidebar rows' grammar. The
 /// settings window's sealed path always passes one; the icon-less
 /// callers across the app stay on [`section`].
 pub fn section_with_icon(
     icon: Option<&'static str>,
     label: &'static str,
+    trailing: Option<AnyElement>,
+    body: impl IntoElement,
+) -> Div {
+    build_section(icon, label, None, trailing, body)
+}
+
+fn build_section(
+    icon: Option<&'static str>,
+    label: &'static str,
+    control: Option<AnyElement>,
     trailing: Option<AnyElement>,
     body: impl IntoElement,
 ) -> Div {
@@ -231,7 +252,8 @@ pub fn section_with_icon(
                                     .text_color(palette::text_muted()),
                             )
                         })
-                        .child(label),
+                        .child(label)
+                        .when_some(control, |d, control| d.child(control)),
                 )
                 .when_some(trailing, |d, trailing| d.child(trailing)),
         )

@@ -25,3 +25,13 @@ log = "0.4"
 notify-debouncer-full = "0.7"
 # Carries the watcher's batches off the debouncer's thread without a poll.
 async-channel = "2"
+# A smart playlist stores its query, filter, sort, and limit as one JSON
+# blob on the playlist row, so the definition types need derives.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# An acoustic vector written into a file's tags is half floats in base64: a
+# tag value is text, and the vector is numbers. Same base64 crate the
+# settings file's embedded images use; half is already in the tree under
+# candle, so neither is a new dependency for the build.
+base64 = "0.22"
+half = "2"

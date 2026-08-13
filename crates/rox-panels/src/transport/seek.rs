@@ -35,9 +35,13 @@ pub enum SeekItem {
     /// The full length, always: pairs with the elapsed clock for the
     /// classic "elapsed, total" read without giving up the countdown.
     Duration,
-    /// A flexible gap that pushes the pieces around it apart. One per
-    /// row under the unique-item model.
+    /// A flexible gap that pushes the pieces around it apart; a row
+    /// holds as many as the layout wants.
     Spacer,
+    /// The line break: everything after it drops to a second row. The
+    /// stacked layouts, where the strip runs the full width with its
+    /// clocks over or under it instead of beside.
+    Break,
 }
 
 /// The row's full catalog in stock order: what the arrange editor offers,
@@ -47,26 +51,37 @@ const ITEMS: &[panel::ArrangeSpec<SeekItem>] = &[
         label: "Elapsed",
         icon: Some(icons::CLOCK),
         value: SeekItem::Elapsed,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Strip",
         icon: Some(icons::AUDIO_LINES),
         value: SeekItem::Strip,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Ending",
         icon: Some(icons::CLOCK),
         value: SeekItem::Ending,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Duration",
         icon: Some(icons::CLOCK),
         value: SeekItem::Duration,
+        repeats: false,
     },
     panel::ArrangeSpec {
         label: "Spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: SeekItem::Spacer,
+        repeats: true,
+    },
+    panel::ArrangeSpec {
+        label: "Break",
+        icon: Some(icons::ROWS_2),
+        value: SeekItem::Break,
+        repeats: true,
     },
 ];
 
@@ -82,7 +97,7 @@ pub struct SeekConfig {
     #[serde(flatten)]
     pub chrome: PanelChrome,
     /// The ending clock shows the full duration instead of the time left;
-    /// clicking the clock flips it.
+    /// the panel settings' Ending row flips it.
     pub show_total: bool,
     /// A thin line at the scrobble threshold, where the playing track
     /// counts as listened for Last.fm. Only draws while scrobbling is
@@ -123,7 +138,7 @@ struct SeekConfigDump {
 impl From<SeekConfigDump> for SeekConfig {
     fn from(dump: SeekConfigDump) -> Self {
         let items = match dump.items {
-            Some(items) => panel::dedup(items),
+            Some(items) => panel::dedup(ITEMS, items),
             None if dump.timings => {
                 vec![SeekItem::Elapsed, SeekItem::Strip, SeekItem::Ending]
             }
@@ -347,6 +362,17 @@ fn paint_strip(progress: f32, marker: Option<f32>, bounds: Bounds<Pixels>, windo
     ));
 }
 
+/// The config's list cut at the break into one piece list per row. No
+/// break reads as the single row the panel has always drawn, and a break
+/// with nothing on a side drops the empty row rather than rendering it.
+fn split_rows(items: &[SeekItem]) -> Vec<Vec<SeekItem>> {
+    items
+        .split(|i| matches!(i, SeekItem::Break))
+        .filter(|row| !row.is_empty())
+        .map(|row| row.to_vec())
+        .collect()
+}
+
 /// Tabular digits for the clock, built once - [`clock`] runs twice per
 /// pump tick while playing, so the feature list should not reallocate
 /// every call.
@@ -386,7 +412,8 @@ impl SeekStripPanel {
             .size_full()
             .bg(palette::bg_root())
             .flex()
-            .items_center();
+            .flex_col()
+            .justify_center();
 
         let Some(now) = now else {
             // Idle: the strip stays blank until a session brings a track.
@@ -463,32 +490,19 @@ impl SeekStripPanel {
             None => "-:--".into(),
         };
 
-        // The row renders the config's list as-is: each shown piece in
-        // its place, whatever order the arrange editor left them in. A
-        // strip alone keeps running edge to edge; the padding only comes
-        // in with a clock.
+        // The config's list draws in order, cut into rows at the break:
+        // each shown piece in its place, whatever order the arrange
+        // editor left them in. The strip's row takes whatever height the
+        // others leave, so a stacked layout keeps the strip broad and its
+        // clocks in a thin line over or under it.
         let mut track = Some(track);
-        let pieces: Vec<AnyElement> = self
-            .config
-            .items
-            .iter()
-            .filter_map(|item| match item {
+        let mut piece = |item: &SeekItem| -> Option<AnyElement> {
+            match item {
                 SeekItem::Elapsed => {
                     Some(clock(fmt_time_padded(now.position_secs, digits)).into_any_element())
                 }
                 SeekItem::Strip => track.take().map(|t| t.into_any_element()),
-                SeekItem::Ending => Some(
-                    clock(ending.clone())
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.config.show_total = !this.config.show_total;
-                                cx.notify();
-                            }),
-                        )
-                        .into_any_element(),
-                ),
+                SeekItem::Ending => Some(clock(ending.clone()).into_any_element()),
                 SeekItem::Duration => Some(
                     clock(match now.duration_secs {
                         Some(d) => fmt_time_padded(d, digits),
@@ -497,18 +511,34 @@ impl SeekStripPanel {
                     .into_any_element(),
                 ),
                 SeekItem::Spacer => Some(div().flex_1().into_any_element()),
+                SeekItem::Break => None,
+            }
+        };
+        let rows: Vec<Div> = split_rows(&self.config.items)
+            .into_iter()
+            .map(|items| {
+                // Any clock brings its row's padding in; a row of the
+                // strip alone (spacers included) runs edge to edge.
+                let has_clock = items.iter().any(|i| {
+                    matches!(i, SeekItem::Elapsed | SeekItem::Ending | SeekItem::Duration)
+                });
+                let stretch = items.contains(&SeekItem::Strip);
+                div()
+                    .flex()
+                    .items_center()
+                    .w_full()
+                    .map(|d| {
+                        if stretch {
+                            d.flex_1().min_h_0()
+                        } else {
+                            d.flex_none()
+                        }
+                    })
+                    .when(has_clock, |d| d.gap(tokens::SPACE_SM).px(tokens::SPACE_SM))
+                    .children(items.iter().filter_map(&mut piece))
             })
             .collect();
-
-        // Any clock brings the row padding in; the strip alone (spacers
-        // included) keeps running edge to edge.
-        let has_clock = self
-            .config
-            .items
-            .iter()
-            .any(|i| matches!(i, SeekItem::Elapsed | SeekItem::Ending | SeekItem::Duration));
-        root.when(has_clock, |d| d.gap(tokens::SPACE_SM).px(tokens::SPACE_SM))
-            .children(pieces)
+        root.children(rows)
     }
 }
 
@@ -517,7 +547,7 @@ transport_panel!(SeekStripPanel, "seek", "Seek", min_w = 160.);
 
 #[cfg(test)]
 mod tests {
-    use super::{SeekConfig, SeekItem};
+    use super::{split_rows, SeekConfig, SeekItem};
 
     /// A layout with no fields decodes to the stock row, and the retired
     /// timings toggle still reads: off leaves the strip alone.
@@ -541,5 +571,26 @@ mod tests {
         let saved = serde_json::to_value(&config).unwrap();
         let back: SeekConfig = serde_json::from_value(saved).unwrap();
         assert!(back.items == config.items);
+    }
+
+    /// A break reads from a layout and cuts the list into rows, with an
+    /// empty side dropping its row instead of drawing one.
+    #[test]
+    fn break_cuts_the_list_into_rows() {
+        let config: SeekConfig =
+            serde_json::from_str(r#"{"items": ["strip", "break", "elapsed", "ending"]}"#).unwrap();
+        let rows = split_rows(&config.items);
+        assert!(
+            rows == vec![
+                vec![SeekItem::Strip],
+                vec![SeekItem::Elapsed, SeekItem::Ending]
+            ]
+        );
+
+        let rows = split_rows(&[SeekItem::Break, SeekItem::Strip]);
+        assert!(rows == vec![vec![SeekItem::Strip]]);
+
+        let rows = split_rows(&SeekConfig::default().items);
+        assert!(rows == vec![SeekConfig::default().items]);
     }
 }

@@ -1,23 +1,25 @@
 //! The tasks window: one OS window listing the long library jobs, running
 //! or not, so the settings window doesn't have to stay open to watch one.
 //!
-//! Three jobs live here. The library scan belongs to a workspace's catalog;
-//! the acoustic pass ([`crate::embeddings`]) and the ReplayGain measurement
-//! ([`crate::replaygain_job`]) are app-global by design, outliving the window
-//! that started them. What they had in common was being unwatchable once
-//! their page was closed: no count, no estimate, and no way to stop short of
-//! reopening whatever started them. This is that missing half.
+//! Four jobs live here. The library scan belongs to a workspace's catalog;
+//! the acoustic pass ([`crate::embeddings`]), the ReplayGain measurement
+//! ([`crate::replaygain_job`]) and the tempo pass ([`crate::tempo_job`]) are
+//! app-global by design, outliving the window that started them. What they
+//! had in common was being unwatchable once their page was closed: no count,
+//! no estimate, and no way to stop short of reopening whatever started them.
+//! This is that missing half.
 //!
-//! Those three rows are always there, idle or not. A list that only exists
+//! Those four rows are always there, idle or not. A list that only exists
 //! while something is running is a progress bar with extra steps; this one
 //! is also the answer to "what can I set going, and what would it cost",
 //! which is the question someone opens it with before they've started
 //! anything.
 //!
 //! Dynamic jobs are the other kind. They're started somewhere else (the
-//! Last.fm loved-tracks import, from the settings window), they're measured
-//! in seconds rather than afternoons, and there's nothing to say about them
-//! before someone sets one going. Those rows appear when one runs and stay
+//! Last.fm loved-tracks import from the settings window, a conversion from
+//! the convert dialog), they're measured in seconds or minutes rather than
+//! afternoons, and there's nothing to say about them before someone sets
+//! one going. Those rows appear when one runs and stay
 //! for the session to report what it did, rather than standing in the list
 //! saying nothing for the rest of the time.
 //!
@@ -36,7 +38,7 @@ use gpui_component::scroll::Scrollbar;
 use gpui_component::Root;
 
 use crate::lastfm::import;
-use crate::{embeddings, pass_prompt, replaygain_job};
+use crate::{bake, convert, embeddings, pass_prompt, replaygain_job, tempo_job};
 use rox_core::settings::{LayoutSize, Settings};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
@@ -81,7 +83,10 @@ pub fn repaint_while_running(cx: &mut App) {
             cx.refresh_windows();
             embeddings::progress(cx).is_some()
                 || replaygain_job::progress(cx).is_some()
+                || tempo_job::progress(cx).is_some()
                 || import::progress(cx).is_some()
+                || convert::progress(cx).is_some()
+                || bake::progress(cx).is_some()
         });
         if !matches!(live, Ok(true)) {
             cx.update(|cx| cx.set_global(Ticking(false))).ok();
@@ -126,10 +131,28 @@ pub fn control<P: 'static>(cx: &mut Context<P>) -> Stateful<Div> {
             format!("Measuring {}", share(job.done(), job.total())),
         ));
     }
+    if let Some(job) = tempo_job::progress(cx) {
+        live.push((
+            Job::Tempo.icon(),
+            format!("Timing {}", share(job.done(), job.total())),
+        ));
+    }
     if let Some(job) = import::progress(cx) {
         live.push((
             Job::LovedImport.icon(),
             format!("Importing {}", share(job.done(), job.total())),
+        ));
+    }
+    if let Some(job) = convert::progress(cx) {
+        live.push((
+            Job::Convert.icon(),
+            format!("Converting {}", share(job.done(), job.total())),
+        ));
+    }
+    if let Some(job) = bake::progress(cx) {
+        live.push((
+            Job::Bake.icon(),
+            format!("Embedding {}", share(job.done(), job.total())),
         ));
     }
     let running = match live.len() {
@@ -258,15 +281,26 @@ enum Job {
     Scan,
     Acoustic,
     ReplayGain,
+    /// The tempo pass ([`crate::tempo_job`]): what every track with no BPM
+    /// runs at.
+    Tempo,
     /// The dynamic one: Last.fm's loved tracks pulled in as hearts, started
     /// from the settings window rather than from here.
     LovedImport,
+    /// The other dynamic one: a selection through ffmpeg into another
+    /// format, started from the convert dialog. Selection-scoped, so it has
+    /// nothing to say before someone picks tracks and a folder.
+    Convert,
+    /// Stored lyrics, gains and vectors written into the files themselves,
+    /// started from the embed dialog. Nothing to say before someone has
+    /// picked which of the three to write.
+    Bake,
 }
 
-/// Top to bottom, cheapest first: a scan is minutes and the two passes are
+/// Top to bottom, cheapest first: a scan is minutes and the three passes are
 /// afternoons, and the passes read what the scan writes. The dynamic jobs
 /// fall in under these when they have anything to say.
-const JOBS: [Job; 3] = [Job::Scan, Job::Acoustic, Job::ReplayGain];
+const JOBS: [Job; 4] = [Job::Scan, Job::Acoustic, Job::ReplayGain, Job::Tempo];
 
 impl Job {
     fn label(self) -> &'static str {
@@ -274,7 +308,10 @@ impl Job {
             Job::Scan => "Library Scan",
             Job::Acoustic => "Acoustic Analysis",
             Job::ReplayGain => "ReplayGain",
+            Job::Tempo => "Tempo Analysis",
             Job::LovedImport => "Last.fm Loved Tracks",
+            Job::Convert => "Convert Audio",
+            Job::Bake => "Embed Stored Metadata",
         }
     }
 
@@ -283,7 +320,13 @@ impl Job {
             Job::Scan => icons::REFRESH_CW,
             Job::Acoustic => icons::FLASK,
             Job::ReplayGain => icons::GAUGE,
+            // Beats a minute is a rate over time, and the clock is the one
+            // glyph in the set that says so without borrowing the gauge the
+            // measurement pass wears.
+            Job::Tempo => icons::CLOCK,
             Job::LovedImport => icons::HEART,
+            Job::Convert => icons::AUDIO_LINES,
+            Job::Bake => icons::UPLOAD,
         }
     }
 
@@ -295,10 +338,17 @@ impl Job {
             Job::Scan => Some(("Rescan", icons::REFRESH_CW)),
             Job::Acoustic => Some(("Analyze Missing", icons::FLASK)),
             Job::ReplayGain => Some(("Measure Missing", icons::GAUGE)),
+            Job::Tempo => Some(("Analyze Missing", icons::CLOCK)),
             // The import belongs to an account, not to a library, and it
             // reads its user off the settings it's started from. Offering
             // it here would be a second door into a room with one chair.
             Job::LovedImport => None,
+            // A conversion is a selection, a format and a folder. None of
+            // those exist here, so this row only ever watches.
+            Job::Convert => None,
+            // An embed is three counts and three checkboxes, and the counts
+            // take a survey to work out. That's a dialog, not a button.
+            Job::Bake => None,
         }
     }
 
@@ -314,7 +364,10 @@ impl Job {
             }
             Job::Acoustic => embeddings::stop(cx),
             Job::ReplayGain => replaygain_job::stop(cx),
+            Job::Tempo => tempo_job::stop(cx),
             Job::LovedImport => import::stop(cx),
+            Job::Convert => convert::stop(cx),
+            Job::Bake => bake::stop(cx),
         }
     }
 }
@@ -358,6 +411,52 @@ impl Snapshot {
             failed: job.unmatched(),
             current: job.current(),
             current_is_path: false,
+            eta: job.eta_secs(),
+            stopping: job.stopping(),
+        }
+    }
+
+    /// A conversion counts files, and the ones ffmpeg refused are its
+    /// failed count. What the plan skipped before the run started isn't in
+    /// here: those never became work, and the finished line reports them.
+    fn convert(job: &convert::Progress) -> Snapshot {
+        Snapshot {
+            done: job.done(),
+            total: job.total(),
+            failed: job.failed(),
+            current: job.current(),
+            current_is_path: true,
+            eta: job.eta_secs(),
+            stopping: job.stopping(),
+        }
+    }
+
+    /// An embed counts files, and the ones the writer refused are its failed
+    /// count. What the survey refused isn't in here: those never became work,
+    /// and the finished line reports them.
+    fn bake(job: &bake::Progress) -> Snapshot {
+        Snapshot {
+            done: job.done(),
+            total: job.total(),
+            failed: job.failed(),
+            current: job.current(),
+            current_is_path: true,
+            eta: job.eta_secs(),
+            stopping: job.stopping(),
+        }
+    }
+
+    /// The tempo pass counts tracks, and the ones it looked at without
+    /// getting an answer are its failed count: a file that wouldn't decode
+    /// and one whose beat the estimator refused to call both leave the row
+    /// as it was.
+    fn tempo(job: &tempo_job::Progress) -> Snapshot {
+        Snapshot {
+            done: job.done(),
+            total: job.total(),
+            failed: job.failed(),
+            current: job.current(),
+            current_is_path: true,
             eta: job.eta_secs(),
             stopping: job.stopping(),
         }
@@ -416,7 +515,10 @@ pub(crate) fn aggregate(cx: &mut App) -> Option<(usize, usize)> {
             .as_deref()
             .map(Snapshot::replaygain),
     );
+    running.extend(tempo_job::progress(cx).as_deref().map(Snapshot::tempo));
     running.extend(import::progress(cx).as_deref().map(Snapshot::import));
+    running.extend(convert::progress(cx).as_deref().map(Snapshot::convert));
+    running.extend(bake::progress(cx).as_deref().map(Snapshot::bake));
     if running.is_empty() {
         return None;
     }
@@ -455,12 +557,13 @@ impl Finished {
 /// None where the idle line above already covers it.
 struct Blocked(Option<&'static str>);
 
-/// The two app-global passes as of the last poll. The scan is not in here:
+/// The three app-global passes as of the last poll. The scan is not in here:
 /// it lives in the catalog, which is asked for it when a row is drawn.
 #[derive(Default)]
 struct Live {
     acoustic: Option<Arc<rox_acoustic::Progress>>,
     replaygain: Option<Arc<replaygain_job::Progress>>,
+    tempo: Option<Arc<tempo_job::Progress>>,
 }
 
 /// What the idle rows state about the library, and what it costs to find
@@ -490,6 +593,12 @@ struct Facts {
     rg_missing: u64,
     rg_total: u64,
     rg_estimate: Option<String>,
+    /// The library's tempo split, tagged against measured against neither.
+    bpm: rox_library::store::BpmCoverage,
+    /// Whether the tempo pass is switched on at all. It no-ops while it's
+    /// off, so the row says so rather than offering a dead button.
+    tempo_on: bool,
+    tempo_estimate: Option<String>,
 }
 
 struct TasksWindow {
@@ -507,6 +616,7 @@ struct TasksWindow {
     /// What each pass left when it stopped, kept so the row can report.
     acoustic_done: Option<Finished>,
     replaygain_done: Option<Finished>,
+    tempo_done: Option<Finished>,
     facts: Facts,
     /// The start prompt, while one is up: the same dialog the settings page
     /// raises, with the worker slider and the estimate.
@@ -586,6 +696,7 @@ impl TasksWindow {
             live: Live::default(),
             acoustic_done: None,
             replaygain_done: None,
+            tempo_done: None,
             facts: Facts::default(),
             prompt: None,
             value_edit: panel::ValueEdit::default(),
@@ -613,6 +724,7 @@ impl TasksWindow {
         let library = library.read(cx);
         let acoustic = library.acoustic_coverage(source.id());
         let gains = library.replaygain_breakdown();
+        let bpm = library.bpm_breakdown();
         self.facts =
             Facts {
                 roots: library.roots().len(),
@@ -629,6 +741,13 @@ impl TasksWindow {
                     settings.session.replaygain_pace,
                     gains.missing,
                     settings.replaygain_workers,
+                ),
+                bpm,
+                tempo_on: settings.tempo_analysis,
+                tempo_estimate: priced(
+                    settings.session.tempo_pace,
+                    bpm.missing,
+                    settings.tempo_workers,
                 ),
             };
     }
@@ -657,8 +776,19 @@ impl TasksWindow {
                 ended = true;
             }
         }
+        if let Some(job) = self.live.tempo.take() {
+            if tempo_job::progress(cx).is_none() {
+                self.tempo_done = Some(Finished {
+                    done: job.done(),
+                    failed: job.failed(),
+                    stopped: job.stopping(),
+                });
+                ended = true;
+            }
+        }
         self.live.acoustic = embeddings::progress(cx);
         self.live.replaygain = replaygain_job::progress(cx);
+        self.live.tempo = tempo_job::progress(cx);
         // A pass that started again clears what the last one left, so the
         // row never shows a finished line under a running bar.
         if self.live.acoustic.is_some() {
@@ -666,6 +796,9 @@ impl TasksWindow {
         }
         if self.live.replaygain.is_some() {
             self.replaygain_done = None;
+        }
+        if self.live.tempo.is_some() {
+            self.tempo_done = None;
         }
         // A pass that just ended moved the count its own row states. The
         // scan's finish comes through the library's event instead.
@@ -687,10 +820,18 @@ impl TasksWindow {
                 .replaygain
                 .as_ref()
                 .map(|j| Snapshot::replaygain(j)),
+            Job::Tempo => self.live.tempo.as_ref().map(|j| Snapshot::tempo(j)),
             // Read live rather than off the poll: the import is seconds
             // long, so a sample taken a frame ago is a sample of a
             // different job.
             Job::LovedImport => import::progress(cx).as_deref().map(Snapshot::import),
+            // Read live for the import's reason: a conversion is minutes
+            // at most, so a sample from a frame ago is a sample of a
+            // different job.
+            Job::Convert => convert::progress(cx).as_deref().map(Snapshot::convert),
+            // Read live for the same reason: an embed is a commit per file
+            // and often over in seconds.
+            Job::Bake => bake::progress(cx).as_deref().map(Snapshot::bake),
         }
     }
 
@@ -701,7 +842,14 @@ impl TasksWindow {
     /// pass.
     fn dynamic(&self, cx: &App) -> Vec<Job> {
         let import = import::progress(cx).is_some() || import::last(cx).is_some();
-        import.then_some(Job::LovedImport).into_iter().collect()
+        let convert = convert::progress(cx).is_some() || convert::last(cx).is_some();
+        let bake = bake::progress(cx).is_some() || bake::last(cx).is_some();
+        import
+            .then_some(Job::LovedImport)
+            .into_iter()
+            .chain(convert.then_some(Job::Convert))
+            .chain(bake.then_some(Job::Bake))
+            .collect()
     }
 
     /// What an idle row says: where the library stands on this job, and what
@@ -788,6 +936,30 @@ impl TasksWindow {
                     lines.push(done.line());
                 }
             }
+            Job::Tempo => {
+                let bpm = self.facts.bpm;
+                if !self.facts.tempo_on {
+                    lines.push(
+                        "Working out how fast tracks run is switched off in Settings, under \
+                         Library"
+                            .into(),
+                    );
+                } else if bpm.total() == 0 {
+                    lines.push("Nothing scanned to analyze yet".into());
+                } else if bpm.missing == 0 {
+                    lines.push(format!("All {} tracks have a tempo", bpm.total()));
+                } else {
+                    let mut line =
+                        format!("{} of {} tracks have no tempo", bpm.missing, bpm.total());
+                    if let Some(estimate) = &self.facts.tempo_estimate {
+                        line.push_str(&format!(", working them out takes {estimate}"));
+                    }
+                    lines.push(line);
+                }
+                if let Some(done) = &self.tempo_done {
+                    lines.push(done.line());
+                }
+            }
             Job::LovedImport => match import::last(cx) {
                 Some(Ok(summary)) => {
                     lines.push(summary.line());
@@ -803,6 +975,32 @@ impl TasksWindow {
                 // the first progress landing.
                 None => lines.push("Reading the loved list...".into()),
             },
+            Job::Convert => {
+                match convert::last(cx) {
+                    Some(summary) => lines.push(summary.line()),
+                    // Only reachable for a frame, between the row appearing
+                    // and the first file finishing.
+                    None => lines.push("Starting ffmpeg...".into()),
+                }
+                // ffmpeg's own last words about the first file it refused.
+                // A count with no reason is what sends someone to the log.
+                if let Some(reason) = convert::last_failure(cx) {
+                    lines.push(reason);
+                }
+            }
+            Job::Bake => {
+                match bake::last(cx) {
+                    Some(summary) => lines.push(summary.line()),
+                    // Only reachable for a frame, between the row appearing
+                    // and the first file being written.
+                    None => lines.push("Writing tags...".into()),
+                }
+                // What the writer said about the first file it refused. A
+                // count with no reason is what sends someone to the log.
+                if let Some(reason) = bake::last_failure(cx) {
+                    lines.push(reason);
+                }
+            }
         }
         lines
     }
@@ -854,8 +1052,11 @@ impl TasksWindow {
                 }
             }
             Job::ReplayGain => (self.facts.rg_missing == 0).then_some(Blocked(None)),
+            Job::Tempo => {
+                (!self.facts.tempo_on || self.facts.bpm.missing == 0).then_some(Blocked(None))
+            }
             // Returned above; a watched job never reaches here.
-            Job::LovedImport => None,
+            Job::LovedImport | Job::Convert | Job::Bake => None,
         }
     }
 
@@ -966,10 +1167,12 @@ impl TasksWindow {
             false,
             // The standing rows returned above, so this is the only kind
             // that reaches here.
-            cx.listener(move |_, _, _, cx| {
-                if job == Job::LovedImport {
-                    import::dismiss(cx);
-                }
+            cx.listener(move |_, _, _, cx| match job {
+                Job::LovedImport => import::dismiss(cx),
+                Job::Convert => convert::dismiss(cx),
+                Job::Bake => bake::dismiss(cx),
+                // The standing rows have no X to reach this.
+                _ => {}
             }),
         ))
     }
@@ -988,8 +1191,10 @@ impl TasksWindow {
             Job::Scan => library.update(cx, |library, cx| library.rescan(cx)),
             Job::Acoustic => pass_prompt::raise(self, pass_prompt::Pass::Acoustic, library, cx),
             Job::ReplayGain => pass_prompt::raise(self, pass_prompt::Pass::ReplayGain, library, cx),
-            // Watched, not started: it has no button here to reach this.
-            Job::LovedImport => {}
+            Job::Tempo => pass_prompt::raise(self, pass_prompt::Pass::Tempo, library, cx),
+            // Watched, not started: none of these has a button here to reach
+            // this.
+            Job::LovedImport | Job::Convert | Job::Bake => {}
         }
     }
 

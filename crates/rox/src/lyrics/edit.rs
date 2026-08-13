@@ -14,8 +14,8 @@
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, Entity, Focusable, Global, KeyDownEvent,
-    SharedString, Subscription, Window, WindowHandle,
+    actions, div, prelude::*, px, size, App, Bounds, Context, Div, Entity, Focusable, Global,
+    KeyBinding, KeyDownEvent, SharedString, Subscription, Window, WindowHandle,
 };
 use gpui_component::input::{Input, InputState, Position};
 use gpui_component::{Root, Sizable};
@@ -28,14 +28,36 @@ use rox_core::settings::lyrics_dir;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::AppState;
-use rox_panel_kit::ui as settings_ui;
+use rox_panel_kit::ui::{self as settings_ui, kbd_line, section, Seg};
 use rox_panels::lyrics::StampLine;
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::player::fmt_time;
 
 /// The default window size: tall enough for a verse or two at a glance,
-/// narrow since the sheet reads one line to a row.
-const DEFAULT_SIZE: (f32, f32) = (460., 620.);
+/// and wide enough that a timestamped line rarely wraps.
+const DEFAULT_SIZE: (f32, f32) = (575., 620.);
+
+actions!(lyrics_edit, [Save]);
+
+/// The key context the window's bindings scope to. The stamp binding in
+/// [`crate::keymap`] already names it, so the save joins it rather than
+/// opening a second context over the same window.
+const CONTEXT: &str = "LyricsEdit";
+
+// The sheet is a multi-line input, where plain enter is a newline, so the
+// save rides the platform's primary modifier: Cmd on macOS, Ctrl
+// everywhere else, the fork every app-level chord takes.
+#[cfg(target_os = "macos")]
+const SAVE_CHORD: &str = "cmd-enter";
+
+#[cfg(not(target_os = "macos"))]
+const SAVE_CHORD: &str = "ctrl-enter";
+
+/// The editor's save binding; call once at startup, before
+/// [`crate::keymap::init`] snapshots what's bound.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new(SAVE_CHORD, Save, Some(CONTEXT))]);
+}
 
 /// The open edit windows, keyed by track path, so a second request for the
 /// same track focuses the first - the match window's registry shape.
@@ -261,11 +283,10 @@ impl LyricsEdit {
         })
         .detach();
     }
-}
 
-impl Render for LyricsEdit {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ready = !self.saving && self.baseline.is_some();
+    /// The window's own actions: the stamp with the position it would
+    /// write, the shortcuts for both of them, and the save.
+    fn footer(&self, ready: bool, cx: &mut Context<Self>) -> Div {
         // The stamp button carries the live position it will write, so the
         // rhythm is visible; inert until the edited track is the one
         // playing, since there is nothing to stamp with otherwise.
@@ -280,7 +301,85 @@ impl Render for LyricsEdit {
             !ready || position.is_none(),
             cx.listener(|this, _, window, cx| this.stamp_line(window, cx)),
         );
+        // What's holding the save up, when something is, in place of the
+        // shortcut it would otherwise spell out.
+        let reason = if self.baseline.is_none() {
+            Some("Loading the sheet...")
+        } else if self.saving {
+            Some("Saving...")
+        } else {
+            None
+        };
+        let hint = match reason {
+            Some(reason) => div()
+                .text_xs()
+                .text_color(palette::tone_warn())
+                .child(reason)
+                .into_any_element(),
+            None => {
+                let mut segs = vec![
+                    Seg::Text("Press".into()),
+                    Seg::Key(settings_ui::chord("Enter")),
+                    Seg::Text("to save".into()),
+                ];
+                // The stamp chord only earns a mention while there's a
+                // position to stamp with.
+                if position.is_some() {
+                    segs.push(Seg::Text("or".into()));
+                    segs.push(Seg::Key("Shift+Enter".into()));
+                    segs.push(Seg::Text("to stamp".into()));
+                }
+                kbd_line(segs).text_xs().into_any_element()
+            }
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_SM)
+            .border_t_1()
+            .border_color(palette::border())
+            .bg(palette::bg_panel())
+            .child(
+                // Stamp on the left where the play-along attention is, its
+                // shortcut spelled out beside it.
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .min_w_0()
+                    .gap(tokens::SPACE_SM)
+                    .child(stamp)
+                    .child(hint),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(settings_ui::small_button(
+                        "Save",
+                        icons::CHECK,
+                        !ready,
+                        cx.listener(|this, _, window, cx| this.save(window, cx)),
+                    ))
+                    .child(settings_ui::small_button(
+                        "Cancel",
+                        icons::CLOSE,
+                        self.saving,
+                        cx.listener(|_, _, window, _| window.remove_window()),
+                    )),
+            )
+    }
+}
 
+impl Render for LyricsEdit {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ready = !self.saving && self.baseline.is_some();
         div()
             .size_full()
             .flex()
@@ -290,12 +389,14 @@ impl Render for LyricsEdit {
             .text_sm()
             // SearchInput scopes the workspace's playback key bindings out
             // while the input is focused; LyricsEdit scopes in the
-            // Shift+Enter stamp binding (see workspace::init).
+            // Shift+Enter stamp binding (see workspace::init) and this
+            // window's own save.
             .key_context("SearchInput LyricsEdit")
             .on_action(cx.listener(|this, _: &StampLine, window, cx| {
                 cx.stop_propagation();
                 this.stamp_line(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &Save, window, cx| this.save(window, cx)))
             .on_key_down(cx.listener(|_, event: &KeyDownEvent, window, _| {
                 if event.keystroke.key != "escape" {
                     return;
@@ -311,61 +412,58 @@ impl Render for LyricsEdit {
                     .min_h_0()
                     .flex()
                     .flex_col()
+                    // The page's own surface over the root's, the same second
+                    // pass the settings page takes: the backdrop reads through
+                    // only as the surfaces thin.
+                    .bg(palette::bg_elevated())
                     .gap(tokens::SPACE_SM)
                     .p(tokens::SPACE_MD)
                     .child(
-                        div()
-                            .flex_none()
-                            .truncate()
-                            .text_color(palette::text_muted())
-                            .child(self.line.clone()),
-                    )
-                    .child(
-                        // The input frames itself transparent, and its
-                        // editor background thins to nothing under surface
-                        // opacity, so the sheet needs its own card to read
-                        // as a surface, the match window's preview idiom.
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .rounded(tokens::RADIUS)
-                            .border_1()
-                            .border_color(palette::border())
-                            .bg(palette::bg_root())
-                            .overflow_hidden()
-                            .child(Input::new(&self.input).appearance(false).h_full().small()),
+                        section(
+                            "Lyrics",
+                            None,
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .flex()
+                                .flex_col()
+                                .gap(tokens::SPACE_SM)
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .truncate()
+                                        .text_color(palette::text_muted())
+                                        .child(self.line.clone()),
+                                )
+                                .child(
+                                    // The input frames itself transparent, and
+                                    // its editor background thins to nothing
+                                    // under surface opacity, so the sheet needs
+                                    // its own card to read as a surface, the
+                                    // match window's preview idiom.
+                                    div()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .rounded(tokens::RADIUS)
+                                        .border_1()
+                                        .border_color(palette::border())
+                                        .bg(palette::bg_root())
+                                        .overflow_hidden()
+                                        .child(
+                                            Input::new(&self.input)
+                                                .appearance(false)
+                                                .h_full()
+                                                .small(),
+                                        ),
+                                ),
+                        )
+                        .flex_1()
+                        .min_h_0(),
                     )
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))
-                    })
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(tokens::SPACE_SM)
-                            // Stamp on the left where the play-along attention
-                            // is, its shortcut spelled out beside it, save and
-                            // cancel pushed to the right.
-                            .child(stamp)
-                            .when(ready && position.is_some(), |d| {
-                                d.child(settings_ui::kbd("Shift+Enter".into()))
-                            })
-                            .child(div().flex_1())
-                            .child(settings_ui::small_button(
-                                "Save",
-                                icons::CHECK,
-                                !ready,
-                                cx.listener(|this, _, window, cx| this.save(window, cx)),
-                            ))
-                            .child(settings_ui::small_button(
-                                "Cancel",
-                                icons::CLOSE,
-                                self.saving,
-                                cx.listener(|_, _, window, _| window.remove_window()),
-                            )),
-                    ),
+                    }),
             )
+            .child(self.footer(ready, cx))
     }
 }

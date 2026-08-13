@@ -15,16 +15,18 @@
 //! written files so their rows converge with what is on disk - duration and
 //! the rest the form never named included.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    actions, div, prelude::*, px, size, App, Bounds, Context, Div, Entity, FocusHandle,
-    Focusable as _, Global, KeyBinding, ScrollHandle, SharedString, Subscription, Window,
-    WindowHandle,
+    actions, div, prelude::*, px, size, svg, App, Bounds, Context, Div, Entity, FocusHandle,
+    Focusable as _, Global, KeyBinding, MouseButton, ScrollHandle, SharedString, Subscription,
+    WeakEntity, Window, WindowHandle,
 };
+use gpui_component::button::Button;
 use gpui_component::input::{Enter, Input, InputEvent, InputState};
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableEvent, TableState};
@@ -34,7 +36,7 @@ use rox_core::fmt::fmt_ms;
 use rox_library::cue::TrackKey;
 use rox_library::projection::Projection;
 use rox_library::rating;
-use rox_library::writer::{self, Change, Edit, Field};
+use rox_library::writer::{self, Change, Edit, Field, UnknownValue};
 
 use crate::matching::{open_or_focus, WindowRegistry};
 use crate::tags::guess;
@@ -44,7 +46,9 @@ use rox_design::{palette, tokens};
 use rox_net::providers;
 use rox_panel_api::panel::AppState;
 use rox_panel_api::suggest;
-use rox_panel_kit::ui::{self as settings_ui, section, SECTION_GAP};
+use rox_panel_kit::ui::{
+    self as settings_ui, kbd_line, section, section_with_control, Seg, SECTION_GAP,
+};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::catalog::Library;
 
@@ -67,6 +71,64 @@ const FIELDS: &[(Field, &str, bool)] = &[
     // number, half points included.
     (Field::Rating, "rating", false),
 ];
+
+/// How many display columns lead the table ahead of the editable
+/// [`FIELDS`] grid in the full column order. The file column is one of
+/// these: it carries no input and no field, and a save never sees it.
+/// The settings file's width slots are positional over this full order,
+/// hidden columns included, so a width survives its column being toggled
+/// away and back.
+const LEAD: usize = 1;
+
+/// A column heading from a field label, each word capitalized: "album
+/// artist" reads as "Album Artist" over the table while the form keeps
+/// the lowercase label.
+fn title_case(label: &str) -> String {
+    label
+        .split(' ')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Every table column's key in the full order: the file column, then one
+/// per [`FIELDS`] entry under its label.
+fn column_keys() -> impl Iterator<Item = &'static str> {
+    std::iter::once("file").chain(FIELDS.iter().map(|(_, label, _)| *label))
+}
+
+/// A key's slot in the full column order, the position its width lives
+/// at in the settings file whether the column shows or not.
+fn canonical_ix(key: &str) -> Option<usize> {
+    column_keys().position(|k| k == key)
+}
+
+/// Every column's default width in the full order: the file column wide
+/// for a name, numerics narrow, the rating wide enough for five stars or
+/// the numeric strip.
+fn default_widths() -> Vec<f32> {
+    std::iter::once(220.)
+        .chain(FIELDS.iter().map(|(field, _, _)| match field {
+            Field::Year | Field::TrackNo | Field::DiscNo => 64.,
+            Field::Rating => 96.,
+            _ => 150.,
+        }))
+        .collect()
+}
+
+/// A path as the row shows it: the file name alone, the whole path when
+/// there is no name to take.
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
 
 /// The rating inputs' empty-state hint, the one field whose scale is not
 /// obvious from its label.
@@ -96,17 +158,27 @@ fn rating_field(input: &Entity<InputState>, cx: &App) -> Div {
     })
 }
 
-actions!(tag_editor, [FieldTab, FieldTabPrev]);
+actions!(tag_editor, [FieldTab, FieldTabPrev, Save]);
 
-/// The editor's tab bindings; call once at startup. They scope to the
-/// field wrappers' key context, deeper along the focus path than the
+/// The key context the window root's own bindings scope to.
+const CONTEXT: &str = "TagEditor";
+
+/// The editor's bindings; call once at startup. The tab pair scopes to
+/// the field wrappers' key context, deeper along the focus path than the
 /// window root's own tab bindings, so inside a tag field the editor owns
 /// what tab means: take the open suggestion, then move. Bindings win
 /// over key listeners, so a listener could never have seen the key.
+///
+/// Enter sits on the window root instead, so it saves from a field, a
+/// table cell, or nothing focused at all. The inputs see the key first,
+/// their own binding being deeper: a single-line input propagates it up
+/// to here, and an open suggestion menu swallows it, so enter takes the
+/// suggestion first and saves on the next press.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", FieldTab, Some("TagField")),
         KeyBinding::new("shift-tab", FieldTabPrev, Some("TagField")),
+        KeyBinding::new("enter", Save, Some(CONTEXT)),
     ]);
 }
 
@@ -200,6 +272,36 @@ struct TrackRow {
     duration_ms: u32,
 }
 
+/// One file's reads off the background hop: the fields the form edits
+/// and the tags it only shows, or the note that the writer has no path
+/// for this format at all.
+enum FileRead {
+    Unsupported,
+    Read {
+        fields: Result<Vec<(Field, String)>, String>,
+        unknown: Result<Vec<(String, UnknownValue)>, String>,
+    },
+}
+
+/// The selection's tags that no field addresses, unioned into one
+/// read-only list.
+struct UnknownTags {
+    rows: Vec<UnknownRow>,
+    /// How many files' unknown reads failed. The list is short by that
+    /// many, so the section says so rather than passing for complete.
+    failed: usize,
+    /// How many files the union covers, for the per-row "3 of 7".
+    files: usize,
+}
+
+/// One key in that list: what it's called, what the files carry under
+/// it, and how many of them do.
+struct UnknownRow {
+    key: SharedString,
+    value: SharedString,
+    files: usize,
+}
+
 pub struct TagEditor {
     library: Entity<Library>,
     tracks: Vec<TrackRow>,
@@ -233,6 +335,10 @@ pub struct TagEditor {
     /// column widths and sort state, the delegate shares the cell
     /// entities, so save reads the same inputs the table shows.
     grid: Option<Entity<TableState<CellGrid>>>,
+    /// The column keys toggled off the table, remembered through the
+    /// settings file like the widths. A hidden column's cells live on,
+    /// so nothing typed there is lost to a toggle.
+    hidden: HashSet<String>,
     /// What each cell last seeded from. A cell still on its seed follows
     /// re-seeds (a form edit folding in); one the user moved is theirs.
     seeds: Vec<Vec<SharedString>>,
@@ -245,11 +351,28 @@ pub struct TagEditor {
     /// The guess pattern's input, remembered across editors through the
     /// settings file - one library tends to one naming scheme.
     pattern: Entity<InputState>,
+    /// The tags no field addresses, read-only under their own fold.
+    /// None until the reads land; a file whose unknown read failed only
+    /// costs its own rows, never the form.
+    unknowns: Option<UnknownTags>,
+    /// Whether that fold is open. Closed at open: most files carry a few
+    /// of these and some carry a screenful, and none of it is editable.
+    unknowns_open: bool,
+    /// How many of the selection are in a format the writer has no path
+    /// for. Those files say so plainly instead of wearing a parse error
+    /// over a dead form.
+    unsupported: usize,
     /// A failed read or commit, shown inline over the buttons.
     error: Option<SharedString>,
     /// A commit is in flight; the fields lock and the buttons hold still
     /// until it lands.
     saving: bool,
+    /// The save already ran and the window is on its way out. One enter
+    /// press can reach [`Self::save`] twice - the focused input's own
+    /// binding and the window root's, which the input propagates to - and
+    /// a batch with nothing to write closes on the first without ever
+    /// raising `saving` for the second to see.
+    saved: bool,
     /// How many of the batch have committed and how many there are, for
     /// the "Saving n/m" count. A file at a time advances this, so a slow
     /// or stuck one shows where the batch is instead of a mute spinner.
@@ -406,6 +529,16 @@ impl TagEditor {
         // A multi-selection opens straight into the table - per-track
         // editing is what it is for; a single track fits the form.
         let table = tracks.len() > 1;
+        // The columns the last editor toggled away, pruned of anything
+        // that stopped being a column since it was written.
+        let hidden: HashSet<String> = Settings::load()
+            .windows
+            .tag_editor
+            .map(|s| s.hidden)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|key| canonical_ix(key).is_some())
+            .collect();
         let this = TagEditor {
             library: state.library,
             tracks,
@@ -417,12 +550,17 @@ impl TagEditor {
             table,
             cells: None,
             grid: None,
+            hidden,
             seeds: Vec::new(),
             projection,
             guess: false,
             pattern,
+            unknowns: None,
+            unknowns_open: false,
+            unsupported: 0,
             error: None,
             saving: false,
+            saved: false,
             save_done: 0,
             save_total: 0,
             scroll: ScrollHandle::new(),
@@ -437,7 +575,10 @@ impl TagEditor {
 
     /// Read every file's fields off the UI thread and fill the form when
     /// they all land. One unreadable file blocks the whole save: without
-    /// its baseline there is nothing safe to diff that file against.
+    /// its baseline there is nothing safe to diff that file against. The
+    /// read-only tags ride the same hop, one file at a time, so the list
+    /// costs nothing extra in wall time and a file that defeats it costs
+    /// only its own rows.
     fn read_baselines(&self, window: &mut Window, cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = self.tracks.iter().map(|track| track.path.clone()).collect();
         cx.spawn_in(window, async move |this, cx| {
@@ -446,14 +587,36 @@ impl TagEditor {
                 .spawn(async move {
                     paths
                         .iter()
-                        .map(|path| writer::read(path))
+                        .map(|path| {
+                            if !writer::supported(path) {
+                                return FileRead::Unsupported;
+                            }
+                            FileRead::Read {
+                                fields: writer::read(path),
+                                unknown: writer::read_unknown(path),
+                            }
+                        })
                         .collect::<Vec<_>>()
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {
+                this.unsupported = reads
+                    .iter()
+                    .filter(|read| matches!(read, FileRead::Unsupported))
+                    .count();
+                // Nothing here parses, so there's no form to fill and no
+                // list to show; the section says which of the two it is.
+                if this.unsupported > 0 {
+                    cx.notify();
+                    return;
+                }
+                this.unknowns = Some(gather_unknowns(&reads));
                 let mut baselines = Vec::with_capacity(reads.len());
                 for (read, track) in reads.into_iter().zip(&this.tracks) {
-                    match read {
+                    let FileRead::Read { fields, .. } = read else {
+                        continue;
+                    };
+                    match fields {
                         Ok(fields) => baselines.push(fields),
                         Err(e) => {
                             this.error = Some(format!("{}: {e}", track.title).into());
@@ -467,6 +630,12 @@ impl TagEditor {
             .ok();
         })
         .detach();
+    }
+
+    /// Open or close the read-only tag list.
+    fn toggle_unknowns(&mut self, cx: &mut Context<Self>) {
+        self.unknowns_open = !self.unknowns_open;
+        cx.notify();
     }
 
     /// Fill the form off the landed baselines: a field every file agrees
@@ -509,7 +678,11 @@ impl TagEditor {
         if self.table {
             self.seed_cells(window, cx);
             if let Some(cells) = &self.cells {
-                window.focus(&cells[0][0].read(cx).focus_handle(cx));
+                window.focus(
+                    &cells[0][self.first_visible_field()]
+                        .read(cx)
+                        .focus_handle(cx),
+                );
             }
         }
         cx.notify();
@@ -520,7 +693,7 @@ impl TagEditor {
     /// several editors open the last writer wins.
     fn persist_frame(&self, window: &Window, cx: &App) {
         let frame = window.window_bounds().get_bounds();
-        let columns: Vec<f32> = self
+        let columns: Vec<(String, f32)> = self
             .grid
             .as_ref()
             .map(|grid| {
@@ -528,21 +701,97 @@ impl TagEditor {
                     .delegate()
                     .columns
                     .iter()
-                    .map(|column| column.width.into())
+                    .map(|column| (column.key.to_string(), column.width.into()))
                     .collect()
             })
             .unwrap_or_default();
+        let mut hidden: Vec<String> = self.hidden.iter().cloned().collect();
+        hidden.sort();
         let pattern = self.pattern.read(cx).value().to_string();
         Settings::update(move |s| {
             let state = s.windows.tag_editor.get_or_insert_with(Default::default);
             state.width = frame.size.width.into();
             state.height = frame.size.height.into();
             // A form-only session has no table; keep the saved widths.
+            // The shown columns write into their slots in the full order,
+            // so a hidden column's width rides along untouched.
             if !columns.is_empty() {
-                state.columns = columns;
+                if state.columns.len() != LEAD + FIELDS.len() {
+                    state.columns = default_widths();
+                }
+                for (key, width) in &columns {
+                    if let Some(ix) = canonical_ix(key) {
+                        state.columns[ix] = *width;
+                    }
+                }
             }
+            state.hidden = hidden;
             state.pattern = pattern;
         });
+    }
+
+    /// The first field the toggles leave on screen, where table focus
+    /// lands: the title unless its column is hidden.
+    fn first_visible_field(&self) -> usize {
+        FIELDS
+            .iter()
+            .position(|(_, label, _)| !self.hidden.contains(*label))
+            .unwrap_or(0)
+    }
+
+    /// Show or hide a table column, keeping the rest in place. A shown
+    /// column returns to its slot in the field order at its default
+    /// width; hiding drops it, and never the last one, since an empty
+    /// table has no header to bring one back from.
+    fn toggle_column(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        let Some(grid) = &self.grid else { return };
+        if self.hidden.remove(key) {
+            grid.update(cx, |table, cx| {
+                let delegate = table.delegate_mut();
+                let Some(canon) = canonical_ix(key) else {
+                    return;
+                };
+                // The table never reorders columns, so the shown set
+                // stays in the field order and the slot count places it.
+                let at = delegate
+                    .columns
+                    .iter()
+                    .take_while(|c| canonical_ix(c.key.as_ref()).unwrap_or(usize::MAX) < canon)
+                    .count();
+                let column = Column::new(key, title_case(key))
+                    .width(px(default_widths()[canon]))
+                    .sortable();
+                delegate.columns.insert(at, column);
+                table.refresh(cx);
+            });
+        } else {
+            let mut removed = false;
+            grid.update(cx, |table, cx| {
+                let delegate = table.delegate_mut();
+                if delegate.columns.len() <= 1 {
+                    return;
+                }
+                let Some(ix) = delegate.columns.iter().position(|c| c.key.as_ref() == key) else {
+                    return;
+                };
+                // A hidden sort column leaves no header to clear the
+                // sort; drop back to the file order instead.
+                let sorted = matches!(
+                    delegate.columns[ix].sort,
+                    Some(ColumnSort::Ascending | ColumnSort::Descending)
+                );
+                delegate.columns.remove(ix);
+                if sorted {
+                    delegate.order = (0..delegate.cells.len()).collect();
+                }
+                removed = true;
+                table.refresh(cx);
+            });
+            if removed {
+                self.hidden.insert(key.to_string());
+            }
+        }
+        cx.notify();
     }
 
     /// Flip between the shared form and the per-track table. The table
@@ -559,7 +808,11 @@ impl TagEditor {
             self.table = true;
             self.seed_cells(window, cx);
             if let Some(cells) = &self.cells {
-                window.focus(&cells[0][0].read(cx).focus_handle(cx));
+                window.focus(
+                    &cells[0][self.first_visible_field()]
+                        .read(cx)
+                        .focus_handle(cx),
+                );
             }
         }
         cx.notify();
@@ -605,15 +858,28 @@ impl TagEditor {
                 }
                 cells.push(row);
             }
+            // The file column's names ride bare disabled inputs, the
+            // track list's trick for text that has to select and copy.
+            // Built with the grid, so a form-only session pays nothing.
+            let names: Vec<Entity<InputState>> = self
+                .tracks
+                .iter()
+                .map(|track| {
+                    let name = file_name(&track.path);
+                    cx.new(|cx| InputState::new(window, cx).default_value(name))
+                })
+                .collect();
             let saved = Settings::load()
                 .windows
                 .tag_editor
                 .map(|s| s.columns)
                 .unwrap_or_default();
             let delegate = CellGrid {
-                columns: grid_columns(&saved),
+                columns: grid_columns(&saved, &self.hidden),
                 cells: cells.clone(),
+                names,
                 order: (0..cells.len()).collect(),
+                editor: cx.entity().downgrade(),
             };
             let grid = cx.new(|cx| TableState::new(delegate, window, cx));
             // The component owns the live column widths; mirror a resize
@@ -914,6 +1180,12 @@ impl TagEditor {
                         div()
                             .flex_1()
                             .min_w_0()
+                            // Enter here applies the guesses, which the
+                            // pattern's own subscription does; it stops
+                            // short of the window root's save, since the
+                            // preview is right there and a save would
+                            // close the window out from under it.
+                            .on_action(|_: &Save, _, cx: &mut App| cx.stop_propagation())
                             .child(Input::new(&self.pattern).small()),
                     )
                     .child(settings_ui::small_button(
@@ -942,42 +1214,67 @@ impl TagEditor {
             }))
     }
 
-    /// Open the metadata compare on the single edited track. The window
+    /// Open the metadata compare on one edited track. The window
     /// searches, ranks matches, and on apply calls back into
     /// [`Self::fill_fields`] rather than writing, so this editor stays the
-    /// one writer. Single-track only, the button its gate.
-    fn look_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(track) = self.tracks.first() else {
+    /// one writer. A lookup is one track's by nature: the form's header
+    /// button carries it for a single track, the table's rows one each.
+    /// The compare keys its window on the track, so a row at a time can
+    /// be open without the two fills crossing.
+    fn look_up(&mut self, track: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.tracks.get(track) else {
             return;
         };
         let key = TrackKey {
-            path: track.path.clone(),
-            sub: track.sub,
+            path: row.path.clone(),
+            sub: row.sub,
         };
         let library = self.library.clone();
         let now_art = self.now_art.clone();
         let weak = cx.entity().downgrade();
         let handle = window.window_handle();
-        crate::tags::matcher::open_fill(library, now_art, key, weak, handle, cx);
+        crate::tags::matcher::open_fill(library, now_art, key, track, weak, handle, cx);
     }
 
-    /// Fill the form from a looked-up match, one field at a time: each set
-    /// input drifts from its fill and arms as a pending edit, so the
-    /// normal save writes it and nothing lands until the user saves.
-    /// Fields the match does not carry are left untouched. The compare
-    /// calls this on its own apply, on this editor's window.
+    /// Fill from a looked-up match, one field at a time: each set input
+    /// drifts from its fill and arms as a pending edit, so the normal
+    /// save writes it and nothing lands until the user saves. Fields the
+    /// match does not carry are left untouched. The compare calls this on
+    /// its own apply, on this editor's window, naming the track it ran on.
+    ///
+    /// Where the values land is where the user can see them: the named
+    /// track's cells once the grid is up, the shared form only in a
+    /// form-only single-track session, since a batch form would stamp
+    /// one track's release over every file. The seeds stay put, like the
+    /// guess panel's: a filled cell reads as the user's own edit and
+    /// never reseeds away.
     pub fn fill_fields(
         &mut self,
+        track: usize,
         values: &[(Field, String)],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let to_cells = self.cells.is_some() && (self.table || self.tracks.len() > 1);
         for (field, value) in values {
             let Some(i) = FIELDS.iter().position(|(f, _, _)| f == field) else {
                 continue;
             };
             let value = value.clone();
-            self.inputs[i].update(cx, |input, cx| input.set_value(value, window, cx));
+            match to_cells {
+                true => {
+                    let Some(cell) = self
+                        .cells
+                        .as_ref()
+                        .and_then(|cells| cells.get(track))
+                        .map(|row| row[i].clone())
+                    else {
+                        continue;
+                    };
+                    cell.update(cx, |cell, cx| cell.set_value(value, window, cx));
+                }
+                false => self.inputs[i].update(cx, |input, cx| input.set_value(value, window, cx)),
+            }
         }
         cx.notify();
     }
@@ -990,7 +1287,7 @@ impl TagEditor {
     /// failure keeps the form open with the error inline, the failed
     /// files untouched.
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(baselines), false) = (&self.baselines, self.saving) else {
+        let (Some(baselines), false, false) = (&self.baselines, self.saving, self.saved) else {
             return;
         };
         let single = self.tracks.len() == 1;
@@ -1051,6 +1348,7 @@ impl TagEditor {
             }
         }
         if edits.is_empty() {
+            self.saved = true;
             self.persist_frame(window, cx);
             window.remove_window();
             return;
@@ -1208,51 +1506,165 @@ impl TagEditor {
         section("Tracks", None, body)
     }
 
-    /// The tags section: the shared form, or in table mode the per-track
-    /// grid; the mode toggle, save, and cancel ride the section header,
-    /// the error inline under the fields per the metadata panel's edit
-    /// face.
-    fn tags_section(&self, cx: &mut Context<Self>) -> Div {
-        // The online lookup rides the header, single-track only: the
-        // compare matches on one track's tags, so a batch has no query.
-        // Gated on the provider toggle like the metadata panel's.
-        let single = self.tracks.len() == 1;
-        let buttons = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_SM)
-            // A commit runs off the UI thread, so say it plainly: the
-            // spinner and a running count ride ahead of the buttons until
-            // the write lands or fails. The count names how far a slow
-            // batch has got instead of freezing on a mute spinner.
-            .when(self.saving, |d| {
-                let label = if self.save_total > 1 {
-                    let at = (self.save_done + 1).min(self.save_total);
-                    format!("Saving {}/{}...", at, self.save_total)
-                } else {
-                    "Saving...".to_string()
-                };
-                d.child(
+    /// The tags no field addresses, read-only under their own fold: TXXX
+    /// descriptions, the keys lofty maps that the form has no row for,
+    /// and the binary frames named by size. Every save carries them
+    /// through untouched, so the point here is only to show that they
+    /// exist. The header is hand-rolled rather than [`section`]'s
+    /// because the count moves with the selection and that one takes a
+    /// static label.
+    fn unknown_section(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let unknowns = self.unknowns.as_ref()?;
+        if unknowns.rows.is_empty() && unknowns.failed == 0 {
+            return None;
+        }
+        let open = self.unknowns_open;
+        let mut body = div().flex().flex_col();
+        if unknowns.failed > 0 {
+            body = body.child(
+                div()
+                    .py(tokens::SPACE_XS)
+                    .text_color(palette::text_muted())
+                    .child(format!(
+                        "{} of {} files' tags couldn't be read",
+                        unknowns.failed, unknowns.files
+                    )),
+            );
+        }
+        for row in &unknowns.rows {
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_MD)
+                    .py(tokens::SPACE_XS)
+                    .border_b_1()
+                    .border_color(palette::border())
+                    .child(
+                        div()
+                            .w(px(180.))
+                            .flex_none()
+                            .truncate()
+                            .text_color(palette::text_muted())
+                            .child(row.key.clone()),
+                    )
+                    .child(div().flex_1().min_w_0().truncate().child(row.value.clone()))
+                    // A key only some of the selection carries says so;
+                    // one they all carry needs no note.
+                    .when(row.files < unknowns.files, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .text_color(palette::text_muted())
+                                .child(format!("{} of {}", row.files, unknowns.files)),
+                        )
+                    }),
+            );
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(tokens::SPACE_SM)
+                .child(
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap(tokens::SPACE_XS)
+                        .pb(tokens::SPACE_XS)
+                        .border_b_1()
+                        .border_color(palette::border())
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child(Spinner::new().with_size(Size::Small))
-                        .child(label),
+                        .cursor_pointer()
+                        .hover(|d| d.text_color(palette::text()))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.toggle_unknowns(cx)),
+                        )
+                        .child(
+                            svg()
+                                .path(if open {
+                                    icons::CHEVRON_DOWN
+                                } else {
+                                    icons::CHEVRON_RIGHT
+                                })
+                                .size(px(12.))
+                                .flex_none()
+                                .text_color(palette::text_muted()),
+                        )
+                        .child(format!("Other Tags ({})", unknowns.rows.len())),
                 )
-            })
-            .when(single && providers::metadata_online(), |d| {
-                d.child(settings_ui::small_button(
-                    "Look Up",
-                    icons::DOWNLOAD,
-                    self.saving || self.baselines.is_none(),
-                    cx.listener(|this, _, window, cx| this.look_up(window, cx)),
-                ))
-            })
+                .when(open, |d| d.child(body)),
+        )
+    }
+
+    /// Table mode's one line about the read-only tag list, which only the
+    /// form shows: the grid is one field per column and these keys are
+    /// ragged per file, so there is no honest column for them. The count
+    /// sits under the table and the click hands the user to the section
+    /// that can show them.
+    fn unknown_hint(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let count = self
+            .unknowns
+            .as_ref()
+            .map(|unknowns| unknowns.rows.len())
+            .filter(|count| *count > 0)?;
+        Some(
+            div()
+                .flex_none()
+                .mt(tokens::SPACE_XS)
+                .text_xs()
+                .text_color(palette::text_muted())
+                .cursor_pointer()
+                .hover(|d| d.text_color(palette::text()))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.show_unknowns(window, cx)),
+                )
+                .child(format!("Other Tags ({count}) in form view")),
+        )
+    }
+
+    /// Leave the table for the form with the read-only tag list open, the
+    /// hint's landing.
+    fn show_unknowns(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.table {
+            self.toggle_table(window, cx);
+        }
+        self.unknowns_open = true;
+        cx.notify();
+    }
+
+    /// The tags section: the shared form, or in table mode the per-track
+    /// grid. The lookup rides beside the heading's name, the mode toggle,
+    /// the column picker, and the guess panel its right edge, since each
+    /// is about what the section shows; save and cancel belong to the
+    /// window and ride its footer.
+    fn tags_section(&self, cx: &mut Context<Self>) -> Div {
+        // The online lookup is the form's alone, single-track only: the
+        // compare matches on one track's tags, so a batch has no one
+        // query, and in the table every row carries its own. Gated on
+        // the provider toggle like the metadata panel's.
+        let single = self.tracks.len() == 1;
+        let look_up = (!self.table && single && providers::metadata_online()).then(|| {
+            settings_ui::small_button(
+                "Look Up",
+                icons::DOWNLOAD,
+                self.saving || self.baselines.is_none(),
+                cx.listener(|this, _, window, cx| this.look_up(0, window, cx)),
+            )
+            .into_any_element()
+        });
+        let buttons = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .when(self.table, |d| d.child(self.columns_menu(cx)))
             .child(settings_ui::small_button(
                 if self.table { "Form" } else { "Table" },
                 icons::ROWS_3,
@@ -1265,62 +1677,162 @@ impl TagEditor {
                 self.saving || self.baselines.is_none(),
                 cx.listener(|this, _, window, cx| this.toggle_guess(window, cx)),
             ))
-            .child(settings_ui::small_button(
-                "Save",
-                icons::CHECK,
-                self.saving || self.baselines.is_none(),
-                cx.listener(|this, _, window, cx| this.save(window, cx)),
-            ))
-            // Cancel stays live through a save: a slow or wedged commit
-            // needs a way out, and the atomic writer leaves every original
-            // intact whether the batch finished or not.
-            .child(settings_ui::small_button(
-                "Cancel",
-                icons::CLOSE,
-                false,
-                cx.listener(|this, _, window, cx| {
-                    this.persist_frame(window, cx);
-                    window.remove_window();
-                }),
-            ))
             .into_any_element();
         let body = if self.table {
             self.table_body()
         } else {
             self.form_body(cx).into_any_element()
         };
-        section(
-            "Tags",
-            Some(buttons),
+        // The fields and the grid lock while a commit is in flight: a
+        // transparent occluder over them swallows clicks and keystrokes
+        // so nothing edits out from under the write. Cancel sits outside
+        // it, down in the footer.
+        let content = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .when(self.table, |d| d.flex_1().min_h_0())
+            .when(self.guess, |d| d.child(self.guess_panel(cx)))
+            .child(body)
+            .when(self.saving, |d| {
+                d.child(div().absolute().inset_0().occlude())
+            });
+        match look_up {
+            Some(control) => section_with_control("Tags", control, Some(buttons), content),
+            None => section("Tags", Some(buttons), content),
+        }
+    }
+
+    /// The table's column picker: one checked row per column, ticked
+    /// while shown, reading off the editor's own set so the menu never
+    /// touches the table mid-update.
+    fn columns_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let weak = cx.entity().downgrade();
+        let hidden = self.hidden.clone();
+        Button::new("tag-columns")
+            .label("Columns")
+            .small()
+            .outline()
+            .dropdown_menu(move |mut menu, _, _| {
+                for key in column_keys() {
+                    let this = weak.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(title_case(key))
+                            .checked(!hidden.contains(key))
+                            .on_click(move |_, _, cx| {
+                                if let Some(this) = this.upgrade() {
+                                    this.update(cx, |this, cx| this.toggle_column(key, cx));
+                                }
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+
+    /// Whether a save can run as it stands. Baselines are what a commit
+    /// diffs each file against, so there is nothing safe to write until
+    /// they land, and a commit already in flight owns the files.
+    fn savable(&self) -> bool {
+        !self.saving && self.baselines.is_some()
+    }
+
+    /// The window's own actions: the save, the way out, and what's
+    /// holding the save back when something is. It hangs off the root
+    /// rather than either page, so the buttons keep their place when the
+    /// form and the table swap.
+    fn footer(&self, cx: &mut Context<Self>) -> Div {
+        let hint: gpui::AnyElement = if self.saving {
+            // A commit runs off the UI thread, so say it plainly. The
+            // count names how far a slow batch has got instead of
+            // freezing on a mute spinner.
+            let label = if self.save_total > 1 {
+                let at = (self.save_done + 1).min(self.save_total);
+                format!("Saving {}/{}...", at, self.save_total)
+            } else {
+                "Saving...".to_string()
+            };
             div()
                 .flex()
-                .flex_col()
-                .when(self.table, |d| d.flex_1().min_h_0())
-                .child(
-                    // The fields and the grid lock while a commit is in
-                    // flight: a transparent occluder over them swallows
-                    // clicks and keystrokes so nothing edits out from under
-                    // the write. Cancel sits above it, on the header.
-                    div()
-                        .relative()
-                        .flex()
-                        .flex_col()
-                        .when(self.table, |d| d.flex_1().min_h_0())
-                        .when(self.guess, |d| d.child(self.guess_panel(cx)))
-                        .child(body)
-                        .when(self.saving, |d| {
-                            d.child(div().absolute().inset_0().occlude())
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_XS)
+                .text_xs()
+                .text_color(palette::tone_warn())
+                .child(Spinner::new().with_size(Size::Small))
+                .child(label)
+                .into_any_element()
+        } else {
+            // A format the writer has no path for is not a broken file,
+            // so it gets its own line rather than wearing the parse error
+            // of the read that never happened.
+            let reason: Option<SharedString> = if self.unsupported > 0 {
+                Some(if self.unsupported == self.tracks.len() {
+                    "Tags for this format can't be read or written yet.".into()
+                } else {
+                    "Some of these files are in a format whose tags can't be read or written yet."
+                        .into()
+                })
+            } else if self.error.is_some() {
+                self.error.clone()
+            } else if self.baselines.is_none() {
+                Some("Loading tags...".into())
+            } else {
+                None
+            };
+            match reason {
+                Some(reason) => div()
+                    .text_xs()
+                    .text_color(palette::tone_warn())
+                    .child(reason)
+                    .into_any_element(),
+                None => kbd_line([
+                    Seg::Text("Press".into()),
+                    Seg::Key("Enter".into()),
+                    Seg::Text("to save".into()),
+                ])
+                .text_xs()
+                .into_any_element(),
+            }
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_SM)
+            .border_t_1()
+            .border_color(palette::border())
+            .bg(palette::bg_panel())
+            .child(hint)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(settings_ui::small_button(
+                        "Save",
+                        icons::CHECK,
+                        !self.savable(),
+                        cx.listener(|this, _, window, cx| this.save(window, cx)),
+                    ))
+                    // Cancel stays live through a save: a slow or wedged
+                    // commit needs a way out, and the atomic writer leaves
+                    // every original intact whether the batch finished or
+                    // not.
+                    .child(settings_ui::small_button(
+                        "Cancel",
+                        icons::CLOSE,
+                        false,
+                        cx.listener(|this, _, window, cx| {
+                            this.persist_frame(window, cx);
+                            window.remove_window();
                         }),
-                )
-                .when_some(self.error.clone(), |d, error| {
-                    d.child(
-                        div()
-                            .mt(tokens::SPACE_XS)
-                            .text_color(palette::text_muted())
-                            .child(error),
-                    )
-                }),
-        )
+                    )),
+            )
     }
 
     /// The shared form: one bare field per row - no input chrome, the
@@ -1440,36 +1952,121 @@ impl TagEditor {
 }
 
 /// The grid's delegate: the cells are the editor's own inputs, shared by
-/// entity, so the table shows exactly the state save reads. `order` is
-/// the sort permutation from display row to track index.
+/// entity, so the table shows exactly the state save reads. `names` holds
+/// the file column's read-only inputs, parallel to `cells`, and `order` is
+/// the sort permutation from display row to track index. The editor comes
+/// along weak so a row's own lookup can reach it from the cell.
 struct CellGrid {
     columns: Vec<Column>,
     cells: Vec<Vec<Entity<InputState>>>,
+    names: Vec<Entity<InputState>>,
     order: Vec<usize>,
+    editor: WeakEntity<TagEditor>,
 }
 
-/// One column per field: name columns wide, numeric ones narrow, all
-/// resizable and sortable like the library's list. `saved` overrides the
-/// defaults with the last editor's widths, in field order.
-fn grid_columns(saved: &[f32]) -> Vec<Column> {
-    FIELDS
-        .iter()
+/// The file column, then one per field: name columns wide, numeric ones
+/// narrow, all resizable and sortable like the library's list. `saved`
+/// overrides the defaults with the last editor's widths, one slot per
+/// column in the full order. Those widths are positional, so a set
+/// written before a column existed falls back to the defaults rather
+/// than landing on the wrong columns. `hidden` columns drop out after
+/// the widths resolve; a hidden set that would empty the table is
+/// ignored, since an empty table has no header to bring one back from.
+fn grid_columns(saved: &[f32], hidden: &HashSet<String>) -> Vec<Column> {
+    let defaults = default_widths();
+    let saved = if saved.len() == defaults.len() {
+        saved
+    } else {
+        &[]
+    };
+    let width = |i: usize| {
+        saved
+            .get(i)
+            .copied()
+            .filter(|w| *w >= 24.)
+            .unwrap_or(defaults[i])
+    };
+    let columns: Vec<Column> = column_keys()
         .enumerate()
-        .map(|(i, (field, label, _))| {
-            let default = match field {
-                Field::Year | Field::TrackNo | Field::DiscNo => 64.,
-                // Room for five stars or the numeric strip.
-                Field::Rating => 96.,
-                _ => 150.,
-            };
-            let width = saved
-                .get(i)
-                .copied()
-                .filter(|w| *w >= 24.)
-                .unwrap_or(default);
-            Column::new(*label, *label).width(px(width)).sortable()
+        .map(|(i, key)| {
+            Column::new(key, title_case(key))
+                .width(px(width(i)))
+                .sortable()
         })
-        .collect()
+        .collect();
+    let shown: Vec<Column> = columns
+        .iter()
+        .filter(|column| !hidden.contains(column.key.as_ref()))
+        .cloned()
+        .collect();
+    if shown.is_empty() {
+        columns
+    } else {
+        shown
+    }
+}
+
+impl CellGrid {
+    /// Which [`FIELDS`] entry a column edits, or None for a display
+    /// column like the file name. By key rather than position: hidden
+    /// columns leave the display order sparse.
+    fn field_ix(&self, col_ix: usize) -> Option<usize> {
+        let key = self.columns[col_ix].key.clone();
+        FIELDS
+            .iter()
+            .position(|(_, label, _)| *label == key.as_ref())
+    }
+
+    /// Whether each [`FIELDS`] entry has a column on screen, for the tab
+    /// walk: a hidden column's cells exist and keep their edits, but
+    /// focusing one would land the cursor somewhere the table doesn't
+    /// draw.
+    fn visible_fields(&self) -> Vec<bool> {
+        let mut visible = vec![false; FIELDS.len()];
+        for ix in 0..self.columns.len() {
+            if let Some(field) = self.field_ix(ix) {
+                visible[field] = true;
+            }
+        }
+        visible
+    }
+
+    /// The file column's cell: the name on a bare disabled input so its
+    /// text selects and copies the way the track list's lines do (the
+    /// component only gates typing on disabled, never selection), and
+    /// the row's own lookup beside it. A lookup matches one file's tags
+    /// against a release, so once the grid is showing many files the row
+    /// is the only honest place for it.
+    fn file_cell(&self, track: usize) -> Div {
+        let editor = self.editor.clone();
+        div()
+            .h_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .child(
+                div().flex_1().min_w_0().child(
+                    Input::new(&self.names[track])
+                        .small()
+                        .appearance(false)
+                        .disabled(true),
+                ),
+            )
+            // Gated on the provider toggle like the header's, which the
+            // form still carries for a single track.
+            .when(providers::metadata_online(), |d| {
+                d.child(settings_ui::icon_button(
+                    icons::DOWNLOAD,
+                    false,
+                    move |_, window, cx| {
+                        editor
+                            .update(cx, |editor, cx| editor.look_up(track, window, cx))
+                            .ok();
+                    },
+                ))
+            })
+    }
 }
 
 impl TableDelegate for CellGrid {
@@ -1506,14 +2103,24 @@ impl TableDelegate for CellGrid {
             self.order = (0..self.cells.len()).collect();
             return;
         }
-        let numeric = matches!(
-            FIELDS[col_ix].0,
-            Field::Year | Field::TrackNo | Field::DiscNo | Field::Rating
-        );
+        // The file column sorts on its name; the rest on their cells.
+        let field = self.field_ix(col_ix);
+        let numeric = field.is_some_and(|i| {
+            matches!(
+                FIELDS[i].0,
+                Field::Year | Field::TrackNo | Field::DiscNo | Field::Rating
+            )
+        });
         let mut keyed: Vec<(usize, String)> = self
             .order
             .iter()
-            .map(|&t| (t, self.cells[t][col_ix].read(cx).value().to_lowercase()))
+            .map(|&t| {
+                let value = match field {
+                    Some(i) => self.cells[t][i].read(cx).value().to_lowercase(),
+                    None => self.names[t].read(cx).value().to_lowercase(),
+                };
+                (t, value)
+            })
             .collect();
         if numeric {
             keyed.sort_by_key(|(_, value)| leading_number(value));
@@ -1534,8 +2141,13 @@ impl TableDelegate for CellGrid {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let rows = self.order.len();
-        let total = rows * self.columns.len();
-        let cell = self.cells[self.order[row_ix]][col_ix].clone();
+        let track = self.order[row_ix];
+        // A display column edits nothing and stays out of the tab walk.
+        let Some(col_ix) = self.field_ix(col_ix) else {
+            return self.file_cell(track).into_any_element();
+        };
+        let total = rows * FIELDS.len();
+        let cell = self.cells[track][col_ix].clone();
         // Star-style rating cells hold no focusable input: they render
         // the click control and sit outside the tab walk. The numeric
         // style keeps them as plain 0-10 inputs in the walk below.
@@ -1550,16 +2162,18 @@ impl TableDelegate for CellGrid {
         }
         // The neighbors down and up the column, wrapping into the next
         // and previous column at the ends and skipping unfocusable
-        // rating columns.
+        // rating columns and fields whose column is toggled away.
+        let visible = self.visible_fields();
         let at = |pos: usize| {
             let (col, row) = (pos / rows, pos % rows);
             self.cells[self.order[row]][col].read(cx).focus_handle(cx)
         };
-        let step = |from: usize, dir: i64| {
+        let step = move |from: usize, dir: i64| {
             let mut pos = from;
             loop {
                 pos = (pos as i64 + dir).rem_euclid(total as i64) as usize;
-                if !(stars && FIELDS[pos / rows].0 == Field::Rating) {
+                let field = pos / rows;
+                if visible[field] && !(stars && FIELDS[field].0 == Field::Rating) {
                     return pos;
                 }
             }
@@ -1585,6 +2199,77 @@ impl TableDelegate for CellGrid {
     }
 }
 
+/// The selection's unknown tags as one list: every key any file carries,
+/// ordered by how many carry it so the shared ones lead, alphabetical
+/// inside a tie so the order holds still across opens. Files that agree
+/// on a value show it; the rest say so the way the form's mixed fields
+/// do.
+fn gather_unknowns(reads: &[FileRead]) -> UnknownTags {
+    // (key, one value per sighting, the file indices that carried it).
+    let mut gathered: Vec<(String, Vec<UnknownValue>, Vec<usize>)> = Vec::new();
+    let mut failed = 0;
+    for (ix, read) in reads.iter().enumerate() {
+        let FileRead::Read { unknown, .. } = read else {
+            continue;
+        };
+        let Ok(rows) = unknown else {
+            failed += 1;
+            continue;
+        };
+        for (key, value) in rows {
+            match gathered.iter_mut().find(|(k, _, _)| k == key) {
+                Some((_, values, files)) => {
+                    values.push(value.clone());
+                    if files.last() != Some(&ix) {
+                        files.push(ix);
+                    }
+                }
+                None => gathered.push((key.clone(), vec![value.clone()], vec![ix])),
+            }
+        }
+    }
+    gathered.sort_by(|a, b| b.2.len().cmp(&a.2.len()).then_with(|| a.0.cmp(&b.0)));
+    let rows = gathered
+        .into_iter()
+        .map(|(key, values, files)| {
+            let agreed = values.windows(2).all(|pair| pair[0] == pair[1]);
+            let value = if agreed {
+                one_line(&values[0].display())
+            } else {
+                "Multiple values".to_owned()
+            };
+            UnknownRow {
+                key: one_line(&key).into(),
+                value: value.into(),
+                files: files.len(),
+            }
+        })
+        .collect();
+    UnknownTags {
+        rows,
+        failed,
+        files: reads.len(),
+    }
+}
+
+/// A tag value as one row of it: newlines and control bytes flattened to
+/// spaces, and a long value cut where reading it stops being the point.
+/// A lyric sheet or an embedded blob of json is a tag like any other and
+/// still has to fit a row.
+fn one_line(value: &str) -> String {
+    const LIMIT: usize = 240;
+    let flat: String = value
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= LIMIT {
+        return flat;
+    }
+    let cut: String = flat.chars().take(LIMIT).collect();
+    format!("{cut}...")
+}
+
 /// A value's leading digits, the scanner's read of a numeric tag.
 fn leading_number(value: &str) -> u32 {
     let digits: String = value
@@ -1607,6 +2292,7 @@ impl Render for TagEditor {
                 .flex_col()
                 .p(tokens::SPACE_MD)
                 .child(self.tags_section(cx).flex_1().min_h_0())
+                .children(self.unknown_hint(cx))
                 .into_any_element()
         } else {
             div()
@@ -1621,7 +2307,8 @@ impl Render for TagEditor {
                         .flex_col()
                         .gap(SECTION_GAP)
                         .child(self.tags_section(cx))
-                        .child(self.track_section()),
+                        .child(self.track_section())
+                        .children(self.unknown_section(cx)),
                 )
                 .into_any_element()
         };
@@ -1629,7 +2316,9 @@ impl Render for TagEditor {
         div()
             .size_full()
             .flex()
-            .flex_row()
+            .flex_col()
+            .key_context(CONTEXT)
+            .on_action(cx.listener(|this, _: &Save, window, cx| this.save(window, cx)))
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
@@ -1638,22 +2327,29 @@ impl Render for TagEditor {
             // black instead of the playing track's art.
             .children(self.backdrop.layer(&self.now_art, window, cx))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .relative()
-                    .bg(palette::bg_elevated())
-                    .child(page)
-                    // Fades out when idle, same as the panels.
-                    .when(!self.table, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .child(Scrollbar::vertical(&self.scroll)),
-                        )
-                    }),
+                div().flex_1().min_h_0().flex().flex_row().child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .relative()
+                        // The page's own surface, a second elevated layer over
+                        // the window's, the same as the settings page. Two
+                        // layers is what the backdrop reads through, and the
+                        // footer stays outside it to sit a step darker.
+                        .bg(palette::bg_elevated())
+                        .child(page)
+                        // Fades out when idle, same as the panels.
+                        .when(!self.table, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .child(Scrollbar::vertical(&self.scroll)),
+                            )
+                        }),
+                ),
             )
+            .child(self.footer(cx))
     }
 }

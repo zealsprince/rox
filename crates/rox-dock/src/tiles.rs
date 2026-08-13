@@ -641,6 +641,13 @@ impl Tiles {
         entity_id: EntityId,
         item: &TileItem,
     ) -> Vec<AnyElement> {
+        // rox addition: tiles waive the dock's design-mode lock for drags,
+        // but resizing follows the resize lock; while it holds, the edges
+        // are not grabbable and the pointer keeps its shape.
+        if crate::resize_locked() {
+            return Vec::new();
+        }
+
         let item_id = item.id;
         let item_bounds = item.bounds;
         let handle_offset = -HANDLE_SIZE + px(1.);

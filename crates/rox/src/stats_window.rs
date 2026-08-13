@@ -939,20 +939,38 @@ impl Render for StatsWindow {
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
         panel::window_body(player, || {
+            // The range scopes every section under it, so it holds its own
+            // bar at the top rather than scrolling away with the first one.
+            // The right inset matches the page's scrollbar lane, so the
+            // picker lines up with the sections beneath it.
+            let range = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .flex_none()
+                .pl(tokens::SPACE_MD)
+                .pr(tokens::SPACE_MD + px(16.))
+                .py(tokens::SPACE_SM)
+                .border_b_1()
+                .border_color(palette::border())
+                .child(
+                    panel::setting_row(
+                        "Range",
+                        None,
+                        panel::choices(
+                            RANGES,
+                            self.range,
+                            |this: &mut Self, range, cx| this.set_range(range, cx),
+                            cx,
+                        ),
+                    )
+                    .flex_1()
+                    .min_w_0(),
+                );
             let page = div()
                 .flex()
                 .flex_col()
                 .gap(SECTION_GAP)
-                .child(panel::setting_row(
-                    "Range",
-                    None,
-                    panel::choices(
-                        RANGES,
-                        self.range,
-                        |this: &mut Self, range, cx| this.set_range(range, cx),
-                        cx,
-                    ),
-                ))
                 .child(self.listens_section())
                 .child(self.chart_section(cx))
                 .child(self.name_section(
@@ -988,27 +1006,35 @@ impl Render for StatsWindow {
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .relative()
+                        .flex()
+                        .flex_col()
                         .bg(palette::bg_elevated())
+                        .child(range)
                         .child(
                             div()
-                                .id("stats-page")
-                                .size_full()
-                                .overflow_y_scroll()
-                                .track_scroll(&self.scroll)
-                                .p(tokens::SPACE_MD)
-                                // Room for the scrollbar's 16px lane, so the
-                                // counts and play controls never sit under
-                                // the thumb.
-                                .pr(tokens::SPACE_MD + px(16.))
-                                .child(page),
-                        )
-                        // Fades out when idle, same as the panels.
-                        .child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .child(Scrollbar::vertical(&self.scroll)),
+                                .flex_1()
+                                .min_h_0()
+                                .relative()
+                                .child(
+                                    div()
+                                        .id("stats-page")
+                                        .size_full()
+                                        .overflow_y_scroll()
+                                        .track_scroll(&self.scroll)
+                                        .p(tokens::SPACE_MD)
+                                        // Room for the scrollbar's 16px lane,
+                                        // so the counts and play controls
+                                        // never sit under the thumb.
+                                        .pr(tokens::SPACE_MD + px(16.))
+                                        .child(page),
+                                )
+                                // Fades out when idle, same as the panels.
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .inset_0()
+                                        .child(Scrollbar::vertical(&self.scroll)),
+                                ),
                         ),
                 )
                 .into_any_element()

@@ -11,8 +11,12 @@
 // debug builds so stdout/stderr logging stays visible.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bake;
+mod bake_dialog;
 mod composite;
 mod console_window;
+mod convert;
+mod convert_dialog;
 mod cover;
 mod duplicates;
 mod embeddings;
@@ -32,10 +36,12 @@ mod quick_play;
 mod replaygain_job;
 mod settings;
 mod signals_window;
+mod smart_playlist;
 mod startup;
 mod stats_window;
 mod tags;
 mod tasks_window;
+mod tempo_job;
 mod workspace;
 mod workspaces;
 
@@ -49,8 +55,9 @@ use rox_core::settings::{
     layouts, note_first_run, note_os_appearance, os_decorations, resize_border, seed_os_appearance,
     set_acoustic_analysis, set_app_font, set_app_frame, set_design_mode, set_experimental,
     set_fold_case, set_gain_mode, set_hide_menubar, set_os_decorations, set_quit_to_tray,
-    set_rating_dots, set_rating_style, set_resize_border, set_seams, set_theme,
-    set_workspace_migrator, window_decorations, Settings, MIN_WINDOW_SIZE,
+    set_rating_dots, set_rating_style, set_resize_border, set_resize_lock, set_seams,
+    set_tempo_analysis, set_theme, set_workspace_migrator, window_decorations, Settings,
+    MIN_WINDOW_SIZE,
 };
 use rox_core::{logging, APP_ID};
 use rox_design::assets::Assets;
@@ -214,8 +221,12 @@ fn install_openers() {
         tags_editor: tags::editor::open,
         tags_matcher: tags::matcher::open,
         cover_editor: cover::editor::open,
+        rename_dialog: tags::rename::open,
+        convert_dialog: convert_dialog::open,
+        convert_available: convert::available,
         playlist_create: playlist_create::open,
         playlist_rename: playlist_create::open_rename,
+        smart_playlist: smart_playlist::open,
         eq_window: eq_window::open,
         stats_window: stats_window::open,
         signals_window: signals_window::open,
@@ -307,7 +318,17 @@ fn main() {
         rox_dock::init(cx);
         workspace::init(cx);
         tags::editor::init(cx);
-        // Last of the four, and it has to stay last: a rebind rebuilds the
+        tags::rename::init(cx);
+        tags::repair::init(cx);
+        smart_playlist::init(cx);
+        playlist_create::init(cx);
+        bake_dialog::init(cx);
+        convert_dialog::init(cx);
+        lyrics::edit::init(cx);
+        lyrics::matcher::init(cx);
+        cover::editor::init(cx);
+        rox_panel_api::panel_settings::init(cx);
+        // Last of the inits, and it has to stay last: a rebind rebuilds the
         // whole keymap, and this is where the bindings already registered
         // above get snapshotted so they survive one.
         keymap::init(cx);
@@ -338,8 +359,10 @@ fn main() {
         rox_library::genre::set_split_compounds(settings.split_genre_compounds);
         set_quit_to_tray(settings.quit_to_tray);
         set_design_mode(settings.design_mode, cx);
+        set_resize_lock(settings.resize_lock, cx);
         set_experimental(settings.experimental, cx);
         set_acoustic_analysis(settings.acoustic_analysis, cx);
+        set_tempo_analysis(settings.tempo_analysis, cx);
         set_gain_mode(settings.replay_gain.mode, cx);
         set_acoustic_model(&settings.acoustic_model, cx);
         integrations::tray::sync(cx);

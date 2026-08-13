@@ -74,51 +74,61 @@ pub const PIECES: &[ArrangeSpec<HeadPiece>] = &[
         label: "Artist",
         icon: Some(icons::MIC),
         value: HeadPiece::Artist,
+        repeats: false,
     },
     ArrangeSpec {
         label: "Album",
         icon: Some(icons::DISC),
         value: HeadPiece::Album,
+        repeats: false,
     },
     ArrangeSpec {
         label: "Year",
         icon: Some(icons::CALENDAR),
         value: HeadPiece::Year,
+        repeats: false,
     },
     ArrangeSpec {
         label: "Genre",
         icon: Some(icons::TAG),
         value: HeadPiece::Genre,
+        repeats: false,
     },
     ArrangeSpec {
         label: "Quality",
         icon: Some(icons::AUDIO_WAVEFORM),
         value: HeadPiece::Quality,
+        repeats: false,
     },
     ArrangeSpec {
         label: "Tracks",
         icon: Some(icons::LIST_MUSIC),
         value: HeadPiece::Tracks,
+        repeats: false,
     },
     ArrangeSpec {
         label: "Time",
         icon: Some(icons::CLOCK),
         value: HeadPiece::Time,
+        repeats: false,
     },
     ArrangeSpec {
         label: "Spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: HeadPiece::Spacer,
+        repeats: true,
     },
     ArrangeSpec {
         label: "Divider",
         icon: Some(icons::MINUS),
         value: HeadPiece::Divider,
+        repeats: false,
     },
     ArrangeSpec {
         label: "Art",
         icon: Some(icons::IMAGE),
         value: HeadPiece::Art,
+        repeats: false,
     },
 ];
 

@@ -4,6 +4,19 @@
 //! within its own to reorder. Playlists rename and delete from their own
 //! right-click, and New Playlist lives in the panel menu. Its own panel, never
 //! a mode of the library.
+//!
+//! A smart playlist is the same tree row over a saved query instead of a
+//! member list. It materializes on every refresh, which is what keeps its
+//! count and its rows honest with no cache to invalidate, and it takes no
+//! member edits at all: a drag onto one, or a Delete over its rows, is
+//! refused out loud rather than quietly dropped.
+//!
+//! What that costs: rating and play edits land in place through the shared
+//! projection (`LibraryEvent::Rated`, `Played`) and deliberately rebuild
+//! nothing, so a smart playlist keyed on either - "never played", "four
+//! stars and up" - can show a row that no longer belongs until the next
+//! refresh. Accepted for now; the alternative is re-materializing every
+//! open smart list on every star click.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -32,7 +45,7 @@ use crate::query::shared_query::{QueryFilter, QuerySource, SharedQueryEvent};
 use crate::selection::SelectionEvent;
 use crate::track_ui::track_cells;
 use crate::track_ui::track_columns::{self, Column, ColumnHost, GroupTrack, HeadingHost};
-use rox_library::playlists::PlaylistTrack;
+use rox_library::playlists::{PlaylistKind, PlaylistTrack};
 use rox_library::projection::{parse_query, FilterSet, Filterable, Term};
 
 /// One row's height; the list is a uniform_list, so every row agrees.
@@ -156,6 +169,9 @@ enum Row {
         /// The one default playlist behind the heart column: shown with a
         /// heart, shielded from rename and delete.
         favourite: bool,
+        /// A saved query rather than a member list: wears the funnel, takes
+        /// no member edits, and answers Edit Query.
+        smart: bool,
     },
     /// The name line of an album heading inside an expanded playlist,
     /// indexing [`PlaylistsPanel::albums`]. Built only when album headings
@@ -171,8 +187,15 @@ enum Row {
 /// off the panel's set, not stored here.
 struct TrackRow {
     playlist_id: i64,
+    /// What the selection, the drag, and the remove address this row by.
+    /// A static row carries its real member rowid; a smart one has no
+    /// member row behind it and carries [`smart_key`]'s negative stand-in.
     member_id: i64,
     track_id: i64,
+    /// Whether this row came out of a smart playlist's materialization, so
+    /// the edits that would need a member row can refuse instead of
+    /// silently doing nothing.
+    smart: bool,
     /// The track's 1-based spot in its playlist, its play order. Runs
     /// unbroken through the album headings, so it counts the playlist, not
     /// each album.
@@ -188,14 +211,40 @@ struct TrackRow {
     path: String,
 }
 
+/// The key a smart playlist's row is selected and dragged by. Its list has
+/// no member rows, so there is no rowid to address one with; a mix of the
+/// playlist and track ids stands in, stable across refreshes the way a
+/// rowid is. Forced negative, which a real member id never is, so the two
+/// key spaces can't collide and `member < 0` reads as "this row belongs to
+/// a query, not a list".
+fn smart_key(playlist_id: i64, track_id: i64) -> i64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in playlist_id
+        .to_le_bytes()
+        .iter()
+        .chain(track_id.to_le_bytes().iter())
+    {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    // Shift into the positive half before negating, and set the low bit so
+    // the key is never zero.
+    -(((hash >> 1) as i64) | 1)
+}
+
 impl TrackRow {
     /// Pull a member row's fields into a display row at a play-order spot,
     /// with the total play count resolved from the catalog.
-    fn new(playlist_id: i64, pos: u32, t: &PlaylistTrack, plays: u32) -> TrackRow {
+    fn new(playlist_id: i64, pos: u32, t: &PlaylistTrack, plays: u32, smart: bool) -> TrackRow {
         TrackRow {
             playlist_id,
-            member_id: t.member_id,
+            member_id: if smart {
+                smart_key(playlist_id, t.track_id)
+            } else {
+                t.member_id
+            },
             track_id: t.track_id,
+            smart,
             pos,
             title: t.title.clone(),
             artist: t.artist.clone(),
@@ -302,6 +351,10 @@ pub struct PlaylistsPanel {
     /// held as a member id so it survives a rebuild too.
     anchor: Option<i64>,
     menu_row: Option<usize>,
+    /// A one-line refusal under the tree: what a smart playlist wouldn't
+    /// take and why. Cleared on the next refresh, so it lives as long as the
+    /// tree that earned it.
+    refusal: Option<SharedString>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -387,6 +440,7 @@ impl PlaylistsPanel {
             drag_set: None,
             anchor: None,
             menu_row: None,
+            refusal: None,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             tab_panel: None,
@@ -419,10 +473,27 @@ impl PlaylistsPanel {
             // A searching tree loads every list to filter it; otherwise only
             // the expanded ones, which is what's on screen.
             let show_tracks = expanded || searching;
-            let all = if show_tracks {
-                library.playlist_tracks(playlist.id)
-            } else {
-                Vec::new()
+            let smart = playlist.kind == PlaylistKind::Smart;
+            // A smart playlist owns no member rows, so it materializes here
+            // even when collapsed: its header count is the result's length,
+            // and there is nothing else to read it from. Collapsed, that's
+            // the ids alone; only an open list pays to resolve display rows.
+            // One projection pass per smart list per refresh, no cache to go
+            // stale.
+            let def = smart
+                .then(|| library.playlist_definition(playlist.id))
+                .flatten();
+            let (count, all) = match (&def, show_tracks) {
+                (Some(def), true) => {
+                    let rows = library.smart_tracks(def);
+                    (rows.len() as u64, rows)
+                }
+                (Some(def), false) => (library.smart_ids(def).len() as u64, Vec::new()),
+                // A smart playlist whose definition won't load holds
+                // nothing; a static one counts its members as always.
+                (None, _) if smart => (0, Vec::new()),
+                (None, true) => (playlist.tracks, library.playlist_tracks(playlist.id)),
+                (None, false) => (playlist.tracks, Vec::new()),
             };
             // The original play-order index of each track that shows; a search
             // keeps only matches, so positions stay the playlist's, not the
@@ -440,9 +511,10 @@ impl PlaylistsPanel {
             rows.push(Row::Head {
                 id: playlist.id,
                 name: playlist.name,
-                count: playlist.tracks,
+                count,
                 expanded: show_tracks,
                 favourite: playlist.favourite,
+                smart,
             });
             if !show_tracks {
                 continue;
@@ -459,6 +531,7 @@ impl PlaylistsPanel {
                         (i + 1) as u32,
                         &all[i],
                         plays_of(&all[i]),
+                        smart,
                     )));
                 }
                 continue;
@@ -494,6 +567,7 @@ impl PlaylistsPanel {
                         (i + 1) as u32,
                         &all[i],
                         plays_of(&all[i]),
+                        smart,
                     )));
                 }
                 k = m;
@@ -520,7 +594,23 @@ impl PlaylistsPanel {
             self.anchor = None;
         }
         self.menu_row = None;
+        self.refusal = None;
         cx.notify();
+    }
+
+    /// Put up the one-line refusal a smart playlist's edits get. Nothing
+    /// happened, and the line says which nothing it was.
+    fn refuse(&mut self, why: &'static str, cx: &mut Context<Self>) {
+        self.refusal = Some(SharedString::from(why));
+        cx.notify();
+    }
+
+    /// Whether a playlist is a smart one, off the tree rather than the
+    /// catalog: the rows were built from the same read.
+    fn is_smart(&self, playlist_id: i64) -> bool {
+        self.rows
+            .iter()
+            .any(|row| matches!(row, Row::Head { id, smart, .. } if *id == playlist_id && *smart))
     }
 
     /// Re-read ratings for the visible track rows in place after a star click,
@@ -855,6 +945,16 @@ impl PlaylistsPanel {
         if members.is_empty() {
             return;
         }
+        // Smart rows carry a synthetic key, not a member rowid: there is no
+        // row to drop. Take out what is real and name what wasn't.
+        let (members, smart): (Vec<i64>, Vec<i64>) =
+            members.into_iter().partition(|&member| member > 0);
+        if !smart.is_empty() {
+            self.refuse("Edit the query to change what a smart playlist holds", cx);
+        }
+        if members.is_empty() {
+            return;
+        }
         self.state.library.update(cx, |library, cx| {
             library.remove_playlist_members(&members, cx);
         });
@@ -911,6 +1011,18 @@ impl PlaylistsPanel {
         if before.is_some_and(|b| drag.members.contains(&b)) {
             return;
         }
+        // A smart playlist's contents are its query's answer, so there is
+        // nowhere for a dropped track to go. Say so rather than swallow it.
+        if self.is_smart(playlist_id) {
+            self.refuse("A smart playlist takes its tracks from its query", cx);
+            return;
+        }
+        // And a row dragged out of one has no member to move, only a query
+        // it happens to match.
+        if drag.members.iter().any(|&member| member < 0) {
+            self.refuse("Tracks in a smart playlist can't be dragged out", cx);
+            return;
+        }
         let members = drag.members.clone();
         self.state.library.update(cx, |library, cx| {
             library.place_playlist_members(playlist_id, &members, before, cx);
@@ -935,8 +1047,9 @@ impl PlaylistsPanel {
                         count,
                         expanded,
                         favourite,
+                        smart,
                         ..
-                    } => self.head_row(ix, name.clone(), *count, *expanded, *favourite, cx),
+                    } => self.head_row(ix, name.clone(), *count, *expanded, *favourite, *smart, cx),
                     Row::Album(g) => {
                         let g = *g;
                         self.album_row(ix, g, cx)
@@ -954,6 +1067,7 @@ impl PlaylistsPanel {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn head_row(
         &self,
         ix: usize,
@@ -961,6 +1075,7 @@ impl PlaylistsPanel {
         count: u64,
         expanded: bool,
         favourite: bool,
+        smart: bool,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let chevron = if expanded {
@@ -1017,6 +1132,17 @@ impl PlaylistsPanel {
                         .size(px(13.))
                         .flex_none()
                         .text_color(palette::accent()),
+                )
+            })
+            // And a smart one wears the funnel, so a list you can't drag
+            // into looks different before you try.
+            .when(smart, |d| {
+                d.child(
+                    svg()
+                        .path(icons::FUNNEL)
+                        .size(px(13.))
+                        .flex_none()
+                        .text_color(palette::text_muted()),
                 )
             })
             .child(
@@ -1209,14 +1335,22 @@ impl PlaylistsPanel {
     }
 
     /// The panel menu's New Playlist entry, shared by the dropdown and the
-    /// empty state.
+    /// empty state, with its smart twin beside it.
     fn new_playlist_item(&self, menu: PopupMenu) -> PopupMenu {
         let state = self.state.clone();
+        let smart_state = self.state.clone();
         menu.item(
             PopupMenuItem::new("New Playlist...")
                 .icon(Icon::default().path(icons::PLUS))
                 .on_click(move |_, _, cx| {
                     rox_panel_api::openers::playlist_create(state.clone(), Vec::new(), cx);
+                }),
+        )
+        .item(
+            PopupMenuItem::new("New Smart Playlist...")
+                .icon(Icon::default().path(icons::FUNNEL))
+                .on_click(move |_, _, cx| {
+                    rox_panel_api::openers::smart_playlist(smart_state.clone(), None, cx);
                 }),
         )
     }
@@ -1609,6 +1743,19 @@ impl PlaylistsPanel {
             };
             this.update(cx, |this, cx| this.row_menu(menu, window, cx))
         }))
+        // The refusal a smart playlist's edits earn, under the tree where
+        // the edit was attempted.
+        .children(self.refusal.clone().map(|why| {
+            div()
+                .flex_none()
+                .px(tokens::SPACE_SM)
+                .py(tokens::SPACE_XS)
+                .border_t_1()
+                .border_color(palette::border())
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(why)
+        }))
     }
 
     /// The right-click menu for the row under the last press: track actions
@@ -1627,6 +1774,7 @@ impl PlaylistsPanel {
         match self.rows.get(ix) {
             Some(Row::Track(t)) => {
                 let (playlist_id, member_id, track_id) = (t.playlist_id, t.member_id, t.track_id);
+                let smart = t.smart;
                 let play_panel = weak.clone();
                 let menu = panel::track_actions(
                     menu,
@@ -1653,6 +1801,9 @@ impl PlaylistsPanel {
                 let menu = menu.item(
                     PopupMenuItem::new(remove_label)
                         .icon(Icon::default().path(icons::CLOSE))
+                        // A smart playlist has no member row to remove; the
+                        // row is here because the query says so.
+                        .disabled(smart)
                         .on_click(move |_, _, cx| {
                             if let Some(this) = remove_panel.upgrade() {
                                 this.update(cx, |this, cx| {
@@ -1672,9 +1823,10 @@ impl PlaylistsPanel {
                 id,
                 name,
                 favourite,
+                smart,
                 ..
             }) => {
-                let (id, name, favourite) = (*id, name.clone(), *favourite);
+                let (id, name, favourite, smart) = (*id, name.clone(), *favourite, *smart);
                 let play_panel = weak.clone();
                 let menu = menu.item(
                     PopupMenuItem::new("Play")
@@ -1685,6 +1837,22 @@ impl PlaylistsPanel {
                             }
                         }),
                 );
+                // A smart playlist's contents are its query, so editing the
+                // query is the only way to change what it holds.
+                let query_state = self.state.clone();
+                let menu = menu.when(smart, |menu| {
+                    menu.item(
+                        PopupMenuItem::new("Edit Query...")
+                            .icon(Icon::default().path(icons::FUNNEL))
+                            .on_click(move |_, _, cx| {
+                                rox_panel_api::openers::smart_playlist(
+                                    query_state.clone(),
+                                    Some(id),
+                                    cx,
+                                );
+                            }),
+                    )
+                });
                 // The favourites playlist is the one default: no rename, no
                 // delete, so the heart column and menu always have their home.
                 let rename_state = self.state.clone();

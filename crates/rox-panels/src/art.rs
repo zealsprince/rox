@@ -2394,6 +2394,8 @@ impl ArtPanel {
                         // editor window.
                         let state = this.read(cx).state.clone();
                         let reveal = ids.first().copied();
+                        let convert_state = state.clone();
+                        let convert_ids = ids.clone();
                         let menu = menu.item(
                             PopupMenuItem::new("Edit Tags...")
                                 .icon(Icon::default().path(icons::PENCIL))
@@ -2405,6 +2407,26 @@ impl ArtPanel {
                                     );
                                 }),
                         );
+                        // The whole album out to another format, the shelf's
+                        // own door to it: this menu is built here rather than
+                        // through `track_actions`, so the row has to be added
+                        // twice. Gated on ffmpeg being installed, same as the
+                        // track menu's.
+                        let menu = if rox_panel_api::openers::convert_available() {
+                            menu.item(
+                                PopupMenuItem::new("Convert...")
+                                    .icon(Icon::default().path(icons::AUDIO_LINES))
+                                    .on_click(move |_, _, cx| {
+                                        rox_panel_api::openers::convert_dialog(
+                                            convert_state.clone(),
+                                            convert_ids.clone(),
+                                            cx,
+                                        );
+                                    }),
+                            )
+                        } else {
+                            menu
+                        };
                         // Reveal follows the album's first track, landing in
                         // that album's folder.
                         let menu = panel::reveal_item(menu, this.read(cx).state.clone(), reveal);

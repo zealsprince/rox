@@ -29,24 +29,26 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{Root, Sizable as _};
 
+use crate::convert;
 use crate::embeddings;
 use crate::integrations::tray;
 use crate::lastfm::import;
 use crate::panel_settings;
 use crate::pass_prompt;
 use crate::replaygain_job;
+use crate::tempo_job;
 use crate::workspace::{ApplyShaders, Workspace};
 use rox_core::settings::layouts::Preset;
 use rox_core::settings::{
-    self, data_dir, settings_path, Frame, GainModeSetting, LayoutSize, LyricsSave, NamedLayout,
-    Providers, RatingStyle, ReplayGainSave, Settings, ShuffleMode, Theme, WorkspaceMeta,
-    BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
+    self, data_dir, settings_path, AcousticSave, Frame, GainModeSetting, LayoutSize, LyricsSave,
+    NamedLayout, Providers, RatingStyle, ReplayGainSave, Settings, ShuffleMode, Theme,
+    WorkspaceMeta, BORDER_MAX, MARGIN_MAX, PADDING_MAX, ROUNDING_MAX,
 };
 use rox_design::assets::icons;
 use rox_design::palette::{self, Palette, Role, Side, Sides, ROLES};
 use rox_design::tokens;
 use rox_dock::{DockAreaState, DockEvent, PanelView, StackPanel, TabPanel};
-use rox_library::store::{GainCoverage, Stats};
+use rox_library::store::{BpmCoverage, GainCoverage, Stats, Storage};
 use rox_net::lastfm::{has_builtin_keys, AuthPhase};
 use rox_net::providers;
 use rox_panel_api::panel::{self, AppState};
@@ -252,22 +254,81 @@ const CONTINUATION_MODES: &[panel::ModeSpec<continuation::Mode>] = &[
 ];
 
 /// The storage page's measurements, taken entering the page and after a
-/// clear rather than per frame: the stats and the cache walk are cheap
-/// once, not every paint.
-#[derive(Clone, Copy, Default)]
+/// clear rather than per frame: the database walk and the store walks are
+/// affordable once, nowhere near affordable every paint.
+#[derive(Clone, Default)]
 struct StorageInfo {
     /// The whole library's rollup: tracks, albums, bytes of music.
     music: Stats,
-    /// library.db with its WAL sidecars.
-    catalog: u64,
+    /// Where library.db's pages went, bucket by bucket. Its buckets are what
+    /// the page reads out rather than the file's size, which says only that
+    /// something in there is large.
+    breakdown: Storage,
+    /// Every acoustic model with vectors in the database, including ones
+    /// this build knows nothing about.
+    models: Vec<rox_library::embeddings::ModelRows>,
     /// thumbs.db with its WAL sidecars.
     thumbs: u64,
     /// Everything under waveforms/.
     waveforms: u64,
     /// Everything in the lyrics store (lyrics/).
     lyrics: u64,
+    /// Everything in the artist store (artists/).
+    artists: u64,
+    /// The downloaded model weights (models/).
+    weights: u64,
+    /// The look the app is wearing plus everything set up around it: the
+    /// saved workspaces, the ejected shaders, the icon packs.
+    app_data: u64,
     /// The log file and its rolled back file (logs/).
     logs: u64,
+}
+
+impl StorageInfo {
+    /// Walk everything the storage page shows. Runs on the background
+    /// executor, on a connection of its own because the library's belongs to
+    /// the UI thread: the page accounting reads every page in the file, and
+    /// the stores are counted file by file on top of that.
+    ///
+    /// A database that isn't there is left alone rather than opened, since
+    /// opening one creates it, and this page has no business making a
+    /// library.db for someone who has never scanned a folder.
+    fn measure(db: &Path) -> Self {
+        let data = data_dir();
+        let conn = db
+            .exists()
+            .then(|| rox_library::store::open(db).ok())
+            .flatten();
+        let (music, breakdown, models) = match &conn {
+            Some(conn) => (
+                rox_library::store::stats(conn).unwrap_or_default(),
+                rox_library::store::storage_breakdown(conn).unwrap_or_default(),
+                rox_library::embeddings::models(conn).unwrap_or_default(),
+            ),
+            None => Default::default(),
+        };
+        Self {
+            music,
+            breakdown,
+            models,
+            thumbs: db_size(&data.join("thumbs.db")),
+            waveforms: dir_size(&rox_services::peaks::cache_dir()),
+            lyrics: dir_size(&settings::lyrics_dir()),
+            artists: dir_size(&settings::artists_dir()),
+            weights: dir_size(&rox_acoustic::models::dir()),
+            app_data: file_size(&settings::look_path())
+                + dir_size(&settings::workspaces_dir())
+                + dir_size(&settings::shaders_dir())
+                + dir_size(&crate::startup::icon_packs::packs_dir()),
+            // The log file follows an override, so the size comes off
+            // whichever folder the Reveal button opens rather than the
+            // default one beside it.
+            logs: rox_core::logging::log_path()
+                .parent()
+                .map(dir_size)
+                .unwrap_or(0),
+        }
+    }
 }
 
 /// A confirm dialog waiting on the user: each variant names what a yes does,
@@ -287,6 +348,17 @@ enum Pending {
         /// to wear it now rather than to replace what's there.
         imported: bool,
     },
+    /// Drop one acoustic model's vectors out of the library, by model id.
+    ///
+    /// The first delete in this window that asks first, and the reason it
+    /// breaks the rule is that nothing else here is expensive to undo. Every
+    /// other clear on the storage page throws away work the app redoes on
+    /// its own: thumbnails redraw as covers scroll past, waveforms decode on
+    /// the next play, artist images come back the next time a panel opens.
+    /// Descriptions don't come back on their own. Getting them is the
+    /// analysis pass listening to every file in the library again, which is
+    /// hours on a big one, so this yes gets asked for.
+    ClearEmbeddings(String),
 }
 
 struct SettingsWindow {
@@ -419,9 +491,25 @@ struct SettingsWindow {
     /// keystroke, the pickers' cadence.
     lastfm_key: Entity<InputState>,
     lastfm_secret: Entity<InputState>,
+    /// The ffmpeg path input; writes through like the credentials, and the
+    /// probe is keyed by value, so a pasted path shows Convert everywhere
+    /// without a restart.
+    ffmpeg_path: Entity<InputState>,
+    /// What the last press of the Test button learned: the version line the
+    /// binary answered with, or why it didn't. An edit to the path clears
+    /// it, so the callout never describes a binary the input has moved past.
+    ffmpeg_test: Option<Result<String, String>>,
     threshold_scrub: ScrubState,
-    /// The storage page's numbers; None until the page is first opened.
+    /// The storage page's numbers; None until the first walk lands.
     storage: Option<StorageInfo>,
+    /// Whether a measurement is out on the background executor, so the
+    /// things that ask for fresh numbers can ask as often as they like
+    /// without stacking walks over the same files.
+    storage_measuring: bool,
+    /// Whether something asked for numbers while that walk was out, which
+    /// means the numbers it brings back are already behind and one more
+    /// walk has to follow it.
+    storage_remeasure: bool,
     /// The folder list with per-folder rollups, recounted on every
     /// library event rather than per frame.
     root_stats: Vec<(PathBuf, Stats)>,
@@ -462,6 +550,12 @@ struct SettingsWindow {
     /// Keymap page doesn't load settings per render. Every edit on that
     /// page writes the file and re-reads this.
     keymap: BTreeMap<String, Vec<String>>,
+    /// The override map as it stood before the last reset, row or all,
+    /// what the Keymap page's Undo puts back. One level deep, cleared by
+    /// any other keymap edit so it never resurrects a stale map. Dies
+    /// with the window, which is as long as an accidental reset takes
+    /// to notice.
+    keymap_undo: Option<BTreeMap<String, Vec<String>>>,
     /// The command whose next keystroke the Keymap page is waiting for,
     /// while a row is recording. The interceptor below reads it to decide
     /// whether to swallow a press.
@@ -474,6 +568,11 @@ struct SettingsWindow {
     /// Whether the library may build acoustic vectors, the Library page's
     /// acoustic switch.
     acoustic_analysis: bool,
+    /// Whether the library may work out how fast its tracks run, the
+    /// Library page's tempo switch.
+    tempo_analysis: bool,
+    /// Where the analysis pass puts its vectors, the row under the switch.
+    acoustic_save: AcousticSave,
     /// The start prompt for a long pass, while it's up. It owns the worker
     /// slider, the estimate, and the start itself; the section buttons only
     /// raise it, and the tasks window raises the same one.
@@ -483,6 +582,7 @@ struct SettingsWindow {
     /// file. The prompt's slider is what moves them.
     acoustic_workers: usize,
     rg_workers: usize,
+    tempo_workers: usize,
     /// What the last acoustic pass measured on this machine, worker-seconds
     /// per track by model id, mirrored from the session file so the coverage
     /// note can price a pass per render without re-reading it. Refreshed
@@ -491,12 +591,21 @@ struct SettingsWindow {
     /// The same for ReplayGain measurement, seconds per track. Zero until a
     /// pass has measured one.
     rg_pace: f32,
+    /// The same for the tempo pass. One number rather than a map, since
+    /// there's no model behind it to key by.
+    tempo_pace: f32,
     /// How much of the library the acoustic pass has described, counted
     /// alongside the rollups above rather than in a paint.
     acoustic_coverage: rox_library::embeddings::Coverage,
     /// The running acoustic pass, while one runs. Polled like `rg_job`, and
     /// app-global for the same reason: closing this window leaves it going.
     acoustic_job: Option<Arc<rox_acoustic::Progress>>,
+    /// The library's tempo split, counted alongside the rollups above
+    /// rather than in a paint.
+    bpm_coverage: BpmCoverage,
+    /// The running tempo pass, while one runs. App-global like the other
+    /// two: closing this window leaves it going.
+    tempo_job: Option<Arc<tempo_job::Progress>>,
     /// Which extractor the pass runs and the similarity queries read, the
     /// Library page's switch. Mirrors the live pick; the coverage above is
     /// counted against whatever this names.
@@ -589,6 +698,7 @@ struct SettingsWindow {
     persist_palette: bool,
     _picker_changes: Vec<Subscription>,
     _lastfm_changes: Vec<Subscription>,
+    _ffmpeg_changed: Subscription,
     /// The connect flow's phases land through here, so the page's status
     /// line follows along.
     _scrobbler_changed: Subscription,
@@ -661,6 +771,11 @@ impl SettingsWindow {
         if acoustic_job.is_some() || model_job.is_some() {
             Self::poll_analyzing(cx);
         }
+        let bpm_coverage = library.read(cx).bpm_breakdown();
+        let tempo_job = tempo_job::progress(cx);
+        if tempo_job.is_some() {
+            Self::poll_timing(cx);
+        }
         let _library_changed = cx.subscribe(
             &library,
             |this: &mut Self, library, event: &LibraryEvent, cx| {
@@ -672,6 +787,9 @@ impl SettingsWindow {
                 // ReplayGain columns in, so the Audio page's coverage line
                 // moves with either.
                 this.rg_coverage = library.read(cx).replaygain_breakdown();
+                // A scan and a finished tempo pass both fill the bpm column
+                // in, so the Library page's tempo line moves with either.
+                this.bpm_coverage = library.read(cx).bpm_breakdown();
                 // A finished scan moves the storage numbers too; remeasure
                 // if they are on screen.
                 if this.page == Page::Storage {
@@ -743,6 +861,22 @@ impl SettingsWindow {
                 }
             }));
         }
+        // The ffmpeg path takes the same per-keystroke write-through, and
+        // since the probe caches per value, a path that resolves flips the
+        // Convert surfaces on with no restart.
+        let ffmpeg_path = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("ffmpeg")
+                .default_value(settings.convert.ffmpeg.clone())
+        });
+        let _ffmpeg_changed = cx.subscribe(&ffmpeg_path, |this, input, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                let value = input.read(cx).value().trim().to_string();
+                Settings::update(move |s| s.convert.ffmpeg = value);
+                this.ffmpeg_test = None;
+                cx.notify();
+            }
+        });
         // The search box up top: typing filters every page at once. The
         // first search measures storage so the Storage rows have numbers
         // without a page visit; after that the numbers ride until the
@@ -839,8 +973,12 @@ impl SettingsWindow {
             discord_show_youtube_button: settings.accounts.discord.show_youtube_button,
             lastfm_key,
             lastfm_secret,
+            ffmpeg_path,
+            ffmpeg_test: None,
             threshold_scrub: ScrubState::default(),
             storage: None,
+            storage_measuring: false,
+            storage_remeasure: false,
             root_stats,
             rg_coverage,
             rg_job,
@@ -855,13 +993,19 @@ impl SettingsWindow {
             check_updates: settings.check_updates,
             experimental: settings.experimental,
             acoustic_analysis: settings.acoustic_analysis,
+            tempo_analysis: settings.tempo_analysis,
+            acoustic_save: settings.acoustic_save,
             prompt: None,
             acoustic_workers: settings.acoustic_workers.max(1),
             rg_workers: settings.replaygain_workers.max(1),
+            tempo_workers: settings.tempo_workers.max(1),
             acoustic_pace: settings.session.acoustic_pace.clone(),
             rg_pace: settings.session.replaygain_pace,
+            tempo_pace: settings.session.tempo_pace,
             acoustic_coverage,
             acoustic_job,
+            bpm_coverage,
+            tempo_job,
             // Open on whichever half holds the model the page is offering,
             // so someone running their own file lands on it rather than on a
             // shelf that looks like nothing is picked.
@@ -896,9 +1040,11 @@ impl SettingsWindow {
             persist_gen: 0,
             persist_palette: false,
             keymap: settings.keymap.clone(),
+            keymap_undo: None,
             recording: None,
             _picker_changes,
             _lastfm_changes,
+            _ffmpeg_changed,
             _scrobbler_changed,
             _library_changed,
             _library_repaint,
@@ -1183,6 +1329,14 @@ impl SettingsWindow {
     fn set_design_mode(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_design_mode(on, cx);
         Settings::update(move |s| s.design_mode = on);
+        cx.notify();
+    }
+
+    /// The resize-lock switch, the design-mode setter's shape: the live
+    /// flag repaints every window's handles, and the file keeps it.
+    fn set_resize_lock(&mut self, on: bool, cx: &mut Context<Self>) {
+        settings::set_resize_lock(on, cx);
+        Settings::update(move |s| s.resize_lock = on);
         cx.notify();
     }
 
@@ -1849,8 +2003,9 @@ impl SettingsWindow {
                     "Run While Idle",
                     Some(
                         "Keep drawing with nothing playing. The animation stays parked \
-                         either way; this is what lets a shader that reads the mouse \
-                         follow the cursor while the music is stopped",
+                         either way. A shader that reads the mouse follows the cursor \
+                         with the music stopped without this; it just stops a couple of \
+                         seconds after the pointer does",
                     ),
                     panel::toggle(run_idle, Self::set_post_shader_run_idle, cx),
                 );
@@ -2631,6 +2786,18 @@ impl SettingsWindow {
                         Self::set_replay_gain_save,
                         cx,
                     ),
+                )
+                .keyed(
+                    &["automatic", "auto", "new files", "watch"],
+                    "Measure New Files",
+                    Some(
+                        "Measure what the watcher brings in as it arrives, once the sync has \
+                         settled, so a library that grows keeps its gains without a trip back \
+                         here. The numbers land wherever Save Measured Gains points. Turning \
+                         this on offers to measure what's already missing first; after that it \
+                         only ever sees files that just landed",
+                    ),
+                    panel::toggle(rg.auto, Self::set_replay_gain_auto, cx),
                 );
                 match note {
                     Some(note) => rows
@@ -2648,6 +2815,26 @@ impl SettingsWindow {
     fn set_replay_gain_save(&mut self, save: ReplayGainSave, cx: &mut Context<Self>) {
         self.playback
             .update(cx, |player, cx| player.set_replay_gain_save(save, cx));
+        cx.notify();
+    }
+
+    /// The follow-the-watcher switch, through the player like the rest of the
+    /// section. On the way on it asks about the backlog: the pass's work list
+    /// is everything with no gain, so a switch flipped over a library nobody
+    /// has measured would start hours of decoding at the next watch sync
+    /// without anyone having seen a number first. The prompt prices that
+    /// backlog and measures it now; declining is a no to the switch too, and
+    /// lands back here through `pass_refused`.
+    ///
+    /// Nothing to ask about with nothing missing, or with a pass already
+    /// working through it, so the switch just goes on.
+    fn set_replay_gain_auto(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.playback
+            .update(cx, |player, cx| player.set_replay_gain_auto(on, cx));
+        if on && self.rg_coverage.missing > 0 && self.rg_job.is_none() {
+            let library = self.library.clone();
+            pass_prompt::raise_for_switch(self, pass_prompt::Pass::ReplayGain, library, cx);
+        }
         cx.notify();
     }
 
@@ -3225,6 +3412,17 @@ impl SettingsWindow {
                     panel::toggle(self.check_updates, Self::set_check_updates, cx),
                 )
             }))
+            .section(Section::new(q, icons::LAYOUT_DASHBOARD, "Layout", None, |rows| {
+                rows.keyed(
+                    &["resize", "lock", "design", "drag", "seam"],
+                    "Lock Panel Resize",
+                    Some(
+                        "Panel splits only resize while Design Mode is on, so a drag \
+                         near a seam can't nudge a finished layout",
+                    ),
+                    panel::toggle(settings::resize_lock(), Self::set_resize_lock, cx),
+                )
+            }))
             // A resident process with no way back in is worse than quitting,
             // so the row only exists where something can bring a window back.
             .when(tray::supported(), |page| {
@@ -3614,6 +3812,96 @@ impl SettingsWindow {
                     )
                 },
             ))
+            // This row stays put when ffmpeg is missing, unlike every other
+            // Convert surface: it's the one place that can fix the absence.
+            .section(Section::new(
+                q,
+                icons::AUDIO_LINES,
+                "Conversion",
+                None,
+                |rows| {
+                    rows.keyed(
+                        &["ffmpeg", "convert", "encoder", "binary", "test"],
+                        "FFmpeg Binary",
+                        Some("Which ffmpeg runs conversions; leave empty for the one on PATH"),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(tokens::SPACE_SM)
+                            .child(Input::new(&self.ffmpeg_path).w(px(240.)))
+                            .child(small_button(
+                                "Test",
+                                icons::FLASK,
+                                false,
+                                cx.listener(|this, _, _, cx| this.test_ffmpeg(cx)),
+                            )),
+                    )
+                    // The callout the test answers with, in the output
+                    // status block's register: what the binary said, and
+                    // whether that's fine, readable before any of it is.
+                    .when_some(self.ffmpeg_test.as_ref(), |rows, answer| {
+                        rows.custom(&["ffmpeg", "convert", "test", "version"], || {
+                            match answer {
+                                Ok(version) => panel::banner(
+                                    panel::Tone::Good,
+                                    version.clone(),
+                                    vec!["This binary answers, so Convert is on".into()],
+                                ),
+                                Err(reason) => panel::banner(
+                                    panel::Tone::Bad,
+                                    "No answer from this ffmpeg",
+                                    vec![
+                                        reason.clone().into(),
+                                        "Convert stays hidden until a working binary answers"
+                                            .into(),
+                                    ],
+                                ),
+                            }
+                            .into_any_element()
+                        })
+                    })
+                    // The passive note keeps covering the case where nothing
+                    // was pressed, in the same banner dress as the test's
+                    // answer; once a test has spoken, that says it better.
+                    // Warn rather than Bad: nothing failed, a capability is
+                    // just absent.
+                    .when(
+                        !convert::available() && self.ffmpeg_test.is_none(),
+                        |rows| {
+                            rows.custom(&["ffmpeg", "convert", "missing"], || {
+                                panel::banner(
+                                    panel::Tone::Warn,
+                                    "No working ffmpeg answered",
+                                    vec!["Convert stays hidden; install ffmpeg or point the \
+                                         path at a binary"
+                                        .into()],
+                                )
+                                .into_any_element()
+                            })
+                        },
+                    )
+                },
+            ))
+    }
+
+    /// Run the version probe against whatever the input holds, off the UI
+    /// thread since it spawns a process, and keep the answer for the
+    /// callout. The probe cache learns the result too, so a pass flips the
+    /// Convert surfaces on right here.
+    fn test_ffmpeg(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let answer = cx
+                .background_executor()
+                .spawn(async { convert::test() })
+                .await;
+            this.update(cx, |this, cx| {
+                this.ffmpeg_test = Some(answer);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The lrclib toggle: through the live static, so the lyrics panel's
@@ -4118,22 +4406,94 @@ impl SettingsWindow {
                 },
             ))
             .section(self.acoustic_section(q, cx))
+            .section(self.tempo_section(q, cx))
+            .section(self.embed_section(q, cx))
     }
 
-    /// Measure everything the storage page shows: the library rollup on
-    /// the UI-side connection, the databases and the waveform cache by
-    /// stat. Cheap enough to run whole on page entry, too heavy per frame.
+    /// The catch-up for the three save settings: what rox is already holding
+    /// written into the files themselves.
+    ///
+    /// It sits here, under the acoustic radio, because this page is where two
+    /// of the three questions it answers already live - the save mode for
+    /// descriptions is the row above it, and the folder tools at the top of
+    /// the page are the other things that rewrite a library's files. The
+    /// counts belong to the dialog rather than this row: working out how many
+    /// files each source would touch means reading their tags, which is not
+    /// something a settings page should do on the way past.
+    fn embed_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        let button = small_button(
+            "Embed Stored Metadata...",
+            icons::UPLOAD,
+            self.library.read(cx).busy().is_some(),
+            cx.listener(|this, _, _, cx| {
+                let library = this.library.clone();
+                let now_art = this.now_art.clone();
+                crate::bake_dialog::open(library, now_art, cx);
+            }),
+        )
+        .into_any_element();
+        Section::new(q, icons::TAG, "Stored Metadata", Some(button), |rows| {
+            rows.keyed(
+                &[
+                    "embed",
+                    "bake",
+                    "tags",
+                    "lyrics",
+                    "replaygain",
+                    "acoustic",
+                    "portable",
+                ],
+                "Write What's Stored Into the Files",
+                Some(
+                    "The three save settings only speak for the next write, so anything \
+                     saved before one was switched to tags is still in rox alone. This \
+                     writes the lyrics, gains and descriptions rox already holds into the \
+                     files themselves, so a folder handed to another player carries them. \
+                     Nothing is worked out again",
+                ),
+                div(),
+            )
+        })
+    }
+
+    /// Measure everything the storage page shows, off the UI thread. It used
+    /// to run whole on page entry, back when it was a handful of stat calls;
+    /// the page accounting behind the database rows walks every page in the
+    /// file, which is a tenth of a second on a described library, and the
+    /// artist and model stores are counted file by file on top of that.
+    ///
+    /// The snapshot swaps in whole when it lands, so a remeasure leaves the
+    /// numbers already on screen up rather than blanking them, and the first
+    /// one shows zeros for the moment it takes. One walk at a time: the
+    /// library fires its update repeatedly through a scan, and every search
+    /// keystroke asks for numbers until there are some.
     fn refresh_storage(&mut self, cx: &mut Context<Self>) {
-        let data = data_dir();
-        self.storage = Some(StorageInfo {
-            music: self.library.read(cx).stats(),
-            catalog: db_size(&data.join("library.db")),
-            thumbs: db_size(&data.join("thumbs.db")),
-            waveforms: dir_size(&rox_services::peaks::cache_dir()),
-            lyrics: dir_size(&settings::lyrics_dir()),
-            logs: dir_size(&data.join("logs")),
-        });
-        cx.notify();
+        if self.storage_measuring {
+            // A walk that's already out was started before whatever just
+            // changed, so what it takes back is stale on arrival. Queue one
+            // behind it rather than dropping the ask or running a second
+            // walk over the same files alongside the first.
+            self.storage_remeasure = true;
+            return;
+        }
+        self.storage_measuring = true;
+        let db = self.library.read(cx).db_path();
+        cx.spawn(async move |this, cx| {
+            let info = cx
+                .background_executor()
+                .spawn(async move { StorageInfo::measure(&db) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.storage_measuring = false;
+                this.storage = Some(info);
+                cx.notify();
+                if std::mem::take(&mut this.storage_remeasure) {
+                    this.refresh_storage(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Empty the thumbnail store. The delete runs off the UI thread on
@@ -4163,14 +4523,111 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Drop the artist store: bios, portraits, banners and fanart. The walk
+    /// deletes a folder tree, so it goes off the UI thread the way the peak
+    /// cache's clear does; the panels fetch again as they open.
+    fn clear_artists(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .spawn(async move { rox_services::artists::clear() })
+                .await;
+            this.update(cx, |this, cx| this.refresh_storage(cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Drop one model's vectors, the confirm dialog's yes. The library holds
+    /// the busy badge through the delete and the vacuum behind it and emits
+    /// its update when they land, which is what remeasures this page.
+    fn clear_embeddings(&mut self, model: &str, cx: &mut Context<Self>) {
+        let model = model.to_owned();
+        self.library
+            .update(cx, |library, cx| library.clear_embeddings(&model, cx));
+    }
+
+    /// A row per acoustic model with vectors in the library: what it
+    /// described, and the clear that drops it. Built here rather than inside
+    /// the page's section closure because the model id is the row's label,
+    /// and rows with built labels don't go through [`Rows::keyed`].
+    fn embedding_rows(
+        &self,
+        models: &[rox_library::embeddings::ModelRows],
+        cx: &mut Context<Self>,
+    ) -> Vec<(String, AnyElement)> {
+        // The library refuses a clear while it's busy, but nothing there can
+        // refuse the analysis pass, which opens the database by path on its
+        // own and would write vectors straight back in behind the delete. The
+        // page that offers the button is what knows a pass is running.
+        let inert = self.acoustic_job.is_some() || self.library.read(cx).busy().is_some();
+        models
+            .iter()
+            .map(|entry| {
+                let id = entry.model.clone();
+                let known = rox_acoustic::models::find(&id).is_some()
+                    || id == rox_acoustic::MODEL
+                    || self
+                        .acoustic_local
+                        .as_ref()
+                        .is_some_and(|local| local.id == id);
+                let description = if known {
+                    format!(
+                        "{}, {} values a track. Clearing gives the space back, and having the \
+                         descriptions again means a whole pass over the library",
+                        self.label_for(&id, "This model"),
+                        entry.dim
+                    )
+                } else {
+                    format!(
+                        "{} values a track. Nothing in this build writes this model, so these \
+                         are left over from one that was renamed or dropped, and clearing them \
+                         costs the library nothing it uses",
+                        entry.dim
+                    )
+                };
+                let control = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(readout(format!("{} tracks", entry.rows)))
+                    .child(small_button(
+                        "Clear",
+                        icons::TRASH,
+                        inert,
+                        cx.listener({
+                            let id = id.clone();
+                            move |this, _, _, cx| {
+                                this.pending = Some(Pending::ClearEmbeddings(id.clone()));
+                                cx.notify();
+                            }
+                        }),
+                    ));
+                let row = rox_panel_kit::setting_row_dyn(
+                    SharedString::from(id.clone()),
+                    Some(description.into()),
+                    control,
+                )
+                .into_any_element();
+                (id, row)
+            })
+            .collect()
+    }
+
     fn storage_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
-        let info = self.storage.unwrap_or_default();
+        let info = self.storage.clone().unwrap_or_default();
+        let store = info.breakdown;
+        let measured = self.storage.is_some();
+        let models = self.embedding_rows(&info.models, cx);
         let music = format!(
             "{} tracks, {} albums, {}",
             info.music.tracks,
             info.music.albums,
             human_size(info.music.bytes)
         );
+        // Deletes leave pages behind and nothing vacuums on a schedule, so a
+        // freelist is the ordinary state of the file rather than news. It's
+        // worth a row once it's a real share of what library.db weighs.
+        let reclaimable = store.free >= 1_000_000 && store.free * 10 >= store.total();
         PageBody::new()
             .section(Section::new(q, icons::DATABASE, "Library", None, |rows| {
                 rows.keyed(
@@ -4180,17 +4637,56 @@ impl SettingsWindow {
                     readout(music),
                 )
                 .keyed(
-                    &["database", "size", "disk"],
+                    &["database", "catalog", "index", "size", "disk"],
                     "Catalog",
-                    Some("The track index scans build (library.db)"),
-                    readout(human_size(info.catalog)),
+                    Some("The track index scans build: a row a track with its tags, its file details and any cue spans, inside library.db"),
+                    readout(human_size(store.catalog)),
                 )
+                .keyed(
+                    &["playlists", "history", "listens", "genres", "size"],
+                    "Playlists and History",
+                    Some("Your playlists and their members, what you've played, and the library's genre notes. All of it small next to the rest of library.db"),
+                    readout(human_size(store.playlists + store.history + store.genres)),
+                )
+                .when(reclaimable, |rows| {
+                    rows.keyed(
+                        &["free", "reclaim", "vacuum", "deleted", "size"],
+                        "Reclaimable Space",
+                        Some("Pages inside library.db that deletes left behind. What gets written next fills them again, so the file stops growing before it starts shrinking"),
+                        readout(human_size(store.free)),
+                    )
+                })
                 .keyed(
                     &["size", "disk"],
                     "Lyrics",
                     Some("Fetched and edited sheets kept in the app's own store (lyrics/), so library folders stay clean"),
                     readout(human_size(info.lyrics)),
                 )
+            }))
+            .section(Section::new(q, icons::AUDIO_WAVEFORM, "Acoustic Descriptions", None, move |mut rows| {
+                rows = rows.keyed(
+                    &["acoustic", "embeddings", "vectors", "similar", "size"],
+                    "Vectors",
+                    Some("What every description weighs inside library.db. On a library the analysis pass has been through this is most of the file, a couple of kilobytes a track against a few hundred bytes of tags"),
+                    readout(human_size(store.acoustic)),
+                );
+                if models.is_empty() {
+                    // Only once a walk has actually come back. An empty list
+                    // is also what the page holds for the beat before the
+                    // first one lands, and saying nothing has been described
+                    // is a lie to tell a described library.
+                    return rows.when(measured, |rows| rows.keyed(
+                        &["acoustic", "analysis", "model", "describe"],
+                        "Models",
+                        Some("Nothing has described the library yet. Turning on acoustic analysis on the Library page is what fills this in, and every model that has run gets a row here"),
+                        readout("None".into()),
+                    ));
+                }
+                for (id, row) in models {
+                    let terms = ["acoustic", "embeddings", "vectors", "clear", "model", id.as_str()];
+                    rows = rows.custom(&terms, || row);
+                }
+                rows
             }))
             .section(Section::new(q, icons::LAYERS, "Caches", None, |rows| {
                 rows.keyed(
@@ -4226,6 +4722,37 @@ impl SettingsWindow {
                             false,
                             cx.listener(|this, _, _, cx| this.clear_waveforms(cx)),
                         )),
+                )
+                .keyed(
+                    &["cache", "clear", "artist", "images", "portrait", "biography", "size"],
+                    "Artist Images",
+                    Some("Portraits, banners and biographies fetched for the artist views (artists/); cleared ones are fetched again the next time a view opens"),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_SM)
+                        .child(readout(human_size(info.artists)))
+                        .child(small_button(
+                            "Clear",
+                            icons::TRASH,
+                            false,
+                            cx.listener(|this, _, _, cx| this.clear_artists(cx)),
+                        )),
+                )
+            }))
+            .section(Section::new(q, icons::FOLDER, "App Data", None, |rows| {
+                rows.keyed(
+                    &["model", "weights", "download", "ml", "size"],
+                    "Model Weights",
+                    Some("The models downloaded for acoustic analysis (models/). The ML Models page is where they're fetched and deleted, one row a model"),
+                    readout(human_size(info.weights)),
+                )
+                .keyed(
+                    &["workspace", "layout", "shader", "icons", "look", "size"],
+                    "Looks and Layouts",
+                    Some("The look the app is wearing (workspace.json) with your saved workspaces, ejected shader files and icon packs beside it. Small, and every byte of it is something you set up"),
+                    readout(human_size(info.app_data)),
                 )
             }))
             .section(Section::new(q, icons::FILE_TEXT, "Diagnostics", None, |rows| {
@@ -4279,6 +4806,15 @@ impl SettingsWindow {
         if !on {
             embeddings::stop(cx);
         }
+        cx.notify();
+    }
+
+    /// Where an analyzed vector saves. Straight to the file: nothing holds a
+    /// live copy of it, and the pass reads it once when it starts, so a pass
+    /// already running keeps the destination it began with.
+    fn set_acoustic_save(&mut self, save: AcousticSave, cx: &mut Context<Self>) {
+        self.acoustic_save = save;
+        Settings::update(move |s| s.acoustic_save = save);
         cx.notify();
     }
 
@@ -4875,6 +5411,26 @@ impl SettingsWindow {
                         cx,
                     ),
                 );
+                rows = rows.keyed(
+                    &["save", "write", "tags", "database", "vectors"],
+                    "Save Descriptions",
+                    Some(
+                        "Where the pass puts what it works out. The database alone keeps your \
+                         files untouched; tags put a copy in each file as well, so the \
+                         descriptions survive the library being rebuilt or the folder moving to \
+                         another machine, at the cost of rewriting the audio files. Tags reach \
+                         MP3 and FLAC only - every other format keeps the database copy",
+                    ),
+                    panel::choices(
+                        &[
+                            ("Database", AcousticSave::Database),
+                            ("Tags", AcousticSave::Tags),
+                        ],
+                        self.acoustic_save,
+                        Self::set_acoustic_save,
+                        cx,
+                    ),
+                );
                 match note {
                     Some(note) => rows
                         .custom(&["coverage", "analyze", "missing", "progress"], || {
@@ -5034,6 +5590,171 @@ impl SettingsWindow {
                 }
                 cx.notify();
                 this.acoustic_job.is_some() || this.model_job.is_some()
+            });
+            if !matches!(live, Ok(true)) {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// Tempo analysis, under the acoustic section because it's the same
+    /// kind of thing: a pass over the audio that fills a column in. One
+    /// switch and one line, since there's nothing to pick - no model, and
+    /// nowhere but the database for the numbers to land.
+    fn tempo_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        let on = self.tempo_analysis;
+        let note = on.then(|| self.tempo_note());
+        Section::new(
+            q,
+            icons::CLOCK,
+            "Tempo Analysis",
+            on.then(|| self.tempo_control(cx)),
+            move |rows| {
+                let rows = rows.keyed(
+                    &["tempo", "bpm", "analysis"],
+                    "Work Out How Fast Tracks Run",
+                    Some(
+                        "Count the beats in tracks whose tags don't say, so the library can \
+                         show and sort by tempo. Everything is worked out on this machine, \
+                         the numbers go in the library database, and your files are left \
+                         alone",
+                    ),
+                    panel::toggle(on, Self::set_tempo_analysis, cx),
+                );
+                match note {
+                    Some(note) => rows
+                        .custom(&["coverage", "analyze", "missing", "progress"], || {
+                            coverage_note(note).into_any_element()
+                        }),
+                    None => rows,
+                }
+            },
+        )
+    }
+
+    /// The tempo switch. It's the feature as well as the permission: with
+    /// it off nothing measures, the BPM column isn't offered, and the pass
+    /// no-ops even if something asks it to run.
+    fn set_tempo_analysis(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.tempo_analysis = on;
+        Settings::update(move |s| s.tempo_analysis = on);
+        settings::set_tempo_analysis(on, cx);
+        cx.notify();
+    }
+
+    /// The line under the tempo switch: what a running pass is doing, or
+    /// where the library stands. The three-way split is worth spelling out
+    /// for the ReplayGain section's reason - a number rox worked out and a
+    /// number the file arrived with are not the same claim.
+    fn tempo_note(&self) -> String {
+        if let Some(job) = &self.tempo_job {
+            let total = job.total();
+            if total == 0 {
+                return "Working out what's missing...".into();
+            }
+            let mut line = format!("Timing {} of {total}", job.done().min(total));
+            if let Some(eta) = job.eta_secs() {
+                line.push_str(&format!(", {} left", rox_core::pace::human(eta)));
+            }
+            let current = job.current();
+            if let Some(name) = Path::new(&current).file_name() {
+                line.push_str(&format!(" - {}", name.to_string_lossy()));
+            }
+            let failed = job.failed();
+            if failed > 0 {
+                line.push_str(&format!(" ({failed} with no clear beat)"));
+            }
+            return line;
+        }
+        let split = self.bpm_coverage;
+        let total = split.total();
+        if total == 0 {
+            return "Nothing scanned to analyze yet".into();
+        }
+        if split.covered() == 0 {
+            return format!(
+                "None of the {total} tracks scanned say how fast they run. Analyze Missing \
+                 works them out{}",
+                self.tempo_estimate_suffix(split.missing)
+            );
+        }
+        if split.missing > 0 {
+            return format!(
+                "{} of {total} scanned tracks have a tempo, {} of them worked out by rox. \
+                 Analyze Missing works through the other {}{}",
+                split.covered(),
+                split.measured,
+                split.missing,
+                self.tempo_estimate_suffix(split.missing)
+            );
+        }
+        if split.measured > 0 {
+            return format!(
+                "All {total} scanned tracks have a tempo, {} of them worked out by rox",
+                split.measured
+            );
+        }
+        format!("All {total} scanned tracks carry a tempo tag")
+    }
+
+    /// A rough cost for working out `missing` tempos at the current worker
+    /// setting, ready to append to the line above, or nothing until a pass
+    /// has measured this machine's pace.
+    fn tempo_estimate_suffix(&self, missing: u64) -> String {
+        match rox_core::pace::estimate(self.tempo_pace, missing, self.tempo_workers) {
+            Some(estimate) => format!(
+                " ({estimate} at {})",
+                rox_core::pace::workers_phrase(self.tempo_workers)
+            ),
+            None => String::new(),
+        }
+    }
+
+    /// Start the pass, or stop the one running. Inert with nothing missing,
+    /// and while the library is busy, since a scan rewrites the very rows
+    /// the pass reads.
+    fn tempo_control(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(job) = &self.tempo_job {
+            let stopping = job.stopping();
+            return small_button(
+                if stopping { "Stopping..." } else { "Stop" },
+                icons::STOP,
+                stopping,
+                cx.listener(|_, _, _, cx| tempo_job::stop(cx)),
+            )
+            .into_any_element();
+        }
+        let idle = self.bpm_coverage.missing == 0 || self.library.read(cx).busy().is_some();
+        small_button(
+            "Analyze Missing",
+            icons::CLOCK,
+            idle,
+            cx.listener(|this, _, _, cx| {
+                let library = this.library.clone();
+                pass_prompt::raise(this, pass_prompt::Pass::Tempo, library, cx);
+            }),
+        )
+        .into_any_element()
+    }
+
+    /// Mirror the running tempo pass into the section, `poll_measuring`'s
+    /// twin. Stops itself once the pass clears the global, and re-reads the
+    /// split on the way out so the line lands on the final count.
+    fn poll_timing(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(RG_POLL).await;
+            let live = this.update(cx, |this, cx| {
+                let was = this.tempo_job.is_some();
+                this.tempo_job = tempo_job::progress(cx);
+                if was && this.tempo_job.is_none() {
+                    this.bpm_coverage = this.library.read(cx).bpm_breakdown();
+                    // The pass that just ended wrote what it measured per
+                    // track; pick it up so the next estimate prices off it.
+                    this.tempo_pace = Settings::load().session.tempo_pace;
+                }
+                cx.notify();
+                this.tempo_job.is_some()
             });
             if !matches!(live, Ok(true)) {
                 break;
@@ -5408,16 +6129,27 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Every file directly under one folder; the waveform cache is flat.
+/// Every file under one folder, subfolders and all. The caches are flat,
+/// but the ejected shaders sit a folder per workspace deep and the icon
+/// packs a folder per pack, and a walk that stopped at the top would report
+/// those as nothing. A symlink is measured as the link rather than followed,
+/// so nothing here can walk in a circle.
 fn dir_size(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };
     entries
         .flatten()
-        .filter_map(|entry| entry.metadata().ok())
-        .map(|meta| meta.len())
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => dir_size(&entry.path()),
+            _ => entry.metadata().map(|meta| meta.len()).unwrap_or(0),
+        })
         .sum()
+}
+
+/// One file's weight, zero when it isn't there.
+fn file_size(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
 }
 
 /// The pass prompt's host side: where the dialog's state lives on this
@@ -5442,16 +6174,21 @@ impl pass_prompt::Host for SettingsWindow {
         let settings = Settings::load();
         self.acoustic_workers = settings.acoustic_workers.max(1);
         self.rg_workers = settings.replaygain_workers.max(1);
+        self.tempo_workers = settings.tempo_workers.max(1);
         self.acoustic_pace = settings.session.acoustic_pace.clone();
         self.rg_pace = settings.session.replaygain_pace;
+        self.tempo_pace = settings.session.tempo_pace;
         self.acoustic_coverage = self
             .library
             .read(cx)
             .acoustic_coverage(self.acoustic_source.id());
         self.rg_coverage = self.library.read(cx).replaygain_breakdown();
+        self.bpm_coverage = self.library.read(cx).bpm_breakdown();
         let (was_analyzing, was_measuring) = (self.acoustic_job.is_some(), self.rg_job.is_some());
+        let was_timing = self.tempo_job.is_some();
         self.acoustic_job = embeddings::progress(cx);
         self.rg_job = replaygain_job::progress(cx);
+        self.tempo_job = tempo_job::progress(cx);
         // A pass that just started needs its poll; one that was already
         // running has a loop and doesn't need a second.
         if !was_analyzing && self.acoustic_job.is_some() {
@@ -5460,7 +6197,20 @@ impl pass_prompt::Host for SettingsWindow {
         if !was_measuring && self.rg_job.is_some() {
             Self::poll_measuring(cx);
         }
+        if !was_timing && self.tempo_job.is_some() {
+            Self::poll_timing(cx);
+        }
         cx.notify();
+    }
+
+    /// The backlog behind the Measure New Files switch was declined, so the
+    /// switch was a no as well: put it back, rather than leave it on to start
+    /// the pass it just refused at the next watch sync.
+    fn pass_refused(&mut self, pass: pass_prompt::Pass, cx: &mut Context<Self>) {
+        if matches!(pass, pass_prompt::Pass::ReplayGain) {
+            self.playback
+                .update(cx, |player, cx| player.set_replay_gain_auto(false, cx));
+        }
     }
 }
 

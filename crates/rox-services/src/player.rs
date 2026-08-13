@@ -6,7 +6,7 @@
 //! minimized main window. The player renders nothing itself; the transport
 //! panels are the UI over this state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, OnceLock};
@@ -68,6 +68,12 @@ const SKIP_SETTLE: Duration = Duration::from_secs(30);
 const SKIP_BAND_BASE: usize = 4;
 const SKIP_BAND_GROWTH: usize = 4;
 
+/// How many of the nearest tracks a similar draw picks out of. Wide enough
+/// that two presses in a row land somewhere else, narrow enough that
+/// everything in the band still sounds like the seed. The same handful the
+/// skip band opens to, for the same reason.
+const SIMILAR_BAND: usize = 8;
+
 /// A random index below `len`, off the std hasher's per-process random
 /// keys; picking a track does not need a rand dependency.
 fn random_index(len: usize) -> usize {
@@ -89,11 +95,60 @@ fn random_pool<'a>(scope: &'a continuation::Scope, library: &'a [i64]) -> &'a [i
     }
 }
 
+/// How many tracks the player remembers across session starts, for the
+/// draws' no-repeat promise. A queue's worth: enough that pressing Play
+/// Similar over and over walks a neighbourhood instead of bouncing between
+/// two tracks, small enough that a big library never runs dry of fresh draws.
+const HEARD_CAP: usize = QUEUE_CAP;
+
+/// Fold a session pool into the heard ring, newest last, deduped so a track
+/// held again moves to the young end rather than aging out from where it
+/// first landed, capped by evicting the oldest.
+///
+/// This exists because the by-hand draws start sessions, and starting a
+/// session replaces the pool their repeat-guard reads: without a memory that
+/// survives the swap, the second press of Play Similar has already forgotten
+/// the track the first press left, and the two bounce between each other's
+/// bands.
+fn remember_held(heard: &mut VecDeque<i64>, pool: impl Iterator<Item = i64>) {
+    for id in pool {
+        if let Some(at) = heard.iter().position(|&held| held == id) {
+            heard.remove(at);
+        }
+        heard.push_back(id);
+    }
+    while heard.len() > HEARD_CAP {
+        heard.pop_front();
+    }
+}
+
+/// Where in `pool` a random draw lands: on anything the session hasn't held,
+/// and only anywhere at all once it has held the whole pool. The same promise
+/// every continuation provider makes (ADR 17), made here because the Random
+/// button is the same question asked by hand, and the same wrap at the end of
+/// it: an exhausted pool opens back up rather than eating the press.
+fn draw_at(pool: &[i64], seen: &HashSet<i64>) -> Option<usize> {
+    if pool.is_empty() {
+        return None;
+    }
+    let fresh: Vec<usize> = (0..pool.len())
+        .filter(|&at| !seen.contains(&pool[at]))
+        .collect();
+    Some(match fresh.is_empty() {
+        true => random_index(pool.len()),
+        false => fresh[random_index(fresh.len())],
+    })
+}
+
 /// One random entry of `pool` with the run it sits in, and where in that run
 /// the draw landed. The draw is where playback starts, and the entries around
 /// it are what carries it on: Next walks down the rest of the album and the
 /// list behind it, Prev walks back. A press lands somewhere and keeps playing,
 /// the same as double clicking a row.
+///
+/// The landing spot avoids `seen` (see [`draw_at`]); the run around it
+/// doesn't, because the run is context, and an album the draw landed inside
+/// should read whole rather than with the heard tracks cut out.
 ///
 /// Bounded like a double click in a big view (`QUEUE_CAP`), with a share of
 /// the budget kept behind the draw for history. None when the pool is empty or
@@ -101,11 +156,12 @@ fn random_pool<'a>(scope: &'a continuation::Scope, library: &'a [i64]) -> &'a [i
 ///
 /// Keys rather than paths, so landing on a cue track draws that track's span
 /// instead of the whole image it lives in.
-fn draw_run(library: &Library, pool: &[i64]) -> Option<(Vec<TrackKey>, usize)> {
-    if pool.is_empty() {
-        return None;
-    }
-    let at = random_index(pool.len());
+fn draw_run(
+    library: &Library,
+    pool: &[i64],
+    seen: &HashSet<i64>,
+) -> Option<(Vec<TrackKey>, usize)> {
+    let at = draw_at(pool, seen)?;
     let drawn = library.keys_for(&[pool[at]]).ok()?.pop()?;
     let (lo, hi) = run_window(at, pool.len());
     let keys = library.keys_for(&pool[lo..hi]).ok()?;
@@ -113,6 +169,24 @@ fn draw_run(library: &Library, pool: &[i64]) -> Option<(Vec<TrackKey>, usize)> {
     // cursor is found by the key rather than counted off the pool.
     let start = keys.iter().position(|key| *key == drawn)?;
     Some((keys, start))
+}
+
+/// The similar band as bare ids with the session's plays taken out, whole
+/// again once every neighbour has been heard. [`draw_at`]'s wrap for the
+/// other button mode: the band stays the `SIMILAR_BAND` nearest rather than
+/// widening past them, because everything in it has to keep sounding like
+/// the seed, and a heard-out neighbourhood repeating is better than a press
+/// that wanders somewhere that doesn't.
+fn fresh_band(near: &[(i64, f32)], seen: &HashSet<i64>) -> Vec<i64> {
+    let fresh: Vec<i64> = near
+        .iter()
+        .map(|&(id, _)| id)
+        .filter(|id| !seen.contains(id))
+        .collect();
+    if fresh.is_empty() {
+        return near.iter().map(|&(id, _)| id).collect();
+    }
+    fresh
 }
 
 /// The slice of a `len` entry pool a draw at `at` plays inside: at most
@@ -555,6 +629,12 @@ pub struct Player {
     /// provider's seed, and the whole vec is the recent plays it must not
     /// hand back.
     pool_ids: Vec<Option<i64>>,
+    /// What the sessions before this one held, oldest first and capped
+    /// (`HEARD_CAP`), folded in whenever a start replaces the pool. The
+    /// random and similar draws read it beside the pool, since those draws
+    /// are themselves session starts: a guard off the pool alone resets at
+    /// exactly the press most likely to repeat.
+    heard: VecDeque<i64>,
     /// A continuation query is out. The pump fires on a 16 ms clock and a
     /// provider takes tens of milliseconds, so without this one dry-out would
     /// queue a few dozen of them.
@@ -596,6 +676,7 @@ impl Player {
             refused_rates: Vec::new(),
             scope: continuation::Scope::default(),
             pool_ids: Vec::new(),
+            heard: VecDeque::new(),
             continuing: false,
             continued_rev: None,
             last_continuation,
@@ -1034,6 +1115,11 @@ impl Player {
         // has been played, nothing has been asked for, and whoever started
         // playback names the scope after this returns. A rebuild (a device
         // or rate change) puts all three back, since the music never stopped.
+        // The outgoing pool joins the heard ring before the new one replaces
+        // it, which is what lets the draws remember across the swap; on a
+        // rebuild the same ids come straight back as the live pool, so the
+        // fold is idle motion rather than a wrong answer.
+        remember_held(&mut self.heard, self.pool_ids.iter().flatten().copied());
         self.pool_ids = meta.ids;
         self.scope = continuation::Scope::default();
         self.continuing = false;
@@ -1343,7 +1429,7 @@ impl Player {
     /// Counted from the audible cursor, not the decode cursor, which has run
     /// a track ahead for the gapless boundary and would fire a track early.
     /// The published cursor stands in before any frame has played, so a
-    /// session that comes up already short (a one-track queue, Start Radio)
+    /// session that comes up already short (a one-track queue, Play Similar)
     /// fires on its first tick, which is the point.
     ///
     /// Asked twice for every batch, once to fire the query and again when the
@@ -1431,6 +1517,20 @@ impl Player {
         self.scope = scope;
     }
 
+    /// What a by-hand draw must not land on: everything the running session
+    /// holds plus the heard ring behind it. Both, because the draws start
+    /// sessions, and either half alone forgets the wrong thing: the pool
+    /// forgets the past the moment a press replaces it, and the ring doesn't
+    /// learn the present until one does.
+    fn draw_seen(&self) -> HashSet<i64> {
+        self.pool_ids
+            .iter()
+            .flatten()
+            .copied()
+            .chain(self.heard.iter().copied())
+            .collect()
+    }
+
     /// Land on a track at random and play on from there, drawn from the
     /// context playback is already in: the view or playlist that started the
     /// session, the library at large when nothing named one. The scope is put
@@ -1441,8 +1541,13 @@ impl Player {
     /// lands somewhere and then keeps going down that album and that list.
     /// Shuffle scatters what follows the way it does for any other start, and
     /// continuation (ADR 17) still takes over at the end of the run.
+    ///
+    /// The draw lands outside what the session and the sessions before it
+    /// have held ([`Self::draw_seen`]), so pressing it over and over keeps
+    /// moving somewhere new until the pool runs out.
     pub fn play_random(&mut self, library: &Entity<Library>, cx: &mut Context<Self>) {
         let scope = self.scope.clone();
+        let seen = self.draw_seen();
         let drawn = {
             let library = library.read(cx);
             let all: &[i64] = library
@@ -1453,13 +1558,95 @@ impl Player {
             // the draw takes the library at large rather than dropping the
             // press on the floor. A scope that already is the library just
             // gets a second try.
-            draw_run(library, random_pool(&scope, all)).or_else(|| draw_run(library, all))
+            draw_run(library, random_pool(&scope, all), &seen)
+                .or_else(|| draw_run(library, all, &seen))
         };
         let Some((keys, start)) = drawn else { return };
         self.play_at(keys, start, cx);
         // After the play, never before: starting a session clears the scope
         // back to the library at large.
         self.scope = scope;
+    }
+
+    /// Play a track that sounds like `seed`, drawn library-wide off the
+    /// acoustic vectors, with a track running at a tempo the seed doesn't
+    /// share marked down for it (see [`embeddings::ranked`]). The library's
+    /// Play Similar and the transport's similar draw both land here.
+    ///
+    /// Scored against the corpus the store keeps standardized in memory, so
+    /// the draw is a dot product per track rather than a read of every vector
+    /// in the library. It still runs on the background executor against its
+    /// own connection the way the Similar ordering does: the first ask after
+    /// the analysis pass writes anything rereads the table, a few hundred
+    /// milliseconds on a fifty-thousand-track library, and that has no
+    /// business on the UI thread. Pressing this twice on one track, and the
+    /// Similar column asking about the track this just drew, come back off the
+    /// held map without scoring anything. A library with nothing described, or
+    /// a seed the pass hasn't reached, leaves playback alone.
+    ///
+    /// One track rather than the run around it the random draw takes. What
+    /// follows a similar track is continuation's business (ADR 17), and the
+    /// tracks filed either side of this one only sound like it by accident.
+    /// The scope goes with it: a draw that left the view to find this track
+    /// has no business carrying that view along.
+    pub fn play_similar_to(
+        &mut self,
+        seed: i64,
+        library: &Entity<Library>,
+        cx: &mut Context<Self>,
+    ) {
+        let db_path = rox_core::settings::data_dir().join("library.db");
+        // Read here rather than down in the spawn: the pick is a process
+        // static, and the query only needs the name it stores vectors under.
+        let model = crate::acoustic::acoustic_source().id().to_string();
+        // Taken now, before the start this press leads to replaces the pool.
+        let seen = self.draw_seen();
+        let library = library.clone();
+        cx.spawn(async move |this, cx| {
+            let drawn = cx
+                .background_executor()
+                .spawn(async move {
+                    let conn = store::open(&db_path).ok()?;
+                    let near =
+                        embeddings::nearest_ranked(&conn, seed, &model, SIMILAR_BAND).ok()?;
+                    // One out of the unheard part of the neighbourhood rather
+                    // than the single nearest, so pressing twice moves
+                    // somewhere instead of asking the same question again,
+                    // and never onto a track the session already played while
+                    // the band still holds one it hasn't.
+                    let band = fresh_band(&near, &seen);
+                    if band.is_empty() {
+                        return None;
+                    }
+                    Some(band[random_index(band.len())])
+                })
+                .await;
+            let Some(id) = drawn else {
+                log::info!("play similar: nothing analyzed to draw from");
+                return;
+            };
+            this.update(cx, |this, cx| {
+                let Ok(keys) = library.read(cx).keys_for(&[id]) else {
+                    return;
+                };
+                this.play(keys, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Play a track that sounds like the one playing. Nothing to draw from
+    /// while nothing plays, or while the playing file isn't one the library
+    /// holds.
+    pub fn play_similar(&mut self, library: &Entity<Library>, cx: &mut Context<Self>) {
+        let Some(seed) = self
+            .now_playing()
+            .and_then(|now| library.read(cx).id_for_key(&now.key))
+        else {
+            return;
+        };
+        self.play_similar_to(seed, library, cx);
     }
 
     /// Rebuild the running session against the current output settings, at
@@ -1764,6 +1951,19 @@ impl Player {
         }
         self.settings.replay_gain.save = save;
         Settings::update(move |s| s.replay_gain.save = save);
+        cx.notify();
+    }
+
+    /// Whether the measurement pass follows the watcher. Through the player
+    /// for the same reason as the destination above: the player flushes
+    /// `replay_gain` whole, so a value written around it would be gone by the
+    /// next volume tick.
+    pub fn set_replay_gain_auto(&mut self, auto: bool, cx: &mut Context<Self>) {
+        if self.settings.replay_gain.auto == auto {
+            return;
+        }
+        self.settings.replay_gain.auto = auto;
+        Settings::update(move |s| s.replay_gain.auto = auto);
         cx.notify();
     }
 
@@ -2236,13 +2436,15 @@ impl Player {
         }
     }
 
-    /// Order what's coming by how much it sounds like the playing track.
+    /// Order what's coming by how much it sounds like the playing track, and
+    /// how close it runs to its tempo ([`embeddings::ranked`]).
     ///
-    /// The scan over the library's vectors is tens of milliseconds, so it
-    /// runs on the background executor against its own connection rather than
-    /// in this update. The engine keeps playing the whole time; the reorder
-    /// lands as a queue publish whenever the answer arrives, which is the
-    /// same way any other queue edit shows up.
+    /// Scoring the library is milliseconds off the corpus the store keeps in
+    /// memory, and a few hundred on the first ask after the analysis pass
+    /// writes anything, so it runs on the background executor against its own
+    /// connection rather than in this update. The engine keeps playing the
+    /// whole time; the reorder lands as a queue publish whenever the answer
+    /// arrives, which is the same way any other queue edit shows up.
     ///
     /// Anything the library can't score keeps its place behind what it can
     /// (see [`Cmd::OrderTail`]), so an unanalyzed library leaves the queue
@@ -2291,7 +2493,7 @@ impl Player {
                 .background_executor()
                 .spawn(async move {
                     let conn = store::open(&db_path).ok()?;
-                    let scores: HashMap<i64, f32> = embeddings::scores(&conn, seed?, &model)
+                    let scores: HashMap<i64, f32> = embeddings::ranked(&conn, seed?, &model)
                         .ok()?
                         .into_iter()
                         .collect();
@@ -2727,6 +2929,78 @@ mod tests {
         }
     }
 
+    /// The Random button lands outside what the session has already held,
+    /// and only wraps back onto it once the whole pool has been heard: the
+    /// providers' no-repeats promise, kept by the press that starts sessions.
+    #[test]
+    fn a_random_draw_avoids_what_the_session_has_held() {
+        let pool = vec![1, 2, 3, 4, 5];
+        let seen: HashSet<i64> = [1, 2, 4, 5].into_iter().collect();
+        for _ in 0..32 {
+            assert_eq!(draw_at(&pool, &seen), Some(2), "3 is the one fresh track");
+        }
+        // Everything heard: the pool opens back up rather than eating the
+        // press, and any index is fair again.
+        let all: HashSet<i64> = pool.iter().copied().collect();
+        for _ in 0..32 {
+            let at = draw_at(&pool, &all).expect("an exhausted pool still draws");
+            assert!(at < pool.len());
+        }
+        // An empty pool is the one case with nothing to play.
+        assert_eq!(draw_at(&[], &seen), None);
+    }
+
+    /// The similar band takes the session's plays out of the draw and comes
+    /// back whole once every neighbour has been heard, without ever widening
+    /// past the tracks that actually sound like the seed.
+    #[test]
+    fn the_similar_band_skips_heard_neighbours_until_it_runs_out() {
+        let near = vec![(10, 0.9), (11, 0.8), (12, 0.7)];
+        let seen: HashSet<i64> = [10, 12].into_iter().collect();
+        assert_eq!(fresh_band(&near, &seen), vec![11]);
+        // The whole neighbourhood heard: it repeats rather than wandering.
+        let all: HashSet<i64> = [10, 11, 12].into_iter().collect();
+        assert_eq!(fresh_band(&near, &all), vec![10, 11, 12]);
+        // Nothing analyzed near the seed stays nothing to draw from.
+        assert!(fresh_band(&[], &seen).is_empty());
+    }
+
+    /// The bounce a pool-only guard allows: press Play Similar on track A,
+    /// land on its neighbour B, press again, and A is back because the new
+    /// session's pool never heard of it. The heard ring carries A across the
+    /// swap, so the second press walks on down the neighbourhood instead.
+    #[test]
+    fn the_heard_ring_stops_the_bounce_between_two_neighbours() {
+        let mut heard = VecDeque::new();
+        // Session one held A (id 1). The press replaces it with B (id 2).
+        remember_held(&mut heard, [1].into_iter());
+        let pool = [Some(2)];
+        let seen: HashSet<i64> = pool
+            .iter()
+            .flatten()
+            .copied()
+            .chain(heard.iter().copied())
+            .collect();
+        // B's band holds A nearest, exactly the shape that bounced.
+        let band = vec![(1, 0.95), (3, 0.9)];
+        assert_eq!(fresh_band(&band, &seen), vec![3], "the press walks on");
+    }
+
+    /// The ring stays deduped and bounded: a track held again moves to the
+    /// young end rather than aging out from its first landing, and past the
+    /// cap the oldest fall off first.
+    #[test]
+    fn the_heard_ring_dedupes_and_evicts_oldest_first() {
+        let mut heard = VecDeque::new();
+        remember_held(&mut heard, [1, 2, 3].into_iter());
+        remember_held(&mut heard, [2].into_iter());
+        assert_eq!(heard.iter().copied().collect::<Vec<_>>(), vec![1, 3, 2]);
+        remember_held(&mut heard, (0..HEARD_CAP as i64).map(|i| 100 + i));
+        assert_eq!(heard.len(), HEARD_CAP, "the ring never grows past the cap");
+        assert!(!heard.contains(&1), "the oldest aged out first");
+        assert_eq!(heard.back(), Some(&(100 + HEARD_CAP as i64 - 1)));
+    }
+
     /// Every index the draw can produce is inside the pool, which is the one
     /// thing the hasher trick could get wrong.
     #[test]
@@ -2912,6 +3186,7 @@ mod tests {
             bit_depth: 0,
             rating: 0,
             replay_gain: Default::default(),
+            bpm: None,
             size: 0,
             mtime: 0,
         }

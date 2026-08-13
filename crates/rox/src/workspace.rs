@@ -512,6 +512,12 @@ fn push_child_signals(signals: [f32; 16], meta: [f32; 8], cx: &mut App) {
     for handle in shaded {
         let alive = handle
             .update(cx, |root, window, cx| {
+                // Everything in meta is the workspace's except the cursor,
+                // which is per window: the pointer sitting in a popped-out
+                // panel never moves the workspace's, so a child wearing the
+                // same shader would fade out with the hand right on it.
+                let mut meta = meta;
+                meta[6] = panel::shader::cursor_presence(window);
                 window.set_post_signals(signals, meta);
                 cx.notify(root.entity_id());
             })
@@ -618,6 +624,9 @@ struct PostShaderDriver {
     /// Whether the program binds `@cover`, so the frame loop only watches
     /// the cover feed for a shader that asked for the art.
     uses_cover: bool,
+    /// Whether the program reads the pointer, so only a shader that does
+    /// keeps frames coming while cursor presence eases off.
+    reads_cursor: bool,
     /// The cover feed's revision the program registered with. The panel
     /// surfaces re-key per frame and follow the track by themselves; this
     /// pass registers on apply, so a moved rev is what re-applies it.
@@ -2076,6 +2085,8 @@ impl Workspace {
             // the tray leaves them on the library the hold keeps.
             crate::integrations::taskbar::follow(&library, cx);
             crate::embeddings::follow(&library, cx);
+            crate::replaygain_job::follow(&library, cx);
+            crate::tempo_job::follow(&library, cx);
             let scrobbler = cx.new(|cx| Scrobbler::new(&player, &library, cx));
             let discord = cx.new(|cx| DiscordPresence::new(&player, &library, cx));
             AppState {
@@ -2441,6 +2452,7 @@ impl Workspace {
             meta: [0.0; 8],
             run_when_idle: config.run_when_idle,
             uses_cover: false,
+            reads_cursor: false,
             cover: 0,
         };
         driver.stamp = driver.path.as_deref().and_then(settings::file_stamp);
@@ -2480,6 +2492,7 @@ impl Workspace {
         if driver.uses_cover {
             driver.cover = panel::shader::poll_cover(window, cx);
         }
+        driver.reads_cursor = panel::shader::reads_cursor(&source);
         // The whole program: the text splits into its passes here and its
         // images are read from wherever the source resolved from, so a
         // split or an unreadable image lands in the same readout a naga
@@ -2611,6 +2624,17 @@ impl Workspace {
         );
         let signals = post_shader_signals(&hub);
         let meta = panel::shader::meta_slots(window, cx);
+        // A pass that reads the pointer keeps its frames coming while the
+        // pointer counts for anything, so a paused window still plays out
+        // the fade rather than leaving the light stuck wherever the cursor
+        // was last seen. It parks itself: presence reaches zero a couple of
+        // seconds after the hand stops, and the probe in `render` is what
+        // wakes the window when the hand comes back.
+        let cursor_live = self
+            .post_shader
+            .as_ref()
+            .is_some_and(|driver| driver.reads_cursor)
+            && meta[6] > 0.0;
         // Meta isn't audio. The theme can flip, the art tint can ease, the
         // volume can move, all while the hub sits parked, and a shader
         // tuning itself to the palette has to hear about it or it wears
@@ -2631,7 +2655,7 @@ impl Workspace {
         // still, and the frames are for the state that updates per draw,
         // which is the mouse.
         if !live && !was_live && !settling && !stale_meta {
-            if run_when_idle {
+            if run_when_idle || cursor_live {
                 // The uniforms hold still, but the mouse is stored beside
                 // them rather than read per draw, so an idle frame has to
                 // carry it across itself or the lamp freezes mid-pause.
@@ -2647,7 +2671,7 @@ impl Workspace {
             driver.meta = meta;
         }
         window.set_post_signals(signals, meta);
-        if live || settling || run_when_idle {
+        if live || settling || run_when_idle || cursor_live {
             window.request_animation_frame();
         }
         if primary {
@@ -4614,6 +4638,27 @@ impl Render for Workspace {
                 // much shows through is the surfaces' call (ADR 10's strength
                 // scalar).
                 .children(self.backdrop.layer(&self.state.now_art, window, cx))
+                // The screen shader's cursor watch. It has to be registered
+                // from a paint, and the driver above runs in render, so a
+                // probe that draws nothing carries it. Without it a pass
+                // that faded its cursor effect out and parked its frames
+                // waits for something else to dirty the window before it
+                // notices the hand is back on the mouse.
+                .when(
+                    self.post_shader
+                        .as_ref()
+                        .is_some_and(|driver| driver.reads_cursor),
+                    |d| {
+                        d.child(
+                            canvas(
+                                |_, _, _| {},
+                                |_, _, window: &mut Window, _| panel::shader::watch_cursor(window),
+                            )
+                            .absolute()
+                            .size_0(),
+                        )
+                    },
+                )
                 .when(!menubar_hidden, |d| d.child(self.menubar(cx)))
                 .child(
                     div()

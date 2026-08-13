@@ -528,6 +528,13 @@ pub struct Settings {
     /// bundle: it's how someone works, not how a look is built, so applying
     /// a workspace leaves it alone.
     pub design_mode: bool,
+    /// Whether panel resizing is reserved for design mode. Off by
+    /// default, so the seams stay draggable whatever the mode and a fresh
+    /// layout is easy to shape. On, a finished layout only resizes while
+    /// design mode is, and a drag near a seam can't nudge it. A
+    /// preference like design mode above, not part of the workspace
+    /// bundle.
+    pub resize_lock: bool,
     /// Whether launch checks GitHub for a newer release, at most once a
     /// day. The About page's toggle flips it; off leaves only the manual
     /// button.
@@ -545,6 +552,13 @@ pub struct Settings {
     /// picked and the pass is run from, since all three are about what the
     /// library knows.
     pub acoustic_analysis: bool,
+    /// Whether the library may work out what its tracks run at, the tempo
+    /// pass behind the BPM column. Off by default, the acoustic switch's
+    /// twin in every respect: this one is the feature as well as the
+    /// permission, so with it off nothing measures and the column isn't
+    /// offered. Flipped on the Library page beside the acoustic rows,
+    /// since both are about what the library knows about its audio.
+    pub tempo_analysis: bool,
     /// How many tracks the analysis pass works on at once. The default
     /// leaves the machine usable while a pass runs behind other work;
     /// someone happy to hand the whole box over for an afternoon raises it
@@ -563,6 +577,11 @@ pub struct Settings {
     /// while measurement in tags mode spends part of every file writing to
     /// disk, so the counts that suit them differ.
     pub replaygain_workers: usize,
+    /// The same for the tempo pass, which parallelizes by track. Its own
+    /// field for the same reason the other two have theirs: a tempo
+    /// estimate decodes a minute of audio per track and nothing else, so
+    /// the count that suits it is neither of theirs.
+    pub tempo_workers: usize,
     /// Which model the analysis pass runs and which model's vectors the
     /// similarity queries read, by its catalog id
     /// (rox's embeddings model catalog). Sits next to the switch
@@ -584,9 +603,16 @@ pub struct Settings {
     /// chosen, so its vectors can never land in another model's coordinates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acoustic_local_model: Option<LocalModel>,
+    /// Where the analysis pass puts the vectors it works out. Read once when
+    /// a pass starts, like the ReplayGain destination it mirrors.
+    #[serde(deserialize_with = "lenient::or_default")]
+    pub acoustic_save: AcousticSave,
     /// The whole-window post-process shader, the Shader settings page's Screen
     /// shader section.
     pub post_shader: PostShaderConfig,
+    /// What the convert dialog opens on: the preset it last ran, where it
+    /// wrote, how it named the files, and which ffmpeg to spawn.
+    pub convert: ConvertSettings,
     /// The chords that have been moved off their defaults, by command id
     /// (rox's keymap registry). Only what differs is written: a command
     /// with no entry here runs the chords it ships with, so a default that
@@ -655,6 +681,10 @@ pub struct WindowsState {
     /// the next open. None until an editor closes.
     #[serde(deserialize_with = "lenient::option")]
     pub tag_editor: Option<TagEditorState>,
+    /// The rename dialog's last size and the patterns it applied, restored
+    /// on the next open. None until the dialog closes.
+    #[serde(deserialize_with = "lenient::option")]
+    pub rename_dialog: Option<RenameDialogState>,
     /// The stats window's last size and range pick, restored on the next
     /// open. None until the window closes.
     #[serde(alias = "stats_window", deserialize_with = "lenient::option")]
@@ -671,6 +701,18 @@ pub struct WindowsState {
     /// the window closes.
     #[serde(deserialize_with = "lenient::option")]
     pub tasks: Option<LayoutSize>,
+    /// The convert dialog's last size, restored on the next open. None until
+    /// the dialog closes. What it converts to and where lives in
+    /// [`ConvertSettings`], since those are choices rather than machine
+    /// state.
+    #[serde(deserialize_with = "lenient::option")]
+    pub convert_dialog: Option<LayoutSize>,
+    /// The embed dialog's last size, restored on the next open. None until
+    /// the dialog closes. Nothing else about it is remembered: what it offers
+    /// is whatever the library holds at the time, so there is no choice worth
+    /// carrying to the next open.
+    #[serde(deserialize_with = "lenient::option")]
+    pub bake_dialog: Option<LayoutSize>,
     /// The equalizer window's last size, restored on the next open. None
     /// until the window closes. The curve itself lives in `eq`, since it
     /// shapes audio whether or not the window is ever opened.
@@ -761,6 +803,11 @@ pub struct SessionState {
     /// last pass averaged. Zero until measured.
     #[serde(skip_serializing_if = "is_zero")]
     pub replaygain_pace: f32,
+    /// The same for the tempo pass: worker-seconds per track the last pass
+    /// averaged. One number rather than a map, unlike the acoustic pace,
+    /// because there's no model behind it to key by. Zero until measured.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tempo_pace: f32,
     /// The shader sources this machine has agreed to run, hex SHA-256 of the
     /// trimmed WGSL. Panel shaders ride layout dumps and workspace bundles as
     /// inline source, so an imported look arrives carrying somebody else's
@@ -813,6 +860,7 @@ impl Default for SessionState {
             update_cache: None,
             acoustic_pace: HashMap::new(),
             replaygain_pace: 0.0,
+            tempo_pace: 0.0,
             approved_shaders: BTreeSet::new(),
         }
     }
@@ -1117,6 +1165,22 @@ pub fn set_design_mode(on: bool, cx: &mut App) {
     }
 }
 
+/// The live resize-lock flag, the design-mode wrapper's twin: the resize
+/// handles read the pair per frame from the dock crate's statics.
+pub fn resize_lock() -> bool {
+    rox_dock::resize_lock()
+}
+
+/// Flip the resize lock and repaint, the design-mode setter's shape.
+/// Persisting is the caller's, startup seeds from the file through here
+/// too.
+pub fn set_resize_lock(on: bool, cx: &mut App) {
+    rox_dock::set_resize_lock(on);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
 /// The live quit-to-tray flag, a static like the ones above: the window
 /// close path reads it where a settings-file load has no place. Seeded at
 /// startup, flipped from the Window menu and the Behavior page.
@@ -1165,6 +1229,25 @@ pub fn acoustic_analysis() -> bool {
 /// caller's.
 pub fn set_acoustic_analysis(on: bool, cx: &mut App) {
     ACOUSTIC_ANALYSIS.store(on, Ordering::Relaxed);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
+/// The live tempo-analysis flag, [`ACOUSTIC_ANALYSIS`]'s twin and a static
+/// for the same reason: the BPM column is offered or withheld while the
+/// header menu is being built, where a settings load has no place.
+static TEMPO_ANALYSIS: AtomicBool = AtomicBool::new(false);
+
+pub fn tempo_analysis() -> bool {
+    TEMPO_ANALYSIS.load(Ordering::Relaxed)
+}
+
+/// Flip the live flag and repaint, so the BPM column appears in and
+/// disappears from the column menus without a relaunch. Persisting is the
+/// caller's.
+pub fn set_tempo_analysis(on: bool, cx: &mut App) {
+    TEMPO_ANALYSIS.store(on, Ordering::Relaxed);
     for window in cx.windows() {
         window.update(cx, |_, window, _| window.refresh()).ok();
     }
@@ -1497,11 +1580,12 @@ pub struct PostShaderConfig {
     pub manual: Vec<(u8, f32)>,
     /// Keep frames coming while the audio is silent, the panel shaders'
     /// switch grown app-wide. Off, a paused player parks the pass on its
-    /// last frame and it costs nothing; on, the pass keeps drawing, which
-    /// is what lets a shader that reads the mouse follow the cursor with
-    /// nothing playing. The clock only advances with the signal feed
-    /// either way, so idle frames track the mouse without the animation
-    /// creeping forward.
+    /// last frame and it costs nothing; on, the pass keeps drawing. The
+    /// clock only advances with the signal feed either way, so idle frames
+    /// track the mouse without the animation creeping forward. A shader
+    /// that reads the pointer asks for its own frames while the pointer
+    /// still counts for anything, so it follows the cursor with nothing
+    /// playing whichever way this sits.
     pub run_when_idle: bool,
 }
 
@@ -1951,6 +2035,12 @@ pub struct ReplayGainSettings {
     /// it once when it starts.
     #[serde(deserialize_with = "lenient::or_default")]
     pub save: ReplayGainSave,
+    /// Whether the measurement pass follows the watcher, so files that land
+    /// in the library while rox is running get measured without anyone asking
+    /// (ADR 19). Off by default: measuring decodes every file, and in tags
+    /// mode it rewrites them, neither of which should start on its own until
+    /// it's been agreed to once.
+    pub auto: bool,
 }
 
 /// Where a measured ReplayGain lands, the Audio page's pick (ADR 19).
@@ -1963,6 +2053,27 @@ pub enum ReplayGainSave {
     Database,
     /// The file's own tags, through the writer's atomic layer, so every
     /// other player reads the same numbers. Rewrites the audio files.
+    Tags,
+}
+
+/// Where an acoustic vector lands, the Library page's pick.
+///
+/// [`ReplayGainSave`]'s shape with one difference that matters: the database
+/// row is written either way. A vector is only useful through the similarity
+/// query, and that query reads the table, so tags mode is a second copy
+/// rather than a different destination. What it buys is a description that
+/// outlives the database: wipe the library, or carry the folder to another
+/// machine, and the files still say what they sound like.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcousticSave {
+    /// The default: the library database alone, so a pass never rewrites a
+    /// file and never bumps an mtime.
+    #[default]
+    Database,
+    /// The database and the file's own tags. MP3 and FLAC only, since those
+    /// are the formats the writer handles; every other format keeps its
+    /// database row and nothing else.
     Tags,
 }
 
@@ -2804,7 +2915,8 @@ pub struct QueuedTrack {
 }
 
 /// The tag editor's remembered shape: window size in logical pixels,
-/// the table's column widths in field order, and the last guess
+/// the table's column widths (one slot per column in field order, shown
+/// or not), the columns hidden from the table, and the last guess
 /// pattern. Every editor window writes it on close, the last writer
 /// wins.
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -2813,7 +2925,49 @@ pub struct TagEditorState {
     pub width: f32,
     pub height: f32,
     pub columns: Vec<f32>,
+    pub hidden: Vec<String>,
     pub pattern: String,
+}
+
+/// The rename dialog's remembered shape: window size in logical pixels
+/// and the patterns that were last applied, newest first. The list is
+/// the point of remembering: one library tends to a couple of naming
+/// schemes, and retyping the good one every time is the whole friction.
+#[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RenameDialogState {
+    pub width: f32,
+    pub height: f32,
+    pub patterns: Vec<String>,
+}
+
+/// What the convert dialog opens on, carried between runs so converting a
+/// second album is a click rather than the same four answers again. The
+/// preset rides as its key (rox's `convert::Preset`), so an unknown one from
+/// a newer build falls back to the default rather than failing the read. The
+/// one key that isn't a preset is "custom", which sends the reader to the two
+/// custom fields below it.
+///
+/// `ffmpeg` is the binary the conversion spawns. Empty means the one on
+/// PATH, which is what almost every machine wants; a path here is for an
+/// ffmpeg that isn't on it, and it's also the only thing in this struct
+/// nothing in the app writes on its own.
+#[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ConvertSettings {
+    pub preset: String,
+    pub destination: Option<PathBuf>,
+    pub pattern: String,
+    /// The container a custom format writes, as a bare extension ("ogg").
+    /// Only read when `preset` is the custom key.
+    pub custom_ext: String,
+    /// The ffmpeg output arguments a custom format runs, as typed. Split on
+    /// whitespace where it's read, so there's no quoting in here.
+    pub custom_args: String,
+    /// Whether outputs mirror the library's folder shape rather than
+    /// landing flat in the destination.
+    pub mirror: bool,
+    pub ffmpeg: String,
 }
 
 /// The stats window's remembered shape: size in logical pixels and the
@@ -2887,15 +3041,20 @@ impl Default for Settings {
             output: OutputSettings::default(),
             quit_to_tray: false,
             design_mode: true,
+            resize_lock: false,
             check_updates: true,
             experimental: false,
             acoustic_analysis: false,
+            tempo_analysis: false,
             acoustic_workers: acoustic::DEFAULT_WORKERS,
             replaygain_workers: acoustic::DEFAULT_WORKERS,
+            tempo_workers: acoustic::DEFAULT_WORKERS,
             acoustic_model: acoustic::MODEL.to_string(),
             acoustic_ml_model: acoustic::PANNS_CNN10.to_string(),
             acoustic_local_model: None,
+            acoustic_save: AcousticSave::default(),
             post_shader: PostShaderConfig::default(),
+            convert: ConvertSettings::default(),
             keymap: BTreeMap::new(),
         }
     }
@@ -4106,6 +4265,43 @@ mod tests {
 
         let older: ReplayGainSettings = serde_json::from_str(r#"{"mode":"track"}"#).unwrap();
         assert_eq!(older.save, ReplayGainSave::Database);
+    }
+
+    /// The analysis pass's destination survives the file, and neither an
+    /// older file that predates the field nor a newer file naming something
+    /// this build never heard of reads as permission to rewrite everyone's
+    /// tags. Both land on the database, which is the answer that touches
+    /// nothing.
+    #[test]
+    fn acoustic_save_round_trips_and_defaults_to_the_database() {
+        let mut src = Settings::default();
+        assert_eq!(src.acoustic_save, AcousticSave::Database);
+        src.acoustic_save = AcousticSave::Tags;
+        let json = serde_json::to_string_pretty(&src).unwrap();
+        assert!(json.contains("\"acoustic_save\": \"tags\""), "{json}");
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.acoustic_save, AcousticSave::Tags);
+
+        let older: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(older.acoustic_save, AcousticSave::Database);
+        let newer: Settings = serde_json::from_str(r#"{"acoustic_save":"cloud"}"#).unwrap();
+        assert_eq!(newer.acoustic_save, AcousticSave::Database);
+    }
+
+    /// The follow-the-watcher switch survives the file, and a file that
+    /// predates it reads as off: measuring is an afternoon of decoding and in
+    /// tags mode it rewrites files, so an upgrade never turns it on for you.
+    #[test]
+    fn replay_gain_auto_round_trips_and_defaults_to_off() {
+        let mut src = Settings::default();
+        assert!(!src.replay_gain.auto);
+        src.replay_gain.auto = true;
+        let json = serde_json::to_string_pretty(&src).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert!(back.replay_gain.auto);
+
+        let older: ReplayGainSettings = serde_json::from_str(r#"{"mode":"track"}"#).unwrap();
+        assert!(!older.auto);
     }
 
     /// Each of the three plain shards round-trips through its own file.

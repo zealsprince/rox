@@ -13,8 +13,8 @@
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, Div, Entity, Global, ScrollHandle,
-    SharedString, Subscription, Window, WindowHandle,
+    actions, div, prelude::*, px, size, App, Bounds, Context, Div, Entity, FocusHandle, Global,
+    KeyBinding, ScrollHandle, SharedString, Subscription, Window, WindowHandle,
 };
 use gpui_component::Root;
 
@@ -30,7 +30,7 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_net::providers::{self, LyricsCandidate, TrackQuery};
 use rox_panel_api::panel::AppState;
-use rox_panel_kit::ui::{self as settings_ui, section, SECTION_GAP};
+use rox_panel_kit::ui::{self as settings_ui, kbd_line, section, Seg, SECTION_GAP};
 use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::lyrics::{query_for, save_target};
 use rox_services::player::fmt_time;
@@ -38,6 +38,19 @@ use rox_services::player::fmt_time;
 /// The default window size: room for the candidate list beside a preview
 /// that reads a verse or two without scrolling.
 const DEFAULT_SIZE: (f32, f32) = (720., 560.);
+
+actions!(lyrics_match, [Apply]);
+
+/// The key context the window's own binding scopes to.
+const CONTEXT: &str = "LyricsMatch";
+
+/// The window's apply binding; call once at startup. It sits on the
+/// window root, so enter applies wherever focus is. Nothing here takes
+/// the key first: the window has no fields of its own, only a list to
+/// click through.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("enter", Apply, Some(CONTEXT))]);
+}
 
 /// The open match windows, keyed by track path, so a second request for
 /// the same track focuses the first - the cover editor's registry shape.
@@ -90,13 +103,17 @@ struct LyricsMatch {
     error: Option<SharedString>,
     /// The preview pane's scroll, so a long sheet reads on its own.
     preview_scroll: ScrollHandle,
+    /// The window root's focus, held so the enter binding has a path to
+    /// dispatch along; the list rows aren't focusable, so nothing else
+    /// ever takes it.
+    focus: FocusHandle,
     now_art: Entity<NowPlayingArt>,
     backdrop: WindowBackdrop,
     _backdrop_changed: Subscription,
 }
 
 impl LyricsMatch {
-    fn new(state: AppState, path: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(state: AppState, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // The query is the track's library tags, and the duration comes off
         // the projection so it scores whether or not the track is playing.
         let query = query_for(&state.library, &TrackKey::from(path.clone()), cx);
@@ -109,6 +126,8 @@ impl LyricsMatch {
             line = format!("{} - {}", query.title, query.artist);
         }
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        let focus = cx.focus_handle();
+        window.focus(&focus);
         let this = LyricsMatch {
             path,
             line: line.into(),
@@ -118,6 +137,7 @@ impl LyricsMatch {
             saving: false,
             error: None,
             preview_scroll: ScrollHandle::new(),
+            focus,
             now_art: state.now_art,
             backdrop: WindowBackdrop::default(),
             _backdrop_changed,
@@ -356,31 +376,95 @@ impl LyricsMatch {
             .overflow_hidden()
             .child(body)
     }
+
+    /// What stands between the window and a save, when something does.
+    /// The clauses run in the order a search clears them, so the footer
+    /// names the one step that is actually next, and Apply is live
+    /// exactly when nothing is left.
+    fn blocker(&self) -> Option<&'static str> {
+        if !matches!(self.phase, Phase::Ready(ref f) if !f.is_empty()) {
+            return Some(match self.phase {
+                Phase::Searching => "Searching...",
+                _ => "No match to apply",
+            });
+        }
+        if self.selected.is_none() {
+            return Some("Pick a match to apply");
+        }
+        if self.saving {
+            return Some("Saving the words...");
+        }
+        None
+    }
+
+    /// The window's actions, and either the shortcut for them or what's
+    /// in their way.
+    fn footer(&self, can_apply: bool, cx: &mut Context<Self>) -> Div {
+        let hint = match self.blocker() {
+            Some(reason) => div()
+                .text_xs()
+                .text_color(palette::tone_warn())
+                .child(reason)
+                .into_any_element(),
+            None => kbd_line([
+                Seg::Text("Press".into()),
+                Seg::Key("Enter".into()),
+                Seg::Text("to apply".into()),
+            ])
+            .text_xs()
+            .into_any_element(),
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(tokens::SPACE_SM)
+            .px(tokens::SPACE_MD)
+            .py(tokens::SPACE_SM)
+            .border_t_1()
+            .border_color(palette::border())
+            .bg(palette::bg_panel())
+            .child(hint)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(settings_ui::small_button(
+                        "Apply",
+                        icons::CHECK,
+                        !can_apply,
+                        cx.listener(|this, _, window, cx| this.apply(window, cx)),
+                    ))
+                    .child(settings_ui::small_button(
+                        "Cancel",
+                        icons::CLOSE,
+                        self.saving,
+                        cx.listener(|_, _, window, _| window.remove_window()),
+                    )),
+            )
+    }
 }
 
 impl Render for LyricsMatch {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Apply is live only with a candidate picked and no save running.
-        let can_apply = matches!(self.phase, Phase::Ready(ref f) if !f.is_empty())
-            && self.selected.is_some()
-            && !self.saving;
-        let buttons = div()
-            .flex()
-            .flex_row()
-            .gap(tokens::SPACE_SM)
-            .child(settings_ui::small_button(
-                "Apply",
-                icons::CHECK,
-                !can_apply,
-                cx.listener(|this, _, window, cx| this.apply(window, cx)),
-            ))
-            .child(settings_ui::small_button(
-                "Cancel",
-                icons::CLOSE,
-                self.saving,
-                cx.listener(|_, _, window, _| window.remove_window()),
-            ))
-            .into_any_element();
+        let can_apply = self.blocker().is_none();
+        let count = match &self.phase {
+            Phase::Ready(found) if !found.is_empty() => Some(
+                div()
+                    .text_xs()
+                    .text_color(palette::text())
+                    .child(SharedString::from(match found.len() {
+                        1 => "1 match".to_string(),
+                        n => format!("{n} matches"),
+                    }))
+                    .into_any_element(),
+            ),
+            _ => None,
+        };
 
         let content = match &self.phase {
             Phase::Searching => note("Searching..."),
@@ -407,6 +491,9 @@ impl Render for LyricsMatch {
             .size_full()
             .flex()
             .flex_col()
+            .track_focus(&self.focus)
+            .key_context(CONTEXT)
+            .on_action(cx.listener(|this, _: &Apply, window, cx| this.apply(window, cx)))
             .bg(palette::bg_elevated())
             .text_color(palette::text_bright())
             .text_sm()
@@ -419,13 +506,22 @@ impl Render for LyricsMatch {
                     .min_h_0()
                     .flex()
                     .flex_col()
+                    // The page's own surface over the root's, the same second
+                    // pass the settings page takes: the backdrop reads through
+                    // only as the surfaces thin.
+                    .bg(palette::bg_elevated())
                     .gap(SECTION_GAP)
                     .p(tokens::SPACE_MD)
-                    .child(section("Track", Some(buttons), self.track_row()))
+                    .child(section("Track", None, self.track_row()))
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))
                     })
-                    .child(div().flex_1().min_h_0().child(content)),
+                    .child(
+                        section("Matches", count, div().flex_1().min_h_0().child(content))
+                            .flex_1()
+                            .min_h_0(),
+                    ),
             )
+            .child(self.footer(can_apply, cx))
     }
 }

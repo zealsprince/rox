@@ -7,6 +7,11 @@
 // Sheen, so it rides a panel that already draws, and pure uniforms, so it
 // stays on the cheap in-scene path.
 //
+// `user_meta[1].z` is cursor presence, 1 with a hand on the mouse and 0
+// once it's been still or off the window for a couple of seconds. The
+// pointer uniform holds its last position either way, so without this the
+// lamp stays lit wherever the cursor was when it stopped.
+//
 // Premultiplied compose: the shade rides the alpha as scrim, the light
 // rides the color at alpha zero, which composites as pure added light.
 //
@@ -33,7 +38,10 @@ fn fs_user(uv: vec2<f32>) -> vec4<f32> {
     let spread = params.mouse.w;
     let radius = (0.20 + 0.28 * reach + 0.08 * bass) * (1.0 - 0.35 * press)
         * (1.0 + 0.8 * spread);
-    let beam = exp(-(d * d) / max(radius * radius, 1e-5));
+    // The lamp goes out with the hand, and the scrim closes over it: the
+    // idle panel reads the same as one with the pointer parked miles off.
+    let here = clamp(params.user_meta[1].z, 0.0, 1.0);
+    let beam = exp(-(d * d) / max(radius * radius, 1e-5)) * here;
 
     // Cool by default, warmed by slot 2; the press feeds the beam more
     // than the bass does, so a click reads as turning the lamp up.

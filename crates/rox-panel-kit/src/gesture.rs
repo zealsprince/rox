@@ -96,10 +96,13 @@ pub fn paint_slider(fraction: f32, dimmed: bool, bounds: Bounds<Pixels>, window:
     // The knob's travel is inset by its radius so it never clips the ends.
     let knob_x = knob / 2.0 + fraction.clamp(0.0, 1.0) * (w - knob);
     let track_y = bounds.origin.y + px((h - track_h) / 2.0);
+    // A core-role wash like the seek bar's unplayed side, not a surface
+    // read: the track has to stay visible when surface opacity thins the
+    // panel to nothing.
     window.paint_quad(
         fill(
             Bounds::new(point(bounds.origin.x, track_y), size(px(w), px(track_h))),
-            palette::bg_control(),
+            palette::alpha(palette::accent(), 0x33),
         )
         .corner_radii(px(track_h / 2.0)),
     );

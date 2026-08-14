@@ -288,6 +288,7 @@ fn look() -> group_head::HeadLook {
         art_side: group_head::ArtSide::Left,
         art_margin: px(0.),
         art_rounding: 0.,
+        font_scale: 1.,
     }
 }
 
@@ -300,7 +301,7 @@ fn head_of(g: &AlbumGroup) -> group_head::GroupHead {
         quality: SharedString::from(g.quality.clone()),
         tracks: g.tracks,
         total_ms: g.total_ms,
-        by_album: true,
+        tiled: true,
         thumb: None,
     }
 }

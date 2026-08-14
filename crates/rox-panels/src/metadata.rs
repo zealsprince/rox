@@ -1,11 +1,13 @@
 //! The metadata panel: the current track's tags laid out as a sheet -
 //! title and artist up top, then the labeled fields the library carries
-//! (album, genre, year, duration, codec, bitrate). Which track is per-view
-//! config through [`crate::source::TrackSource`], the cover panel's knob,
-//! so a duplicate can watch each. The background can carry the track's
-//! cover art, cropped to fill and dimmed under a scrim so the fields keep
-//! reading; art comes off the file on a background thread like the cover
-//! panel's and is retired the same way when the track moves on.
+//! (album, genre, year, duration, codec, bitrate). What it describes is
+//! per-view config through [`MetadataSource`]: the playing track, the
+//! selected one, or the library as a whole, where the sheet zooms out to
+//! the catalog's counts, so a duplicate can watch each. The background
+//! can carry the track's cover art, cropped to fill and dimmed under a
+//! scrim so the fields keep reading; art comes off the file on a
+//! background thread like the cover panel's and is retired the same way
+//! when the track moves on.
 //!
 //! The sheet has an edit face, the pencil in the title row: the tag
 //! fields become inputs over a baseline read off the file itself, and a
@@ -24,7 +26,9 @@
 //! hit areas only show while a search panel is up somewhere to display
 //! what a click writes.
 
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use gpui::{
@@ -34,7 +38,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use gpui_component::{Icon, Sizable};
+use gpui_component::{Icon, Side, Sizable};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use rox_library::cue::TrackKey;
 use rox_library::projection::FilterField;
@@ -54,7 +58,7 @@ use crate::providers;
 use crate::query::shared_query::{self, SharedQuery};
 use crate::selection::SelectionEvent;
 use crate::settings::ui as settings_ui;
-use crate::source::{self, ResolvedTrack, TrackSource};
+use crate::source::{ResolvedTrack, TrackSource};
 use crate::track_ui::track_columns::{self, Column};
 
 /// The metadata panel's per-view config: what a saved layout restores, and
@@ -67,7 +71,7 @@ pub struct MetadataConfig {
     /// panel.
     #[serde(flatten)]
     pub chrome: PanelChrome,
-    pub source: TrackSource,
+    pub source: MetadataSource,
     pub align: Align,
     /// Where the content sits down the panel when there's height to
     /// spare. The sheet has always centered, so that stays the default;
@@ -92,7 +96,7 @@ impl Default for MetadataConfig {
     fn default() -> Self {
         MetadataConfig {
             chrome: PanelChrome::default(),
-            source: TrackSource::default(),
+            source: MetadataSource::default(),
             align: Align::default(),
             valign: VAlign::default(),
             cover: true,
@@ -113,6 +117,30 @@ pub enum MetadataDisplay {
     #[default]
     Sheet,
     Table,
+}
+
+/// What the sheet describes: the playing track, the selected one, or the
+/// library as a whole, the same fields idea zoomed out to the catalog.
+/// The track sides spell the same as [`TrackSource`], so a layout saved
+/// before the library scope existed reads unchanged.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MetadataSource {
+    #[default]
+    Playing,
+    Selected,
+    Library,
+}
+
+impl MetadataSource {
+    /// The track-scoped side, None for the library scope.
+    fn track(self) -> Option<TrackSource> {
+        match self {
+            MetadataSource::Playing => Some(TrackSource::Playing),
+            MetadataSource::Selected => Some(TrackSource::Selected),
+            MetadataSource::Library => None,
+        }
+    }
 }
 
 /// The sheet's toggleable fields in display order, the library-column
@@ -220,6 +248,18 @@ fn query_field(key: &str) -> Option<Search> {
     }
 }
 
+/// The library scope's readouts: the catalog boiled down to the counts a
+/// collection sheet lists. Cached and rebuilt when the catalog or the
+/// listen record moves, never per frame.
+struct LibraryTotals {
+    tracks: usize,
+    albums: usize,
+    artists: usize,
+    genres: usize,
+    total_ms: u64,
+    plays: u64,
+}
+
 /// The shown track's full projection row, owned so it outlives the borrow
 /// of the library.
 #[derive(Clone)]
@@ -283,6 +323,9 @@ pub struct MetadataPanel {
     /// not know. Cached because the pump notifies every frame and the row
     /// lookup scans the projection; cleared when the catalog changes.
     details: Option<(TrackKey, Option<Details>)>,
+    /// The library scope's cached counts; cleared when the catalog or the
+    /// listen record moves.
+    totals: Option<LibraryTotals>,
     /// The loaded background art keyed by the track it belongs to, with the
     /// pending marker, generation guard, and swap/drop retires the shared
     /// loader carries.
@@ -321,9 +364,11 @@ impl MetadataPanel {
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| {
                 // A rating click or a landed listen moves two of the sheet's
-                // fields; re-resolve the row, nothing else changed.
+                // fields, and the listen moves the library scope's play
+                // total too; re-resolve those, nothing else changed.
                 if matches!(event, LibraryEvent::Rated | LibraryEvent::Played) {
                     this.details = None;
+                    this.totals = None;
                     cx.notify();
                     return;
                 }
@@ -332,6 +377,7 @@ impl MetadataPanel {
                 }
                 this.resolved.invalidate();
                 this.details = None;
+                this.totals = None;
                 this.art.refresh();
                 cx.notify();
             },
@@ -342,6 +388,7 @@ impl MetadataPanel {
             config,
             edit: None,
             details: None,
+            totals: None,
             art: panel::TrackedImage::default(),
             resolved: ResolvedTrack::default(),
             focus: cx.focus_handle(),
@@ -351,6 +398,14 @@ impl MetadataPanel {
             _library_changed,
             _retire_on_drop,
         }
+    }
+
+    /// The track the panel describes, through the source's track side;
+    /// the library scope names no track, which is what folds the pencil
+    /// and the online lookup away there.
+    fn resolved_track(&mut self, cx: &App) -> Option<TrackKey> {
+        let source = self.config.source.track()?;
+        self.resolved.get(source, &self.state, cx)
     }
 
     /// The shown track's row, from the cache or one projection scan on a
@@ -388,6 +443,49 @@ impl MetadataPanel {
             .and_then(|(_, details)| details.as_ref())
     }
 
+    /// The library scope's counts, from the cache or one projection scan
+    /// on a miss: the whole catalog's tracks, albums, artists, genres,
+    /// running time, and play total. Albums key on the (album artist,
+    /// album) pair the library groups by; artists are the distinct album
+    /// artists, matching the artist grid; genres split compound tags the
+    /// way the genre grid does, so the counts agree across the app.
+    fn library_totals(&mut self, cx: &App) -> Option<&LibraryTotals> {
+        if self.totals.is_none() {
+            let library = self.state.library.read(cx);
+            let projection = library.projection()?;
+            let mut total_ms = 0u64;
+            let mut plays = 0u64;
+            let mut albums: HashSet<(u32, u32)> = HashSet::new();
+            let mut artists: HashSet<u32> = HashSet::new();
+            let mut genre_syms: HashSet<u32> = HashSet::new();
+            for ix in 0..projection.db_id.len() {
+                total_ms += u64::from(projection.duration_ms[ix]);
+                plays += u64::from(projection.plays[ix].load(Ordering::Relaxed));
+                albums.insert((projection.album_artist[ix], projection.album[ix]));
+                artists.insert(projection.album_artist[ix]);
+                genre_syms.insert(projection.genre[ix]);
+            }
+            // The distinct syms first, then the strings split once each:
+            // a compound tag names every genre it carries, the grid's read.
+            let mut genres: HashSet<String> = HashSet::new();
+            for sym in genre_syms {
+                for genre in rox_library::genre::split(&projection.genres.strings[sym as usize]) {
+                    genres.insert(genre.to_string());
+                }
+            }
+            genres.remove("");
+            self.totals = Some(LibraryTotals {
+                tracks: projection.db_id.len(),
+                albums: albums.len(),
+                artists: artists.len(),
+                genres: genres.len(),
+                total_ms,
+                plays,
+            });
+        }
+        self.totals.as_ref()
+    }
+
     /// Make sure the background art for `path` is cached or on its way:
     /// read the file off the UI thread through the shared loader, which
     /// swaps the result in and retires the previous decode.
@@ -407,24 +505,44 @@ impl MetadataPanel {
     }
 
     /// The panel's own dropdown entries: the source pick and the cover
-    /// background toggle, the same knobs the customize window edits.
+    /// background toggle, the same knobs the customize window edits. The
+    /// source flyout is the panel's own rather than the shared track
+    /// pair, because this sheet can also describe the library itself.
     fn config_menu(
         &self,
         menu: PopupMenu,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let menu = source::source_flyout(
-            menu,
-            |this: &Self| this.config.source,
-            &cx.entity(),
-            |this, source, cx| {
-                this.config.source = source;
-                cx.notify();
-            },
-            window,
-            cx,
-        );
+        let panel = cx.entity();
+        let submenu = PopupMenu::build(window, cx, move |mut submenu, _, cx| {
+            // The flyout follows the panel so the picked row's tick swaps
+            // live instead of sitting stale until the menu is reopened.
+            panel::follow_panel(&panel, cx);
+            submenu = submenu.check_side(Side::Right);
+            for (label, icon, source) in [
+                ("Follow Playing", icons::PLAY, MetadataSource::Playing),
+                (
+                    "Follow Selection",
+                    icons::LIST_MUSIC,
+                    MetadataSource::Selected,
+                ),
+                ("Library", icons::DATABASE, MetadataSource::Library),
+            ] {
+                submenu = submenu.item(panel::check_row(
+                    label,
+                    Some(icon),
+                    move |this: &Self| this.config.source == source,
+                    move |this, cx| {
+                        this.config.source = source;
+                        cx.notify();
+                    },
+                    &panel,
+                ));
+            }
+            submenu
+        });
+        let menu = menu.item(PopupMenuItem::submenu("Source", submenu));
         let submenu = track_columns::columns_submenu(FIELDS, window, cx);
         let menu = menu.item(PopupMenuItem::submenu("Fields", submenu));
         let weak = cx.entity().downgrade();
@@ -458,7 +576,7 @@ impl MetadataPanel {
         if self.edit.is_some() {
             return;
         }
-        let Some(key) = self.resolved.get(self.config.source, &self.state, cx) else {
+        let Some(key) = self.resolved_track(cx) else {
             return;
         };
         let inputs: Vec<Entity<InputState>> = EDIT_FIELDS
@@ -663,21 +781,22 @@ impl PanelSettings for MetadataPanel {
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
-            .child(source::source_row(
-                self.config.source,
-                |this: &mut Self, source, cx| {
-                    this.config.source = source;
-                    cx.notify();
-                },
-                cx,
-            ))
-            .child(align_row(
-                self.config.align,
-                |this: &mut Self, align, cx| {
-                    this.config.align = align;
-                    cx.notify();
-                },
-                cx,
+            .child(panel::setting_row(
+                "Source",
+                Some("Follow what is playing or selected, or read the library as a whole"),
+                panel::choices(
+                    &[
+                        ("Playing", MetadataSource::Playing),
+                        ("Selected", MetadataSource::Selected),
+                        ("Library", MetadataSource::Library),
+                    ],
+                    self.config.source,
+                    |this: &mut Self, source, cx| {
+                        this.config.source = source;
+                        cx.notify();
+                    },
+                    cx,
+                ),
             ))
             .child(valign_row(
                 self.config.valign,
@@ -703,6 +822,18 @@ impl PanelSettings for MetadataPanel {
                     cx,
                 ),
             ))
+            // The horizontal knob only places the sheet; the table always
+            // runs full width, so the row sits out while that face shows.
+            .when(self.config.display == MetadataDisplay::Sheet, |d| {
+                d.child(align_row(
+                    self.config.align,
+                    |this: &mut Self, align, cx| {
+                        this.config.align = align;
+                        cx.notify();
+                    },
+                    cx,
+                ))
+            })
             .child(panel::setting_row(
                 "Cover Background",
                 Some("The track's cover art behind the fields"),
@@ -798,12 +929,7 @@ impl Panel for MetadataPanel {
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
         let editing = self.edit.is_some();
-        if !editing
-            && self
-                .resolved
-                .get(self.config.source, &self.state, cx)
-                .is_none()
-        {
+        if !editing && self.resolved_track(cx).is_none() {
             return None;
         }
         let weak = cx.entity().downgrade();
@@ -876,10 +1002,7 @@ impl Panel for MetadataPanel {
         // The online lookup, gated with the provider toggle so the menu
         // never offers a search that can't run. Opens the compare window;
         // the write waits for a confirmed, field-by-field pick.
-        let menu = match (
-            providers::metadata_online(),
-            self.resolved.get(self.config.source, &self.state, cx),
-        ) {
+        let menu = match (providers::metadata_online(), self.resolved_track(cx)) {
             (true, Some(key)) => {
                 let library = self.state.library.clone();
                 let now_art = self.state.now_art.clone();
@@ -1073,11 +1196,7 @@ impl MetadataPanel {
         // Deliberately the panel's own flag rather than `controls_hidden`:
         // this one edits tags, not the layout, so design mode leaves it be.
         let show_toggle = !self.config.chrome.hide_controls
-            && (self.edit.is_some()
-                || self
-                    .resolved
-                    .get(self.config.source, &self.state, cx)
-                    .is_some());
+            && (self.edit.is_some() || self.resolved_track(cx).is_some());
         div()
             .size_full()
             .flex()
@@ -1123,13 +1242,20 @@ impl MetadataPanel {
         // out of the flow.
         let root = justify_v(div().relative().flex().flex_col(), self.config.valign);
 
+        // The library scope: the catalog's own sheet, no track to
+        // resolve, no cover, nothing to edit. An open edit still shows
+        // its form, so a source flip mid-edit doesn't eat the typing.
+        if self.config.source == MetadataSource::Library && self.edit.is_none() {
+            return self.library_sheet(root, cx);
+        }
+
         // An open edit pins its track; the source only drives the sheet
         // while nothing is being edited.
         let Some(key) = self
             .edit
             .as_ref()
             .map(|edit| edit.key.clone())
-            .or_else(|| self.resolved.get(self.config.source, &self.state, cx))
+            .or_else(|| self.resolved_track(cx))
         else {
             // The source points at no track: a quiet line where the sheet
             // would sit.
@@ -1328,6 +1454,93 @@ impl MetadataPanel {
         root.child(scroll_frame("metadata-sheet", align, sheet))
     }
 
+    /// The library scope's face: the catalog's counts through the same
+    /// two layouts the track fields use, "Library" standing where the
+    /// title does. Nothing here names a track, so there's no cover
+    /// backdrop and the values stay inert text.
+    fn library_sheet(&mut self, root: Div, cx: &mut Context<Self>) -> Div {
+        let align = self.config.align;
+        let display = self.config.display;
+        let stripes = self.config.stripes;
+        let borders = self.config.row_borders;
+        let Some(totals) = self.library_totals(cx) else {
+            // The projection is still loading: the quiet line the track
+            // scopes show while they point at nothing.
+            return root.child(
+                justify(div().w_full().flex_none().flex(), align)
+                    .p(tokens::SPACE_MD)
+                    .child(div().text_color(palette::text_faint()).child("No library")),
+            );
+        };
+        let fields: Vec<(&'static str, String)> = vec![
+            ("Tracks", totals.tracks.to_string()),
+            ("Albums", totals.albums.to_string()),
+            ("Artists", totals.artists.to_string()),
+            ("Genres", totals.genres.to_string()),
+            (
+                "Total Time",
+                format!(
+                    "{} ({})",
+                    crate::group_head::fmt_total(totals.total_ms),
+                    rox_core::fmt::fmt_span(totals.total_ms / 1000)
+                ),
+            ),
+            ("Plays", totals.plays.to_string()),
+        ];
+        let mut hit_id = 0usize;
+        if display == MetadataDisplay::Table {
+            let rows: Vec<Div> = fields
+                .into_iter()
+                .enumerate()
+                .map(|(ix, (label, value))| {
+                    let cell = value_cell(&value, None, None, &mut hit_id);
+                    table_row(ix, label, cell, stripes, borders)
+                })
+                .collect();
+            return root.child(
+                div()
+                    .id("metadata-table")
+                    .w_full()
+                    .max_h_full()
+                    .flex_none()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .py(tokens::SPACE_XS)
+                            .children(rows),
+                    ),
+            );
+        }
+        let title_cell = value_cell("Library", None, None, &mut hit_id)
+            .text_lg()
+            .text_color(palette::text_bright())
+            .max_w_full();
+        let rows: Vec<Div> = fields
+            .into_iter()
+            .map(|(label, value)| field(label, value_cell(&value, None, None, &mut hit_id)))
+            .collect();
+        let sheet = div()
+            .max_w_full()
+            .min_w_0()
+            .p(tokens::SPACE_MD)
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .child(title_cell)
+            .child(
+                div()
+                    .mt(tokens::SPACE_MD)
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .children(rows),
+            );
+        root.child(scroll_frame("metadata-sheet", align, sheet))
+    }
+
     /// The sheet's edit face: one input per editable field, the save and
     /// cancel row under them, and whatever error the last read or commit
     /// left. Enter saves through the inputs' own event; Escape cancels
@@ -1399,5 +1612,25 @@ impl MetadataPanel {
                         cx.listener(|this, _, _, cx| this.close_edit(cx)),
                     )),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MetadataConfig, MetadataSource};
+
+    /// A layout saved before the library scope existed spells its source
+    /// the shared track pair's way, and still reads; no source at all is
+    /// the stock follow-playing.
+    #[test]
+    fn track_sources_read_unchanged() {
+        let config: MetadataConfig = serde_json::from_str(r#"{"source": "selected"}"#).unwrap();
+        assert!(config.source == MetadataSource::Selected);
+
+        let config: MetadataConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.source == MetadataSource::Playing);
+
+        let config: MetadataConfig = serde_json::from_str(r#"{"source": "library"}"#).unwrap();
+        assert!(config.source == MetadataSource::Library);
     }
 }

@@ -869,6 +869,14 @@ impl SettingsWindow {
                         .into(),
                     "Clear",
                 ),
+                Pending::ClearMeasuredBpm => (
+                    "Forget the measured tempos?".into(),
+                    "Every tempo rox worked out goes back to unmeasured; numbers from your \
+                     files' own tags stay. Having them again means the tempo pass decoding \
+                     each of those tracks over."
+                        .into(),
+                    "Clear",
+                ),
             };
         let line = |text: SharedString| {
             div()
@@ -1000,6 +1008,7 @@ impl SettingsWindow {
                 self.apply_workspace(&card.name, shaders, window, cx);
             }
             Some(Pending::ClearEmbeddings(model)) => self.clear_embeddings(&model, cx),
+            Some(Pending::ClearMeasuredBpm) => self.clear_measured_bpm(cx),
             None => {}
         }
     }
@@ -1019,17 +1028,50 @@ impl SettingsWindow {
     ) {
         let view = node.view();
         if let Ok(stack) = view.clone().downcast::<StackPanel>() {
-            let (axis, children) = {
+            let (axis, children, seams_override) = {
                 let stack = stack.read(cx);
-                (stack.axis(), stack.panels().to_vec())
+                (stack.axis(), stack.panels().to_vec(), stack.seams())
             };
+            // The split's own seams, over the app-wide Appearance toggle:
+            // the button shows the effective state and flips it, and a
+            // flip that lands back on the app's side clears the override
+            // so the split follows the toggle again. An overriding split
+            // keeps its button at rest like a closed lock; one following
+            // the app only shows it with the row's other controls.
+            let effective = seams_override.unwrap_or_else(settings::seams);
+            let seams_stack = stack.clone();
+            let seams_button = icon_button(
+                if effective {
+                    icons::COLUMNS_2
+                } else {
+                    icons::SQUARE_DASHED
+                },
+                false,
+                cx.listener(move |_, _, _, cx| {
+                    let next = !effective;
+                    let value = (next != settings::seams()).then_some(next);
+                    seams_stack.update(cx, |stack, cx| stack.set_seams(value, cx));
+                    cx.notify();
+                }),
+            );
+            let controls = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(if seams_override.is_some() {
+                    seams_button
+                } else {
+                    reveal(seams_button)
+                })
+                .children(self.move_controls(&slot, cx))
+                .into_any_element();
             rows.push(chrome_row(
                 depth,
                 match axis {
                     Axis::Horizontal => "Split, side by side",
                     Axis::Vertical => "Split, stacked",
                 },
-                self.move_controls(&slot, cx),
+                Some(controls),
             ));
             let len = children.len();
             for (ix, child) in children.into_iter().enumerate() {

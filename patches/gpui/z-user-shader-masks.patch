@@ -1,0 +1,883 @@
+The mask capture: content isolated on transparency for shader shadows.
+
+A screen-shader region only ever sees the composed frame, where glyphs
+and backdrop are already one image, so no shader could cast a shadow
+from a panel's content alone. This adds the missing input. A caller
+brackets a stretch of painting as a mask span (marker entries in the
+frame's paint operations, so cached subtrees replay theirs), and when a
+region whose chain binds `mask` draws, the renderer replays that span
+into a window-sized layer over a transparent clear, using the main
+pass's own pipelines, then crops the region's rect out beside the
+`screen` scratch. The binding joins the template after `prev`, is
+classified by the same drop-and-revalidate trick, and forces the region
+pass the way `screen` does. Box shadows, video surfaces, in-scene user
+shader quads and nested regions don't replay: their pixels stay on
+screen, they just cast nothing.
+
+Blade only for now. The DirectX renderer binds the register as an empty
+SRV, which samples zeros, so a mask shader there runs against a
+transparent mask instead of breaking.
+
+The z- prefix is ordering, not taxonomy: patches apply in C-collation
+glob order, this one diffs against nearly the whole user-shader series
+plus windows-server-frames-opaque, so it has to sort last.
+
+diff -ruN '--exclude=target' '--exclude=.rox-stamp' '--exclude=Cargo.lock' a/src/platform/blade/blade_renderer.rs b/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs	2026-08-14 15:44:10.751559608 -0600
++++ b/src/platform/blade/blade_renderer.rs	2026-08-14 15:31:58.695589918 -0600
+@@ -3,9 +3,9 @@
+ 
+ use super::{BladeAtlas, BladeContext};
+ use crate::{
+-    Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point, PolychromeSprite,
+-    PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, Underline, UserShader,
+-    UserShaderRegion,
++    Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, PaintOperation, Path, Point,
++    PolychromeSprite, Primitive, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
++    Underline, UserShader, UserShaderRegion,
+ };
+ // rox patch: the composed chain and its per-pass bindings, which is what the
+ // pipeline layouts and the draw-time fill are built from.
+@@ -313,6 +313,16 @@
+             .map(|pass| (pass.scale, pass.uses_prev()))
+             .collect()
+     }
++
++    // Whether any pass reads the mask capture, which is what decides if a
++    // region's span is worth replaying at all.
++    fn uses_mask(&self) -> bool {
++        self.passes.iter().any(|pass| {
++            pass.bindings
++                .iter()
++                .any(|binding| matches!(binding, ChainBinding::Mask))
++        })
++    }
+ }
+ 
+ // One pass's renderer-owned textures. The final pass draws into whatever the
+@@ -358,6 +368,10 @@
+     height: u32,
+     scratch: gpu::Texture,
+     scratch_view: gpu::TextureView,
++    // The region's crop of the mask capture, allocated only for a chain
++    // that binds `mask`. Every pass reading `mask` samples this, the same
++    // way every `screen` read samples the scratch.
++    mask: Option<(gpu::Texture, gpu::TextureView)>,
+     targets: Vec<ChainPassTarget>,
+     clock: ShaderClock,
+ }
+@@ -636,6 +650,15 @@
+     user_shaders: HashMap<u32, UserShaderPipeline>,
+     region_shaders: HashMap<u32, ShaderChain>,
+     region_instances: HashMap<u64, RegionInstance>,
++    // Window-sized capture target for shader mask spans: the span's
++    // primitives replay into it on a transparent clear, and each masked
++    // region copies its rect out. Allocated the first frame a masked region
++    // draws, thrown away on a resize.
++    mask_layer: Option<(gpu::Texture, gpu::TextureView)>,
++    // A 1x1 transparent stand-in bound where a chain reads `mask` but no
++    // span was recorded this frame, and for the whole-window post pass,
++    // which has no span to capture.
++    empty_mask: Option<(gpu::Texture, gpu::TextureView)>,
+     user_textures: HashMap<u32, UserTexture>,
+     pending_texture_uploads: Vec<PendingTextureUpload>,
+     texture_belt: BufferBelt,
+@@ -737,6 +760,8 @@
+             user_shaders: HashMap::default(),
+             region_shaders: HashMap::default(),
+             region_instances: HashMap::default(),
++            mask_layer: None,
++            empty_mask: None,
+             user_textures: HashMap::default(),
+             pending_texture_uploads: Vec::new(),
+             texture_belt: BufferBelt::new(BufferBeltDescriptor {
+@@ -844,6 +869,12 @@
+             for instance in std::mem::take(&mut self.region_instances).into_values() {
+                 self.destroy_region_instance(instance);
+             }
++            // The mask capture layer is window-sized too; the next masked
++            // frame recreates it at the new size.
++            if let Some((texture, view)) = self.mask_layer.take() {
++                self.gpu.destroy_texture(texture);
++                self.gpu.destroy_texture_view(view);
++            }
+         }
+     }
+ 
+@@ -1063,6 +1094,10 @@
+     fn destroy_region_instance(&mut self, instance: RegionInstance) {
+         self.gpu.destroy_texture(instance.scratch);
+         self.gpu.destroy_texture_view(instance.scratch_view);
++        if let Some((texture, view)) = instance.mask {
++            self.gpu.destroy_texture(texture);
++            self.gpu.destroy_texture_view(view);
++        }
+         for target in instance.targets {
+             self.destroy_chain_pass_target(target);
+         }
+@@ -1226,6 +1261,14 @@
+             self.gpu.destroy_texture(texture);
+             self.gpu.destroy_texture_view(view);
+         }
++        if let Some((texture, view)) = self.mask_layer.take() {
++            self.gpu.destroy_texture(texture);
++            self.gpu.destroy_texture_view(view);
++        }
++        if let Some((texture, view)) = self.empty_mask.take() {
++            self.gpu.destroy_texture(texture);
++            self.gpu.destroy_texture_view(view);
++        }
+         for mut entry in std::mem::take(&mut self.user_shaders).into_values() {
+             self.gpu.destroy_render_pipeline(&mut entry.pipeline);
+         }
+@@ -1248,9 +1291,11 @@
+     }
+ 
+     /// Re-runs one registered shader over everything already composed under
+-    /// `region.bounds`, writing back into the same intermediate.
++    /// `region.bounds`, writing back into the same intermediate. `scene` is
++    /// where a chain binding `mask` finds its instance's span to replay.
+     fn draw_shader_region(
+         &mut self,
++        scene: &Scene,
+         region: &UserShaderRegion,
+         target: gpu::Texture,
+         target_view: gpu::TextureView,
+@@ -1296,6 +1341,21 @@
+             return;
+         }
+ 
++        // The capture replays the span before any of the instance's own
++        // textures are touched, so the crop below reads a finished layer.
++        let uses_mask = self
++            .region_shaders
++            .get(&region.shader_id)
++            .is_some_and(ShaderChain::uses_mask);
++        let captured = uses_mask
++            && match scene.mask_span(region.instance) {
++                Some(span) => {
++                    self.draw_mask_capture(scene, span);
++                    true
++                }
++                None => false,
++            };
++
+         self.ensure_region_instance(region, width, height);
+ 
+         let Some(instance) = self.region_instances.get_mut(&region.instance) else {
+@@ -1305,6 +1365,7 @@
+         let (time, delta) = (instance.clock.time, instance.clock.delta);
+         let scratch = instance.scratch;
+         let scratch_view = instance.scratch_view;
++        let instance_mask = instance.mask;
+         // Snapshotted so walking the chain below doesn't hold the instance map
+         // borrowed while the encoder is in use.
+         let targets = instance
+@@ -1342,6 +1403,38 @@
+             );
+         }
+ 
++        // The mask crop takes the same rect the screen snapshot takes, so a
++        // pass samples both in one uv space. Cleared first: a region sliding
++        // partly offscreen would otherwise keep stale texels where this
++        // frame's copy doesn't reach.
++        let mask_view = if captured
++            && let (Some((layer_texture, _)), Some((mask_texture, mask_view))) =
++                (self.mask_layer, instance_mask)
++        {
++            self.clear_texture(mask_view);
++            let mut transfers = self.command_encoder.transfer("shader mask read");
++            transfers.copy_texture_to_texture(
++                gpu::TexturePiece {
++                    texture: layer_texture,
++                    mip_level: 0,
++                    array_layer: 0,
++                    origin: [copy_left as u32, copy_top as u32, 0],
++                },
++                gpu::TexturePiece {
++                    texture: mask_texture,
++                    mip_level: 0,
++                    array_layer: 0,
++                    origin: local_origin,
++                },
++                copy_extent,
++            );
++            Some(mask_view)
++        } else if uses_mask {
++            Some(self.ensure_empty_mask())
++        } else {
++            None
++        };
++
+         let chain = &self.region_shaders[&region.shader_id];
+         let Some(last) = chain.passes.len().checked_sub(1) else {
+             return;
+@@ -1376,6 +1469,7 @@
+                 self.atlas_sampler,
+                 &targets,
+                 index,
++                mask_view,
+                 &self.user_textures,
+             ) else {
+                 return;
+@@ -1497,6 +1591,18 @@
+         self.command_encoder.init_texture(scratch);
+         self.clear_texture(scratch_view);
+ 
++        let uses_mask = self
++            .region_shaders
++            .get(&region.shader_id)
++            .is_some_and(ShaderChain::uses_mask);
++        let mask = uses_mask.then(|| {
++            let pair =
++                create_region_texture(&self.gpu, format, width, height, "shader region mask");
++            self.command_encoder.init_texture(pair.0);
++            self.clear_texture(pair.1);
++            pair
++        });
++
+         let targets =
+             self.create_chain_targets(&shape, width, height, "shader region pass", true);
+ 
+@@ -1508,6 +1614,7 @@
+                 height,
+                 scratch,
+                 scratch_view,
++                mask,
+                 targets,
+                 clock: ShaderClock::default(),
+             },
+@@ -1548,6 +1655,14 @@
+         if uses_prev {
+             self.ensure_post_prev();
+         }
++        // Registration offers `mask` everywhere, but the whole-window pass
++        // has no span to capture, so a post chain that binds it reads
++        // transparent black.
++        let post_mask = self
++            .post_shader
++            .as_ref()
++            .is_some_and(|post| post.chain.uses_mask())
++            .then(|| self.ensure_empty_mask());
+         let feedback = uses_prev.then_some(()).and(self.post_prev);
+         let (final_view, prev_view) = match feedback {
+             Some(pair) => (pair[self.post_prev_index].1, pair[1 - self.post_prev_index].1),
+@@ -1599,6 +1714,7 @@
+                 &targets,
+                 index,
+                 final_prev,
++                post_mask,
+                 &self.user_textures,
+             ) else {
+                 return;
+@@ -1721,6 +1837,244 @@
+     }
+ 
+     /// A render pass with no draws, so the target comes out transparent black.
++    /// The window-sized target mask spans replay into, created the first
++    /// frame a masked region draws. `update_drawable_size_impl` throws it
++    /// away so it comes back at the new size.
++    fn ensure_mask_layer(&mut self) -> (gpu::Texture, gpu::TextureView) {
++        if self.mask_layer.is_none() {
++            self.mask_layer = Some(create_region_texture(
++                &self.gpu,
++                self.surface.info().format,
++                self.surface_config.size.width,
++                self.surface_config.size.height,
++                "shader mask layer",
++            ));
++        }
++        self.mask_layer.unwrap()
++    }
++
++    /// The 1x1 transparent texture a `mask` binding reads when there is
++    /// nothing captured: a region whose instance recorded no span this
++    /// frame, or the whole-window post pass. Cleared once at creation and
++    /// never drawn to again.
++    fn ensure_empty_mask(&mut self) -> gpu::TextureView {
++        if self.empty_mask.is_none() {
++            let pair = create_region_texture(
++                &self.gpu,
++                self.surface.info().format,
++                1,
++                1,
++                "shader empty mask",
++            );
++            self.command_encoder.init_texture(pair.0);
++            self.clear_texture(pair.1);
++            self.empty_mask = Some(pair);
++        }
++        self.empty_mask.unwrap().1
++    }
++
++    /// Replays one mask span's paint operations into the capture layer, over
++    /// a transparent clear: the span's content isolated with real alpha,
++    /// which is what a `mask` binding samples. The main pass's own pipelines
++    /// do the drawing (the layer shares the surface's format), and since
++    /// alpha compositing is commutative in the alpha channel, the coverage
++    /// that accumulates is exactly what the span drew, whatever order the
++    /// runs land in.
++    ///
++    /// Some operations don't replay: box shadows (decor under content, not
++    /// content), video surfaces, in-scene user shader quads, and nested
++    /// region entries, whose output only exists in the composed frame. Their
++    /// pixels still show on screen; they just cast nothing into the mask.
++    fn draw_mask_capture(&mut self, scene: &Scene, span: std::ops::Range<usize>) {
++        let (layer_texture, layer_view) = self.ensure_mask_layer();
++        self.command_encoder.init_texture(layer_texture);
++        let surface_width = self.surface_config.size.width as f32;
++        let surface_height = self.surface_config.size.height as f32;
++        let globals = GlobalParams {
++            viewport_size: [surface_width, surface_height],
++            premultiplied_alpha: match self.surface.info().alpha {
++                gpu::AlphaMode::Ignored | gpu::AlphaMode::PostMultiplied => 0,
++                gpu::AlphaMode::PreMultiplied => 1,
++            },
++            pad: 0,
++        };
++
++        let operations = &scene.paint_operations[span];
++        let mut pass = self.command_encoder.render(
++            "mask capture",
++            gpu::RenderTargetSet {
++                colors: &[gpu::RenderTarget {
++                    view: layer_view,
++                    init_op: gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack),
++                    finish_op: gpu::FinishOp::Store,
++                }],
++                depth_stencil: None,
++            },
++        );
++
++        // Runs of the same kind draw together, the way the main pass batches
++        // them; sprites split further by atlas texture. The span's list is
++        // walked in recorded order, so a run never crosses a kind boundary.
++        let mut index = 0;
++        while index < operations.len() {
++            let PaintOperation::Primitive(first) = &operations[index] else {
++                index += 1;
++                continue;
++            };
++            match first {
++                Primitive::Quad(_) => {
++                    let mut quads = Vec::new();
++                    while let Some(PaintOperation::Primitive(Primitive::Quad(quad))) =
++                        operations.get(index)
++                    {
++                        quads.push(quad.clone());
++                        index += 1;
++                    }
++                    let instance_buf = unsafe { self.instance_belt.alloc_typed(&quads, &self.gpu) };
++                    let mut encoder = pass.with(&self.pipelines.quads);
++                    encoder.bind(
++                        0,
++                        &ShaderQuadsData {
++                            globals,
++                            b_quads: instance_buf,
++                        },
++                    );
++                    encoder.draw(0, 4, 0, quads.len() as u32);
++                }
++                Primitive::Underline(_) => {
++                    let mut underlines = Vec::new();
++                    while let Some(PaintOperation::Primitive(Primitive::Underline(underline))) =
++                        operations.get(index)
++                    {
++                        underlines.push(underline.clone());
++                        index += 1;
++                    }
++                    let instance_buf =
++                        unsafe { self.instance_belt.alloc_typed(&underlines, &self.gpu) };
++                    let mut encoder = pass.with(&self.pipelines.underlines);
++                    encoder.bind(
++                        0,
++                        &ShaderUnderlinesData {
++                            globals,
++                            b_underlines: instance_buf,
++                        },
++                    );
++                    encoder.draw(0, 4, 0, underlines.len() as u32);
++                }
++                Primitive::MonochromeSprite(first_sprite) => {
++                    let texture_id = first_sprite.tile.texture_id;
++                    let mut sprites = Vec::new();
++                    while let Some(PaintOperation::Primitive(Primitive::MonochromeSprite(sprite))) =
++                        operations.get(index)
++                    {
++                        if sprite.tile.texture_id != texture_id {
++                            break;
++                        }
++                        sprites.push(sprite.clone());
++                        index += 1;
++                    }
++                    let tex_info = self.atlas.get_texture_info(texture_id);
++                    let instance_buf =
++                        unsafe { self.instance_belt.alloc_typed(&sprites, &self.gpu) };
++                    let mut encoder = pass.with(&self.pipelines.mono_sprites);
++                    encoder.bind(
++                        0,
++                        &ShaderMonoSpritesData {
++                            globals,
++                            gamma_ratios: self.rendering_parameters.gamma_ratios,
++                            grayscale_enhanced_contrast: self
++                                .rendering_parameters
++                                .grayscale_enhanced_contrast,
++                            t_sprite: tex_info.raw_view,
++                            s_sprite: self.atlas_sampler,
++                            b_mono_sprites: instance_buf,
++                        },
++                    );
++                    encoder.draw(0, 4, 0, sprites.len() as u32);
++                }
++                Primitive::PolychromeSprite(first_sprite) => {
++                    let texture_id = first_sprite.tile.texture_id;
++                    let mut sprites = Vec::new();
++                    while let Some(PaintOperation::Primitive(Primitive::PolychromeSprite(
++                        sprite,
++                    ))) = operations.get(index)
++                    {
++                        if sprite.tile.texture_id != texture_id {
++                            break;
++                        }
++                        sprites.push(sprite.clone());
++                        index += 1;
++                    }
++                    let tex_info = self.atlas.get_texture_info(texture_id);
++                    let instance_buf =
++                        unsafe { self.instance_belt.alloc_typed(&sprites, &self.gpu) };
++                    let mut encoder = pass.with(&self.pipelines.poly_sprites);
++                    encoder.bind(
++                        0,
++                        &ShaderPolySpritesData {
++                            globals,
++                            t_sprite: tex_info.raw_view,
++                            s_sprite: self.atlas_sampler,
++                            b_poly_sprites: instance_buf,
++                        },
++                    );
++                    encoder.draw(0, 4, 0, sprites.len() as u32);
++                }
++                Primitive::Path(_) => {
++                    let mut paths = Vec::new();
++                    while let Some(PaintOperation::Primitive(Primitive::Path(path))) =
++                        operations.get(index)
++                    {
++                        paths.push(path.clone());
++                        index += 1;
++                    }
++                    // Same two-stage dance as the main pass. One spanning
++                    // copy rather than per-path rects: the rasterization
++                    // already merged the run, transparent texels blend to
++                    // nothing, and one rect can't double-blend an overlap.
++                    drop(pass);
++                    self.draw_paths_to_intermediate(&paths, surface_width, surface_height);
++                    pass = self.command_encoder.render(
++                        "mask capture resumed",
++                        gpu::RenderTargetSet {
++                            colors: &[gpu::RenderTarget {
++                                view: layer_view,
++                                init_op: gpu::InitOp::Load,
++                                finish_op: gpu::FinishOp::Store,
++                            }],
++                            depth_stencil: None,
++                        },
++                    );
++                    let mut bounds = paths[0].clipped_bounds();
++                    for path in paths.iter().skip(1) {
++                        bounds = bounds.union(&path.clipped_bounds());
++                    }
++                    let sprites = vec![PathSprite { bounds }];
++                    let instance_buf =
++                        unsafe { self.instance_belt.alloc_typed(&sprites, &self.gpu) };
++                    let mut encoder = pass.with(&self.pipelines.paths);
++                    encoder.bind(
++                        0,
++                        &ShaderPathsData {
++                            globals,
++                            t_sprite: self.path_intermediate_texture_view,
++                            s_sprite: self.atlas_sampler,
++                            b_path_sprites: instance_buf,
++                        },
++                    );
++                    encoder.draw(0, 4, 0, sprites.len() as u32);
++                }
++                Primitive::Shadow(_)
++                | Primitive::Surface(_)
++                | Primitive::UserShader(_)
++                | Primitive::UserShaderRegion(_) => {
++                    index += 1;
++                }
++            }
++        }
++        drop(pass);
++    }
++
+     fn clear_texture(&mut self, view: gpu::TextureView) {
+         let _pass = self.command_encoder.render(
+             "shader texture clear",
+@@ -2112,6 +2466,7 @@
+                         drop(pass);
+                         for region in regions {
+                             self.draw_shader_region(
++                                scene,
+                                 region,
+                                 intermediate_texture,
+                                 intermediate_view,
+@@ -2176,6 +2531,7 @@
+     targets: &[ChainPassViews],
+     index: usize,
+     prev_override: Option<gpu::TextureView>,
++    mask: Option<gpu::TextureView>,
+     textures: &HashMap<u32, UserTexture>,
+ ) -> Option<Vec<ChainBindValue>> {
+     let mut values = Vec::with_capacity(pass.bindings.len());
+@@ -2188,6 +2544,7 @@
+                 Some(view) => ChainBindValue::Texture(view),
+                 None => ChainBindValue::Texture(targets.get(index)?.feedback?.1),
+             },
++            ChainBinding::Mask => ChainBindValue::Texture(mask?),
+             ChainBinding::Pass { index: earlier, .. } => {
+                 ChainBindValue::Texture(targets.get(*earlier)?.target?.1)
+             }
+@@ -2197,6 +2554,7 @@
+     Some(values)
+ }
+ 
++#[allow(clippy::too_many_arguments)]
+ fn bind_chain_pass(
+     pass: &ChainPass,
+     params: ShaderParams,
+@@ -2204,9 +2562,12 @@
+     sampler: gpu::Sampler,
+     targets: &[ChainPassViews],
+     index: usize,
++    mask: Option<gpu::TextureView>,
+     textures: &HashMap<u32, UserTexture>,
+ ) -> Option<Vec<ChainBindValue>> {
+-    bind_chain_pass_with_prev(pass, params, screen, sampler, targets, index, None, textures)
++    bind_chain_pass_with_prev(
++        pass, params, screen, sampler, targets, index, None, mask, textures,
++    )
+ }
+ 
+ fn create_path_intermediate_texture(
+diff -ruN '--exclude=target' '--exclude=.rox-stamp' '--exclude=Cargo.lock' a/src/platform/windows/directx_renderer.rs b/src/platform/windows/directx_renderer.rs
+--- a/src/platform/windows/directx_renderer.rs	2026-08-14 15:44:10.771979934 -0600
++++ b/src/platform/windows/directx_renderer.rs	2026-08-14 15:32:23.744950975 -0600
+@@ -2135,6 +2135,10 @@
+             ChainBinding::Pass { index: earlier, .. } => {
+                 views.push(Some(targets.get(*earlier)?.target.as_ref()?.srv()))
+             }
++            // The mask capture is blade-only so far. An unbound SRV samples
++            // zeros in HLSL, which reads exactly like the empty mask: the
++            // shader runs, the mask is transparent, nothing breaks.
++            ChainBinding::Mask => views.push(None),
+             ChainBinding::Asset { id, .. } => views.push(Some(textures.get(id)?.srv[0].clone()?)),
+         }
+     }
+diff -ruN '--exclude=target' '--exclude=.rox-stamp' '--exclude=Cargo.lock' a/src/scene.rs b/src/scene.rs
+--- a/src/scene.rs	2026-08-14 15:44:10.760901865 -0600
++++ b/src/scene.rs	2026-08-14 15:25:02.097718940 -0600
+@@ -38,6 +38,10 @@
+     // rox patch: `OVERLAY_ORDER_BIAS` while the deferred-draw phase is
+     // painting, 0 otherwise.
+     order_bias: DrawOrder,
++    // rox patch: mask spans by instance, derived from the marker operations
++    // in `finish`. Each names the run of paint operations a shader mask
++    // replays; see `begin_mask_span`.
++    mask_spans: std::collections::HashMap<u64, Range<usize>>,
+     pub(crate) shadows: Vec<Shadow>,
+     pub(crate) quads: Vec<Quad>,
+     pub(crate) paths: Vec<Path<ScaledPixels>>,
+@@ -68,6 +72,7 @@
+         self.surfaces.clear();
+         self.user_shaders.clear();
+         self.user_shader_regions.clear();
++        self.mask_spans.clear();
+     }
+ 
+     pub fn len(&self) -> usize {
+@@ -96,6 +101,27 @@
+         self.primitive_bounds.insert(bounds) + self.order_bias
+     }
+ 
++    /// rox patch: opens a mask span for `instance`, the id a screen-shader
++    /// region carries. Everything painted until the matching `end_mask_span`
++    /// is what a shader binding `mask` sees as content coverage. The span
++    /// rides `paint_operations` as marker entries rather than an index pair
++    /// held elsewhere, so a cached subtree replayed out of the previous
++    /// frame's operations carries its span with it.
++    pub(crate) fn begin_mask_span(&mut self, instance: u64) {
++        self.paint_operations
++            .push(PaintOperation::StartMaskSpan(instance));
++    }
++
++    pub(crate) fn end_mask_span(&mut self) {
++        self.paint_operations.push(PaintOperation::EndMaskSpan);
++    }
++
++    /// rox patch: the run of paint operations recorded under `instance`'s
++    /// mask span this frame, if it opened one. Paired in [`Self::finish`].
++    pub(crate) fn mask_span(&self, instance: u64) -> Option<Range<usize>> {
++        self.mask_spans.get(&instance).cloned()
++    }
++
+     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
+         let order = self.next_order(bounds);
+         self.layer_stack.push(order);
+@@ -171,11 +197,33 @@
+                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
+                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
+                 PaintOperation::EndLayer => self.pop_layer(),
++                // rox patch: replayed spans re-mark themselves, so a cached
++                // panel's mask survives frames its paint never runs in.
++                PaintOperation::StartMaskSpan(instance) => self.begin_mask_span(*instance),
++                PaintOperation::EndMaskSpan => self.end_mask_span(),
+             }
+         }
+     }
+ 
+     pub fn finish(&mut self) {
++        // rox patch: pair the mask markers into per-instance operation
++        // ranges. A stack handles nesting (a masked panel inside a masked
++        // group), and an unmatched start simply never lands a span, which
++        // draws the same as no mask at all.
++        self.mask_spans.clear();
++        let mut open_spans = Vec::new();
++        for (index, operation) in self.paint_operations.iter().enumerate() {
++            match operation {
++                PaintOperation::StartMaskSpan(instance) => open_spans.push((*instance, index + 1)),
++                PaintOperation::EndMaskSpan => {
++                    if let Some((instance, start)) = open_spans.pop() {
++                        self.mask_spans.insert(instance, start..index);
++                    }
++                }
++                _ => {}
++            }
++        }
++
+         self.shadows.sort_by_key(|shadow| shadow.order);
+         self.quads.sort_by_key(|quad| quad.order);
+         self.paths.sort_by_key(|path| path.order);
+@@ -266,6 +314,9 @@
+     Primitive(Primitive),
+     StartLayer(Bounds<ScaledPixels>),
+     EndLayer,
++    // rox patch: mask span markers, see `Scene::begin_mask_span`.
++    StartMaskSpan(u64),
++    EndMaskSpan,
+ }
+ 
+ #[derive(Clone)]
+diff -ruN '--exclude=target' '--exclude=.rox-stamp' '--exclude=Cargo.lock' a/src/window.rs b/src/window.rs
+--- a/src/window.rs	2026-08-14 15:44:10.769450083 -0600
++++ b/src/window.rs	2026-08-14 15:44:47.437340886 -0600
+@@ -3670,6 +3670,28 @@
+     /// once, and each exit restores what it found. Hit testing doesn't move -
+     /// hitboxes order by the sequence they were inserted in, not by draw order.
+     ///
++    /// Records everything `f` paints as `instance`'s mask span: the content
++    /// a screen-shader region drawn with the same `instance` can read back
++    /// through its `mask` binding, isolated on transparency. The span rides
++    /// the frame's paint operations, so a cached subtree replaying its
++    /// recorded operations keeps its mask without re-running `f`.
++    ///
++    /// Recording costs two marker entries; the capture itself only happens
++    /// for regions whose shader actually binds `mask`. On backends without
++    /// the region pass the markers are inert.
++    ///
++    /// This method should only be called as part of the paint phase of
++    /// element drawing.
++    ///
++    /// rox patch: part of the user shader masks.
++    pub fn with_shader_mask_span<R>(&mut self, instance: u64, f: impl FnOnce(&mut Self) -> R) -> R {
++        self.invalidator.debug_assert_paint();
++        self.next_frame.scene.begin_mask_span(instance);
++        let result = f(self);
++        self.next_frame.scene.end_mask_span();
++        result
++    }
++
+     /// rox patch: part of the user shader surfaces.
+     pub fn with_overlay_phase<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+         let previous = self.next_frame.scene.begin_overlay();
+@@ -5684,13 +5706,15 @@
+ struct ScreenBindings {
+     screen: bool,
+     prev: bool,
++    mask: bool,
+ }
+ 
+ /// rox patch: one binding a chain pass can have in scope. The order a
+ /// composed pass lists them in is pinned, and three things walk it in
+ /// lockstep: the WGSL declarations, the pipeline's data layout, and the
+-/// draw-time fill. That order is params, screen, samp, prev, the earlier
+-/// passes of the chain, then the declared assets, referenced ones only.
++/// draw-time fill. That order is params, screen, samp, prev, mask, the
++/// earlier passes of the chain, then the declared assets, referenced ones
++/// only.
+ #[derive(Clone, Debug, Eq, PartialEq)]
+ pub(crate) enum ChainBinding {
+     /// The uniform block. Always bound.
+@@ -5701,6 +5725,12 @@
+     Sampler,
+     /// This pass's own output from the previous frame, at the pass's size.
+     Prev,
++    /// What the program's mask span drew, isolated on transparency: the
++    /// content painted between [`Window::with_shader_mask_span`]'s brackets,
++    /// cropped to the program's bounds. Alpha is the coverage a drop shadow
++    /// or glow builds from; a region with no span recorded reads transparent
++    /// black.
++    Mask,
+     /// An earlier pass of the same chain, at that pass's scaled size.
+     Pass {
+         /// Where the pass sits in the chain.
+@@ -5725,6 +5755,7 @@
+             ChainBinding::Screen => "screen",
+             ChainBinding::Sampler => "samp",
+             ChainBinding::Prev => "prev",
++            ChainBinding::Mask => "mask",
+             ChainBinding::Pass { name, .. } | ChainBinding::Asset { name, .. } => name,
+         }
+     }
+@@ -5790,6 +5821,9 @@
+     if bindings.prev {
+         composed.push(ChainBinding::Prev);
+     }
++    if bindings.mask {
++        composed.push(ChainBinding::Mask);
++    }
+     composed
+ }
+ 
+@@ -5817,6 +5851,7 @@
+ const SCREEN_SUPERSET: ScreenBindings = ScreenBindings {
+     screen: true,
+     prev: true,
++    mask: true,
+ };
+ 
+ // Blade panics on bad WGSL, so anything user-supplied gets checked up front.
+@@ -6043,6 +6078,11 @@
+     /// Some pass binds one of the declared assets. The in-scene primitive has
+     /// no sampler, so an asset read rules it out as well.
+     pub uses_assets: bool,
++    /// Some pass reads `mask`, the content its span isolated on
++    /// transparency. The capture rides the region pass, so this is
++    /// screen-pass-only too, and it's what tells a caller the span brackets
++    /// are worth recording at all.
++    pub uses_mask: bool,
+ }
+ 
+ impl UserShaderCaps {
+@@ -6052,7 +6092,11 @@
+     ///
+     /// rox patch: part of the shader chains.
+     pub fn screen_pass_only(&self) -> bool {
+-        self.samples_screen || self.uses_prev || self.multi_pass || self.uses_assets
++        self.samples_screen
++            || self.uses_prev
++            || self.multi_pass
++            || self.uses_assets
++            || self.uses_mask
+     }
+ }
+ 
+@@ -6106,7 +6150,7 @@
+         if !is_binding_name(name) {
+             return Err(format!("`{name}` isn't a usable binding name"));
+         }
+-        if matches!(name, "params" | "screen" | "samp" | "prev") {
++        if matches!(name, "params" | "screen" | "samp" | "prev" | "mask") {
+             return Err(format!(
+                 "`{name}` is one of the template's own bindings, pick another name"
+             ));
+@@ -6269,6 +6313,7 @@
+             uses_prev: false,
+             multi_pass: chain.passes.len() > 1,
+             uses_assets: false,
++            uses_mask: false,
+         };
+         for (index, pass) in chain.passes.iter().enumerate() {
+             // Everything this pass could possibly bind: the screen-pass four,
+@@ -6348,6 +6393,7 @@
+                     ChainBinding::Screen => caps.samples_screen = true,
+                     ChainBinding::Prev => caps.uses_prev = true,
+                     ChainBinding::Asset { .. } => caps.uses_assets = true,
++                    ChainBinding::Mask => caps.uses_mask = true,
+                     _ => {}
+                 }
+                 bindings.push(binding.clone());
+@@ -6625,6 +6671,51 @@
+     }
+ 
+     #[test]
++    fn mask_reference_is_classified_and_region_only() {
++        let mut registry = UserShaderRegistry::default();
++        let (id, _) = registry
++            .register(
++                "fn fs_user(uv: vec2<f32>) -> vec4<f32> {
++                     let cover = textureSample(mask, samp, uv).a;
++                     return vec4<f32>(0.0, 0.0, 0.0, cover * 0.5);
++                 }",
++            )
++            .unwrap();
++        let caps = registry.caps(id).unwrap();
++        assert!(caps.uses_mask);
++        assert!(!caps.samples_screen);
++        assert!(caps.screen_pass_only());
++        // The capture only exists in the region pass, so the primitive
++        // variant has to fail composition the way screen and prev do.
++        assert!(registry.primitive_source(id).is_none());
++        assert!(registry.screen_source(id).unwrap().contains("mask"));
++    }
++
++    #[test]
++    fn mask_is_a_reserved_binding_name() {
++        let chain = UserShaderChain {
++            passes: vec![
++                UserShaderPass {
++                    name: "mask".to_string(),
++                    source: "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }"
++                        .to_string(),
++                    scale: 1.0,
++                },
++                UserShaderPass {
++                    name: "out".to_string(),
++                    source: "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(1.0); }"
++                        .to_string(),
++                    scale: 1.0,
++                },
++            ],
++            assets: Vec::new(),
++        };
++        let mut registry = UserShaderRegistry::default();
++        let error = registry.register_chain(&chain).unwrap_err();
++        assert!(error.contains("template's own bindings"), "{error}");
++    }
++
++    #[test]
+     fn caps_are_false_for_a_pure_shader_and_none_for_an_unknown_id() {
+         let mut registry = UserShaderRegistry::default();
+         let (id, _) = registry.register(SOLID).unwrap();
+@@ -6635,6 +6726,7 @@
+                 uses_prev: false,
+                 multi_pass: false,
+                 uses_assets: false,
++                uses_mask: false,
+             })
+         );
+         assert_eq!(registry.caps(UserShaderId(7)), None);
+@@ -6854,6 +6946,7 @@
+                 uses_prev: true,
+                 multi_pass: true,
+                 uses_assets: false,
++                uses_mask: false,
+             })
+         );
+         assert!(registry.caps(id).unwrap().screen_pass_only());
+@@ -7229,3 +7322,4 @@
+         perspective,
+     ))
+ }
++

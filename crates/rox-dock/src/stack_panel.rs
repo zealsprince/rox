@@ -21,6 +21,10 @@ pub struct StackPanel {
     focus_handle: FocusHandle,
     pub(crate) panels: SmallVec<[Arc<dyn PanelView>; 2]>,
     state: Entity<ResizableState>,
+    /// rox addition: this split's say over its own seams, over the
+    /// app-wide flag; None follows it. Rides the layout dump, so one
+    /// area of a workspace can sit flush while the rest keeps its lines.
+    seams: Option<bool>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -99,7 +103,7 @@ impl Panel for StackPanel {
         // Set the stack info up front, not inside the loop: same reason as
         // TabPanel::dump, an empty stack left on the `Panel(Null)` default
         // restores as an unregistered "StackPanel" InvalidPanel.
-        state.info = PanelInfo::stack(sizes, self.axis);
+        state.info = PanelInfo::stack_with_seams(sizes, self.axis, self.seams);
         for panel in &self.panels {
             state.add_child(panel.dump(cx));
         }
@@ -124,6 +128,7 @@ impl StackPanel {
             focus_handle: cx.focus_handle(),
             panels: SmallVec::new(),
             state,
+            seams: None,
             _subscriptions,
         }
     }
@@ -155,6 +160,17 @@ impl StackPanel {
     /// The stack's axis, for app-level walks over the live layout.
     pub fn axis(&self) -> Axis {
         self.axis
+    }
+
+    /// This split's seam override: None follows the app-wide flag.
+    pub fn seams(&self) -> Option<bool> {
+        self.seams
+    }
+
+    /// Set the split's seam override and repaint.
+    pub fn set_seams(&mut self, seams: Option<bool>, cx: &mut Context<Self>) {
+        self.seams = seams;
+        cx.notify();
     }
 
     /// The stack this one sits in, for app-level walks; None at the root.
@@ -553,6 +569,7 @@ impl Render for StackPanel {
                 ResizablePanelGroup::new("stack-panel-group")
                     .with_state(&self.state)
                     .axis(self.axis)
+                    .seams_override(self.seams)
                     .children(self.panels.clone().into_iter().map(|panel| {
                         resizable_panel()
                             .size_range(

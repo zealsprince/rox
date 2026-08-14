@@ -40,7 +40,7 @@ pub fn open(state: AppState, cx: &mut App) {
             return;
         }
     }
-    let bounds = Bounds::centered(None, size(px(1160.), px(740.)), cx);
+    let bounds = Bounds::centered(None, size(px(1160.), px(800.)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
         "rox - Welcome",
@@ -341,14 +341,25 @@ impl Render for WelcomeWindow {
                             Seg::Text("to bring it back.".into()),
                         ]))
                         .child(kbd_line([
-                            Seg::Text("Drag a tab to rearrange, or hold middle mouse or".into()),
+                            Seg::Text("Drag a tab to rearrange, or hold".into()),
+                            Seg::Key("Middle Mouse".into()),
+                            Seg::Text("or".into()),
                             Seg::Key("Alt".into()),
+                            Seg::Text("+".into()),
+                            Seg::Key("Left Click".into()),
                             Seg::Text(
-                                "+ left click anywhere in a panel. Drop one outside the \
-                             window and it becomes its own window."
+                                "anywhere in a panel to move it. Drop it on another \
+                             panel's edge to split there, on the middle to share a \
+                             tab group, or outside the window to make it its own \
+                             window."
                                     .into(),
                             ),
-                        ])),
+                        ]))
+                        .child(line(
+                            "Rearranging needs Design Mode, on by default and toggled \
+                         at the top of the Panels menu. Turning it off locks the \
+                         layout, so a finished setup can't be nudged.",
+                        )),
                 ))
                 .child(section(
                     "Playback",

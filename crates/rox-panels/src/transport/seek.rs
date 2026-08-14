@@ -15,9 +15,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
 use crate::design::{palette, tokens};
-use crate::panel::{self, AppState, PanelChrome, PanelSettings, ScrubState};
+use crate::panel::{self, AppState, PanelChrome, PanelSettings, ScrubState, ValueEdit};
 use crate::panel_settings;
 use crate::player::fmt_time_padded;
+use crate::settings::ui as settings_ui;
 
 use super::{default_true, transport_panel};
 
@@ -38,6 +39,8 @@ pub enum SeekItem {
     /// A flexible gap that pushes the pieces around it apart; a row
     /// holds as many as the layout wants.
     Spacer,
+    /// A spacer that draws a hairline in the border color across its gap.
+    Divider,
     /// The line break: everything after it drops to a second row. The
     /// stacked layouts, where the strip runs the full width with its
     /// clocks over or under it instead of beside.
@@ -78,9 +81,9 @@ const ITEMS: &[panel::ArrangeSpec<SeekItem>] = &[
         repeats: true,
     },
     panel::ArrangeSpec {
-        label: "Break",
-        icon: Some(icons::ROWS_2),
-        value: SeekItem::Break,
+        label: "Divider",
+        icon: Some(icons::MINUS),
+        value: SeekItem::Divider,
         repeats: true,
     },
 ];
@@ -103,6 +106,17 @@ pub struct SeekConfig {
     /// counts as listened for Last.fm. Only draws while scrobbling is
     /// connected and on.
     pub scrobble_marker: bool,
+    /// The track line's height in px.
+    pub thickness: f32,
+    /// The track line's corner radius in px, capped at a pill.
+    pub rounding: f32,
+    /// The playhead's width in px.
+    pub playhead_width: f32,
+    /// The playhead spans the strip's full height; off, it hugs the line.
+    pub playhead_full: bool,
+    /// Cap the full playhead's height in px, kept centered on the line;
+    /// 0 lets it fill the panel.
+    pub playhead_max: f32,
     /// The shown pieces in display order; one not listed is hidden.
     pub items: Vec<SeekItem>,
 }
@@ -113,6 +127,11 @@ impl Default for SeekConfig {
             chrome: PanelChrome::default(),
             show_total: false,
             scrobble_marker: false,
+            thickness: tokens::SEEK_STRIP_H,
+            rounding: 0.0,
+            playhead_width: tokens::PLAYHEAD_W,
+            playhead_full: true,
+            playhead_max: 0.0,
             items: vec![SeekItem::Elapsed, SeekItem::Strip, SeekItem::Ending],
         }
     }
@@ -129,16 +148,42 @@ struct SeekConfigDump {
     show_total: bool,
     #[serde(default)]
     scrobble_marker: bool,
+    #[serde(default = "default_thickness")]
+    thickness: f32,
+    #[serde(default)]
+    rounding: f32,
+    #[serde(default = "default_playhead_width")]
+    playhead_width: f32,
+    #[serde(default = "default_true")]
+    playhead_full: bool,
+    #[serde(default)]
+    playhead_max: f32,
     #[serde(default)]
     items: Option<Vec<SeekItem>>,
     #[serde(default = "default_true")]
     timings: bool,
 }
 
+fn default_thickness() -> f32 {
+    tokens::SEEK_STRIP_H
+}
+
+fn default_playhead_width() -> f32 {
+    tokens::PLAYHEAD_W
+}
+
 impl From<SeekConfigDump> for SeekConfig {
     fn from(dump: SeekConfigDump) -> Self {
         let items = match dump.items {
-            Some(items) => panel::dedup(ITEMS, items),
+            // Deduped row by row, the breaks put back after: the catalog
+            // doesn't carry the break (it draws as the editor's row
+            // boundary, not a chip), and each row may hold its own copy
+            // of a piece.
+            Some(items) => items
+                .split(|i| matches!(i, SeekItem::Break))
+                .map(|row| panel::dedup(ITEMS, row.to_vec()))
+                .collect::<Vec<_>>()
+                .join(&SeekItem::Break),
             None if dump.timings => {
                 vec![SeekItem::Elapsed, SeekItem::Strip, SeekItem::Ending]
             }
@@ -148,6 +193,11 @@ impl From<SeekConfigDump> for SeekConfig {
             chrome: dump.chrome,
             show_total: dump.show_total,
             scrobble_marker: dump.scrobble_marker,
+            thickness: dump.thickness,
+            rounding: dump.rounding,
+            playhead_width: dump.playhead_width,
+            playhead_full: dump.playhead_full,
+            playhead_max: dump.playhead_max,
             items,
         }
     }
@@ -162,6 +212,12 @@ pub struct SeekStripPanel {
     config: SeekConfig,
     /// The strip's painted bounds and drag state, for scrub mapping.
     scrub: ScrubState,
+    /// The settings page's scalar strips, with the shared readout edit.
+    thickness_scrub: ScrubState,
+    rounding_scrub: ScrubState,
+    playhead_scrub: ScrubState,
+    playhead_max_scrub: ScrubState,
+    value_edit: ValueEdit,
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
@@ -177,6 +233,11 @@ impl SeekStripPanel {
             state,
             config,
             scrub: ScrubState::default(),
+            thickness_scrub: ScrubState::default(),
+            rounding_scrub: ScrubState::default(),
+            playhead_scrub: ScrubState::default(),
+            playhead_max_scrub: ScrubState::default(),
+            value_edit: ValueEdit::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
             _player_changed,
@@ -266,21 +327,97 @@ impl PanelSettings for SeekStripPanel {
             .child(panel::setting_block(
                 "Pieces",
                 Some(
-                    "Drag along the bar to reorder; drag between the rows, \
-                     or use a chip's x and plus, to hide and show",
+                    "Drag along a row to reorder and between rows to move; \
+                     a chip's x and plus hide and show",
                 ),
                 None,
-                panel::arrange_editor(
+                panel::arrange_rows_editor(
                     "seek-items",
                     ITEMS,
-                    &self.config.items,
-                    |this: &mut Self, items, cx| {
-                        this.config.items = items;
+                    &editor_rows(&self.config.items),
+                    None,
+                    |this: &mut Self, rows, cx| {
+                        this.config.items = rows.join(&SeekItem::Break);
                         cx.notify();
                     },
                     cx,
                 ),
             ))
+            .child(panel::setting_row(
+                "Thickness",
+                Some("The track line's height"),
+                settings_ui::scalar(
+                    &self.thickness_scrub,
+                    &self.value_edit,
+                    self.config.thickness,
+                    settings_ui::span(1., 16., " px"),
+                    |this: &mut Self, thickness, cx| {
+                        this.config.thickness = thickness;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Rounding",
+                Some("The line's corner radius, up to a pill at half the thickness"),
+                settings_ui::scalar(
+                    &self.rounding_scrub,
+                    &self.value_edit,
+                    self.config.rounding,
+                    settings_ui::span(0., 8., " px"),
+                    |this: &mut Self, rounding, cx| {
+                        this.config.rounding = rounding;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Playhead",
+                Some("Span the strip's full height or hug the line"),
+                panel::choices(
+                    &[("Full", true), ("Line", false)],
+                    self.config.playhead_full,
+                    |this: &mut Self, full, cx| {
+                        this.config.playhead_full = full;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Playhead Width",
+                Some("The moving position marker's width"),
+                settings_ui::scalar(
+                    &self.playhead_scrub,
+                    &self.value_edit,
+                    self.config.playhead_width,
+                    settings_ui::span(1., 8., " px"),
+                    |this: &mut Self, width, cx| {
+                        this.config.playhead_width = width;
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .when(self.config.playhead_full, |d| {
+                d.child(panel::setting_row(
+                    "Playhead Max Height",
+                    Some("Cap the full playhead, centered on the line; 0 fills the panel"),
+                    settings_ui::scalar(
+                        &self.playhead_max_scrub,
+                        &self.value_edit,
+                        self.config.playhead_max,
+                        settings_ui::span(0., 100., " px"),
+                        |this: &mut Self, max, cx| {
+                            this.config.playhead_max = max;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                ))
+            })
             .when(self.config.items.contains(&SeekItem::Ending), |d| {
                 d.child(panel::setting_row(
                     "Ending",
@@ -312,10 +449,40 @@ impl PanelSettings for SeekStripPanel {
     }
 }
 
+/// The strip's paint knobs, copied off the config for the paint closure.
+#[derive(Clone, Copy)]
+struct StripLook {
+    thickness: f32,
+    rounding: f32,
+    playhead_width: f32,
+    playhead_full: bool,
+    playhead_max: f32,
+}
+
+impl From<&SeekConfig> for StripLook {
+    fn from(config: &SeekConfig) -> Self {
+        StripLook {
+            thickness: config.thickness,
+            rounding: config.rounding,
+            playhead_width: config.playhead_width,
+            playhead_full: config.playhead_full,
+            playhead_max: config.playhead_max,
+        }
+    }
+}
+
 /// The track line centered in whatever height the panel gets: unplayed side
-/// dim, played side solid, the waveform's playhead on top. `marker` draws
-/// the scrobble threshold as a thin full-height line under the playhead.
-fn paint_strip(progress: f32, marker: Option<f32>, bounds: Bounds<Pixels>, window: &mut Window) {
+/// dim, played side solid, the waveform's playhead on top. `look` carries
+/// the config's line and playhead knobs, the radius capped at a pill.
+/// `marker` draws the scrobble threshold as a thin full-height line under
+/// the playhead.
+fn paint_strip(
+    progress: f32,
+    marker: Option<f32>,
+    look: StripLook,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+) {
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
     if w <= 0.0 || h <= 0.0 {
@@ -323,21 +490,31 @@ fn paint_strip(progress: f32, marker: Option<f32>, bounds: Bounds<Pixels>, windo
     }
 
     let head_x = progress.clamp(0.0, 1.0) * w;
-    let line_y = (h - tokens::SEEK_STRIP_H) / 2.0;
-    window.paint_quad(fill(
-        Bounds::new(
-            point(bounds.origin.x, bounds.origin.y + px(line_y)),
-            size(px(w), px(tokens::SEEK_STRIP_H)),
-        ),
-        palette::alpha(palette::accent(), 0x33),
-    ));
-    window.paint_quad(fill(
-        Bounds::new(
-            point(bounds.origin.x, bounds.origin.y + px(line_y)),
-            size(px(head_x), px(tokens::SEEK_STRIP_H)),
-        ),
-        palette::accent(),
-    ));
+    let line_h = look.thickness.clamp(1.0, h);
+    let radius = look.rounding.clamp(0.0, line_h / 2.0);
+    let line_y = (h - line_h) / 2.0;
+    window.paint_quad(
+        fill(
+            Bounds::new(
+                point(bounds.origin.x, bounds.origin.y + px(line_y)),
+                size(px(w), px(line_h)),
+            ),
+            palette::alpha(palette::accent(), 0x33),
+        )
+        .corner_radii(px(radius)),
+    );
+    window.paint_quad(
+        fill(
+            Bounds::new(
+                point(bounds.origin.x, bounds.origin.y + px(line_y)),
+                size(px(head_x), px(line_h)),
+            ),
+            palette::accent(),
+        )
+        // gpui doesn't clamp radii to the quad, so the played side's
+        // shrink with it near the start.
+        .corner_radii(px(radius.min(head_x / 2.0))),
+    );
     if let Some(marker) = marker {
         window.paint_quad(fill(
             Bounds::new(
@@ -350,16 +527,32 @@ fn paint_strip(progress: f32, marker: Option<f32>, bounds: Bounds<Pixels>, windo
             palette::alpha(palette::highlight(), 0x80),
         ));
     }
-    window.paint_quad(fill(
-        Bounds::new(
-            point(
-                bounds.origin.x + px(head_x - tokens::PLAYHEAD_W / 2.0),
-                bounds.origin.y,
+    // The playhead: the panel's full height, capped when the config says
+    // so, or the line's when it hugs. Either way it centers on the line.
+    let head_w = look.playhead_width.clamp(1.0, w);
+    let head_h = if !look.playhead_full {
+        line_h
+    } else if look.playhead_max > 0.0 {
+        look.playhead_max.clamp(line_h.min(h), h)
+    } else {
+        h
+    };
+    window.paint_quad(
+        fill(
+            Bounds::new(
+                point(
+                    bounds.origin.x + px(head_x - head_w / 2.0),
+                    bounds.origin.y + px((h - head_h) / 2.0),
+                ),
+                size(px(head_w), px(head_h)),
             ),
-            size(px(tokens::PLAYHEAD_W), px(h)),
-        ),
-        palette::alpha(palette::highlight(), 0xd9),
-    ));
+            palette::alpha(palette::highlight(), 0xd9),
+        )
+        // The playhead reads the config's rounding raw, capped at its own
+        // pill: through the line's cap a head fatter than the line could
+        // never close into a circle.
+        .corner_radii(px(look.rounding.clamp(0.0, head_w.min(head_h) / 2.0))),
+    );
 }
 
 /// The config's list cut at the break into one piece list per row. No
@@ -369,6 +562,15 @@ fn split_rows(items: &[SeekItem]) -> Vec<Vec<SeekItem>> {
     items
         .split(|i| matches!(i, SeekItem::Break))
         .filter(|row| !row.is_empty())
+        .map(|row| row.to_vec())
+        .collect()
+}
+
+/// [`split_rows`] for the rows editor, empty rows kept: an added row's
+/// well shows until a piece lands or its x drops it.
+fn editor_rows(items: &[SeekItem]) -> Vec<Vec<SeekItem>> {
+    items
+        .split(|i| matches!(i, SeekItem::Break))
         .map(|row| row.to_vec())
         .collect()
 }
@@ -437,6 +639,7 @@ impl SeekStripPanel {
         let hover_duration = now.duration_secs.filter(|d| *d > 0.0);
         let scrub = self.scrub.clone();
         let player = self.state.player.clone();
+        let look = StripLook::from(&self.config);
         let track = div()
             .flex_1()
             .min_w_0()
@@ -460,7 +663,7 @@ impl SeekStripPanel {
                         move |bounds, _, _| scrub.set_bounds(bounds)
                     },
                     move |bounds, _, window, _| {
-                        paint_strip(progress, marker, bounds, window);
+                        paint_strip(progress, marker, look, bounds, window);
                         panel::scrub_on_paint(&scrub, window, {
                             let player = player.clone();
                             move |fraction, cx| panel::seek_fraction(&player, fraction, cx)
@@ -511,6 +714,13 @@ impl SeekStripPanel {
                     .into_any_element(),
                 ),
                 SeekItem::Spacer => Some(div().flex_1().into_any_element()),
+                SeekItem::Divider => Some(
+                    div()
+                        .flex_1()
+                        .h(px(1.))
+                        .bg(palette::border())
+                        .into_any_element(),
+                ),
                 SeekItem::Break => None,
             }
         };
@@ -547,7 +757,7 @@ transport_panel!(SeekStripPanel, "seek", "Seek", min_w = 160.);
 
 #[cfg(test)]
 mod tests {
-    use super::{split_rows, SeekConfig, SeekItem};
+    use super::{editor_rows, split_rows, SeekConfig, SeekItem};
 
     /// A layout with no fields decodes to the stock row, and the retired
     /// timings toggle still reads: off leaves the strip alone.
@@ -567,6 +777,12 @@ mod tests {
         let config: SeekConfig =
             serde_json::from_str(r#"{"items": ["strip", "elapsed", "strip"]}"#).unwrap();
         assert!(config.items == vec![SeekItem::Strip, SeekItem::Elapsed]);
+
+        // Uniqueness is per row: a copy on the other side of a break
+        // survives the load, only same-row repeats collapse.
+        let config: SeekConfig =
+            serde_json::from_str(r#"{"items": ["elapsed", "break", "elapsed"]}"#).unwrap();
+        assert!(config.items == vec![SeekItem::Elapsed, SeekItem::Break, SeekItem::Elapsed]);
 
         let saved = serde_json::to_value(&config).unwrap();
         let back: SeekConfig = serde_json::from_value(saved).unwrap();
@@ -592,5 +808,15 @@ mod tests {
 
         let rows = split_rows(&SeekConfig::default().items);
         assert!(rows == vec![SeekConfig::default().items]);
+    }
+
+    /// The editor's rows keep the empty well a trailing break makes, and
+    /// the join puts the breaks back exactly.
+    #[test]
+    fn editor_rows_keep_empties_and_rejoin() {
+        let items = vec![SeekItem::Strip, SeekItem::Break];
+        let rows = editor_rows(&items);
+        assert!(rows == vec![vec![SeekItem::Strip], vec![]]);
+        assert!(rows.join(&SeekItem::Break) == items);
     }
 }

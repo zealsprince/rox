@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::composite::{self, Slot};
 use crate::workspace::Workspace;
 use rox_design::assets::icons;
+use rox_design::palette::Sides;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::{self, AppState, PanelChrome, PanelSettings};
 use rox_panel_api::panel_settings;
@@ -181,6 +182,9 @@ pub struct DrawerPanel {
     config: DrawerConfig,
     /// Main at 0, drawer at 1.
     slots: [Slot; 2],
+    /// Whether the hosted children have been told which tab panel this
+    /// drawer sits under; see [`composite::introduce_slots`].
+    introduced: bool,
     /// Whether the panel itself is active, so the hover toggle can hand
     /// the drawer the right active state without waiting on the dock.
     active: bool,
@@ -272,6 +276,7 @@ impl DrawerPanel {
             value_edit: panel::ValueEdit::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
+            introduced: false,
             _selection,
         }
     }
@@ -373,6 +378,7 @@ impl DrawerPanel {
 
     fn set_slot(&mut self, ix: usize, slot: Slot, cx: &mut Context<Self>) {
         self.slots[ix] = slot;
+        self.introduced = false;
         cx.notify();
     }
 
@@ -390,7 +396,10 @@ impl DrawerPanel {
     /// affordance, filling the panel behind the drawer.
     fn main_content(&self, cx: &mut Context<Self>) -> Div {
         match &self.slots[0] {
-            Some(child) => div().size_full().child(child.view()),
+            // Routed like a group cell: the drawer opted the dock's body
+            // fallback out for everything it covers, so the main slot has
+            // to serve the right-click itself.
+            Some(child) => composite::menu_routed_slot(child, &self.tab_panel, cx),
             None => {
                 let weak = cx.entity().downgrade();
                 composite::empty_slot(
@@ -482,7 +491,9 @@ impl DrawerPanel {
             .min_h_0()
             .min_w_0()
             .overflow_hidden()
-            .when(u > 0.001, |d| d.child(child.view()));
+            .when(u > 0.001, |d| {
+                d.child(composite::menu_routed_slot(&child, &self.tab_panel, cx))
+            });
 
         let boxed = div()
             .absolute()
@@ -514,10 +525,25 @@ impl DrawerPanel {
         // A drawer with its handle dropped shows nothing at all until a pick
         // brings it out, so the strip goes with it.
         let handle = (!handle_dropped(&self.config, self.primed)).then_some(handle);
-        match edge {
+        let boxed = match edge {
             DrawerEdge::Bottom | DrawerEdge::Right => boxed.children(handle).child(content),
             DrawerEdge::Top | DrawerEdge::Left => boxed.child(content).children(handle),
-        }
+        };
+        // The host chrome's surface shader, painted over the box instead
+        // of the panel (see render): the box is what reads as one pane, so
+        // the handle strip gets shaded with the content. Last child, so
+        // the screen pass samples both already drawn.
+        let surface = panel::shader::PanelSurface::build(&self.config.chrome, Sides::default());
+        boxed.when_some(surface, |boxed, surface| {
+            boxed.child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, cx| surface.paint(bounds, window, cx),
+                )
+                .absolute()
+                .size_full(),
+            )
+        })
     }
 
     /// The drawer's extent along its axis at openness `u`: the handle
@@ -966,13 +992,18 @@ impl Panel for DrawerPanel {
         cx: &mut Context<Self>,
     ) {
         self.tab_panel = Some(tab_panel.clone());
+        self.introduced = false;
         self.state
             .tab_hosts
             .update(cx, |hosts, _| hosts.report(tab_panel));
     }
 
-    fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn on_removed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tab_panel = None;
+        self.introduced = false;
+        for child in self.slots.iter().flatten() {
+            child.on_removed(window, cx);
+        }
     }
 
     fn dropdown_menu(
@@ -1005,7 +1036,19 @@ impl Panel for DrawerPanel {
 
 impl Render for DrawerPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let chrome = self.config.chrome.clone();
+        composite::introduce_slots(
+            self.slots.iter().flatten(),
+            &self.tab_panel,
+            &mut self.introduced,
+            window,
+            cx,
+        );
+        // The chrome shader is worn by the drawer box, handle included,
+        // rather than by the whole panel: the host's rect spans the main
+        // slot too, and a surface over that would shade the panel the
+        // drawer merely covers. `drawer_box` paints it over the box.
+        let mut chrome = self.config.chrome.clone();
+        chrome.shader = None;
         panel::themed(&chrome, || self.body(window, cx))
     }
 }

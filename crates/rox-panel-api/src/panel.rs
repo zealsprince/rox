@@ -52,8 +52,8 @@ pub use rox_panel_kit::{
     items, justify, justify_v, mode_list, paint_slider, picker, scrub_on_paint, setting_block,
     setting_row, setting_row_dyn, title_text, toggle, toggle_face, toggle_locked, tracking_section,
     type_ahead_grow, valign_row, value_slider_edit, value_slider_edit_over,
-    value_slider_edit_sized, window_body, Align, FlickState, ModeSpec, ResumeIdle, ScrubState,
-    SliderWidth, Tip, Tone, TrackedImage, VAlign, ValueEdit,
+    value_slider_edit_sized, window_body, workspace_body, Align, FlickState, ModeSpec, ResumeIdle,
+    ScrubState, SliderWidth, Tip, Tone, TrackedImage, VAlign, ValueEdit,
 };
 
 /// The shared entities every panel renders over: one player, one catalog,
@@ -1333,9 +1333,26 @@ impl Element for Themed {
         let rem_scale = self.rem_scale;
         let child = &mut self.child;
         let rem = rem_scale.map(|scale| window.rem_size() * scale);
-        window.with_rem_size(rem, |window| {
-            panel_env(scope, rem_scale, || child.paint(window, cx));
-        });
+        // A surface that reads `mask` gets the body's paint bracketed as its
+        // span, keyed the same way the region itself is (the panel entity),
+        // so the renderer can replay exactly what this panel drew. Everyone
+        // else skips the brackets and paints as before.
+        if self
+            .surface
+            .as_ref()
+            .is_some_and(shader::PanelSurface::wants_mask)
+        {
+            let instance = window.current_view().as_u64();
+            window.with_shader_mask_span(instance, |window| {
+                window.with_rem_size(rem, |window| {
+                    panel_env(scope, rem_scale, || child.paint(window, cx));
+                });
+            });
+        } else {
+            window.with_rem_size(rem, |window| {
+                panel_env(scope, rem_scale, || child.paint(window, cx));
+            });
+        }
         // Post-order: the body is in the scene before the shader records,
         // so a screen pass samples what this panel drew - and a shaded
         // panel nested in a shaded host composes child first, the host

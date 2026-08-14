@@ -26,7 +26,6 @@ use rox_panels::biography::BiographyPanel;
 use rox_panels::cover::CoverArtPanel;
 use rox_panels::drag_anchor::DragAnchorPanel;
 use rox_panels::eq_widget::EqWidgetPanel;
-use rox_panels::favourite::FavouritePanel;
 use rox_panels::filter::FilterPanel;
 use rox_panels::folder_tree::FolderTreePanel;
 use rox_panels::genre_grid::GenreGridPanel;
@@ -39,7 +38,6 @@ use rox_panels::output::OutputPanel;
 use rox_panels::particles::ParticlesPanel;
 use rox_panels::playlists::PlaylistsPanel;
 use rox_panels::queue::QueuePanel;
-use rox_panels::rating::RatingPanel;
 use rox_panels::search::SearchPanel;
 use rox_panels::shader::ShaderPanel;
 use rox_panels::spacer::SpacerPanel;
@@ -82,8 +80,6 @@ macro_rules! with_settings_panel {
             EqWidgetPanel,
             StatsWidgetPanel,
             OutputPanel,
-            RatingPanel,
-            FavouritePanel,
             SpectrumPanel,
             WaveformPanel,
             ParticlesPanel,

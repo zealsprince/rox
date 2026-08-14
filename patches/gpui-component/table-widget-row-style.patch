@@ -1,0 +1,649 @@
+--- a/src/virtual_list.rs
++++ b/src/virtual_list.rs
+@@ -118,6 +118,29 @@
+         let items_count = self.state.borrow().items_count;
+         self.scroll_to_item(items_count.saturating_sub(1), ScrollStrategy::Top);
+     }
++
++    /// rox patch: like [`Self::scroll_to_item`], but scrolls even when
++    /// the item is already visible, pinning it to the strategy's edge.
++    /// What a saved scroll position restores through.
++    pub fn scroll_to_item_strict(&self, ix: usize, strategy: ScrollStrategy) {
++        let mut state = self.state.borrow_mut();
++        state.deferred_scroll_to_item = Some(DeferredScrollToItem {
++            item_index: ix,
++            strategy,
++            offset: 0,
++            scroll_strict: true,
++        });
++    }
++
++    /// rox patch: the deferred scroll target's index while one is queued,
++    /// for callers that save scroll positions before the next paint lands.
++    pub fn deferred_item_index(&self) -> Option<usize> {
++        self.state
++            .borrow()
++            .deferred_scroll_to_item
++            .as_ref()
++            .map(|d| d.item_index)
++    }
+ }
+ 
+ /// Create a [`VirtualList`] in vertical direction.
+@@ -245,17 +268,10 @@
+     fn scroll_to_deferred_item(
+         &self,
+         scroll_offset: Point<Pixels>,
+-        items_bounds: &[Bounds<Pixels>],
++        bounds: Bounds<Pixels>,
+         content_bounds: &Bounds<Pixels>,
+         scroll_to_item: DeferredScrollToItem,
+     ) -> Point<Pixels> {
+-        let Some(bounds) = items_bounds
+-            .get(scroll_to_item.item_index + scroll_to_item.offset)
+-            .cloned()
+-        else {
+-            return scroll_offset;
+-        };
+-
+         let mut scroll_offset = scroll_offset;
+         match scroll_to_item.strategy {
+             ScrollStrategy::Center => {
+@@ -269,6 +285,16 @@
+                         - bounds.size.width.half()
+                 }
+             }
++            // rox patch: a strict scroll pins the item to the top edge
++            // even when it is already visible, the saved-position
++            // restore's contract.
++            _ if scroll_to_item.scroll_strict => {
++                if self.axis.is_vertical() {
++                    scroll_offset.y = content_bounds.top() - bounds.top();
++                } else {
++                    scroll_offset.x = content_bounds.left() - bounds.left();
++                }
++            }
+             _ => {
+                 // Ref: https://github.com/zed-industries/zed/blob/0d145289e0867a8d5d63e5e1397a5ca69c9d49c3/crates/gpui/src/elements/div.rs#L3026
+                 if self.axis.is_vertical() {
+@@ -327,8 +353,11 @@
+ pub struct ItemSizeLayout {
+     items_sizes: Rc<Vec<Size<Pixels>>>,
+     content_size: Size<Pixels>,
+-    sizes: Vec<Pixels>,
+-    origins: Vec<Pixels>,
++    // rox patch: shared rather than owned, so the per-frame element-state
++    // clone is a pointer copy instead of two full-vec copies on a list
++    // with a hundred thousand rows.
++    sizes: Rc<Vec<Pixels>>,
++    origins: Rc<Vec<Pixels>>,
+     last_layout_bounds: Bounds<Pixels>,
+ }
+ 
+@@ -381,40 +410,48 @@
+                             .along(self.axis)
+                             .to_pixels(font_size.into(), rem_size);
+ 
+-                        if state.items_sizes != self.item_sizes {
++                        // rox patch: a pointer compare first, so a caller
++                        // handing back the same Rc every frame skips the
++                        // full-vec equality walk.
++                        if !Rc::ptr_eq(&state.items_sizes, &self.item_sizes)
++                            && state.items_sizes != self.item_sizes
++                        {
+                             state.items_sizes = self.item_sizes.clone();
+                             // Prepare each item's size by axis
+-                            state.sizes = self
+-                                .item_sizes
+-                                .iter()
+-                                .enumerate()
+-                                .map(|(i, size)| {
+-                                    let size = size.along(self.axis);
+-                                    if i + 1 == self.items_count {
+-                                        size
+-                                    } else {
+-                                        size + gap
+-                                    }
+-                                })
+-                                .collect::<Vec<_>>();
++                            state.sizes = Rc::new(
++                                self.item_sizes
++                                    .iter()
++                                    .enumerate()
++                                    .map(|(i, size)| {
++                                        let size = size.along(self.axis);
++                                        if i + 1 == self.items_count {
++                                            size
++                                        } else {
++                                            size + gap
++                                        }
++                                    })
++                                    .collect::<Vec<_>>(),
++                            );
+ 
+                             // Prepare each item's origin by axis
+-                            state.origins = state
+-                                .sizes
+-                                .iter()
+-                                .scan(px(0.), |cumulative, size| match self.axis {
+-                                    Axis::Horizontal => {
+-                                        let x = *cumulative;
+-                                        *cumulative += *size;
+-                                        Some(x)
+-                                    }
+-                                    Axis::Vertical => {
+-                                        let y = *cumulative;
+-                                        *cumulative += *size;
+-                                        Some(y)
+-                                    }
+-                                })
+-                                .collect::<Vec<_>>();
++                            state.origins = Rc::new(
++                                state
++                                    .sizes
++                                    .iter()
++                                    .scan(px(0.), |cumulative, size| match self.axis {
++                                        Axis::Horizontal => {
++                                            let x = *cumulative;
++                                            *cumulative += *size;
++                                            Some(x)
++                                        }
++                                        Axis::Vertical => {
++                                            let y = *cumulative;
++                                            *cumulative += *size;
++                                            Some(y)
++                                        }
++                                    })
++                                    .collect::<Vec<_>>(),
++                            );
+ 
+                             state.content_size = if self.axis.is_horizontal() {
+                                 Size {
+@@ -551,14 +588,21 @@
+                 ),
+         );
+ 
+-        // Update scroll_handle with the item bounds
+-        let items_bounds = item_origins
+-            .iter()
+-            .enumerate()
+-            .map(|(i, &origin)| {
+-                let item_size = item_sizes[i];
++        let axis = self.axis;
+ 
+-                Bounds {
++        let mut scroll_state = self.scroll_handle.state.borrow_mut();
++        scroll_state.axis = axis;
++        scroll_state.items_count = self.items_count;
++
++        let mut scroll_offset = self.scroll_handle.offset();
++        if let Some(scroll_to_item) = scroll_state.deferred_scroll_to_item.take() {
++            // rox patch: the target's bounds come straight off the cached
++            // origins rather than materializing a bounds vec for every
++            // item every frame.
++            let ix = scroll_to_item.item_index + scroll_to_item.offset;
++            if let Some(&origin) = item_origins.get(ix) {
++                let item_size = item_sizes[ix];
++                let bounds = Bounds {
+                     origin: match self.axis {
+                         Axis::Horizontal => point(content_bounds.left() + origin, px(0.)),
+                         Axis::Vertical => point(px(0.), content_bounds.top() + origin),
+@@ -567,24 +611,14 @@
+                         Axis::Horizontal => size(item_size, content_bounds.size.height),
+                         Axis::Vertical => size(content_bounds.size.width, item_size),
+                     },
+-                }
+-            })
+-            .collect::<Vec<_>>();
+-
+-        let axis = self.axis;
+-
+-        let mut scroll_state = self.scroll_handle.state.borrow_mut();
+-        scroll_state.axis = axis;
+-        scroll_state.items_count = self.items_count;
+-
+-        let mut scroll_offset = self.scroll_handle.offset();
+-        if let Some(scroll_to_item) = scroll_state.deferred_scroll_to_item.take() {
+-            scroll_offset = self.scroll_to_deferred_item(
+-                scroll_offset,
+-                &items_bounds,
+-                &content_bounds,
+-                scroll_to_item,
+-            );
++                };
++                scroll_offset = self.scroll_to_deferred_item(
++                    scroll_offset,
++                    bounds,
++                    &content_bounds,
++                    scroll_to_item,
++                );
++            }
+         }
+ 
+         scroll_offset = scroll_offset
+@@ -597,6 +631,13 @@
+             self.scroll_handle.set_offset(scroll_offset);
+         }
+ 
++        // rox patch: release the scroll-state borrow before rendering:
++        // an item render is allowed to call scroll_to_item (the table
++        // clamps its scroll mid-render when the row count shrinks under
++        // the visible range), which borrows this same cell and would
++        // panic while we still held it.
++        drop(scroll_state);
++
+         self.base.interactivity().prepaint(
+             global_id,
+             inspector_id,
+@@ -624,63 +665,45 @@
+                         }
+                     }
+ 
+-                    let (first_visible_element_ix, last_visible_element_ix) = match self.axis {
+-                        Axis::Horizontal => {
+-                            let mut cumulative_size = px(0.);
+-                            let mut first_visible_element_ix = 0;
+-                            for (i, &size) in item_sizes.iter().enumerate() {
+-                                cumulative_size += size;
+-                                if cumulative_size > -(scroll_offset.x + paddings.left) {
+-                                    first_visible_element_ix = i;
+-                                    break;
+-                                }
+-                            }
+-
+-                            cumulative_size = px(0.);
+-                            let mut last_visible_element_ix = 0;
+-                            for (i, &size) in item_sizes.iter().enumerate() {
+-                                cumulative_size += size;
+-                                if cumulative_size > (-scroll_offset.x + content_bounds.size.width)
+-                                {
+-                                    last_visible_element_ix = i + 1;
+-                                    break;
+-                                }
+-                            }
+-                            if last_visible_element_ix == 0 {
+-                                last_visible_element_ix = self.items_count;
++                    // rox patch: the visible range comes off the cached
++                    // prefix sums by binary search rather than a linear
++                    // walk per frame, so a table of a hundred thousand
++                    // rows pays log n while scrolling. `cumulative(i)` is
++                    // `origins[i] + sizes[i]`, monotonic by construction.
++                    let cumulative_after = |i: usize| item_origins[i] + item_sizes[i];
++                    let first_past = |target: Pixels| {
++                        let mut lo = 0usize;
++                        let mut hi = self.items_count;
++                        while lo < hi {
++                            let mid = (lo + hi) / 2;
++                            if cumulative_after(mid) > target {
++                                hi = mid;
+                             } else {
+-                                last_visible_element_ix += 1;
++                                lo = mid + 1;
+                             }
+-                            (first_visible_element_ix, last_visible_element_ix)
+-                        }
+-                        Axis::Vertical => {
+-                            let mut cumulative_size = px(0.);
+-                            let mut first_visible_element_ix = 0;
+-                            for (i, &size) in item_sizes.iter().enumerate() {
+-                                cumulative_size += size;
+-                                if cumulative_size > -(scroll_offset.y + paddings.top) {
+-                                    first_visible_element_ix = i;
+-                                    break;
+-                                }
+-                            }
+-
+-                            cumulative_size = px(0.);
+-                            let mut last_visible_element_ix = 0;
+-                            for (i, &size) in item_sizes.iter().enumerate() {
+-                                cumulative_size += size;
+-                                if cumulative_size > (-scroll_offset.y + content_bounds.size.height)
+-                                {
+-                                    last_visible_element_ix = i + 1;
+-                                    break;
+-                                }
+-                            }
+-                            if last_visible_element_ix == 0 {
+-                                last_visible_element_ix = self.items_count;
+-                            } else {
+-                                last_visible_element_ix += 1;
+-                            }
+-                            (first_visible_element_ix, last_visible_element_ix)
+                         }
++                        lo
++                    };
++                    let (start_target, end_target) = match self.axis {
++                        Axis::Horizontal => (
++                            -(scroll_offset.x + paddings.left),
++                            -scroll_offset.x + content_bounds.size.width,
++                        ),
++                        Axis::Vertical => (
++                            -(scroll_offset.y + paddings.top),
++                            -scroll_offset.y + content_bounds.size.height,
++                        ),
++                    };
++                    let first_visible_element_ix =
++                        first_past(start_target).min(self.items_count.saturating_sub(1));
++                    let last_past = first_past(end_target);
++                    let last_visible_element_ix = if last_past >= self.items_count {
++                        self.items_count
++                    } else {
++                        // The extra rows past the edge match the linear
++                        // walk's overshoot, so a scroll reveals painted
++                        // rows instead of a blank strip.
++                        last_past + 2
+                     };
+ 
+                     let visible_range = first_visible_element_ix
+--- a/src/table/mod.rs
++++ b/src/table/mod.rs
+@@ -3,8 +3,8 @@
+     ActiveTheme, Sizable, Size,
+ };
+ use gpui::{
+-    actions, div, prelude::FluentBuilder, App, Edges, Entity, Focusable, InteractiveElement,
+-    IntoElement, KeyBinding, ParentElement, RenderOnce, Styled, Window,
++    actions, div, prelude::FluentBuilder, px, App, Edges, Entity, Focusable, InteractiveElement,
++    IntoElement, KeyBinding, ParentElement, Pixels, RenderOnce, Styled, Window,
+ };
+ 
+ mod column;
+@@ -39,6 +39,12 @@
+     row_borders: bool,
+     /// rox patch: whether the column header row draws.
+     header_visible: bool,
++    /// rox patch: extra height grown into every row, which the row fills;
++    /// breathing room without touching the text size.
++    row_spacing: Pixels,
++    /// rox patch: whether the widget paints its own selected-row overlay.
++    /// Off for delegates that draw selection in their rows.
++    row_selection_style: bool,
+     /// The cell size of the table.
+     size: Size,
+ }
+@@ -51,6 +57,8 @@
+             bordered: true,
+             row_borders: true,
+             header_visible: true,
++            row_spacing: px(0.),
++            row_selection_style: true,
+             size: Size::default(),
+         }
+     }
+@@ -93,6 +101,25 @@
+         self
+     }
+ 
++    /// rox patch: extra height grown into every row. The row fills it,
++    /// background, border, and hit area included, so it reads as
++    /// breathing room rather than a gap; the caller keeps its text size
++    /// keyed to the base row height. Scaled by the window rem like the
++    /// row height itself. Default zero.
++    pub fn row_spacing(mut self, spacing: Pixels) -> Self {
++        self.options.row_spacing = spacing;
++        self
++    }
++
++    /// rox patch: turn off the widget's own selected-row overlay for
++    /// delegates that draw selection in their rows. The overlay swaps the
++    /// row's bottom hairline for a ring the row clip then eats, so a
++    /// delegate-styled table keeps its hairline by opting out.
++    pub fn row_selection_style(mut self, style: bool) -> Self {
++        self.options.row_selection_style = style;
++        self
++    }
++
+     /// rox patch: set to draw the column header row, default to true.
+     pub fn header_visible(mut self, visible: bool) -> Self {
+         self.options.header_visible = visible;
+--- a/src/table/delegate.rs
++++ b/src/table/delegate.rs
+@@ -1,7 +1,7 @@
+ use std::ops::Range;
+ 
+ use gpui::{
+-    App, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Stateful,
++    App, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Stateful,
+     Styled as _, Window, div,
+ };
+ 
+@@ -68,6 +68,29 @@
+         div().id(("row", row_ix))
+     }
+ 
++    /// rox patch: whether this is a plain data row. Every row by default.
++    /// A plain row takes the stripe and hover washes; a composed row (a
++    /// group header block's line) opts out, since it draws its own
++    /// furniture and a per-row wash would band the block.
++    fn plain_row(&self, _row_ix: usize) -> bool {
++        true
++    }
++
++    /// rox patch: a row's own height, for rows that break the uniform
++    /// stride: a group header line sizes to its content, so blocks need
++    /// no whole-row rounding. None keeps the table's uniform row height
++    /// (the size option plus the row spacing).
++    fn row_height(&self, _row_ix: usize) -> Option<Pixels> {
++        None
++    }
++
++    /// rox patch: a fingerprint of whatever feeds [`Self::row_height`].
++    /// The table rebuilds its per-row size cache when this moves, and
++    /// only then, so an unchanged frame costs one compare.
++    fn row_heights_version(&self) -> u64 {
++        0
++    }
++
+     /// Render the context menu for the row at the given row index.
+     fn context_menu(
+         &mut self,
+--- a/src/table/state.rs
++++ b/src/table/state.rs
+@@ -12,8 +12,8 @@
+     AppContext, Axis, Bounds, ClickEvent, Context, Div, DragMoveEvent, EventEmitter, FocusHandle,
+     Focusable, InteractiveElement, IntoElement, ListSizingBehavior, MouseButton, MouseDownEvent,
+     ParentElement, Pixels, Point, Render, ScrollStrategy, SharedString, Stateful,
+-    StatefulInteractiveElement as _, Styled, Task, UniformListScrollHandle, Window, canvas, div,
+-    prelude::FluentBuilder, px, uniform_list,
++    StatefulInteractiveElement as _, Styled, Task, Window, canvas, div, prelude::FluentBuilder, px,
++    size,
+ };
+ 
+ use super::*;
+@@ -94,7 +94,10 @@
+     /// Enable/disable fixed columns feature.
+     pub col_fixed: bool,
+ 
+-    pub vertical_scroll_handle: UniformListScrollHandle,
++    // rox patch: the vertical axis runs on the variable-size virtual
++    // list, so group header rows can size to their content instead of
++    // rounding up to whole uniform rows.
++    pub vertical_scroll_handle: VirtualListScrollHandle,
+     pub horizontal_scroll_handle: VirtualListScrollHandle,
+ 
+     selected_row: Option<usize>,
+@@ -108,6 +111,13 @@
+     /// The visible range of the rows and columns.
+     visible_range: TableVisibleRange,
+ 
++    /// rox patch: the per-row heights the vertical virtual list runs on,
++    /// rebuilt only when the delegate's heights version, the row count,
++    /// or the uniform height moves; shared by Rc so unchanged frames
++    /// cost a pointer compare in the list.
++    row_sizes: Rc<Vec<gpui::Size<Pixels>>>,
++    row_sizes_key: (usize, Pixels, u64),
++
+     _measure: Vec<Duration>,
+     _load_more_task: Task<()>,
+ }
+@@ -124,7 +134,7 @@
+             delegate,
+             col_groups: Vec::new(),
+             horizontal_scroll_handle: VirtualListScrollHandle::new(),
+-            vertical_scroll_handle: UniformListScrollHandle::new(),
++            vertical_scroll_handle: VirtualListScrollHandle::new(),
+             selection_state: SelectionState::Row,
+             selected_row: None,
+             right_clicked_row: None,
+@@ -140,6 +150,8 @@
+             col_movable: true,
+             col_resizable: true,
+             col_fixed: true,
++            row_sizes: Rc::new(Vec::new()),
++            row_sizes_key: (0, px(0.), 0),
+             _load_more_task: Task::ready(()),
+             _measure: Vec::new(),
+         };
+@@ -975,8 +987,16 @@
+         let is_stripe_row = self.options.stripe && row_ix % 2 != 0;
+         let is_selected = self.selected_row == Some(row_ix);
+         let view = cx.entity().clone();
+-        // rox patch: rows and header track the window rem size.
+-        let row_height = self.options.size.table_row_height_scaled(window);
++        // rox patch: rows and header track the window rem size, and row
++        // spacing grows every row by the same amount: breathing room the
++        // row itself fills (background, border, and hit area included),
++        // while the text, sized off the row height alone, keeps its size.
++        // A delegate-sized row (a group header line) takes its own height
++        // instead, matching the slot the virtual list laid out for it.
++        let uniform = self.options.size.table_row_height_scaled(window)
++            + self.options.row_spacing * (window.rem_size() / px(16.));
++        let row_height = self.delegate.row_height(row_ix).unwrap_or(uniform);
++        let plain = self.delegate.plain_row(row_ix);
+ 
+         if row_ix < rows_count {
+             let is_last_row = row_ix + 1 == rows_count;
+@@ -992,14 +1012,21 @@
+                 .when(need_render_border && self.options.row_borders, |this| {
+                     this.border_b_1().border_color(cx.theme().table_row_border)
+                 })
+-                .when(is_stripe_row, |this| this.bg(cx.theme().table_even))
++                // rox patch: stripe and hover washes are plain-row things;
++                // a composed row (a group header block's line) paints its
++                // own and a per-row wash would band the block.
++                .when(is_stripe_row && plain, |this| {
++                    this.bg(cx.theme().table_even)
++                })
+                 .refine_style(&style)
+-                .hover(|this| {
+-                    if is_selected || self.right_clicked_row == Some(row_ix) {
+-                        this
+-                    } else {
+-                        this.bg(cx.theme().table_hover)
+-                    }
++                .when(plain, |this| {
++                    this.hover(|this| {
++                        if is_selected || self.right_clicked_row == Some(row_ix) {
++                            this
++                        } else {
++                            this.bg(cx.theme().table_hover)
++                        }
++                    })
+                 })
+                 .when(left_columns_count > 0, |this| {
+                     // Left fixed columns
+@@ -1082,9 +1109,14 @@
+                         .child(self.delegate.render_last_empty_col(window, cx)),
+                 )
+                 // Row selected style
++                // rox patch: skipped when the delegate draws its own
++                // selection; the overlay would swap the row's hairline
++                // for a ring the row clip eats.
+                 .when_some(self.selected_row, |this, _| {
+                     this.when(
+-                        is_selected && self.selection_state == SelectionState::Row,
++                        self.options.row_selection_style
++                            && is_selected
++                            && self.selection_state == SelectionState::Row,
+                         |this| {
+                             this.border_color(gpui::transparent_white()).child(
+                                 div()
+@@ -1143,6 +1175,25 @@
+         }
+     }
+ 
++    /// rox patch: the per-row heights the vertical virtual list lays out
++    /// by: the delegate's own height where it gives one (group header
++    /// lines), the uniform height everywhere else, filler rows included.
++    /// Rebuilt only when the count, the uniform height, or the delegate's
++    /// heights version moves. Width is zero: the vertical list ignores
++    /// it and measures the first item's width itself.
++    fn row_sizes(&mut self, rows: usize, uniform: Pixels) -> Rc<Vec<gpui::Size<Pixels>>> {
++        let key = (rows, uniform, self.delegate.row_heights_version());
++        if self.row_sizes_key != key || self.row_sizes.len() != rows {
++            self.row_sizes = Rc::new(
++                (0..rows)
++                    .map(|ix| size(px(0.), self.delegate.row_height(ix).unwrap_or(uniform)))
++                    .collect(),
++            );
++            self.row_sizes_key = key;
++        }
++        self.row_sizes.clone()
++    }
++
+     /// Calculate the extra rows needed to fill the table empty space when `stripe` is true.
+     fn calculate_extra_rows_needed(
+         &self,
+@@ -1269,16 +1320,13 @@
+         let rows_count = self.delegate.rows_count(cx);
+         let loading = self.delegate.loading(cx);
+ 
+-        // rox patch: rows and header track the window rem size.
+-        let row_height = self.options.size.table_row_height_scaled(window);
+-        let total_height = self
+-            .vertical_scroll_handle
+-            .0
+-            .borrow()
+-            .base_handle
+-            .bounds()
+-            .size
+-            .height;
++        // rox patch: rows and header track the window rem size, and the
++        // fill math runs on the uniform stride: row height plus spacing.
++        // Delegate-sized rows (group header lines) drift it a little,
++        // which only over- or under-fills the stripe fillers by a hair.
++        let row_height = self.options.size.table_row_height_scaled(window)
++            + self.options.row_spacing * (window.rem_size() / px(16.));
++        let total_height = self.vertical_scroll_handle.base_handle().bounds().size.height;
+         let actual_height = row_height * rows_count as f32;
+         let extra_rows_count =
+             self.calculate_extra_rows_needed(total_height, actual_height, row_height);
+@@ -1335,13 +1383,19 @@
+                 if rows_count == 0 {
+                     this.children(empty_view)
+                 } else {
++                    // rox patch: the vertical axis runs on the
++                    // variable-size virtual list instead of the uniform
++                    // list, fed by the cached per-row heights, so group
++                    // header rows size exactly to their content.
++                    let row_sizes = self.row_sizes(render_rows_count, row_height);
+                     this.child(
+                         h_flex().id("table-body").flex_grow().size_full().child(
+-                            uniform_list(
+-                                "table-uniform-list",
+-                                render_rows_count,
+-                                cx.processor(
+-                                    move |table, visible_range: Range<usize>, window, cx| {
++                            crate::virtual_list::virtual_list(
++                                cx.entity(),
++                                "table-rows",
++                                Axis::Vertical,
++                                row_sizes,
++                                move |table, visible_range: Range<usize>, window, cx| {
+                                         // We must calculate the col sizes here, because the col sizes
+                                         // need render_th first, then that method will set the bounds of each col.
+                                         // rox patch: a header that never rendered (hidden from the
+@@ -1406,12 +1460,11 @@
+ 
+                                         items
+                                     },
+-                                ),
+                             )
+                             .flex_grow()
+                             .size_full()
+                             .with_sizing_behavior(ListSizingBehavior::Auto)
+-                            .track_scroll(self.vertical_scroll_handle.clone())
++                            .track_scroll(&self.vertical_scroll_handle)
+                             .into_any_element(),
+                         ),
+                     )

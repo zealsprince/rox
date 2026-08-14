@@ -668,7 +668,7 @@ impl PanelSettings for VuPanel {
     }
 
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
-        &[("Display", icons::EYE)]
+        &[("Layout", icons::ALIGN_LEFT)]
     }
 
     fn page(

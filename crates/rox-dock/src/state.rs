@@ -102,6 +102,10 @@ pub enum PanelInfo {
     Stack {
         sizes: Vec<Pixels>,
         axis: usize, // 0 for horizontal, 1 for vertical
+        /// rox addition: the split's seam override; None (absent in older
+        /// dumps) follows the app-wide flag.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seams: Option<bool>,
     },
     #[serde(rename = "tabs")]
     Tabs { active_index: usize },
@@ -113,9 +117,16 @@ pub enum PanelInfo {
 
 impl PanelInfo {
     pub fn stack(sizes: Vec<Pixels>, axis: Axis) -> Self {
+        Self::stack_with_seams(sizes, axis, None)
+    }
+
+    /// rox addition: the stack info with the split's seam override riding
+    /// along.
+    pub fn stack_with_seams(sizes: Vec<Pixels>, axis: Axis, seams: Option<bool>) -> Self {
         Self::Stack {
             sizes,
             axis: if axis == Axis::Horizontal { 0 } else { 1 },
+            seams,
         }
     }
 
@@ -194,14 +205,20 @@ impl PanelState {
             .collect();
 
         match info {
-            PanelInfo::Stack { sizes, axis } => {
+            PanelInfo::Stack { sizes, axis, seams } => {
                 let axis = if axis == 0 {
                     Axis::Horizontal
                 } else {
                     Axis::Vertical
                 };
                 let sizes = sizes.iter().map(|s| Some(*s)).collect_vec();
-                DockItem::split_with_sizes(axis, items, sizes, &dock_area, window, cx)
+                let item = DockItem::split_with_sizes(axis, items, sizes, &dock_area, window, cx);
+                // The seam override rides the dump; hand it back to the
+                // rebuilt split.
+                if let (Some(seams), DockItem::Split { view, .. }) = (seams, &item) {
+                    view.update(cx, |stack, cx| stack.set_seams(Some(seams), cx));
+                }
+                item
             }
             PanelInfo::Tabs { active_index } => {
                 if items.len() == 1 {

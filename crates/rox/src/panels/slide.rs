@@ -86,6 +86,9 @@ pub struct SlidePanel {
     wheel: f32,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
+    /// Whether the hosted children have been told which tab panel this
+    /// slide sits under; see [`composite::introduce_slots`].
+    introduced: bool,
 }
 
 impl SlidePanel {
@@ -124,6 +127,7 @@ impl SlidePanel {
             wheel: 0.0,
             focus: cx.focus_handle(),
             tab_panel: None,
+            introduced: false,
         }
     }
 
@@ -249,6 +253,7 @@ impl SlidePanel {
 
     fn add(&mut self, panel: Arc<dyn PanelView>, window: &mut Window, cx: &mut Context<Self>) {
         self.slides.push(panel);
+        self.introduced = false;
         if self.slides.len() == 1 {
             self.snap(cx);
             // First slide on a visible panel: wake it, since there is no
@@ -266,6 +271,7 @@ impl SlidePanel {
             return;
         }
         self.slides.remove(ix);
+        self.introduced = false;
         self.config.active = self.config.active.min(self.slides.len().saturating_sub(1));
         self.snap(cx);
     }
@@ -750,13 +756,18 @@ impl Panel for SlidePanel {
         cx: &mut Context<Self>,
     ) {
         self.tab_panel = Some(tab_panel.clone());
+        self.introduced = false;
         self.state
             .tab_hosts
             .update(cx, |hosts, _| hosts.report(tab_panel));
     }
 
-    fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn on_removed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tab_panel = None;
+        self.introduced = false;
+        for child in self.slides.iter() {
+            child.on_removed(window, cx);
+        }
     }
 
     fn dropdown_menu(
@@ -809,6 +820,13 @@ impl Panel for SlidePanel {
 
 impl Render for SlidePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        composite::introduce_slots(
+            self.slides.iter(),
+            &self.tab_panel,
+            &mut self.introduced,
+            window,
+            cx,
+        );
         let chrome = self.config.chrome.clone();
         panel::themed(&chrome, || self.body(window, cx))
     }

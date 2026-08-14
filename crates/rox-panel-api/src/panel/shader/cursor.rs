@@ -7,8 +7,10 @@
 //! pointer stays lit wherever it last saw it, usually pinned to whichever
 //! edge the pointer left by. Presence is the missing fact: 1 while the
 //! pointer is moving, held at 1 for [`CURSOR_HOLD`] after it stops, then
-//! eased to 0 over [`CURSOR_FADE`]. A shader multiplies its cursor effect
-//! by it and the effect bows out with the hand.
+//! eased to 0 over [`CURSOR_FADE`], and eased back up over [`CURSOR_RISE`]
+//! when the hand returns to a faded surface. A shader multiplies its
+//! cursor effect by it and the effect swells in and bows out with the
+//! hand, never popping at either end.
 //!
 //! Sampled, not listened to. [`cursor_presence`] compares the window's
 //! pointer against where it stood on the last frame that asked, so the
@@ -33,6 +35,11 @@ pub const CURSOR_HOLD: Duration = Duration::from_millis(1500);
 /// How long the ease from full to nothing takes once the hold is up.
 pub const CURSOR_FADE: Duration = Duration::from_millis(1000);
 
+/// How long the ease back to full takes when the hand returns to a
+/// surface that had faded. Short enough to read as the surface answering,
+/// long enough that the answer swells instead of popping on.
+pub const CURSOR_RISE: Duration = Duration::from_millis(250);
+
 /// How long an untouched window sticks around before the next insert drops
 /// it, same shape as the surface registry's own sweep. A window pruned
 /// while its shader was parked comes back at full presence, which is why
@@ -49,6 +56,11 @@ struct Watch {
     /// The pointer left the window. Nothing to compare against any more,
     /// so the fade skips the hold and starts from `at`.
     gone: bool,
+    /// When the current rise started and the level it started from: a
+    /// move landing mid-fade swells back from wherever the fade stood
+    /// rather than snapping to full.
+    rose: Instant,
+    from: f32,
     /// The last frame that read this window, for the sweep below.
     touched: Instant,
 }
@@ -71,15 +83,48 @@ pub fn cursor_presence(window: &Window) -> f32 {
         position,
         at: now,
         gone: false,
+        // From full, so the fresh-surface-reads-1 rule above holds: a
+        // rise starting at 1 is no rise at all.
+        rose: now,
+        from: 1.0,
         touched: now,
     });
     watch.touched = now;
     if watch.position != position {
+        // A move landing while presence was falling starts a rise from
+        // wherever the fall had gotten to. A move during the hold or an
+        // unfinished rise changes nothing but the clock, so continuous
+        // movement doesn't pin the level to its own start.
+        let idle = now.saturating_duration_since(watch.at);
+        if watch.gone || idle > CURSOR_HOLD {
+            watch.from = level(
+                idle,
+                watch.gone,
+                now.saturating_duration_since(watch.rose),
+                watch.from,
+            );
+            watch.rose = now;
+        }
         watch.position = position;
         watch.at = now;
         watch.gone = false;
     }
-    ease(now.saturating_duration_since(watch.at), watch.gone)
+    level(
+        now.saturating_duration_since(watch.at),
+        watch.gone,
+        now.saturating_duration_since(watch.rose),
+        watch.from,
+    )
+}
+
+/// Presence as the fall capped by the rise: full through the hold and off
+/// over the fade, but never above the swell easing back in from wherever
+/// the last fade left off. Both ends are smoothsteps, so the hand's
+/// answer lands and leaves at zero slope.
+fn level(idle: Duration, gone: bool, since_rise: Duration, from: f32) -> f32 {
+    let up = (since_rise.as_secs_f32() / CURSOR_RISE.as_secs_f32()).clamp(0.0, 1.0);
+    let rise = from + (1.0 - from) * (up * up * (3.0 - 2.0 * up));
+    ease(idle, gone).min(rise)
 }
 
 /// The curve itself: full through the hold, then off over the fade. A
@@ -149,9 +194,16 @@ fn left(id: WindowId) {
 /// mouse arrives as `params.mouse` and presence as `params.user_meta[1]`,
 /// but either can be pulled into a local first, and the cost of a false
 /// yes is a couple of seconds of frames after the pointer stops while the
-/// cost of a false no is a shader that never fades.
+/// cost of a false no is a shader that never fades. The one carve-out is
+/// a read going straight to `.w`: that lane is the panel's content shape,
+/// nothing about the pointer, and a shader hugging a picture shouldn't
+/// pay for frames it never looks at. Grabbing the whole vector still
+/// counts as cursor, keeping the wide read for locals.
 pub fn reads_cursor(source: &str) -> bool {
-    source.contains("mouse") || source.contains("user_meta[1]")
+    source.contains("mouse")
+        || source
+            .match_indices("user_meta[1]")
+            .any(|(at, key)| !source[at + key.len()..].starts_with(".w"))
 }
 
 /// Drop the windows nothing has read in a while. Called from the surface
@@ -185,11 +237,36 @@ mod tests {
     }
 
     #[test]
+    fn a_returning_pointer_eases_back_in() {
+        // Faded to nothing, then the hand comes back: the rise climbs
+        // from zero to full over CURSOR_RISE instead of popping on.
+        assert_eq!(level(Duration::ZERO, false, Duration::ZERO, 0.0), 0.0);
+        let mid = level(Duration::ZERO, false, CURSOR_RISE / 2, 0.0);
+        assert!((mid - 0.5).abs() < 0.01, "{mid}");
+        assert_eq!(level(Duration::ZERO, false, CURSOR_RISE, 0.0), 1.0);
+        // A move landing mid-fade swells from where the fade stood.
+        let caught = level(Duration::ZERO, false, Duration::ZERO, 0.4);
+        assert!((caught - 0.4).abs() < 0.001, "{caught}");
+        // The fall still wins once the rise is over.
+        assert_eq!(
+            level(CURSOR_HOLD + CURSOR_FADE, false, CURSOR_RISE, 0.0),
+            0.0
+        );
+    }
+
+    #[test]
     fn only_a_cursor_reader_pays_for_the_fade() {
         assert!(reads_cursor("let c = params.mouse.xy;"));
         assert!(reads_cursor("let here = params.user_meta[1].z;"));
+        assert!(reads_cursor("let m = params.user_meta[1];"));
         assert!(!reads_cursor(
             "fn fs_user(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(params.time); }"
+        ));
+        // The content shape lane: a shader that only wants where the
+        // picture ends isn't watching the hand.
+        assert!(!reads_cursor("let shape = params.user_meta[1].w;"));
+        assert!(reads_cursor(
+            "let shape = params.user_meta[1].w;\nlet here = params.user_meta[1].z;"
         ));
     }
 }

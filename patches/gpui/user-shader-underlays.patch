@@ -1,0 +1,129 @@
+Screen-shader regions run at their paint order.
+
+The batch iterator already yields each region sequence at its place in
+the scene, but the renderer skipped those batches and ran every region
+in one go at the overlay boundary, over the fully composed main scene.
+That read the whole window into any region pass, so a shader recorded
+early (a backdrop treatment under the panels) distorted everything
+painted after it. Now each region batch splits the main pass where it
+stands: compose so far, shade, resume with Load. Later primitives draw
+over the shaded result untouched.
+
+--- a/src/scene.rs
++++ b/src/scene.rs
+@@ -233,7 +233,9 @@
+     }
+ 
+     /// rox patch: this frame's screen-shader regions in paint order. The
+-    /// renderer runs them after the main pass rather than inside it.
++    /// renderer runs each one at its place in the batch sequence; this
++    /// slice is for the questions asked before the pass opens, like
++    /// whether the frame needs an intermediate at all.
+     pub(crate) fn user_shader_regions(&self) -> &[UserShaderRegion] {
+         &self.user_shader_regions
+     }
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -1796,13 +1796,6 @@
+         let main_target_view = intermediate
+             .map(|(_, view)| view)
+             .unwrap_or_else(|| frame.texture_view());
+-        // `Scene::finish` already sorted these by paint order, which is the
+-        // order they run in. Splitting the main pass at the overlay boundary
+-        // costs an extra render pass, so only do it when there's a region
+-        // sequence to slot in there.
+-        let split_at_overlay = !scene.user_shader_regions().is_empty();
+-        let mut regions_done = false;
+-
+         let globals = GlobalParams {
+             viewport_size: [
+                 self.surface_config.size.width as f32,
+@@ -1829,31 +1822,6 @@
+ 
+         profiling::scope!("render pass");
+         for batch in scene.batches() {
+-            // The overlay boundary. Everything gpui defers - context menus,
+-            // tooltips, drag previews - paints after this point, so the region
+-            // passes belong here, on the composed content below it. Run them,
+-            // then reopen the main pass loading what's there so the overlays
+-            // draw over the shaded result.
+-            if split_at_overlay && !regions_done && batch.is_overlay() {
+-                regions_done = true;
+-                if let Some((intermediate_texture, intermediate_view)) = intermediate {
+-                    drop(pass);
+-                    for region in scene.user_shader_regions() {
+-                        self.draw_shader_region(region, intermediate_texture, intermediate_view);
+-                    }
+-                    pass = self.command_encoder.render(
+-                        "main overlay",
+-                        gpu::RenderTargetSet {
+-                            colors: &[gpu::RenderTarget {
+-                                view: main_target_view,
+-                                init_op: gpu::InitOp::Load,
+-                                finish_op: gpu::FinishOp::Store,
+-                            }],
+-                            depth_stencil: None,
+-                        },
+-                    );
+-                }
+-            }
+             match batch {
+                 PrimitiveBatch::Quads(quads) => {
+                     let instance_buf = unsafe { self.instance_belt.alloc_typed(quads, &self.gpu) };
+@@ -2131,24 +2099,42 @@
+                         start = end;
+                     }
+                 }
+-                // Regions draw nothing here. They're in the scene so cached
+-                // views replay them, and the renderer runs the whole sequence
+-                // in one go at the overlay boundary.
+-                PrimitiveBatch::UserShaderRegions(_) => {}
++                // Regions run right here, at their place in the paint order:
++                // the pass so far is composed into the intermediate, each
++                // region reads it and writes its patch back, and the main
++                // pass reopens over the result. Everything painted before a
++                // region is what it sees, and everything painted after draws
++                // over the shaded result untouched, which is what lets a
++                // backdrop treatment sit under a window of panels and a
++                // panel's own surface ride over its body - one rule for both.
++                PrimitiveBatch::UserShaderRegions(regions) => {
++                    if let Some((intermediate_texture, intermediate_view)) = intermediate {
++                        drop(pass);
++                        for region in regions {
++                            self.draw_shader_region(
++                                region,
++                                intermediate_texture,
++                                intermediate_view,
++                            );
++                        }
++                        pass = self.command_encoder.render(
++                            "main resumed",
++                            gpu::RenderTargetSet {
++                                colors: &[gpu::RenderTarget {
++                                    view: main_target_view,
++                                    init_op: gpu::InitOp::Load,
++                                    finish_op: gpu::FinishOp::Store,
++                                }],
++                                depth_stencil: None,
++                            },
++                        );
++                    }
++                }
+             }
+         }
+         drop(pass);
+ 
+-        if let Some((intermediate_texture, intermediate_view)) = intermediate {
+-            // In paint order, so a later region reads what the earlier ones
+-            // left behind, and a region under the post pass gets
+-            // post-processed like everything else. A frame with no overlay
+-            // never hit the boundary above, so the sequence runs here instead.
+-            if !regions_done {
+-                for region in scene.user_shader_regions() {
+-                    self.draw_shader_region(region, intermediate_texture, intermediate_view);
+-                }
+-            }
++        if let Some((_, intermediate_view)) = intermediate {
+             if self.post_shader.is_some() {
+                 self.draw_post_pass(frame.texture_view(), intermediate_view);
+             } else {

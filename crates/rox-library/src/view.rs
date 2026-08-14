@@ -15,9 +15,10 @@ use crate::projection::{FilterSet, Projection, SortKey};
 
 /// One display row of a track list: a track from the projection, or a line
 /// of the group header opening the artist/album run that follows it.
-/// Headers are presentation of the canonical order only - search hits and
-/// column sorts render flat - and they live in the same index space as
-/// tracks, so a virtualized table scrolls them like any row. A table draws
+/// Headers open whatever runs the current order holds: the canonical
+/// order's groups, or the runs a column sort leaves adjacent. Search hits
+/// render flat. Headers live in the same index space as tracks, so a
+/// virtualized table scrolls them like any row. A table draws
 /// every row one fixed height, so a header block is one row per composed
 /// line, each drawing its own piece list.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -52,10 +53,11 @@ pub struct Group {
     /// not a group that disagrees.
     pub bit_depth: Option<u8>,
     pub sample_rate_hz: Option<u32>,
-    /// The first track's path, what a header tile's thumbnail loads by.
-    /// Resolved through the store once, on the group's first paint; the
-    /// inner None is a track the store no longer knows.
-    pub art: Option<Option<PathBuf>>,
+    /// The cover paths the header tile loads by, resolved through the
+    /// store once on the group's first paint: the run's first cover, or up
+    /// to four distinct albums' covers when the grouping mosaics (genre).
+    /// The inner vec empty is a group with nothing to show.
+    pub art: Option<Vec<PathBuf>>,
 }
 
 impl Group {
@@ -92,18 +94,19 @@ pub struct ViewSpec<'a> {
     /// Similarity scores by db id and the sort direction, when the similar
     /// column owns the sort. Takes precedence over `sort`.
     pub similar: Option<(&'a HashMap<i64, f32>, bool)>,
-    /// The column sort, when one is set. A sorted view renders flat.
+    /// The column sort, when one is set.
     pub sort: Option<(SortKey, bool)>,
-    /// The grouping to lay headers out under. Only consulted when nothing
-    /// else has reordered the view: a search or a sort renders flat however
-    /// this is set.
+    /// The grouping to lay headers out under. A sorted view groups the runs
+    /// the sort leaves adjacent; a search renders flat however this is set.
     pub grouping: Option<Grouping<'a>>,
 }
 
 /// The rows a view shows: the canonical order or search hits, narrowed by
-/// the structured filter, put through the active sort when one is set. Only
-/// the unsorted view gets grouping headers; a column sort breaks the runs
-/// the headers name, so those render flat.
+/// the structured filter, put through the active sort when one is set.
+/// Grouping headers open the runs of whichever order shows: the canonical
+/// groups unsorted, or the runs a column sort leaves adjacent (an album
+/// scanned in one go stays together under the added sort, and keeps its
+/// header). Search hits render flat.
 pub fn view_for(
     projection: &Projection,
     order: Arc<Vec<u32>>,
@@ -156,16 +159,24 @@ pub fn view_for(
         );
     }
     match spec.sort {
-        Some((key, desc)) => (
-            Arc::new(
-                projection
-                    .sort_view(&base, key, desc)
-                    .into_iter()
-                    .map(Row::Track)
-                    .collect(),
-            ),
-            Vec::new(),
-        ),
+        Some((key, desc)) => {
+            let sorted = projection.sort_view(&base, key, desc);
+            match &spec.grouping {
+                // The sort itself is the order, so the grouping's pre-sort
+                // goes unused; `group_rows` breaks on adjacency and a key
+                // recurring later just opens a fresh group. Loners go
+                // bare: a run of one is no series, and a sort that
+                // scatters every group reads as the flat list it is.
+                Some(grouping) if spec.query.is_empty() => {
+                    let (rows, groups) = group_rows(&sorted, projection, grouping, false);
+                    (Arc::new(rows), groups)
+                }
+                _ => (
+                    Arc::new(sorted.into_iter().map(Row::Track).collect()),
+                    Vec::new(),
+                ),
+            }
+        }
         None => match &spec.grouping {
             // A query breaks the runs the headers name, so hits render flat
             // whatever grouping the caller asked for.
@@ -176,7 +187,7 @@ pub fn view_for(
                     Some(key) => Arc::new(projection.sort_view(&base, key, false)),
                     None => base,
                 };
-                let (rows, groups) = group_rows(&base, projection, grouping);
+                let (rows, groups) = group_rows(&base, projection, grouping, true);
                 (Arc::new(rows), groups)
             }
             _ => (
@@ -188,34 +199,47 @@ pub fn view_for(
 }
 
 /// The given order with a header block opening every group run:
-/// `head_rows` rows per block, one per composed line. The order must keep
-/// each group's rows contiguous (the caller re-sorts for genre and year).
+/// `head_rows` rows per block, one per composed line. Runs are adjacency
+/// in the given order, so a key recurring later opens a fresh group: under
+/// a column sort an album can split, and each piece heads itself.
 /// Album groups break on the album artist, not the track artist, so a
 /// compilation stays one run with its per-track artists inside, and a
 /// group spanning discs gets a divider row opening each numbered disc's
-/// run; untagged tracks (disc 0) sit under the header undivided. Breaks
-/// compare interned symbols (years their raw value) and the stats are
-/// two integer sums, so the walk stays cheap and runs once per view
-/// swap, never while scrolling.
+/// run, as long as the run lists its discs in order (the canonical order
+/// always does; a column sort can interleave them, and an out-of-order
+/// run reads better undivided). Untagged tracks (disc 0) sit under the
+/// header undivided. Breaks compare interned symbols (years their raw
+/// value) and the stats are two integer sums, so the walk stays cheap and
+/// runs once per view swap, never while scrolling.
+///
+/// `solo_heads` says whether a run of one track still opens a block. The
+/// canonical order heads everything (a single is its own album); a sorted
+/// view leaves loners bare, headers only over the runs that held together.
 pub fn group_rows(
     order: &[u32],
     projection: &Projection,
     grouping: &Grouping,
+    solo_heads: bool,
 ) -> (Vec<Row>, Vec<Group>) {
     let mut rows = Vec::with_capacity(order.len() + order.len() / 8);
     let mut groups: Vec<Group> = Vec::new();
     let key = |row: u32| -> u64 { (grouping.key)(projection, row) };
     let mut i = 0;
     while i < order.len() {
-        // One album run: the canonical order keeps a group contiguous, so
-        // its extent is known before any of its rows are pushed, which is
-        // what lets the first disc get its divider too.
+        // One album run: the order keeps a group contiguous, so its extent
+        // is known before any of its rows are pushed, which is what lets
+        // the first disc get its divider too.
         let mut j = i + 1;
         while j < order.len() && key(order[j]) == key(order[i]) {
             j += 1;
         }
         let run = &order[i..j];
         i = j;
+
+        if run.len() == 1 && !solo_heads {
+            rows.push(Row::Track(run[0]));
+            continue;
+        }
 
         let g = groups.len() as u32;
         groups.push(Group {
@@ -233,7 +257,9 @@ pub fn group_rows(
             rows.push(Row::Head(g, line));
         }
         let disc = |row: u32| projection.disc_no[row as usize];
-        let multi_disc = grouping.discs && run.iter().any(|&row| disc(row) != disc(run[0]));
+        let multi_disc = grouping.discs
+            && run.iter().any(|&row| disc(row) != disc(run[0]))
+            && run.windows(2).all(|pair| disc(pair[0]) <= disc(pair[1]));
         let mut last_disc = None;
         for &row in run {
             if multi_disc && disc(row) > 0 && last_disc != Some(disc(row)) {
@@ -339,7 +365,7 @@ mod tests {
             track("/m/b1.mp3", "B", "Two", 0, 1, 3000, "mp3", 320, 48000, 0),
         ]);
         let order = p.sort_canonical();
-        let (rows, groups) = group_rows(&order, &p, &grouping(2));
+        let (rows, groups) = group_rows(&order, &p, &grouping(2), true);
 
         assert_eq!(groups.len(), 2);
         // Two header lines per block, then the run's tracks.
@@ -371,7 +397,7 @@ mod tests {
             track("/m/2.mp3", "A", "One", 1, 2, 0, "mp3", 320, 48000, 24),
         ]);
         let order = p.sort_canonical();
-        let (_, groups) = group_rows(&order, &p, &grouping(1));
+        let (_, groups) = group_rows(&order, &p, &grouping(1), true);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].codec_name(&p), None);
         assert_eq!(groups[0].bit_depth, None);
@@ -388,7 +414,7 @@ mod tests {
             track("/m/2.mp3", "A", "One", 0, 2, 0, "mp3", 320, 0, 0),
         ]);
         let order = p.sort_canonical();
-        let (_, groups) = group_rows(&order, &p, &grouping(1));
+        let (_, groups) = group_rows(&order, &p, &grouping(1), true);
         assert_eq!(groups[0].bit_depth, Some(0));
         assert_eq!(groups[0].sample_rate_hz, Some(0));
     }
@@ -400,7 +426,7 @@ mod tests {
             track("/m/2.flac", "A", "One", 2, 1, 0, "flac", 900, 44100, 16),
         ]);
         let order = p.sort_canonical();
-        let (rows, _) = group_rows(&order, &p, &grouping(1));
+        let (rows, _) = group_rows(&order, &p, &grouping(1), true);
         let discs: Vec<u16> = rows
             .iter()
             .filter_map(|r| match r {
@@ -416,14 +442,61 @@ mod tests {
             track("/m/2.flac", "A", "One", 0, 2, 0, "flac", 900, 44100, 16),
         ]);
         let order = flat.sort_canonical();
-        let (rows, _) = group_rows(&order, &flat, &grouping(1));
+        let (rows, _) = group_rows(&order, &flat, &grouping(1), true);
+        assert!(!rows.iter().any(|r| matches!(r, Row::Disc(_))));
+
+        // A run whose discs come through out of order (a column sort can
+        // interleave them) stays undivided too.
+        let p = projection(&[
+            track("/m/1.flac", "A", "One", 1, 1, 0, "flac", 900, 44100, 16),
+            track("/m/2.flac", "A", "One", 2, 1, 0, "flac", 900, 44100, 16),
+        ]);
+        let order: Vec<u32> = p.sort_canonical().into_iter().rev().collect();
+        let (rows, _) = group_rows(&order, &p, &grouping(1), true);
         assert!(!rows.iter().any(|r| matches!(r, Row::Disc(_))));
     }
 
-    /// Grouping off, a search, or a column sort all render flat: the
-    /// headers name runs those views have already broken.
+    /// A column sort keeps the headers over whatever runs held together,
+    /// while a run of one goes bare: a loner is no series, and a sort
+    /// that scatters everything reads as the flat list it is.
     #[test]
-    fn a_sorted_or_searched_view_renders_flat() {
+    fn a_sorted_view_heads_its_runs_and_leaves_loners_bare() {
+        let p = projection(&[
+            track("/m/a.flac", "A", "One", 0, 1, 0, "flac", 900, 44100, 16),
+            track("/m/b.flac", "A", "One", 0, 2, 0, "flac", 900, 44100, 16),
+            track("/m/c.flac", "B", "Two", 0, 1, 0, "flac", 900, 44100, 16),
+            track("/m/d.flac", "B", "Two", 0, 2, 0, "flac", 900, 44100, 16),
+            track("/m/e.flac", "C", "Three", 0, 1, 0, "flac", 900, 44100, 16),
+        ]);
+        let order = Arc::new(p.sort_canonical());
+        let filter = FilterSet::default();
+        // Titles read a through e, so ascending keeps One and Two whole
+        // and leaves Three's lone track at the end.
+        let sorted = ViewSpec {
+            query: "",
+            filter: &filter,
+            similar: None,
+            sort: Some((SortKey::Title, false)),
+            grouping: Some(grouping(1)),
+        };
+        let (rows, groups) = view_for(&p, order, &sorted);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups.iter().map(|g| g.tracks).collect::<Vec<_>>(),
+            vec![2, 2]
+        );
+        // Two header lines, five tracks, and no header over the loner.
+        assert_eq!(rows.len(), 7);
+        match rows.last() {
+            Some(&Row::Track(r)) => assert_eq!(p.resolve(r).title, "/m/e.flac"),
+            other => panic!("expected the bare loner last, got {other:?}"),
+        }
+    }
+
+    /// Grouping off or a search renders flat: hits are no run the headers
+    /// could name.
+    #[test]
+    fn a_searched_view_renders_flat() {
         let p = projection(&[
             track("/m/one.flac", "A", "One", 0, 1, 0, "flac", 900, 44100, 16),
             track("/m/two.flac", "B", "Two", 0, 1, 0, "flac", 900, 44100, 16),
@@ -440,16 +513,6 @@ mod tests {
         let (rows, groups) = view_for(&p, order.clone(), &grouped);
         assert_eq!(groups.len(), 2);
         assert_eq!(rows.len(), 4);
-
-        let sorted = ViewSpec {
-            sort: Some((SortKey::Title, true)),
-            grouping: Some(grouping(1)),
-            ..grouped
-        };
-        let (rows, groups) = view_for(&p, order.clone(), &sorted);
-        assert!(groups.is_empty());
-        assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|r| matches!(r, Row::Track(_))));
 
         let searched = ViewSpec {
             query: "one",

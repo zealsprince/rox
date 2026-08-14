@@ -36,6 +36,10 @@ pub struct ResizablePanelGroup {
     size: Option<Pixels>,
     children: Vec<ResizablePanel>,
     on_resize: Rc<dyn Fn(&Entity<ResizableState>, &mut Window, &mut App)>,
+    /// rox addition: the group's say over its handles' resting seams,
+    /// over the app-wide flag; None follows it. See
+    /// [`ResizeHandle::seams_override`](super::resize_handle).
+    seams_override: Option<bool>,
 }
 
 impl ResizablePanelGroup {
@@ -48,6 +52,7 @@ impl ResizablePanelGroup {
             state: None,
             size: None,
             on_resize: Rc::new(|_, _, _| {}),
+            seams_override: None,
         }
     }
 
@@ -105,6 +110,13 @@ impl ResizablePanelGroup {
         self.on_resize = Rc::new(on_resize);
         self
     }
+
+    /// Override whether this group's handles paint their resting seams;
+    /// None follows the app-wide flag.
+    pub fn seams_override(mut self, seams: Option<bool>) -> Self {
+        self.seams_override = seams;
+        self
+    }
 }
 
 impl<T> From<T> for ResizablePanel
@@ -152,6 +164,7 @@ impl RenderOnce for ResizablePanelGroup {
                         panel.panel_ix = ix;
                         panel.axis = self.axis;
                         panel.state = Some(state.clone());
+                        panel.seams_override = self.seams_override;
                         panel
                     }),
             )
@@ -197,6 +210,9 @@ pub struct ResizablePanel {
     size_range: Range<Pixels>,
     children: Vec<AnyElement>,
     visible: bool,
+    /// rox addition: mirrored off the group for the handle this panel
+    /// hosts on its leading edge.
+    seams_override: Option<bool>,
 }
 
 impl ResizablePanel {
@@ -210,6 +226,7 @@ impl ResizablePanel {
             axis: Axis::Horizontal,
             children: vec![],
             visible: true,
+            seams_override: None,
         }
     }
 
@@ -303,17 +320,18 @@ impl RenderOnce for ResizablePanel {
             .children(self.children)
             .when(self.panel_ix > 0, |this| {
                 let ix = self.panel_ix - 1;
-                this.child(resize_handle(("resizable-handle", ix), self.axis).on_drag(
-                    DragPanel,
-                    move |drag_panel, _, _, cx| {
-                        cx.stop_propagation();
-                        // Set current resizing panel ix
-                        state.update(cx, |state, _| {
-                            state.resizing_panel_ix = Some(ix);
-                        });
-                        cx.new(|_| drag_panel.deref().clone())
-                    },
-                ))
+                this.child(
+                    resize_handle(("resizable-handle", ix), self.axis)
+                        .seams_override(self.seams_override)
+                        .on_drag(DragPanel, move |drag_panel, _, _, cx| {
+                            cx.stop_propagation();
+                            // Set current resizing panel ix
+                            state.update(cx, |state, _| {
+                                state.resizing_panel_ix = Some(ix);
+                            });
+                            cx.new(|_| drag_panel.deref().clone())
+                        }),
+                )
             })
     }
 }

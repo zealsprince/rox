@@ -1,0 +1,34 @@
+--- a/src/menu/popup_menu.rs
++++ b/src/menu/popup_menu.rs
+@@ -8,7 +8,7 @@
+     Action, AnyElement, App, AppContext, Bounds, Context, Corner, DismissEvent, Edges, Entity,
+     EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
+     ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+-    WeakEntity, Window, anchored, canvas, div, prelude::FluentBuilder, px, rems,
++    WeakEntity, Window, anchored, canvas, deferred, div, prelude::FluentBuilder, px, rems,
+ };
+ use gpui::{ClickEvent, Half, MouseDownEvent, OwnedMenuItem, Subscription};
+ use std::rc::Rc;
+@@ -1188,7 +1188,12 @@
+                         ),
+                 )
+                 .when(selected, |this| {
+-                    this.child({
++                    // rox patch: deferred, so a submenu that has to overlap an
++                    // ancestor menu (narrow window, deep chain) paints above
++                    // the whole chain instead of under the ancestor's later
++                    // rows. Menus already sit inside a deferred, so this
++                    // leans on the gpui nested-deferred-draws patch.
++                    this.child(deferred({
+                         let (anchor, left) = self.submenu_anchor;
+                         let is_bottom_pos =
+                             matches!(anchor, Corner::BottomLeft | Corner::BottomRight);
+@@ -1204,7 +1209,7 @@
+                                     .child(menu.clone()),
+                             )
+                             .snap_to_window_with_margin(Edges::all(EDGE_PADDING))
+-                    })
++                    }))
+                 }),
+         }
+     }

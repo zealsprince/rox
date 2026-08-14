@@ -227,7 +227,8 @@
                           "art_rounding": 0.0,
                           "header_art": false,
                           "header_year": true,
-                          "header_details": false
+                          "header_details": false,
+                          "row_height": 26.0
                         }
                       }
                     }
@@ -298,6 +299,7 @@
     "bg_control_active": "#383e45",
     "bg_control_hover": "#3d434a",
     "bg_elevated": "#232323",
+    "bg_header": "#232323",
     "bg_input": "#262626",
     "bg_menu": "#2b2b2b",
     "bg_menu_hover": "#343a41",
@@ -320,33 +322,33 @@
   "palette_light": {
     "accent": "#3873b3",
     "accent_hover": "#5590cc",
-    "highlight": "#ffffff",
-    "border": "#c8c8c8",
-    "border_light": "#d8d8d8",
-    "text_bright": "#000000",
-    "text_on_accent": "#ffffff",
-    "bg_root": "#e8e8e8",
-    "bg_panel": "#f5f5f5",
-    "bg_elevated": "#fafafa",
-    "bg_menubar": "#f0f0f0",
-    "bg_menu": "#ffffff",
     "bg_control": "#e4e4e4",
-    "bg_menu_hover": "#e0e8f0",
     "bg_control_active": "#d0d8e0",
     "bg_control_hover": "#dde3ea",
+    "bg_elevated": "#fafafa",
+    "bg_header": "#fafafa",
     "bg_input": "#ffffff",
+    "bg_menu": "#ffffff",
+    "bg_menu_hover": "#e0e8f0",
+    "bg_menubar": "#f0f0f0",
+    "bg_panel": "#f5f5f5",
+    "bg_root": "#e8e8e8",
     "bg_toolbar": "#ececec",
+    "border": "#c8c8c8",
+    "border_light": "#d8d8d8",
+    "gridline": "#b0b0b0",
+    "highlight": "#ffffff",
     "text": "#202020",
-    "text_secondary": "#404040",
+    "text_bright": "#000000",
     "text_dim": "#606060",
-    "text_muted": "#808080",
     "text_faint": "#969696",
-    "gridline": "#b0b0b0"
+    "text_muted": "#808080",
+    "text_on_accent": "#ffffff",
+    "text_secondary": "#404040"
   },
   "meta": {
     "author": "zealsprince",
     "description": "The layout this whole project is an argument with. Opaque panels, artist and album filter columns, a dense track table, and the menubar right where it always was.",
-    "version": "1.0",
     "created": "2026-07-23",
     "updated": "2026-08-09"
   },

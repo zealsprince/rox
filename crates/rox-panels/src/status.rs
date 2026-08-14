@@ -9,15 +9,15 @@ use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable,
-    Pixels, Subscription, WeakEntity, Window,
+    div, prelude::*, px, AnyElement, AnyView, App, Context, Div, Entity, EventEmitter, FocusHandle,
+    Focusable, Pixels, SharedString, Subscription, WeakEntity, Window,
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::icons;
-use crate::catalog::LibraryEvent;
+use crate::catalog::{Library, LibraryEvent};
 use crate::design::{palette, tokens};
 use crate::group_head;
 use crate::panel::{self, align_row, justify, Align, AppState, PanelChrome, PanelSettings};
@@ -143,13 +143,17 @@ impl From<StatusConfigDump> for StatusConfig {
 }
 
 /// One computed readout set: the scope's track count, summed time,
-/// distinct album and artist counts, play total, and whether a selection
-/// scoped it.
+/// distinct album, artist, and genre counts, play total, and whether a
+/// selection scoped it.
 struct Totals {
     tracks: usize,
     total_ms: u64,
     albums: usize,
     artists: usize,
+    /// Distinct genres, split the way the genre grid splits compound
+    /// tags. Not a readout of its own; the count tooltip carries it so
+    /// the hover matches the metadata panel's library sheet.
+    genres: usize,
     plays: u64,
     selection: bool,
     /// What a standing selection resolves to by name: the track's title
@@ -256,6 +260,7 @@ impl StatusPanel {
         let mut total_ms = 0u64;
         let mut albums: HashSet<(u32, u32)> = HashSet::new();
         let mut artists: HashSet<u32> = HashSet::new();
+        let mut genre_syms: HashSet<u32> = HashSet::new();
         let mut plays = 0u64;
         let mut first_ix: Option<u32> = None;
         for (ix, id) in projection.db_id.iter().enumerate() {
@@ -266,11 +271,13 @@ impl StatusPanel {
             total_ms += u64::from(projection.duration_ms[ix]);
             albums.insert((projection.album_artist[ix], projection.album[ix]));
             artists.insert(projection.album_artist[ix]);
+            genre_syms.insert(projection.genre[ix]);
             plays += u64::from(projection.plays[ix].load(Ordering::Relaxed));
             if first_ix.is_none() {
                 first_ix = Some(ix as u32);
             }
         }
+        let genres = genre_count(genre_syms, &projection.genres.strings);
         let selection = !selected.is_empty();
         // Name the selection where one name covers it: any picked row
         // answers for the whole set once the counts say it's one track or
@@ -314,10 +321,147 @@ impl StatusPanel {
             total_ms,
             albums: albums.len(),
             artists: artists.len(),
+            genres,
             plays,
             selection,
             selection_label,
         });
+    }
+
+    /// The count tooltip's rows off the cached totals: everything the
+    /// metadata panel's library sheet lists, whether or not the strip
+    /// shows the readout.
+    fn tooltip_rows(&self) -> Vec<(SharedString, SharedString)> {
+        self.totals.as_ref().map_or_else(Vec::new, |totals| {
+            totals_rows(
+                totals.tracks,
+                totals.albums,
+                totals.artists,
+                totals.genres,
+                totals.total_ms,
+                totals.plays,
+            )
+        })
+    }
+}
+
+/// The row set both hover cards share: each readout's label with its
+/// formatted value, the metadata panel's library sheet as a list.
+fn totals_rows(
+    tracks: usize,
+    albums: usize,
+    artists: usize,
+    genres: usize,
+    total_ms: u64,
+    plays: u64,
+) -> Vec<(SharedString, SharedString)> {
+    [
+        ("Tracks", tracks.to_string()),
+        ("Albums", albums.to_string()),
+        ("Artists", artists.to_string()),
+        ("Genres", genres.to_string()),
+        (
+            "Total Time",
+            format!(
+                "{} ({})",
+                group_head::fmt_total(total_ms),
+                rox_core::fmt::fmt_span(total_ms / 1000)
+            ),
+        ),
+        ("Plays", plays.to_string()),
+    ]
+    .into_iter()
+    .map(|(label, value)| (SharedString::from(label), SharedString::from(value)))
+    .collect()
+}
+
+/// The distinct genres behind a set of syms, split the way the genre
+/// grid splits compound tags, so the counts agree across the app.
+fn genre_count(syms: HashSet<u32>, strings: &[String]) -> usize {
+    let mut genres: HashSet<&str> = HashSet::new();
+    for sym in syms {
+        genres.extend(rox_library::genre::split(&strings[sym as usize]));
+    }
+    genres.remove("");
+    genres.len()
+}
+
+/// The whole catalog's totals as a hover card, computed on open. The
+/// menubar's track count wears this one: no panel stands behind it, so
+/// there's nowhere to cache and one projection scan per hover is fine.
+pub fn library_tooltip(library: &Entity<Library>, cx: &mut App) -> AnyView {
+    let rows = library
+        .read(cx)
+        .projection()
+        .map_or_else(Vec::new, |projection| {
+            let mut total_ms = 0u64;
+            let mut plays = 0u64;
+            let mut albums: HashSet<(u32, u32)> = HashSet::new();
+            let mut artists: HashSet<u32> = HashSet::new();
+            let mut genre_syms: HashSet<u32> = HashSet::new();
+            for ix in 0..projection.db_id.len() {
+                total_ms += u64::from(projection.duration_ms[ix]);
+                plays += u64::from(projection.plays[ix].load(Ordering::Relaxed));
+                albums.insert((projection.album_artist[ix], projection.album[ix]));
+                artists.insert(projection.album_artist[ix]);
+                genre_syms.insert(projection.genre[ix]);
+            }
+            totals_rows(
+                projection.db_id.len(),
+                albums.len(),
+                artists.len(),
+                genre_count(genre_syms, &projection.genres.strings),
+                total_ms,
+                plays,
+            )
+        });
+    cx.new(|_| TotalsTooltip {
+        scope: SharedString::from("Library"),
+        rows,
+    })
+    .into()
+}
+
+/// The count's hover card: the scope's full readout set, the stats
+/// widget's tooltip shape. Opaque fill like the popup menus, since it
+/// floats over panel content with no backdrop behind it.
+struct TotalsTooltip {
+    /// "Library", or "Selection" while one scopes the numbers.
+    scope: SharedString,
+    rows: Vec<(SharedString, SharedString)>,
+}
+
+impl Render for TotalsTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_XS)
+            .p(tokens::SPACE_SM)
+            .min_w(px(150.))
+            .rounded(tokens::RADIUS)
+            .border_1()
+            .border_color(palette::border())
+            .bg(palette::bg_menu_opaque())
+            .shadow_md()
+            .text_color(palette::text())
+            .text_xs()
+            .child(
+                div()
+                    .text_color(palette::text_muted())
+                    .child(self.scope.clone()),
+            )
+            .children(self.rows.iter().map(|(label, value)| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(tokens::SPACE_MD)
+                    .text_color(palette::text_secondary())
+                    .child(div().min_w_0().truncate().child(label.clone()))
+                    .child(div().flex_none().child(value.clone()))
+            }))
     }
 }
 
@@ -426,6 +570,7 @@ impl StatusPanel {
         };
         // The strip renders the config's list as-is: each shown readout
         // in its place, whatever order the arrange editor left them in.
+        let weak = cx.entity().downgrade();
         let pieces: Vec<AnyElement> = self
             .config
             .items
@@ -443,7 +588,28 @@ impl StatusPanel {
                             .unwrap_or_else(|| format!("{n} selected")),
                         (false, n) => noun(n, "track", "tracks"),
                     };
-                    div().min_w_0().truncate().child(label).into_any_element()
+                    let scope = SharedString::from(if totals.selection {
+                        "Selection"
+                    } else {
+                        "Library"
+                    });
+                    // The hover carries the whole readout set, so the
+                    // count answers for the readouts the strip hides.
+                    let weak = weak.clone();
+                    div()
+                        .id("status-count")
+                        .min_w_0()
+                        .truncate()
+                        .child(label)
+                        .tooltip(move |_window, cx| {
+                            let rows = weak
+                                .upgrade()
+                                .map(|this| this.read(cx).tooltip_rows())
+                                .unwrap_or_default();
+                            let scope = scope.clone();
+                            cx.new(|_| TotalsTooltip { scope, rows }).into()
+                        })
+                        .into_any_element()
                 }
                 StatusItem::Time => stat(group_head::fmt_total(totals.total_ms)),
                 StatusItem::Albums => stat(noun(totals.albums, "album", "albums")),

@@ -74,6 +74,9 @@ pub struct OverlayPanel {
     value_edit: panel::ValueEdit,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
+    /// Whether the hosted children have been told which tab panel this
+    /// overlay sits under; see [`composite::introduce_slots`].
+    introduced: bool,
 }
 
 impl OverlayPanel {
@@ -109,6 +112,7 @@ impl OverlayPanel {
             value_edit: panel::ValueEdit::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
+            introduced: false,
         }
     }
 
@@ -137,6 +141,7 @@ impl OverlayPanel {
 
     fn set_slot(&mut self, ix: usize, slot: Slot, cx: &mut Context<Self>) {
         self.slots[ix] = slot;
+        self.introduced = false;
         cx.notify();
     }
 
@@ -434,13 +439,18 @@ impl Panel for OverlayPanel {
         cx: &mut Context<Self>,
     ) {
         self.tab_panel = Some(tab_panel.clone());
+        self.introduced = false;
         self.state
             .tab_hosts
             .update(cx, |hosts, _| hosts.report(tab_panel));
     }
 
-    fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn on_removed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tab_panel = None;
+        self.introduced = false;
+        for child in self.slots.iter().flatten() {
+            child.on_removed(window, cx);
+        }
     }
 
     fn dropdown_menu(
@@ -474,6 +484,13 @@ impl Panel for OverlayPanel {
 
 impl Render for OverlayPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        composite::introduce_slots(
+            self.slots.iter().flatten(),
+            &self.tab_panel,
+            &mut self.introduced,
+            window,
+            cx,
+        );
         let chrome = self.config.chrome.clone();
         panel::themed(&chrome, || self.body(window, cx))
     }

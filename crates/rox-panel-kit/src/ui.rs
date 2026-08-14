@@ -589,6 +589,44 @@ pub fn dialog_button(
         .child(label)
 }
 
+/// A [`dialog_button`] with a leading icon, for the secondary action that
+/// sits in a dialog's footer beside the confirm pair and has to read as
+/// their equal. Inert ones dim and drop the click.
+pub fn dialog_icon_button(
+    label: impl Into<SharedString>,
+    icon: &'static str,
+    inert: bool,
+    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .flex_none()
+        .items_center()
+        .gap(tokens::SPACE_XS)
+        .px(tokens::SPACE_MD)
+        .py(tokens::SPACE_XS)
+        .rounded(tokens::RADIUS)
+        .bg(palette::bg_control())
+        .map(|d| {
+            if inert {
+                d.opacity(0.5)
+            } else {
+                d.hover(|d| d.bg(palette::bg_control_hover()))
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, on_click)
+            }
+        })
+        .child(
+            svg()
+                .path(icon)
+                .size(px(14.))
+                .flex_none()
+                .text_color(palette::text()),
+        )
+        .child(label.into())
+}
+
 /// How wide a select field draws unless the caller says otherwise: room
 /// for a signal's derived name ("Band 30 - 1.5k Hz") without the list
 /// pushing the row's label off its own line.

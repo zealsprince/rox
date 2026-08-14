@@ -29,7 +29,7 @@ const SCALES: [f32; 4] = [1.0, 0.5, 0.25, 0.125];
 
 /// The names the wrapping template already binds, which a pass or an image
 /// can't take.
-const RESERVED: [&str; 4] = ["params", "screen", "samp", "prev"];
+const RESERVED: [&str; 5] = ["params", "screen", "samp", "prev", "mask"];
 
 /// The one dynamic image source: `// @asset art: @cover` binds the playing
 /// track's cover instead of a file. The bytes come from the window's cover
@@ -98,6 +98,15 @@ impl ChainSpec {
 /// a spurious registration there, never a missing one.
 pub fn uses_cover(source: &str) -> bool {
     source.contains(COVER_SOURCE)
+}
+
+/// Whether a text mentions the `mask` binding at all: the cheap check the
+/// panel wrapper gates its span brackets on, ahead of registration ever
+/// running. The same over-approximation as [`uses_cover`]: a mention in
+/// prose records a span nothing reads, two marker entries and no capture,
+/// while a real read is never missed.
+pub fn uses_mask(source: &str) -> bool {
+    source.contains("mask")
 }
 
 /// Read the chain out of a shader text.

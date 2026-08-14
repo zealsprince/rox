@@ -314,6 +314,9 @@ fn main() {
         // or a shipped look's first frame paints its panels bare while the
         // gate waits for an approval nobody should have to give.
         workspaces::trust_shipped_shaders();
+        // The backdrop layer's shade hook, wired before any window paints
+        // a bake so the look's backdrop shader is there from frame one.
+        workspace::install_backdrop_shade();
         gpui_component::init(cx);
         rox_dock::init(cx);
         workspace::init(cx);
@@ -344,6 +347,7 @@ fn main() {
             settings.look.bundle.appearance.backdrop_strength,
             cx,
         );
+        palette::set_backdrop_all_windows(settings.look.bundle.appearance.backdrop_all_windows, cx);
         set_app_frame(settings.look.bundle.appearance.frame, cx);
         set_seams(settings.look.bundle.appearance.seams, cx);
         palette::set_keep_theme(settings.look.bundle.appearance.keep_theme, cx);

@@ -1473,6 +1473,34 @@ impl PanelSettings for ArtistGridPanel {
         cx.notify();
     }
 
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Layout", icons::ALIGN_LEFT)]
+    }
+
+    fn page(
+        &mut self,
+        _page: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(setting_row(
+                "Vertical Layout",
+                Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height"),
+                toggle(
+                    self.config.vertical,
+                    |this: &mut Self, on, cx| {
+                        this.set_orientation(on, cx);
+                    },
+                    cx,
+                ),
+            ))
+            .into_any_element()
+    }
+
     fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         Some(
             div()
@@ -1515,21 +1543,6 @@ impl PanelSettings for ArtistGridPanel {
                                     this.drop_artist_filter(cx);
                                 }
                                 this.rebuild(cx);
-                            },
-                            cx,
-                        ),
-                    ),
-                ))
-                .child(settings_ui::section(
-                    "Orientation",
-                    None,
-                    setting_row(
-                        "Vertical Layout",
-                        Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height"),
-                        toggle(
-                            self.config.vertical,
-                            |this: &mut Self, on, cx| {
-                                this.set_orientation(on, cx);
                             },
                             cx,
                         ),

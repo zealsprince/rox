@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use lofty::config::{ParseOptions, WriteOptions};
 use lofty::file::{AudioFile, FileType};
 use lofty::flac::FlacFile;
-use lofty::id3::v2::Frame;
+use lofty::id3::v2::{Frame, Id3v2Tag};
 use lofty::mpeg::MpegFile;
 use lofty::ogg::OggPictureStorage;
 use lofty::picture::{MimeType, Picture, PictureInformation, PictureType};
@@ -79,6 +79,15 @@ pub enum Field {
     /// beside it.
     ReplayGain(GainKind),
     Custom(String),
+    /// A tag outside the editable set, addressed by the key
+    /// [`read_unknown`] lists it under: a TXXX description or bare frame
+    /// id on ID3v2, a Vorbis comment key on FLAC, the owner-prefixed
+    /// `PRIV:`/`UFID:` forms for the binary carriers. A clear removes
+    /// every carrier of the key; a set writes text back through the
+    /// key's own carrier - the mapped item where lofty knows the key, a
+    /// custom otherwise - so editing a stray tag never lands a TXXX twin
+    /// beside the frame it meant to change.
+    Unknown(String),
 }
 
 /// One slot of a file's ReplayGain. Named for
@@ -202,7 +211,7 @@ fn item_key(field: &Field) -> Option<ItemKey> {
         Field::ReplayGain(kind) => kind.item_key(),
         // The rating never writes as plain text; `apply_rating` puts its
         // popularimeter form on the generic tag itself.
-        Field::Rating | Field::Custom(_) => return None,
+        Field::Rating | Field::Custom(_) | Field::Unknown(_) => return None,
     })
 }
 
@@ -373,14 +382,14 @@ fn unknown_item_excluded(key: ItemKey) -> bool {
     )
 }
 
-/// A file's tags the editor has no row for, read-only and display-only:
-/// the format's custom keys ([`read`]'s customs), the items lofty maps
-/// but rox has no field for (BPM, ISRC, the MusicBrainz ids, sort
-/// orders), and the ID3v2 frames that carry bytes rather than text. Kept
-/// apart from [`read`] on purpose: that one's output feeds the editor's
-/// field lookups and the save diff, and none of this is editable.
-/// Isolated the same way, so a parser panic costs an error, not the
-/// process.
+/// A file's tags the editor has no row for: the format's custom keys
+/// ([`read`]'s customs), the items lofty maps but rox has no field for
+/// (BPM, ISRC, the MusicBrainz ids, sort orders), and the ID3v2 frames
+/// that carry bytes rather than text. Kept apart from [`read`] on
+/// purpose: that one's output feeds the editor's field lookups and the
+/// save diff, while this list shows as one ragged set and edits through
+/// [`Field::Unknown`] by key. Isolated the same way, so a parser panic
+/// costs an error, not the process.
 pub fn read_unknown(path: &Path) -> Result<Vec<(String, UnknownValue)>, String> {
     catch_unwind(AssertUnwindSafe(|| read_unknown_inner(path)))
         .unwrap_or_else(|_| Err(format!("tag parser panicked on {}", path.display())))
@@ -875,14 +884,17 @@ fn write_tags(
                 .map_err(|e| format!("parse: {e}"))?;
             let mut tag = mpeg.id3v2().cloned().unwrap_or_default();
             for change in changes {
-                if let Field::Custom(key) = &change.field {
-                    match &change.value {
+                match &change.field {
+                    Field::Custom(key) => match &change.value {
                         Some(v) => drop(tag.insert_user_text(key.clone(), v.clone())),
                         None => drop(tag.remove_user_text(key)),
-                    }
+                    },
+                    Field::Unknown(key) => apply_unknown_mpeg(&mut tag, key, &change.value),
+                    _ => {}
                 }
             }
             let (remainder, mut generic) = tag.split_tag();
+            apply_unknown_generic(&mut generic, lofty::tag::TagType::Id3v2, changes);
             apply_named(&mut generic, changes);
             apply_rating(&mut generic, changes);
             if let Some((data, mime)) = rescue {
@@ -910,12 +922,18 @@ fn write_tags(
             let mut flac = FlacFile::read_from(&mut source, parse_opts())
                 .map_err(|e| format!("parse: {e}"))?;
             let mut tag = flac.vorbis_comments().cloned().unwrap_or_default();
+            // Unknowns ride the custom path here: a Vorbis key is its own
+            // carrier whichever tier the read filed it under, and a
+            // mapped one round-trips through the split unchanged.
             for change in changes {
-                if let Field::Custom(key) = &change.field {
-                    tag.remove(key).for_each(drop);
-                    if let Some(v) = &change.value {
-                        tag.push(key.clone(), v.clone());
+                match &change.field {
+                    Field::Custom(key) | Field::Unknown(key) => {
+                        tag.remove(key).for_each(drop);
+                        if let Some(v) = &change.value {
+                            tag.push(key.clone(), v.clone());
+                        }
                     }
+                    _ => {}
                 }
             }
             let (remainder, mut generic) = tag.split_tag();
@@ -957,6 +975,50 @@ fn apply_named(generic: &mut Tag, changes: &[Change]) {
         match &change.value {
             Some(v) => drop(generic.insert_text(key, v.clone())),
             None => generic.remove_key(key),
+        }
+    }
+}
+
+/// The key [`read_unknown`] files an ID3v2 frame under, the address an
+/// unknown edit removes by. Mirrors the read's naming: descriptions for
+/// the user frames, the owner-prefixed forms for PRIV and UFID, the
+/// frame id for everything else.
+fn mpeg_unknown_key(frame: &Frame<'_>) -> String {
+    match frame {
+        Frame::UserText(f) => f.description.to_string(),
+        Frame::UserUrl(f) => f.description.to_string(),
+        Frame::Private(f) => format!("PRIV:{}", f.owner),
+        Frame::UniqueFileIdentifier(f) => format!("UFID:{}", f.owner),
+        _ => frame.id_str().to_string(),
+    }
+}
+
+/// One unknown change onto an MP3's format tag, ahead of the split:
+/// every frame the key names goes, whatever tier carried it. A set whose
+/// key lofty has no mapping for lands back as a TXXX here; a mapped one
+/// waits for [`apply_unknown_generic`], so the value writes through the
+/// format's own frame instead.
+fn apply_unknown_mpeg(tag: &mut Id3v2Tag, key: &str, value: &Option<String>) {
+    tag.retain(|frame| mpeg_unknown_key(frame) != key);
+    if let Some(v) = value {
+        if ItemKey::from_key(lofty::tag::TagType::Id3v2, key).is_none() {
+            drop(tag.insert_user_text(key.to_string(), v.clone()));
+        }
+    }
+}
+
+/// The mapped half of an unknown set, after the split: a key lofty knows
+/// writes through its generic item and merges back into the frame the
+/// file carried it in. Clears need nothing here - the format pass
+/// already dropped every carrier.
+fn apply_unknown_generic(generic: &mut Tag, tag_type: lofty::tag::TagType, changes: &[Change]) {
+    for change in changes {
+        let Field::Unknown(key) = &change.field else {
+            continue;
+        };
+        let Some(v) = &change.value else { continue };
+        if let Some(item_key) = ItemKey::from_key(tag_type, key) {
+            generic.insert_text(item_key, v.clone());
         }
     }
 }
@@ -1133,6 +1195,14 @@ fn verify_fields(tmp: &Path, kind: FileType, changes: &[Change]) -> Result<(), S
         }
         _ => unreachable!("file_type only passes writable formats"),
     };
+    // Unknown changes verify through the same list the editor showed
+    // them in, so the check exercises what the next open will read.
+    let unknowns: Vec<(String, UnknownValue)> =
+        if changes.iter().any(|c| matches!(c.field, Field::Unknown(_))) {
+            read_unknown_inner(tmp)?
+        } else {
+            Vec::new()
+        };
     for change in changes {
         // The rating verifies at star resolution: its popularimeter is
         // the whole-star form by design, and a FLAC hands it back as the
@@ -1181,6 +1251,10 @@ fn verify_fields(tmp: &Path, kind: FileType, changes: &[Change]) -> Result<(), S
                 .iter()
                 .find(|(k, _)| k == key)
                 .and_then(|(_, v)| v.clone()),
+            Field::Unknown(key) => unknowns
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.display()),
             named => generic
                 .get_string(item_key(named).expect("named fields have keys"))
                 .map(str::to_string),
@@ -1664,6 +1738,105 @@ mod tests {
                 unknown_of(&rows, key).is_none(),
                 "{key} must stay out of the unknown list"
             );
+        }
+    }
+
+    /// An unknown edit lands through the key's own carrier and a clear
+    /// removes every one: the TXXX tier, the mapped tier (where a set
+    /// must not leave a TXXX twin beside the real frame), and the
+    /// binary tier, which only clears.
+    #[test]
+    fn mp3_unknown_edits_address_every_tier() {
+        use lofty::id3::v2::{
+            ExtendedTextFrame, FrameId, Id3v2Tag, PrivateFrame, TextInformationFrame,
+        };
+        use lofty::TextEncoding;
+        use std::borrow::Cow;
+
+        let dir = scratch("mp3-unknown-edit");
+        let path = mp3_file(&dir, "track.mp3");
+        let mut tag = Id3v2Tag::default();
+        tag.insert(Frame::UserText(ExtendedTextFrame::new(
+            TextEncoding::UTF8,
+            "MY NOTE".to_string(),
+            "old".to_string(),
+        )));
+        tag.insert(Frame::Text(TextInformationFrame::new(
+            FrameId::Valid(Cow::Borrowed("TBPM")),
+            TextEncoding::UTF8,
+            "128",
+        )));
+        tag.insert(Frame::Private(PrivateFrame::new("rox.test", vec![7u8; 64])));
+        tag.save_to_path(&path, WriteOptions::default()).unwrap();
+
+        commit(
+            &path,
+            &[
+                set(Field::Unknown("MY NOTE".into()), "new"),
+                set(Field::Unknown("TBPM".into()), "90"),
+            ],
+        )
+        .unwrap();
+        let rows = read_unknown(&path).unwrap();
+        assert_eq!(text_of(&rows, "MY NOTE").as_deref(), Some("new"));
+        assert_eq!(text_of(&rows, "TBPM").as_deref(), Some("90"));
+        let tag = parse_mpeg(&path).unwrap().id3v2().cloned().unwrap();
+        assert!(
+            tag.get_user_text("TBPM").is_none(),
+            "a mapped set must not leave a TXXX twin"
+        );
+
+        commit(
+            &path,
+            &[
+                clear(Field::Unknown("MY NOTE".into())),
+                clear(Field::Unknown("TBPM".into())),
+                clear(Field::Unknown("PRIV:rox.test".into())),
+            ],
+        )
+        .unwrap();
+        let rows = read_unknown(&path).unwrap();
+        for key in ["MY NOTE", "TBPM", "PRIV:rox.test"] {
+            assert!(unknown_of(&rows, key).is_none(), "{key} should be gone");
+        }
+    }
+
+    /// The FLAC side of the same edits: one flat key space, so the
+    /// unmapped and mapped tiers write and clear alike.
+    #[test]
+    fn flac_unknown_edits_write_and_clear_by_key() {
+        use lofty::ogg::VorbisComments;
+
+        let dir = scratch("flac-unknown-edit");
+        let path = flac_file(&dir, "track.flac");
+        let mut tag = VorbisComments::default();
+        tag.push("MY NOTE".into(), "old".into());
+        tag.push("BPM".into(), "128".into());
+        tag.save_to_path(&path, WriteOptions::default()).unwrap();
+
+        commit(
+            &path,
+            &[
+                set(Field::Unknown("MY NOTE".into()), "new"),
+                set(Field::Unknown("BPM".into()), "90"),
+            ],
+        )
+        .unwrap();
+        let rows = read_unknown(&path).unwrap();
+        assert_eq!(text_of(&rows, "MY NOTE").as_deref(), Some("new"));
+        assert_eq!(text_of(&rows, "BPM").as_deref(), Some("90"));
+
+        commit(
+            &path,
+            &[
+                clear(Field::Unknown("MY NOTE".into())),
+                clear(Field::Unknown("BPM".into())),
+            ],
+        )
+        .unwrap();
+        let rows = read_unknown(&path).unwrap();
+        for key in ["MY NOTE", "BPM"] {
+            assert!(unknown_of(&rows, key).is_none(), "{key} should be gone");
         }
     }
 

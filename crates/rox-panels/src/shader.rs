@@ -1677,6 +1677,7 @@ mod tests {
             uses_prev: false,
             multi_pass: false,
             uses_assets: false,
+            uses_mask: false,
         };
         assert!(
             !pure.screen_pass_only(),
@@ -1709,6 +1710,7 @@ mod tests {
             uses_prev: false,
             multi_pass: false,
             uses_assets: false,
+            uses_mask: false,
         };
         assert!(gpui::UserShaderCaps {
             multi_pass: true,

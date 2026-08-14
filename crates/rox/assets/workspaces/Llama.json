@@ -343,7 +343,9 @@
                       "art_rounding": 0.0,
                       "header_art": false,
                       "header_year": true,
-                      "header_details": false
+                      "header_details": false,
+                      "row_height": 26.0,
+                      "head_text": 14.0
                     }
                   }
                 }
@@ -681,6 +683,7 @@
     "bg_control_active": "#343d5a",
     "bg_control_hover": "#3a4464",
     "bg_elevated": "#1c212e",
+    "bg_header": "#1c212e",
     "bg_input": "#0c0e14",
     "bg_menu": "#262c3e",
     "bg_menu_hover": "#303852",
@@ -707,6 +710,7 @@
     "bg_control_active": "#bac5e1",
     "bg_control_hover": "#b1bedc",
     "bg_elevated": "#dfe4f2",
+    "bg_header": "#dfe4f2",
     "bg_input": "#f3f5fa",
     "bg_menu": "#cfd7eb",
     "bg_menu_hover": "#c1cbe4",
@@ -729,7 +733,6 @@
   "meta": {
     "author": "zealsprince",
     "description": "Winamp the way you remember it rather than the way it was. Tahoma, dark, no chrome, a dotted spectrum across the top, and a shade mode on the mini layout.",
-    "version": "1.0",
     "created": "2026-07-23",
     "updated": "2026-08-09"
   },

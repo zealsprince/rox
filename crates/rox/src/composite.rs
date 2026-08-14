@@ -24,7 +24,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Sizable as _};
-use rox_dock::{DockArea, Panel, PanelRegistry, PanelState, PanelView};
+use rox_dock::{DockArea, Panel, PanelRegistry, PanelState, PanelView, TabPanel};
 
 use crate::panel_catalog::{self as catalog, PanelDef};
 use crate::panel_settings;
@@ -37,6 +37,65 @@ use rox_panel_api::panel::{AppState, PanelSettings};
 /// One hosted slot: a live child panel, or empty and showing the add
 /// affordance.
 pub type Slot = Option<Arc<dyn PanelView>>;
+
+/// Hand a host's tab panel down to its hosted children, once per change.
+///
+/// `on_added_to` only ever reaches panels the dock holds directly, so a
+/// child in a composite slot never hears which tab panel it sits under,
+/// and anything it routes there (its fallback right-click menu above all)
+/// quietly goes nowhere. The host knows, so it passes the introduction
+/// along - from render, because that is the one place with a window in
+/// hand on every path a slot can change through. `introduced` is the
+/// host's own once-flag: cleared when its tab panel or a slot turns over,
+/// set here, so a settled layout pays one bool check per frame.
+pub fn introduce_slots<'a>(
+    children: impl IntoIterator<Item = &'a Arc<dyn PanelView>>,
+    tab_panel: &Option<WeakEntity<TabPanel>>,
+    introduced: &mut bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if *introduced {
+        return;
+    }
+    let Some(tabs) = tab_panel else {
+        return;
+    };
+    *introduced = true;
+    for child in children {
+        child.on_added_to(tabs.clone(), window, cx);
+    }
+}
+
+/// A hosted child's view, with its right-click routed to the hosting tab
+/// panel's fallback menu when the child doesn't serve a content menu of
+/// its own - the exact overlay a lone docked panel gets. Children that do
+/// serve one keep the click untouched.
+pub fn menu_routed_slot(
+    child: &Arc<dyn PanelView>,
+    tab_panel: &Option<WeakEntity<TabPanel>>,
+    cx: &App,
+) -> Div {
+    let body = div().size_full().child(child.view());
+    if child.content_context_menu(cx) {
+        return body;
+    }
+    let Some(tabs) = tab_panel.clone() else {
+        return body;
+    };
+    let target = child.clone();
+    body.on_mouse_down(
+        MouseButton::Right,
+        move |event: &gpui::MouseDownEvent, window, cx| {
+            let Some(tabs) = tabs.upgrade() else {
+                return;
+            };
+            tabs.update(cx, |tabs, cx| {
+                tabs.open_panel_menu(target.clone(), event.position, window, cx)
+            });
+        },
+    )
+}
 
 /// Which composite a hosted panel sits in. A host reports its slots as it
 /// renders, so a child's own right-click can reach the panel that holds it.
@@ -282,7 +341,7 @@ fn pick_item(
 /// mode the button goes and the dashed mark stands alone: filling the slot
 /// is a layout edit, and the Workspace page's tree still does it.
 pub fn empty_slot(
-    id: &'static str,
+    id: impl Into<gpui::ElementId>,
     state: AppState,
     workspace: WeakEntity<Workspace>,
     on_pick: impl Fn(Arc<dyn PanelView>, &mut Window, &mut App) + Clone + 'static,

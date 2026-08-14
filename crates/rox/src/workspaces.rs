@@ -229,6 +229,12 @@ fn bundle_fingerprints(bundle: &WorkspaceBundle) -> Vec<String> {
         .chain(bundle.post_shader.iter().map(|post| post.source.clone()))
         .chain(
             bundle
+                .backdrop_shader
+                .iter()
+                .map(|post| post.source.clone()),
+        )
+        .chain(
+            bundle
                 .layouts
                 .iter()
                 .flat_map(|layout| settings::dump_shader_sources(&layout.dump)),
@@ -281,13 +287,24 @@ pub fn unapproved_shaders(bundle: &WorkspaceBundle) -> Vec<PendingShader> {
                 .is_none_or(|name| !bundle.shaders.iter().any(|shader| shader.name == name))
         })
         .map(|post| (None, post.source.clone()));
+    let backdrop = bundle
+        .backdrop_shader
+        .iter()
+        // The same read as the screen pass above: a pool name runs the
+        // pool's source, already listed; only inline text is its own code.
+        .filter(|post| {
+            post.name
+                .as_deref()
+                .is_none_or(|name| !bundle.shaders.iter().any(|shader| shader.name == name))
+        })
+        .map(|post| (None, post.source.clone()));
     let dumps = bundle_dumps(bundle)
         .flat_map(settings::dump_shader_sources)
         .map(|source| (None, source));
 
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
-    for (name, source) in named.chain(screen).chain(dumps) {
+    for (name, source) in named.chain(screen).chain(backdrop).chain(dumps) {
         if shader::approved(&source) {
             continue;
         }
@@ -342,7 +359,22 @@ fn screen_shader_line(bundle: &WorkspaceBundle) -> Option<SharedString> {
 /// The pool on its own doesn't count. It travels either way and nothing in it
 /// paints until something wears it.
 pub fn wears_shaders(bundle: &WorkspaceBundle) -> bool {
-    screen_shader_line(bundle).is_some() || bundle_dumps(bundle).any(settings::dump_wears_shader)
+    screen_shader_line(bundle).is_some()
+        || backdrop_shader_runs(bundle)
+        || bundle_dumps(bundle).any(settings::dump_wears_shader)
+}
+
+/// Whether the look's backdrop shader would actually paint: switched on with
+/// a pool name that resolves or inline source of its own, the same read
+/// [`screen_shader_line`] makes for the screen pass.
+fn backdrop_shader_runs(bundle: &WorkspaceBundle) -> bool {
+    let Some(config) = bundle.backdrop_shader.as_ref().filter(|c| c.enabled) else {
+        return false;
+    };
+    match config.name.as_deref() {
+        Some(name) => bundle.shaders.iter().any(|entry| entry.name == name),
+        None => !config.source.trim().is_empty(),
+    }
 }
 
 /// Every panel dump a bundle carries: its layouts' and its panel presets'.
@@ -368,6 +400,9 @@ pub fn without_shaders(bundle: &WorkspaceBundle) -> WorkspaceBundle {
     let mut bare = bundle.clone();
     if let Some(post) = bare.post_shader.as_mut() {
         post.enabled = false;
+    }
+    if let Some(backdrop) = bare.backdrop_shader.as_mut() {
+        backdrop.enabled = false;
     }
     for layout in &mut bare.layouts {
         settings::strip_dump_shaders(&mut layout.dump);
@@ -616,6 +651,7 @@ pub fn apply_look(bundle: &WorkspaceBundle, cx: &mut App) {
     );
     let a = &bundle.appearance;
     palette::set_scalars(a.surface_opacity, a.backdrop_strength, cx);
+    palette::set_backdrop_all_windows(a.backdrop_all_windows, cx);
     settings::set_app_frame(a.frame, cx);
     settings::set_seams(a.seams, cx);
     palette::set_keep_theme(a.keep_theme, cx);
@@ -726,6 +762,39 @@ mod tests {
             files.iter().map(|(stem, _)| stem).collect::<Vec<_>>(),
             parsed.iter().map(|e| &e.name).collect::<Vec<_>>()
         );
+    }
+
+    /// Every panel config a shipped bundle carries reads back into the
+    /// panel's own config type. The parse above only proves the bundle's
+    /// shape: a panel's `info` rides it as an opaque value, so a piece
+    /// name that no longer exists (or never did, in a hand edit) would
+    /// ship as a panel that quietly comes up in its stock arrangement.
+    /// Track info is the one spelled out here because its pieces are what
+    /// the bundles hand-carry; the rest take their configs from exports.
+    #[test]
+    fn every_shipped_track_info_config_reads() {
+        fn walk(node: &serde_json::Value, stem: &str) {
+            if node.get("panel_name").and_then(|name| name.as_str()) == Some("track info") {
+                let info = &node["info"]["panel"];
+                let read: Result<rox_panels::transport::TrackInfoConfig, _> =
+                    serde_json::from_value(info.clone());
+                assert!(read.is_ok(), "{stem}: {info}");
+            }
+            for child in node
+                .get("children")
+                .and_then(|kids| kids.as_array())
+                .into_iter()
+                .flatten()
+            {
+                walk(child, stem);
+            }
+        }
+        for (stem, bytes) in rox_design::assets::shipped_workspaces() {
+            let bundle: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            for layout in bundle["layouts"].as_array().into_iter().flatten() {
+                walk(&layout["dump"]["center"], &stem);
+            }
+        }
     }
 
     /// Every pool shader a shipped bundle carries splits cleanly, and every

@@ -26,6 +26,7 @@ use crate::panel::{
 };
 use crate::panel_settings;
 use crate::player::observe_view;
+use crate::rating_ui;
 use crate::settings::ShuffleMode;
 use crate::source::TrackSource;
 use rox_panel_api::actions::{TogglePlayback, PLAYBACK_TIP_SCOPE};
@@ -71,6 +72,9 @@ pub enum PlaybackItem {
     /// The heart over the playing track, the same toggle the favourite
     /// panel and the library's heart column run.
     Favourite,
+    /// The stars over the playing track, the same write the rating panel
+    /// and the library's rating column make.
+    Rating,
     /// A flexible gap that pushes the buttons around it apart; the strip
     /// holds as many as the layout wants.
     Spacer,
@@ -161,6 +165,12 @@ const ITEMS: &[panel::ArrangeSpec<PlaybackItem>] = &[
         label: "Favourite",
         icon: Some(icons::HEART),
         value: PlaybackItem::Favourite,
+        repeats: false,
+    },
+    panel::ArrangeSpec {
+        label: "Rating",
+        icon: Some(icons::STAR),
+        value: PlaybackItem::Rating,
         repeats: false,
     },
     panel::ArrangeSpec {
@@ -378,14 +388,15 @@ pub struct TransportPanel {
     _library_changed: Subscription,
 }
 
-/// The track the heart currently sits over: the key it was resolved from,
-/// that key's catalog id (None for a file the library does not know), and
-/// whether the id is favourited. The favourite panel keeps the same shape,
-/// for the same reason.
+/// The track the heart and the stars currently sit over: the key it was
+/// resolved from, that key's catalog id (None for a file the library does
+/// not know), whether the id is favourited, and its rating. The favourite
+/// panel keeps the same shape, for the same reason.
 struct Heart {
     key: TrackKey,
     id: Option<i64>,
     on: bool,
+    rating: u8,
 }
 
 /// A button whose click does something and whose hold opens the shades of
@@ -504,6 +515,7 @@ impl TransportPanel {
             &state.library,
             |this: &mut Self, _, event: &LibraryEvent, cx| match event {
                 LibraryEvent::PlaylistsChanged => this.refresh_favourite(cx),
+                LibraryEvent::Rated => this.refresh_rating(cx),
                 LibraryEvent::Updated => {
                     this.heart = None;
                     cx.notify();
@@ -542,6 +554,7 @@ impl TransportPanel {
             ("Random Button", PlaybackItem::Random),
             ("Stop After Button", PlaybackItem::StopAfter),
             ("Favourite Button", PlaybackItem::Favourite),
+            ("Rating Stars", PlaybackItem::Rating),
         ] {
             let weak = cx.entity().downgrade();
             menu = menu.item(
@@ -1029,11 +1042,28 @@ impl TransportPanel {
             let library = self.state.library.read(cx);
             let id = library.id_for_key(&key);
             let on = id.is_some_and(|id| library.is_favourite(id));
-            self.heart = Some(Heart { key, id, on });
+            let rating = id
+                .and_then(|id| library.ratings_for(&[id]).get(&id).copied())
+                .unwrap_or(0);
+            self.heart = Some(Heart {
+                key,
+                id,
+                on,
+                rating,
+            });
         }
         self.heart
             .as_ref()
             .map_or((None, false), |heart| (heart.id, heart.on))
+    }
+
+    /// The stars' side of the same cache: the playing track's id and its
+    /// rating, resolved through [`Self::current_heart`].
+    fn current_rating(&mut self, cx: &App) -> (Option<i64>, u8) {
+        self.current_heart(cx);
+        self.heart
+            .as_ref()
+            .map_or((None, 0), |heart| (heart.id, heart.rating))
     }
 
     /// Re-read the shown track's favourite state after a playlist change,
@@ -1046,6 +1076,26 @@ impl TransportPanel {
         let on = self.state.library.read(cx).is_favourite(id);
         if let Some(heart) = self.heart.as_mut() {
             heart.on = on;
+        }
+        cx.notify();
+    }
+
+    /// Re-read the shown track's rating after a star landed, here or on
+    /// another surface. The id stays put, so this costs one lookup.
+    fn refresh_rating(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.heart.as_ref().and_then(|heart| heart.id) else {
+            return;
+        };
+        let rating = self
+            .state
+            .library
+            .read(cx)
+            .ratings_for(&[id])
+            .get(&id)
+            .copied()
+            .unwrap_or(0);
+        if let Some(heart) = self.heart.as_mut() {
+            heart.rating = rating;
         }
         cx.notify();
     }
@@ -1095,7 +1145,7 @@ impl PanelSettings for TransportPanel {
     }
 
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
-        &[("Controls", icons::PLAY)]
+        &[("Layout", icons::ALIGN_LEFT)]
     }
 
     fn page(
@@ -1280,6 +1330,11 @@ impl TransportPanel {
             self.current_heart(cx)
         } else {
             (None, false)
+        };
+        let (rating_id, rating_value) = if self.config.items.contains(&PlaybackItem::Rating) {
+            self.current_rating(cx)
+        } else {
+            (None, 0)
         };
 
         // The strip renders the config's list as-is: each shown button in
@@ -1516,6 +1571,33 @@ impl TransportPanel {
                                         )
                                 }),
                         )
+                        .into_any_element()
+                }
+                // The stars over the playing track, the rating panel's
+                // control in the strip: the same write the library's
+                // rating column makes, so a star set here shows
+                // everywhere else.
+                PlaybackItem::Rating => {
+                    let state = self.state.clone();
+                    // Keyed by the shown track so the hover preview
+                    // matches every other surface rating the same track.
+                    let key = rating_id.unwrap_or(-1) as u64;
+                    let control = rating_ui::control(key, rating_value, move |rating, _, cx| {
+                        let Some(id) = rating_id else { return };
+                        state
+                            .library
+                            .update(cx, |library, cx| library.rate(id, rating, cx));
+                    });
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .p(tokens::ICON_PAD)
+                        // Nothing to rate: the stars stay up, dimmed, so
+                        // the strip holds its shape while the queue turns
+                        // over.
+                        .when(rating_id.is_none(), |d| d.opacity(0.4))
+                        .child(control)
                         .into_any_element()
                 }
                 PlaybackItem::Spacer => div().flex_1().into_any_element(),

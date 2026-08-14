@@ -193,8 +193,11 @@ pub fn check_row<P: 'static>(
     let item = PopupMenuItem::element(move |_, cx| {
         let on = is_on(read.read(cx));
         if has_icon {
+            // gap_3 mirrors the stock checked-item row, so the widest row
+            // still gets the same label-to-tick breathing room.
             h_flex()
                 .w_full()
+                .gap_3()
                 .items_center()
                 .justify_between()
                 .child(label.clone())
@@ -237,6 +240,11 @@ pub fn follow_panel<P: 'static>(panel: &Entity<P>, cx: &mut Context<PopupMenu>) 
 /// [`window_body`], which snapshots the tint and runs the body inside it.
 pub struct WindowTint {
     tint: palette::Tint,
+    /// Whether this window always paints the cover backdrop, pushed
+    /// through the phases beside the tint so the surface accessors know
+    /// to keep their transparency. Children leave it off and follow the
+    /// All Windows switch.
+    backdropped: bool,
     child: AnyElement,
 }
 
@@ -244,9 +252,28 @@ pub struct WindowTint {
 /// with the tint pushed so render-time color reads see it, and the tint
 /// rides along into the paint phases through the returned element.
 pub fn window_body(player: gpui::EntityId, body: impl FnOnce() -> AnyElement) -> WindowTint {
+    tinted_body(player, false, body)
+}
+
+/// [`window_body`] for a workspace window, which paints the backdrop
+/// whatever the All Windows switch says, so its surfaces keep their
+/// transparency over it.
+pub fn workspace_body(player: gpui::EntityId, body: impl FnOnce() -> AnyElement) -> WindowTint {
+    tinted_body(player, true, body)
+}
+
+fn tinted_body(
+    player: gpui::EntityId,
+    backdropped: bool,
+    body: impl FnOnce() -> AnyElement,
+) -> WindowTint {
     let tint = palette::window_tint(player);
-    let child = palette::tinted(tint, body);
-    WindowTint { tint, child }
+    let child = palette::backdropped(backdropped, || palette::tinted(tint, body));
+    WindowTint {
+        tint,
+        backdropped,
+        child,
+    }
 }
 
 impl Element for WindowTint {
@@ -268,7 +295,9 @@ impl Element for WindowTint {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        let layout_id = palette::tinted(self.tint, || self.child.request_layout(window, cx));
+        let layout_id = palette::backdropped(self.backdropped, || {
+            palette::tinted(self.tint, || self.child.request_layout(window, cx))
+        });
         (layout_id, ())
     }
 
@@ -281,8 +310,10 @@ impl Element for WindowTint {
         window: &mut Window,
         cx: &mut App,
     ) {
-        palette::tinted(self.tint, || {
-            self.child.prepaint(window, cx);
+        palette::backdropped(self.backdropped, || {
+            palette::tinted(self.tint, || {
+                self.child.prepaint(window, cx);
+            });
         });
     }
 
@@ -296,7 +327,9 @@ impl Element for WindowTint {
         window: &mut Window,
         cx: &mut App,
     ) {
-        palette::tinted(self.tint, || self.child.paint(window, cx));
+        palette::backdropped(self.backdropped, || {
+            palette::tinted(self.tint, || self.child.paint(window, cx));
+        });
     }
 }
 

@@ -12,7 +12,7 @@ mod volume;
 
 pub use playback::{TransportConfig, TransportPanel};
 pub use seek::{SeekConfig, SeekStripPanel};
-pub use track_info::{TrackInfoConfig, TrackInfoPanel};
+pub use track_info::{InfoPiece, TrackInfoConfig, TrackInfoPanel};
 pub use volume::{VolumeConfig, VolumePanel};
 
 // The transport configs share the widget layer's serde default for the

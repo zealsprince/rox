@@ -686,6 +686,53 @@ impl Library {
         cx.notify();
     }
 
+    /// Forget every tempo rox measured, leaving what the files' own tags
+    /// claim alone. The cleared tracks go back on the tempo pass's work
+    /// list, which is the point: the estimator improves, and a pass only
+    /// ever looks at rows with nothing on them, so a number a worse
+    /// estimator wrote would otherwise stand forever.
+    ///
+    /// The same busy gate and background connection as
+    /// [`Library::clear_embeddings`], with two differences. There's no
+    /// VACUUM, since a tempo is a float a row and there's no space to give
+    /// back. And the projection does reload, because it holds the bpm
+    /// column the BPM column draws: without it every number just forgotten
+    /// would keep rendering until something else reloaded.
+    ///
+    /// Like the vectors' clear, this can't gate the tempo pass, which opens
+    /// the library by path on its own and would write numbers back in
+    /// behind the delete. Whoever offers the button is what knows a pass is
+    /// running.
+    pub fn clear_measured_bpm(&mut self, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        self.busy = Some("clearing tempos...".into());
+        let db_path = self.db_path.clone();
+        cx.spawn(async move |this, cx| {
+            let cleared = cx
+                .background_executor()
+                .spawn(async move {
+                    let conn = store::open(&db_path)?;
+                    store::clear_measured_bpm(&conn)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.busy = None;
+                this.status = match cleared {
+                    Ok(n) => format!("forgot {n} measured tempos").into(),
+                    Err(e) => format!("library: {e}").into(),
+                };
+                this.reload_projection(cx);
+                cx.emit(LibraryEvent::Updated);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// The library database, for a background pass that opens its own
     /// connection to it (the ReplayGain measurement job).
     pub fn db_path(&self) -> PathBuf {

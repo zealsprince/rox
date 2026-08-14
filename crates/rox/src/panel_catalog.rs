@@ -27,7 +27,6 @@ use rox_panels::biography::{BiographyConfig, BiographyPanel};
 use rox_panels::cover::{CoverArtPanel, CoverConfig};
 use rox_panels::drag_anchor::{DragAnchorConfig, DragAnchorPanel};
 use rox_panels::eq_widget::{EqWidgetConfig, EqWidgetPanel};
-use rox_panels::favourite::{FavouriteConfig, FavouritePanel};
 use rox_panels::filter::{FilterConfig, FilterPanel};
 use rox_panels::folder_tree::{FolderTreeConfig, FolderTreePanel};
 use rox_panels::genre_grid::{GenreGridConfig, GenreGridPanel};
@@ -40,7 +39,6 @@ use rox_panels::output::{OutputConfig, OutputPanel};
 use rox_panels::particles::{ParticlesConfig, ParticlesPanel};
 use rox_panels::playlists::{PlaylistsConfig, PlaylistsPanel};
 use rox_panels::queue::{QueueConfig, QueuePanel};
-use rox_panels::rating::{RatingConfig, RatingPanel};
 use rox_panels::search::{SearchConfig, SearchPanel};
 use rox_panels::shader::{ShaderConfig, ShaderPanel};
 use rox_panels::spacer::{SpacerConfig, SpacerPanel};
@@ -443,26 +441,10 @@ pub(crate) static CONTROLS: PanelSection = PanelSection {
                 Arc::new(cx.new(|cx| VolumePanel::new(state.clone(), VolumeConfig::default(), cx)))
             },
         },
-        PanelDef {
-            label: "Rating",
-            name: "rating",
-            icon: icons::STAR,
-            placement: PanelPlacement::Bottom,
-            build: |state, _, _, cx| {
-                Arc::new(cx.new(|cx| RatingPanel::new(state.clone(), RatingConfig::default(), cx)))
-            },
-        },
-        PanelDef {
-            label: "Favourite",
-            name: "favourite",
-            icon: icons::HEART,
-            placement: PanelPlacement::Bottom,
-            build: |state, _, _, cx| {
-                Arc::new(
-                    cx.new(|cx| FavouritePanel::new(state.clone(), FavouriteConfig::default(), cx)),
-                )
-            },
-        },
+        // The rating and favourite panels retired from the catalog once
+        // the stars and the heart became transport items and track info
+        // pieces; the registry still builds them, so a layout that
+        // carries one keeps restoring.
         PanelDef {
             label: "Queue Widget",
             name: "queue widget",

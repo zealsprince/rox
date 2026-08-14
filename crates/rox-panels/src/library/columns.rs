@@ -8,7 +8,7 @@ use rox_library::projection::SortKey;
 use rox_panel_kit::config::default_true;
 use serde::{Deserialize, Serialize};
 
-use crate::group_head::{self, ArtSide, HeadPiece, Headers};
+use crate::group_head::{self, ArtSide, HeadPiece, Headers, TileFace};
 use crate::panel::{dedup, PanelChrome};
 use crate::query::shared_query::QuerySource;
 use crate::settings::ui as settings_ui;
@@ -291,15 +291,45 @@ impl GroupBy {
 }
 
 /// The slider bounds for the row and header-line heights, px at the stock
-/// font size.
+/// font size, and the stock height itself: what the rows draw at out of
+/// the box, and the height whose text sits at the stock 1 rem (the row
+/// and header text scale off their height's ratio to this).
 pub const ROW_HEIGHT_MIN: f32 = 18.;
 pub const ROW_HEIGHT_MAX: f32 = 48.;
+pub const ROW_HEIGHT_STOCK: f32 = 30.;
 pub const HEAD_HEIGHT_MAX: f32 = 72.;
 
 /// The gap and margin sliders' ceilings, same units: the open space over
 /// and under a header block, and the cover tile's inset inside the block.
 pub const HEAD_GAP_MAX: f32 = 24.;
 pub const ART_MARGIN_MAX: f32 = 16.;
+
+/// The row spacing slider's ceiling: extra height grown into each row,
+/// which the row fills; the text keeps the size the row height sets.
+pub const ROW_SPACING_MAX: f32 = 32.;
+
+/// The header text slider's range and stock value, px at the stock font
+/// size. The stock is the 1 rem the lines drew before the knob existed.
+pub const HEAD_TEXT_MIN: f32 = 8.;
+pub const HEAD_TEXT_MAX: f32 = 32.;
+pub const HEAD_TEXT_STOCK: f32 = 16.;
+
+fn default_head_text() -> f32 {
+    HEAD_TEXT_STOCK
+}
+
+/// A saved header text size read back clamped to the slider's reach;
+/// nonsense in a hand-edited dump falls to the stock size.
+pub fn fold_head_text(v: f32) -> f32 {
+    if v.is_finite() {
+        v.clamp(
+            HEAD_TEXT_MIN,
+            settings_ui::ceiling(HEAD_TEXT_MIN, HEAD_TEXT_MAX),
+        )
+    } else {
+        HEAD_TEXT_STOCK
+    }
+}
 
 /// A saved margin knob read back clamped to the band its input reaches,
 /// not the strip's own top, so a typed value survives a reload; nonsense
@@ -320,7 +350,7 @@ pub fn fold_margin(v: f32, max: f32) -> f32 {
 pub fn fold_row_heights(config: &LibraryConfig) -> (f32, f32) {
     let stock = match config.density {
         Some(Density::Comfortable) => 40.,
-        _ => 30.,
+        _ => ROW_HEIGHT_STOCK,
     };
     let clamp = |v: Option<f32>, default: f32, max: f32| match v {
         Some(v) if v.is_finite() => {
@@ -362,6 +392,15 @@ pub struct LibraryConfig {
     /// header block spans however many table rows its lines need.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_height: Option<f32>,
+    /// Extra height grown into each row, which the row fills; breathing
+    /// room without growing the text.
+    #[serde(default)]
+    pub row_spacing: f32,
+    /// The header lines' text size, px at the stock font size. Free of
+    /// the line height, so the cover art (which spans the lines) grows
+    /// without dragging the text along.
+    #[serde(default = "default_head_text")]
+    pub head_text: f32,
     /// Pre-slider layouts' density choice; folds into the heights and
     /// never writes back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -417,9 +456,16 @@ pub struct LibraryConfig {
     /// The same under the block, before its own tracks.
     #[serde(default)]
     pub header_gap_below: f32,
-    /// Show the expanded album headers' cover tile.
+    /// Show the expanded headers' cover tile.
     #[serde(default = "default_true")]
     pub header_art: bool,
+    /// Round the artist grouping's tiles to the full circle the artist
+    /// wall wears; off keeps the shared rounding knob.
+    #[serde(default = "default_true")]
+    pub portrait_circle: bool,
+    /// What the genre grouping's tile wears, the genre grid's faces.
+    #[serde(default)]
+    pub genre_face: TileFace,
     /// Sit the header rows on the list background instead of the raised
     /// Elevated tint. A role, not a color, so song theming moves the
     /// headers together with the list.
@@ -467,6 +513,8 @@ impl Default for LibraryConfig {
             query_source: QuerySource::default(),
             row_height: None,
             head_height: None,
+            row_spacing: 0.,
+            head_text: HEAD_TEXT_STOCK,
             density: None,
             headers: Headers::default(),
             group_by: GroupBy::default(),
@@ -483,6 +531,8 @@ impl Default for LibraryConfig {
             header_gap_above: 0.,
             header_gap_below: 0.,
             header_art: true,
+            portrait_circle: true,
+            genre_face: TileFace::default(),
             header_flush: false,
             header_compact: Vec::new(),
             header_lines: Vec::new(),

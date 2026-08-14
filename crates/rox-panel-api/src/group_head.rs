@@ -8,12 +8,16 @@
 //! headings stay one look. The stock lines here are the classic two-line
 //! arrangement; the library's config carries its own.
 
-use gpui::{div, img, prelude::*, px, svg, AnyElement, Div, ObjectFit, Pixels, SharedString};
+use gpui::{
+    div, img, linear_color_stop, linear_gradient, prelude::*, px, rems, svg, AnyElement, Div,
+    ObjectFit, Pixels, SharedString,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::panel::ArrangeSpec;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
+use rox_panel_kit::motif;
 use rox_services::thumbs::Thumb;
 
 /// How a group's header shows, shared by the library table and the playlists
@@ -65,6 +69,42 @@ pub enum ArtSide {
     #[default]
     Left,
     Right,
+}
+
+/// Covers in a genre tile's mosaic when it has that many albums to show,
+/// shared by the genre grid's wall and the library's genre headers.
+pub const MOSAIC: usize = 4;
+
+/// What a genre tile wears, shared by the genre grid and the library's
+/// genre-grouped headers. Tinted is the default: the covers still say
+/// "your music" while the genre's own color says which one at a glance;
+/// Mosaic is the plain covers, Gradient and Color are cards in the
+/// genre's color - a two-stop lean or a flat fill - decorated with the
+/// genre's own geometry.
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TileFace {
+    Mosaic,
+    #[default]
+    Tinted,
+    Gradient,
+    Color,
+}
+
+impl TileFace {
+    pub fn label(self) -> &'static str {
+        match self {
+            TileFace::Mosaic => "Cover Mosaic",
+            TileFace::Tinted => "Tinted Mosaic",
+            TileFace::Gradient => "Gradient Card",
+            TileFace::Color => "Color Card",
+        }
+    }
+
+    /// The card faces paint no covers, so they skip the thumbnail cache.
+    pub fn is_card(self) -> bool {
+        matches!(self, TileFace::Gradient | TileFace::Color)
+    }
 }
 
 /// The full piece catalog in stock order: what the arrange editors offer,
@@ -122,7 +162,7 @@ pub const PIECES: &[ArrangeSpec<HeadPiece>] = &[
         label: "Divider",
         icon: Some(icons::MINUS),
         value: HeadPiece::Divider,
-        repeats: false,
+        repeats: true,
     },
     ArrangeSpec {
         label: "Art",
@@ -176,9 +216,10 @@ pub struct GroupHead {
     pub quality: SharedString,
     pub tracks: u32,
     pub total_ms: u64,
-    /// Whether this is an album grouping: the cover tile, the album text,
-    /// and the trailing year are album presentation, off for the rest.
-    pub by_album: bool,
+    /// Whether the block wears the cover tile beside its lines, which then
+    /// indent past it. The caller decides what has a cover to show: albums
+    /// always, the library's artist and genre groupings too, year never.
+    pub tiled: bool,
     /// The group's cover, resolved by the caller only when a line carries
     /// the inline art piece; None drops the piece from the line.
     pub thumb: Option<Thumb>,
@@ -199,6 +240,11 @@ pub struct HeadLook {
     pub art_margin: Pixels,
     /// The cover corners' radius, shared by the tile and the inline piece.
     pub art_rounding: f32,
+    /// The composed lines' text size as a rem factor, so the text follows
+    /// the line height instead of floating small in a tall line. 1 keeps
+    /// the stock sizes; the name line's lead multiplies its usual step on
+    /// top.
+    pub font_scale: f32,
 }
 
 /// A sample rate as the kHz a spec sheet writes: 44100 reads "44.1",
@@ -298,7 +344,144 @@ pub fn tile(
     art_side: ArtSide,
     margin: Pixels,
 ) -> AnyElement {
-    let content = art_content(thumb, rounding, 16.);
+    tile_frame(
+        art_content(thumb, rounding, 16., false),
+        side,
+        lift,
+        art_side,
+        margin,
+    )
+}
+
+/// The genre grouping's block tile, wearing the configured [`TileFace`]
+/// the genre grid's tiles wear: the cover mosaic plain, the covers
+/// grayscaled under the genre's color wash, or a card in the genre's
+/// color under its geometry motif. The card leaves the name off; the
+/// header's own line sets it right beside the tile. Same frame mechanics
+/// as [`tile`]; the covers are a two-by-two mosaic once `thumbs` carries
+/// [`MOSAIC`] of them, the lone first cover below that.
+#[allow(clippy::too_many_arguments)]
+pub fn genre_tile(
+    face: TileFace,
+    thumbs: &[Thumb],
+    name: &str,
+    side: Pixels,
+    rounding: f32,
+    lift: Pixels,
+    art_side: ArtSide,
+    margin: Pixels,
+) -> AnyElement {
+    let (color, partner) = palette::genre_color_pair(name);
+    let seed = palette::genre_seed(name);
+    let card = |background: gpui::Background, base: gpui::Rgba| -> AnyElement {
+        div()
+            .size_full()
+            .relative()
+            .overflow_hidden()
+            .rounded(px(rounding))
+            .bg(background)
+            .child(motif(seed, palette::text_on(base)))
+            .into_any_element()
+    };
+    let grayed = face == TileFace::Tinted;
+    let covers: Option<AnyElement> = if face.is_card() || thumbs.is_empty() {
+        None
+    } else if thumbs.len() >= MOSAIC {
+        Some(mosaic_content(thumbs, rounding, grayed))
+    } else {
+        Some(art_content(thumbs[0].clone(), rounding, 16., grayed))
+    };
+    let content: AnyElement = match (face, covers) {
+        (TileFace::Color, _) => card(color.into(), color),
+        // The gradient leans the genre's own way, the grid's angle rule,
+        // so neighbors sharing a hue family still tilt apart.
+        (TileFace::Gradient, _) => card(
+            linear_gradient(
+                ((seed >> 45) % 360) as f32,
+                linear_color_stop(color, 0.0),
+                linear_color_stop(partner, 1.0),
+            ),
+            color,
+        ),
+        // The wash over the grayscaled covers is what makes the tinted
+        // face: identity in color, music underneath.
+        (TileFace::Tinted, Some(covers)) => div()
+            .size_full()
+            .relative()
+            .child(covers)
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded(px(rounding))
+                    .bg(palette::alpha(color, 0x73)),
+            )
+            .into_any_element(),
+        // A coverless genre on the tinted face borrows the card, the
+        // grid's move, so the tile still says which genre it is.
+        (TileFace::Tinted, None) if !name.is_empty() => card(color.into(), color),
+        (_, Some(covers)) => covers,
+        (_, None) => art_content(Thumb::Missing, rounding, 16., false),
+    };
+    tile_frame(content, side, lift, art_side, margin)
+}
+
+/// Four covers as a two-by-two mosaic filling the tile square, each
+/// quadrant rounding only its outer corner per the knob. A quadrant whose
+/// cover is still loading (or gone) sits as a quiet elevated square, so
+/// landing covers fill in without a shift.
+fn mosaic_content(thumbs: &[Thumb], rounding: f32, grayed: bool) -> AnyElement {
+    let quarter = |thumb: &Thumb, corner: usize| -> AnyElement {
+        match thumb {
+            Thumb::Ready(image) => {
+                let image = img(image.clone())
+                    .size_full()
+                    .overflow_hidden()
+                    .object_fit(ObjectFit::Cover)
+                    .grayscale(grayed);
+                match corner {
+                    0 => image.rounded_tl(px(rounding)),
+                    1 => image.rounded_tr(px(rounding)),
+                    2 => image.rounded_bl(px(rounding)),
+                    _ => image.rounded_br(px(rounding)),
+                }
+                .into_any_element()
+            }
+            _ => div()
+                .size_full()
+                .bg(palette::bg_elevated())
+                .into_any_element(),
+        }
+    };
+    let half = |a: AnyElement, b: AnyElement| {
+        let cell = |content: AnyElement| div().flex_1().min_w_0().overflow_hidden().child(content);
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_row()
+            .child(cell(a))
+            .child(cell(b))
+    };
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(half(quarter(&thumbs[0], 0), quarter(&thumbs[1], 1)))
+        .child(half(quarter(&thumbs[2], 2), quarter(&thumbs[3], 3)))
+        .into_any_element()
+}
+
+/// The tile's placement frame, shared by the single cover and the mosaic:
+/// the block-spanning square at its margin on the configured side, lifted
+/// past the block rows already painted.
+fn tile_frame(
+    content: AnyElement,
+    side: Pixels,
+    lift: Pixels,
+    art_side: ArtSide,
+    margin: Pixels,
+) -> AnyElement {
     div()
         .absolute()
         .top_0()
@@ -321,19 +504,21 @@ pub fn tile(
 
 /// A cover's face: the image rounded per the knob, or the quiet music-note
 /// placeholder both pending and missing wear, so a landing cover fills in
-/// without a layout shift. Shared by the block tile and the inline piece.
+/// without a layout shift. Shared by the block tile, the inline piece, and
+/// the track info panel's art piece.
 ///
 /// `Cover` scales the art until it fills the square, which leaves the odd
 /// side hanging outside the element. gpui hands `paint_image` those larger
 /// bounds and masks nothing on its own, so a sleeve that isn't square
 /// spills over the track rows above and below the block. The crop is ours
 /// to make: `overflow_hidden` puts the mask back at the square's edge.
-fn art_content(thumb: Thumb, rounding: f32, icon_px: f32) -> AnyElement {
+pub fn art_content(thumb: Thumb, rounding: f32, icon_px: f32, grayed: bool) -> AnyElement {
     match thumb {
         Thumb::Ready(image) => img(image)
             .size_full()
             .overflow_hidden()
             .object_fit(ObjectFit::Cover)
+            .grayscale(grayed)
             .rounded(px(rounding))
             .into_any_element(),
         _ => div()
@@ -380,7 +565,7 @@ pub fn line_content(
     look: &HeadLook,
     expanded: bool,
 ) -> Div {
-    let has_tile = expanded && head.by_album && look.show_art;
+    let has_tile = expanded && head.tiled && look.show_art;
     let indent = look.art_margin + look.tile_side + tokens::SPACE_SM;
     let album_here = !head.album.is_empty() && pieces.contains(&HeadPiece::Album);
     let mut row = div()
@@ -391,6 +576,9 @@ pub fn line_content(
         .items_center()
         .gap(tokens::SPACE_SM)
         .px(tokens::SPACE_SM)
+        // The text follows the line height through the caller's factor;
+        // the pieces inherit it, the lead below steps up from it.
+        .text_size(rems(look.font_scale))
         // Clear of the cover tile, which spans the block on its side.
         .when(has_tile, |d| match look.art_side {
             ArtSide::Left => d.pl(indent),
@@ -419,9 +607,13 @@ pub fn line_content(
                             // Expanded, the name is the block's lead and
                             // gives way by truncating; compact keeps it
                             // whole and lets the album truncate instead.
+                            // The lead's step (text_lg's 1.125) rides the
+                            // line-height factor with the rest.
                             .map(|d| {
                                 if expanded {
-                                    d.min_w_0().truncate().text_lg()
+                                    d.min_w_0()
+                                        .truncate()
+                                        .text_size(rems(1.125 * look.font_scale))
                                 } else {
                                     d.flex_none()
                                 }
@@ -493,6 +685,7 @@ pub fn line_content(
                         thumb.clone(),
                         look.art_rounding,
                         12.,
+                        false,
                     )));
                 }
             }

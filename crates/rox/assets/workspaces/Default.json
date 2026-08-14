@@ -451,7 +451,7 @@
                       "info": {
                         "panel": {
                           "theme": {
-                            "font_scale": 0.8975
+                            "font_scale": 1.0
                           },
                           "query": "",
                           "search": false,
@@ -499,7 +499,10 @@
                           "header_art": true,
                           "header_year": true,
                           "header_details": true,
-                          "compact_plays": true
+                          "compact_plays": true,
+                          "row_height": 24.0,
+                          "head_height": 30.0,
+                          "head_text": 14.0
                         }
                       }
                     },
@@ -1032,7 +1035,6 @@
   "meta": {
     "author": "zealsprince",
     "description": "What rox looks like out of the box: translucent surfaces over the desktop, no window chrome, art tinting off. The starting point every other look here is a departure from.",
-    "version": "1.0",
     "created": "2026-07-24",
     "updated": "2026-08-09"
   },

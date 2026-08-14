@@ -47,6 +47,11 @@ pub(crate) struct ResizeHandle<T: 'static, E: 'static + Render> {
     drag_value: Option<Rc<T>>,
     placement: Option<DockPlacement>,
     on_drag: Option<Rc<dyn Fn(&Point<Pixels>, &mut Window, &mut App) -> Entity<E>>>,
+    /// rox addition: this handle's own say over the resting seam, over
+    /// the app-wide flag. None follows [`seams`]; a split with an
+    /// override passes it down so one area can sit flush while the rest
+    /// keeps its lines. An active drag still shows either way.
+    seams_override: Option<bool>,
 }
 
 impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
@@ -58,6 +63,7 @@ impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
             drag_value: None,
             placement: None,
             axis,
+            seams_override: None,
         }
     }
 
@@ -76,6 +82,11 @@ impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
 
     pub(crate) fn placement(mut self, placement: DockPlacement) -> Self {
         self.placement = Some(placement);
+        self
+    }
+
+    pub(crate) fn seams_override(mut self, seams: Option<bool>) -> Self {
+        self.seams_override = seams;
         self
     }
 }
@@ -135,7 +146,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
 
             let bg_color = if state.is_active() {
                 cx.theme().drag_border
-            } else if seams() {
+            } else if self.seams_override.unwrap_or_else(seams) {
                 cx.theme().border
             } else {
                 transparent_black()

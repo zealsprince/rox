@@ -238,14 +238,24 @@ impl Workspace {
             .gap(tokens::SPACE_SM)
             .px(tokens::SPACE_MD)
             .when(!status.is_empty(), |d| {
+                let library = self.state.library.clone();
                 d.child(
                     div()
+                        .id("library-status")
                         .max_w(px(480.))
                         .truncate()
                         .text_color(palette::text_muted())
                         // While scanning the status is the full path of the
                         // file under the cursor: smaller text.
                         .when(scanning, |d| d.text_xs())
+                        // The count's hover card: the catalog's totals, the
+                        // status strip's tooltip. Only at idle, where the
+                        // text is the count the card expands on.
+                        .when(idle, |d| {
+                            d.tooltip(move |_window, cx| {
+                                rox_panels::status::library_tooltip(&library, cx)
+                            })
+                        })
                         .child(status),
                 )
             })

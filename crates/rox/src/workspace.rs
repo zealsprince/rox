@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -59,7 +59,6 @@ use rox_panels::biography::BiographyPanel;
 use rox_panels::cover::CoverArtPanel;
 use rox_panels::drag_anchor::DragAnchorPanel;
 use rox_panels::eq_widget::EqWidgetPanel;
-use rox_panels::favourite::FavouritePanel;
 use rox_panels::filter::{FilterConfig, FilterPanel};
 use rox_panels::folder_tree::FolderTreePanel;
 use rox_panels::genre_grid::{GenreGridConfig, GenreGridPanel};
@@ -72,7 +71,6 @@ use rox_panels::output::OutputPanel;
 use rox_panels::particles::ParticlesPanel;
 use rox_panels::playlists::PlaylistsPanel;
 use rox_panels::queue::QueuePanel;
-use rox_panels::rating::RatingPanel;
 use rox_panels::search::{SearchConfig, SearchPanel};
 use rox_panels::shader::ShaderPanel;
 use rox_panels::spacer::SpacerPanel;
@@ -367,6 +365,113 @@ pub(crate) fn post_shader_program(
 /// another's rather than compiling it.
 pub(crate) fn post_shader_source(config: &PostShaderConfig) -> Result<Option<String>, String> {
     Ok(post_shader_program(config)?.map(|(source, _)| source))
+}
+
+/// The backdrop shader's last compile message, for the settings page's
+/// readout: the surface notes errors against the workspace view that
+/// painted it, which a settings window has no way to name, so the paint
+/// publishes here as well. None is a clean compile or nothing running.
+static BACKDROP_SHADER_ERROR: LazyLock<RwLock<Option<String>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// What the backdrop shader last said, for the Backdrop section's banner.
+pub(crate) fn backdrop_shader_error() -> Option<String> {
+    BACKDROP_SHADER_ERROR.read().unwrap().clone()
+}
+
+/// Put a message on that readout from outside the paint, for the page's
+/// own failures: a file that won't read, an eject that can't land.
+pub(crate) fn note_backdrop_shader_error(message: String) {
+    *BACKDROP_SHADER_ERROR.write().unwrap() = Some(message);
+}
+
+/// Repaint every window, for edits that land in state the backdrop layers
+/// read at render time: the Backdrop section writes its config through
+/// here so the shader follows the knobs live, child windows included.
+pub(crate) fn refresh_backdrop(cx: &mut App) {
+    for handle in cx.windows() {
+        handle.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
+/// Hand the backdrop layer its shade, once at startup. The layer lives in
+/// rox-services, under the shader machinery, so it asks back up through
+/// this hook; which windows wear the shade is decided here, since the
+/// service can't tell a workspace from a settings window.
+pub(crate) fn install_backdrop_shade() {
+    rox_services::backdrop::set_shade(|window, cx| {
+        let config = settings::backdrop_shader().filter(|config| config.enabled)?;
+        if !config.all_windows && !workspace_window(window, cx) {
+            return None;
+        }
+        backdrop_shader_layer()
+    });
+    // The layer's gate rides the same install: whether a child window
+    // paints the cover backdrop at all is the Transparency section's All
+    // Windows switch, and the workspaces always do.
+    rox_services::backdrop::set_gate(|window, cx| {
+        rox_design::palette::backdrop_all_windows() || workspace_window(window, cx)
+    });
+}
+
+/// Whether this window is one of the open workspaces, which always wear
+/// the backdrop shade; everything else is a child gated on All Windows.
+fn workspace_window(window: &Window, cx: &App) -> bool {
+    let id = window.window_handle().window_id();
+    cx.try_global::<WorkspaceWindows>()
+        .is_some_and(|windows| windows.open.iter().any(|w| w.handle.window_id() == id))
+}
+
+/// The render side of the look's backdrop shader: the config off the cache,
+/// worn as a panel surface so registration, approval, routes, and frame
+/// pacing all come free. Built per render like any panel's; None is a bare
+/// backdrop, a disabled config, or a source the machine hasn't approved.
+fn backdrop_surface() -> Option<panel::shader::PanelSurface> {
+    let config = settings::backdrop_shader()?;
+    if !config.enabled {
+        return None;
+    }
+    let chrome = panel::PanelChrome {
+        shader: Some(panel::PanelShader {
+            enabled: config.enabled,
+            source: config.source,
+            name: config.name,
+            path: config.path,
+            routes: config.routes,
+            manual: config.manual,
+            run_when_idle: config.run_when_idle,
+        }),
+        ..Default::default()
+    };
+    panel::shader::PanelSurface::build(&chrome, rox_design::palette::Sides::default())
+}
+
+/// The element that paints it: a window-filling canvas slotted between the
+/// backdrop layer and everything else, so the screen the pass reads is the
+/// art wash alone and every panel drawn after lands over the result
+/// untouched.
+fn backdrop_shader_layer() -> Option<AnyElement> {
+    let surface = backdrop_surface()?;
+    Some(
+        div()
+            .absolute()
+            .inset_0()
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, cx| {
+                        surface.paint(bounds, window, cx);
+                        // The surface files its compile message under this
+                        // window's view; mirror it where the settings page
+                        // can read it without knowing the view.
+                        *BACKDROP_SHADER_ERROR.write().unwrap() =
+                            panel::shader::error(window.current_view());
+                    },
+                )
+                .size_full(),
+            )
+            .into_any_element(),
+    )
 }
 
 /// The file behind the screen shader, which is the only source hot reload
@@ -1148,8 +1253,22 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured!("queue widget", QueueWidgetPanel);
     configured!("eq widget", EqWidgetPanel);
     configured!("stats widget", StatsWidgetPanel);
-    configured!("rating", RatingPanel);
-    configured!("favourite", FavouritePanel);
+    // The retired standalone rating and favourite panels: their names
+    // restore as track info cards carrying the one piece, so a layout
+    // saved with them keeps its stars and heart. The chrome (caps, theme,
+    // locks) reads straight across, both configs flatten the same shape;
+    // the next save writes the card, and the migration is done. [compat]
+    for (name, piece) in [
+        ("rating", rox_panels::transport::InfoPiece::Rating),
+        ("favourite", rox_panels::transport::InfoPiece::Favourite),
+    ] {
+        let s = state.clone();
+        register_panel(cx, name, move |_, _, info, _, cx| {
+            let mut config: rox_panels::transport::TrackInfoConfig = panel::config_from_info(info);
+            config.items = vec![piece];
+            Box::new(cx.new(|cx| TrackInfoPanel::new(s.clone(), config, cx)))
+        });
+    }
     configured_windowed!("playlists", PlaylistsPanel);
     // The composition hosts rebuild their children through this same
     // registry, and carry the workspace handle so their slot menus can
@@ -2922,6 +3041,9 @@ impl Workspace {
         let persist = incoming.clone();
         Settings::update(move |s| s.post_shader = persist);
         apply_post_shader(cx);
+        // The backdrop shader travels inside the bundle apply_look already
+        // wrote, so only the cache needs the news.
+        settings::note_backdrop_shader(bundle.backdrop_shader.clone());
         // A shader that came in with the look gets the keep-or-revert window
         // a risky apply from the settings page does, but only where nothing
         // said it was coming: the confirms name the shader and the hotkey
@@ -4517,7 +4639,7 @@ impl Render for Workspace {
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
         let dock_empty = self.dock_is_empty(cx);
-        panel::window_body(player, || {
+        panel::workspace_body(player, || {
             div()
                 .flex()
                 .flex_col()

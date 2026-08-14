@@ -699,8 +699,8 @@ fn features(mono: &[f32]) -> Option<Vec<f32>> {
 /// because [`features`] is already walking the frames for its own
 /// statistics and there's no reason it should pay for a second transform of
 /// the same audio: it hands the magnitudes it already has straight here.
-/// [`novelty`] is that same walk for callers who want nothing else out of
-/// the window.
+/// [`novelty_split`] is that same walk for callers who want nothing else
+/// out of the window.
 #[derive(Default)]
 struct Flux {
     /// One value per hop after the first: how much magnitude appeared since
@@ -735,23 +735,42 @@ impl Flux {
     }
 }
 
-/// One mono window's novelty curve: [`Flux`] over every frame of it, one
-/// value per [`HOP`] and so one every 23 ms at [`RATE`].
+/// Where the drum band ends. Kick and snare body live under here; hats,
+/// cymbals and strummed strings almost entirely above. The exact figure is
+/// loose on purpose: it only has to catch the drums that carry a beat and
+/// miss the brightness that carries its subdivisions.
+const DRUMS_HZ: f32 = 350.0;
+
+/// One mono window's novelty, twice over one walk: the full-band curve,
+/// [`Flux`] over every frame with one value per [`HOP`] and so one every
+/// 23 ms at [`RATE`], and the same flux summed over only the bins under
+/// [`DRUMS_HZ`].
 ///
-/// This is the rhythm signal the whole crate reads. [`features`] reduces it
-/// to a mean, a spread and an onset rate; [`tempo`] looks for the lag it
-/// repeats at. Cost is one [`FFT`]-wide transform per hop, which is the
-/// same order as describing the window, so a caller wanting both should
-/// expect to pay twice.
-fn novelty(mono: &[f32]) -> Vec<f32> {
+/// The full curve is the rhythm signal the whole crate reads. [`features`]
+/// reduces it to a mean, a spread and an onset rate; [`tempo`] looks for
+/// the lag it repeats at. Cost is one [`FFT`]-wide transform per hop, which
+/// is the same order as describing the window, so a caller wanting both
+/// should expect to pay twice.
+///
+/// The low curve exists for the tempo estimator's octave. A full-band
+/// curve says something starts, never what: a hat between two kicks makes
+/// as much flux as a third kick would, and the two read identically at
+/// every lag. The low curve is the one place the difference survives, since
+/// a kick lands in it and a hat doesn't, so it's what can say whether the
+/// events between a candidate's beats are drums or decoration.
+fn novelty_split(mono: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let bins = (DRUMS_HZ / (RATE as f32 / FFT as f32)) as usize;
     let mut analyzer = Analyzer::new(FFT);
-    let mut flux = Flux::default();
+    let mut full = Flux::default();
+    let mut low = Flux::default();
     let mut start = 0;
     while start + FFT <= mono.len() {
-        flux.push(analyzer.magnitudes(&mono[start..start + FFT]));
+        let mags = analyzer.magnitudes(&mono[start..start + FFT]);
+        full.push(mags);
+        low.push(&mags[..bins.min(mags.len())]);
         start += HOP;
     }
-    flux.curve
+    (full.curve, low.curve)
 }
 
 /// Whether a vector is worth storing at all.
@@ -958,7 +977,7 @@ mod tests {
 
     /// [`features`] over [`pulses`] at eight a second, as it described that
     /// signal before the flux curve was pulled out into [`Flux`] and
-    /// [`novelty`] for the tempo estimator to share.
+    /// [`novelty_split`] for the tempo estimator to share.
     ///
     /// Written down because a library's vectors are only comparable to each
     /// other: a change here that shifts a number by a hundredth doesn't
@@ -1038,8 +1057,8 @@ mod tests {
         assert_eq!(features(&pulses(8.0, 2.0)).unwrap(), BEFORE_THE_FLUX_MOVED);
     }
 
-    /// And the curve [`novelty`] hands the tempo estimator is the same
-    /// curve [`features`] reduced, rather than a second one computed
+    /// And the curve [`novelty_split`] hands the tempo estimator is the
+    /// same curve [`features`] reduced, rather than a second one computed
     /// alongside it. The flux mean, the flux spread and the onset rate are
     /// the three numbers in the vector that come off it, so all three
     /// landing exactly is the whole claim.
@@ -1047,7 +1066,7 @@ mod tests {
     fn the_curve_the_tempo_estimator_reads_is_the_one_the_vector_came_from() {
         let audio = pulses(8.0, 2.0);
         let vector = features(&audio).unwrap();
-        let curve = novelty(&audio);
+        let curve = novelty_split(&audio).0;
         let (mean, std) = mean_std(&curve);
         assert_eq!((mean, std), (vector[DIM - 4], vector[DIM - 3]));
         let secs = audio.len() as f32 / RATE as f32;

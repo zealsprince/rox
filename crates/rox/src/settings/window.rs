@@ -359,6 +359,13 @@ enum Pending {
     /// analysis pass listening to every file in the library again, which is
     /// hours on a big one, so this yes gets asked for.
     ClearEmbeddings(String),
+    /// Forget every tempo rox measured, the way the vectors go: the numbers
+    /// don't come back until a pass has decoded every one of those tracks
+    /// over, so this yes gets asked for too. What it's for is a better
+    /// estimator: the pass only ever measures tracks with no tempo, so
+    /// clearing is how improved beat counting reaches numbers already
+    /// written.
+    ClearMeasuredBpm,
 }
 
 struct SettingsWindow {
@@ -378,6 +385,9 @@ struct SettingsWindow {
     keep_theme: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
+    /// The Transparency section's All Windows switch, mirrored like the
+    /// scalars beside it.
+    backdrop_all_windows: bool,
     /// The app font size's working copy: what the Typography slider shows
     /// and writes through [`palette::set_app_font_size`].
     font_size: f32,
@@ -683,6 +693,15 @@ struct SettingsWindow {
     post_shader_manual: Vec<(u8, f32)>,
     /// One scrub state per slot for the hand-set sliders.
     post_shader_slot_scrubs: Vec<panel::ScrubState>,
+    /// The Backdrop section's editor state. The config itself lives in the
+    /// look's bundle behind a cache the section reads per render, so only
+    /// what has to survive a render sits here: the route editor's folds,
+    /// the slot scrubs, the save field, and the write debounces.
+    backdrop_route_ui: RouteEditState,
+    backdrop_slot_scrubs: Vec<panel::ScrubState>,
+    backdrop_save_name: ShaderNameField,
+    backdrop_route_persist_gen: u64,
+    backdrop_manual_persist_gen: u64,
     /// The route write's own debounce generation, kept apart from the
     /// appearance one so neither burst cancels the other's write.
     route_persist_gen: u64,
@@ -926,6 +945,7 @@ impl SettingsWindow {
             keep_theme: settings.look.bundle.appearance.keep_theme,
             surface_opacity: settings.look.bundle.appearance.surface_opacity,
             backdrop_strength: settings.look.bundle.appearance.backdrop_strength,
+            backdrop_all_windows: settings.look.bundle.appearance.backdrop_all_windows,
             font_size: settings.app_font_size,
             frame: appearance_frame,
             restore_last_track: settings.restore_last_track,
@@ -1035,6 +1055,13 @@ impl SettingsWindow {
             post_shader_slot_scrubs: (0..panel::shader::SLOTS)
                 .map(|_| panel::ScrubState::default())
                 .collect(),
+            backdrop_route_ui: RouteEditState::default(),
+            backdrop_slot_scrubs: (0..panel::shader::SLOTS)
+                .map(|_| panel::ScrubState::default())
+                .collect(),
+            backdrop_save_name: ShaderNameField::default(),
+            backdrop_route_persist_gen: 0,
+            backdrop_manual_persist_gen: 0,
             route_persist_gen: 0,
             manual_persist_gen: 0,
             persist_gen: 0,
@@ -1411,6 +1438,16 @@ impl SettingsWindow {
     fn set_backdrop(&mut self, value: f32, cx: &mut Context<Self>) {
         self.backdrop_strength = value;
         self.scalars_edited(cx);
+    }
+
+    /// The backdrop-everywhere switch: live into the palette static the
+    /// layer's gate reads, straight into the file since a toggle is one
+    /// write, not a scrub.
+    fn set_backdrop_windows(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.backdrop_all_windows = on;
+        palette::set_backdrop_all_windows(on, cx);
+        Settings::update(move |s| s.look.bundle.appearance.backdrop_all_windows = on);
+        cx.notify();
     }
 
     fn scalars_edited(&mut self, cx: &mut Context<Self>) {
@@ -1797,6 +1834,16 @@ impl SettingsWindow {
                         cx,
                     ),
                 )
+                .keyed(
+                    &["transparency", "backdrop", "child windows", "everywhere"],
+                    "All Windows",
+                    Some(
+                        "Back the child windows too: settings, editors, dialogs, \
+                         popped-out panels. Off keeps the backdrop and the \
+                         transparency to the workspace windows",
+                    ),
+                    panel::toggle(self.backdrop_all_windows, Self::set_backdrop_windows, cx),
+                )
             }))
             .section(Section::new(q, icons::SQUARE_DASHED, "Frame", None, |rows| {
                 rows.keyed(
@@ -1841,7 +1888,9 @@ impl SettingsWindow {
     /// Frame. Matches the panel settings window, where a panel's shader
     /// is its own page under the same icon.
     fn shader_page(&mut self, q: &Query, window: &mut Window, cx: &mut Context<Self>) -> PageBody {
-        PageBody::new().section(self.screen_shader_section(q, window, cx))
+        PageBody::new()
+            .section(self.screen_shader_section(q, window, cx))
+            .section(self.backdrop_shader_section(q, window, cx))
     }
 
     /// The Screen Shader section: a WGSL post-process over the whole
@@ -2377,6 +2426,424 @@ impl SettingsWindow {
     fn reload_post_shader(&mut self, cx: &mut Context<Self>) {
         crate::workspace::apply_post_shader(cx);
         cx.notify();
+    }
+
+    /// The backdrop shader as the look holds it, the base of every read
+    /// and edit on the Backdrop section. Absent reads as an untouched
+    /// default with All Windows on: shading every backdrop is the whole-app
+    /// read, and a look that wants its children bare says so, the way
+    /// Diffuse does.
+    fn backdrop_config() -> settings::PostShaderConfig {
+        settings::backdrop_shader().unwrap_or_else(|| settings::PostShaderConfig {
+            all_windows: true,
+            ..Default::default()
+        })
+    }
+
+    /// One write to the backdrop config: the cache the workspace roots
+    /// read, the look's bundle in the file, and a repaint so the shader
+    /// follows the knob. No countdown confirm anywhere on this page: the
+    /// panels paint over this pass whatever it does, so it can never bury
+    /// the switch that would undo it.
+    ///
+    /// A config walked all the way back to nothing collapses to None, so
+    /// clearing the shader leaves no empty block riding the look's exports.
+    fn write_backdrop(&mut self, config: settings::PostShaderConfig, cx: &mut Context<Self>) {
+        let config =
+            (config.configured() || !config.routes.is_empty() || !config.manual.is_empty())
+                .then_some(config);
+        settings::note_backdrop_shader(config.clone());
+        Settings::update(move |s| s.look.bundle.backdrop_shader = config);
+        crate::workspace::refresh_backdrop(cx);
+        cx.notify();
+    }
+
+    fn set_backdrop_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
+        let mut config = Self::backdrop_config();
+        config.enabled = on;
+        self.write_backdrop(config, cx);
+    }
+
+    fn set_backdrop_run_idle(&mut self, on: bool, cx: &mut Context<Self>) {
+        let mut config = Self::backdrop_config();
+        config.run_when_idle = on;
+        self.write_backdrop(config, cx);
+    }
+
+    fn set_backdrop_all_windows(&mut self, on: bool, cx: &mut Context<Self>) {
+        let mut config = Self::backdrop_config();
+        config.all_windows = on;
+        self.write_backdrop(config, cx);
+    }
+
+    /// One edit to the backdrop's source trio. Every picker action funnels
+    /// through here, the screen shader's shape without the countdown.
+    fn edit_backdrop_source(
+        &mut self,
+        name: Option<String>,
+        source: String,
+        path: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut config = Self::backdrop_config();
+        config.name = name;
+        config.source = source;
+        config.path = path;
+        self.write_backdrop(config, cx);
+    }
+
+    fn clear_backdrop_source(&mut self, cx: &mut Context<Self>) {
+        self.edit_backdrop_source(None, String::new(), None, cx);
+    }
+
+    fn use_backdrop_example(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(preset) = panel::shader::PRESETS.get(index) else {
+            return;
+        };
+        self.edit_backdrop_source(None, preset.source.to_string(), None, cx);
+    }
+
+    fn use_backdrop_pool(&mut self, name: String, cx: &mut Context<Self>) {
+        self.edit_backdrop_source(Some(name), String::new(), None, cx);
+    }
+
+    /// Take a private copy of the pool shader the backdrop is wearing.
+    fn detach_backdrop(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = Self::backdrop_config()
+            .name
+            .as_deref()
+            .and_then(settings::shader_pool_get)
+        else {
+            return;
+        };
+        self.edit_backdrop_source(None, entry.source, None, cx);
+    }
+
+    /// Write the backdrop shader out to a file and hand it to whatever
+    /// opens `.wgsl`. A named shader ejects through its pool entry; an
+    /// inline one keeps its source and takes the file as a bookmark, which
+    /// puts it under the surface's own watch, the panel pages' loop.
+    fn eject_backdrop(&mut self, cx: &mut Context<Self>) {
+        let config = Self::backdrop_config();
+        match config.name.as_deref() {
+            Some(name) => match panel::shader::eject_pool_entry(name) {
+                Ok(path) => cx.open_with_system(&path),
+                Err(error) => {
+                    crate::workspace::note_backdrop_shader_error(format!("ejecting: {error}"));
+                    cx.notify();
+                }
+            },
+            None if !config.source.trim().is_empty() => {
+                let name = panel::shader::eject_name("Backdrop", &config.source);
+                match panel::shader::eject(&name, &config.source) {
+                    Ok(path) => {
+                        self.edit_backdrop_source(
+                            None,
+                            config.source.clone(),
+                            Some(path.clone()),
+                            cx,
+                        );
+                        cx.open_with_system(&path);
+                    }
+                    Err(error) => {
+                        crate::workspace::note_backdrop_shader_error(format!("ejecting: {error}"));
+                        cx.notify();
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Promote the backdrop's own source into the workspace's shaders and
+    /// wear it by name from there.
+    fn save_backdrop_to_pool(&mut self, name: String, cx: &mut Context<Self>) {
+        let config = Self::backdrop_config();
+        let name = name.trim().to_string();
+        if name.is_empty() || config.name.is_some() || config.source.trim().is_empty() {
+            return;
+        }
+        panel::shader::save_to_pool(&name, &config.source, config.path.clone());
+        self.edit_backdrop_source(Some(name), String::new(), None, cx);
+    }
+
+    fn pick_backdrop_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.pop() else {
+                return;
+            };
+            this.update(cx, |this, cx| this.load_backdrop_file(path, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Read a file into the config's inline source, with the path as the
+    /// bookmark the surface watches. Inline rather than file-mode on
+    /// purpose: the backdrop runs through the panel surface machinery,
+    /// which resolves a name or an inline source and nothing else.
+    fn load_backdrop_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        match std::fs::read_to_string(&path) {
+            Ok(source) => {
+                panel::shader::approve(&source);
+                self.edit_backdrop_source(None, source, Some(path), cx);
+            }
+            Err(error) => {
+                crate::workspace::note_backdrop_shader_error(format!(
+                    "reading {}: {error}",
+                    path.display()
+                ));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Re-read the file behind the shader, for an edit the watch missed.
+    fn reload_backdrop(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = Self::backdrop_config().path {
+            self.load_backdrop_file(path, cx);
+        }
+    }
+
+    /// One edit to the backdrop's routes: into the cache so the shader
+    /// follows the drag, into the file once the burst settles.
+    fn edit_backdrop_routes(
+        &mut self,
+        edit: &mut dyn FnMut(&mut Vec<Route>),
+        cx: &mut Context<Self>,
+    ) {
+        let mut config = Self::backdrop_config();
+        edit(&mut config.routes);
+        settings::note_backdrop_shader(Some(config.clone()));
+        crate::workspace::refresh_backdrop(cx);
+        self.backdrop_route_persist_gen += 1;
+        let gen = self.backdrop_route_persist_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            let latest = this
+                .update(cx, |this, _| this.backdrop_route_persist_gen)
+                .unwrap_or(gen);
+            if latest == gen {
+                Settings::update(move |s| s.look.bundle.backdrop_shader = Some(config));
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// One hand-set slot edit, the routes' exact write path.
+    fn set_backdrop_manual(&mut self, slot: usize, value: f32, cx: &mut Context<Self>) {
+        let mut config = Self::backdrop_config();
+        panel::shader::set_manual_value(&mut config.manual, slot, value);
+        settings::note_backdrop_shader(Some(config.clone()));
+        crate::workspace::refresh_backdrop(cx);
+        self.backdrop_manual_persist_gen += 1;
+        let gen = self.backdrop_manual_persist_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            let latest = this
+                .update(cx, |this, _| this.backdrop_manual_persist_gen)
+                .unwrap_or(gen);
+            if latest == gen {
+                Settings::update(move |s| s.look.bundle.backdrop_shader = Some(config));
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The Backdrop Shader section: the same surface machinery a panel
+    /// wears, painted between the art wash and the panels, so whatever it
+    /// does stays under the whole window. It lives in the look's bundle
+    /// rather than the machine settings and travels with the workspace.
+    fn backdrop_shader_section(
+        &mut self,
+        q: &Query,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Section {
+        let config = Self::backdrop_config();
+        let enabled = config.enabled;
+        let all_windows = config.all_windows;
+        let run_idle = config.run_when_idle;
+        let error = crate::workspace::backdrop_shader_error();
+        let resolved = match config.name.as_deref() {
+            Some(name) => settings::shader_pool_get(name).map(|entry| entry.source),
+            None => (!config.source.trim().is_empty()).then(|| config.source.clone()),
+        };
+        let labels = panel::shader::slot_labels(resolved.as_deref().unwrap_or_default());
+        let path = config.name.is_none().then(|| config.path.clone()).flatten();
+        let picked = ShaderSource {
+            id: "backdrop-shader",
+            name: config.name.as_deref(),
+            path: path.as_deref(),
+            resolved: resolved.as_deref(),
+            clear: Some(|this: &mut Self, cx| this.clear_backdrop_source(cx)),
+            // Everything here paints under the panels, so nothing it does
+            // can take the app: the list stays unfiltered, scenes and all.
+            overlays_only: false,
+            use_example: |this: &mut Self, index, cx| this.use_backdrop_example(index, cx),
+            use_named: |this: &mut Self, name, cx| this.use_backdrop_pool(name, cx),
+            choose_file: |this: &mut Self, window, cx| this.pick_backdrop_file(window, cx),
+            eject: |this: &mut Self, cx| this.eject_backdrop(cx),
+            detach: |this: &mut Self, cx| this.detach_backdrop(cx),
+            reload: |this: &mut Self, cx| this.reload_backdrop(cx),
+            save: |this: &mut Self, name, cx| this.save_backdrop_to_pool(name, cx),
+            field: &mut self.backdrop_save_name,
+            fallback: "Backdrop",
+        }
+        .render(window, cx);
+        let hub = self.signals.clone();
+        let slots = signal_ui::slots::SlotList {
+            hub: &hub,
+            routes: &config.routes,
+            manual: &config.manual,
+            labels: &labels,
+            value_edit: &self.value_edit,
+            scrubs: &self.backdrop_slot_scrubs,
+            set: Arc::new(|this: &mut Self, slot, value, cx| {
+                this.set_backdrop_manual(slot, value, cx)
+            }),
+        }
+        .render(cx);
+        let editor = signal_ui::routes::RouteEditor {
+            id: "backdrop-shader-route",
+            hub: &hub,
+            routes: &config.routes,
+            labels: &labels,
+            value_edit: &self.value_edit,
+            ui: &self.backdrop_route_ui,
+            ui_mut: |this: &mut Self| &mut this.backdrop_route_ui,
+            mutate: Arc::new(
+                |this: &mut Self, edit: &mut dyn FnMut(&mut Vec<Route>), cx: &mut Context<Self>| {
+                    this.edit_backdrop_routes(edit, cx);
+                },
+            ),
+        };
+        Section::new(
+            q,
+            icons::LAYERS,
+            "Backdrop Shader",
+            None,
+            move |mut rows| {
+                rows = rows
+                    .keyed(
+                        &["shader", "wgsl", "backdrop", "wash", "art", "bokeh"],
+                        "Backdrop Shader",
+                        Some(
+                            "Run a music-reactive WGSL shader over the album-art backdrop, \
+                         under every panel. Part of the workspace, so it travels with \
+                         the look",
+                        ),
+                        panel::toggle(enabled, Self::set_backdrop_enabled, cx),
+                    )
+                    .custom(
+                        &[
+                            "shader",
+                            "wgsl",
+                            "file",
+                            "reload",
+                            "source",
+                            "example",
+                            "preset",
+                            "workspace",
+                        ],
+                        || picked.into_any_element(),
+                    )
+                    .keyed(
+                        &[
+                            "shader",
+                            "child windows",
+                            "settings",
+                            "everywhere",
+                            "backdrop",
+                        ],
+                        "All Windows",
+                        Some(
+                            "Shade every window's backdrop: settings, editors, dialogs, \
+                         popped-out panels. Off keeps it to the workspace windows",
+                        ),
+                        panel::toggle(all_windows, Self::set_backdrop_all_windows, cx),
+                    )
+                    .keyed(
+                        &["shader", "idle", "pause", "freeze"],
+                        "Run While Idle",
+                        Some(
+                            "Keep drawing with nothing playing. The animation stays parked \
+                         either way",
+                        ),
+                        panel::toggle(run_idle, Self::set_backdrop_run_idle, cx),
+                    );
+                rows = match error {
+                    Some(error) => rows.custom(&["shader", "error", "compile"], || {
+                        match panel::shader::unsupported(&error) {
+                            true => panel::banner(
+                                panel::Tone::Bad,
+                                panel::shader::NO_PIPELINE_TITLE,
+                                vec![panel::shader::NO_PIPELINE_NOTE.into()],
+                            ),
+                            false => panel::banner(
+                                panel::Tone::Bad,
+                                "This shader didn't compile",
+                                vec![error.into()],
+                            ),
+                        }
+                        .into_any_element()
+                    }),
+                    None => rows,
+                };
+                rows.custom(
+                    &[
+                        "shader",
+                        "signal",
+                        "route",
+                        "slot",
+                        "bind",
+                        "modulation",
+                        "knob",
+                        "manual",
+                    ],
+                    || {
+                        let add = editor.add_button(cx);
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_MD)
+                            .child(panel::setting_block(
+                                "Signals",
+                                Some(
+                                    "Which shared signal each of the shader's sixteen slots reads",
+                                ),
+                                Some(add.into_any_element()),
+                                editor.list(cx),
+                            ))
+                            .child(panel::setting_block(
+                                "Slots",
+                                Some(
+                                    "Each slot as it reaches the shader; slots without a route \
+                                 are hand-set knobs",
+                                ),
+                                None,
+                                slots,
+                            ))
+                            .into_any_element()
+                    },
+                )
+            },
+        )
     }
 
     /// The Icons section: the built-in set and every pack the user has as a
@@ -4545,6 +5012,14 @@ impl SettingsWindow {
             .update(cx, |library, cx| library.clear_embeddings(&model, cx));
     }
 
+    /// The measured-tempos clear, the confirm dialog's yes. The library
+    /// emits Updated once the clear lands, which is what refreshes the
+    /// coverage split this window shows and the row's count with it.
+    fn clear_measured_bpm(&mut self, cx: &mut Context<Self>) {
+        self.library
+            .update(cx, |library, cx| library.clear_measured_bpm(cx));
+    }
+
     /// A row per acoustic model with vectors in the library: what it
     /// described, and the clear that drops it. Built here rather than inside
     /// the page's section closure because the model id is the row's label,
@@ -4628,6 +5103,16 @@ impl SettingsWindow {
         // freelist is the ordinary state of the file rather than news. It's
         // worth a row once it's a real share of what library.db weighs.
         let reclaimable = store.free >= 1_000_000 && store.free * 10 >= store.total();
+        // The tempo row's numbers come off the coverage split the window
+        // already keeps live, not the storage walk: a tempo is a float a
+        // row, so the interesting figure is how many, not how heavy. The
+        // clear can't gate the tempo pass, which opens the database by path
+        // on its own, so the button goes inert while one runs, the same
+        // arrangement as the model rows above a running analysis.
+        let measured_tempos = self.bpm_coverage.measured;
+        let tempos_inert = measured_tempos == 0
+            || self.tempo_job.is_some()
+            || self.library.read(cx).busy().is_some();
         PageBody::new()
             .section(Section::new(q, icons::DATABASE, "Library", None, |rows| {
                 rows.keyed(
@@ -4687,6 +5172,28 @@ impl SettingsWindow {
                     rows = rows.custom(&terms, || row);
                 }
                 rows
+            }))
+            .section(Section::new(q, icons::CLOCK, "Tempo", None, |rows| {
+                rows.keyed(
+                    &["tempo", "bpm", "measured", "clear"],
+                    "Measured Tempos",
+                    Some("The tempos rox counted from the audio, for tracks whose tags carry none; the tags' own numbers aren't touched. Clearing puts those tracks back on Analyze Missing's list on the Library page, which is how improved beat counting reaches numbers an older pass wrote"),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_SM)
+                        .child(readout(format!("{measured_tempos} tracks")))
+                        .child(small_button(
+                            "Clear",
+                            icons::TRASH,
+                            tempos_inert,
+                            cx.listener(|this, _, _, cx| {
+                                this.pending = Some(Pending::ClearMeasuredBpm);
+                                cx.notify();
+                            }),
+                        )),
+                )
             }))
             .section(Section::new(q, icons::LAYERS, "Caches", None, |rows| {
                 rows.keyed(

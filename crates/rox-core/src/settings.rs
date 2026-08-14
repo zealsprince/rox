@@ -1719,6 +1719,23 @@ pub fn shader_pool_rev() -> u64 {
     SHADER_POOL_REV.load(Ordering::Relaxed)
 }
 
+/// The live look's backdrop shader config, cached out of the settings file
+/// the way the pool is: the workspace root reads it every render, which is
+/// no place for disk.
+static BACKDROP_SHADER: LazyLock<RwLock<Option<PostShaderConfig>>> =
+    LazyLock::new(|| RwLock::new(Settings::load().look.bundle.backdrop_shader.clone()));
+
+/// What the backdrop wears, or None for a bare art wash.
+pub fn backdrop_shader() -> Option<PostShaderConfig> {
+    BACKDROP_SHADER.read().unwrap().clone()
+}
+
+/// Replace the backdrop shader in the cache alone, [`note_shader_pool`]'s
+/// twin: a workspace apply has already written the whole bundle.
+pub fn note_backdrop_shader(config: Option<PostShaderConfig>) {
+    *BACKDROP_SHADER.write().unwrap() = config;
+}
+
 /// One connected account. Last.fm binds a session to the api key it was
 /// authorized under, so this is only ever usable by a build signing with
 /// that same key.
@@ -2303,6 +2320,14 @@ pub struct WorkspaceBundle {
     /// switching to it can't leave the last look's shader running over it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub post_shader: Option<PostShaderConfig>,
+    /// The shader painted over the backdrop and under everything else, so
+    /// it only ever reads the art wash and the panels stay untouched. The
+    /// same config shape as the screen shader, but it lives in the bundle
+    /// rather than the machine settings: a backdrop treatment is part of
+    /// the look, not of this install. None means a bare backdrop, the
+    /// same replace-wholesale read as `post_shader`'s.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backdrop_shader: Option<PostShaderConfig>,
     /// The appearance knobs the workspace dresses the app with.
     pub appearance: AppearanceBundle,
 }
@@ -2322,6 +2347,7 @@ impl Default for WorkspaceBundle {
             shaders: Vec::new(),
             meta: WorkspaceMeta::default(),
             post_shader: None,
+            backdrop_shader: None,
             appearance: AppearanceBundle::default(),
         }
     }
@@ -2435,6 +2461,11 @@ pub struct AppearanceBundle {
     /// ...and how strongly the backdrop shows behind them, 1 the bare
     /// bake, 0 sunk into the floor.
     pub backdrop_strength: f32,
+    /// Whether the child windows (settings, editors, dialogs, popped-out
+    /// panels) paint the cover backdrop too, wearing the transparency the
+    /// same way the workspaces do. On by default; off keeps the treatment
+    /// to the workspace windows and the children on their plain surfaces.
+    pub backdrop_all_windows: bool,
     /// The app-wide frame defaults every panel inherits: margin, padding,
     /// rounding, and border, all in px. A panel's own theme overrides any
     /// of them; unset there, the panel takes these.
@@ -2489,6 +2520,7 @@ impl Default for AppearanceBundle {
         AppearanceBundle {
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
+            backdrop_all_windows: true,
             frame: Frame::DEFAULT,
             seams: true,
             art_theming: false,
@@ -2813,15 +2845,17 @@ impl WorkspaceBundle {
     /// empty, which is the same dead pass the bundle would have carried
     /// anyway, and there's nobody to tell at export time.
     pub fn inline_post_shader(&mut self) {
-        let Some(post) = self.post_shader.as_mut() else {
-            return;
-        };
-        if !post.source.is_empty() {
-            return;
-        }
-        if let Some(path) = post.path.as_ref() {
-            if let Ok(source) = std::fs::read_to_string(path) {
-                post.source = source;
+        for shader in [self.post_shader.as_mut(), self.backdrop_shader.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            if !shader.source.is_empty() {
+                continue;
+            }
+            if let Some(path) = shader.path.as_ref() {
+                if let Ok(source) = std::fs::read_to_string(path) {
+                    shader.source = source;
+                }
             }
         }
     }
@@ -2845,6 +2879,9 @@ impl WorkspaceBundle {
         }
         if let Some(post) = self.post_shader.as_mut() {
             post.path = None;
+        }
+        if let Some(backdrop) = self.backdrop_shader.as_mut() {
+            backdrop.path = None;
         }
         for layout in &mut self.layouts {
             scrub_dump_paths(&mut layout.dump);
@@ -3807,12 +3844,14 @@ mod tests {
         let file = std::env::temp_dir().join("rox-test-from-settings-shader.wgsl");
         std::fs::write(&file, "// scanlines\n").expect("write the working copy");
 
-        let mut src = Settings::default();
-        src.post_shader = PostShaderConfig {
-            enabled: true,
-            path: Some(file.clone()),
-            all_windows: true,
-            ..PostShaderConfig::default()
+        let src = Settings {
+            post_shader: PostShaderConfig {
+                enabled: true,
+                path: Some(file.clone()),
+                all_windows: true,
+                ..PostShaderConfig::default()
+            },
+            ..Settings::default()
         };
         let post = WorkspaceBundle::from_settings("mine".into(), &src)
             .post_shader
@@ -3824,10 +3863,12 @@ mod tests {
 
         // A pass that's off but points somewhere still travels: it's set up,
         // and the look it belongs to is the one that decides when it runs.
-        let mut parked = Settings::default();
-        parked.post_shader = PostShaderConfig {
-            path: Some(file.clone()),
-            ..PostShaderConfig::default()
+        let parked = Settings {
+            post_shader: PostShaderConfig {
+                path: Some(file.clone()),
+                ..PostShaderConfig::default()
+            },
+            ..Settings::default()
         };
         assert!(WorkspaceBundle::from_settings("mine".into(), &parked)
             .post_shader

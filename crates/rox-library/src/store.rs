@@ -1066,6 +1066,34 @@ pub fn set_measured_bpm(
     Ok(written)
 }
 
+/// Forget every tempo rox measured, putting those tracks back on
+/// [`bpm_missing`]'s list. Tag-sourced numbers stay: they are the files' own
+/// claim, not an estimate there's any point redoing. Returns how many rows
+/// went back on the list.
+///
+/// This exists because the estimator improves. A pass only ever works rows
+/// with nothing on them, so a number a worse estimator wrote would otherwise
+/// stand forever, and there is nothing in a stored 100 that says a better
+/// pass would have called it 200.
+///
+/// The cleared rows read back exactly like rows nobody measured, NULL in
+/// both columns, which is the shape the work list and the coverage split
+/// already understand.
+pub fn clear_measured_bpm(conn: &Connection) -> rusqlite::Result<usize> {
+    let cleared = conn.execute(
+        "UPDATE tracks SET bpm = NULL, bpm_source = NULL
+         WHERE source = 'local' AND bpm_source = ?1",
+        [crate::tempo::Source::Measured.code()],
+    )?;
+    // One bump, not one per row: the acoustic cache only asks whether the
+    // counter moved, and it reads the tempos back, so a clear invalidates it
+    // the same way a measurement does.
+    if cleared > 0 {
+        crate::embeddings::note_write(conn);
+    }
+    Ok(cleared)
+}
+
 /// Every local file the library holds, each with the lowest subsong number
 /// on it: 0 for a file that is its own track, 1 for a cue image whose tracks
 /// are all spans inside it. One row per path rather than per track, which is
@@ -2739,6 +2767,22 @@ mod tests {
         )
         .unwrap();
         assert!(bpm_missing(&conn).unwrap().is_empty());
+
+        // Forgetting what rox measured puts exactly those two back on the
+        // list; the tagged row's number is the file's and stays.
+        assert_eq!(clear_measured_bpm(&conn).unwrap(), 2);
+        let again = bpm_missing(&conn).unwrap();
+        assert_eq!(
+            again.iter().map(|w| w.path.as_str()).collect::<Vec<_>>(),
+            ["/m/a/1.mp3", "/m/a/disc.flac"]
+        );
+        assert_eq!(
+            stored_bpm(&conn, "/m/a/2.mp3"),
+            (Some(120.0), crate::tempo::Source::Tags),
+            "a tag-sourced tempo survives the clear"
+        );
+        // Nothing measured left, so a second clear is a no-op.
+        assert_eq!(clear_measured_bpm(&conn).unwrap(), 0);
     }
 
     /// The scan timestamp stamps a row when it first lands and a rescan's

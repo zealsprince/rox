@@ -81,7 +81,17 @@ impl Logger {
 
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Info
+        if metadata.level() > Level::Info {
+            return false;
+        }
+        // blade-graphics narrates every buffer and texture create/destroy at
+        // info, and the shader region scratch texture recreates on each
+        // resize. That's debug-grade noise, so it drops with the rest of
+        // debug; its warnings and errors still pass.
+        !(metadata.level() == Level::Info
+            && metadata
+                .target()
+                .starts_with("blade_graphics::vulkan::resource"))
     }
 
     fn log(&self, record: &Record) {

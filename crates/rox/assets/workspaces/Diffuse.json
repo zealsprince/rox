@@ -1,0 +1,649 @@
+{
+  "version": 1,
+  "name": "Diffuse",
+  "layouts": [
+    {
+      "name": "Diffuse",
+      "dump": {
+        "version": 1,
+        "center": {
+          "panel_name": "StackPanel",
+          "children": [
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "drawer",
+                  "children": [
+                    {
+                      "panel_name": "group",
+                      "children": [
+                        {
+                          "panel_name": "cover art",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "theme": {
+                                "surface_opacity": 0.0,
+                                "margin": {
+                                  "top": 48.0,
+                                  "right": 16.0,
+                                  "bottom": 48.0,
+                                  "left": 48.0
+                                },
+                                "padding": 0.0,
+                                "rounding": 24.0,
+                                "border": 0.0
+                              },
+                              "source": "playing",
+                              "art": "front",
+                              "align": "center",
+                              "stretch": false,
+                              "spin": false,
+                              "spin_rpm": 10.0,
+                              "spin_ramp": 2.0,
+                              "disc_style": "off",
+                              "shader": {
+                                "enabled": true,
+                                "name": "Glass",
+                                "manual": [
+                                  [
+                                    0,
+                                    1.0
+                                  ],
+                                  [
+                                    1,
+                                    0.6
+                                  ],
+                                  [
+                                    2,
+                                    1.0
+                                  ],
+                                  [
+                                    3,
+                                    1.0
+                                  ],
+                                  [
+                                    5,
+                                    1.0
+                                  ],
+                                  [
+                                    6,
+                                    1.0
+                                  ],
+                                  [
+                                    7,
+                                    0.6
+                                  ]
+                                ],
+                                "run_when_idle": false
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "panel_name": "group",
+                          "children": [
+                            {
+                              "panel_name": "spacer",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "theme": {
+                                    "surface_opacity": 0.0
+                                  },
+                                  "locked": true
+                                }
+                              }
+                            },
+                            {
+                              "panel_name": "track info",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "theme": {
+                                    "surface_opacity": 0.0,
+                                    "margin": {
+                                      "top": 0.0,
+                                      "right": 24.0,
+                                      "bottom": 0.0,
+                                      "left": 34.0
+                                    }
+                                  },
+                                  "locked": true,
+                                  "max_height": 116.0,
+                                  "align": "left",
+                                  "marquee": "off",
+                                  "marquee_speed": 30.0,
+                                  "marquee_delay": 2.0,
+                                  "swap": false,
+                                  "swap_secs": 4.0,
+                                  "output_tint": true,
+                                  "items": [
+                                    "title",
+                                    "spacer",
+                                    "favourite",
+                                    "break",
+                                    "artist",
+                                    "break",
+                                    "album"
+                                  ],
+                                  "scales": [
+                                    1.8,
+                                    1.0,
+                                    1.0
+                                  ]
+                                }
+                              }
+                            },
+                            {
+                              "panel_name": "seek",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "theme": {
+                                    "surface_opacity": 0.0,
+                                    "margin": {
+                                      "top": 0.0,
+                                      "right": 32.0,
+                                      "bottom": 0.0,
+                                      "left": 48.0
+                                    }
+                                  },
+                                  "locked": true,
+                                  "max_height": 52.0,
+                                  "show_total": true,
+                                  "scrobble_marker": false,
+                                  "thickness": 4.0,
+                                  "rounding": 8.0,
+                                  "playhead_width": 12.0,
+                                  "playhead_full": true,
+                                  "playhead_max": 12.0,
+                                  "items": [
+                                    "strip",
+                                    "break",
+                                    "elapsed",
+                                    "spacer",
+                                    "duration"
+                                  ]
+                                }
+                              }
+                            },
+                            {
+                              "panel_name": "group",
+                              "children": [
+                                {
+                                  "panel_name": "playback",
+                                  "children": [],
+                                  "info": {
+                                    "panel": {
+                                      "theme": {
+                                        "surface_opacity": 0.0,
+                                        "margin": {
+                                          "top": 8.0,
+                                          "right": 0.0,
+                                          "bottom": 0.0,
+                                          "left": 32.0
+                                        },
+                                        "border": 0.0
+                                      },
+                                      "locked": true,
+                                      "max_height": 64.0,
+                                      "align": "left",
+                                      "play_highlight": "circle",
+                                      "items": [
+                                        "prev",
+                                        "play",
+                                        "next",
+                                        "repeat",
+                                        "shuffle",
+                                        "random"
+                                      ],
+                                      "random_mode": "random"
+                                    }
+                                  }
+                                },
+                                {
+                                  "panel_name": "volume",
+                                  "children": [],
+                                  "info": {
+                                    "panel": {
+                                      "theme": {
+                                        "surface_opacity": 0.0,
+                                        "margin": {
+                                          "top": 8.0,
+                                          "right": 24.0,
+                                          "bottom": 0.0,
+                                          "left": 0.0
+                                        }
+                                      },
+                                      "locked": true,
+                                      "max_width": 200.0,
+                                      "max_height": 64.0,
+                                      "align": "right",
+                                      "stretch": false,
+                                      "percent_db": false,
+                                      "items": [
+                                        "icon",
+                                        "slider"
+                                      ]
+                                    }
+                                  }
+                                }
+                              ],
+                              "info": {
+                                "panel": {
+                                  "theme": {
+                                    "surface_opacity": 0.0
+                                  },
+                                  "hide_controls": true,
+                                  "max_height": 64.0,
+                                  "stacked": false,
+                                  "ratio": 0.63,
+                                  "dividers": [
+                                    0.63
+                                  ]
+                                }
+                              }
+                            },
+                            {
+                              "panel_name": "spacer",
+                              "children": [],
+                              "info": {
+                                "panel": {
+                                  "theme": {
+                                    "surface_opacity": 0.0
+                                  },
+                                  "locked": true
+                                }
+                              }
+                            }
+                          ],
+                          "info": {
+                            "panel": {
+                              "theme": {
+                                "surface_opacity": 0.0
+                              },
+                              "hide_controls": true,
+                              "stacked": true,
+                              "ratio": 0.32,
+                              "dividers": [
+                                0.32,
+                                0.49,
+                                0.57,
+                                0.68
+                              ],
+                              "shader": {
+                                "enabled": true,
+                                "source": "// rox preset: Shadow.\n//\n// A drop shadow cast by the panel's own content. The `mask` binding is the\n// body's draws isolated on transparency, so the shadow hugs glyphs, icons\n// and controls exactly, whatever the backdrop looks like: the soft pass\n// blurs that coverage at half size, and the out pass lays it down dark,\n// shifted, and cut away under the content itself, so the ink stays exactly\n// as bright as it was drawn.\n//\n// Output is premultiplied, and most of the rect stays transparent: this is\n// an overlay in the same sense Sheen is, riding a panel (or a whole group)\n// that already draws.\n//\n// @overlay\n// @slot 0: soften\n// @slot 1: strength\n// @slot 2: drop\n// @slot 3: lift\n\n// A knob resting at zero means \"unrouted, unset\", so each one has a spot\n// the shadow defaults to rather than vanishing.\nfn shadow_knob(value: f32, rest: f32) -> f32 {\n    return mix(rest, value, step(0.001, value));\n}\n\n// @pass soft: 0.5\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let soften = shadow_knob(params.signals[0].x, 0.35);\n    // Tap spread in uv, off the pass's own half resolution: the half-size\n    // target and its bilinear reads are the inner half of the blur.\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let reach = vec2<f32>(soften * 12.0) / res;\n\n    var cover = textureSampleLevel(mask, samp, uv, 0.0).a;\n    var weight = 1.0;\n    for (var i = 0u; i < 8u; i = i + 1u) {\n        let a = f32(i) * 0.78539816;\n        let dir = vec2<f32>(cos(a), sin(a));\n        cover = cover + textureSampleLevel(mask, samp, uv + dir * reach * 0.5, 0.0).a * 0.75;\n        cover = cover + textureSampleLevel(mask, samp, uv + dir * reach, 0.0).a * 0.35;\n        weight = weight + 1.1;\n    }\n    return vec4<f32>(0.0, 0.0, 0.0, cover / weight);\n}\n\n// @pass out\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let strength = shadow_knob(params.signals[0].y, 0.55);\n    let drop = shadow_knob(params.signals[0].z, 0.18);\n    let lift = clamp(params.signals[0].w, 0.0, 1.0);\n\n    // The shadow sits below its caster, so its coverage is read from above\n    // the pixel in hand.\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let offset = vec2<f32>(0.0, drop * 14.0) / res;\n    let spread = textureSampleLevel(soft, samp, uv - offset, 0.0).a;\n\n    // The cutout: this pixel's own ink wins over any shadow behind it, and\n    // an anti-aliased edge wins by exactly its coverage.\n    let ink = textureSampleLevel(mask, samp, uv, 0.0).a;\n    let shade = smoothstep(0.0, 0.85, spread) * strength * (1.0 - ink);\n\n    // Black shadow at rest; the lift walks it toward white for the looks\n    // where a dark backdrop wants a halo instead.\n    let tone = vec3<f32>(lift);\n    return vec4<f32>(tone * shade, shade);\n}\n",
+                                "run_when_idle": false
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "panel": {
+                          "theme": {
+                            "surface_opacity": 0.0
+                          },
+                          "locked": true,
+                          "hide_controls": true,
+                          "stacked": false,
+                          "ratio": 0.44,
+                          "dividers": [
+                            0.44
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "panel_name": "slide",
+                      "children": [
+                        {
+                          "panel_name": "library",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "theme": {
+                                "surface_opacity": 0.0,
+                                "font_scale": 1.0,
+                                "padding": 24.0
+                              },
+                              "query": "",
+                              "search": true,
+                              "query_source": "global",
+                              "row_height": 18.0,
+                              "head_height": 30.0,
+                              "row_spacing": 12.0,
+                              "headers": "expanded",
+                              "group_by": "album",
+                              "column_layout": [
+                                {
+                                  "key": "track",
+                                  "width": 61.0
+                                },
+                                {
+                                  "key": "title",
+                                  "width": 394.0
+                                },
+                                {
+                                  "key": "duration",
+                                  "width": 53.0
+                                }
+                              ],
+                              "sort_key": null,
+                              "sort_desc": false,
+                              "follow_playing": true,
+                              "resume_playing": false,
+                              "smooth_follow": false,
+                              "art_rounding": 8.0,
+                              "art_side": "left",
+                              "art_margin": 4.0,
+                              "header_gap_above": 48.0,
+                              "header_gap_below": 8.0,
+                              "header_art": true,
+                              "portrait_circle": true,
+                              "genre_face": "tinted",
+                              "header_flush": false,
+                              "header_compact": [
+                                "artist",
+                                "album",
+                                "spacer",
+                                "year"
+                              ],
+                              "header_lines": [
+                                [
+                                  "artist",
+                                  "spacer",
+                                  "year"
+                                ],
+                                [
+                                  "album",
+                                  "spacer",
+                                  "tracks",
+                                  "time"
+                                ],
+                                []
+                              ],
+                              "compact_plays": false,
+                              "stripes": false,
+                              "row_borders": false,
+                              "column_headers": false
+                            }
+                          }
+                        },
+                        {
+                          "panel_name": "queue",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "headers": "off",
+                              "columns": [
+                                "number",
+                                "name",
+                                "artist"
+                              ],
+                              "search": true,
+                              "query_source": "global",
+                              "query": "",
+                              "theme": {
+                                "surface_opacity": 0.0,
+                                "padding": 24.0
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "panel_name": "lyrics",
+                          "children": [],
+                          "info": {
+                            "panel": {
+                              "source": "playing",
+                              "align": "center",
+                              "bold": false,
+                              "font_size": 18.0,
+                              "line_spacing": 1.9,
+                              "follow": true,
+                              "pre_scroll": true,
+                              "fade_lines": false,
+                              "word_by_word": false,
+                              "intro_rest": false,
+                              "gap_rest": false,
+                              "gap_secs": 5.0,
+                              "dim": 0.0,
+                              "dim_edge": "both",
+                              "search_button": true,
+                              "auto_search": false,
+                              "show_name": false,
+                              "show_title": false,
+                              "rest_mark": "note",
+                              "theme": {
+                                "surface_opacity": 0.0,
+                                "padding": 24.0
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "info": {
+                        "panel": {
+                          "hide_controls": true,
+                          "active": 0,
+                          "theme": {
+                            "surface_opacity": 0.8
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "info": {
+                    "panel": {
+                      "theme": {
+                        "surface_opacity": 0.0
+                      },
+                      "locked": true,
+                      "hide_controls": true,
+                      "edge": "right",
+                      "reveal": 0.38,
+                      "dim": 0.25,
+                      "open_on": "hover",
+                      "scope": "main",
+                      "hide_handle": false,
+                      "shader": {
+                        "enabled": true,
+                        "name": "Glass Slab",
+                        "manual": [
+                          [
+                            0,
+                            0.5
+                          ],
+                          [
+                            1,
+                            0.5
+                          ],
+                          [
+                            2,
+                            0.5
+                          ]
+                        ],
+                        "run_when_idle": false
+                      }
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            }
+          ],
+          "info": {
+            "stack": {
+              "sizes": [
+                1386.0
+              ],
+              "axis": 0,
+              "seams": false
+            }
+          }
+        }
+      },
+      "size": {
+        "width": 1386.0,
+        "height": 690.0
+      }
+    }
+  ],
+  "primary_layout": "Diffuse",
+  "palette_dark": {
+    "accent": "#f2f2ee",
+    "accent_hover": "#ffffff",
+    "bg_control": "#2a2c30",
+    "bg_control_active": "#3d4046",
+    "bg_control_hover": "#34363b",
+    "bg_elevated": "#25262a",
+    "bg_header": "#17181a",
+    "bg_input": "#202124",
+    "bg_menu": "#26272b",
+    "bg_menu_hover": "#303237",
+    "bg_menubar": "#1b1c1e",
+    "bg_panel": "#1d1e21",
+    "bg_root": "#17181a",
+    "bg_toolbar": "#1b1c1e",
+    "border": "#33353a",
+    "border_light": "#3d3f45",
+    "gridline": "#4a4d54",
+    "highlight": "#ffffff",
+    "text": "#d8d8d4",
+    "text_bright": "#ffffff",
+    "text_dim": "#8b8b88",
+    "text_faint": "#5c5c59",
+    "text_muted": "#7a7a76",
+    "text_on_accent": "#17181a",
+    "text_secondary": "#b0b0ac"
+  },
+  "palette_light": {
+    "accent": "#403a35",
+    "accent_hover": "#575049",
+    "bg_control": "#e6e4df",
+    "bg_control_active": "#d3d1ca",
+    "bg_control_hover": "#dedcd6",
+    "bg_elevated": "#ffffff",
+    "bg_header": "#f2f1ee",
+    "bg_input": "#ffffff",
+    "bg_menu": "#ffffff",
+    "bg_menu_hover": "#e8e6e1",
+    "bg_menubar": "#eeede9",
+    "bg_panel": "#f8f7f5",
+    "bg_root": "#f2f1ee",
+    "bg_toolbar": "#ecebe8",
+    "border": "#d9d7d1",
+    "border_light": "#e4e2dc",
+    "gridline": "#c4c2bb",
+    "highlight": "#1c1c1a",
+    "text": "#383834",
+    "text_bright": "#121210",
+    "text_dim": "#6f6f68",
+    "text_faint": "#a7a79f",
+    "text_muted": "#8a8a82",
+    "text_on_accent": "#f5f5f2",
+    "text_secondary": "#55554f"
+  },
+  "signals": [
+    {
+      "id": 2,
+      "name": "Mix",
+      "source": {
+        "kind": "level"
+      },
+      "smooth": 0.4,
+      "threshold": 0.0,
+      "reset_on_track": false
+    },
+    {
+      "id": 3,
+      "name": "Drift",
+      "source": {
+        "kind": "aggregate",
+        "of": 2,
+        "rate": 0.03
+      },
+      "smooth": 0.0,
+      "threshold": 0.0,
+      "reset_on_track": false
+    }
+  ],
+  "shaders": [
+    {
+      "name": "Glass",
+      "source": "// rox shader: Glass. A glass frame over whatever panel wears it: an edge\n// band where the picture bows inward and frosts, while everything\n// inside the band passes through untouched, pixel for pixel, so the\n// content stays exactly as readable as it was. The\n// middle is not glass on purpose; this is edges and corners only.\n//\n// The pane either fills the panel's rect or hugs the picture itself,\n// which is the fit slot: 0 the rect, 1 the picture. The picture's shape\n// arrives as user_meta[1].w, the host's word on what the panel drew:\n// width over height letterboxed centered, negative when it fills the\n// rect, and zero from a panel that never says, which falls back to the\n// centered square. Radius, band width, and the optics all ride slots,\n// and the bundle's manual values are the tuning. Everything resting at zero is a\n// square pane with a hairline band and no optics, so tune or route\n// before expecting much.\n//\n// The pointer is a thumb resting near the glass. The stretch of rim\n// within its reach bows deeper and frosts harder, the picture\n// refracting under the press, and the press falls off smoothly with\n// distance, so dragging the hand around the cover rolls a soft lens\n// along the frame. Presence swells it in when the hand arrives and\n// eases it back out when the hand goes still, both ends shaped by the\n// host, so the glass never pops. Nothing brightens: the whole answer\n// is refraction. Nothing reads the clock, so a still pointer costs\n// nothing.\n//\n// The feather is the melt: past the rim the frost keeps reading, wider\n// than anywhere inside, and fades out across the feather's reach, so the\n// pane dissolves into whatever sits around it instead of ending on a\n// line. At zero the rim is back to a clean edge.\n//\n// @overlay\n// @slot 0: radius\n// @slot 1: band\n// @slot 2: bend\n// @slot 3: frost\n// @slot 5: fit\n// @slot 6: press\n// @slot 7: feather\n\n// The composed frame under the pane, clamped so a bent read can't leave\n// the rect.\nfn glass_read(at: vec2<f32>) -> vec3<f32> {\n    let inside = clamp(at, vec2<f32>(0.0), vec2<f32>(1.0));\n    return textureSampleLevel(screen, samp, inside, 0.0).rgb;\n}\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let radius_k = clamp(params.signals[0].x, 0.0, 1.0);\n    let band_k = clamp(params.signals[0].y, 0.0, 1.0);\n    let bend_k = clamp(params.signals[0].z, 0.0, 1.0);\n    let frost_k = clamp(params.signals[0].w, 0.0, 1.0);\n    let fit = clamp(params.signals[1].y, 0.0, 1.0);\n    let press_k = clamp(params.signals[1].z, 0.0, 1.0);\n    let feather_k = clamp(params.signals[1].w, 0.0, 1.0);\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let base = glass_read(uv);\n\n    // The pane's half-size: the whole rect, eased toward what the panel\n    // says it drew. A published shape is the letterboxed picture's own\n    // rect, negative says the picture fills the panel, and no word falls\n    // back to the centered square.\n    let shape = params.user_meta[1].w;\n    var content = vec2<f32>(min(res.x, res.y) * 0.5);\n    if (shape > 0.0) {\n        let wide = min(res.x, res.y * shape);\n        content = vec2<f32>(wide, wide / shape) * 0.5;\n    } else if (shape < 0.0) {\n        content = res * 0.5;\n    }\n    let half = mix(res * 0.5, content, fit);\n    let radius = min(radius_k * 64.0, min(half.x, half.y));\n    let band = max(band_k * 48.0, 2.0);\n\n    // Rounded-box signed distance in device pixels, negative inside.\n    let p = (uv - vec2<f32>(0.5)) * res;\n    let q = abs(p) - half + vec2<f32>(radius);\n    let out_q = max(q, vec2<f32>(0.0));\n    let dist = length(out_q) + min(max(q.x, q.y), 0.0) - radius;\n\n    // The band, easing in at its inner rim; past the outer rim the melt\n    // takes over, fading across the feather's reach so the pane blurs\n    // out into its surroundings rather than ending on a line.\n    let feather = max(feather_k * 48.0, 0.5);\n    let weight = smoothstep(-band - 1.0, -band + 1.0, dist)\n        * (1.0 - smoothstep(0.0, feather, dist));\n    if (weight <= 0.0) {\n        return vec4<f32>(base, 1.0);\n    }\n\n    // Depth into the band, 0 at the inner rim to 1 at the outer, and the\n    // way the nearest rim faces. Deep on a straight stretch the nearer\n    // axis is the normal; out past a corner it swings around the arc.\n    // Past the rim it holds at 1, so the melt zone frosts and bends at\n    // full depth while the weight fades it out.\n    let t = clamp(1.0 + dist / band, 0.0, 1.0);\n    var n = vec2<f32>(0.0);\n    if (max(q.x, q.y) < 0.0) {\n        if (q.x > q.y) {\n            n = vec2<f32>(sign(p.x), 0.0);\n        } else {\n            n = vec2<f32>(0.0, sign(p.y));\n        }\n    } else {\n        n = normalize(out_q) * sign(p);\n    }\n\n    // The press: how hard the hand bears on this stretch of rim. The\n    // reach falls off exponentially with the gap between pointer and\n    // pixel, about a third of the pane across, so the lens stays local\n    // to the hand, and presence swells the whole thing in and out with\n    // both ends eased by the host.\n    let here = clamp(params.user_meta[1].z, 0.0, 1.0);\n    let hand = params.mouse.xy - res * 0.5;\n    let reach = exp(-length(hand - p) / (0.35 * (half.x + half.y)));\n    let press = reach * here * press_k;\n\n    // The optics: the picture pulled from deeper inside the pane, harder\n    // toward the rim, which is what reads as thickness, under a frost\n    // that widens the same way. The press bows the nearby rim up to\n    // forty pixels deeper whatever the resting bend says, which is the\n    // refraction the hand actually sees, and because the reach is\n    // smooth the melt swells under the pointer instead of wobbling.\n    let pull = n * (bend_k * 24.0 + 40.0 * press) * t * t;\n    let lens = uv - pull / res;\n    // Tap spacing grows with the square of the depth, so the inner band\n    // stays near-sharp and the rim melts hard: at full frost the taps sit\n    // 8px apart, a 16px reach either way, which is what smears the pane's\n    // edge and its surroundings into one soft gradient over the feather.\n    // Under the press the taps spread up to three quarters wider, so\n    // the hand reads in the blur as well as the bend.\n    var color = vec3<f32>(0.0);\n    let spread = (frost_k * 8.0 * (1.0 + 0.75 * press) * t * t) / res;\n    for (var x = -2; x <= 2; x = x + 1) {\n        for (var y = -2; y <= 2; y = y + 1) {\n            color = color + glass_read(lens + vec2<f32>(f32(x), f32(y)) * spread);\n        }\n    }\n    color = color / 25.0;\n\n    return vec4<f32>(mix(base, color, weight), 1.0);\n}\n"
+    },
+    {
+      "name": "Glass Slab",
+      "source": "// rox shader: Glass Slab. The drawer's sheet of glass, worn entirely on\n// its face: no rim optics, no bent content, just the reflections. Two\n// soft diagonal streaks ride the sheet, a whisper of light grades down\n// it, and a glow drifts under the pointer. The hand is what animates\n// it: the streaks travel as the pointer moves, the way reflections walk\n// across a pane as it tilts, and a streak catches bright while the hand\n// stands on its line. Everything is additive brightness a few percent\n// tall, so the text under it stays text.\n//\n// Presence eases the whole reaction out: reflections drift home, the\n// catch lets go, the glow fades, and the surface stops asking for\n// frames. A parked pointer costs nothing.\n//\n// The phase slot is for a slow aggregate: routed there, the reflections\n// sway across the sheet with the music's own time, through the wrap\n// without a snap since it reads as sin. Nothing routed leaves them\n// resting, which is the drawer's tuning; the backdrop is the wearer\n// that routes it.\n//\n// @overlay\n// @slot 0: sheen\n// @slot 1: glint\n// @slot 2: drift\n// @slot 3: phase\n\nconst TAU: f32 = 6.28318530718;\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let sheen_k = clamp(params.signals[0].x, 0.0, 1.0);\n    let glint_k = clamp(params.signals[0].y, 0.0, 1.0);\n    let drift_k = clamp(params.signals[0].z, 0.0, 1.0);\n    let phase = clamp(params.signals[0].w, 0.0, 1.0);\n\n    let res = max(params.resolution, vec2<f32>(1.0));\n    let p = (uv - vec2<f32>(0.5)) * res;\n    let base = textureSampleLevel(screen, samp, uv, 0.0).rgb;\n\n    // The pointer in sheet-centered pixels, and how much the hand still\n    // counts for.\n    let here = clamp(params.user_meta[1].z, 0.0, 1.0);\n    let hand = params.mouse.xy - res * 0.5;\n    let gap = length(hand - p);\n\n    // The tilt: where the hand stands on the sheet, scaled by the drift\n    // slot and eased out with presence, so the reflections walk with the\n    // pointer and drift home when it leaves.\n    let tilt = clamp(hand / res, vec2<f32>(-0.6), vec2<f32>(0.6)) * here * drift_k * 2.0;\n\n    // The streak coordinate: a diagonal across the sheet, slid by the\n    // tilt and swayed by the phase. Evaluated once for this pixel and\n    // once for the hand, since a streak catches bright while the hand\n    // stands on its line; both carry the sway, so the catch stays true\n    // while the pattern moves.\n    let sway = 0.30 * sin(TAU * phase);\n    let s = (p.x - 0.45 * p.y) / res.x - 0.35 * tilt.x + 0.15 * tilt.y + sway;\n    let h = (hand.x - 0.45 * hand.y) / res.x - 0.35 * tilt.x + 0.15 * tilt.y + sway;\n    let catch_a = 0.5 + 1.5 * exp(-pow((h + 0.12) / 0.14, 2.0)) * here;\n    let catch_b = 0.5 + 1.5 * exp(-pow((h - 0.16) / 0.08, 2.0)) * here;\n    let streaks = exp(-pow((s + 0.12) / 0.10, 2.0)) * catch_a\n        + 0.6 * exp(-pow((s - 0.16) / 0.05, 2.0)) * catch_b;\n\n    // Light grading down the sheet, and the glow under the hand.\n    let grade = 0.5 - uv.y;\n    let sigma = 0.4 * min(res.x, res.y);\n    let glow = exp(-(gap * gap) / (2.0 * sigma * sigma));\n\n    let face = (0.05 * streaks + 0.04 * grade) * sheen_k * 2.0\n        + 0.06 * glow * here * glint_k * 2.0;\n    return vec4<f32>(clamp(base + vec3<f32>(face), vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);\n}\n"
+    }
+  ],
+  "meta": {
+    "author": "zealsprince",
+    "description": "Just the playing album: the cover and the playback card as one group filling the window, transparent surfaces over the backdrop, seam-free. The library, the queue, and the lyrics wait in a drawer on the right edge, sliding out over the music when the handle is hovered. Monochrome on purpose: the covers carry the color.",
+    "created": "2026-08-13",
+    "updated": "2026-08-14"
+  },
+  "backdrop_shader": {
+    "enabled": true,
+    "name": "Glass Slab",
+    "routes": [
+      {
+        "enabled": true,
+        "signal": 3,
+        "target": "slot3",
+        "from": 0.0,
+        "to": 1.0
+      }
+    ],
+    "manual": [
+      [
+        0,
+        0.5
+      ],
+      [
+        1,
+        0.4
+      ],
+      [
+        2,
+        0.5
+      ]
+    ],
+    "run_when_idle": false,
+    "all_windows": false
+  },
+  "appearance": {
+    "surface_opacity": 0.0,
+    "backdrop_strength": 1.0,
+    "frame": {
+      "margin": 0.0,
+      "padding": 0.0,
+      "rounding": 0.0,
+      "border": 0.0
+    },
+    "seams": false,
+    "art_theming": true,
+    "keep_theme": false,
+    "rating_style": "stars",
+    "rating_dots": false,
+    "quick_play": {
+      "show_cover": true,
+      "show_subtitle": true,
+      "show_duration": true,
+      "comfortable": true
+    },
+    "hide_menubar": false,
+    "os_decorations": true,
+    "resize_border": true,
+    "backdrop_all_windows": false
+  }
+}

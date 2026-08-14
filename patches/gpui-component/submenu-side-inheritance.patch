@@ -1,20 +1,24 @@
 --- a/src/menu/popup_menu.rs
 +++ b/src/menu/popup_menu.rs
-@@ -1000,10 +1000,30 @@
+@@ -1000,10 +1000,33 @@
      }
  
      /// Calculate the anchor corner and left offset for child submenu
 -    fn update_submenu_menu_anchor(&mut self, window: &Window) {
 +    fn update_submenu_menu_anchor(&mut self, window: &Window, cx: &App) {
          let bounds = self.bounds;
-         let max_width = self.max_width();
+-        let max_width = self.max_width();
 -        let (anchor, left) = if max_width + bounds.origin.x > window.bounds().size.width {
 +        // rox patch: a chain that flipped leftward keeps opening leftward
 +        // while there's room, instead of flipping back over its grandparent.
-+        // Submenus paint inside their parent's element tree, so an ancestor's
-+        // later rows paint over an overlapping child and the child reads as
-+        // translucent. Room on the left is estimated with this menu's own
-+        // width, since the child's is unknown until it renders.
++        // Overlap paints correctly now that submenus are deferred, but
++        // covering a menu the user navigated through still reads badly, so
++        // the side choice avoids it when it can. Room on either side is
++        // estimated with this menu's own width, since the child's is unknown
++        // until it renders. Upstream estimated the right side with max_width,
++        // 500px when unset, which flipped children leftward over the root
++        // menu whenever this menu sat within 500px of the window edge. The
++        // estimate only picks a side: the child snaps into the window anyway.
 +        let opened_leftward = self
 +            .parent_menu
 +            .as_ref()
@@ -27,13 +31,13 @@
 +            })
 +            .unwrap_or(false);
 +        let room_left = bounds.origin.x + px(16.) >= bounds.size.width;
-+        let (anchor, left) = if max_width + bounds.origin.x > window.bounds().size.width
-+            || (opened_leftward && room_left)
-+        {
++        let room_right = bounds.origin.x + bounds.size.width + bounds.size.width - px(8.)
++            <= window.bounds().size.width;
++        let (anchor, left) = if !room_right || (opened_leftward && room_left) {
              (Corner::TopRight, -px(16.))
          } else {
              (Corner::TopLeft, bounds.size.width - px(8.))
-@@ -1248,7 +1268,7 @@
+@@ -1248,7 +1271,7 @@
  
  impl Render for PopupMenu {
      fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

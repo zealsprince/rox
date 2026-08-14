@@ -109,14 +109,12 @@ impl Panel for SpacerPanel {
         false
     }
 
+    /// The floor is zero on purpose: the spacer is nothing but the space
+    /// it holds, so a shrinking window may squeeze it away entirely
+    /// before its neighbors give anything up. The chrome's own minimums
+    /// still raise it where a layout wants a guaranteed gap.
     fn min_size(&self, _cx: &App) -> gpui::Size<Pixels> {
-        crate::panel::chrome_min_size(
-            &self.config.chrome,
-            gpui::size(
-                rox_dock::resizable::PANEL_MIN_SIZE,
-                rox_dock::resizable::PANEL_MIN_SIZE,
-            ),
-        )
+        crate::panel::chrome_min_size(&self.config.chrome, gpui::size(gpui::px(0.), gpui::px(0.)))
     }
 
     fn max_size(&self, cx: &App) -> gpui::Size<Pixels> {

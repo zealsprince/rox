@@ -1,7 +1,7 @@
 //! The tag editor window: one OS window opened on a selection - albums
 //! picked in the grid, tracks picked in the library - rather than a panel,
 //! since editing wants room and a plain close-without-saving story. One
-//! shared field form sits over the selection's track list: a field every
+//! shared field form covers the selection: a field every
 //! file agrees on shows its value, differing values show empty over a
 //! "multiple values" placeholder, and only the fields the user moves
 //! write anything. Table mode swaps the form for one row of cells per
@@ -24,15 +24,13 @@ use gpui::{
     Focusable as _, Global, KeyBinding, MouseButton, ScrollHandle, SharedString, Subscription,
     WeakEntity, Window, WindowHandle,
 };
-use gpui_component::button::Button;
 use gpui_component::input::{Enter, Input, InputEvent, InputState};
-use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableEvent, TableState};
 use gpui_component::{Root, Sizable, Size};
 
-use rox_core::fmt::fmt_ms;
 use rox_library::cue::TrackKey;
 use rox_library::projection::Projection;
 use rox_library::rating;
@@ -258,18 +256,15 @@ pub fn open(state: AppState, ids: Vec<i64>, cx: &mut App) {
     );
 }
 
-/// One selected track as the list shows it, resolved at open; the path is
-/// what the baselines read and the commits write, and the sub says which row
-/// of it they belong to when the file is a cue image.
+/// One selected track, resolved at open; the path is what the baselines
+/// read and the commits write, and the sub says which row of it they
+/// belong to when the file is a cue image. The title only names the
+/// track in errors - the table's file column is where the selection
+/// shows itself.
 struct TrackRow {
     path: PathBuf,
     sub: u16,
     title: SharedString,
-    /// The row's display line (title, artist when tagged) in a read-only
-    /// input, so its text selects and copies into the fields - the way
-    /// into retagging files whose only metadata is their name.
-    line: Entity<InputState>,
-    duration_ms: u32,
 }
 
 /// One file's reads off the background hop: the fields the form edits
@@ -284,22 +279,35 @@ enum FileRead {
 }
 
 /// The selection's tags that no field addresses, unioned into one
-/// read-only list.
+/// editable list.
 struct UnknownTags {
     rows: Vec<UnknownRow>,
     /// How many files' unknown reads failed. The list is short by that
-    /// many, so the section says so rather than passing for complete.
+    /// many, so the section says so rather than passing for complete,
+    /// and save leaves those files' unknowns alone - there is nothing
+    /// safe to diff them against.
     failed: usize,
     /// How many files the union covers, for the per-row "3 of 7".
     files: usize,
 }
 
-/// One key in that list: what it's called, what the files carry under
-/// it, and how many of them do.
+/// One key in that list: the exact key a save addresses it by, the input
+/// its text edits through, and how many of the selection carry it.
 struct UnknownRow {
-    key: SharedString,
-    value: SharedString,
+    /// The key as the file spells it, what [`Field::Unknown`] writes by.
+    key: String,
+    /// The key flattened to one row for the label.
+    label: SharedString,
+    /// What the input filled with: the value every carrier agrees on,
+    /// empty under the mixed placeholder. An edit arms by drifting.
+    initial: SharedString,
+    /// The value's editor; a binary payload has none and only removes.
+    input: Option<Entity<InputState>>,
+    /// A binary payload's size line, shown where the input would sit.
+    binary: Option<SharedString>,
     files: usize,
+    /// Armed to remove the key from every carrier on save.
+    removed: bool,
 }
 
 pub struct TagEditor {
@@ -351,12 +359,16 @@ pub struct TagEditor {
     /// The guess pattern's input, remembered across editors through the
     /// settings file - one library tends to one naming scheme.
     pattern: Entity<InputState>,
-    /// The tags no field addresses, read-only under their own fold.
+    /// The tags no field addresses, editable under their own fold.
     /// None until the reads land; a file whose unknown read failed only
     /// costs its own rows, never the form.
     unknowns: Option<UnknownTags>,
+    /// Each file's unknown tags as the writer read them, parallel to
+    /// `tracks`: what an unknown edit diffs against per file. None where
+    /// the read failed, and save leaves that file's unknowns alone.
+    unknown_baselines: Vec<Option<Vec<(String, UnknownValue)>>>,
     /// Whether that fold is open. Closed at open: most files carry a few
-    /// of these and some carry a screenful, and none of it is editable.
+    /// of these and some carry a screenful.
     unknowns_open: bool,
     /// How many of the selection are in a format the writer has no path
     /// for. Those files say so plainly instead of wearing a parse error
@@ -421,42 +433,23 @@ impl TagEditor {
                 let resolved = projection.as_ref().and_then(|projection| {
                     let row = *row_of.get(&id)?;
                     let v = projection.resolve(row);
-                    Some((
-                        v.title.to_owned(),
-                        v.artist.to_owned(),
-                        v.duration_ms,
-                        v.sub,
-                    ))
+                    Some((v.title.to_owned(), v.sub))
                 });
-                let (title, artist, duration_ms, sub) = resolved.unwrap_or_else(|| {
+                let (title, sub) = resolved.unwrap_or_else(|| {
                     let title = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.display().to_string());
-                    (title, String::new(), 0, 0)
+                    (title, 0)
                 });
-                tracks.push((path, sub, title, artist, duration_ms));
-            }
-            tracks
-        };
-        let tracks: Vec<TrackRow> = tracks
-            .into_iter()
-            .map(|(path, sub, title, artist, duration_ms)| {
-                let mut line = title.clone();
-                if !artist.is_empty() {
-                    line.push_str(" - ");
-                    line.push_str(&artist);
-                }
-                let line = cx.new(|cx| InputState::new(window, cx).default_value(line));
-                TrackRow {
+                tracks.push(TrackRow {
                     path,
                     sub,
                     title: title.into(),
-                    line,
-                    duration_ms,
-                }
-            })
-            .collect();
+                });
+            }
+            tracks
+        };
         let inputs: Vec<Entity<InputState>> = FIELDS
             .iter()
             .map(|(field, _, _)| {
@@ -556,6 +549,7 @@ impl TagEditor {
             guess: false,
             pattern,
             unknowns: None,
+            unknown_baselines: Vec::new(),
             unknowns_open: false,
             unsupported: 0,
             error: None,
@@ -610,7 +604,16 @@ impl TagEditor {
                     cx.notify();
                     return;
                 }
-                this.unknowns = Some(gather_unknowns(&reads));
+                this.unknown_baselines = reads
+                    .iter()
+                    .map(|read| match read {
+                        FileRead::Read {
+                            unknown: Ok(rows), ..
+                        } => Some(rows.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                this.unknowns = Some(build_unknowns(&reads, window, cx));
                 let mut baselines = Vec::with_capacity(reads.len());
                 for (read, track) in reads.into_iter().zip(&this.tracks) {
                     let FileRead::Read { fields, .. } = read else {
@@ -632,10 +635,25 @@ impl TagEditor {
         .detach();
     }
 
-    /// Open or close the read-only tag list.
+    /// Open or close the unknown tag list.
     fn toggle_unknowns(&mut self, cx: &mut Context<Self>) {
         self.unknowns_open = !self.unknowns_open;
         cx.notify();
+    }
+
+    /// Arm or disarm one unknown key's removal: armed, save drops the
+    /// key from every file that carries it; disarmed, the row goes back
+    /// to editing. Nothing touches disk until save, like everything else
+    /// here.
+    fn toggle_remove_unknown(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(row) = self
+            .unknowns
+            .as_mut()
+            .and_then(|unknowns| unknowns.rows.get_mut(i))
+        {
+            row.removed = !row.removed;
+            cx.notify();
+        }
     }
 
     /// Fill the form off the landed baselines: a field every file agrees
@@ -1334,6 +1352,42 @@ impl TagEditor {
                     value: (!value.is_empty()).then_some(value),
                 });
             }
+            // The unknown rows, diffed per file like the fields: a
+            // removal or an emptied value drops the key from the files
+            // that carry it, a typed value stamps the batch, and a file
+            // whose unknown read failed stays untouched - there is
+            // nothing safe to diff it against.
+            if let (Some(unknowns), Some(Some(rows))) =
+                (&self.unknowns, self.unknown_baselines.get(t))
+            {
+                for row in &unknowns.rows {
+                    let carried = rows.iter().any(|(k, _)| k == &row.key);
+                    let value = match (row.removed, &row.input) {
+                        (true, _) => None,
+                        (false, Some(input)) => {
+                            let value = input.read(cx).value().to_string();
+                            if value == row.initial.as_ref() {
+                                continue;
+                            }
+                            (!value.is_empty()).then_some(value)
+                        }
+                        (false, None) => continue,
+                    };
+                    let current = rows.iter().find_map(|(k, v)| match v {
+                        UnknownValue::Text(text) if k == &row.key => Some(text.as_str()),
+                        _ => None,
+                    });
+                    match &value {
+                        None if !carried => continue,
+                        Some(v) if current == Some(v.as_str()) => continue,
+                        _ => {}
+                    }
+                    changes.push(Change {
+                        field: Field::Unknown(row.key.clone()),
+                        value,
+                    });
+                }
+            }
             if !changes.is_empty() {
                 // The sub rides beside the edit: a writer::Edit names a file,
                 // and one file can be a dozen cue tracks.
@@ -1427,10 +1481,24 @@ impl TagEditor {
                     let Some(ix) = this.tracks.iter().position(|t| t.path == edit.path) else {
                         continue;
                     };
-                    let Some(baseline) = this.baselines.as_mut().and_then(|b| b.get_mut(ix)) else {
-                        continue;
-                    };
                     for change in &edit.changes {
+                        // An unknown change squares its own baseline; a
+                        // set replaced every carrier of the key, so the
+                        // one written value stands in for them all.
+                        if let Field::Unknown(key) = &change.field {
+                            let Some(Some(rows)) = this.unknown_baselines.get_mut(ix) else {
+                                continue;
+                            };
+                            rows.retain(|(k, _)| k != key);
+                            if let Some(value) = &change.value {
+                                rows.push((key.clone(), UnknownValue::Text(value.clone())));
+                            }
+                            continue;
+                        }
+                        let Some(baseline) = this.baselines.as_mut().and_then(|b| b.get_mut(ix))
+                        else {
+                            continue;
+                        };
                         match &change.value {
                             Some(value) => {
                                 match baseline.iter_mut().find(|(f, _)| f == &change.field) {
@@ -1468,51 +1536,13 @@ impl TagEditor {
         .detach();
     }
 
-    /// The selection as a list: the display line filling left, the
-    /// duration right, one hairline row per track. The line rides a bare
-    /// disabled input rather than plain text so it can be selected and
-    /// copied; the component only gates typing on disabled, never
-    /// selection or copy.
-    fn track_section(&self) -> Div {
-        let mut body = div().flex().flex_col();
-        for track in &self.tracks {
-            body = body.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(tokens::SPACE_MD)
-                    .py(tokens::SPACE_XS)
-                    .border_b_1()
-                    .border_color(palette::border())
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Input::new(&track.line)
-                                .small()
-                                .appearance(false)
-                                .disabled(true),
-                        ),
-                    )
-                    .when(track.duration_ms > 0, |d| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .text_color(palette::text_muted())
-                                .child(fmt_ms(track.duration_ms)),
-                        )
-                    }),
-            );
-        }
-        section("Tracks", None, body)
-    }
-
-    /// The tags no field addresses, read-only under their own fold: TXXX
+    /// The tags no field addresses, editable under their own fold: TXXX
     /// descriptions, the keys lofty maps that the form has no row for,
-    /// and the binary frames named by size. Every save carries them
-    /// through untouched, so the point here is only to show that they
-    /// exist. The header is hand-rolled rather than [`section`]'s
-    /// because the count moves with the selection and that one takes a
-    /// static label.
+    /// and the binary frames named by size. A text value edits in place
+    /// and arms like a field, the remove toggle arms the key to leave
+    /// every carrier on save, and a binary payload only removes. The
+    /// header is hand-rolled rather than [`section`]'s because the count
+    /// moves with the selection and that one takes a static label.
     fn unknown_section(&self, cx: &mut Context<Self>) -> Option<Div> {
         let unknowns = self.unknowns.as_ref()?;
         if unknowns.rows.is_empty() && unknowns.failed == 0 {
@@ -1531,38 +1561,90 @@ impl TagEditor {
                     )),
             );
         }
-        for row in &unknowns.rows {
-            body = body.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(tokens::SPACE_MD)
-                    .py(tokens::SPACE_XS)
-                    .border_b_1()
-                    .border_color(palette::border())
-                    .child(
-                        div()
-                            .w(px(180.))
-                            .flex_none()
-                            .truncate()
-                            .text_color(palette::text_muted())
-                            .child(row.key.clone()),
-                    )
-                    .child(div().flex_1().min_w_0().truncate().child(row.value.clone()))
-                    // A key only some of the selection carries says so;
-                    // one they all carry needs no note.
-                    .when(row.files < unknowns.files, |d| {
-                        d.child(
+        for (i, row) in unknowns.rows.iter().enumerate() {
+            let removed = row.removed;
+            let value: gpui::AnyElement = match (&row.input, &row.binary) {
+                (Some(input), _) => Input::new(input)
+                    .small()
+                    .appearance(false)
+                    .disabled(self.saving || removed)
+                    .into_any_element(),
+                (None, Some(size)) => div()
+                    .truncate()
+                    .text_color(palette::text_muted())
+                    .child(size.clone())
+                    .into_any_element(),
+                (None, None) => div().into_any_element(),
+            };
+            body =
+                body.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_MD)
+                        .py(tokens::SPACE_XS)
+                        .border_b_1()
+                        .border_color(palette::border())
+                        .child(
                             div()
+                                .w(px(180.))
                                 .flex_none()
-                                .text_xs()
+                                .truncate()
                                 .text_color(palette::text_muted())
-                                .child(format!("{} of {}", row.files, unknowns.files)),
+                                .when(removed, |d| d.line_through())
+                                .child(row.label.clone()),
                         )
-                    }),
-            );
+                        .child(div().flex_1().min_w_0().child(value))
+                        // A key only some of the selection carries says so;
+                        // one they all carry needs no note.
+                        .when(row.files < unknowns.files, |d| {
+                            d.child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(palette::text_muted())
+                                    .child(format!("{} of {}", row.files, unknowns.files)),
+                            )
+                        })
+                        // The arm toggle, the clear-all chip's language: a
+                        // click promises the removal, another takes it back.
+                        .child(
+                            div()
+                                .id(("remove-tag", i))
+                                .flex_none()
+                                .px(tokens::SPACE_XS)
+                                .py(px(1.))
+                                .rounded(tokens::RADIUS)
+                                .text_xs()
+                                .cursor_pointer()
+                                .map(|d| {
+                                    if removed {
+                                        d.text_color(palette::accent())
+                                    } else {
+                                        d.text_color(palette::text_muted())
+                                            .hover(|d| d.text_color(palette::text()))
+                                    }
+                                })
+                                .child(if removed { "will remove" } else { "remove" })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.toggle_remove_unknown(i, cx)
+                                })),
+                        ),
+                );
         }
+        // Under the table the page never scrolls, so a long list caps
+        // and scrolls itself; the form page already scrolls whole.
+        let body: gpui::AnyElement = if self.table {
+            div()
+                .id("unknown-rows")
+                .max_h(px(240.))
+                .overflow_y_scroll()
+                .child(body)
+                .into_any_element()
+        } else {
+            body.into_any_element()
+        };
         Some(
             div()
                 .flex()
@@ -1602,48 +1684,12 @@ impl TagEditor {
         )
     }
 
-    /// Table mode's one line about the read-only tag list, which only the
-    /// form shows: the grid is one field per column and these keys are
-    /// ragged per file, so there is no honest column for them. The count
-    /// sits under the table and the click hands the user to the section
-    /// that can show them.
-    fn unknown_hint(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let count = self
-            .unknowns
-            .as_ref()
-            .map(|unknowns| unknowns.rows.len())
-            .filter(|count| *count > 0)?;
-        Some(
-            div()
-                .flex_none()
-                .mt(tokens::SPACE_XS)
-                .text_xs()
-                .text_color(palette::text_muted())
-                .cursor_pointer()
-                .hover(|d| d.text_color(palette::text()))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.show_unknowns(window, cx)),
-                )
-                .child(format!("Other Tags ({count}) in form view")),
-        )
-    }
-
-    /// Leave the table for the form with the read-only tag list open, the
-    /// hint's landing.
-    fn show_unknowns(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.table {
-            self.toggle_table(window, cx);
-        }
-        self.unknowns_open = true;
-        cx.notify();
-    }
-
     /// The tags section: the shared form, or in table mode the per-track
-    /// grid. The lookup rides beside the heading's name, the mode toggle,
-    /// the column picker, and the guess panel its right edge, since each
-    /// is about what the section shows; save and cancel belong to the
-    /// window and ride its footer.
+    /// grid. The lookup rides beside the heading's name, the mode toggle
+    /// and the guess panel its right edge, since each is about what the
+    /// section shows; save and cancel belong to the window and ride its
+    /// footer. The table's columns pick through a right click on their
+    /// headers, the library table's convention.
     fn tags_section(&self, cx: &mut Context<Self>) -> Div {
         // The online lookup is the form's alone, single-track only: the
         // compare matches on one track's tags, so a batch has no one
@@ -1664,13 +1710,27 @@ impl TagEditor {
             .flex_row()
             .items_center()
             .gap(tokens::SPACE_SM)
-            .when(self.table, |d| d.child(self.columns_menu(cx)))
-            .child(settings_ui::small_button(
-                if self.table { "Form" } else { "Table" },
-                icons::ROWS_3,
-                self.saving || self.baselines.is_none(),
-                cx.listener(|this, _, window, cx| this.toggle_table(window, cx)),
-            ))
+            // A single file edits in the form alone, so its way into the
+            // file manager rides here instead of a table row's.
+            .when(single, |d| {
+                let path = self.tracks[0].path.clone();
+                d.child(settings_ui::small_button(
+                    "Reveal",
+                    icons::FOLDER,
+                    false,
+                    move |_, _, cx| cx.reveal_path(&path),
+                ))
+            })
+            // A single track fits the form; the table is the batch's
+            // per-track view, so only a batch offers the swap.
+            .when(!single, |d| {
+                d.child(settings_ui::small_button(
+                    if self.table { "Form" } else { "Table" },
+                    icons::ROWS_3,
+                    self.saving || self.baselines.is_none(),
+                    cx.listener(|this, _, window, cx| this.toggle_table(window, cx)),
+                ))
+            })
             .child(settings_ui::small_button(
                 "Guess",
                 icons::FILE_TEXT,
@@ -1701,33 +1761,6 @@ impl TagEditor {
             Some(control) => section_with_control("Tags", control, Some(buttons), content),
             None => section("Tags", Some(buttons), content),
         }
-    }
-
-    /// The table's column picker: one checked row per column, ticked
-    /// while shown, reading off the editor's own set so the menu never
-    /// touches the table mid-update.
-    fn columns_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let weak = cx.entity().downgrade();
-        let hidden = self.hidden.clone();
-        Button::new("tag-columns")
-            .label("Columns")
-            .small()
-            .outline()
-            .dropdown_menu(move |mut menu, _, _| {
-                for key in column_keys() {
-                    let this = weak.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(title_case(key))
-                            .checked(!hidden.contains(key))
-                            .on_click(move |_, _, cx| {
-                                if let Some(this) = this.upgrade() {
-                                    this.update(cx, |this, cx| this.toggle_column(key, cx));
-                                }
-                            }),
-                    );
-                }
-                menu
-            })
     }
 
     /// Whether a save can run as it stands. Baselines are what a commit
@@ -2032,13 +2065,14 @@ impl CellGrid {
     }
 
     /// The file column's cell: the name on a bare disabled input so its
-    /// text selects and copies the way the track list's lines do (the
-    /// component only gates typing on disabled, never selection), and
-    /// the row's own lookup beside it. A lookup matches one file's tags
-    /// against a release, so once the grid is showing many files the row
-    /// is the only honest place for it.
+    /// text selects and copies the way the library's lines do (the
+    /// component only gates typing on disabled, never selection), then
+    /// the row's way into the file manager and its own lookup. A lookup
+    /// matches one file's tags against a release, so once the grid is
+    /// showing many files the row is the only honest place for it.
     fn file_cell(&self, track: usize) -> Div {
-        let editor = self.editor.clone();
+        let reveal = self.editor.clone();
+        let look_up = self.editor.clone();
         div()
             .h_full()
             .flex()
@@ -2053,6 +2087,16 @@ impl CellGrid {
                         .disabled(true),
                 ),
             )
+            .child(settings_ui::icon_button(
+                icons::FOLDER,
+                false,
+                move |_, _, cx| {
+                    if let Some(editor) = reveal.upgrade() {
+                        let path = editor.read(cx).tracks[track].path.clone();
+                        cx.reveal_path(&path);
+                    }
+                },
+            ))
             // Gated on the provider toggle like the header's, which the
             // form still carries for a single track.
             .when(providers::metadata_online(), |d| {
@@ -2060,7 +2104,7 @@ impl CellGrid {
                     icons::DOWNLOAD,
                     false,
                     move |_, window, cx| {
-                        editor
+                        look_up
                             .update(cx, |editor, cx| editor.look_up(track, window, cx))
                             .ok();
                     },
@@ -2080,6 +2124,37 @@ impl TableDelegate for CellGrid {
 
     fn column(&self, col_ix: usize, _: &App) -> &Column {
         &self.columns[col_ix]
+    }
+
+    /// The header cell: the stock label plus a right-click menu that
+    /// toggles the shown columns in place, the library table's
+    /// convention.
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let shown: HashSet<String> = self.columns.iter().map(|c| c.key.to_string()).collect();
+        let editor = self.editor.clone();
+        div()
+            .size_full()
+            .child(self.column(col_ix, cx).name.clone())
+            .context_menu(move |mut menu, _, _| {
+                for key in column_keys() {
+                    let editor = editor.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(title_case(key))
+                            .checked(shown.contains(key))
+                            .on_click(move |_, _, cx| {
+                                editor
+                                    .update(cx, |editor, cx| editor.toggle_column(key, cx))
+                                    .ok();
+                            }),
+                    );
+                }
+                menu
+            })
     }
 
     /// Sort the rows by the column's current cell values, numerics by
@@ -2199,12 +2274,18 @@ impl TableDelegate for CellGrid {
     }
 }
 
-/// The selection's unknown tags as one list: every key any file carries,
-/// ordered by how many carry it so the shared ones lead, alphabetical
-/// inside a tie so the order holds still across opens. Files that agree
-/// on a value show it; the rest say so the way the form's mixed fields
-/// do.
-fn gather_unknowns(reads: &[FileRead]) -> UnknownTags {
+/// The selection's unknown tags as one editable list: every key any file
+/// carries, ordered by how many carry it so the shared ones lead,
+/// alphabetical inside a tie so the order holds still across opens. A
+/// text key every carrier agrees on fills its input with the value;
+/// disagreeing carriers leave it empty over the mixed placeholder, the
+/// form's convention. The initial snapshot reads back off the input, so
+/// an untouched row can never drift from what it filled with.
+fn build_unknowns(
+    reads: &[FileRead],
+    window: &mut Window,
+    cx: &mut Context<TagEditor>,
+) -> UnknownTags {
     // (key, one value per sighting, the file indices that carried it).
     let mut gathered: Vec<(String, Vec<UnknownValue>, Vec<usize>)> = Vec::new();
     let mut failed = 0;
@@ -2233,15 +2314,44 @@ fn gather_unknowns(reads: &[FileRead]) -> UnknownTags {
         .into_iter()
         .map(|(key, values, files)| {
             let agreed = values.windows(2).all(|pair| pair[0] == pair[1]);
-            let value = if agreed {
-                one_line(&values[0].display())
+            let label: SharedString = one_line(&key).into();
+            let files = files.len();
+            // Bytes never edit: the row shows its size and only removes.
+            if values.iter().any(|v| matches!(v, UnknownValue::Binary(_))) {
+                let size = if agreed {
+                    one_line(&values[0].display())
+                } else {
+                    "Multiple values".to_owned()
+                };
+                return UnknownRow {
+                    key,
+                    label,
+                    initial: SharedString::default(),
+                    input: None,
+                    binary: Some(size.into()),
+                    files,
+                    removed: false,
+                };
+            }
+            let (value, placeholder) = if agreed {
+                (values[0].display(), "")
             } else {
-                "Multiple values".to_owned()
+                (String::new(), "Multiple values")
             };
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(placeholder)
+                    .default_value(value)
+            });
+            let initial = input.read(cx).value().clone();
             UnknownRow {
-                key: one_line(&key).into(),
-                value: value.into(),
-                files: files.len(),
+                key,
+                label,
+                initial,
+                input: Some(input),
+                binary: None,
+                files,
+                removed: false,
             }
         })
         .collect();
@@ -2282,9 +2392,9 @@ fn leading_number(value: &str) -> u32 {
 
 impl Render for TagEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The table scrolls its own rows inside a fixed page - its rows
-        // are the tracks, so the track list would only repeat them. The
-        // form page scrolls whole under the shared scrollbar.
+        // The table scrolls its own rows inside a fixed page, the tag
+        // list capped under it; the form page scrolls whole under the
+        // shared scrollbar.
         let page: gpui::AnyElement = if self.table {
             div()
                 .size_full()
@@ -2292,7 +2402,10 @@ impl Render for TagEditor {
                 .flex_col()
                 .p(tokens::SPACE_MD)
                 .child(self.tags_section(cx).flex_1().min_h_0())
-                .children(self.unknown_hint(cx))
+                .children(
+                    self.unknown_section(cx)
+                        .map(|section| section.flex_none().mt(SECTION_GAP)),
+                )
                 .into_any_element()
         } else {
             div()
@@ -2307,7 +2420,6 @@ impl Render for TagEditor {
                         .flex_col()
                         .gap(SECTION_GAP)
                         .child(self.tags_section(cx))
-                        .child(self.track_section())
                         .children(self.unknown_section(cx)),
                 )
                 .into_any_element()

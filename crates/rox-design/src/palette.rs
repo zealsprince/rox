@@ -374,7 +374,7 @@ macro_rules! tokens {
             pub fn $srole() -> Rgba {
                 let color = scope_color(stringify!($srole))
                     .unwrap_or_else(|| active_role(|p| p.$srole));
-                let opacity = scope_opacity().unwrap_or_else(base_surface_opacity);
+                let opacity = effective_opacity();
                 scaled(color, opacity)
             }
         )*
@@ -385,7 +385,7 @@ macro_rules! tokens {
             pub fn $trole() -> Rgba {
                 let color = scope_color(stringify!($trole))
                     .unwrap_or_else(|| active_role(|p| p.$trole));
-                let opacity = scope_opacity().unwrap_or_else(base_surface_opacity);
+                let opacity = effective_opacity();
                 scaled(color, opacity * opacity)
             }
         )*
@@ -398,7 +398,7 @@ macro_rules! tokens {
                     .unwrap_or_else(|| active_role(|p| p.$irole));
                 let bright = scope_color("text_bright")
                     .unwrap_or_else(|| active_role(|p| p.text_bright));
-                let opacity = scope_opacity().unwrap_or_else(base_surface_opacity);
+                let opacity = effective_opacity();
                 mix(color, bright, 1.0 - opacity)
             }
         )*
@@ -441,6 +441,11 @@ tokens! {
         bg_root: 0x121212, "Root";
         bg_panel: 0x181818, "Panel";
         bg_elevated: 0x1c1c1c, "Elevated";
+        /// The grouped lists' heading strips, the library's album blocks
+        /// foremost. Sits at the elevated tint by default; its own role so
+        /// a look can pull the headings apart from the other raised
+        /// surfaces.
+        bg_header: 0x1c1c1c, "Header";
         bg_menubar: 0x242424, "Menubar";
         bg_menu: 0x262626, "Menu";
         bg_control: 0x2a2a2a, "Control";
@@ -513,6 +518,14 @@ impl Palette {
         for role in ROLES {
             if let Some(color) = map.get(role.name).and_then(|hex| parse_hex(hex)) {
                 (role.set)(&mut palette, color);
+            }
+        }
+        // The heading strips read the elevated tint before they had a role
+        // of their own, so a palette that recolors bg_elevated without
+        // naming bg_header keeps the look it was saved with. [compat]
+        if !map.contains_key("bg_header") {
+            if let Some(color) = map.get("bg_elevated").and_then(|hex| parse_hex(hex)) {
+                palette.bg_header = color;
             }
         }
         palette
@@ -986,6 +999,40 @@ fn scope_color(role: &str) -> Option<Rgba> {
     })
 }
 
+thread_local! {
+    /// Whether the window being rendered is one that always paints the
+    /// cover backdrop - the workspaces, which push this around their whole
+    /// body. Everything else leaves it unset and follows the All Windows
+    /// switch instead: with the backdrop kept out of the child windows,
+    /// their surfaces read opaque, since transparency over a bare root is
+    /// how a settings page turns illegible.
+    static BACKDROPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with the window marked as one that paints the backdrop. The
+/// workspace body wrapper pushes this through build and every render
+/// phase, the tint's ride.
+pub fn backdropped<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    BACKDROPPED.with(|flag| {
+        let prior = flag.replace(on);
+        let out = f();
+        flag.set(prior);
+        out
+    })
+}
+
+/// The opacity the surface accessors scale by: the scope's or the app's
+/// where this window shows the backdrop, full where it doesn't. A window
+/// only counts as showing it when it's a workspace or the All Windows
+/// switch backs the children too.
+fn effective_opacity() -> f32 {
+    if BACKDROPPED.with(std::cell::Cell::get) || BASE.read().unwrap().backdrop_all_windows {
+        scope_opacity().unwrap_or_else(base_surface_opacity)
+    } else {
+        1.0
+    }
+}
+
 /// The innermost scope's surface opacity, if it carries one.
 fn scope_opacity() -> Option<f32> {
     SCOPES.with(|scopes| {
@@ -1101,6 +1148,7 @@ struct Base {
     keep_theme: bool,
     surface_opacity: f32,
     backdrop_strength: f32,
+    backdrop_all_windows: bool,
     /// The app-wide text size in px, the rem every `.text_*` class
     /// resolves against. [`apply`] projects it into the widget theme,
     /// whose root pushes it to each window's rem size per frame.
@@ -1197,6 +1245,7 @@ static BASE: LazyLock<RwLock<Base>> = LazyLock::new(|| {
         keep_theme: false,
         surface_opacity: 1.0,
         backdrop_strength: 1.0,
+        backdrop_all_windows: true,
         font_size: FONT_SIZE_DEFAULT,
     })
 });
@@ -1348,6 +1397,20 @@ pub fn set_scalars(surface_opacity: f32, backdrop_strength: f32, cx: &mut App) {
         base.surface_opacity = surface_opacity.clamp(0.0, 1.0);
         base.backdrop_strength = backdrop_strength.clamp(0.0, 1.0);
     }
+    apply(cx);
+}
+
+/// Whether child windows paint the cover backdrop, the Transparency
+/// section's All Windows switch. Runtime value like the scalars; the
+/// backdrop layer's gate reads it per render.
+pub fn backdrop_all_windows() -> bool {
+    BASE.read().unwrap().backdrop_all_windows
+}
+
+/// Its setter, [`set_scalars`]'s pipe: live value here, persistence with
+/// the settings' writers.
+pub fn set_backdrop_all_windows(on: bool, cx: &mut App) {
+    BASE.write().unwrap().backdrop_all_windows = on;
     apply(cx);
 }
 
@@ -1658,6 +1721,7 @@ impl Palette {
             bg_root: rgb(0xededed),
             bg_panel: rgb(0xe7e7e7),
             bg_elevated: rgb(0xe3e3e3),
+            bg_header: rgb(0xe3e3e3),
             bg_menubar: rgb(0xdbdbdb),
             bg_menu: rgb(0xd9d9d9),
             bg_control: rgb(0xd5d5d5),
@@ -2101,6 +2165,7 @@ mod tests {
             keep_theme,
             surface_opacity: 1.0,
             backdrop_strength: 1.0,
+            backdrop_all_windows: true,
             font_size: FONT_SIZE_DEFAULT,
         }
     }

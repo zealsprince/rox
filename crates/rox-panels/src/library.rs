@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle,
+    div, prelude::*, px, rems, AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle,
     Focusable, KeyDownEvent, MouseButton, ScrollStrategy, ScrollWheelEvent, SharedString, Stateful,
     Subscription, WeakEntity, Window,
 };
@@ -31,7 +31,9 @@ use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::continuation;
 use crate::design::{palette, tokens};
-use crate::group_head::{self, effective_head_lines, ArtSide, HeadPiece, Headers};
+use crate::group_head::{
+    self, effective_head_lines, ArtSide, HeadPiece, Headers, TileFace, MOSAIC,
+};
 use crate::panel::{self, AppState, PanelChrome, ResumeIdle, ScrubState};
 use crate::panel_settings;
 use crate::query::search::{SearchBox, SearchEvent};
@@ -77,9 +79,9 @@ struct TrackTable {
     state: AppState,
     /// The owning panel, for dispatching context menu actions back to it.
     panel: WeakEntity<LibraryPanel>,
-    /// Rows currently displayed: the canonical order broken by group
-    /// headers, or flat search hits, re-sorted when a column sort is
-    /// active.
+    /// Rows currently displayed: the canonical order or a column sort's,
+    /// broken by group headers over whatever runs sit adjacent, or flat
+    /// search hits.
     view: Arc<Vec<Row>>,
     /// The current view's groups, what header rows index; empty when the
     /// view renders flat. Swapped together with `view`, always.
@@ -94,10 +96,16 @@ struct TrackTable {
     /// because the header block math needs it beside the line height
     /// below, and the widget's size lives outside the delegate.
     row_height: f32,
+    /// The extra height each row fills, same units; part of the row
+    /// stride the block math spans, so it rides beside the height.
+    row_spacing: f32,
     /// One composed header line's height at the stock font size,
     /// independent of the rows: a block spans however many table rows its
     /// lines need.
     head_height: f32,
+    /// The header lines' text size, same units, free of the line height;
+    /// mirrored from the panel like the heights.
+    head_text: f32,
     /// The header tiles' corner radius, mirrored from the panel like the
     /// heights: the tile renders here, the knob lives on the panel.
     art_rounding: f32,
@@ -107,13 +115,19 @@ struct TrackTable {
     /// The tile's inset from the block edges, px at the stock font size;
     /// the tile shrinks to keep the square. Mirrored likewise.
     art_margin: f32,
-    /// Open space over and under each header block, same units; the block
-    /// math spans rows for them, so they live beside the heights.
+    /// Open space carved off each header block's edges, same units; the
+    /// canvas math reads them beside the heights.
     header_gap_above: f32,
     header_gap_below: f32,
     /// The header rows' cover tile knob, mirrored from the panel the
     /// same way.
     header_art: bool,
+    /// Round the artist grouping's tiles to the full circle the artist
+    /// wall wears, mirrored likewise; off keeps the rounding knob.
+    portrait_circle: bool,
+    /// What the genre grouping's tile wears, the genre grid's faces,
+    /// mirrored likewise.
+    genre_face: TileFace,
     /// Header rows on the list background instead of the Elevated tint,
     /// mirrored likewise.
     header_flush: bool,
@@ -311,41 +325,56 @@ impl TrackTable {
         Some(rows)
     }
 
-    /// The rendered height of one table row, the height slider's value
-    /// scaled like the table scales its rows.
-    fn row_px(&self) -> gpui::Pixels {
-        px(self.row_height) * palette::row_scale()
-    }
-
-    /// The rendered height of one composed header line, same scaling.
+    /// The rendered height of one composed header line, scaled like the
+    /// table scales its rows.
     fn line_px(&self) -> gpui::Pixels {
         px(self.head_height) * palette::row_scale()
     }
 
-    /// The rendered block gap and tile margin, same scaling again, so the
+    /// The rendered block gaps and tile margin, same scaling again, so the
     /// insets hold their share of the block at any font size.
     fn gap_above_px(&self) -> gpui::Pixels {
         px(self.header_gap_above) * palette::row_scale()
+    }
+
+    fn gap_below_px(&self) -> gpui::Pixels {
+        px(self.header_gap_below) * palette::row_scale()
     }
 
     fn art_margin_px(&self) -> gpui::Pixels {
         px(self.art_margin) * palette::row_scale()
     }
 
+    /// The track rows' text size as a rem factor: the stock height keeps
+    /// the stock 1 rem, and the text follows the height slider from
+    /// there, floored so a dense list stays legible.
+    fn row_font_scale(&self) -> f32 {
+        (self.row_height / ROW_HEIGHT_STOCK).clamp(0.8, 1.8)
+    }
+
+    /// The header lines' factor: the text-size knob over its stock 1 rem,
+    /// free of the line height, so the art (which spans the lines) grows
+    /// without dragging the text along.
+    fn head_font_scale(&self) -> f32 {
+        self.head_text / HEAD_TEXT_STOCK
+    }
+
     /// How many uniform table rows a header block spans: enough to hold
-    /// its composed lines at their own height plus the gaps over and
-    /// under it, so the line height moves free of the rows'. The scales
-    /// cancel, so the stock-size values carry the ratio.
+    /// its composed lines at their own height, so the line height moves
+    /// free of the rows'. The scales cancel, so the stock-size values
+    /// carry the ratio.
     fn head_rows(&self) -> u8 {
-        let lines = self.head_lines.len() as f32;
-        let content = lines * self.head_height + self.header_gap_above + self.header_gap_below;
-        ((content / self.row_height).ceil() as usize).clamp(1, u8::MAX as usize) as u8
+        // One row per composed line: the table lays rows out at the
+        // heights this delegate hands it, so a block's height is exactly
+        // its lines plus the gaps, and nothing rounds to whole rows.
+        self.head_lines.len().clamp(1, u8::MAX as usize) as u8
     }
 
     /// The edge length of an expanded header's cover tile: the composed
     /// lines' full height less the tile's own margin, so the art squares
-    /// off exactly against the text. Scaled like the table scales its
-    /// rows, so the square holds at any app font size or panel override.
+    /// off against the text and scales smoothly with the line height.
+    /// Scaled like the table scales its rows, so the square holds at any
+    /// app font size or panel override.
     fn tile_side(&self) -> gpui::Pixels {
         let side = self.line_px() * self.head_lines.len() as f32 - self.art_margin_px() * 2.;
         if side < px(0.) {
@@ -355,10 +384,27 @@ impl TrackTable {
         }
     }
 
+    /// Whether the tiles wear the artist wall's full circle: grouped by
+    /// artist with the circle knob on, the wall's default face.
+    fn circled(&self) -> bool {
+        self.group_by == GroupBy::Artist && self.portrait_circle
+    }
+
+    /// The block tile's corner radius: the rounding knob, or half the
+    /// tile when the artist grouping wears the wall's circle.
+    fn tile_rounding(&self) -> f32 {
+        if self.circled() {
+            f32::from(self.tile_side()) / 2.
+        } else {
+            self.art_rounding
+        }
+    }
+
     /// The heading look knobs packaged for the shared surface, mirrored
     /// off the delegate the same way the tile side is. The year and
     /// details switches stay on: the composed lines already carry those
-    /// choices.
+    /// choices. The circle rides the inline art piece too, at that
+    /// square's own radius.
     fn head_look(&self) -> group_head::HeadLook {
         group_head::HeadLook {
             tile_side: self.tile_side(),
@@ -368,66 +414,193 @@ impl TrackTable {
             line_px: self.line_px(),
             art_side: self.art_side,
             art_margin: self.art_margin_px(),
-            art_rounding: self.art_rounding,
+            art_rounding: if self.circled() {
+                f32::from(self.line_px() - tokens::SPACE_XS * 2.) / 2.
+            } else {
+                self.art_rounding
+            },
+            font_scale: self.head_font_scale(),
         }
     }
 
-    /// An expanded header's cover tile, sitting at the top of the block
-    /// canvas each block row redraws. Same image handle every time, so
-    /// gpui decodes it once. Pending and missing wear the same quiet
-    /// placeholder, so a landing cover fills the tile without shifting
-    /// the text beside it.
-    fn group_tile(&mut self, g: u32, cx: &mut Context<TableState<Self>>) -> AnyElement {
+    /// An expanded header's cover tile, painted whole by each of the
+    /// block's rows at `lift` (how far above this row the block's lines
+    /// begin; negative drops it past the first row's gap), the last draw
+    /// winning. Same image handles every time, so gpui decodes them
+    /// once. Pending and missing wear the same quiet placeholder, so a
+    /// landing cover fills the tile without shifting the text beside it.
+    /// Grouped by genre the tile wears the configured genre face, the
+    /// grid's looks: the cover mosaic plain or under the genre's wash,
+    /// or a color card under its geometry.
+    fn group_tile(
+        &mut self,
+        g: u32,
+        lift: gpui::Pixels,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        if self.group_by == GroupBy::Genre {
+            // The card faces paint no covers, so they skip the path
+            // resolve and the thumbnail cache, the grid's economy.
+            let paths = if self.genre_face.is_card() {
+                Vec::new()
+            } else {
+                self.group_art_paths(g, cx)
+            };
+            let thumbs: Vec<Thumb> = paths
+                .iter()
+                .map(|path| {
+                    self.state
+                        .thumbs
+                        .update(cx, |thumbs, cx| thumbs.get(path, cx))
+                })
+                .collect();
+            let name = {
+                let library = self.state.library.read(cx);
+                self.groups
+                    .get(g as usize)
+                    .zip(library.projection())
+                    .map(|(group, projection)| projection.resolve(group.first).genre.to_string())
+                    .unwrap_or_default()
+            };
+            return group_head::genre_tile(
+                self.genre_face,
+                &thumbs,
+                &name,
+                self.tile_side(),
+                self.art_rounding,
+                lift,
+                self.art_side,
+                self.art_margin_px(),
+            );
+        }
         let thumb = self.group_thumb(g, cx);
         group_head::tile(
             thumb,
             self.tile_side(),
-            self.art_rounding,
-            px(0.),
+            self.tile_rounding(),
+            lift,
             self.art_side,
             self.art_margin_px(),
         )
     }
 
-    /// A group's cover thumbnail, the first track's art resolved to a
-    /// path once and cached on the group; the tile and the inline art
-    /// piece share it.
+    /// A group's single cover thumbnail, off its first resolved path; the
+    /// inline art piece draws this too, since a line-tall square has no
+    /// room for the genre mosaic. Grouped by artist the portrait service
+    /// answers first, the artist wall's face, with the lead record's
+    /// cover standing in while a lookup runs or after a settled miss.
     fn group_thumb(&mut self, g: u32, cx: &mut Context<TableState<Self>>) -> Thumb {
-        let path = match self
+        if let Some(portrait) = self.group_portrait(g, cx) {
+            return portrait;
+        }
+        let paths = self.group_art_paths(g, cx);
+        match paths.first() {
+            Some(path) => self
+                .state
+                .thumbs
+                .update(cx, |thumbs, cx| thumbs.get(path, cx)),
+            None => Thumb::Missing,
+        }
+    }
+
+    /// The artist grouping's portrait through the shared service the
+    /// artist wall draws from, under the same name the header line shows.
+    /// None for every other grouping, while a lookup is in flight, and
+    /// for a name the services carry nothing under; those fall back to
+    /// the cover. A landing face notifies the service, and the panel's
+    /// subscription repaints this into the tile.
+    fn group_portrait(&mut self, g: u32, cx: &mut Context<TableState<Self>>) -> Option<Thumb> {
+        if self.group_by != GroupBy::Artist {
+            return None;
+        }
+        let name = {
+            let library = self.state.library.read(cx);
+            let projection = library.projection()?;
+            let v = projection.resolve(self.groups.get(g as usize)?.first);
+            if v.album_artist.is_empty() {
+                v.artist.to_string()
+            } else {
+                v.album_artist.to_string()
+            }
+        };
+        self.state
+            .portraits
+            .update(cx, |portraits, cx| portraits.get(&name, cx))
+            .map(Thumb::Ready)
+    }
+
+    /// The resolved cover paths a group's art loads by, cached on the
+    /// group: the run's first track for album and artist grouping, the
+    /// first [`MOSAIC`] distinct tagged albums for genre's mosaic. Empty
+    /// for the unknown bucket (an empty grouped field), which keeps the
+    /// placeholder instead of whichever loose track's art lands first.
+    fn group_art_paths(&mut self, g: u32, cx: &mut Context<TableState<Self>>) -> Vec<PathBuf> {
+        if let Some(paths) = self
             .groups
             .get(g as usize)
             .and_then(|group| group.art.clone())
         {
-            Some(path) => path,
-            None => {
-                let id = {
-                    let library = self.state.library.read(cx);
-                    self.groups.get(g as usize).and_then(|group| {
-                        library.projection().and_then(|projection| {
-                            // No album tag means this is the unknown bucket,
-                            // not a real album: keep the placeholder instead
-                            // of whichever loose track's art lands first.
-                            (!projection.resolve(group.first).album.is_empty())
-                                .then(|| projection.db_id[group.first as usize])
-                        })
-                    })
-                };
-                let path = id
-                    .and_then(|id| self.state.library.read(cx).paths_for(&[id]).ok())
-                    .and_then(|mut paths| paths.pop());
-                if let Some(group) = self.groups.get_mut(g as usize) {
-                    group.art = Some(path.clone());
-                }
-                path
-            }
-        };
-        match path {
-            Some(path) => self
-                .state
-                .thumbs
-                .update(cx, |thumbs, cx| thumbs.get(&path, cx)),
-            None => Thumb::Missing,
+            return paths;
         }
+        let paths = {
+            let library = self.state.library.read(cx);
+            let ids: Vec<i64> = self
+                .groups
+                .get(g as usize)
+                .zip(library.projection())
+                .map(|(group, projection)| {
+                    let v = projection.resolve(group.first);
+                    match self.group_by {
+                        GroupBy::Album if !v.album.is_empty() => {
+                            vec![projection.db_id[group.first as usize]]
+                        }
+                        GroupBy::Artist if !v.album_artist.is_empty() => {
+                            vec![projection.db_id[group.first as usize]]
+                        }
+                        GroupBy::Genre if !v.genre.is_empty() => self.mosaic_ids(g, projection),
+                        _ => Vec::new(),
+                    }
+                })
+                .unwrap_or_default();
+            library.paths_for(&ids).unwrap_or_default()
+        };
+        if let Some(group) = self.groups.get_mut(g as usize) {
+            group.art = Some(paths.clone());
+        }
+        paths
+    }
+
+    /// The genre mosaic's track ids, the genre grid's pick: the first
+    /// track of each of the run's first [`MOSAIC`] distinct tagged
+    /// albums, walked off the view's own rows under the group's header.
+    fn mosaic_ids(&self, g: u32, projection: &Projection) -> Vec<i64> {
+        let Some(start) = self
+            .view
+            .iter()
+            .position(|row| matches!(row, Row::Head(h, 0) if *h == g))
+        else {
+            return Vec::new();
+        };
+        let mut seen = HashSet::new();
+        let mut ids = Vec::new();
+        for row in &self.view[start..] {
+            match *row {
+                Row::Head(h, _) if h != g => break,
+                Row::Track(r) => {
+                    if projection.resolve(r).album.is_empty() {
+                        continue;
+                    }
+                    if seen.insert(projection.album[r as usize]) {
+                        ids.push(projection.db_id[r as usize]);
+                        if ids.len() == MOSAIC {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        ids
     }
 
     /// One table row of a group's header block. The group resolves once
@@ -438,8 +611,10 @@ impl TrackTable {
     /// one's paint is what shows: one seamless draw whatever the line and
     /// row heights are. Grouped by album every field fills; the other
     /// groupings resolve the name they key on plus the count and time, so
-    /// album pieces just drop out of their lines - the tile and the year
-    /// are album presentation, and they go with it.
+    /// album pieces just drop out of their lines. The tile stays for
+    /// artist runs (the artist's portrait, or their lead cover while it
+    /// loads) and genre runs (the genre grid's cover mosaic); the year
+    /// grouping has no one image to show, so it alone goes bare.
     fn render_head_row(
         &mut self,
         row_ix: usize,
@@ -449,11 +624,31 @@ impl TrackTable {
     ) -> Stateful<Div> {
         let expanded = self.headers == Headers::Expanded;
         let by_album = self.group_by == GroupBy::Album;
-        let has_tile = expanded && by_album && self.header_art;
-        let tile = has_tile.then(|| self.group_tile(g, cx));
-        // The inline art piece resolves the same thumbnail as the tile;
-        // album presentation, like the tile, so other groupings drop it.
-        let inline_art = by_album && self.head_lines.iter().any(|l| l.contains(&HeadPiece::Art));
+        let with_art = self.group_by != GroupBy::Year;
+        let has_tile = expanded && with_art && self.header_art;
+        // One row per composed line, sized to it by the delegate's
+        // `row_height`, the gaps riding the block's first and last rows:
+        // the block's height is exactly its content, so the gap and line
+        // height knobs read pixel for pixel with nothing left to round.
+        let lines = self.head_lines.len().max(1);
+        let first = line == 0;
+        let last = line as usize + 1 >= lines;
+        let line_px = self.line_px();
+        let gap_above = if first { self.gap_above_px() } else { px(0.) };
+        let gap_below = if last { self.gap_below_px() } else { px(0.) };
+        // The tile spans the block's lines; every row paints it whole at
+        // its own offset, the last draw winning, so it stays one
+        // seamless square. The first row drops it past its gap, the
+        // rest lift it back past the lines already painted.
+        let lift = if first {
+            -self.gap_above_px()
+        } else {
+            line_px * line as f32
+        };
+        let tile = has_tile.then(|| self.group_tile(g, lift, cx));
+        // The inline art piece draws the single cover (or portrait); a
+        // line-tall square has no room for the genre mosaic.
+        let inline_art = with_art && self.head_lines.iter().any(|l| l.contains(&HeadPiece::Art));
         let mut head = match (
             self.groups.get(g as usize),
             self.state.library.read(cx).projection(),
@@ -501,12 +696,12 @@ impl TrackTable {
                     },
                     tracks: group.tracks,
                     total_ms: group.total_ms,
-                    by_album,
+                    tiled: with_art,
                     thumb: None,
                 }
             }
             _ => group_head::GroupHead {
-                by_album,
+                tiled: with_art,
                 ..Default::default()
             },
         };
@@ -514,54 +709,63 @@ impl TrackTable {
             head.thumb = Some(self.group_thumb(g, cx));
         }
         let look = self.head_look();
-        let line_px = self.line_px();
-        let gapped = self.header_gap_above > 0. || self.header_gap_below > 0.;
         let bg = if self.header_flush {
             palette::bg_root()
         } else {
-            palette::bg_elevated()
+            palette::bg_header()
         };
-        // The block canvas: the tile, then each composed line at its own
-        // height, shifted up past this row's predecessors in the block.
-        // A gap drops the canvas below the block's top edge (and leaves
-        // the rows under it bare), and the tint moves onto the canvas so
-        // the gaps show the list; ungapped, the rows keep their
-        // full-bleed paint below, slack included.
-        let mut canvas = div()
-            .absolute()
-            .left_0()
-            .right_0()
-            .top(-(self.row_px() * line as f32) + self.gap_above_px())
-            .h(line_px * self.head_lines.len() as f32)
-            .when(gapped, |d| d.bg(bg));
-        if let Some(tile) = tile {
-            canvas = canvas.child(tile);
-        }
-        for (ix, pieces) in self.head_lines.iter().enumerate() {
-            canvas = canvas.child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top(line_px * ix as f32)
-                    .h(line_px)
-                    .child(group_head::line_content(pieces, &head, &look, expanded)),
-            );
-        }
-        let last = line + 1 >= self.head_rows();
+        // The panel body already painted the list surface under every row,
+        // so a header color that resolves to that same surface has nothing
+        // to add: painting it anyway lays a second coat, which stops
+        // matching the moment surfaces go translucent. A header meant to
+        // sit on the list's own color matches by not painting at all.
+        let tinted = bg != palette::bg_root();
+        // The row is its line: the strip renders in place at the line
+        // height, past its gap share, and the tint hugs it so the gaps
+        // show the list. A row with no gap share tints its own
+        // background, which keeps the block's bottom hairline drawing
+        // over it; the edge rows carry the tint as a child slice.
+        let strip = self
+            .head_lines
+            .get(line as usize)
+            .map(|pieces| group_head::line_content(pieces, &head, &look, expanded));
         div()
             .id(("row", row_ix))
-            // Flush headers read the list's own role, so song theming
-            // moves them together with the rows. With a gap the tint
-            // rides the canvas instead, so the rows stay bare.
-            .when(!gapped, |d| d.bg(bg))
             // A click selects the album, a double click plays it, so the
             // strip wears the same pointer a track row does.
             .cursor_pointer()
             // The block reads as one: no border between its rows. The
             // width stays, so rows keep their height.
             .when(!last, |d| d.border_color(gpui::transparent_black()))
-            .child(canvas)
+            .map(|d| {
+                if !tinted {
+                    d
+                } else if gap_above <= px(0.) && gap_below <= px(0.) {
+                    d.bg(bg)
+                } else {
+                    d.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(gap_above)
+                            .h(line_px)
+                            .bg(bg),
+                    )
+                }
+            })
+            .when_some(tile, |d, tile| d.child(tile))
+            .when_some(strip, |d, strip| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(gap_above)
+                        .h(line_px)
+                        .child(strip),
+                )
+            })
     }
 
     /// The slim strip opening one disc's run inside a multi-disc group,
@@ -728,6 +932,54 @@ impl TableDelegate for TrackTable {
         self.view.len()
     }
 
+    /// Track rows are the plain ones: they take the stripe and hover
+    /// washes. A header block's rows compose one canvas (disc dividers
+    /// ride inside a run the same way), so a per-row wash would band it.
+    fn plain_row(&self, row_ix: usize) -> bool {
+        self.track_at(row_ix).is_some()
+    }
+
+    /// A header line's row sizes to the line itself, the block's first
+    /// and last rows carrying the gaps; every other row takes the
+    /// table's uniform stride. This is what frees the blocks from
+    /// whole-row rounding: their height is exactly their content.
+    fn row_height(&self, row_ix: usize) -> Option<gpui::Pixels> {
+        match self.view.get(row_ix) {
+            Some(&Row::Head(_, line)) => {
+                let mut h = self.line_px();
+                if line == 0 {
+                    h += self.gap_above_px();
+                }
+                if line as usize + 1 >= self.head_lines.len().max(1) {
+                    h += self.gap_below_px();
+                }
+                Some(h)
+            }
+            _ => None,
+        }
+    }
+
+    /// A cheap fingerprint of everything `row_height` reads: the knobs,
+    /// the render scale, the line count, and the view's identity. The
+    /// table rebuilds its per-row size cache when this moves.
+    fn row_heights_version(&self) -> u64 {
+        let mut h: u64 = 0;
+        for v in [
+            self.head_height,
+            self.header_gap_above,
+            self.header_gap_below,
+            palette::row_scale(),
+        ] {
+            h = h
+                .wrapping_mul(0x100000001b3)
+                .wrapping_add(v.to_bits() as u64);
+        }
+        h = h
+            .wrapping_mul(0x100000001b3)
+            .wrapping_add(self.head_lines.len() as u64);
+        h ^ (Arc::as_ptr(&self.view) as u64)
+    }
+
     fn column(&self, col_ix: usize, _: &App) -> &Column {
         &self.columns[col_ix]
     }
@@ -841,6 +1093,9 @@ impl TableDelegate for TrackTable {
             // rating cell fades its unrated stars in on row hover.
             .group(track_cells::ROW_GROUP)
             .id(("row", row_ix))
+            // The cells inherit this, so the text follows the row height
+            // slider instead of floating small in a tall row.
+            .text_size(rems(self.row_font_scale()))
             .cursor_pointer()
             .when(selected, |d| d.bg(palette::alpha(palette::accent(), 0x26)))
             .when(self.playing_row == Some(row_ix) && !selected, |d| {
@@ -1174,7 +1429,18 @@ impl TableDelegate for TrackTable {
                 }),
             _ => cell,
         };
-        cell.into_any_element()
+        // The text's line box rides the font (gpui's phi line height),
+        // not the row, and a cell lays it from the top: at short row
+        // heights the glyphs hug the cell bottom and the descenders get
+        // chopped. Centering the content in the cell splits any overshoot
+        // evenly, so every row height carries its text in the middle.
+        div()
+            .size_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(cell.w_full().min_w_0())
+            .into_any_element()
     }
 
     /// Keep the delegate's columns in the widget's order: the table calls
@@ -1269,9 +1535,17 @@ pub struct LibraryPanel {
     /// The delegate mirrors both for the block math.
     row_height: f32,
     head_height: f32,
+    /// Extra height grown into each row, which the row fills; the table
+    /// option carries it and the delegate mirrors it for the block math.
+    row_spacing: f32,
+    /// The header lines' text size, free of the line height; the delegate
+    /// mirrors it for the header renders.
+    head_text: f32,
     /// The height sliders' scrub strips, for the settings window.
     row_scrub: ScrubState,
     head_scrub: ScrubState,
+    row_spacing_scrub: ScrubState,
+    head_text_scrub: ScrubState,
     /// The header style and what the headers group on. The delegate
     /// mirrors both for the view computation; they live here too so the
     /// dropdown's checkmarks build without reading the table entity
@@ -1312,16 +1586,25 @@ pub struct LibraryPanel {
     /// The header rows' cover tile knob; the delegate mirrors it for the
     /// header renders, the config dump carries it.
     header_art: bool,
+    /// The artist grouping's full-circle tiles, the wall's face; same
+    /// route as the tile knob.
+    portrait_circle: bool,
+    /// The genre grouping's tile face, the grid's looks; same route.
+    genre_face: TileFace,
     /// Header rows on the list background instead of the Elevated tint,
     /// same route.
     header_flush: bool,
     /// The compact header's composed row, the arrange editor's list.
     header_compact: Vec<HeadPiece>,
     /// The expanded block's composed lines, always [`HEAD_LINE_SLOTS`]
-    /// entries, the editors' slots; an empty slot drops out of the
+    /// entries, the editor's slots; an empty slot drops out of the
     /// rendered block. The delegate mirrors the current mode's effective
     /// lines, the config dump carries these as saved.
     header_lines: Vec<Vec<HeadPiece>>,
+    /// How many line wells the rows editor holds open. The fixed slots
+    /// can't say "added but still empty", so this UI-only count keeps a
+    /// fresh well up past the last filled slot; not persisted.
+    header_lines_shown: usize,
     /// The plays column's compact face: a small count and a faint dash
     /// instead of the plain number.
     compact_plays: bool,
@@ -1347,6 +1630,9 @@ pub struct LibraryPanel {
     _selection_changed: Subscription,
     _player_changed: Subscription,
     _thumbs_changed: Subscription,
+    /// Watches the portrait service for the artist grouping's header
+    /// tiles, the artist wall's move: a landing face repaints the rows.
+    _portraits_changed: Subscription,
 }
 
 impl LibraryPanel {
@@ -1390,6 +1676,11 @@ impl LibraryPanel {
         // and details toggles folded in; same fold for the heights and
         // the old density.
         let (header_compact, header_lines) = fold_head_lines(&config);
+        // The editor opens wells through the last filled slot, one at least.
+        let header_lines_shown = header_lines
+            .iter()
+            .rposition(|line| !line.is_empty())
+            .map_or(1, |last| last + 1);
         let (row_height, head_height) = fold_row_heights(&config);
         let art_margin = fold_margin(config.art_margin, ART_MARGIN_MAX);
         let header_gap_above = fold_margin(config.header_gap_above, HEAD_GAP_MAX);
@@ -1410,13 +1701,17 @@ impl LibraryPanel {
             headers: config.headers,
             group_by: config.group_by,
             row_height,
+            row_spacing: fold_margin(config.row_spacing, ROW_SPACING_MAX),
             head_height,
+            head_text: fold_head_text(config.head_text),
             art_rounding: config.art_rounding,
             art_side: config.art_side,
             art_margin,
             header_gap_above,
             header_gap_below,
             header_art: config.header_art,
+            portrait_circle: config.portrait_circle,
+            genre_face: config.genre_face,
             header_flush: config.header_flush,
             head_lines: effective_head_lines(config.headers, &header_compact, &header_lines),
             compact_plays: config.compact_plays,
@@ -1478,9 +1773,12 @@ impl LibraryPanel {
         let _player_changed = cx.observe(&state.player, |this: &mut LibraryPanel, _, cx| {
             this.sync_playing(cx)
         });
-        // A thumbnail landing repaints the rows; the panel itself has
-        // nothing to recompute.
+        // A thumbnail or portrait landing repaints the rows; the panel
+        // itself has nothing to recompute.
         let _thumbs_changed = cx.observe(&state.thumbs, |this: &mut LibraryPanel, _, cx| {
+            this.table.update(cx, |_, cx| cx.notify());
+        });
+        let _portraits_changed = cx.observe(&state.portraits, |this: &mut LibraryPanel, _, cx| {
             this.table.update(cx, |_, cx| cx.notify());
         });
         let mut this = LibraryPanel {
@@ -1506,8 +1804,12 @@ impl LibraryPanel {
             glide_tick: Instant::now(),
             row_height,
             head_height,
+            row_spacing: fold_margin(config.row_spacing, ROW_SPACING_MAX),
+            head_text: fold_head_text(config.head_text),
             row_scrub: ScrubState::default(),
             head_scrub: ScrubState::default(),
+            row_spacing_scrub: ScrubState::default(),
+            head_text_scrub: ScrubState::default(),
             headers: config.headers,
             group_by: config.group_by,
             columns_shown: HashSet::new(),
@@ -1526,9 +1828,12 @@ impl LibraryPanel {
             header_gap_below_scrub: ScrubState::default(),
             value_edit: panel::ValueEdit::default(),
             header_art: config.header_art,
+            portrait_circle: config.portrait_circle,
+            genre_face: config.genre_face,
             header_flush: config.header_flush,
             header_compact,
             header_lines,
+            header_lines_shown,
             compact_plays: config.compact_plays,
             stripes: config.stripes,
             row_borders: config.row_borders,
@@ -1543,6 +1848,7 @@ impl LibraryPanel {
             _selection_changed,
             _player_changed,
             _thumbs_changed,
+            _portraits_changed,
         };
         this.refresh_view(cx);
         this.columns_shown = this.shown_columns(cx);
@@ -2149,6 +2455,8 @@ impl LibraryPanel {
             query_source: self.query_source,
             row_height: Some(self.row_height),
             head_height: Some(self.head_height),
+            row_spacing: self.row_spacing,
+            head_text: self.head_text,
             // The legacy density folds in on load and never writes back.
             density: None,
             headers: self.headers,
@@ -2166,6 +2474,8 @@ impl LibraryPanel {
             header_gap_above: self.header_gap_above,
             header_gap_below: self.header_gap_below,
             header_art: self.header_art,
+            portrait_circle: self.portrait_circle,
+            genre_face: self.genre_face,
             header_flush: self.header_flush,
             header_compact: self.header_compact.clone(),
             header_lines: self.header_lines.clone(),
@@ -2193,9 +2503,12 @@ impl LibraryPanel {
             return row;
         }
         let table = self.table.read(cx);
-        let handle = table.vertical_scroll_handle.0.borrow();
-        if let Some(deferred) = &handle.deferred_scroll_to_item {
-            return deferred.item_index;
+        if let Some(ix) = table.vertical_scroll_handle.deferred_item_index() {
+            return ix;
+        }
+        let offset = -table.vertical_scroll_handle.base_handle().offset().y;
+        if offset <= px(0.) {
+            return 0;
         }
         // The rendered rows scale by the app font times this panel's own
         // override. A dump save runs outside the panel's render, so the
@@ -2208,13 +2521,36 @@ impl LibraryPanel {
             .font_scale
             .map(|s| s.clamp(palette::PANEL_FONT_SCALE_MIN, palette::PANEL_FONT_SCALE_MAX))
             .unwrap_or(1.0);
-        let row_height = px(self.row_height) * palette::font_scale() * panel_scale;
-        if row_height <= px(0.) {
+        let scale = palette::font_scale() * panel_scale;
+        if scale <= 0. {
             return 0;
         }
-        (-handle.base_handle.offset().y / row_height)
-            .floor()
-            .max(0.) as usize
+        // Rows are no longer uniform (header lines size to their content),
+        // so the offset walks the view's own heights. Layout dumps only,
+        // never a paint, so the walk is fine.
+        let delegate = table.delegate();
+        let lines = delegate.head_lines.len().max(1);
+        let stride = px(self.row_height + self.row_spacing) * scale;
+        let mut y = px(0.);
+        for (ix, row) in delegate.view.iter().enumerate() {
+            y += match *row {
+                Row::Head(_, line) => {
+                    let mut h = self.head_height;
+                    if line == 0 {
+                        h += self.header_gap_above;
+                    }
+                    if line as usize + 1 >= lines {
+                        h += self.header_gap_below;
+                    }
+                    px(h) * scale
+                }
+                _ => stride,
+            };
+            if y > offset {
+                return ix;
+            }
+        }
+        delegate.view.len().saturating_sub(1)
     }
 
     /// Show or hide a registry column, keeping the rest in place. A shown
@@ -2573,6 +2909,11 @@ impl LibraryPanel {
             .row_borders(self.row_borders)
             .header_visible(self.column_headers)
             .bordered(false)
+            // The rows draw their own selection wash, so the widget's
+            // overlay stays off; it would swap the clicked row's bottom
+            // hairline for a ring the row clip eats (vendor patch).
+            .row_selection_style(false)
+            .row_spacing(px(self.row_spacing))
             // A custom size is the row height itself (vendor patch); the
             // widget scales it by the window rem like the stock sizes.
             .with_size(Size::Size(px(self.row_height)))
@@ -2593,7 +2934,35 @@ impl LibraryPanel {
         self.refresh_title_bar(cx);
     }
 
-    /// Set one header line's height, the row height's route.
+    /// Set the open gap under each track row and rebuild the view: the
+    /// gap rides the row stride, which the header blocks' row spans run
+    /// on, the heights' route.
+    fn set_row_spacing(&mut self, spacing: f32, cx: &mut Context<Self>) {
+        if self.row_spacing == spacing {
+            return;
+        }
+        self.row_spacing = spacing;
+        self.table
+            .update(cx, |table, _| table.delegate_mut().row_spacing = spacing);
+        self.refresh_view(cx);
+        cx.notify();
+    }
+
+    /// Set the header lines' text size. Pure paint: the block rows size
+    /// to the line height, not the text.
+    fn set_head_text(&mut self, size: f32, cx: &mut Context<Self>) {
+        if self.head_text == size {
+            return;
+        }
+        self.head_text = size;
+        self.table
+            .update(cx, |table, _| table.delegate_mut().head_text = size);
+        cx.notify();
+    }
+
+    /// Set one header line's height. The block rows resize to it through
+    /// the delegate's height hook; the view's rows don't move, so no
+    /// rebuild and the selection stays put.
     fn set_head_height(&mut self, height: f32, cx: &mut Context<Self>) {
         if self.head_height == height {
             return;
@@ -2601,13 +2970,12 @@ impl LibraryPanel {
         self.head_height = height;
         self.table
             .update(cx, |table, _| table.delegate_mut().head_height = height);
-        self.refresh_view(cx);
         cx.notify();
     }
 
-    /// Set the open space over each header block and rebuild the view:
-    /// the gaps ride the block's row-span math, the heights' route.
-    /// Persisted on the next layout dump.
+    /// Set the open space over each header block, the line height's
+    /// route: the block's first row grows by it. Persisted on the next
+    /// layout dump.
     fn set_header_gap_above(&mut self, gap: f32, cx: &mut Context<Self>) {
         if self.header_gap_above == gap {
             return;
@@ -2615,11 +2983,10 @@ impl LibraryPanel {
         self.header_gap_above = gap;
         self.table
             .update(cx, |table, _| table.delegate_mut().header_gap_above = gap);
-        self.refresh_view(cx);
         cx.notify();
     }
 
-    /// The same under the block.
+    /// The same under the block, on its last row.
     fn set_header_gap_below(&mut self, gap: f32, cx: &mut Context<Self>) {
         if self.header_gap_below == gap {
             return;
@@ -2627,7 +2994,6 @@ impl LibraryPanel {
         self.header_gap_below = gap;
         self.table
             .update(cx, |table, _| table.delegate_mut().header_gap_below = gap);
-        self.refresh_view(cx);
         cx.notify();
     }
 
@@ -2678,11 +3044,17 @@ impl LibraryPanel {
         self.refresh_title_bar(cx);
     }
 
-    /// Store one edited expanded line slot and rebuild: the block's row
-    /// count rides the non-empty lines. Persisted on the next layout dump.
-    fn set_head_line(&mut self, slot: usize, items: Vec<HeadPiece>, cx: &mut Context<Self>) {
-        if let Some(line) = self.header_lines.get_mut(slot) {
-            *line = items;
+    /// Store the rows editor's wells back into the fixed line slots and
+    /// rebuild: the block's row count rides the non-empty lines. The
+    /// editor sends every open well, empties included, so the open count
+    /// follows its adds and removes; slots past it clear. Persisted on
+    /// the next layout dump.
+    fn set_head_lines(&mut self, rows: Vec<Vec<HeadPiece>>, cx: &mut Context<Self>) {
+        self.header_lines_shown = rows.len().clamp(1, HEAD_LINE_SLOTS);
+        for slot in 0..HEAD_LINE_SLOTS {
+            if let Some(line) = self.header_lines.get_mut(slot) {
+                *line = rows.get(slot).cloned().unwrap_or_default();
+            }
         }
         self.sync_head_lines(cx);
     }
@@ -2731,6 +3103,85 @@ impl LibraryPanel {
         self.refresh_title_bar(cx);
     }
 
+    /// The Layout page: what the group headers are and how their lines
+    /// compose. The look knobs (heights, gaps, art) stay on Appearance,
+    /// the column checklist on View.
+    fn layout_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let header_mode = self.headers;
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(panel::setting_row(
+                "Headers",
+                Some("Group breaks over the list; a sort keeps whatever runs stay together, searching renders flat"),
+                panel::choices(
+                    &[
+                        ("Off", Headers::Off),
+                        ("Compact", Headers::Compact),
+                        ("Expanded", Headers::Expanded),
+                    ],
+                    header_mode,
+                    |this: &mut Self, headers, cx| this.set_headers(headers, cx),
+                    cx,
+                ),
+            ))
+            .when(header_mode != Headers::Off, |d| {
+                d.child(panel::setting_row(
+                    "Group By",
+                    Some("What the headers break on; genre and year re-sort the list"),
+                    panel::choices(
+                        &[
+                            ("Album", GroupBy::Album),
+                            ("Artist", GroupBy::Artist),
+                            ("Genre", GroupBy::Genre),
+                            ("Year", GroupBy::Year),
+                        ],
+                        self.group_by,
+                        |this: &mut Self, group_by, cx| this.set_group_by(group_by, cx),
+                        cx,
+                    ),
+                ))
+            })
+            .when(header_mode == Headers::Compact, |d| {
+                d.child(panel::setting_block(
+                    "Header Row",
+                    Some(
+                        "What the one-row headers pack, left to right; a spacer or \
+                         divider splits the sides",
+                    ),
+                    None,
+                    panel::arrange_editor(
+                        "library-head-compact",
+                        group_head::PIECES,
+                        &self.header_compact,
+                        |this: &mut Self, items, cx| this.set_head_compact(items, cx),
+                        cx,
+                    ),
+                ))
+            })
+            .when(header_mode == Headers::Expanded, |d| {
+                // One well per line, top to bottom; a line left empty drops
+                // out of the block, so two make the classic pair and three
+                // the tall foobar-style block.
+                let open = self.header_lines_shown.clamp(1, HEAD_LINE_SLOTS);
+                d.child(panel::setting_block(
+                    "Header Lines",
+                    Some("The block's rows, top to bottom; an empty line drops out"),
+                    None,
+                    panel::arrange_rows_editor(
+                        "library-head-lines",
+                        group_head::PIECES,
+                        &self.header_lines[..open],
+                        Some(HEAD_LINE_SLOTS),
+                        |this: &mut Self, rows, cx| this.set_head_lines(rows, cx),
+                        cx,
+                    ),
+                ))
+            })
+            .into_any_element()
+    }
+
     fn empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("library-empty")
@@ -2771,7 +3222,7 @@ impl panel::PanelSettings for LibraryPanel {
     }
 
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
-        &[("View", icons::ROWS_3)]
+        &[("Layout", icons::ALIGN_LEFT), ("View", icons::ROWS_3)]
     }
 
     fn behavior(
@@ -2830,10 +3281,13 @@ impl panel::PanelSettings for LibraryPanel {
 
     fn page(
         &mut self,
-        _page: &'static str,
+        page: &'static str,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if page == "Layout" {
+            return self.layout_page(cx);
+        }
         div()
             .flex()
             .flex_col()
@@ -2876,15 +3330,18 @@ impl panel::PanelSettings for LibraryPanel {
             .into_any_element()
     }
 
-    /// The library's own appearance rows on the shared page: everything
-    /// that shapes the rows and their group headers, from the heights and
-    /// striping to the header style and its composed lines. These live on
-    /// the config because they shape the content, not the panel frame;
-    /// the View page keeps what shows (columns, search).
+    /// The library's own appearance rows on the shared page: what shapes
+    /// the rows and their group headers, from the heights and striping to
+    /// the gaps and the cover tile. These live on the config because they
+    /// shape the content, not the panel frame; the Layout page carries
+    /// the headers' composition, the View page what shows (columns,
+    /// search).
     fn appearance(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let rounding = self.art_rounding;
         let row_height = self.row_height;
+        let row_spacing = self.row_spacing;
         let head_height = self.head_height;
+        let head_text = self.head_text;
         let gap_above = self.header_gap_above;
         let gap_below = self.header_gap_below;
         let art_margin = self.art_margin;
@@ -2894,152 +3351,70 @@ impl panel::PanelSettings for LibraryPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "Headers",
-                Some("Group breaks over the canonical order; searching or sorting renders flat"),
-                panel::choices(
-                    &[
-                        ("Off", Headers::Off),
-                        ("Compact", Headers::Compact),
-                        ("Expanded", Headers::Expanded),
-                    ],
-                    header_mode,
-                    |this: &mut Self, headers, cx| this.set_headers(headers, cx),
+                "Line Height",
+                Some("One header line; blocks take the rows they need, free of the track rows"),
+                settings_ui::scalar(
+                    &self.head_scrub,
+                    &self.value_edit,
+                    head_height,
+                    settings_ui::span(ROW_HEIGHT_MIN, HEAD_HEIGHT_MAX, " px"),
+                    Self::set_head_height,
                     cx,
                 ),
             ))
-            .when(header_mode != Headers::Off, |d| {
-                d.child(panel::setting_row(
-                    "Group By",
-                    Some("What the headers break on; genre and year re-sort the list"),
-                    panel::choices(
-                        &[
-                            ("Album", GroupBy::Album),
-                            ("Artist", GroupBy::Artist),
-                            ("Genre", GroupBy::Genre),
-                            ("Year", GroupBy::Year),
-                        ],
-                        self.group_by,
-                        |this: &mut Self, group_by, cx| this.set_group_by(group_by, cx),
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    "Line Height",
-                    Some("One header line; blocks take the rows they need, free of the track rows"),
-                    settings_ui::scalar(
-                        &self.head_scrub,
-                        &self.value_edit,
-                        head_height,
-                        settings_ui::span(ROW_HEIGHT_MIN, HEAD_HEIGHT_MAX, " px"),
-                        Self::set_head_height,
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    "Flush Background",
-                    Some(
-                        "Sit the headers on the list background instead of the raised \
+            .child(panel::setting_row(
+                "Text Size",
+                Some("The header lines' text, free of the line height, so the art grows alone"),
+                settings_ui::scalar(
+                    &self.head_text_scrub,
+                    &self.value_edit,
+                    head_text,
+                    settings_ui::span(HEAD_TEXT_MIN, HEAD_TEXT_MAX, " px"),
+                    Self::set_head_text,
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Flush Background",
+                Some(
+                    "Sit the headers on the list background instead of the raised \
                          tint; song theming moves them together",
-                    ),
-                    panel::toggle(
-                        self.header_flush,
-                        |this: &mut Self, on, cx| {
-                            this.header_flush = on;
-                            this.table
-                                .update(cx, |table, _| table.delegate_mut().header_flush = on);
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    "Gap Above",
-                    Some("Open space over each header block; the list shows through"),
-                    settings_ui::scalar(
-                        &self.header_gap_above_scrub,
-                        &self.value_edit,
-                        gap_above,
-                        settings_ui::span(0., HEAD_GAP_MAX, " px"),
-                        Self::set_header_gap_above,
-                        cx,
-                    ),
-                ))
-                .child(panel::setting_row(
-                    "Gap Below",
-                    Some("The same under the block, before its tracks"),
-                    settings_ui::scalar(
-                        &self.header_gap_below_scrub,
-                        &self.value_edit,
-                        gap_below,
-                        settings_ui::span(0., HEAD_GAP_MAX, " px"),
-                        Self::set_header_gap_below,
-                        cx,
-                    ),
-                ))
-            })
-            .when(header_mode == Headers::Expanded, |d| {
-                d.child(panel::setting_row(
-                    "Cover Art",
-                    Some("The expanded album headers' cover tile"),
-                    panel::toggle(
-                        self.header_art,
-                        |this: &mut Self, on, cx| {
-                            this.header_art = on;
-                            this.table
-                                .update(cx, |table, _| table.delegate_mut().header_art = on);
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ))
-            })
-            .when(header_mode == Headers::Compact, |d| {
-                d.child(panel::setting_block(
-                    "Header Row",
-                    Some(
-                        "What the one-row headers pack, left to right; a spacer or \
-                         divider splits the sides",
-                    ),
-                    None,
-                    panel::arrange_editor(
-                        "library-head-compact",
-                        group_head::PIECES,
-                        &self.header_compact,
-                        |this: &mut Self, items, cx| this.set_head_compact(items, cx),
-                        cx,
-                    ),
-                ))
-            })
-            .when(header_mode == Headers::Expanded, |d| {
-                // One editor per line slot; a line left empty drops out of
-                // the block, so two slots make the classic pair and three
-                // the tall foobar-style block.
-                let mut lines = div().flex().flex_col().gap(tokens::SPACE_MD);
-                const SLOT_IDS: [&str; HEAD_LINE_SLOTS] =
-                    ["library-head-1", "library-head-2", "library-head-3"];
-                for (slot, id) in SLOT_IDS.iter().enumerate() {
-                    lines = lines
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(palette::text_muted())
-                                .child(SharedString::from(format!("Line {}", slot + 1))),
-                        )
-                        .child(panel::arrange_editor(
-                            id,
-                            group_head::PIECES,
-                            &self.header_lines[slot],
-                            move |this: &mut Self, items, cx| this.set_head_line(slot, items, cx),
-                            cx,
-                        ));
-                }
-                d.child(panel::setting_block(
-                    "Header Lines",
-                    Some("The block's rows, top to bottom; an empty line drops out"),
-                    None,
-                    lines,
-                ))
-            });
+                ),
+                panel::toggle(
+                    self.header_flush,
+                    |this: &mut Self, on, cx| {
+                        this.header_flush = on;
+                        this.table
+                            .update(cx, |table, _| table.delegate_mut().header_flush = on);
+                        cx.notify();
+                    },
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Gap Above",
+                Some("Carved off the block's top; the list shows through, and the lines tighten to fit"),
+                settings_ui::scalar(
+                    &self.header_gap_above_scrub,
+                    &self.value_edit,
+                    gap_above,
+                    settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                    Self::set_header_gap_above,
+                    cx,
+                ),
+            ))
+            .child(panel::setting_row(
+                "Gap Below",
+                Some("The same under the block, before its tracks"),
+                settings_ui::scalar(
+                    &self.header_gap_below_scrub,
+                    &self.value_edit,
+                    gap_below,
+                    settings_ui::span(0., HEAD_GAP_MAX, " px"),
+                    Self::set_header_gap_below,
+                    cx,
+                ),
+            ));
         Some(
             div()
                 .flex()
@@ -3054,13 +3429,25 @@ impl panel::PanelSettings for LibraryPanel {
                         .gap(tokens::SPACE_MD)
                         .child(panel::setting_row(
                             "Row Height",
-                            Some("The track rows, scaled with the app font like the text"),
+                            Some("The track rows; the text follows, and both scale with the app font"),
                             settings_ui::scalar(
                                 &self.row_scrub,
                                 &self.value_edit,
                                 row_height,
                                 settings_ui::span(ROW_HEIGHT_MIN, ROW_HEIGHT_MAX, " px"),
                                 Self::set_row_height,
+                                cx,
+                            ),
+                        ))
+                        .child(panel::setting_row(
+                            "Row Spacing",
+                            Some("Extra height each row fills; breathing room without growing the text"),
+                            settings_ui::scalar(
+                                &self.row_spacing_scrub,
+                                &self.value_edit,
+                                row_spacing,
+                                settings_ui::span(0., ROW_SPACING_MAX, " px"),
+                                Self::set_row_spacing,
                                 cx,
                             ),
                         ))
@@ -3089,17 +3476,41 @@ impl panel::PanelSettings for LibraryPanel {
                             ),
                         )),
                 ))
-                .child(settings_ui::section("Headers", None, headers))
+                // The header look only matters while headers show; their
+                // mode and composition live on the Layout page.
+                .when(header_mode != Headers::Off, |d| {
+                    d.child(settings_ui::section("Headers", None, headers))
+                })
+                // Every art knob in one always-shown place, whatever the
+                // grouping: swapping the group-by shouldn't send you
+                // hunting for the row that just appeared elsewhere.
                 .child(settings_ui::section(
-                    "Covers",
+                    "Art",
                     None,
                     div()
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
                         .child(panel::setting_row(
+                            "Art",
+                            Some(
+                                "The expanded headers' tile: the cover, the artist's \
+                                 portrait, or the genre face",
+                            ),
+                            panel::toggle(
+                                self.header_art,
+                                |this: &mut Self, on, cx| {
+                                    this.header_art = on;
+                                    this.table
+                                        .update(cx, |table, _| table.delegate_mut().header_art = on);
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                        .child(panel::setting_row(
                             "Art Rounding",
-                            Some("Round the album headers' cover corners"),
+                            Some("Round the art's corners"),
                             settings_ui::scalar(
                                 &self.art_scrub,
                                 &self.value_edit,
@@ -3136,6 +3547,49 @@ impl panel::PanelSettings for LibraryPanel {
                                 art_margin,
                                 settings_ui::span(0., ART_MARGIN_MAX, " px"),
                                 Self::set_art_margin,
+                                cx,
+                            ),
+                        ))
+                        .child(panel::setting_row(
+                            "Circular Portraits",
+                            Some(
+                                "Grouped by artist, round the tiles to the wall's \
+                                 full circle instead of the rounding knob",
+                            ),
+                            panel::toggle(
+                                self.portrait_circle,
+                                |this: &mut Self, on, cx| {
+                                    this.portrait_circle = on;
+                                    this.table.update(cx, |table, _| {
+                                        table.delegate_mut().portrait_circle = on
+                                    });
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        ))
+                        .child(panel::setting_row(
+                            "Genre Face",
+                            Some(
+                                "Grouped by genre, what the tile wears: the covers, \
+                                 the covers washed in the genre's color, or a color \
+                                 card under its geometry",
+                            ),
+                            panel::choices(
+                                &[
+                                    ("Mosaic", TileFace::Mosaic),
+                                    ("Tinted", TileFace::Tinted),
+                                    ("Gradient", TileFace::Gradient),
+                                    ("Color", TileFace::Color),
+                                ],
+                                self.genre_face,
+                                |this: &mut Self, face, cx| {
+                                    this.genre_face = face;
+                                    this.table.update(cx, |table, _| {
+                                        table.delegate_mut().genre_face = face
+                                    });
+                                    cx.notify();
+                                },
                                 cx,
                             ),
                         )),
@@ -3505,8 +3959,20 @@ impl LibraryPanel {
                     table.delegate().view.len(),
                 )
             };
-            match panel::glide_target(&handle, row, count) {
-                Some(target) if !panel::glide_step(&handle, target, dt) => self.glide_to = None,
+            // The uniform-item target is an estimate now that header rows
+            // size to their content; close enough for a centering glide,
+            // and the strict jumps stay index-exact.
+            match panel::glide_target_axis(handle.base_handle(), gpui::Axis::Vertical, row, count) {
+                Some(target)
+                    if !panel::glide_step_axis(
+                        handle.base_handle(),
+                        gpui::Axis::Vertical,
+                        target,
+                        dt,
+                    ) =>
+                {
+                    self.glide_to = None
+                }
                 // Not laid out yet, or still moving: keep going.
                 _ => window.request_animation_frame(),
             }

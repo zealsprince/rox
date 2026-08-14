@@ -59,6 +59,33 @@ pub fn plural(n: u32, noun: &str) -> String {
     }
 }
 
+/// A long running time in words: the largest unit that fits and the one
+/// under it, "3 weeks, 2 days". The clock readouts stop meaning much past
+/// a day, so the library totals carry this beside them.
+pub fn fmt_span(secs: u64) -> String {
+    const UNITS: &[(u64, &str)] = &[
+        (86_400 * 365, "year"),
+        (86_400 * 7, "week"),
+        (86_400, "day"),
+        (3_600, "hour"),
+        (60, "minute"),
+        (1, "second"),
+    ];
+    let Some(top) = UNITS.iter().position(|(span, _)| secs >= *span) else {
+        return "0 seconds".into();
+    };
+    let (span, noun) = UNITS[top];
+    let mut out = plural((secs / span) as u32, noun);
+    if let Some(&(next_span, next_noun)) = UNITS.get(top + 1) {
+        let rest = (secs % span) / next_span;
+        if rest > 0 {
+            out.push_str(", ");
+            out.push_str(&plural(rest as u32, next_noun));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,6 +95,19 @@ mod tests {
         assert_eq!(plural(0, "album"), "0 albums");
         assert_eq!(plural(1, "album"), "1 album");
         assert_eq!(plural(12, "track"), "12 tracks");
+    }
+
+    /// Two units at most, adjacent ones, and a spent second place drops
+    /// rather than reading "3 weeks, 0 days".
+    #[test]
+    fn spans_read_in_two_units() {
+        assert_eq!(fmt_span(0), "0 seconds");
+        assert_eq!(fmt_span(45), "45 seconds");
+        assert_eq!(fmt_span(90), "1 minute, 30 seconds");
+        assert_eq!(fmt_span(3_600 * 5 + 60 * 12), "5 hours, 12 minutes");
+        assert_eq!(fmt_span(86_400 * 7 * 3), "3 weeks");
+        assert_eq!(fmt_span(86_400 * 23), "3 weeks, 2 days");
+        assert_eq!(fmt_span(86_400 * 365 + 86_400 * 14), "1 year, 2 weeks");
     }
 
     /// One unit, the largest that fits, and anything under a minute reads

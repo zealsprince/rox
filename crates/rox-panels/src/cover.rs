@@ -256,8 +256,11 @@ impl CoverArtPanel {
         );
         // On drop the panel is gone, so nothing is still showing: force the
         // decoded covers out of the asset cache rather than going through the
-        // showing-guarded retire.
-        let _retire_on_drop = cx.on_release(|this, cx| {
+        // showing-guarded retire, and take the published content shape with
+        // it.
+        let panel_id = cx.entity().entity_id();
+        let _retire_on_drop = cx.on_release(move |this, cx| {
+            panel::shader::forget_content_shape(panel_id);
             for slide in [
                 std::mem::replace(&mut this.from, Slide::Blank),
                 std::mem::replace(&mut this.to, Slide::Blank),
@@ -945,6 +948,19 @@ impl CoverArtPanel {
                 }
             }
         }
+
+        // Tell the panel's shader surface what shape the slide actually
+        // takes in the body rect, so a frame shader can hug the picture
+        // instead of guessing at a square: the art's own ratio letterboxed,
+        // 1 for the square stand-ins and the disc bake, and the whole rect
+        // under stretch. The settling target speaks for a fade in flight.
+        let shape = match &self.to {
+            Slide::Blank => 0.0,
+            Slide::Empty | Slide::Disc | Slide::Art(_, _, Some(_)) => 1.0,
+            Slide::Art(_, _, None) if self.config.stretch => -1.0,
+            Slide::Art(_, ratio, None) => *ratio,
+        };
+        panel::shader::note_content_shape(cx.entity().entity_id(), shape);
 
         // The spin: velocity ramps toward full speed while a track plays
         // and back to rest when it stops, the angle integrating per frame.

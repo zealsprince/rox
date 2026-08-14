@@ -20,10 +20,39 @@ use gpui::{
     Subscription, Window,
 };
 use image::{Frame, RgbaImage};
+use std::sync::RwLock;
 
 use rox_design::{palette, tokens};
 
 use crate::player::Player;
+
+/// The shade the app lays over every backdrop layer: the backdrop
+/// shader's element, built by the layer above this crate, which owns the
+/// shader machinery this crate can't see. Registered once at startup, and
+/// asked per window so the app decides which windows wear it; None paints
+/// the bake bare, which is also every window before the app wires it.
+type ShadeFn = dyn Fn(&Window, &App) -> Option<AnyElement> + Send + Sync;
+
+static SHADE: RwLock<Option<Arc<ShadeFn>>> = RwLock::new(None);
+
+/// Register the backdrop shade. The app calls this once at startup;
+/// calling again replaces the hook.
+pub fn set_shade(shade: impl Fn(&Window, &App) -> Option<AnyElement> + Send + Sync + 'static) {
+    *SHADE.write().unwrap() = Some(Arc::new(shade));
+}
+
+/// Whether a window paints a backdrop at all, asked the same way as the
+/// shade: the service can't tell a workspace from a settings window, so
+/// the app's hook says. Unregistered means every window does, which is
+/// also the behavior before the app wires it.
+type GateFn = dyn Fn(&Window, &App) -> bool + Send + Sync;
+
+static GATE: RwLock<Option<Arc<GateFn>>> = RwLock::new(None);
+
+/// Register the backdrop gate, [`set_shade`]'s twin.
+pub fn set_gate(gate: impl Fn(&Window, &App) -> bool + Send + Sync + 'static) {
+    *GATE.write().unwrap() = Some(Arc::new(gate));
+}
 
 /// The longest side of the baked image. Small enough that the decode,
 /// blur, and upload cost nothing next to the art read that precedes them;
@@ -289,7 +318,15 @@ impl WindowBackdrop {
         // The song-theming switch gates the paint, not the bake: the bake
         // keeps following the player, so flipping the switch mid-track
         // takes effect right away, riding the normal cross-fade in and out.
-        let image = if palette::art_theming() {
+        // A gated-off window reads as having no bake, so flipping the
+        // switch rides the normal cross-fade in and out and the retired
+        // textures leave the atlas the usual way.
+        let allowed = GATE
+            .read()
+            .unwrap()
+            .clone()
+            .is_none_or(|gate| gate(window, cx));
+        let image = if allowed && palette::art_theming() {
             art.read(cx).backdrop()
         } else {
             None
@@ -303,7 +340,18 @@ impl WindowBackdrop {
         } else if let Some(old) = self.from.take() {
             let _ = window.drop_image(old);
         }
-        if self.from.is_none() && self.to.is_none() {
+        // The registered shade rides inside the layer, over the wash, so
+        // every window that paints a bake wears it the same way and
+        // everything drawn after still lands over the result. It doesn't
+        // need the bake: with song theming off, or nothing playing, the
+        // shade runs over the bare root and is the whole layer.
+        let shade = SHADE
+            .read()
+            .unwrap()
+            .clone()
+            .and_then(|shade| shade(window, cx));
+        let baked = self.from.is_some() || self.to.is_some();
+        if !baked && shade.is_none() {
             return None;
         }
         // Smoothstepped so the fade eases out instead of stopping dead.
@@ -319,13 +367,13 @@ impl WindowBackdrop {
         if let Some(to) = &self.to {
             root = root.child(sheet(to, u));
         }
-        Some(
-            root
-                // Backdrop strength, applied as its inverse: a wash of the
-                // floor color over the bake.
-                .child(div().absolute().inset_0().bg(palette::backdrop_wash()))
-                .into_any_element(),
-        )
+        if baked {
+            // Backdrop strength, applied as its inverse: a wash of the
+            // floor color over the bake. Nothing baked has nothing to
+            // wash; the root's own background is already the floor.
+            root = root.child(div().absolute().inset_0().bg(palette::backdrop_wash()));
+        }
+        Some(root.children(shade).into_any_element())
     }
 }
 

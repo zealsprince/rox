@@ -30,8 +30,8 @@ mod chain;
 mod cursor;
 
 pub use chain::{
-    fallback_cover, parse_chain, register_program, resolve_assets, uses_cover, AssetImage,
-    AssetRef, ChainSpec, PassSpec, ProgramCtx, COVER_SOURCE,
+    fallback_cover, parse_chain, register_program, resolve_assets, uses_cover, uses_mask,
+    AssetImage, AssetRef, ChainSpec, PassSpec, ProgramCtx, COVER_SOURCE,
 };
 pub use cursor::{cursor_presence, reads_cursor, watch_cursor, CURSOR_FADE, CURSOR_HOLD};
 
@@ -43,13 +43,15 @@ pub const SLOTS: usize = 16;
 /// demonstrates a different part of the contract, so together they double as
 /// the authoring reference: Plasma is a pure primitive, Trails reads its own
 /// last frame and proves the region pass, Sheen is a transparent overlay
-/// meant to ride another panel's body, Cover and Badge bind the playing
+/// meant to ride another panel's body, Shadow reads the mask capture and
+/// shades under the panel's own content, Cover and Badge bind the playing
 /// track's art, Lamp reads the mouse, Cube fakes a third dimension from
 /// uniforms alone, Bloom is a two-pass chain, and Tube samples the screen
 /// under it.
 pub const PLASMA: &str = include_str!("shader/plasma.wgsl");
 pub const TRAILS: &str = include_str!("shader/trails.wgsl");
 pub const SHEEN: &str = include_str!("shader/sheen.wgsl");
+pub const SHADOW: &str = include_str!("shader/shadow.wgsl");
 pub const COVER: &str = include_str!("shader/cover.wgsl");
 pub const BADGE: &str = include_str!("shader/badge.wgsl");
 pub const LAMP: &str = include_str!("shader/lamp.wgsl");
@@ -90,6 +92,11 @@ pub const PRESETS: &[Preset] = &[
         blurb:
             "A vignette and a drifting gleam, transparent overlay for a panel that already draws.",
         source: SHEEN,
+    },
+    Preset {
+        label: "Shadow",
+        blurb: "A drop shadow the panel's own text and controls cast, read off the mask capture.",
+        source: SHADOW,
     },
     Preset {
         label: "Cover",
@@ -1201,6 +1208,35 @@ struct Live {
 static LIVE: LazyLock<RwLock<HashMap<(u64, EntityId), Live>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
+/// The shape of what each publishing panel actually drew inside its body
+/// rect, read back into `meta[7]` when that panel's surface paints. A
+/// frame or glow shader wants to hug the picture, and the picture rarely
+/// fills the rect: the cover letterboxes its art, so the surface alone
+/// can't know where the content ends. One float carries it: the content's
+/// width over height when it letterboxes centered in the rect, negative
+/// when it fills the rect edge to edge, and no entry when the panel never
+/// said, which reads as zero.
+static CONTENT: LazyLock<RwLock<HashMap<EntityId, f32>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Publish the shape of what `panel` draws in its body rect: width over
+/// height for content letterboxed centered into the rect, negative for
+/// content filling the rect outright, zero for no claim. Cheap enough to
+/// call every render; the value just overwrites.
+pub fn note_content_shape(panel: EntityId, shape: f32) {
+    CONTENT.write().unwrap().insert(panel, shape);
+}
+
+/// Drop a closed panel's published shape, the publisher's job on release.
+pub fn forget_content_shape(panel: EntityId) {
+    CONTENT.write().unwrap().remove(&panel);
+}
+
+/// What `panel` said about its content, zero when it never spoke.
+fn content_shape(panel: EntityId) -> f32 {
+    CONTENT.read().unwrap().get(&panel).copied().unwrap_or(0.0)
+}
+
 /// How long an untouched entry sticks around before the next insert drops
 /// it. Long enough that a panel in a background window keeps its state.
 const LIVE_TTL: Duration = Duration::from_secs(300);
@@ -1233,6 +1269,10 @@ pub struct PanelSurface {
     /// The chrome margin, side by side, so the shader covers the panel's
     /// body rect and leaves the gutter the backdrop shows through alone.
     inset: Sides,
+    /// Whether the source mentions the `mask` binding, read once at build so
+    /// the wrapper knows to bracket the body's paint as a mask span before
+    /// registration has said anything.
+    wants_mask: bool,
 }
 
 impl PanelSurface {
@@ -1254,7 +1294,9 @@ impl PanelSurface {
         if !approved(&source) {
             return None;
         }
+        let wants_mask = uses_mask(&source);
         Some(PanelSurface {
+            wants_mask,
             source,
             name: shader.name.clone(),
             // A named surface doesn't watch a file. Its text belongs to the
@@ -1268,6 +1310,12 @@ impl PanelSurface {
             run_when_idle: shader.run_when_idle,
             inset: margin,
         })
+    }
+
+    /// Whether the wrapper should bracket the body's paint as a mask span,
+    /// so this surface's `mask` binding has something to read.
+    pub fn wants_mask(&self) -> bool {
+        self.wants_mask
     }
 
     /// Record the shader over the panel's body, after the body itself has
@@ -1322,7 +1370,12 @@ impl PanelSurface {
             return;
         };
         let (signals, live) = self.signals(window, cx);
-        let meta = meta_slots(window, cx);
+        let mut meta = meta_slots(window, cx);
+        // The wearing panel's published content shape rides the reserved
+        // slot, so a shader framing the panel's picture knows where the
+        // picture actually ends. Only panel surfaces get it: the Shader
+        // panel and the backdrop have no publisher and read zero.
+        meta[7] = content_shape(panel);
         // A shader that reads the pointer keeps its own frames coming
         // while the pointer counts for anything, so the fade at the end of
         // it plays out on a panel that would otherwise be parked, and the
@@ -1486,8 +1539,9 @@ fn window_feed(window: &Window, cx: &App) -> Option<(Arc<SignalHub>, gpui::Entit
 /// the Shader panel shares: volume, where the track sits, whether audio is
 /// moving, how long the track runs, how dark the theme renders, which
 /// theme the user actually picked, and how much the cursor still counts
-/// for. The last one is reserved and reads zero, so a shader written
-/// against it today keeps working when it fills in.
+/// for. The last one reads zero here; a panel surface fills it with the
+/// wearing panel's published content shape (see [`note_content_shape`])
+/// on its way into the paint.
 pub fn meta_slots(window: &Window, cx: &App) -> [f32; 8] {
     let mut meta = [0.0f32; 8];
     // Cursor presence, 1 with a hand on the mouse and 0 once it's been

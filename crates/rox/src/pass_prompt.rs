@@ -25,7 +25,7 @@ use rox_core::settings::{AcousticSave, ReplayGainSave, Settings};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel;
-use rox_panel_kit::ui::{self as settings_ui, dialog_button, small_button};
+use rox_panel_kit::ui::{self as settings_ui, dialog_button, dialog_icon_button};
 use rox_panel_kit::ScrubState;
 use rox_services::catalog::Library;
 
@@ -443,7 +443,7 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
     // tracks would be the worse of the two.
     let probing = prompt.probing;
     let probe_button = estimate.is_none().then(|| {
-        small_button(
+        dialog_icon_button(
             if probing { "Estimating..." } else { "Estimate" },
             icons::GAUGE,
             probing,
@@ -458,12 +458,16 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
             .flex()
             .items_center()
             .justify_center()
+            // Inset so the card keeps a margin in a window barely wider
+            // than it, instead of running edge to edge.
+            .p(tokens::SPACE_MD)
             .bg(gpui::rgba(0x00000066))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .w(px(400.))
+                    .max_w_full()
                     .rounded(tokens::RADIUS)
                     .bg(palette::bg_menu_opaque())
                     .border_1()
@@ -502,13 +506,14 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
                             ),
                     )
                     // The windows' footer, run inside a card: what the pass
-                    // costs on the left, what to do about it on the right.
+                    // costs across the top, what to do about it in a button
+                    // row beneath. The cost line ran beside the buttons once,
+                    // and with no estimate yet it wraps to a paragraph that
+                    // left them no room.
                     .child(
                         div()
                             .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
+                            .flex_col()
                             .gap(tokens::SPACE_SM)
                             .px(tokens::SPACE_MD)
                             .py(tokens::SPACE_SM)
@@ -516,42 +521,44 @@ pub fn overlay<V: Host>(this: &V, cx: &mut Context<V>) -> Option<Div> {
                             .border_color(palette::border())
                             .child(
                                 div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap(tokens::SPACE_SM)
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .text_xs()
-                                            .text_color(if failed {
-                                                palette::tone_warn()
-                                            } else {
-                                                palette::text_muted()
-                                            })
-                                            .child(SharedString::from(timing)),
-                                    )
-                                    .children(probe_button),
+                                    .text_xs()
+                                    .text_color(if failed {
+                                        palette::tone_warn()
+                                    } else {
+                                        palette::text_muted()
+                                    })
+                                    .child(SharedString::from(timing)),
                             )
                             .child(
                                 div()
                                     .flex()
                                     .flex_row()
-                                    .flex_none()
                                     .items_center()
+                                    .justify_between()
                                     .gap(tokens::SPACE_SM)
-                                    .child(dialog_button(
-                                        "Cancel",
-                                        false,
-                                        cx.listener(|this: &mut V, _, _, cx| cancel(this, cx)),
-                                    ))
-                                    .child(dialog_button(
-                                        copy.action,
-                                        true,
-                                        cx.listener(|this: &mut V, _, _, cx| start(this, cx)),
-                                    )),
+                                    .child(div().flex_none().children(probe_button))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .flex_none()
+                                            .items_center()
+                                            .gap(tokens::SPACE_SM)
+                                            .child(dialog_button(
+                                                "Cancel",
+                                                false,
+                                                cx.listener(|this: &mut V, _, _, cx| {
+                                                    cancel(this, cx)
+                                                }),
+                                            ))
+                                            .child(dialog_button(
+                                                copy.action,
+                                                true,
+                                                cx.listener(|this: &mut V, _, _, cx| {
+                                                    start(this, cx)
+                                                }),
+                                            )),
+                                    ),
                             ),
                     ),
             ),

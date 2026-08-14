@@ -46,6 +46,7 @@ use crate::assets::icons;
 use crate::catalog::LibraryEvent;
 use crate::design::{palette, tokens};
 use crate::grid::TitleAlign;
+use crate::group_head::{TileFace, MOSAIC};
 use crate::panel::{
     self, setting_row, toggle, AppState, FlickState, PanelChrome, PanelSettings, ResumeIdle,
     ScrubState,
@@ -76,46 +77,12 @@ const FALLBACK_COLS: usize = 5;
 /// reveals loaded art instead of placeholders.
 const PREFETCH_ROWS: usize = 2;
 
-/// Covers in a tile's mosaic when the genre has that many albums.
-const MOSAIC: usize = 4;
-
 fn default_tile() -> f32 {
     160.
 }
 
 fn default_rounding() -> f32 {
     12.
-}
-
-/// What a genre tile wears. Tinted is the default: the covers still say
-/// "your music" while the genre's own color says which one at a glance;
-/// Mosaic is the plain covers, Gradient and Color are cards in the
-/// genre's color - a two-stop lean or a flat fill - decorated with the
-/// genre's own geometry and the name set on them.
-#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TileFace {
-    Mosaic,
-    #[default]
-    Tinted,
-    Gradient,
-    Color,
-}
-
-impl TileFace {
-    fn label(self) -> &'static str {
-        match self {
-            TileFace::Mosaic => "Cover Mosaic",
-            TileFace::Tinted => "Tinted Mosaic",
-            TileFace::Gradient => "Gradient Card",
-            TileFace::Color => "Color Card",
-        }
-    }
-
-    /// The card faces paint no covers, so they skip the thumbnail cache.
-    fn is_card(self) -> bool {
-        matches!(self, TileFace::Gradient | TileFace::Color)
-    }
 }
 
 /// The genre grid's per-view config: what a saved layout restores, and
@@ -1492,6 +1459,34 @@ impl PanelSettings for GenreGridPanel {
         cx.notify();
     }
 
+    fn pages(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Layout", icons::ALIGN_LEFT)]
+    }
+
+    fn page(
+        &mut self,
+        _page: &'static str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_MD)
+            .child(setting_row(
+                "Vertical Layout",
+                Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height"),
+                toggle(
+                    self.config.vertical,
+                    |this: &mut Self, on, cx| {
+                        this.set_orientation(on, cx);
+                    },
+                    cx,
+                ),
+            ))
+            .into_any_element()
+    }
+
     fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         Some(
             div()
@@ -1514,21 +1509,6 @@ impl PanelSettings for GenreGridPanel {
                                     this.drop_genre_filter(cx);
                                 }
                                 this.rebuild(cx);
-                            },
-                            cx,
-                        ),
-                    ),
-                ))
-                .child(settings_ui::section(
-                    "Orientation",
-                    None,
-                    setting_row(
-                        "Vertical Layout",
-                        Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height"),
-                        toggle(
-                            self.config.vertical,
-                            |this: &mut Self, on, cx| {
-                                this.set_orientation(on, cx);
                             },
                             cx,
                         ),

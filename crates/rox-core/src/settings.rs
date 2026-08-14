@@ -43,8 +43,8 @@ use crate::continuation;
 /// the clamp the programmatic resizes run through, small enough for a compact
 /// mini-player but never zero.
 pub const MIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
-    width: px(240.),
-    height: px(140.),
+    width: px(20.),
+    height: px(20.),
 };
 
 /// Where a pre-split settings file's workspaces go. The bundle handling lives

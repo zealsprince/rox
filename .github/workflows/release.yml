@@ -178,8 +178,15 @@ jobs:
           staging=$(mktemp -d)
           cp -R rox.app "$staging/"
           ln -s /Applications "$staging/Applications"
+          # Handed just -srcfolder, hdiutil works out the image size itself and
+          # undershoots on the signed bundle: create dies with ENOSPC copying
+          # into /Volumes/rox while the runner still has ~96 GB free. Give it
+          # the number instead, with slack for volume overhead. UDZO squeezes
+          # the unused blocks back out, so the shipped DMG doesn't grow.
+          size=$(( $(du -sm "$staging" | cut -f1) + 200 ))
           hdiutil create -volname "rox" -srcfolder "$staging" -ov \
-            -format UDZO "rox-v$VERSION-${{ matrix.artifact }}.dmg"
+            -size "${size}m" -format UDZO \
+            "rox-v$VERSION-${{ matrix.artifact }}.dmg"
           if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
             codesign --force --timestamp -s "$APPLE_SIGNING_IDENTITY" \
               "rox-v$VERSION-${{ matrix.artifact }}.dmg"

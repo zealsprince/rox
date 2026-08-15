@@ -40,11 +40,16 @@ use crate::continuation;
 /// mini-player resizes the window to a preset's stored size, and a bad or
 /// zero size there used to collapse the window to nothing, so you had to go
 /// fish it back out with the window manager. This is the OS-level minimum and
-/// the clamp the programmatic resizes run through, small enough for a compact
-/// mini-player but never zero.
+/// the clamp the programmatic resizes run through, never zero.
+///
+/// Low enough to stay out of the way, because it isn't what usually stops a
+/// resize. The dock floors a window at what its layout needs: every panel
+/// carries a minimum, a stack adds its children's along its own axis, and
+/// that sum is what a drag actually hits. This is the backstop under that,
+/// for a layout whose panels have all been set small enough to reach it.
 pub const MIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
-    width: px(240.),
-    height: px(140.),
+    width: px(20.),
+    height: px(20.),
 };
 
 /// Where a pre-split settings file's workspaces go. The bundle handling lives

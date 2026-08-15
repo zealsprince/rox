@@ -1,0 +1,41 @@
+--- a/src/platform/mac/window.rs
++++ b/src/platform/mac/window.rs
+@@ -784,6 +784,22 @@
+                     native_window.setLevel_(NSNormalWindowLevel);
+                     native_window.setAcceptsMouseMovedEvents_(YES);
+ 
++                    // rox patch: ask for full-screen-primary out loud rather
++                    // than leaning on AppKit inferring it from the style mask.
++                    // Without the flag the green button in the native titlebar
++                    // takes its zoom fallback and just fills the desktop in
++                    // place, while the window controls panel's green light,
++                    // which calls toggleFullScreen: itself, opens a Space. Two
++                    // controls, same window, different answers. Only for
++                    // resizable windows: a fixed-size one has no live zoom
++                    // button whose meaning this would change.
++                    if is_resizable {
++                        let primary =
++                            NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenPrimary;
++                        let behavior = native_window.collectionBehavior();
++                        native_window.setCollectionBehavior_(behavior | primary);
++                    }
++
+                     if let Some(tabbing_identifier) = tabbing_identifier {
+                         let tabbing_id = NSString::alloc(nil).init_str(tabbing_identifier.as_str());
+                         let _: () = msg_send![native_window, setTabbingIdentifier: tabbing_id];
+@@ -1400,6 +1416,15 @@
+                 mask &= !NSWindowStyleMask::NSFullSizeContentViewWindowMask;
+             }
+             let _: () = msg_send![window, setStyleMask: mask];
++            // Re-assert full-screen-primary behind the mask change. AppKit
++            // re-derives what the window can do when the mask is set, and a
++            // window that came up decorated and then had the decorations
++            // toggled lost its fullscreen green button until restart.
++            if mask.contains(NSWindowStyleMask::NSResizableWindowMask) {
++                let primary =
++                    NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenPrimary;
++                window.setCollectionBehavior_(window.collectionBehavior() | primary);
++            }
+             window.setTitlebarAppearsTransparent_(client as BOOL);
+             window.setTitleVisibility_(if client {
+                 NSWindowTitleVisibility::NSWindowTitleHidden

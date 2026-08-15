@@ -47,6 +47,9 @@ pub enum SeekItem {
     Break,
 }
 
+/// The two clocks, what the quick Show Timings toggle moves as a pair.
+const CLOCKS: [SeekItem; 2] = [SeekItem::Elapsed, SeekItem::Ending];
+
 /// The row's full catalog in stock order: what the arrange editor offers,
 /// and where a menu toggle slots a re-shown piece back in.
 const ITEMS: &[panel::ArrangeSpec<SeekItem>] = &[
@@ -221,6 +224,11 @@ pub struct SeekStripPanel {
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
+    /// The row as it stood when the quick Show Timings toggle last hid the
+    /// clocks, so turning them back on returns them to where they sat
+    /// rather than their catalog rank. Held on the panel and not the config
+    /// because it's the undo for one toggle, not a layout anybody saves.
+    timings_stash: Option<Vec<SeekItem>>,
     _player_changed: Subscription,
 }
 
@@ -240,6 +248,7 @@ impl SeekStripPanel {
             value_edit: ValueEdit::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
+            timings_stash: None,
             _player_changed,
         }
     }
@@ -251,6 +260,13 @@ impl SeekStripPanel {
             .items
             .iter()
             .any(|i| matches!(i, SeekItem::Elapsed | SeekItem::Ending))
+    }
+
+    /// Both clocks on or off in one move, the row they sat in kept across
+    /// the round trip.
+    fn toggle_timings(&mut self) {
+        self.config.items =
+            panel::toggled_stashed(ITEMS, &self.config.items, &mut self.timings_stash, &CLOCKS);
     }
 
     /// The panel's own dropdown entries: the quick timings and marker
@@ -265,13 +281,7 @@ impl SeekStripPanel {
                 .on_click(move |_, _, cx| {
                     let Some(this) = weak.upgrade() else { return };
                     this.update(cx, |this, cx| {
-                        let mut items = this.config.items.clone();
-                        for clock in [SeekItem::Elapsed, SeekItem::Ending] {
-                            if items.contains(&clock) == timings {
-                                items = panel::toggled(ITEMS, &items, clock);
-                            }
-                        }
-                        this.config.items = items;
+                        this.toggle_timings();
                         cx.notify();
                     });
                 }),

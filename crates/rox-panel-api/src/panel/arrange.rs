@@ -262,6 +262,58 @@ pub fn toggled<V: PartialEq + Copy>(
     }
 }
 
+/// Put a stashed arrangement back, if it still describes the row. `stash`
+/// is what the list looked like before a hide took `hidden` out of it, and
+/// restoring it is only right while nothing else has moved since: the
+/// stash minus the hidden values has to still match the live list exactly.
+/// None means it doesn't.
+fn restored<V: PartialEq + Copy>(stash: &[V], items: &[V], hidden: &[V]) -> Option<Vec<V>> {
+    let kept: Vec<V> = stash
+        .iter()
+        .copied()
+        .filter(|v| !hidden.contains(v))
+        .collect();
+    (kept == items).then(|| stash.to_vec())
+}
+
+/// [`toggled`] with the arrangement kept, and what the panels' quick menus
+/// ride. `values` moves as one group: shown if any of them is on the row.
+/// Hiding stashes the row first, so showing can put it back whole instead
+/// of slotting each value at its catalog rank, which on a hand-arranged
+/// row is the wrong place and is the whole reason this exists.
+///
+/// One stash slot per toggle, so hiding a second group forgets the first.
+/// [`restored`] catches that, along with any edit made while the group was
+/// hidden, and the stock insert takes over.
+pub fn toggled_stashed<V: PartialEq + Copy>(
+    registry: &'static [ArrangeSpec<V>],
+    items: &[V],
+    stash: &mut Option<Vec<V>>,
+    values: &[V],
+) -> Vec<V> {
+    if values.iter().any(|value| items.contains(value)) {
+        *stash = Some(items.to_vec());
+        return items
+            .iter()
+            .copied()
+            .filter(|value| !values.contains(value))
+            .collect();
+    }
+    if let Some(kept) = stash
+        .take()
+        .and_then(|stash| restored(&stash, items, values))
+    {
+        return kept;
+    }
+    let mut out = items.to_vec();
+    for value in values {
+        if !out.contains(value) {
+            out = insert_stock(registry, &out, *value);
+        }
+    }
+    out
+}
+
 /// Drop repeated values from a dump's list, keeping first positions, so a
 /// hand-edited layout can't render an item twice. Items the catalog marks
 /// repeatable pass through as often as they appear.
@@ -561,7 +613,8 @@ pub fn arrange_rows_editor<P: 'static, V: PartialEq + Copy + 'static>(
 #[cfg(test)]
 mod tests {
     use super::{
-        dedup, insert_stock, inserted, moved_at, removed_at, removed_row, without, ArrangeSpec,
+        dedup, insert_stock, inserted, moved_at, removed_at, removed_row, toggled, toggled_stashed,
+        without, ArrangeSpec,
     };
 
     /// The place ops that read the catalog for repeatability, pinned to
@@ -664,5 +717,57 @@ mod tests {
         assert_eq!(dedup(REGISTRY, vec![2, 0, 2, 1, 0]), vec![2, 0, 1]);
         assert_eq!(dedup(REGISTRY, vec![3, 0, 3, 3]), vec![3, 0, 3, 3]);
         assert_eq!(without(&[0, 1, 2], 1), vec![0, 2]);
+    }
+
+    /// The round trip a quick menu makes: a hand-arranged row comes back
+    /// as itself, where the stock insert would have put the item at its
+    /// catalog rank instead. The stash is spent on the way back, so a
+    /// second show falls through to that stock insert.
+    #[test]
+    fn stashed_toggle_returns_a_rearranged_row() {
+        let row = vec![2, 0, 1];
+        let mut stash = None;
+        let hidden = toggled_stashed(REGISTRY, &row, &mut stash, &[0]);
+        assert_eq!(hidden, vec![2, 1]);
+        assert_eq!(toggled_stashed(REGISTRY, &hidden, &mut stash, &[0]), row);
+        assert_eq!(insert_stock(REGISTRY, &hidden, 0), vec![0, 2, 1]);
+        assert!(stash.is_none(), "the stash is spent once it's used");
+    }
+
+    /// Both clocks of the seek row move as one group, and come back as one.
+    #[test]
+    fn stashed_toggle_moves_a_group() {
+        let row = vec![2, 0, 3, 1];
+        let mut stash = None;
+        let hidden = toggled_stashed(REGISTRY, &row, &mut stash, &[0, 1]);
+        assert_eq!(hidden, vec![2, 3]);
+        assert_eq!(toggled_stashed(REGISTRY, &hidden, &mut stash, &[0, 1]), row);
+    }
+
+    /// An edit made while the item was hidden invalidates the stash: the
+    /// row it describes isn't the row on screen any more, so putting it
+    /// back would undo the edit. The stock insert takes over instead.
+    #[test]
+    fn an_edit_under_the_stash_falls_back_to_stock() {
+        let mut stash = None;
+        let hidden = toggled_stashed(REGISTRY, &[2, 0, 1], &mut stash, &[0]);
+        assert_eq!(hidden, vec![2, 1]);
+        let edited = vec![1, 2];
+        assert_eq!(
+            toggled_stashed(REGISTRY, &edited, &mut stash, &[0]),
+            vec![0, 1, 2],
+            "stock rank, not the stale stash"
+        );
+    }
+
+    /// No stash at all is the first toggle after a launch, and it behaves
+    /// exactly like the plain toggle it replaced.
+    #[test]
+    fn a_cold_stash_matches_the_plain_toggle() {
+        let mut stash = None;
+        assert_eq!(
+            toggled_stashed(REGISTRY, &[2, 1], &mut stash, &[0]),
+            toggled(REGISTRY, &[2, 1], 0)
+        );
     }
 }

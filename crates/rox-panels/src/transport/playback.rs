@@ -357,6 +357,11 @@ pub struct TransportPanel {
     focus: FocusHandle,
     /// The tab panel this panel currently sits in, for duplicate and pop-out.
     tab_panel: Option<WeakEntity<TabPanel>>,
+    /// The row as it stood when a menu toggle last hid a control, so
+    /// showing it again puts it back where it was rather than at its
+    /// catalog rank. The undo for one toggle, not a layout anybody saves,
+    /// so it rides the panel and not the config.
+    items_stash: Option<Vec<PlaybackItem>>,
     /// The last crossfade the render saw, so the frame where it disappears
     /// can tell a finished fade (glow out) from a cancelled one (vanish,
     /// today's behavior).
@@ -528,6 +533,7 @@ impl TransportPanel {
             config,
             focus: cx.focus_handle(),
             tab_panel: None,
+            items_stash: None,
             last_fade: None,
             outro: None,
             press: None,
@@ -542,8 +548,8 @@ impl TransportPanel {
     }
 
     /// The panel's own dropdown entries: quick show/hide for the opt-in
-    /// buttons. A re-shown one slots back at its stock position; the
-    /// settings window's arrange editor is where the order changes.
+    /// buttons. A re-shown one goes back where it sat; the settings
+    /// window's arrange editor is where the order changes.
     fn config_menu(&self, menu: PopupMenu, cx: &mut Context<Self>) -> PopupMenu {
         let mut menu = menu;
         for (name, value) in [
@@ -563,7 +569,12 @@ impl TransportPanel {
                     .on_click(move |_, _, cx| {
                         let Some(this) = weak.upgrade() else { return };
                         this.update(cx, |this, cx| {
-                            this.config.items = panel::toggled(ITEMS, &this.config.items, value);
+                            this.config.items = panel::toggled_stashed(
+                                ITEMS,
+                                &this.config.items,
+                                &mut this.items_stash,
+                                &[value],
+                            );
                             cx.notify();
                         });
                     }),

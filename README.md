@@ -25,7 +25,7 @@ start in under a second, it isn't rox.
 | Playback  | Gapless single-stream engine, queue with shuffle, repeat, and play-next, endless play that refills the queue from your browse order, from what you've neglected, or from what the current track sounds like, crossfade that leaves album-contiguous boundaries alone, recovery when an audio device disappears, media keys and now-playing integration on all three platforms |
 | Sound     | Optional local analysis describing how each track actually sounds, driving a sortable Similar column, Play Similar, and a nearest-by-sound shuffle. The built-in extractor needs no download; PANNs CNN10 or a weights file of your own if you want a heavier ear. Nothing leaves the machine |
 | Audio     | A ten-band equalizer in a window of its own, ReplayGain off the tags with an EBU R128 pass for the files no tagger ever measured, and an exclusive output mode (ALSA, WASAPI, CoreAudio) that states what the hardware agreed to |
-| Panels    | Forty-one panel types (library, queue, history, playlists, lyrics, cover, biography, artist and genre grids, spectrum, waveform, VU), composed freely, duplicated with independent configs, popped out into OS windows, saved as named presets, and a design mode switch so a finished layout stays put |
+| Panels    | Forty-odd panel types (library, queue, history, playlists, lyrics, cover, biography, artist and genre grids, spectrum, waveform, VU), composed freely, duplicated with independent configs, popped out into OS windows, saved as named presets, and a design mode switch so a finished layout stays put |
 | Theming   | Workspaces as single shareable files (layout, palette, appearance) in a folder you can drop a bundle into, palette tinting from the playing album's cover per window, light and dark following cover brightness |
 | Shaders   | Music-reactive WGSL shaders in a panel or over the whole window: multi-pass pipelines, cover-art and image bindings, shipped examples or your own files, and a signals window for tuning what drives them. Shaders ride workspace bundles and never run without your yes |
 | Tagging   | Full tag editor with atomic writes and batch edits, multi-value genres with merges kept as a library opinion rather than a tag write, ratings stored in the files themselves (FMPS and POPM), online tag and cover lookup through MusicBrainz, iTunes, and Deezer, artist biographies |
@@ -118,17 +118,24 @@ is start mapping it over. So that's what I did. And now we have a new native pla
 ## Screenshots & Additional Workspaces
 
 A workspace is a whole look in one shareable file: layout, palette, appearance.
-The shot above is the Default workspace, and these ship in the box too, one
-click away on the welcome window or in settings:
+These all ship in the box, one click away on the welcome window or in settings:
 
 <table>
   <tr>
+    <th width="50%">(Default / NekoRoX)</th>
     <th width="50%">CaTRoX</th>
-    <th width="50%">Critters</th>
   </tr>
   <tr>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Default_Dark.png" alt="Default" width="100%"></td>
     <td valign="top"><img src="crates/rox/assets/workspaces/CaTRoX_Dark.png" alt="CaTRoX" width="100%"></td>
+  </tr>
+  <tr>
+    <th>Critters</th>
+    <th>Diffuse</th>
+  </tr>
+  <tr>
     <td valign="top"><img src="crates/rox/assets/workspaces/Critters_Dark.png" alt="Critters" width="100%"></td>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Diffuse_Dark.png" alt="Diffuse" width="100%"></td>
   </tr>
   <tr>
     <th>Foobar</th>

@@ -38,6 +38,11 @@ use crate::workspace::{
 /// is focused: there space and arrows keep typing into the query.
 /// Bindings win over key listeners, so the exclusion is what hands the
 /// keys back.
+///
+/// The exclusion is for bare chords only. A command rebound onto a
+/// modified chord widens to [`WORKSPACE`] at build time, since ctrl-f is
+/// nothing the search box wants and losing the binding while you type is
+/// the whole complaint. See [`Command::binding`].
 const PLAYBACK: Option<&str> = Some("Workspace && !SearchInput");
 
 /// The plain workspace scope: anywhere in a workspace window, the search
@@ -110,8 +115,35 @@ impl Command {
     /// A file edited by hand is the way that happens, and dropping the
     /// one bad line beats refusing to bind anything.
     fn binding(&self, chord: &str) -> Option<KeyBinding> {
-        parses(chord).then(|| (self.build)(chord, self.context))
+        parses(chord).then(|| (self.build)(chord, self.scope(chord)))
     }
+
+    /// The context this chord binds under. Everything binds under the
+    /// command's own scope except a modified chord on [`PLAYBACK`], which
+    /// widens to the whole workspace: the search-box exclusion is there so
+    /// space and the arrows keep typing, and a chord holding ctrl, alt or
+    /// cmd was never going to reach the query anyway.
+    fn scope(&self, chord: &str) -> Option<&'static str> {
+        if self.context == PLAYBACK && modified(chord) {
+            WORKSPACE
+        } else {
+            self.context
+        }
+    }
+}
+
+/// Whether a chord opens on a modified keystroke. Shift doesn't count:
+/// shift-letter is typing, and a text box wants it. The first keystroke
+/// decides, since that's the one a focused input would otherwise eat.
+fn modified(chord: &str) -> bool {
+    chord
+        .split_whitespace()
+        .next()
+        .and_then(|key| Keystroke::parse(key).ok())
+        .is_some_and(|key| {
+            let m = key.modifiers;
+            m.control || m.alt || m.platform || m.function
+        })
 }
 
 macro_rules! command {
@@ -340,25 +372,35 @@ pub fn is_default(command: &Command, overrides: &BTreeMap<String, Vec<String>>) 
     }
 }
 
+/// Whether two scopes can both be live at one moment. Unscoped is live
+/// everywhere and so overlaps anything. [`PLAYBACK`] is [`WORKSPACE`]
+/// minus the search box, a subset rather than a neighbour, so the two
+/// overlap wherever a workspace window has focus. Everything else here is
+/// a distinct window or editor and only overlaps itself.
+fn overlaps(a: Option<&'static str>, b: Option<&'static str>) -> bool {
+    let widen = |scope| if scope == PLAYBACK { WORKSPACE } else { scope };
+    a.is_none() || b.is_none() || widen(a) == widen(b)
+}
+
 /// Another command holding the same chord somewhere this one is also
-/// live, if there is one. This compares context strings rather than
-/// working out whether two predicates can both be true at once: an
-/// unscoped binding is live everywhere so it clashes with anything, and
-/// two scoped ones only count as clashing when they name the same scope.
-/// That misses a pair whose predicates overlap without matching, which
-/// today can't happen - every scope here is a distinct window or editor.
+/// live, if there is one. Both sides resolve through
+/// [`Command::scope`] first, so a playback command rebound onto a
+/// modified chord is checked where it actually binds rather than where it
+/// was declared.
 pub fn clash(
     command: &Command,
     chord: &str,
     overrides: &BTreeMap<String, Vec<String>>,
 ) -> Option<&'static str> {
+    let scope = command.scope(chord);
     COMMANDS
         .iter()
         .filter(|other| other.id != command.id)
-        .filter(|other| {
-            other.context.is_none() || command.context.is_none() || other.context == command.context
+        .find(|other| {
+            chords(other, overrides)
+                .iter()
+                .any(|held| held == chord && overlaps(other.scope(held), scope))
         })
-        .find(|other| chords(other, overrides).iter().any(|held| held == chord))
         .map(|other| other.label)
 }
 
@@ -591,5 +633,74 @@ mod tests {
         assert!(parses("ctrl"));
         assert!(parses("ctrl-nonsense"));
         assert!(parses("ctrl-k ctrl-s"), "a two-keystroke sequence");
+    }
+
+    #[test]
+    fn shift_alone_is_typing() {
+        assert!(!modified("space"));
+        assert!(!modified("left"));
+        assert!(!modified("shift-left"));
+        assert!(modified("ctrl-f"));
+        assert!(modified("alt-left"));
+        assert!(modified("cmd-space"));
+    }
+
+    /// The first keystroke of a sequence is the one a focused input would
+    /// eat, so it's the one that decides.
+    #[test]
+    fn sequences_read_their_opening_chord() {
+        assert!(modified("ctrl-k left"));
+        assert!(!modified("g ctrl-f"));
+    }
+
+    /// The point of the split: a playback command left on its bare default
+    /// keeps handing the key back to the search box, and the same command
+    /// rebound onto a modified chord fires while you type.
+    #[test]
+    fn modified_playback_chords_reach_the_search_box() {
+        let seek = COMMANDS
+            .iter()
+            .find(|c| c.id == "seek_forward")
+            .expect("seek_forward is bound");
+        assert_eq!(seek.context, PLAYBACK, "the fixture moved scope");
+        assert_eq!(seek.scope("right"), PLAYBACK);
+        assert_eq!(seek.scope("ctrl-f"), WORKSPACE);
+    }
+
+    /// Rebinding a playback command onto a chord the workspace already
+    /// holds is a real collision once it widens, so the page has to say so
+    /// rather than let the loser bind and never fire.
+    #[test]
+    fn widened_chords_clash_with_the_workspace() {
+        let seek = COMMANDS
+            .iter()
+            .find(|c| c.id == "seek_forward")
+            .expect("seek_forward is bound");
+        let overrides = BTreeMap::new();
+        assert_eq!(
+            clash(seek, "ctrl-l", &overrides),
+            Some("Focus Search"),
+            "a modified playback chord binds where Focus Search lives"
+        );
+        assert_eq!(
+            clash(seek, "right", &overrides),
+            None,
+            "a bare one still bows out of the search box"
+        );
+    }
+
+    /// Widening is scoped to the playback exclusion. A command already on
+    /// the plain workspace scope, or on the lyrics editor's, stays put no
+    /// matter what it's bound to.
+    #[test]
+    fn other_scopes_do_not_widen() {
+        for command in COMMANDS.iter().filter(|c| c.context != PLAYBACK) {
+            assert_eq!(
+                command.scope("ctrl-f"),
+                command.context,
+                "{} widened out of its own scope",
+                command.id
+            );
+        }
     }
 }

@@ -3867,9 +3867,13 @@ impl SettingsWindow {
             .section(self.playback_behavior_section(q, cx))
             .section(Section::new(q, icons::PLAY, "Startup", None, |rows| {
                 rows.keyed(
-                    &["resume", "reopen"],
-                    "Restore Last Track",
-                    Some("Launch with the last playing track loaded, paused where it left off"),
+                    &["resume", "reopen", "track", "queue"],
+                    "Restore Last Session",
+                    Some(
+                        "Launch with the play queue as you left it, paused on the track that \
+                         was playing and where it left off. Queued tracks outside your library \
+                         folders can't be restored and drop from the order",
+                    ),
                     panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
                 )
                 .keyed(

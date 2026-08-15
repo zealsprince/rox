@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    div, img, prelude::*, AnyElement, App, Context, Entity, ObjectFit, RenderImage, Rgba,
+    div, img, prelude::*, AnyElement, App, Context, Entity, ObjectFit, Pixels, RenderImage, Rgba,
     Subscription, Window,
 };
 use image::{Frame, RgbaImage};
@@ -274,15 +274,35 @@ impl Default for WindowBackdrop {
     }
 }
 
+/// How far past the window the bake is drawn, in baked texels. gpui packs
+/// images into a shared atlas and samples them with a linear filter that
+/// runs to the tile's exact edge, so a sprite's outermost half texel blends
+/// with whatever tile got packed beside it. At bake size that half texel is
+/// invisible; blown up to window width it's a several-pixel band of someone
+/// else's texture down the left and right edges, which is the weird edge.
+/// Two texels of overscan puts the whole contaminated band outside the
+/// layer's clip. Cover-fit already crops one axis, so the only cost is a
+/// couple of percent more crop on a blur nobody can read anyway.
+const OVERSCAN_TEXELS: f32 = 2.0;
+
 /// One bake filling the window at a weight, cover-fit; the bilinear
-/// upscale is what multiplies the baked blur.
-fn sheet(image: &Arc<RenderImage>, opacity: f32) -> AnyElement {
+/// upscale is what multiplies the baked blur. `overscan` is the atlas-bleed
+/// margin, see [`OVERSCAN_TEXELS`].
+fn sheet(image: &Arc<RenderImage>, opacity: f32, overscan: Pixels) -> AnyElement {
     div()
         .absolute()
-        .inset_0()
+        .inset(-overscan)
         .opacity(opacity)
         .child(img(image.clone()).size_full().object_fit(ObjectFit::Cover))
         .into_any_element()
+}
+
+/// The overscan for this window: whole texels of the bake at the size it
+/// gets drawn. Cover-fit on a square bake scales by the window's long side,
+/// so that side over [`BAKE_SIZE`] is one texel on screen.
+fn overscan(window: &Window) -> Pixels {
+    let viewport = window.viewport_size();
+    viewport.width.max(viewport.height) / BAKE_SIZE as f32 * OVERSCAN_TEXELS
 }
 
 impl WindowBackdrop {
@@ -356,16 +376,19 @@ impl WindowBackdrop {
         }
         // Smoothstepped so the fade eases out instead of stopping dead.
         let u = u * u * (3.0 - 2.0 * u);
+        // Clipping is what makes the overscan work, so the sheets can only
+        // ever be children of an overflow_hidden root.
         let mut root = div().absolute().inset_0().overflow_hidden();
+        let overscan = overscan(window);
         if let Some(from) = &self.from {
             // Under an incoming bake the floor holds at full, so the
             // cross-fade never dips toward black between two covers; with
             // nothing incoming it fades out bare.
             let opacity = if self.to.is_some() { 1.0 } else { 1.0 - u };
-            root = root.child(sheet(from, opacity));
+            root = root.child(sheet(from, opacity, overscan));
         }
         if let Some(to) = &self.to {
-            root = root.child(sheet(to, u));
+            root = root.child(sheet(to, u, overscan));
         }
         if baked {
             // Backdrop strength, applied as its inverse: a wash of the

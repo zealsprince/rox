@@ -4781,7 +4781,7 @@ impl Render for Workspace {
                         )
                     },
                 )
-                .when(!menubar_hidden, |d| d.child(self.menubar(cx)))
+                .when(!menubar_hidden, |d| d.child(self.menubar(window, cx)))
                 .child(
                     div()
                         .flex_1()
@@ -4803,7 +4803,7 @@ impl Render for Workspace {
                             .left_0()
                             .right_0()
                             .occlude()
-                            .child(self.menubar(cx)),
+                            .child(self.menubar(window, cx)),
                     )
                 })
                 // The quick-play modal floats over everything on an occluding

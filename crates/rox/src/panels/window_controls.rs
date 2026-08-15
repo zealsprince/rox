@@ -10,7 +10,7 @@ use gpui::{
 };
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_dock::{Panel, PanelEvent, TabPanel};
-use rox_panel_kit::{maximize, traffic_lights, MAXIMIZE_TIP};
+use rox_panel_kit::{maximize, maximize_icon, maximize_tip, traffic_lights};
 use serde::{Deserialize, Serialize};
 
 use crate::workspace::Workspace;
@@ -164,7 +164,7 @@ impl WindowControlsPanel {
         )
     }
 
-    fn body(&mut self, cx: &mut Context<Self>) -> Div {
+    fn body(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         // Close the window this panel sits in. A workspace window runs the
         // same teardown the OS close button does, so shutting the last one
         // quits and takes the settings and popout windows with it; a
@@ -198,12 +198,16 @@ impl WindowControlsPanel {
                     .child(icon_button(icons::MINUS, "Minimize", |_, w, _| {
                         w.minimize_window()
                     }))
-                    .child(icon_button(icons::STOP, MAXIMIZE_TIP, maximize))
+                    .child(icon_button(
+                        maximize_icon(window),
+                        maximize_tip(window),
+                        maximize,
+                    ))
                     .child(icon_button(icons::CLOSE, "Close", cx.listener(close))),
                 // macOS order: close, minimize, zoom.
                 ControlStyle::Traffic => d
                     .gap(tokens::SPACE_SM)
-                    .children(traffic_lights(cx.listener(close))),
+                    .children(traffic_lights(window, cx.listener(close))),
             })
     }
 }
@@ -307,9 +311,9 @@ impl PanelSettings for WindowControlsPanel {
 }
 
 impl Render for WindowControlsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = self.config.chrome.clone();
-        panel::themed(&chrome, || self.body(cx))
+        panel::themed(&chrome, || self.body(window, cx))
     }
 }
 

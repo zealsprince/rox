@@ -1915,7 +1915,11 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
                 "Min Width",
-                Some("Hold the panel's width so a resize can't squeeze it narrower"),
+                Some(
+                    "Where a resize stops squeezing the panel narrower. Taken as written, \
+                     under the panel's own floor included, so a compact strip can go tighter \
+                     than stock; empty leaves the floor alone",
+                ),
                 self.size_limit_row(
                     &self.min_width_input,
                     limits.min_width.is_some(),
@@ -1935,7 +1939,11 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             ))
             .child(panel::setting_row(
                 "Min Height",
-                Some("Hold the panel's height so a resize can't squeeze it shorter"),
+                Some(
+                    "Where a resize stops squeezing the panel shorter. Taken as written, \
+                     under the panel's own floor included, so a compact strip can go tighter \
+                     than stock; empty leaves the floor alone",
+                ),
                 self.size_limit_row(
                     &self.min_height_input,
                     limits.min_height.is_some(),

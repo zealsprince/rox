@@ -42,7 +42,7 @@ pub use tracked_load::TrackedImage;
 pub mod ui;
 
 mod window_buttons;
-pub use window_buttons::{maximize, traffic_lights, MAXIMIZE_TIP};
+pub use window_buttons::{maximize, maximize_icon, maximize_tip, traffic_lights};
 
 /// What a control's hover tooltip says, and the identity gpui parks its
 /// timing under. Every [`icon_control`] takes one: a glyph on its own says

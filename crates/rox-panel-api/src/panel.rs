@@ -889,13 +889,19 @@ pub fn chrome_max_size(chrome: &PanelChrome, floor: gpui::Size<Pixels>) -> gpui:
 }
 
 /// The panel's minimum size as a [`Size`], the chrome's optional min
-/// width/height raised over `floor` (the panel's built-in minimum, what its
-/// controls need). A user min can only tighten the floor upward, never below
-/// it. An unset axis stays at the floor. Every panel returns this from its
+/// width/height over `floor` (the panel's built-in minimum, what its
+/// controls need at a comfortable size). Every panel returns this from its
 /// `Panel::min_size`, the mirror of [`chrome_max_size`].
+///
+/// The floor is the default, not a cap: an axis the chrome sets is taken
+/// as written, under the floor included. It used to clamp upward, which
+/// made the min knobs one-way and left compact layouts stuck at the 40px
+/// panel floor with no way down. A panel asked for 12px tall draws
+/// cramped, which is the point of asking. Zero is the bottom, since a
+/// negative min is a hand-edited file rather than an intent.
 pub fn chrome_min_size(chrome: &PanelChrome, floor: gpui::Size<Pixels>) -> gpui::Size<Pixels> {
     let axis = |min: Option<f32>, floor: Pixels| match min {
-        Some(px_value) => px(px_value).max(floor),
+        Some(px_value) => px(px_value.max(0.)),
         None => floor,
     };
     gpui::size(
@@ -1649,8 +1655,7 @@ mod chrome_tests {
     }
 
     /// A min set above the max is a settings file the user typed, not a
-    /// state the dock can lay out. The min wins on both axes, and the
-    /// panel's built-in floor still beats a min under it.
+    /// state the dock can lay out. The min wins on both axes.
     #[test]
     fn a_min_over_the_max_raises_the_cap() {
         let floor = gpui::size(px(120.), px(80.));
@@ -1668,16 +1673,6 @@ mod chrome_tests {
         assert_eq!(max.width, px(500.));
         assert_eq!(max.height, px(400.));
 
-        // A min under the panel's floor lifts to the floor, and the cap
-        // follows it there rather than sitting below.
-        let squeezed = PanelChrome {
-            min_width: Some(40.),
-            max_width: Some(60.),
-            ..PanelChrome::default()
-        };
-        assert_eq!(chrome_min_size(&squeezed, floor).width, px(120.));
-        assert_eq!(chrome_max_size(&squeezed, floor).width, px(120.));
-
         // A sane pair is left exactly as written, and an unset cap stays
         // unbounded however high the min goes.
         let sane = PanelChrome {
@@ -1688,5 +1683,38 @@ mod chrome_tests {
         };
         assert_eq!(chrome_max_size(&sane, floor).width, px(600.));
         assert_eq!(chrome_max_size(&sane, floor).height, Pixels::MAX);
+    }
+
+    /// The floor is the default, not a cap. A min typed under the panel's
+    /// own floor is what the panel gets, so a compact strip can be built
+    /// tighter than stock; the cap follows it down rather than being held
+    /// at a floor the min already left.
+    #[test]
+    fn an_explicit_min_goes_under_the_floor() {
+        let floor = gpui::size(px(120.), px(80.));
+        let compact = PanelChrome {
+            min_width: Some(40.),
+            max_width: Some(60.),
+            min_height: Some(12.),
+            ..PanelChrome::default()
+        };
+        assert_eq!(chrome_min_size(&compact, floor).width, px(40.));
+        assert_eq!(chrome_min_size(&compact, floor).height, px(12.));
+        assert_eq!(chrome_max_size(&compact, floor).width, px(60.));
+
+        // An unset axis is still the floor, which is what leaves every
+        // panel nobody has touched exactly where it was.
+        assert_eq!(
+            chrome_min_size(&PanelChrome::default(), floor),
+            gpui::size(px(120.), px(80.))
+        );
+
+        // A negative is a hand-edited file rather than an intent, and
+        // bottoms out at zero rather than laying out backwards.
+        let negative = PanelChrome {
+            min_height: Some(-20.),
+            ..PanelChrome::default()
+        };
+        assert_eq!(chrome_min_size(&negative, floor).height, px(0.));
     }
 }

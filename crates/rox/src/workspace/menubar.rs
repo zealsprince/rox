@@ -150,7 +150,7 @@ impl Workspace {
     /// The menubar row: the mini toggle, the menus, and the status side.
     /// One builder so the docked row and the alt-revealed overlay stay
     /// the same bar.
-    pub(crate) fn menubar(&self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn menubar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         // On macOS the menus live in the system bar, so this row keeps only
         // what the system bar has no place for: the mini toggle, the drag
         // handle, and the library status.
@@ -164,7 +164,7 @@ impl Workspace {
             .bg(palette::bg_menubar())
             .border_b_1()
             .border_color(palette::border())
-            .children(self.traffic_lights(cx))
+            .children(self.traffic_lights(window, cx))
             .children(self.mini_button(cx))
             .when(!native_menus, |d| {
                 d.children(
@@ -191,7 +191,7 @@ impl Workspace {
     /// draws its own chrome. With OS decorations on, the real ones are up in
     /// the native titlebar and a second set here would just be a copy; off
     /// every other platform there are no traffic lights to match.
-    fn traffic_lights(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+    fn traffic_lights(&self, window: &Window, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         if !cfg!(target_os = "macos") || settings::os_decorations() {
             return None;
         }
@@ -209,7 +209,7 @@ impl Workspace {
                 .flex_none()
                 .gap(tokens::SPACE_SM)
                 .px(tokens::SPACE_MD)
-                .children(rox_panel_kit::traffic_lights(close)),
+                .children(rox_panel_kit::traffic_lights(window, close)),
         )
     }
 

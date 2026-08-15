@@ -6163,7 +6163,7 @@ dependencies = [
 
 [[package]]
 name = "rox"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
@@ -6205,7 +6205,7 @@ dependencies = [
 
 [[package]]
 name = "rox-acoustic"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -6221,7 +6221,7 @@ dependencies = [
 
 [[package]]
 name = "rox-core"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6238,7 +6238,7 @@ dependencies = [
 
 [[package]]
 name = "rox-design"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -6251,7 +6251,7 @@ dependencies = [
 
 [[package]]
 name = "rox-dock"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "anyhow",
  "gpui",
@@ -6264,7 +6264,7 @@ dependencies = [
 
 [[package]]
 name = "rox-library"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "async-channel 2.5.0",
  "base64 0.22.1",
@@ -6282,7 +6282,7 @@ dependencies = [
 
 [[package]]
 name = "rox-net"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "dotenvy",
  "md5",
@@ -6294,7 +6294,7 @@ dependencies = [
 
 [[package]]
 name = "rox-panel-api"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "anyhow",
  "gpui",
@@ -6316,7 +6316,7 @@ dependencies = [
 
 [[package]]
 name = "rox-panel-kit"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -6326,7 +6326,7 @@ dependencies = [
 
 [[package]]
 name = "rox-panels"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "dirs 5.0.1",
  "gpui",
@@ -6349,7 +6349,7 @@ dependencies = [
 
 [[package]]
 name = "rox-playback"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "alsa",
  "cpal",
@@ -6365,7 +6365,7 @@ dependencies = [
 
 [[package]]
 name = "rox-services"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "async-channel 2.5.0",
  "discord-rich-presence",
@@ -6386,7 +6386,7 @@ dependencies = [
 
 [[package]]
 name = "rox-viz"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "serde",
  "serde_json",

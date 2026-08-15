@@ -105,6 +105,53 @@ impl Workspace {
         }
     }
 
+    /// The modifiers changed, which is where the pin comes from: a
+    /// double-tap of Alt leaves a hidden menubar up.
+    pub(crate) fn note_modifiers(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) {
+        if self
+            .alt_tap
+            .note(modifiers, Instant::now(), self.pointer_down)
+        {
+            self.menubar_pinned = !self.menubar_pinned;
+            self.menubar_touched = false;
+            cx.notify();
+        }
+    }
+
+    /// Something landed under the held Alt, so it's a chord or a drag rather
+    /// than a tap, and the pair it might have completed is off too.
+    pub(crate) fn cancel_alt_tap(&mut self) {
+        self.alt_tap.cancel();
+    }
+
+    /// Drop a pinned menubar. Reports whether there was one, so escape can
+    /// stop at the bar instead of falling through to what it backs out of
+    /// next.
+    pub(crate) fn unpin_menubar(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.menubar_pinned {
+            return false;
+        }
+        self.menubar_pinned = false;
+        self.menubar_touched = false;
+        cx.notify();
+        true
+    }
+
+    /// The pointer crossing the pinned bar's edge. Entering arms the pin,
+    /// leaving drops it, so the bar clears itself once it's been used. A
+    /// leave with a dropdown open is the pointer walking into the dropdown,
+    /// which hangs below the bar's bounds, so the pin holds through it.
+    pub(crate) fn note_menubar_hover(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        if !self.menubar_pinned {
+            return;
+        }
+        if hovered {
+            self.menubar_touched = true;
+        } else if self.menubar_touched && self.open_menu.is_none() {
+            self.unpin_menubar(cx);
+        }
+    }
+
     fn menu_button(
         &self,
         index: usize,
@@ -1193,6 +1240,67 @@ fn flyout_note(text: &'static str) -> Div {
         .child(text)
 }
 
+/// The Alt tap tracker behind the menubar pin. Alt held floats a hidden bar
+/// over the dock, and two quick taps of it pin the bar up so it stays with
+/// nothing held. Holding the key is what makes the plain reveal awkward to
+/// click: Alt+drag is the compositor's window move, and on macOS
+/// Option-click on the zoom light means zoom, so fullscreen was unreachable
+/// while the bar only existed under a held Option.
+///
+/// Only a clean tap counts: Alt alone, released quickly, with nothing under
+/// it. A chord, a drag, or a long hold cancels the run. Split off the
+/// workspace so the timing rules can be exercised without a window.
+#[derive(Default)]
+pub(crate) struct AltTap {
+    /// When the current Alt press started, or None once it's been ruled out
+    /// as a tap.
+    held_since: Option<Instant>,
+    /// When the last clean tap released, the window a second tap has to
+    /// land in to make the pair.
+    tapped_at: Option<Instant>,
+}
+
+impl AltTap {
+    /// Feed the tracker a modifiers change. Reports true on the release that
+    /// completes a double-tap, which is the caller's cue to toggle the pin.
+    fn note(&mut self, modifiers: Modifiers, now: Instant, pointer_down: bool) -> bool {
+        if modifiers.alt {
+            let alone = !modifiers.control
+                && !modifiers.shift
+                && !modifiers.platform
+                && !modifiers.function;
+            if !alone || pointer_down {
+                self.cancel();
+            } else if self.held_since.is_none() {
+                self.held_since = Some(now);
+            }
+            return false;
+        }
+        let Some(held) = self.held_since.take() else {
+            self.tapped_at = None;
+            return false;
+        };
+        if now.duration_since(held) > ALT_TAP_MAX {
+            self.tapped_at = None;
+            return false;
+        }
+        match self.tapped_at.take() {
+            Some(first) if now.duration_since(first) <= ALT_DOUBLE_TAP => true,
+            _ => {
+                self.tapped_at = Some(now);
+                false
+            }
+        }
+    }
+
+    /// A key or a button landed under the held Alt, so it's a chord or a
+    /// drag; the press and the pair it might have completed are both off.
+    fn cancel(&mut self) {
+        self.held_since = None;
+        self.tapped_at = None;
+    }
+}
+
 /// A clickable flyout row: the padding, hover, and icon-then-label layout
 /// every one of them shares. The caller chains the icon and label on.
 fn menu_row(on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> Div {
@@ -1206,4 +1314,102 @@ fn menu_row(on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static)
         .flex_row()
         .items_center()
         .gap(tokens::SPACE_SM)
+}
+
+#[cfg(test)]
+mod alt_tap_tests {
+    use super::*;
+
+    fn alt() -> Modifiers {
+        Modifiers {
+            alt: true,
+            ..Default::default()
+        }
+    }
+
+    fn none() -> Modifiers {
+        Modifiers::default()
+    }
+
+    /// Press and release Alt at the given offsets from a fixed start, so the
+    /// timings are the test's to pick rather than the clock's.
+    fn tap(tracker: &mut AltTap, base: Instant, down: u64, up: u64) -> bool {
+        tracker.note(alt(), base + Duration::from_millis(down), false);
+        tracker.note(none(), base + Duration::from_millis(up), false)
+    }
+
+    #[test]
+    fn two_quick_taps_fire() {
+        let base = Instant::now();
+        let mut tracker = AltTap::default();
+        assert!(!tap(&mut tracker, base, 0, 50));
+        assert!(tap(&mut tracker, base, 200, 250));
+    }
+
+    #[test]
+    fn a_third_tap_starts_a_fresh_pair() {
+        // The pair is consumed when it fires, so the tap after it is a first
+        // tap again and only the fourth toggles back.
+        let base = Instant::now();
+        let mut tracker = AltTap::default();
+        assert!(!tap(&mut tracker, base, 0, 50));
+        assert!(tap(&mut tracker, base, 100, 150));
+        assert!(!tap(&mut tracker, base, 200, 250));
+        assert!(tap(&mut tracker, base, 300, 350));
+    }
+
+    #[test]
+    fn a_slow_second_tap_misses_the_window() {
+        let base = Instant::now();
+        let mut tracker = AltTap::default();
+        assert!(!tap(&mut tracker, base, 0, 50));
+        assert!(!tap(&mut tracker, base, 900, 950));
+    }
+
+    #[test]
+    fn a_held_alt_is_not_a_tap() {
+        // The plain reveal: Alt down, the bar floats, Alt up a second later.
+        let base = Instant::now();
+        let mut tracker = AltTap::default();
+        assert!(!tap(&mut tracker, base, 0, 1000));
+        assert!(!tap(&mut tracker, base, 1100, 1150));
+    }
+
+    #[test]
+    fn a_chord_is_not_a_tap() {
+        // Alt+Shift, then a clean tap: the chord can't be half of a pair.
+        let base = Instant::now();
+        let mut tracker = AltTap::default();
+        let chord = Modifiers {
+            alt: true,
+            shift: true,
+            ..Default::default()
+        };
+        tracker.note(chord, base, false);
+        assert!(!tracker.note(none(), base + Duration::from_millis(50), false));
+        assert!(!tap(&mut tracker, base, 100, 150));
+    }
+
+    #[test]
+    fn a_key_under_alt_cancels_the_run() {
+        // What the workspace's captured key handler does: alt-f4 and friends
+        // are chords, so the release that follows isn't a tap.
+        let base = Instant::now();
+        let mut tracker = AltTap::default();
+        assert!(!tap(&mut tracker, base, 0, 50));
+        tracker.note(alt(), base + Duration::from_millis(100), false);
+        tracker.cancel();
+        assert!(!tracker.note(none(), base + Duration::from_millis(150), false));
+    }
+
+    #[test]
+    fn an_alt_drag_is_not_a_tap() {
+        // Alt pressed with a button already down is the compositor's window
+        // move, not a tap, however short it is.
+        let base = Instant::now();
+        let mut tracker = AltTap::default();
+        assert!(!tap(&mut tracker, base, 0, 50));
+        tracker.note(alt(), base + Duration::from_millis(100), true);
+        assert!(!tracker.note(none(), base + Duration::from_millis(150), false));
+    }
 }

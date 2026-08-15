@@ -15,8 +15,9 @@ use std::time::{Duration, Instant};
 use gpui::{
     actions, canvas, deferred, div, overlay_phase, prelude::*, px, svg, AnyElement,
     AnyWindowHandle, App, Axis, Bounds, Context, DismissEvent, Div, Entity, ExternalPaths,
-    FocusHandle, Focusable as _, FontFeatures, Global, KeyDownEvent, MouseButton,
-    PathPromptOptions, Pixels, SharedString, Subscription, Task, WeakEntity, Window, WindowBounds,
+    FocusHandle, Focusable as _, FontFeatures, Global, KeyDownEvent, Modifiers,
+    ModifiersChangedEvent, MouseButton, PathPromptOptions, Pixels, SharedString, Subscription,
+    Task, WeakEntity, Window, WindowBounds,
 };
 use rox_dock::{
     register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel as _, PanelInfo, PanelView,
@@ -96,6 +97,13 @@ mod menubar;
 pub(crate) mod native_menu;
 
 const MENU_BAR_H: f32 = 30.0;
+
+/// How long an Alt press may last and still read as a tap rather than a
+/// hold. A hold is the plain reveal; two taps pin the bar up.
+const ALT_TAP_MAX: Duration = Duration::from_millis(400);
+
+/// How far apart two Alt taps may land and still count as a double-tap.
+const ALT_DOUBLE_TAP: Duration = Duration::from_millis(500);
 
 // The registry of open workspace windows lives in rox-panel-api now, so
 // the app-level lookups panels reach for can answer without the Workspace
@@ -2010,6 +2018,17 @@ pub struct Workspace {
     /// front of the drag. Tracked in the capture phase so an occluding
     /// child can't hide the press.
     pointer_down: bool,
+    /// The Alt press run behind the pin below: two clean taps of the key
+    /// leave a hidden menubar up.
+    alt_tap: menubar::AltTap,
+    /// A hidden menubar is pinned up: it stays without Alt held, so its
+    /// buttons can be clicked unmodified. Dropped when the pointer leaves
+    /// the bar, on a press below it, on escape, or on another double-tap.
+    menubar_pinned: bool,
+    /// The pinned bar has had the pointer over it, so the next time the
+    /// pointer leaves it the pin drops. Without this the pin would fall the
+    /// instant it went up, before the pointer ever reached the bar.
+    menubar_touched: bool,
     state: AppState,
     /// Fallback focus so the key bindings keep a dispatch path under the
     /// Workspace context even before a panel takes focus. The dock focuses
@@ -2489,6 +2508,9 @@ impl Workspace {
             menu_surfaces: [None; 2],
             menu_viewport_w: Pixels::ZERO,
             pointer_down: false,
+            alt_tap: menubar::AltTap::default(),
+            menubar_pinned: false,
+            menubar_touched: false,
             state,
             focus,
             dock,
@@ -4628,12 +4650,21 @@ impl Render for Workspace {
         // A hidden menubar comes back while alt is held, and stays while a
         // dropdown is open so releasing alt can't strand one barless.
         let menubar_hidden = settings::hide_menubar();
+        // A pin from the last time the bar was hidden has nothing to hold up
+        // once the bar is docked again.
+        if !menubar_hidden {
+            self.menubar_pinned = false;
+            self.menubar_touched = false;
+        }
         // Alt reveals the hidden bar, but Alt+drag is the compositor's
         // window move/resize; suppress the reveal while a button is down so
         // the overlay never sits in front of the drag. An open menu keeps
-        // it up regardless (that press landed on a menu, not a drag).
-        let menubar_revealed =
-            self.open_menu.is_some() || (window.modifiers().alt && !self.pointer_down);
+        // it up regardless (that press landed on a menu, not a drag), and so
+        // does a double-tap pin, which is the way to click the bar without a
+        // modifier changing what the click means.
+        let menubar_revealed = self.menubar_pinned
+            || self.open_menu.is_some()
+            || (window.modifiers().alt && !self.pointer_down);
         // Every panel in this window renders under its player's art tint,
         // and the window claims the one widget theme while it holds focus.
         let player = self.state.player.entity_id();
@@ -4700,9 +4731,20 @@ impl Render for Workspace {
                         cx.stop_propagation();
                         return;
                     }
+                    if this.unpin_menubar(cx) {
+                        cx.stop_propagation();
+                        return;
+                    }
                     if this.dock.update(cx, |dock, cx| dock.zoom_out(window, cx)) {
                         cx.stop_propagation();
                     }
+                }))
+                // Any keystroke under a held Alt makes it a chord rather than
+                // the tap that pins the bar. Captured so a panel eating the key
+                // can't hide it; bare modifiers arrive as a modifiers change,
+                // not a keystroke, so Alt itself never lands here.
+                .capture_key_down(cx.listener(|this, _: &KeyDownEvent, _, _| {
+                    this.cancel_alt_tap();
                 }))
                 // Quit bypasses the window close hook, so dump the layout and
                 // frame here or a pending debounce and any window move since
@@ -4712,8 +4754,11 @@ impl Render for Workspace {
                     cx.quit();
                 }))
                 // Alt reveals a hidden menubar, so modifier flips repaint. Gated
-                // on the setting so the common case stays free of repaints.
-                .on_modifiers_changed(cx.listener(|_, _, _, cx| {
+                // on the setting so the common case stays free of repaints. The
+                // tap tracking runs either way, since the bar can be hidden
+                // between the two taps.
+                .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
+                    this.note_modifiers(event.modifiers, cx);
                     if settings::hide_menubar() {
                         cx.notify();
                     }
@@ -4722,7 +4767,17 @@ impl Render for Workspace {
                 // alt-revealed bar can duck a window move/resize drag. Capture
                 // beats the occluding overlay and any panel that eats the
                 // press; only the alt-reveal path cares, so repaint just there.
-                .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                .capture_any_mouse_down(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    // A press under a held Alt is a drag, not a tap.
+                    this.cancel_alt_tap();
+                    // A press anywhere but the bar itself is the user going
+                    // back to the app, so the pin has done its job. The bar
+                    // is full width at the top, so the height is the whole
+                    // test; a dropdown hangs below it and counts as outside,
+                    // which is what closing the menu should do anyway.
+                    if event.position.y > px(MENU_BAR_H) {
+                        this.unpin_menubar(cx);
+                    }
                     if !this.pointer_down {
                         this.pointer_down = true;
                         if settings::hide_menubar() && this.open_menu.is_none() {
@@ -4798,11 +4853,19 @@ impl Render for Workspace {
                 .when(menubar_hidden && menubar_revealed, |d| {
                     d.child(
                         div()
+                            // Stateful for the hover below, which is what
+                            // clears a pinned bar.
+                            .id("menubar-reveal")
                             .absolute()
                             .top_0()
                             .left_0()
                             .right_0()
                             .occlude()
+                            // A pinned bar clears itself once the pointer has
+                            // been over it and left again.
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.note_menubar_hover(*hovered, cx);
+                            }))
                             .child(self.menubar(window, cx)),
                     )
                 })

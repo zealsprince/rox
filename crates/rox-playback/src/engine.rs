@@ -1822,14 +1822,26 @@ impl Source {
         let sample_rate = params.sample_rate.ok_or("unknown sample rate")?;
         let channels = params.channels.as_ref().map(|c| c.count()).unwrap_or(2);
 
-        // num_frames already excludes encoder delay and padding in 0.6.
-        let file_frames = track.num_frames;
-        let file_secs = track
+        // num_frames already excludes encoder delay and padding in 0.6. A
+        // zero out of either of these is the reader saying it doesn't know
+        // rather than the file being empty, so it reads as no answer and
+        // falls through to the next one.
+        let stated_frames = track.num_frames.filter(|n| *n > 0);
+        let stated_secs = track
             .duration
+            .filter(|dur| dur.get() > 0)
             .zip(time_base)
             .and_then(|(dur, tb)| tb.calc_time(Timestamp::from(dur.get() as i64)))
             .map(|t| t.as_secs_f64())
-            .or_else(|| file_frames.map(|n| n as f64 / sample_rate as f64));
+            .or_else(|| stated_frames.map(|n| n as f64 / sample_rate as f64));
+
+        // A fragmented MP4 states its length in the movie header and
+        // nowhere symphonia looks, so without this the whole file reads as
+        // zero seconds long: no seek bar range, and a fade window that
+        // thinks the track ended before it started.
+        let file_secs = stated_secs.or_else(|| rox_library::mp4::fragment_duration_secs(path));
+        let file_frames =
+            stated_frames.or_else(|| file_secs.map(|s| (s * sample_rate as f64).round() as u64));
 
         let decoder = symphonia::default::get_codecs()
             .make_audio_decoder(params, &AudioDecoderOptions::default())

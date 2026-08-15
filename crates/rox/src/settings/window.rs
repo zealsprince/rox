@@ -1727,7 +1727,7 @@ impl SettingsWindow {
                 .keyed(
                     &["menu bar", "toolbar", "alt"],
                     "Hide Menubar",
-                    Some("Keep the menubar hidden, floating it over the dock while alt is held"),
+                    Some("Keep the menubar hidden, floating it over the dock while alt is held. Double-tap alt to leave it up, so its buttons take a plain click"),
                     panel::toggle(settings::hide_menubar(), Self::set_hide_menubar, cx),
                 )
                 .keyed(

@@ -49,10 +49,10 @@ pub fn open(state: AppState, cx: &mut App) {
     }
     // Size the fixed window against the current font. The page is one set
     // shape at the stock 16px rem; a larger app font grows the rem-based text
-    // past the 820x240 it was tuned at and strands the tail of the copy
+    // past the 960x240 it was tuned at and strands the tail of the copy
     // offscreen. Growing the bounds with the text keeps the whole page in view.
     let scale = palette::font_scale();
-    let bounds = Bounds::centered(None, size(px(820. * scale), px(240. * scale)), cx);
+    let bounds = Bounds::centered(None, size(px(960. * scale), px(240. * scale)), cx);
     let handle =
         rox_panel_api::panel::open_fixed_window(cx, "rox - About", bounds, move |_window, cx| {
             cx.new(|cx| AboutWindow::new(state, cx))

@@ -245,14 +245,25 @@ pub fn measure(
 
     // What the container says is playable, at the file's own rate: the
     // denominator a progress bar needs. num_frames already has encoder
-    // delay and padding out of it in symphonia 0.6.
-    let total_frames = track.num_frames.or_else(|| {
-        track
-            .duration
-            .zip(time_base)
-            .and_then(|(dur, tb)| tb.calc_time(Timestamp::from(dur.get() as i64)))
-            .map(|t| (t.as_secs_f64() * rate as f64).round() as u64)
-    });
+    // delay and padding out of it in symphonia 0.6, and a zero out of
+    // either field means the reader doesn't know, not that the file is
+    // empty - a fragmented MP4 answers zero to both and states its length
+    // in the movie header instead (see [`rox_library::mp4`]).
+    let total_frames = track
+        .num_frames
+        .filter(|n| *n > 0)
+        .or_else(|| {
+            track
+                .duration
+                .filter(|dur| dur.get() > 0)
+                .zip(time_base)
+                .and_then(|(dur, tb)| tb.calc_time(Timestamp::from(dur.get() as i64)))
+                .map(|t| (t.as_secs_f64() * rate as f64).round() as u64)
+        })
+        .or_else(|| {
+            rox_library::mp4::fragment_duration_secs(path)
+                .map(|secs| (secs * rate as f64).round() as u64)
+        });
 
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(params, &AudioDecoderOptions::default())

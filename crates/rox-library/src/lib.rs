@@ -18,6 +18,7 @@ pub mod listens;
 pub mod lyrics;
 pub mod m3u;
 pub mod migrate;
+pub mod mp4;
 pub mod open_files;
 pub mod peaks;
 pub mod playlists;

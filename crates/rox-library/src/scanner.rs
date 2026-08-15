@@ -758,6 +758,15 @@ fn read_tags(path: &Path) -> Option<TrackRow> {
     .ok()??;
     let mut row = fallback_row(path);
     row.duration_ms = file.properties().duration().as_millis() as u32;
+    // lofty takes an MP4's length off the sample tables, which a fragmented
+    // file leaves empty, so a whole album of them scans in at zero. The
+    // movie header still states it (see [`crate::mp4`]), and this only
+    // opens the file again for the rows that came back with nothing.
+    if row.duration_ms == 0 {
+        if let Some(secs) = crate::mp4::fragment_duration_secs(path) {
+            row.duration_ms = (secs * 1000.0).round() as u32;
+        }
+    }
     // The parsed type beats the extension a fallback row guesses from; a
     // format outside the match keeps the guess.
     if let Some(codec) = match file.file_type() {

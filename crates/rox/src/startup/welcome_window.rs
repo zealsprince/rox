@@ -1,24 +1,25 @@
 //! The welcome window: one OS window opened over the primary workspace on
 //! the first launch (no settings file yet), and any time from the
-//! Application menu's Welcome entry. A short tour, each section a pointer
-//! rather than a manual: where music comes in, how panels move, the
-//! quick-play chord, and where the look lives. Beside the tour, the
-//! quick-start column: the shipped workspaces as picture tiles, one click
-//! dressing the main window in a whole look.
+//! Application menu's Welcome entry. Two stages, each filling the window on
+//! its own: a card per thing worth knowing, every one a pointer rather than
+//! a manual, then the quick start, the shipped workspaces as picture tiles
+//! with one click dressing the main window in a whole look.
 
 use std::time::Duration;
 
 use gpui::{
-    canvas, div, img, prelude::*, px, size, svg, Animation, AnimationExt, App, Bounds, Context,
-    Div, Global, MouseButton, ObjectFit, Pixels, SharedString, Subscription, Window, WindowHandle,
+    canvas, div, img, point, prelude::*, px, size, svg, Animation, AnimationExt, AnyElement, App,
+    Bounds, Context, Div, FocusHandle, Global, KeyDownEvent, MouseButton, ObjectFit, Pixels,
+    ScrollHandle, SharedString, Subscription, Window, WindowHandle,
 };
+use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::Root;
 
 use rox_core::settings::app_font;
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::{self, AppState};
-use rox_panel_kit::ui::{chord, kbd_line, section, small_button, Seg, SECTION_GAP};
+use rox_panel_kit::ui::{chord, kbd_line, small_button, Seg, SECTION_GAP};
 use rox_services::backdrop::WindowBackdrop;
 
 /// The open welcome window, if any: opening again focuses it instead of
@@ -40,15 +41,48 @@ pub fn open(state: AppState, cx: &mut App) {
             return;
         }
     }
-    let bounds = Bounds::centered(None, size(px(1160.), px(800.)), cx);
+    // Wide enough for three cards across without any of them turning into a
+    // column of short lines, which is the shelf's three tile columns too.
+    let bounds = Bounds::centered(None, size(px(1240.), px(660.)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
         "rox - Welcome",
         bounds,
-        Some(size(px(720.), px(480.))),
-        move |_window, cx| cx.new(|cx| WelcomeWindow::new(state, cx)),
+        Some(size(px(700.), px(460.))),
+        move |window, cx| cx.new(|cx| WelcomeWindow::new(state, window, cx)),
     );
     cx.set_global(OpenWelcome(handle));
+}
+
+/// The tour's stages, in the order they're taken. Two of them: a headline
+/// over the cards, then the shelf, which is the only one with enough in it
+/// to scroll.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    Welcome,
+    Workspaces,
+}
+
+const STAGES: [Stage; 2] = [Stage::Welcome, Stage::Workspaces];
+
+impl Stage {
+    /// The stage's headline.
+    fn title(self) -> &'static str {
+        match self {
+            Stage::Welcome => "Welcome to rox",
+            Stage::Workspaces => "Quick Start",
+        }
+    }
+
+    /// The line under the headline, the one thing the stage is about.
+    fn lead(self) -> &'static str {
+        match self {
+            Stage::Welcome => "Foobar if it was made in 20XX.",
+            Stage::Workspaces => {
+                "Pick a workspace and the main window puts it on: layouts, palette, the whole look."
+            }
+        }
+    }
 }
 
 struct WelcomeWindow {
@@ -65,19 +99,32 @@ struct WelcomeWindow {
     /// The tile the pointer is over, if any: its preview shows in color
     /// while the rest sit desaturated.
     hovered_tile: Option<usize>,
-    /// The tile column's laid-out width, measured by a probe canvas each
+    /// The tile grid's laid-out width, measured by a probe canvas each
     /// paint. The grid splits it into however many tile columns fit, and
     /// the hover pan's pixel math needs the resulting tile width. Seeded
     /// with the default window's share; the first paint corrects it.
     tiles_width: f32,
+    /// Which stage of [`STAGES`] is up, the tour's whole position.
+    stage: usize,
+    /// The stage body's scroll position, shared with its scrollbar. One
+    /// handle for every stage, wound back to the top on each step so a long
+    /// stage can't hand the next one its own offset.
+    scroll: ScrollHandle,
+    /// The window root's own focus. Nothing here takes typing; it's what
+    /// puts the arrow keys on the dispatch path.
+    focus: FocusHandle,
     /// This window pumps its own frames, so the backdrop needs its own
     /// wake on a new bake.
     _backdrop_changed: Subscription,
 }
 
 impl WelcomeWindow {
-    fn new(state: AppState, cx: &mut Context<Self>) -> Self {
+    fn new(state: AppState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        // The tour steps on the arrow keys, and nothing else in the window
+        // wants the keyboard, so the root takes focus as it opens.
+        let focus = cx.focus_handle();
+        window.focus(&focus);
         // A header that doesn't parse falls back to the frame's own
         // aspect, which renders the picture static.
         fn sized(path: SharedString) -> (SharedString, f32) {
@@ -103,14 +150,124 @@ impl WelcomeWindow {
             workspaces,
             hovered_tile: None,
             tiles_width: 458.,
+            stage: 0,
+            scroll: ScrollHandle::new(),
+            focus,
             _backdrop_changed,
         }
+    }
+
+    /// Move the tour by `delta` stages, stopping at either end.
+    fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let last = STAGES.len() as isize - 1;
+        let next = (self.stage as isize + delta).clamp(0, last) as usize;
+        self.go_to(next, cx);
+    }
+
+    /// Land on a stage: the body starts at the top, and no tile is under
+    /// the pointer until the pointer says so.
+    fn go_to(&mut self, stage: usize, cx: &mut Context<Self>) {
+        if stage == self.stage {
+            return;
+        }
+        self.stage = stage;
+        self.scroll.set_offset(point(px(0.), px(0.)));
+        self.hovered_tile = None;
+        cx.notify();
     }
 }
 
 /// A section's body line, the pages' muted copy register.
 fn line(text: impl Into<SharedString>) -> Div {
     div().text_color(palette::text_muted()).child(text.into())
+}
+
+/// What a card asks for before its row shares out what's left. Three of
+/// these plus their gaps is what the window opens wide enough to hold, and
+/// it's the width the card's copy is measured at, which is what keeps a
+/// card as tall as its own text.
+const CARD_BASIS: f32 = 300.0;
+
+/// The narrowest a tile column gets before the shelf drops one.
+const MIN_TILE_W: f32 = 400.0;
+
+/// The most tile columns the quick-start shelf ever lays out. Past three
+/// the shelf reads as a contact sheet rather than a gallery, and a window
+/// with room for more spends it on bigger pictures instead.
+const MAX_TILE_COLUMNS: f32 = 3.0;
+
+/// The widest a tile gets. The shipped previews are about 1400px across, so
+/// this is roughly where a fullscreen shelf starts upscaling them on a 2x
+/// display; a window wider than three of these centers its grid.
+const MAX_TILE_W: f32 = 900.0;
+
+/// One card on a stage: an icon and name over whatever the card is telling
+/// you, on the panel surface so it sits proud of the page. Cards share a
+/// row and split it evenly, so a stage reads as a few things beside each
+/// other rather than one column of copy.
+fn card(icon: &'static str, title: &'static str, body: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        // Grow and shrink from a real basis rather than from zero. The
+        // basis is what the row wraps on and what the copy is measured at,
+        // so a card comes out as tall as its own text; the zero floor is
+        // what keeps a long line from setting the card's width instead.
+        .flex_grow()
+        .flex_shrink()
+        .flex_basis(px(CARD_BASIS))
+        .min_w_0()
+        .gap(tokens::SPACE_SM)
+        .p(tokens::SPACE_MD)
+        .rounded(tokens::RADIUS)
+        .border_1()
+        .border_color(palette::border())
+        .bg(palette::bg_panel())
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_XS)
+                .child(
+                    svg()
+                        .path(icon)
+                        .size(px(14.))
+                        .flex_none()
+                        .text_color(palette::text_muted()),
+                )
+                .child(title),
+        )
+        .child(body)
+}
+
+/// One row of cards, split evenly across the stage. A row rather than a
+/// wrapping grid: a wrapped flex line takes its height from the container
+/// instead of from its own cards, which leaves the first row of a grid
+/// stretched to half the page. No cross-axis alignment, so the row stretches
+/// its cards to the tallest of them and a row reads as a row.
+fn cards(cards: impl IntoIterator<Item = Div>) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .gap(tokens::SPACE_MD)
+        .children(cards)
+}
+
+/// The width the scrollbar rides in. The bar is an overlay, so a column
+/// keeps this much clear on its right or the thumb sits under the content.
+const SCROLL_LANE: f32 = 16.0;
+
+/// A scrolling column paired with its scrollbar, the same overlay the about
+/// window and the settings pages use. The caller sizes the wrapper into its
+/// page and keeps the lane clear inside the column.
+fn scroll_lane(column: impl IntoElement, scroll: &ScrollHandle) -> Div {
+    div().relative().child(column).child(
+        div()
+            .absolute()
+            .inset_0()
+            .child(Scrollbar::vertical(scroll).scrollbar_show(ScrollbarShow::Always)),
+    )
 }
 
 /// One quick-start tile as the window holds it: what the workspace is
@@ -257,6 +414,291 @@ fn workspace_tile(
         )
 }
 
+impl WelcomeWindow {
+    /// The stage's content under its headline. Every stage builds one of
+    /// these; the shell around them is the same.
+    fn stage_body(&self, stage: Stage, cx: &mut Context<Self>) -> AnyElement {
+        match stage {
+            Stage::Welcome => div()
+                .flex()
+                .flex_col()
+                .gap(SECTION_GAP)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens::SPACE_SM)
+                        .child(line(
+                            "A quick tour of where music comes in and where the look \
+                             lives. It ends at the shelf of shipped workspaces, one \
+                             click each.",
+                        ))
+                        .child(div().text_color(palette::text_faint()).child(kbd_line([
+                            Seg::Text("Step through it with".into()),
+                            Seg::Key("Left".into()),
+                            Seg::Text("and".into()),
+                            Seg::Key("Right".into()),
+                            Seg::Text(", or the buttons below.".into()),
+                        ]))),
+                )
+                .child(cards([
+                    card(
+                        icons::MUSIC,
+                        "Music",
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .gap(tokens::SPACE_SM)
+                            .child(small_button(
+                                "Add Folder",
+                                icons::FOLDER_PLUS,
+                                false,
+                                cx.listener(|this, _, _, cx| {
+                                    rox_services::catalog::browse(&this.state.library, cx);
+                                }),
+                            ))
+                            .child(line(
+                                "rox scans it into the library and the files stay where \
+                                 they are. More folders go in settings under library.",
+                            )),
+                    ),
+                    card(
+                        icons::PLAY,
+                        "Playback",
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_SM)
+                            .child(kbd_line([
+                                Seg::Key(chord("P")),
+                                Seg::Text("opens quick play: type a track, hit".into()),
+                                Seg::Key("Enter".into()),
+                                Seg::Text("and it plays.".into()),
+                            ]))
+                            .child(kbd_line([
+                                Seg::Key("Space".into()),
+                                Seg::Text("toggles playback;".into()),
+                                Seg::Key("Left".into()),
+                                Seg::Text("and".into()),
+                                Seg::Key("Right".into()),
+                                Seg::Text("seek.".into()),
+                            ])),
+                    ),
+                    card(
+                        icons::SETTINGS,
+                        "Settings",
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_SM)
+                            .child(kbd_line([
+                                Seg::Key(chord(",")),
+                                Seg::Text(
+                                    "opens settings: the palette, transparency, and \
+                                     behavior."
+                                        .into(),
+                                ),
+                            ]))
+                            .child(line(
+                                "Save an arrangement as a layout; a workspace bundles \
+                                 layouts and palette into one shareable look.",
+                            )),
+                    ),
+                ]))
+                .child(cards([
+                    card(
+                        icons::LAYOUT_DASHBOARD,
+                        "Panels",
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_SM)
+                            .child(line(
+                                "Every surface is a panel, and the menubar's Panels menu \
+                                 opens more of them.",
+                            ))
+                            .child(line(
+                                "Rearranging needs Design Mode, on by default at the top \
+                                 of that menu. Off locks the layout, so a finished setup \
+                                 can't be nudged.",
+                            )),
+                    ),
+                    card(
+                        icons::MOVE_HORIZONTAL,
+                        "Rearranging",
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_SM)
+                            .child(kbd_line([
+                                Seg::Text("Drag a tab, or hold".into()),
+                                Seg::Key("Middle Mouse".into()),
+                                Seg::Text("or".into()),
+                                Seg::Key("Alt".into()),
+                                Seg::Text("+".into()),
+                                Seg::Key("Left Click".into()),
+                                Seg::Text("anywhere in a panel to move it.".into()),
+                            ]))
+                            .child(line(
+                                "Drop it on a panel's edge to split there, on the middle \
+                                 to share a tab group, or outside the window to make it \
+                                 its own window.",
+                            )),
+                    ),
+                    card(
+                        icons::KEYBOARD,
+                        "Menubar",
+                        kbd_line([
+                            Seg::Text("With the menubar hidden, hold".into()),
+                            Seg::Key("Alt".into()),
+                            Seg::Text("to float it back over the dock, or tap".into()),
+                            Seg::Key("Alt".into()),
+                            Seg::Text("twice to leave it up.".into()),
+                        ]),
+                    ),
+                ]))
+                .into_any_element(),
+            Stage::Workspaces => self.shelf(cx),
+        }
+    }
+
+    /// The quick-start shelf: every shipped workspace as a picture tile,
+    /// wrapping into however many columns the window affords. Applying goes
+    /// through the frontmost workspace window at app level, since this
+    /// window has no workspace of its own.
+    fn shelf(&self, cx: &mut Context<Self>) -> AnyElement {
+        // The tiles size to the shelf but the pan math needs pixels, so a
+        // probe measures the laid-out width every paint and wakes the view
+        // when a resize moves it. Next frame renders at the corrected
+        // width; one frame of lag during a live drag.
+        let tiles_width = self.tiles_width;
+        let entity = cx.entity().downgrade();
+        let probe = canvas(
+            |_, _, _| {},
+            move |bounds: Bounds<Pixels>, _, window, _| {
+                let measured = f32::from(bounds.size.width);
+                if (measured - tiles_width).abs() > 0.5 {
+                    let entity = entity.clone();
+                    window.on_next_frame(move |_, cx| {
+                        entity
+                            .update(cx, |this, cx| {
+                                this.tiles_width = measured;
+                                cx.notify();
+                            })
+                            .ok();
+                    });
+                }
+            },
+        )
+        .absolute()
+        .inset_0();
+
+        // The measured width splits into however many tile columns fit at a
+        // comfortable size, so a narrow window drops to one or two across
+        // instead of squeezing three. Up to the column cap the tiles take
+        // the whole width between them; the tile cap only bites on a window
+        // wider than the shelf has any use for.
+        let gap = f32::from(tokens::SPACE_SM);
+        let columns = (tiles_width / MIN_TILE_W)
+            .floor()
+            .clamp(1., MAX_TILE_COLUMNS);
+        let tile_width = (((tiles_width - gap * (columns - 1.)) / columns).min(MAX_TILE_W)).floor();
+        // The grid is only ever as wide as the columns it holds, so a window
+        // wider than that leaves the slack at the edge instead of letting
+        // flex wrap a fourth tile in behind the cap's back.
+        let grid_width = tile_width * columns + gap * (columns - 1.);
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_SM)
+            .child(
+                // The probe measures the room the shelf has; the grid inside
+                // takes only what the column cap allows, centered in it so a
+                // window wider than the cap splits the slack instead of
+                // pushing the gallery to one side.
+                div()
+                    .relative()
+                    .w_full()
+                    .justify_center()
+                    .child(probe)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            // Wrapped flex lines stretch apart to fill the
+                            // shelf by default; pack them at the top instead.
+                            .content_start()
+                            .w(px(grid_width))
+                            .gap(tokens::SPACE_SM)
+                            .children(self.workspaces.iter().enumerate().map(|(i, tile)| {
+                                let apply = tile.name.clone();
+                                workspace_tile(
+                                    tile.name.clone(),
+                                    tile.author.clone(),
+                                    tile.previews.pick(palette::mode()),
+                                    self.hovered_tile == Some(i),
+                                    tile_width,
+                                    cx.listener(move |_, _, window, cx| {
+                                        crate::workspace::apply_workspace_to_front(&apply, cx);
+                                        // Picking a look is the end of the
+                                        // tour, so close out to the freshly
+                                        // dressed window.
+                                        window.remove_window();
+                                    }),
+                                )
+                                .id(("welcome-tile", i))
+                                .on_hover(cx.listener(
+                                    move |this, hovered: &bool, _, cx| {
+                                        if *hovered {
+                                            this.hovered_tile = Some(i);
+                                        } else if this.hovered_tile == Some(i) {
+                                            this.hovered_tile = None;
+                                        }
+                                        cx.notify();
+                                    },
+                                ))
+                            })),
+                    ),
+            )
+            .child(div().text_xs().text_color(palette::text_faint()).child(
+                "Picking one replaces the main window's look and closes the tour. \
+                         This window is here any time under Application > Welcome.",
+            ))
+            .into_any_element()
+    }
+
+    /// The stage row in the footer: one dot per stage, the one that's up
+    /// lit, any of them a click away.
+    fn dots(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .children(STAGES.iter().enumerate().map(|(i, _)| {
+                let here = i == self.stage;
+                div()
+                    .size(px(8.))
+                    .flex_none()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .bg(if here {
+                        palette::accent()
+                    } else {
+                        palette::bg_control()
+                    })
+                    .when(!here, |d| d.hover(|d| d.bg(palette::bg_control_hover())))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| this.go_to(i, cx)),
+                    )
+            }))
+    }
+}
+
 impl Render for WelcomeWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The window renders under the player's art tint like the
@@ -264,247 +706,84 @@ impl Render for WelcomeWindow {
         // holds focus, so the tour reads in the playing track's colors.
         let player = self.state.player.entity_id();
         palette::note_focus(player, window.is_window_active(), cx);
+        let index = self.stage;
+        let stage = STAGES[index];
+        let first = index == 0;
+        let last = index + 1 == STAGES.len();
 
         panel::window_body(player, || {
-            let add_folder = small_button(
-                "Add Folder",
-                icons::FOLDER_PLUS,
-                false,
-                cx.listener(|this, _, _, cx| {
-                    rox_services::catalog::browse(&this.state.library, cx);
-                }),
-            );
-
-            let tour = div()
-                .id("welcome-tour")
+            let heading = div()
                 .flex()
                 .flex_col()
-                .flex_1()
-                .min_w_0()
-                // Prose stops stretching past a readable measure; past the
-                // cap the window's extra room all goes to the tiles.
-                .max_w(px(560.))
-                .h_full()
-                .min_h_0()
-                .overflow_y_scroll()
-                .gap(SECTION_GAP)
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(tokens::SPACE_SM)
-                        .child(
-                            svg()
-                                .path(icons::LOGO)
-                                .size(px(44.))
-                                .text_color(palette::text_bright()),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(tokens::SPACE_XS)
-                                .child(div().text_lg().child("Welcome to rox"))
-                                .child(line("Foobar if it was made in 20XX.")),
-                        ),
-                )
-                .child(section(
-                    "Get Started",
-                    None,
-                    line(
-                        "Pick a workspace from the quick start on the right, or close \
-                     this window and build your own player from scratch.",
-                    ),
-                ))
-                .child(section(
-                    "Music",
-                    Some(add_folder.into_any_element()),
-                    line(
-                        "Add a folder and rox scans it into the library; the files \
-                     stay where they are. Folders live in settings under library.",
-                    ),
-                ))
-                .child(section(
-                    "Panels",
-                    None,
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(tokens::SPACE_SM)
-                        .child(kbd_line([
-                            Seg::Text(
-                                "Every surface is a panel, and the menubar's Panels menu \
-                             opens more of them. If the menubar is hidden, hold"
-                                    .into(),
-                            ),
-                            Seg::Key("Alt".into()),
-                            Seg::Text("to bring it back.".into()),
-                        ]))
-                        .child(kbd_line([
-                            Seg::Text("Drag a tab to rearrange, or hold".into()),
-                            Seg::Key("Middle Mouse".into()),
-                            Seg::Text("or".into()),
-                            Seg::Key("Alt".into()),
-                            Seg::Text("+".into()),
-                            Seg::Key("Left Click".into()),
-                            Seg::Text(
-                                "anywhere in a panel to move it. Drop it on another \
-                             panel's edge to split there, on the middle to share a \
-                             tab group, or outside the window to make it its own \
-                             window."
-                                    .into(),
-                            ),
-                        ]))
-                        .child(line(
-                            "Rearranging needs Design Mode, on by default and toggled \
-                         at the top of the Panels menu. Turning it off locks the \
-                         layout, so a finished setup can't be nudged.",
-                        )),
-                ))
-                .child(section(
-                    "Playback",
-                    None,
-                    kbd_line([
-                        Seg::Key(chord("P")),
-                        Seg::Text("opens quick play: type a track, hit".into()),
-                        Seg::Key("Enter".into()),
-                        Seg::Text("and it plays.".into()),
-                        Seg::Key("Space".into()),
-                        Seg::Text("toggles playback;".into()),
-                        Seg::Key("Left".into()),
-                        Seg::Text("and".into()),
-                        Seg::Key("Right".into()),
-                        Seg::Text("seek.".into()),
-                    ]),
-                ))
-                .child(section(
-                    "Make It Yours",
-                    None,
-                    kbd_line([
-                        Seg::Key(chord(",")),
-                        Seg::Text(
-                            "opens settings: the palette, transparency, and behavior. \
-                         Save an arrangement as a layout; a workspace bundles layouts \
-                         and palette into one shareable look."
-                                .into(),
-                        ),
-                    ]),
-                ));
-
-            // The tiles size to the column but the pan math needs pixels,
-            // so a probe measures the laid-out width every paint and wakes
-            // the view when a resize moves it. Next frame renders at the
-            // corrected width; one frame of lag during a live drag.
-            let tiles_width = self.tiles_width;
-            let entity = cx.entity().downgrade();
-            let probe = canvas(
-                |_, _, _| {},
-                move |bounds: Bounds<Pixels>, _, window, _| {
-                    let measured = f32::from(bounds.size.width);
-                    if (measured - tiles_width).abs() > 0.5 {
-                        let entity = entity.clone();
-                        window.on_next_frame(move |_, cx| {
-                            entity
-                                .update(cx, |this, cx| {
-                                    this.tiles_width = measured;
-                                    cx.notify();
-                                })
-                                .ok();
-                        });
-                    }
-                },
-            )
-            .absolute()
-            .inset_0();
-
-            // The measured width splits into however many tile columns fit
-            // at a comfortable size, so a wide window reflows the reel
-            // side by side instead of inflating one giant column. A lone
-            // column still caps where the screenshots would upscale past
-            // their sources and turn soft.
-            let gap = f32::from(tokens::SPACE_SM);
-            let columns = (tiles_width / 400.).floor().max(1.);
-            let tile_width = (((tiles_width - gap * (columns - 1.)) / columns).min(640.)).floor();
-
-            // The quick-start column: every shipped workspace as a picture
-            // tile, wrapping into the columns computed above, the reel
-            // scrolling when it outgrows the window. Applying goes through
-            // the frontmost workspace window at app level, since this
-            // window has no workspace of its own.
-            let tiles = div()
-                .id("welcome-workspaces")
-                .relative()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                // Wrapped flex lines stretch apart to fill the column by
-                // default; pack them at the top instead.
-                .content_start()
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .gap(tokens::SPACE_SM)
-                .child(probe)
-                .children(self.workspaces.iter().enumerate().map(|(i, tile)| {
-                    let apply = tile.name.clone();
-                    workspace_tile(
-                        tile.name.clone(),
-                        tile.author.clone(),
-                        tile.previews.pick(palette::mode()),
-                        self.hovered_tile == Some(i),
-                        tile_width,
-                        cx.listener(move |_, _, window, cx| {
-                            crate::workspace::apply_workspace_to_front(&apply, cx);
-                            // Picking a look is the end of the tour, so close
-                            // out to the freshly dressed main window.
-                            window.remove_window();
-                        }),
+                .flex_none()
+                .gap(tokens::SPACE_XS)
+                // The logo leads the tour and then gets out of the way; the
+                // stages after it are all copy and controls.
+                .when(first, |d| {
+                    d.child(
+                        svg()
+                            .path(icons::LOGO)
+                            .size(px(44.))
+                            .text_color(palette::text_bright())
+                            .mb(tokens::SPACE_SM),
                     )
-                    .id(("welcome-tile", i))
-                    .on_hover(cx.listener(
-                        move |this, hovered: &bool, _, cx| {
-                            if *hovered {
-                                this.hovered_tile = Some(i);
-                            } else if this.hovered_tile == Some(i) {
-                                this.hovered_tile = None;
-                            }
-                            cx.notify();
-                        },
-                    ))
-                }));
+                })
+                .child(div().text_lg().child(stage.title()))
+                .child(line(stage.lead()));
 
             let body = div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h_0()
-                .gap(tokens::SPACE_SM)
-                .child(tiles)
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_faint())
-                        .child("Picking one replaces the main window's look."),
-                );
-
-            // The tiles take whatever the tour doesn't, growing with the
-            // window; the grid math above decides how the room is spent.
-            let quick_start = section("Quick Start", None, body)
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .min_h_0();
+                .id("welcome-stage")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                // The content stops short of the scrollbar's lane rather
+                // than running under the thumb.
+                .pr(px(SCROLL_LANE))
+                .child(self.stage_body(stage, cx));
 
             let page = div()
                 .flex()
-                .flex_row()
-                .h_full()
+                .flex_col()
+                .size_full()
                 .gap(SECTION_GAP)
-                .child(tour)
-                .child(quick_start);
+                .child(heading)
+                .child(scroll_lane(body, &self.scroll).flex_1().min_h_0());
 
-            // The tour's own way out, and where to find it again once it's
-            // gone.
+            let buttons = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_SM)
+                .when(!last, |d| {
+                    d.child(small_button(
+                        "Close",
+                        icons::CLOSE,
+                        false,
+                        cx.listener(|_, _, window, _| window.remove_window()),
+                    ))
+                })
+                .child(small_button(
+                    "Back",
+                    icons::CHEVRON_LEFT,
+                    first,
+                    cx.listener(|this, _, _, cx| this.step(-1, cx)),
+                ))
+                .child(if last {
+                    small_button(
+                        "Done",
+                        icons::CHECK,
+                        false,
+                        cx.listener(|_, _, window, _| window.remove_window()),
+                    )
+                } else {
+                    small_button(
+                        "Next",
+                        icons::CHEVRON_RIGHT,
+                        false,
+                        cx.listener(|this, _, _, cx| this.step(1, cx)),
+                    )
+                });
+
             let footer = div()
                 .flex()
                 .flex_row()
@@ -516,23 +795,27 @@ impl Render for WelcomeWindow {
                 .border_t_1()
                 .border_color(palette::border())
                 .bg(palette::bg_panel())
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_muted())
-                        .child("This window is here any time under Application > Welcome."),
-                )
-                .child(small_button(
-                    "Close",
-                    icons::CLOSE,
-                    false,
-                    cx.listener(|_, _, window, _| window.remove_window()),
-                ));
+                .child(self.dots(cx))
+                .child(buttons);
 
             div()
                 .size_full()
                 .flex()
                 .flex_col()
+                .track_focus(&self.focus)
+                // The arrows step the tour; anything else the window sees is
+                // somebody else's. Modified keystrokes pass through so the
+                // app's own chords keep working over the top.
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                    if event.keystroke.modifiers.modified() {
+                        return;
+                    }
+                    match event.keystroke.key.as_str() {
+                        "left" => this.step(-1, cx),
+                        "right" => this.step(1, cx),
+                        _ => {}
+                    }
+                }))
                 .bg(palette::bg_elevated())
                 .text_color(palette::text_bright())
                 .text_sm()

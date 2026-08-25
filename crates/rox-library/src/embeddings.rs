@@ -392,8 +392,10 @@ fn each_vector(
         buf.clear();
         buf.extend(
             bytes
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])),
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c)),
         );
         // A blob of the wrong width can't be compared against the rest, and
         // neither can one carrying a NaN or an infinity: it wouldn't merely
@@ -1136,8 +1138,10 @@ fn encode(vec: &[f32]) -> Vec<u8> {
 /// check in [`scores`] drops it.
 fn decode(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 

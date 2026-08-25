@@ -115,8 +115,10 @@ pub fn decode(value: &str, dim: usize) -> Option<Vec<f32>> {
         return None;
     }
     let vec: Vec<f32> = bytes
-        .chunks_exact(2)
-        .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| f16::from_le_bytes(*c).to_f32())
         .collect();
     // A NaN or an infinity poisons every score in the library once it's in
     // the table (see [`crate::embeddings::upsert`]), and a tag anyone can

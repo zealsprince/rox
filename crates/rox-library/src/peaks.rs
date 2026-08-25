@@ -98,7 +98,9 @@ pub fn load(dir: &Path, track: &Path) -> Option<Vec<Vec<(f32, f32)>>> {
         let pairs = take(&mut rest, count.checked_mul(8)?)?;
         lanes.push(
             pairs
-                .chunks_exact(8)
+                .as_chunks::<8>()
+                .0
+                .iter()
                 .map(|pair| {
                     (
                         f32::from_le_bytes(pair[0..4].try_into().unwrap()),

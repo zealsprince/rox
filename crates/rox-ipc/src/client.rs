@@ -74,8 +74,10 @@ impl Client {
 
 /// The two halves of a fresh connection, boxed behind the traits the
 /// client reads and writes through.
+type Halves = (Box<dyn Read + Send>, Box<dyn Write + Send>);
+
 #[cfg(unix)]
-fn open(path: &Path) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>), String> {
+fn open(path: &Path) -> Result<Halves, String> {
     use std::os::unix::net::UnixStream;
 
     let stream = UnixStream::connect(path)
@@ -85,7 +87,7 @@ fn open(path: &Path) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>), St
 }
 
 #[cfg(windows)]
-fn open(path: &Path) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>), String> {
+fn open(path: &Path) -> Result<Halves, String> {
     use interprocess::local_socket::traits::Stream as _;
     use interprocess::local_socket::Stream;
 
@@ -97,6 +99,6 @@ fn open(path: &Path) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>), St
 }
 
 #[cfg(not(any(unix, windows)))]
-fn open(_path: &Path) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>), String> {
+fn open(_path: &Path) -> Result<Halves, String> {
     Err("no control socket backend on this platform".into())
 }

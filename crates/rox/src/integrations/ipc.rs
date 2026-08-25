@@ -313,13 +313,18 @@ fn queue_add(state: &AppState, params: &Value, cx: &mut App) -> Result<Value, Rp
     }
     let queued = keys.len();
     let mode = params.get("mode").and_then(Value::as_str).unwrap_or("end");
-    state.player.update(cx, |player, cx| match mode {
-        "end" => Ok(player.enqueue(keys, cx)),
-        "next" => Ok(player.play_next(keys, cx)),
-        "now" => Ok(player.play_now(keys, cx)),
-        other => Err(RpcError::invalid_params(format!(
-            "unknown mode {other:?}: end, next, or now"
-        ))),
+    state.player.update(cx, |player, cx| {
+        match mode {
+            "end" => player.enqueue(keys, cx),
+            "next" => player.play_next(keys, cx),
+            "now" => player.play_now(keys, cx),
+            other => {
+                return Err(RpcError::invalid_params(format!(
+                    "unknown mode {other:?}: end, next, or now"
+                )))
+            }
+        }
+        Ok(())
     })?;
     Ok(json!({ "queued": queued }))
 }

@@ -570,6 +570,10 @@ impl OutputStatus {
 /// explicit flag, the audible cursor, and the position clock in seconds.
 pub type QueueStatePersist = (Vec<(TrackKey, bool)>, usize, f64);
 
+/// A queue snapshot for an external editor: every entry's stable id, key,
+/// and explicit flag, plus the audible cursor.
+pub type PlayOrder = (Vec<(u64, TrackKey, bool)>, usize);
+
 pub struct Player {
     session: Option<Session>,
     error: Option<SharedString>,
@@ -873,7 +877,7 @@ impl Player {
     /// read as [`queue_state`](Self::queue_state) but keeping the ids, which
     /// the persist has no use for and a remove or move can't do without.
     /// None when no session runs.
-    pub fn play_order(&self) -> Option<(Vec<(u64, TrackKey, bool)>, usize)> {
+    pub fn play_order(&self) -> Option<PlayOrder> {
         let session = self.session.as_ref()?;
         let snap = session.shared.queue_snapshot();
         if snap.entries.is_empty() {

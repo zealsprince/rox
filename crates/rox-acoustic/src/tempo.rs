@@ -330,7 +330,9 @@ fn probe_window(path: &Path, at: f64) -> Option<Vote> {
     match rox_playback::engine::decode_window(&path.to_path_buf(), at, RATE, frames) {
         Ok(stereo) => {
             let mono: Vec<f32> = stereo
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| (c[0] + c[1]) * 0.5)
                 .collect();
             window(&mono)

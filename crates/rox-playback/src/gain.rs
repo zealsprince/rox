@@ -154,7 +154,7 @@ pub fn crossfade(t: f32) -> (f32, f32) {
 /// what a track that ended before its fade window closed leaves behind.
 pub fn crossfade_mix(incoming: &mut [f32], outgoing: &[f32], done: u64, len: u64) {
     let len = len.max(1) as f32;
-    for (i, frame) in incoming.chunks_exact_mut(2).enumerate() {
+    for (i, frame) in incoming.as_chunks_mut::<2>().0.iter_mut().enumerate() {
         let (g_in, g_out) = crossfade((done + i as u64) as f32 / len);
         let l = outgoing.get(i * 2).copied().unwrap_or(0.0);
         let r = outgoing.get(i * 2 + 1).copied().unwrap_or(0.0);

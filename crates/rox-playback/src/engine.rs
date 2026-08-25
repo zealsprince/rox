@@ -1664,7 +1664,7 @@ pub fn decode_peaks(path: &PathBuf, bins: usize) -> Result<Vec<Vec<(f32, f32)>>,
         // The EOF call flushes the resampler's final frame into `chunk`, so
         // fold it in before honouring the end signal.
         let more = src.next_chunk(info.sample_rate, &mut chunk);
-        for frame in chunk.chunks_exact(2) {
+        for frame in chunk.as_chunks::<2>().0 {
             let s = [(frame[0] + frame[1]) * 0.5, frame[0], frame[1]];
             for lane in 0..3 {
                 lo[lane] = lo[lane].min(s[lane]);

@@ -169,7 +169,7 @@ fn bake(bytes: &[u8]) -> Option<(Arc<RenderImage>, palette::Seed)> {
     let seed = extract_seed(&small);
     let mut baked = image::imageops::blur(&small, BLUR_SIGMA);
     // The renderer wants BGRA, the same swizzle gpui's own decode does.
-    for pixel in baked.chunks_exact_mut(4) {
+    for pixel in baked.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Some((Arc::new(RenderImage::new(vec![Frame::new(baked)])), seed))

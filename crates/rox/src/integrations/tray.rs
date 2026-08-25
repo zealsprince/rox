@@ -186,7 +186,7 @@ impl ksni::Tray for RoxTray {
         static PIXMAP: std::sync::LazyLock<ksni::Icon> = std::sync::LazyLock::new(|| {
             let (width, height, mut data) = ICON.clone();
             // RGBA to the spec's ARGB32 network byte order.
-            for pixel in data.chunks_exact_mut(4) {
+            for pixel in data.as_chunks_mut::<4>().0 {
                 pixel.rotate_right(1);
             }
             ksni::Icon {

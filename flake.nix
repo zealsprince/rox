@@ -150,7 +150,7 @@
     {
       packages = forEachSystem (
         pkgs:
-        lib.optionalAttrs pkgs.stdenv.isLinux (
+        lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
           let
             rox = mkRox pkgs;
           in
@@ -183,9 +183,9 @@
               # Dev links go through mold (see the gitignored
               # .cargo/config.toml); CI, release, and the nix package build
               # keep the stock linker.
-              ++ lib.optionals stdenv.isLinux ([ pkgs.mold ] ++ linuxBuildInputs pkgs);
+              ++ lib.optionals stdenv.hostPlatform.isLinux ([ pkgs.mold ] ++ linuxBuildInputs pkgs);
 
-            env = lib.optionalAttrs stdenv.isLinux {
+            env = lib.optionalAttrs stdenv.hostPlatform.isLinux {
               LD_LIBRARY_PATH = lib.makeLibraryPath (runtimeLibs pkgs);
             };
 
@@ -200,7 +200,7 @@
             # mkShell sets, drop the stub xcrun nixpkgs puts on PATH, and
             # lean on real Xcode instead. Xcode 26 users need to grab the
             # toolchain once: xcodebuild -downloadComponent MetalToolchain
-            + lib.optionalString stdenv.isDarwin ''
+            + lib.optionalString stdenv.hostPlatform.isDarwin ''
               # The apple-sdk hook exported these to nix store paths, and
               # xcode-select -p echoes DEVELOPER_DIR, so clear both before
               # asking the system which Xcode is selected.

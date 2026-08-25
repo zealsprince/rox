@@ -584,7 +584,9 @@ pub fn extract(path: &Path, duration_ms: u32) -> Result<Vec<f32>, String> {
             }
         };
         let mono: Vec<f32> = stereo
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| (c[0] + c[1]) * 0.5)
             .collect();
         match features(&mono) {

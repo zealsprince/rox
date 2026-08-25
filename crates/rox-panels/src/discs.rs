@@ -118,7 +118,7 @@ pub fn bake_disc(bytes: &[u8], shape: DiscShape) -> Option<RgbaImage> {
         }
     };
     // The renderer's BGRA, the same swizzle gpui's own decode does.
-    for pixel in disc.chunks_exact_mut(4) {
+    for pixel in disc.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Some(disc)
@@ -357,7 +357,7 @@ mod tests {
             ("vinyl", DiscShape::Vinyl),
         ] {
             let mut disc = bake_disc(&bytes, shape).unwrap();
-            for pixel in disc.chunks_exact_mut(4) {
+            for pixel in disc.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2);
             }
             disc.save(format!("/tmp/bake-{name}.png")).unwrap();

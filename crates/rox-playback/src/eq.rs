@@ -416,7 +416,7 @@ impl Band {
     /// trailing odd sample can't be half a frame, so it's left alone.
     fn run(&mut self, buf: &mut [f32]) {
         let Coeffs { b0, b1, b2, a1, a2 } = self.coeffs;
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             for (ch, sample) in frame.iter_mut().enumerate() {
                 let x = *sample as f64;
                 let y = b0 * x + self.s1[ch];

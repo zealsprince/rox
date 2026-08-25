@@ -208,9 +208,14 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     .detach();
 }
 
-/// Follow a library's watch syncs, so a library with the switch on keeps
-/// its tempos as it grows instead of waiting for someone to open the
+/// Follow a library's watch syncs, so a library with the auto switch on
+/// keeps its tempos as it grows instead of waiting for someone to open the
 /// settings and press a button.
+///
+/// The switch is read here rather than inside [`start`], the other two
+/// follows' stance: the button has to keep working with the switch off, and
+/// this is the only caller the setting speaks for. Off by default, so
+/// turning the tempo column on doesn't also hand every watch settle a pass.
 ///
 /// Only what the watcher brought in, deliberately. The backlog a library
 /// starts with is a decision made in front of an estimate, which is what
@@ -218,7 +223,7 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
 /// delta, which is the case this exists for.
 pub fn follow(library: &Entity<Library>, cx: &mut App) {
     App::subscribe(cx, library, |library, event, cx| {
-        if matches!(event, LibraryJob::WatchSettled) {
+        if matches!(event, LibraryJob::WatchSettled) && Settings::load().tempo_auto {
             start(library, cx);
         }
     })

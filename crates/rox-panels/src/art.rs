@@ -123,6 +123,11 @@ pub struct ArtConfig {
     /// a row that scrolls left and right.
     #[serde(default)]
     pub vertical: bool,
+    /// Size the hero off the cross axis alone, letting the flank covers
+    /// run off the panel edge. The default fit shrinks the hero to keep
+    /// the flanks inside, which reads as wasted space in a narrow panel.
+    #[serde(default)]
+    pub fill: bool,
     /// Bring the playing album to the center when the track changes.
     #[serde(default)]
     pub follow_playing: bool,
@@ -192,6 +197,7 @@ impl Default for ArtConfig {
             search: false,
             query_source: QuerySource::default(),
             vertical: false,
+            fill: false,
             follow_playing: false,
             resume_playing: false,
             smooth_follow: false,
@@ -854,11 +860,15 @@ impl ArtPanel {
         } else {
             (1.0, 1.0)
         };
+        // The cap along the scroll axis: the fit keeps the first flanks
+        // inside the panel, fill spends the whole axis on the hero and
+        // lets the flanks clip at the edge.
+        let cap = if self.config.fill { 1.0 } else { 0.42 };
         match self.axis() {
             // A row: covers as tall as the band, capped by the width.
-            Axis::Horizontal => (avail_h * 0.9 / floor).min(w * 0.42),
+            Axis::Horizontal => (avail_h * 0.9 / floor).min(w * cap),
             // A column: covers as wide as the panel, capped by its length.
-            Axis::Vertical => (w * 0.86 / sides).min(avail_h * 0.42),
+            Axis::Vertical => (w * 0.86 / sides).min(avail_h * cap),
         }
         .max(48.)
     }
@@ -1635,19 +1645,38 @@ impl PanelSettings for ArtPanel {
                 .flex_col()
                 .gap(settings_ui::SECTION_GAP)
                 .child(settings_ui::section(
-                    "Orientation",
+                    "Layout",
                     None,
-                    setting_row(
-                        "Vertical Layout",
-                        Some("Stack the shelf as a column that scrolls up and down instead of a row"),
-                        toggle(
-                            self.config.vertical,
-                            |this: &mut Self, on, cx| {
-                                this.set_orientation(on, cx);
-                            },
-                            cx,
-                        ),
-                    ),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens::SPACE_MD)
+                        .child(setting_row(
+                            "Vertical Layout",
+                            Some("Stack the shelf as a column that scrolls up and down instead of a row"),
+                            toggle(
+                                self.config.vertical,
+                                |this: &mut Self, on, cx| {
+                                    this.set_orientation(on, cx);
+                                },
+                                cx,
+                            ),
+                        ))
+                        .child(setting_row(
+                            "Fill the Panel",
+                            Some(
+                                "Size the centered cover off the panel's height alone (width when \
+                                 vertical); the side covers run off the edge instead of shrinking it",
+                            ),
+                            toggle(
+                                self.config.fill,
+                                |this: &mut Self, on, cx| {
+                                    this.config.fill = on;
+                                    cx.notify();
+                                },
+                                cx,
+                            ),
+                        )),
                 ))
                 .child(crate::query::shared_query::search_section(
                     self.config.search,

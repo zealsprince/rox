@@ -1,0 +1,19 @@
+[package]
+name = "rox-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "roxctl"
+path = "src/main.rs"
+
+[dependencies]
+# The socket client and the path derivation, shared with the app so the
+# two can't drift on where the socket lives or how a frame looks.
+rox-ipc = { path = "../rox-ipc" }
+serde_json = "1"
+# Undoes the server's artwork encode; the same 0.22 line the app rides.
+base64 = "0.22"
+# The default data dir mirrors the app's non-portable resolve.
+dirs = "5"

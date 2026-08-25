@@ -1,0 +1,25 @@
+[package]
+name = "rox-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The wire format: one JSON-RPC object per line.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Carries requests from the connection threads to the app's drain without a
+# poll, the same channel the single-instance guard and the media keys ride.
+async-channel = "2"
+# The accept loop and connection threads log through the app's backend.
+log = "0.4"
+# The runtime dir the socket lives in, same anchor the single-instance
+# guard uses.
+dirs = "5"
+
+# The named-pipe half of ADR 22. Only Windows: the Unix side speaks std's
+# own UnixStream and keeps the single-instance guard's bind discipline,
+# which pipes have no use for (they aren't filesystem objects and vanish
+# with the process). Sync API, so no runtime comes along.
+[target.'cfg(windows)'.dependencies]
+interprocess = "2"

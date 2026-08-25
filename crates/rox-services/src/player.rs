@@ -460,7 +460,7 @@ pub struct PlayerView {
     pub loop_mode: LoopMode,
     pub shuffle: bool,
     /// Which order shuffle is in. Here beside the flag because the transport
-    /// button's glyph follows it, and the Behavior page can move it from
+    /// button's glyph follows it, and the Playback page can move it from
     /// another window; without it the gated observer sees an unchanged view
     /// and the strip keeps drawing the old order's icon.
     pub shuffle_mode: ShuffleMode,
@@ -865,6 +865,27 @@ impl Player {
             .map(|e| (self.key_for(e), e.explicit))
             .collect();
         Some((entries, cursor, position_secs))
+    }
+
+    /// The whole play order for an external reader (the control socket),
+    /// with the handles an edit needs: each entry's stable id, its key, and
+    /// whether it was queued explicitly, plus the audible cursor. The same
+    /// read as [`queue_state`](Self::queue_state) but keeping the ids, which
+    /// the persist has no use for and a remove or move can't do without.
+    /// None when no session runs.
+    pub fn play_order(&self) -> Option<(Vec<(u64, TrackKey, bool)>, usize)> {
+        let session = self.session.as_ref()?;
+        let snap = session.shared.queue_snapshot();
+        if snap.entries.is_empty() {
+            return None;
+        }
+        let cursor = self.audible_index(&snap).unwrap_or(snap.cursor);
+        let entries = snap
+            .entries
+            .iter()
+            .map(|e| (e.id, self.key_for(e), e.explicit))
+            .collect();
+        Some((entries, cursor))
     }
 
     /// Queue tracks to play next, at the front of the explicit queue right

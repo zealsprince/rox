@@ -549,6 +549,18 @@ pub struct Settings {
     /// Development page. A layout that already holds an experimental panel
     /// still restores it either way.
     pub experimental: bool,
+    /// Whether anything of rox talks to AI tooling: the MCP surface, and
+    /// any LLM-facing feature that comes later (ADR 22). Off by default,
+    /// flipped at the top of the Application page, and revealing the MCP and
+    /// ML Models pages when on. The built-in acoustic analysis below
+    /// stands on its own and never reads this; enablement only layers AI
+    /// capability on top.
+    pub ai_enabled: bool,
+    /// Whether the MCP surface actually answers tool calls. Its own switch
+    /// under [`ai_enabled`](Self::ai_enabled): turning AI on reveals the MCP
+    /// page but doesn't open the door, and the rox-mcp proxy checks this on
+    /// every call, so a flip applies to the next tool use. Off by default.
+    pub mcp_enabled: bool,
     /// Whether the library may describe how its tracks sound, the vectors
     /// behind "more like this". Off by default and separate from the panel
     /// switch above: this one costs real decoding time across the whole
@@ -557,6 +569,12 @@ pub struct Settings {
     /// picked and the pass is run from, since all three are about what the
     /// library knows.
     pub acoustic_analysis: bool,
+    /// Whether the analysis pass follows the watcher, so files that land
+    /// in the library while rox is running get described without anyone
+    /// asking. Off by default, [`ReplayGainSettings::auto`]'s stance: a
+    /// pass that decodes audio shouldn't start on its own until it's been
+    /// agreed to once. Means nothing with the switch above off.
+    pub acoustic_auto: bool,
     /// Whether the library may work out what its tracks run at, the tempo
     /// pass behind the BPM column. Off by default, the acoustic switch's
     /// twin in every respect: this one is the feature as well as the
@@ -564,6 +582,10 @@ pub struct Settings {
     /// offered. Flipped on the Library page beside the acoustic rows,
     /// since both are about what the library knows about its audio.
     pub tempo_analysis: bool,
+    /// Whether the tempo pass follows the watcher, the acoustic auto
+    /// switch's twin. Off by default; means nothing with the switch above
+    /// off.
+    pub tempo_auto: bool,
     /// How many tracks the analysis pass works on at once. The default
     /// leaves the machine usable while a pass runs behind other work;
     /// someone happy to hand the whole box over for an afternoon raises it
@@ -3086,8 +3108,12 @@ impl Default for Settings {
             resize_lock: false,
             check_updates: true,
             experimental: false,
+            ai_enabled: false,
+            mcp_enabled: false,
             acoustic_analysis: false,
+            acoustic_auto: false,
             tempo_analysis: false,
+            tempo_auto: false,
             acoustic_workers: acoustic::DEFAULT_WORKERS,
             replaygain_workers: acoustic::DEFAULT_WORKERS,
             tempo_workers: acoustic::DEFAULT_WORKERS,

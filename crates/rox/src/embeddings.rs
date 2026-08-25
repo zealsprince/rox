@@ -163,9 +163,14 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
     .detach();
 }
 
-/// Follow a library's watch syncs, so a library with the switch on stays
-/// described as it grows instead of waiting for someone to open the settings
-/// and press a button.
+/// Follow a library's watch syncs, so a library with the auto switch on
+/// stays described as it grows instead of waiting for someone to open the
+/// settings and press a button.
+///
+/// The switch is read here rather than inside [`start`], the ReplayGain
+/// follow's stance: the button has to keep working with the switch off, and
+/// this is the only caller the setting speaks for. Off by default, so
+/// turning analysis on doesn't also hand every watch settle a pass.
 ///
 /// Only what the watcher brought in, deliberately. A full scan is an import
 /// or a manual rescan, and a library's worth of decoding is an afternoon that
@@ -173,7 +178,7 @@ pub fn start(library: Entity<Library>, cx: &mut App) {
 /// watch case.
 pub fn follow(library: &Entity<Library>, cx: &mut App) {
     App::subscribe(cx, library, |library, event, cx| {
-        if matches!(event, LibraryJob::WatchSettled) {
+        if matches!(event, LibraryJob::WatchSettled) && Settings::load().acoustic_auto {
             start(library, cx);
         }
     })

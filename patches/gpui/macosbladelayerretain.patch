@@ -1,0 +1,20 @@
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -1168,7 +1168,16 @@
+ 
+     #[cfg(target_os = "macos")]
+     pub fn layer(&self) -> metal::MetalLayer {
+-        unsafe { foreign_types::ForeignType::from_ptr(self.layer_ptr()) }
++        // rox patch: the wrapper releases on drop, so it has to own a
++        // reference. from_ptr alone claims the surface's reference, and every
++        // call over-released the backing layer by one; a couple of
++        // backing-property changes then deallocated it under the view and the
++        // next CATransaction commit crashed in CA::Layer::collect_animations_.
++        // into_raw hands the wrapper the +1 from metal_layer() instead.
++        let layer = self.surface.metal_layer();
++        unsafe {
++            foreign_types::ForeignType::from_ptr(objc2::rc::Retained::into_raw(layer) as *mut _)
++        }
+     }
+ 
+     #[cfg(target_os = "macos")]

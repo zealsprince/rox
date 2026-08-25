@@ -1,0 +1,14 @@
+[package]
+name = "rox-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The socket client this binary proxies; its tool surface is by
+# construction a subset of what the socket serves (ADR 22).
+rox-ipc = { path = "../rox-ipc" }
+serde_json = "1"
+# The default data dir mirrors the app's non-portable resolve, the same
+# way roxctl derives it.
+dirs = "5"

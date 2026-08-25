@@ -1084,7 +1084,7 @@ impl TasksWindow {
                     .children(
                         blocked
                             .and_then(|blocked| blocked.0)
-                            .map(|why| muted(format!("{why}, so this waits its turn"))),
+                            .map(|why| muted(why.to_string())),
                     ),
             })
     }

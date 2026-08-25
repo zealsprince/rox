@@ -142,6 +142,10 @@ pub mod icons {
     /// the primary.
     pub const MINIMIZE: &str = "icons/minimize-2.svg";
     pub const MAXIMIZE: &str = "icons/maximize-2.svg";
+    /// Exit fullscreen: corner brackets folding in, pairing with the
+    /// square frame the maximize button wears otherwise. Bracket-style so
+    /// it can't be mistaken for the mini toggle's shrink arrows.
+    pub const FULLSCREEN_EXIT: &str = "icons/minimize.svg";
     /// The Window menu's Empty Window entry: a blank dock.
     pub const SQUARE_DASHED: &str = "icons/square-dashed.svg";
     /// The unfinished work: the settings sidebar's Development page, and
@@ -272,6 +276,7 @@ pub mod icons {
         GAUGE,
         MINIMIZE,
         MAXIMIZE,
+        FULLSCREEN_EXIT,
         SQUARE_DASHED,
         FLASK,
         KEYBOARD,

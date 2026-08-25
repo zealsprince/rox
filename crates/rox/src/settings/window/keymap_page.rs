@@ -87,9 +87,12 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Rows<'a> {
         let chords = keymap::chords(command, &self.keymap);
+        // The row renders through `custom`, which matches keywords only, so
+        // the label and description go in by hand or search never sees them.
         // The chords find the row too, both as typed and as printed, so
         // searching "ctrl-p" and searching "Ctrl+P" both land here.
-        let mut keywords: Vec<String> = chords.iter().map(|chord| chord.to_string()).collect();
+        let mut keywords: Vec<String> = vec![command.label.into(), command.description.into()];
+        keywords.extend(chords.iter().map(|chord| chord.to_string()));
         keywords.extend(chords.iter().map(|chord| keymap::display(chord)));
         keywords.push("shortcut".into());
         keywords.push("chord".into());

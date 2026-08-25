@@ -2490,6 +2490,15 @@ impl Workspace {
             });
         });
 
+        // The launch also binds the control socket (ADR 22), which hangs off
+        // the app rather than any window: the drain holds its own state
+        // clone, so a close to the tray leaves the surface answering. A
+        // reopen adopts the same entities the running server already speaks
+        // for, so only the first ever open binds.
+        if is_primary && !adopted {
+            crate::integrations::ipc::serve(&state, cx);
+        }
+
         // The primary window owns the OS media service: a session the tray
         // hands back when it kept one alive, a fresh registration otherwise.
         // Everything past that point is the session's own business - it

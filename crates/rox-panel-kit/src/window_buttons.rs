@@ -40,11 +40,13 @@ pub fn maximize_tip(window: &Window) -> &'static str {
 }
 
 /// The glyph for the maximize control, for the surfaces that draw icons
-/// rather than traffic lights. Shrink arrows from inside a fullscreen Space,
-/// matching what the click does; the plain square otherwise.
+/// rather than traffic lights. Corner brackets folding in from inside a
+/// fullscreen Space, and the plain square otherwise. Brackets rather than
+/// shrink arrows: the mini toggle wears the arrows, and it can sit right
+/// beside this button.
 pub fn maximize_icon(window: &Window) -> &'static str {
     if cfg!(target_os = "macos") && window.is_fullscreen() {
-        icons::MINIMIZE
+        icons::FULLSCREEN_EXIT
     } else {
         icons::STOP
     }

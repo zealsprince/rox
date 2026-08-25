@@ -7,7 +7,10 @@ members = [
     "crates/rox-design",
     "crates/rox-dock",
     "crates/rox-playback",
+    "crates/rox-cli",
+    "crates/rox-ipc",
     "crates/rox-library",
+    "crates/rox-mcp",
     "crates/rox-net",
     "crates/rox-panel-api",
     "crates/rox-panel-kit",
@@ -18,7 +21,7 @@ members = [
 default-members = ["crates/rox"]
 
 [workspace.package]
-version = "1.18.2"
+version = "1.19.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 

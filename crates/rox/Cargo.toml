@@ -20,6 +20,9 @@ rox-core = { path = "../rox-core" }
 # and crate::assets so panels path through them the way they always have.
 rox-design = { path = "../rox-design" }
 rox-dock = { path = "../rox-dock" }
+# The control socket's wire side (ADR 22); the answers live in
+# crate::integrations::ipc.
+rox-ipc = { path = "../rox-ipc" }
 rox-library = { path = "../rox-library" }
 # The enrichment providers, the signed Last.fm calls, and the baked-in
 # service identities, re-exported as crate::providers and crate::discord.
@@ -52,6 +55,9 @@ image = "0.25"
 # The settings file; both already in the tree through gpui.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Artwork rides the control socket as base64; already in the tree through
+# rox-core, same 0.22 line.
+base64 = "0.22"
 # Embeds our own icons over the gpui-component set; already in the tree
 # through gpui-component-assets.
 rust-embed = "8"
@@ -78,8 +84,12 @@ souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] 
 # poll; already in the tree through gpui, same 2.x line.
 async-channel = "2"
 # The duplicates window's delete: files go to the OS trash, never unlinked,
-# so a wrong pick comes back.
-trash = "5"
+# so a wrong pick comes back. Defaults off to drop coinit_apartmentthreaded:
+# the delete runs on gpui's background executor, which on Windows is the
+# WinRT thread pool, and those threads are already in the multithreaded
+# apartment - the default's CoInitializeEx(STA) there fails and the crate
+# panics. coinit_multithreaded is a no-op success on them.
+trash = { version = "5", default-features = false, features = ["coinit_multithreaded", "chrono"] }
 # Builds the file:// URL for the now-playing cover souvlaki hands the OS
 # transport; percent-encodes the path so spaces and unicode survive. Already
 # in the tree, same 2.x line.

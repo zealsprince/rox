@@ -57,7 +57,7 @@ struct Held {
 }
 
 /// Whether this platform has a way back into a windowless app: the tray
-/// icon on Linux and Windows, the dock on macOS. The Behavior row hides
+/// icon on Linux and Windows, the dock on macOS. The Application row hides
 /// where this is false, and the close path quits regardless of the setting.
 pub(crate) fn supported() -> bool {
     cfg!(any(

@@ -3,7 +3,7 @@
 //! back to the project, and the update check. The check is notify only: it
 //! reports a newer release and links to its page, it never downloads or
 //! installs. The daily launch check has its own toggle over in settings
-//! under Behavior; the button here checks now either way.
+//! under Application; the button here checks now either way.
 
 use gpui::{
     div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, Div, Global, MouseButton,

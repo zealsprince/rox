@@ -20,13 +20,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, size, svg, AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, Div,
-    Entity, EntityId, Global, Hsla, MouseButton, MouseDownEvent, PathPromptOptions, Pixels,
-    ScrollHandle, SharedString, Subscription, WeakEntity, Window, WindowHandle,
+    div, prelude::*, px, size, svg, AnyElement, AnyWindowHandle, App, Axis, Bounds, ClipboardItem,
+    Context, Div, Entity, EntityId, Global, Hsla, MouseButton, MouseDownEvent, PathPromptOptions,
+    Pixels, ScrollHandle, SharedString, Subscription, WeakEntity, Window, WindowHandle,
 };
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::Scrollbar;
+use gpui_component::text::TextView;
 use gpui_component::{Root, Sizable as _};
 
 use crate::convert;
@@ -151,12 +152,14 @@ pub fn open(
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Appearance,
+    Application,
     Audio,
-    Behavior,
     Integrations,
     Keymap,
     Library,
+    Mcp,
     MlModels,
+    Playback,
     Providers,
     Shader,
     Storage,
@@ -169,7 +172,7 @@ enum Page {
 /// survives a tenth page, and one that's only in someone's head costs a
 /// scan of the whole list to find Storage. Development sits out because
 /// it's the escape hatch, not a subject: it belongs with the raw file and
-/// the data folder at the bottom rather than wedged between Behavior and
+/// the data folder at the bottom rather than wedged between Audio and
 /// Integrations.
 ///
 /// Nothing keys off a page's position here - the sidebar, the search
@@ -177,12 +180,14 @@ enum Page {
 /// can be resorted without touching anything else.
 const PAGES: &[(Page, &str, &str)] = &[
     (Page::Appearance, "Appearance", icons::PALETTE),
+    (Page::Application, "Application", icons::SLIDERS),
     (Page::Audio, "Audio", icons::AUDIO_LINES),
-    (Page::Behavior, "Behavior", icons::SLIDERS),
     (Page::Integrations, "Integrations", icons::RADIO),
     (Page::Keymap, "Keymap", icons::KEYBOARD),
     (Page::Library, "Library", icons::LIST_MUSIC),
+    (Page::Mcp, "MCP", icons::LINK),
     (Page::MlModels, "ML Models", icons::LAYERS),
+    (Page::Playback, "Playback", icons::PLAY),
     (Page::Providers, "Providers", icons::DOWNLOAD),
     (Page::Shader, "Shader", icons::BLEND),
     (Page::Storage, "Storage", icons::DATABASE),
@@ -206,7 +211,7 @@ const MODEL_KINDS: &[(&str, ModelKind)] = &[
 ];
 
 /// The orders shuffle can put the upcoming queue in, and what each one
-/// means. Read on the Behavior page.
+/// means. Read on the Playback page.
 const SHUFFLE_MODES: &[panel::ModeSpec<ShuffleMode>] = &[
     panel::ModeSpec {
         label: "Random",
@@ -570,17 +575,30 @@ struct SettingsWindow {
     /// while a row is recording. The interceptor below reads it to decide
     /// whether to swallow a press.
     recording: Option<&'static str>,
-    /// Whether launch runs the daily update check, the Behavior page toggle.
+    /// Whether launch runs the daily update check, the Application page toggle.
     check_updates: bool,
+    /// Whether anything of rox talks to AI tooling, the toggle at the top
+    /// of the Application page. Also gates whether the MCP and ML Models
+    /// pages show in the sidebar.
+    ai_enabled: bool,
+    /// Whether the MCP surface answers tool calls, the MCP page's own
+    /// toggle under the AI gate above.
+    mcp_enabled: bool,
     /// Whether the experimental panels show in the panel menus, the
     /// Development page toggle.
     experimental: bool,
     /// Whether the library may build acoustic vectors, the Library page's
     /// acoustic switch.
     acoustic_analysis: bool,
+    /// Whether the analysis pass follows the watcher, the row under the
+    /// acoustic switch.
+    acoustic_auto: bool,
     /// Whether the library may work out how fast its tracks run, the
     /// Library page's tempo switch.
     tempo_analysis: bool,
+    /// Whether the tempo pass follows the watcher, the row under the
+    /// tempo switch.
+    tempo_auto: bool,
     /// Where the analysis pass puts its vectors, the row under the switch.
     acoustic_save: AcousticSave,
     /// The start prompt for a long pass, while it's up. It owns the worker
@@ -1011,9 +1029,13 @@ impl SettingsWindow {
             mini_layout: settings.look.bundle.mini_layout.clone(),
             pending: None,
             check_updates: settings.check_updates,
+            ai_enabled: settings.ai_enabled,
+            mcp_enabled: settings.mcp_enabled,
             experimental: settings.experimental,
             acoustic_analysis: settings.acoustic_analysis,
+            acoustic_auto: settings.acoustic_auto,
             tempo_analysis: settings.tempo_analysis,
+            tempo_auto: settings.tempo_auto,
             acoustic_save: settings.acoustic_save,
             prompt: None,
             acoustic_workers: settings.acoustic_workers.max(1),
@@ -3827,7 +3849,11 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn behavior_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
+    /// The Application page: how the app itself behaves, from the AI gate
+    /// through launch, layout, window residency, where the data lives, and
+    /// the control socket under it all. Everything about how the music
+    /// plays lives on Playback instead.
+    fn application_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
         // The portable row's control by where the toggle stands: inert
         // text where the exe folder refuses writes or while the seed
         // copy runs, the live switch otherwise.
@@ -3864,19 +3890,22 @@ impl SettingsWindow {
             );
         }
         PageBody::new()
-            .section(self.playback_behavior_section(q, cx))
+            // At the head of the page rather than sorted in: it's the gate
+            // for two whole pages (MCP, ML Models), and a gate that hides
+            // below the fold is a setting people ask where to find.
+            .section(Section::new(q, icons::LINK, "AI", None, |rows| {
+                rows.keyed(
+                    &["ai", "mcp", "agent", "assistant", "llm", "model"],
+                    "Enable AI Features",
+                    Some(
+                        "Let AI tooling talk to rox: adds MCP support, and the ML model \
+                         downloads, with their pages joining the sidebar.",
+                    ),
+                    panel::toggle(self.ai_enabled, Self::set_ai_enabled, cx),
+                )
+            }))
             .section(Section::new(q, icons::PLAY, "Startup", None, |rows| {
                 rows.keyed(
-                    &["resume", "reopen", "track", "queue"],
-                    "Restore Last Session",
-                    Some(
-                        "Launch with the play queue as you left it, paused on the track that \
-                         was playing and where it left off. Queued tracks outside your library \
-                         folders can't be restored and drop from the order",
-                    ),
-                    panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
-                )
-                .keyed(
                     &["release", "version", "upgrade"],
                     "Check for Updates",
                     Some("Look for a newer release once a day when rox starts; the About window checks now either way"),
@@ -3913,6 +3942,75 @@ impl SettingsWindow {
                 rows.custom(&["portable mode", "usb", "folder", "executable"], || {
                     portable_row.into_any_element()
                 })
+            }))
+            // Here rather than on the MCP page: the socket is rox's one
+            // machine interface, and rox-mcp is just one of its callers.
+            .section(Section::new(q, icons::LINK, "Control Socket", None, |rows| {
+                rows.custom(&["socket", "ipc", "control", "roxctl", "mcp"], || {
+                    let path = rox_ipc::socket_path(&settings::data_dir());
+                    let text = path.display().to_string();
+                    let copy = text.clone();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens::SPACE_XS)
+                        .child(panel::setting_row(
+                            "Socket Path",
+                            Some(
+                                "rox's machine interface while it runs: JSON-RPC over a \
+                                 local socket, keyed to this data folder. roxctl drives \
+                                 it from a shell, and the rox-mcp proxy answers MCP \
+                                 clients over it",
+                            ),
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(tokens::SPACE_SM)
+                                .child(small_button("Copy", icons::COPY, false, move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                                }))
+                                // A named pipe lives outside the filesystem,
+                                // so Windows has nothing to reveal.
+                                .when(!cfg!(windows), |d| {
+                                    d.child(small_button(
+                                        "Reveal",
+                                        icons::FOLDER,
+                                        false,
+                                        move |_, _, cx| {
+                                            cx.reveal_path(&path);
+                                        },
+                                    ))
+                                })
+                                .into_any_element(),
+                        ))
+                        // The path on its own line rather than squeezed
+                        // beside the buttons: runtime dirs run long, and a
+                        // readout that truncates is a readout that lies.
+                        .child(readout(text))
+                        .into_any_element()
+                })
+            }))
+    }
+
+    /// The Playback page: how the queue arranges and extends itself, what a
+    /// launch brings back, and how tracks get rated along the way. Split off
+    /// the Application page so the music behavior reads together instead of
+    /// between window and data rows.
+    fn playback_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
+        PageBody::new()
+            .section(self.playback_behavior_section(q, cx))
+            .section(Section::new(q, icons::PLAY, "Startup", None, |rows| {
+                rows.keyed(
+                    &["resume", "reopen", "track", "queue"],
+                    "Restore Last Session",
+                    Some(
+                        "Launch with the play queue as you left it, paused on the track that \
+                         was playing and where it left off. Queued tracks outside your library \
+                         folders can't be restored and drop from the order",
+                    ),
+                    panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
+                )
             }))
             .section(Section::new(q, icons::STAR, "Ratings", None, |rows| {
                 rows.keyed(
@@ -3956,7 +4054,7 @@ impl SettingsWindow {
         let analyzed = settings::similarity_ready();
         let shuffle_mode = self.playback.read(cx).shuffle_mode();
         let continuation = self.playback.read(cx).continuation_mode();
-        Section::new(q, icons::LIST_MUSIC, "Playback", None, move |rows| {
+        Section::new(q, icons::LIST_MUSIC, "Queue", None, move |rows| {
             rows.custom(
                 &[
                     "shuffle",
@@ -5297,6 +5395,24 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    fn set_ai_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.ai_enabled = on;
+        Settings::update(move |s| s.ai_enabled = on);
+        // Turning it off takes the MCP and ML Models pages out of the
+        // sidebar; a window sitting on one of them lands back where the
+        // toggle lives rather than on an orphaned page.
+        if !on && matches!(self.page, Page::Mcp | Page::MlModels) {
+            self.page = Page::Application;
+        }
+        cx.notify();
+    }
+
+    fn set_mcp_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.mcp_enabled = on;
+        Settings::update(move |s| s.mcp_enabled = on);
+        cx.notify();
+    }
+
     fn set_experimental(&mut self, on: bool, cx: &mut Context<Self>) {
         self.experimental = on;
         Settings::update(move |s| s.experimental = on);
@@ -5316,6 +5432,20 @@ impl SettingsWindow {
         // sanctioned the decoding in the first place.
         if !on {
             embeddings::stop(cx);
+        }
+        cx.notify();
+    }
+
+    /// The follow-the-watcher switch for the analysis pass,
+    /// [`Self::set_replay_gain_auto`]'s shape: on the way on it prices the
+    /// backlog through the prompt, and declining is a no to the switch too,
+    /// landing back through `pass_refused`.
+    fn set_acoustic_auto(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.acoustic_auto = on;
+        Settings::update(move |s| s.acoustic_auto = on);
+        if on && self.acoustic_coverage.missing() > 0 && self.acoustic_job.is_none() {
+            let library = self.library.clone();
+            pass_prompt::raise_for_switch(self, pass_prompt::Pass::Acoustic, library, cx);
         }
         cx.notify();
     }
@@ -5344,6 +5474,73 @@ impl SettingsWindow {
                 panel::toggle(self.experimental, Self::set_experimental, cx),
             )
         }))
+    }
+
+    /// The MCP page (ADR 22): where an MCP client is pointed at rox. The
+    /// server is the rox-mcp binary beside the executable, proxying the
+    /// control socket, so the page holds the switch that lets it answer and
+    /// the copy-ready config snippet. Only in the sidebar while AI features
+    /// are on, and off at its own toggle even then: revealing the page is
+    /// not the same as opening the door. The socket itself lives on the
+    /// Application page; it's rox's surface, not MCP's.
+    fn mcp_page(&self, q: &Query, window: &mut Window, cx: &mut Context<Self>) -> PageBody {
+        let snippet = mcp_config_snippet();
+        // A TextView rather than a styled div so the snippet can actually be
+        // selected and copied in place; the markdown code block brings its
+        // own frame, and the header button still copies the whole thing.
+        let block =
+            TextView::markdown("mcp-config", format!("```json\n{snippet}\n```"), window, cx)
+                .selectable(true)
+                .text_xs();
+        let toggle = panel::toggle(self.mcp_enabled, Self::set_mcp_enabled, cx);
+        PageBody::new().section(Section::new(
+            q,
+            icons::LINK,
+            "MCP",
+            // The header's one-click copy only while the server answers: a
+            // grab-this button on a switched-off surface reads as an
+            // invitation the toggle just declined.
+            self.mcp_enabled.then(|| {
+                small_button("Copy", icons::COPY, false, move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(snippet.clone()));
+                })
+                .into_any_element()
+            }),
+            move |rows| {
+                rows.keyed(
+                    &["mcp", "enable", "server", "tools"],
+                    "Enable MCP Server",
+                    Some(
+                        "Answer tool calls from connected MCP clients. The proxy checks \
+                         this on every call, so while it's off clients are turned away \
+                         with the reason; the config below can be set up either way",
+                    ),
+                    toggle,
+                )
+                .custom(
+                    &["mcp", "client", "config", "claude", "agent"],
+                    move || {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(tokens::SPACE_XS)
+                            .child(panel::setting_row(
+                                "Client Config",
+                                Some(
+                                    "Paste into an MCP client's server list (Claude Code, \
+                                 Claude Desktop, or any other) to let it ask rox about \
+                                 the library, what's playing, and the transport. rox \
+                                 has to be running; the tools answer over its control \
+                                 socket",
+                                ),
+                                div().into_any_element(),
+                            ))
+                            .child(block)
+                            .into_any_element()
+                    },
+                )
+            },
+        ))
     }
 
     /// The models page: what can run a job that needs a network, what it
@@ -5868,6 +6065,7 @@ impl SettingsWindow {
     /// which model is the other page's business.
     fn acoustic_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let on = self.acoustic_analysis;
+        let auto = self.acoustic_auto;
         let note = on.then(|| self.acoustic_note());
         let ml_label = self.acoustic_ml_source.label();
         let installed = self.acoustic_ml_source.installed();
@@ -5941,6 +6139,18 @@ impl SettingsWindow {
                         Self::set_acoustic_save,
                         cx,
                     ),
+                );
+                rows = rows.keyed(
+                    &["automatic", "auto", "new files", "watch"],
+                    "Describe New Files",
+                    Some(
+                        "Describe what the watcher brings in as it arrives, once the sync has \
+                         settled, so a library that grows keeps its descriptions without a trip \
+                         back here. Off, new files wait for the Analyze Missing button. Turning \
+                         this on offers to analyze what's already missing first; after that it \
+                         only ever sees files that just landed",
+                    ),
+                    panel::toggle(auto, Self::set_acoustic_auto, cx),
                 );
                 match note {
                     Some(note) => rows
@@ -6115,14 +6325,15 @@ impl SettingsWindow {
     /// nowhere but the database for the numbers to land.
     fn tempo_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
         let on = self.tempo_analysis;
+        let auto = self.tempo_auto;
         let note = on.then(|| self.tempo_note());
         Section::new(
             q,
             icons::CLOCK,
             "Tempo Analysis",
             on.then(|| self.tempo_control(cx)),
-            move |rows| {
-                let rows = rows.keyed(
+            move |mut rows| {
+                rows = rows.keyed(
                     &["tempo", "bpm", "analysis"],
                     "Work Out How Fast Tracks Run",
                     Some(
@@ -6133,6 +6344,20 @@ impl SettingsWindow {
                     ),
                     panel::toggle(on, Self::set_tempo_analysis, cx),
                 );
+                if on {
+                    rows = rows.keyed(
+                        &["automatic", "auto", "new files", "watch"],
+                        "Time New Files",
+                        Some(
+                            "Count the beats in what the watcher brings in as it arrives, once \
+                             the sync has settled, so a library that grows keeps its tempos \
+                             without a trip back here. Off, new files wait for the Analyze \
+                             Missing button. Turning this on offers to time what's already \
+                             missing first; after that it only ever sees files that just landed",
+                        ),
+                        panel::toggle(auto, Self::set_tempo_auto, cx),
+                    );
+                }
                 match note {
                     Some(note) => rows
                         .custom(&["coverage", "analyze", "missing", "progress"], || {
@@ -6151,6 +6376,19 @@ impl SettingsWindow {
         self.tempo_analysis = on;
         Settings::update(move |s| s.tempo_analysis = on);
         settings::set_tempo_analysis(on, cx);
+        cx.notify();
+    }
+
+    /// The follow-the-watcher switch for the tempo pass, the acoustic
+    /// setter's twin: the backlog gets priced on the way on, and a decline
+    /// puts the switch back through `pass_refused`.
+    fn set_tempo_auto(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.tempo_auto = on;
+        Settings::update(move |s| s.tempo_auto = on);
+        if on && self.bpm_coverage.missing > 0 && self.tempo_job.is_none() {
+            let library = self.library.clone();
+            pass_prompt::raise_for_switch(self, pass_prompt::Pass::Tempo, library, cx);
+        }
         cx.notify();
     }
 
@@ -6302,11 +6540,13 @@ impl SettingsWindow {
         match page {
             Page::Appearance => self.appearance_page(q, columns, cx),
             Page::Audio => self.audio_page(q, cx),
-            Page::Behavior => self.behavior_page(q, cx),
+            Page::Application => self.application_page(q, cx),
             Page::Integrations => self.integrations_page(q, cx),
             Page::Keymap => self.keymap_page(q, cx),
             Page::Library => self.library_page(q, cx),
+            Page::Mcp => self.mcp_page(q, window, cx),
             Page::MlModels => self.ml_models_page(q, cx),
+            Page::Playback => self.playback_page(q, cx),
             Page::Providers => self.providers_page(q, cx),
             Page::Shader => self.shader_page(q, window, cx),
             Page::Storage => self.storage_page(q, cx),
@@ -6542,6 +6782,26 @@ fn readout(value: String) -> Div {
     div().text_color(palette::text_muted()).child(value)
 }
 
+/// The MCP page's copy-ready client config: the rox-mcp binary beside this
+/// executable, in the mcpServers shape every stdio client reads. A portable
+/// run points the proxy at its own data folder, since the socket is keyed
+/// to it; the stock run needs no arguments at all.
+fn mcp_config_snippet() -> String {
+    let binary = format!("rox-mcp{}", std::env::consts::EXE_SUFFIX);
+    let command = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(&binary)))
+        .map(|path| path.display().to_string())
+        .unwrap_or(binary);
+    let mut server = serde_json::json!({ "command": command });
+    if settings::portable() {
+        server["args"] =
+            serde_json::json!(["--data-dir", settings::data_dir().display().to_string(),]);
+    }
+    let config = serde_json::json!({ "mcpServers": { "rox": server } });
+    serde_json::to_string_pretty(&config).unwrap_or_default()
+}
+
 /// The exclusive toggle as the output layer's mode. The two device lists
 /// don't share ids, so which one to ask for follows the toggle rather than
 /// what happens to be running.
@@ -6714,13 +6974,23 @@ impl pass_prompt::Host for SettingsWindow {
         cx.notify();
     }
 
-    /// The backlog behind the Measure New Files switch was declined, so the
+    /// The backlog behind a follow-the-watcher switch was declined, so the
     /// switch was a no as well: put it back, rather than leave it on to start
     /// the pass it just refused at the next watch sync.
     fn pass_refused(&mut self, pass: pass_prompt::Pass, cx: &mut Context<Self>) {
-        if matches!(pass, pass_prompt::Pass::ReplayGain) {
-            self.playback
-                .update(cx, |player, cx| player.set_replay_gain_auto(false, cx));
+        match pass {
+            pass_prompt::Pass::Acoustic => {
+                self.acoustic_auto = false;
+                Settings::update(|s| s.acoustic_auto = false);
+            }
+            pass_prompt::Pass::ReplayGain => {
+                self.playback
+                    .update(cx, |player, cx| player.set_replay_gain_auto(false, cx));
+            }
+            pass_prompt::Pass::Tempo => {
+                self.tempo_auto = false;
+                Settings::update(|s| s.tempo_auto = false);
+            }
         }
     }
 }
@@ -6764,8 +7034,16 @@ impl Render for SettingsWindow {
         // keeping everything.
         let text = self.search.read(cx).query().trim().to_string();
         let q = Query::parse(&text);
+        // The AI toggle takes the MCP and ML Models pages out of the list
+        // entirely, search included: a page that isn't on offer shouldn't
+        // surface its rows either.
+        let pages: Vec<(Page, &str, &str)> = PAGES
+            .iter()
+            .copied()
+            .filter(|&(page, ..)| self.ai_enabled || !matches!(page, Page::Mcp | Page::MlModels))
+            .collect();
         let results: Option<Vec<_>> = q.active().then(|| {
-            PAGES
+            pages
                 .iter()
                 .map(|&(page, label, icon)| {
                     (
@@ -6794,7 +7072,7 @@ impl Render for SettingsWindow {
                         .child(self.search.update(cx, |search, cx| search.element(cx))),
                 )
                 .children(
-                    PAGES
+                    pages
                         .iter()
                         .enumerate()
                         .map(|(index, &(page, label, icon))| {
@@ -6898,12 +7176,14 @@ mod tests {
     fn label(page: Page) -> &'static str {
         match page {
             Page::Appearance => "Appearance",
+            Page::Application => "Application",
             Page::Audio => "Audio",
-            Page::Behavior => "Behavior",
             Page::Keymap => "Keymap",
             Page::Integrations => "Integrations",
             Page::Library => "Library",
+            Page::Mcp => "MCP",
             Page::MlModels => "ML Models",
+            Page::Playback => "Playback",
             Page::Providers => "Providers",
             Page::Shader => "Shader",
             Page::Storage => "Storage",
@@ -6914,12 +7194,14 @@ mod tests {
 
     const ALL: &[Page] = &[
         Page::Appearance,
+        Page::Application,
         Page::Audio,
-        Page::Behavior,
         Page::Integrations,
         Page::Keymap,
         Page::Library,
+        Page::Mcp,
         Page::MlModels,
+        Page::Playback,
         Page::Providers,
         Page::Shader,
         Page::Storage,

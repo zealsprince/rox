@@ -1,0 +1,22 @@
+Make DispatchEventResult public so code outside gpui can call
+Window::dispatch_event. rox's control socket drives the UI with synthetic
+input for agent-side verification (ADR 22), and the method is already pub;
+only its crate-private return type stopped external callers.
+
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -1269,9 +1269,13 @@
+     }
+ }
+ 
++/// What dispatching an input event produced, for callers driving
++/// [`Window::dispatch_event`] from outside the platform loop.
+ #[derive(Clone, Debug, Default, PartialEq, Eq)]
+-pub(crate) struct DispatchEventResult {
++pub struct DispatchEventResult {
++    /// False when a handler stopped the event's propagation.
+     pub propagate: bool,
++    /// True when a handler prevented the platform default.
+     pub default_prevented: bool,
+ }
+ 

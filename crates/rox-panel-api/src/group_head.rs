@@ -92,12 +92,12 @@ pub enum TileFace {
 }
 
 impl TileFace {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> gpui::SharedString {
         match self {
-            TileFace::Mosaic => "Cover Mosaic",
-            TileFace::Tinted => "Tinted Mosaic",
-            TileFace::Gradient => "Gradient Card",
-            TileFace::Color => "Color Card",
+            TileFace::Mosaic => rox_i18n::t!("tile-face-mosaic"),
+            TileFace::Tinted => rox_i18n::t!("tile-face-tinted"),
+            TileFace::Gradient => rox_i18n::t!("tile-face-gradient"),
+            TileFace::Color => rox_i18n::t!("tile-face-color"),
         }
     }
 
@@ -111,61 +111,61 @@ impl TileFace {
 /// and where a re-shown piece slots back in.
 pub const PIECES: &[ArrangeSpec<HeadPiece>] = &[
     ArrangeSpec {
-        label: "Artist",
+        key: "head-piece-artist",
         icon: Some(icons::MIC),
         value: HeadPiece::Artist,
         repeats: false,
     },
     ArrangeSpec {
-        label: "Album",
+        key: "head-piece-album",
         icon: Some(icons::DISC),
         value: HeadPiece::Album,
         repeats: false,
     },
     ArrangeSpec {
-        label: "Year",
+        key: "head-piece-year",
         icon: Some(icons::CALENDAR),
         value: HeadPiece::Year,
         repeats: false,
     },
     ArrangeSpec {
-        label: "Genre",
+        key: "head-piece-genre",
         icon: Some(icons::TAG),
         value: HeadPiece::Genre,
         repeats: false,
     },
     ArrangeSpec {
-        label: "Quality",
+        key: "head-piece-quality",
         icon: Some(icons::AUDIO_WAVEFORM),
         value: HeadPiece::Quality,
         repeats: false,
     },
     ArrangeSpec {
-        label: "Tracks",
+        key: "head-piece-tracks",
         icon: Some(icons::LIST_MUSIC),
         value: HeadPiece::Tracks,
         repeats: false,
     },
     ArrangeSpec {
-        label: "Time",
+        key: "head-piece-time",
         icon: Some(icons::CLOCK),
         value: HeadPiece::Time,
         repeats: false,
     },
     ArrangeSpec {
-        label: "Spacer",
+        key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: HeadPiece::Spacer,
         repeats: true,
     },
     ArrangeSpec {
-        label: "Divider",
+        key: "head-piece-divider",
         icon: Some(icons::MINUS),
         value: HeadPiece::Divider,
         repeats: true,
     },
     ArrangeSpec {
-        label: "Art",
+        key: "head-piece-art",
         icon: Some(icons::IMAGE),
         value: HeadPiece::Art,
         repeats: false,
@@ -597,7 +597,7 @@ pub fn line_content(
                                 .min_w_0()
                                 .truncate()
                                 .text_color(palette::text_muted())
-                                .child("Unknown"),
+                                .child(rox_i18n::t!("head-unknown")),
                         );
                     }
                 } else {

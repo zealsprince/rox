@@ -139,7 +139,7 @@ pub struct GridConfig {
     /// keeps the wall square, 100 rounds each cover into a circle.
     #[serde(default)]
     pub rounding: f32,
-    /// The space between tiles, in px; zero keeps the wall seamless.
+    /// The space between tiles, in px; zero packs the covers edge to edge.
     #[serde(default)]
     pub gap: f32,
     /// Show the album title and artist under every cover, iTunes style,
@@ -328,7 +328,8 @@ impl GridPanel {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
-        let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
+        let search =
+            cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // Follow the shared query while global: rebuild the wall and reset
         // the box to it on the next render.
@@ -1222,8 +1223,8 @@ impl PanelSettings for GridPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(setting_row(
-                "Vertical Layout",
-                Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height"),
+                rox_i18n::t!("grid-vertical-layout"),
+                Some(rox_i18n::t!("grid-vertical-layout.description")),
                 toggle(
                     self.config.vertical,
                     |this: &mut Self, on, cx| {
@@ -1257,7 +1258,7 @@ impl PanelSettings for GridPanel {
                 ))
                 .child(panel::tracking_section(
                     self.config.follow_playing,
-                    "Scroll to the playing album whenever the track changes",
+                    rox_i18n::t!("grid-follow.description"),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
                         // Catch up right away instead of waiting for
@@ -1268,13 +1269,13 @@ impl PanelSettings for GridPanel {
                         cx.notify();
                     },
                     self.config.resume_playing,
-                    "Slide back to the playing album after you stop browsing",
+                    rox_i18n::t!("grid-resume.description"),
                     |this: &mut Self, on, cx| {
                         this.config.resume_playing = on;
                         cx.notify();
                     },
                     self.config.smooth_follow,
-                    "Glide to the album instead of jumping",
+                    rox_i18n::t!("grid-smooth.description"),
                     |this: &mut Self, on, cx| {
                         this.config.smooth_follow = on;
                         cx.notify();
@@ -1282,15 +1283,15 @@ impl PanelSettings for GridPanel {
                     cx,
                 ))
                 .child(settings_ui::section(
-                    "Dimming",
+                    rox_i18n::t!("grid-section-dimming"),
                     None,
                     div()
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
                         .child(setting_row(
-                            "Dim While Playing",
-                            Some("Fade every cover but the playing album's; hovering lights a tile back up"),
+                            rox_i18n::t!("grid-dim-while-playing"),
+                            Some(rox_i18n::t!("grid-dim-while-playing.description")),
                             toggle(
                                 self.config.dim_playing,
                                 |this: &mut Self, on, cx| {
@@ -1303,8 +1304,8 @@ impl PanelSettings for GridPanel {
                         ))
                         .when(self.config.dim_playing, |d| {
                             d.child(setting_row(
-                                "Dim Amount",
-                                Some("How far the other covers fade; 100% hides them"),
+                                rox_i18n::t!("grid-dim-amount"),
+                                Some(rox_i18n::t!("grid-dim-amount.description")),
                                 settings_ui::scalar(
                                     &self.dim_scrub,
                                     &self.value_edit,
@@ -1320,8 +1321,8 @@ impl PanelSettings for GridPanel {
                             ))
                         })
                         .child(setting_row(
-                            "Desaturate While Playing",
-                            Some("Drain every cover but the playing album's to grayscale; hovering brings a tile's color back"),
+                            rox_i18n::t!("grid-desaturate"),
+                            Some(rox_i18n::t!("grid-desaturate.description")),
                             toggle(
                                 self.config.desaturate_playing,
                                 |this: &mut Self, on, cx| {
@@ -1331,21 +1332,24 @@ impl PanelSettings for GridPanel {
                                 cx,
                             ),
                         ))
-                        .when(self.config.dim_playing || self.config.desaturate_playing, |d| {
-                            d.child(setting_row(
-                                "Always",
-                                Some("Keep the covers pushed back even when nothing plays; only a hovered tile shows in full"),
-                                toggle(
-                                    self.config.dim_always,
-                                    |this: &mut Self, on, cx| {
-                                        this.config.dim_always = on;
-                                        this.dim_fading = true;
-                                        cx.notify();
-                                    },
-                                    cx,
-                                ),
-                            ))
-                        }),
+                        .when(
+                            self.config.dim_playing || self.config.desaturate_playing,
+                            |d| {
+                                d.child(setting_row(
+                                    rox_i18n::t!("grid-always"),
+                                    Some(rox_i18n::t!("grid-always.description")),
+                                    toggle(
+                                        self.config.dim_always,
+                                        |this: &mut Self, on, cx| {
+                                            this.config.dim_always = on;
+                                            this.dim_fading = true;
+                                            cx.notify();
+                                        },
+                                        cx,
+                                    ),
+                                ))
+                            },
+                        ),
                 ))
                 .into_any_element(),
         )
@@ -1359,15 +1363,15 @@ impl PanelSettings for GridPanel {
         let rounding = self.config.rounding;
         Some(
             settings_ui::section(
-                "Tiles",
+                rox_i18n::t!("grid-section-tiles"),
                 None,
                 div()
                     .flex()
                     .flex_col()
                     .gap(tokens::SPACE_MD)
                     .child(setting_row(
-                        "Show Titles",
-                        Some("Print the album and artist under every cover, iTunes style, instead of only on hover"),
+                        rox_i18n::t!("grid-show-titles"),
+                        Some(rox_i18n::t!("grid-show-titles.description")),
                         toggle(
                             self.config.labels,
                             |this: &mut Self, on, cx| {
@@ -1379,8 +1383,8 @@ impl PanelSettings for GridPanel {
                     ))
                     .when(self.config.labels, |d| {
                         d.child(setting_row(
-                            "Title Alignment",
-                            Some("Line the captions up under their covers"),
+                            rox_i18n::t!("grid-title-alignment"),
+                            Some(rox_i18n::t!("grid-title-alignment.description")),
                             panel::icon_choices(
                                 &[
                                     (icons::ALIGN_LEFT, TitleAlign::Left),
@@ -1397,8 +1401,8 @@ impl PanelSettings for GridPanel {
                         ))
                     })
                     .child(setting_row(
-                        "Tile Size",
-                        Some("The cover tiles' widest edge; columns split the panel width evenly"),
+                        rox_i18n::t!("grid-tile-size"),
+                        Some(rox_i18n::t!("grid-tile-size.description")),
                         settings_ui::scalar(
                             &self.tile_scrub,
                             &self.value_edit,
@@ -1412,8 +1416,8 @@ impl PanelSettings for GridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Gap",
-                        Some("Space between the covers; zero keeps the wall seamless"),
+                        rox_i18n::t!("grid-gap"),
+                        Some(rox_i18n::t!("grid-gap.description")),
                         settings_ui::scalar(
                             &self.gap_scrub,
                             &self.value_edit,
@@ -1427,8 +1431,8 @@ impl PanelSettings for GridPanel {
                         ),
                     ))
                     .child(setting_row(
-                        "Art Rounding",
-                        Some("Round each cover's corners; 100% is a circle"),
+                        rox_i18n::t!("library-art-rounding"),
+                        Some(rox_i18n::t!("grid-art-rounding.description")),
                         settings_ui::scalar(
                             &self.rounding_scrub,
                             &self.value_edit,
@@ -1506,7 +1510,10 @@ impl Panel for GridPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.config.chrome.title.as_deref(), "Album Grid")
+        panel::title_text(
+            self.config.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-album-grid"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -1600,7 +1607,7 @@ impl Panel for GridPanel {
         let menu = menu
             .check_side(Side::Right)
             .item(
-                PopupMenuItem::new("Jump to Playing")
+                PopupMenuItem::new(rox_i18n::t!("grid-jump-to-playing"))
                     .icon(Icon::default().path(icons::DISC))
                     .on_click(move |_, _, cx| {
                         if let Some(this) = weak.upgrade() {
@@ -1609,7 +1616,7 @@ impl Panel for GridPanel {
                     }),
             )
             .item(
-                PopupMenuItem::new("Follow Playing")
+                PopupMenuItem::new(rox_i18n::t!("tracking-follow"))
                     .icon(Icon::default().path(icons::LOCATE))
                     .checked(follow)
                     .on_click(move |_, _, cx| {
@@ -1621,7 +1628,7 @@ impl Panel for GridPanel {
 
         // Display section: the view knobs group under flyouts so the menu
         // stays short, the same shape as the library's.
-        let menu = menu.separator().label("Display");
+        let menu = menu.separator().label(rox_i18n::t!("library-menu-display"));
         // The scroll direction, a checked pair so the current axis reads at
         // a glance.
         let panel = cx.entity();
@@ -1629,8 +1636,16 @@ impl Panel for GridPanel {
             panel::follow_panel(&panel, cx);
             submenu = submenu.check_side(Side::Right);
             for (name, icon, is_vertical) in [
-                ("Vertical Scroll", icons::MOVE_VERTICAL, true),
-                ("Horizontal Scroll", icons::MOVE_HORIZONTAL, false),
+                (
+                    rox_i18n::t!("grid-vertical-scroll"),
+                    icons::MOVE_VERTICAL,
+                    true,
+                ),
+                (
+                    rox_i18n::t!("grid-horizontal-scroll"),
+                    icons::MOVE_HORIZONTAL,
+                    false,
+                ),
             ] {
                 submenu = submenu.item(panel::check_row(
                     name,
@@ -1642,7 +1657,10 @@ impl Panel for GridPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Scroll", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("grid-menu-scroll"),
+            submenu,
+        ));
         // Follow the shared search query, or filter by this wall's own box.
         let menu = crate::query::shared_query::search_flyout(
             menu,
@@ -1822,11 +1840,11 @@ impl GridPanel {
                 .on_click(cx.listener(|this, _, _, cx| {
                     crate::catalog::browse(&this.state.library, cx);
                 }))
-                .child(div().text_lg().child("Open a music folder"))
+                .child(div().text_lg().child(rox_i18n::t!("library-empty-title")))
                 .child(
                     div()
                         .text_color(palette::text_muted())
-                        .child("It gets scanned into the library (flac, mp3, wav)"),
+                        .child(rox_i18n::t!("library-empty-note")),
                 )
                 .into_any_element()
         } else if self.cells.is_empty() {
@@ -1838,9 +1856,9 @@ impl GridPanel {
                 .text_color(palette::text_muted())
                 .child(
                     if self.effective_query(cx).is_empty() && self.effective_filter(cx).is_empty() {
-                        "The library is empty"
+                        rox_i18n::t!("grid-library-empty")
                     } else {
-                        "No matches"
+                        rox_i18n::t!("picker-no-matches")
                     },
                 )
                 .into_any_element()
@@ -1979,9 +1997,9 @@ impl GridPanel {
                         });
                         let single_tile = ixs.len() == 1;
                         let label = if ixs.len() > 1 {
-                            format!("Play {} Albums", ixs.len())
+                            rox_i18n::t!("grid-play-albums", count = ixs.len() as u64).to_string()
                         } else {
-                            "Play".to_string()
+                            rox_i18n::t!("library-play").to_string()
                         };
                         // The selected albums' tracks as db ids, resolved
                         // now for the editor, the library rows' move.
@@ -2015,7 +2033,7 @@ impl GridPanel {
                             Some(artist) => {
                                 let artist_panel = weak.clone();
                                 menu.separator().item(
-                                    PopupMenuItem::new("Filter by Artist")
+                                    PopupMenuItem::new(rox_i18n::t!("library-filter-by-artist"))
                                         .icon(Icon::default().path(icons::MIC))
                                         .on_click(move |_, _, cx| {
                                             let Some(this) = artist_panel.upgrade() else {

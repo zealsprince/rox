@@ -4,6 +4,7 @@
 //! is behind boxed halves, which is what lets `call` stay one body over the
 //! Unix socket and the Windows pipe.
 
+use std::collections::VecDeque;
 use std::io::{BufRead as _, BufReader, Read, Write};
 use std::path::Path;
 
@@ -12,11 +13,17 @@ use serde_json::{json, Value};
 use crate::protocol::{RpcError, PROTOCOL_VERSION};
 
 /// One connection past its handshake. Calls are strictly serial: one frame
-/// out, one frame back, which is all the request/response half needs.
+/// out, one frame back. Pushed events (id-less frames, flowing once
+/// `subscribe` has been called) can land anywhere in that rhythm; a call
+/// steps over them into the pending queue, and [`next_event`](Client::next_event)
+/// drains them in arrival order.
 pub struct Client {
     reader: BufReader<Box<dyn Read + Send>>,
     writer: Box<dyn Write + Send>,
     next_id: u64,
+    /// Events read off the wire while waiting on a response, kept in order
+    /// for `next_event`.
+    pending: VecDeque<(String, Value)>,
     /// What the server said it was in the handshake.
     pub server: Value,
 }
@@ -31,6 +38,7 @@ impl Client {
             reader: BufReader::new(read_half),
             writer: write_half,
             next_id: 0,
+            pending: VecDeque::new(),
             server: Value::Null,
         };
         client.server = client
@@ -55,6 +63,41 @@ impl Client {
         self.writer.write_all(&bytes).map_err(RpcError::transport)?;
         self.writer.flush().map_err(RpcError::transport)?;
 
+        loop {
+            let response = self.read_frame()?;
+            // An event arriving under the call keeps its place in line for
+            // next_event; the response is the frame carrying an id.
+            if response.get("id").is_none() {
+                self.stash(response);
+                continue;
+            }
+            if let Some(error) = response.get("error") {
+                return Err(serde_json::from_value(error.clone())
+                    .unwrap_or_else(|_| RpcError::app(error.clone())));
+            }
+            return Ok(response.get("result").cloned().unwrap_or(Value::Null));
+        }
+    }
+
+    /// Block until the next pushed event and hand back its name and
+    /// payload. Only useful after a `subscribe` call; events that arrived
+    /// while a call waited on its response come out first, in order.
+    pub fn next_event(&mut self) -> Result<(String, Value), RpcError> {
+        loop {
+            if let Some(event) = self.pending.pop_front() {
+                return Ok(event);
+            }
+            let frame = self.read_frame()?;
+            if frame.get("id").is_none() {
+                self.stash(frame);
+            }
+            // A frame with an id here is a response nobody is waiting on;
+            // with calls strictly serial it can't happen, and dropping it
+            // beats wedging the event loop over it.
+        }
+    }
+
+    fn read_frame(&mut self) -> Result<Value, RpcError> {
         let mut line = String::new();
         let read = self
             .reader
@@ -63,12 +106,17 @@ impl Client {
         if read == 0 {
             return Err(RpcError::transport("rox closed the connection"));
         }
-        let response: Value = serde_json::from_str(&line).map_err(RpcError::transport)?;
-        if let Some(error) = response.get("error") {
-            return Err(serde_json::from_value(error.clone())
-                .unwrap_or_else(|_| RpcError::app(error.clone())));
-        }
-        Ok(response.get("result").cloned().unwrap_or(Value::Null))
+        serde_json::from_str(&line).map_err(RpcError::transport)
+    }
+
+    fn stash(&mut self, frame: Value) {
+        let Some(method) = frame.get("method").and_then(Value::as_str) else {
+            return;
+        };
+        self.pending.push_back((
+            method.to_owned(),
+            frame.get("params").cloned().unwrap_or(Value::Null),
+        ));
     }
 }
 

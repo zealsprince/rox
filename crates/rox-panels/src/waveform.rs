@@ -584,7 +584,7 @@ impl PanelSettings for WaveformPanel {
             .gap(tokens::SPACE_MD)
             .child(setting_row(
                 "Bar Width",
-                Some("How thick each bar draws"),
+                Some("How thick each bar draws".into()),
                 settings_ui::scalar(
                     &self.bar_w_scrub,
                     &self.value_edit,
@@ -596,7 +596,7 @@ impl PanelSettings for WaveformPanel {
             ))
             .child(setting_row(
                 "Bar Gap",
-                Some("Space between bars, zero merges them into a solid shape"),
+                Some("Space between bars, zero merges them into a solid shape".into()),
                 settings_ui::scalar(
                     &self.gap_scrub,
                     &self.value_edit,
@@ -608,7 +608,9 @@ impl PanelSettings for WaveformPanel {
             ))
             .child(setting_row(
                 "Outline",
-                Some("Trace the bars instead of filling them; merged bars read as one shape"),
+                Some(
+                    "Trace the bars instead of filling them; merged bars read as one shape".into(),
+                ),
                 toggle(
                     self.config.outline,
                     |this: &mut Self, on, cx| {
@@ -620,7 +622,7 @@ impl PanelSettings for WaveformPanel {
             ))
             .child(setting_row(
                 "Split Channels",
-                Some("One row per channel, left above right; mono tracks stay a single row"),
+                Some("One row per channel, left above right; mono tracks stay a single row".into()),
                 toggle(
                     self.config.split_channels,
                     |this: &mut Self, on, cx| {
@@ -632,7 +634,7 @@ impl PanelSettings for WaveformPanel {
             ))
             .child(setting_row(
                 "Scrobble Marker",
-                Some("A thin line where the track counts as scrobbled to Last.fm"),
+                Some("A thin line where the track counts as scrobbled to Last.fm".into()),
                 toggle(
                     self.config.scrobble_marker,
                     |this: &mut Self, on, cx| {

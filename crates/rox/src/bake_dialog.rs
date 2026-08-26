@@ -51,10 +51,6 @@ const MIN: gpui::Size<gpui::Pixels> = gpui::Size {
 /// more than enough to read by.
 const TICK: Duration = Duration::from_millis(250);
 
-/// What the dialog says before it says anything else. Both refusals are the
-/// writer's own and neither is worth discovering from a count.
-const FALLBACK: &str = "MP3 and FLAC only; other formats and CUE tracks are skipped";
-
 actions!(bake_dialog, [Embed]);
 
 /// The key context the window's own bindings scope to.
@@ -93,7 +89,7 @@ pub fn open(library: Entity<Library>, now_art: Entity<NowPlayingArt>, cx: &mut A
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let handle = rox_panel_api::panel::open_child_window(
         cx,
-        "rox - Embed Stored Metadata",
+        rox_i18n::t!("bake-window-title"),
         bounds,
         Some(MIN),
         move |window, cx| cx.new(|cx| BakeDialog::new(library, now_art, window, cx)),
@@ -261,10 +257,14 @@ impl BakeDialog {
         let live = counts.writes > 0;
         let on = self.picked[at] && live;
         let detail = match (counts.writes, counts.skipped) {
-            (0, 0) => "nothing stored to embed".to_string(),
-            (0, skipped) => format!("nothing to write, {skipped} skipped"),
-            (writes, 0) => format!("{} to write", files(writes)),
-            (writes, skipped) => format!("{} to write, {skipped} skipped", files(writes)),
+            (0, 0) => rox_i18n::t!("bake-detail-nothing"),
+            (0, skipped) => rox_i18n::t!("bake-detail-only-skipped", skipped = skipped as u64),
+            (writes, 0) => rox_i18n::t!("bake-detail-writes", count = writes as u64),
+            (writes, skipped) => rox_i18n::t!(
+                "bake-detail-writes-skipped",
+                count = writes as u64,
+                skipped = skipped as u64,
+            ),
         };
         div()
             .id(("bake-source", at))
@@ -290,14 +290,18 @@ impl BakeDialog {
                     } else {
                         palette::text_faint()
                     })
-                    .child(source.label()),
+                    .child(match source {
+                        Source::Lyrics => rox_i18n::t!("bake-source-lyrics"),
+                        Source::Gain => rox_i18n::t!("bake-source-gain"),
+                        Source::Acoustic => rox_i18n::t!("bake-source-acoustic"),
+                    }),
             )
             .child(
                 div()
                     .flex_none()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child(SharedString::from(detail)),
+                    .child(detail),
             )
     }
 
@@ -308,24 +312,25 @@ impl BakeDialog {
     fn status(&self) -> Option<(SharedString, gpui::Rgba)> {
         if let Some(e) = &self.error {
             return Some((
-                format!("The library couldn't be read: {e}").into(),
+                rox_i18n::t!("bake-error-read", error = e.to_string()),
                 palette::tone_bad(),
             ));
         }
         if let Some(survey) = &self.survey {
             let total = survey.total();
             let line = if total == 0 {
-                "Looking through the library...".to_string()
+                rox_i18n::t!("bake-survey-counting")
             } else {
-                format!("Reading tags, {} of {total}", survey.done().min(total))
+                rox_i18n::t!(
+                    "bake-survey-progress",
+                    done = survey.done().min(total) as u64,
+                    total = total as u64,
+                )
             };
-            return Some((line.into(), palette::text_muted()));
+            return Some((line, palette::text_muted()));
         }
         if self.sources().is_empty() {
-            return Some((
-                "Nothing to embed: the files already carry everything rox holds".into(),
-                palette::tone_warn(),
-            ));
+            return Some((rox_i18n::t!("bake-nothing-to-embed"), palette::tone_warn()));
         }
         None
     }
@@ -340,9 +345,9 @@ impl BakeDialog {
                 .child(line)
                 .into_any_element(),
             None => kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to embed".into()),
+                Seg::Text(rox_i18n::t!("bake-hint-before")),
+                Seg::Key(rox_i18n::t!("bake-hint-key")),
+                Seg::Text(rox_i18n::t!("bake-hint-after")),
             ])
             .text_xs()
             .into_any_element(),
@@ -366,13 +371,13 @@ impl BakeDialog {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(settings_ui::small_button(
-                        "Embed",
+                        rox_i18n::t!("bake-embed"),
                         icons::UPLOAD,
                         !ready,
                         cx.listener(|this, _, window, cx| this.embed(window, cx)),
                     ))
                     .child(settings_ui::small_button(
-                        "Cancel",
+                        rox_i18n::t!("bake-cancel"),
                         icons::CLOSE,
                         false,
                         cx.listener(|this, _, window, cx| {
@@ -387,16 +392,6 @@ impl BakeDialog {
     }
 }
 
-/// A file count as a phrase, since every count here reads as "N files" in a
-/// sentence and one of them is always eventually 1.
-fn files(count: usize) -> String {
-    if count == 1 {
-        "1 file".to_string()
-    } else {
-        format!("{count} files")
-    }
-}
-
 impl Render for BakeDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = self.survey.is_none() && !self.sources().is_empty();
@@ -407,10 +402,7 @@ impl Render for BakeDialog {
             div()
                 .text_xs()
                 .text_color(palette::text())
-                .child(SharedString::from(format!(
-                    "{} will be rewritten",
-                    files(picked)
-                )))
+                .child(rox_i18n::t!("bake-rewrites", count = picked as u64))
                 .into_any_element()
         });
         let rows = Source::ALL
@@ -422,15 +414,17 @@ impl Render for BakeDialog {
             .flex()
             .flex_col()
             .gap(tokens::SPACE_SM)
-            .child(div().text_xs().text_color(palette::text_muted()).child(
-                "Writes what rox is already holding into the files themselves, so \
-                         another player reads it too. Nothing is worked out again.",
-            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(rox_i18n::t!("bake-intro")),
+            )
             .child(
                 div()
                     .text_xs()
                     .text_color(palette::text_faint())
-                    .child(FALLBACK),
+                    .child(rox_i18n::t!("bake-formats")),
             )
             .child(
                 div()
@@ -460,7 +454,7 @@ impl Render for BakeDialog {
                     // only as the surfaces thin.
                     .bg(palette::bg_elevated())
                     .p(tokens::SPACE_MD)
-                    .child(section("Embed Stored Metadata", total, body)),
+                    .child(section(rox_i18n::t_static("bake-title"), total, body)),
             )
             .child(self.footer(ready, cx))
     }

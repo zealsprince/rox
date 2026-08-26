@@ -400,7 +400,7 @@ impl PanelSettings for BiographyPanel {
             ))
             .child(panel::setting_row(
                 "Header Image",
-                Some("The wide artist banner across the top, or the portrait when there is no banner"),
+                Some("The wide artist banner across the top, or the portrait when there is no banner".into()),
                 panel::toggle(
                     self.config.portrait,
                     |this: &mut Self, on, cx| {
@@ -412,7 +412,7 @@ impl PanelSettings for BiographyPanel {
             ))
             .child(panel::setting_row(
                 "Keep Aspect Ratio",
-                Some("Show the header at its own proportions instead of cropping it to fill a band"),
+                Some("Show the header at its own proportions instead of cropping it to fill a band".into()),
                 panel::toggle(
                     self.config.header_aspect,
                     |this: &mut Self, on, cx| {
@@ -424,7 +424,7 @@ impl PanelSettings for BiographyPanel {
             ))
             .child(panel::setting_row(
                 "Fill Width",
-                Some("Let a tall header span the full width instead of sitting capped and centered"),
+                Some("Let a tall header span the full width instead of sitting capped and centered".into()),
                 panel::toggle(
                     self.config.header_fill,
                     |this: &mut Self, on, cx| {
@@ -436,7 +436,7 @@ impl PanelSettings for BiographyPanel {
             ))
             .child(panel::setting_row(
                 "Background",
-                Some("The artist fanart behind the text, dimmed and fading out toward the bottom"),
+                Some("The artist fanart behind the text, dimmed and fading out toward the bottom".into()),
                 panel::toggle(
                     self.config.background,
                     |this: &mut Self, on, cx| {
@@ -448,7 +448,7 @@ impl PanelSettings for BiographyPanel {
             ))
             .child(panel::setting_row(
                 "Stats",
-                Some("Listeners and plays on Last.fm, under the name"),
+                Some("Listeners and plays on Last.fm, under the name".into()),
                 panel::toggle(
                     self.config.stats,
                     |this: &mut Self, on, cx| {
@@ -460,7 +460,7 @@ impl PanelSettings for BiographyPanel {
             ))
             .child(panel::setting_row(
                 "Tags",
-                Some("The genre tags as a chip row"),
+                Some("The genre tags as a chip row".into()),
                 panel::toggle(
                     self.config.tags,
                     |this: &mut Self, on, cx| {
@@ -472,7 +472,7 @@ impl PanelSettings for BiographyPanel {
             ))
             .child(panel::setting_row(
                 "Similar Artists",
-                Some("Names related listening leans toward, at the foot"),
+                Some("Names related listening leans toward, at the foot".into()),
                 panel::toggle(
                     self.config.similar,
                     |this: &mut Self, on, cx| {

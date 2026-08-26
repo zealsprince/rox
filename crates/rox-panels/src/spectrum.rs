@@ -1418,7 +1418,7 @@ impl PanelSettings for SpectrumPanel {
             .gap(tokens::SPACE_MD)
             .child(setting_row(
                 "Style",
-                Some("Classic bars, LED-style blocks, or a solid line"),
+                Some("Classic bars, LED-style blocks, or a solid line".into()),
                 choices(
                     STYLE_CHOICES,
                     self.config.style,
@@ -1431,7 +1431,7 @@ impl PanelSettings for SpectrumPanel {
             ))
             .child(setting_row(
                 "Orientation",
-                Some("The edge the bands grow from"),
+                Some("The edge the bands grow from".into()),
                 choices(
                     ORIENTATION_CHOICES,
                     self.config.orientation,
@@ -1444,7 +1444,7 @@ impl PanelSettings for SpectrumPanel {
             ))
             .child(setting_row(
                 "Symmetry",
-                Some("Fold the spectrum around the center; forward puts lows at the edges, reverse meets them in the middle"),
+                Some("Fold the spectrum around the center; forward puts lows at the edges, reverse meets them in the middle".into()),
                 choices(
                     SYMMETRY_CHOICES,
                     self.config.symmetry,
@@ -1457,17 +1457,17 @@ impl PanelSettings for SpectrumPanel {
             ))
             .child(setting_row(
                 "Low Bound",
-                Some("Lowest frequency the bars analyze"),
+                Some("Lowest frequency the bars analyze".into()),
                 self.freq_slider(&self.lo_scrub, self.config.freq_lo, Self::set_freq_lo, cx),
             ))
             .child(setting_row(
                 "High Bound",
-                Some("Highest frequency the bars analyze"),
+                Some("Highest frequency the bars analyze".into()),
                 self.freq_slider(&self.hi_scrub, self.config.freq_hi, Self::set_freq_hi, cx),
             ))
             .child(setting_row(
                 "Bar Width",
-                Some("How thick each bar draws, thinner bars fit more bands"),
+                Some("How thick each bar draws, thinner bars fit more bands".into()),
                 settings_ui::scalar(
                     &self.bar_w_scrub,
                     &self.value_edit,
@@ -1479,7 +1479,7 @@ impl PanelSettings for SpectrumPanel {
             ))
             .child(setting_row(
                 "Bar Gap",
-                Some("Space between bars, wider gaps fit fewer bars"),
+                Some("Space between bars, wider gaps fit fewer bars".into()),
                 settings_ui::scalar(
                     &self.bar_gap_scrub,
                     &self.value_edit,
@@ -1492,7 +1492,7 @@ impl PanelSettings for SpectrumPanel {
             .when(self.config.style == SpectrumStyle::Blocks, |d| {
                 d.child(setting_row(
                     "Block Height",
-                    Some("How tall each cell in a stack draws"),
+                    Some("How tall each cell in a stack draws".into()),
                     settings_ui::scalar(
                         &self.block_h_scrub,
                         &self.value_edit,
@@ -1504,7 +1504,7 @@ impl PanelSettings for SpectrumPanel {
                 ))
                 .child(setting_row(
                     "Block Gap",
-                    Some("The seam between cells in a stack"),
+                    Some("The seam between cells in a stack".into()),
                     settings_ui::scalar(
                         &self.block_gap_scrub,
                         &self.value_edit,
@@ -1517,7 +1517,7 @@ impl PanelSettings for SpectrumPanel {
             })
             .child(setting_row(
                 "FFT Size",
-                Some("Analysis window; short reacts fast, long resolves finer"),
+                Some("Analysis window; short reacts fast, long resolves finer".into()),
                 choices(
                     FFT_CHOICES,
                     self.config.fft_lo(),
@@ -1530,7 +1530,7 @@ impl PanelSettings for SpectrumPanel {
             ))
             .child(setting_row(
                 "Split Zones",
-                Some("Analyze below and above a split frequency at different window sizes"),
+                Some("Analyze below and above a split frequency at different window sizes".into()),
                 toggle(
                     self.config.split,
                     |this: &mut Self, on, cx| {
@@ -1543,7 +1543,7 @@ impl PanelSettings for SpectrumPanel {
             .when(self.config.split, |d| {
                 d.child(setting_row(
                     "Split At",
-                    Some("Where the zones meet, snapped to the nearest bar"),
+                    Some("Where the zones meet, snapped to the nearest bar".into()),
                     self.freq_slider(
                         &self.split_scrub,
                         self.config.split_hz,
@@ -1553,7 +1553,7 @@ impl PanelSettings for SpectrumPanel {
                 ))
                 .child(setting_row(
                     "High FFT Size",
-                    Some("Analysis window for the bands above the split"),
+                    Some("Analysis window for the bands above the split".into()),
                     choices(
                         FFT_CHOICES,
                         self.config.fft_hi(),
@@ -1567,7 +1567,7 @@ impl PanelSettings for SpectrumPanel {
             })
             .child(setting_row(
                 "Gradient",
-                Some("Color the bands by loudness: the theme's ramp, the cover art's colors under song theming, or a custom pair"),
+                Some("Color the bands by loudness: the theme's ramp, the cover art's colors under song theming, or a custom pair".into()),
                 choices(
                     GRADIENT_CHOICES,
                     self.config.gradient,
@@ -1585,12 +1585,12 @@ impl PanelSettings for SpectrumPanel {
                 |d, [lo, hi]| {
                     d.child(setting_row(
                         "Base Color",
-                        Some("The quiet end of the custom ramp"),
+                        Some("The quiet end of the custom ramp".into()),
                         ColorPicker::new(&lo).small(),
                     ))
                     .child(setting_row(
                         "Tip Color",
-                        Some("The loud end of the custom ramp"),
+                        Some("The loud end of the custom ramp".into()),
                         ColorPicker::new(&hi).small(),
                     ))
                 },
@@ -1598,7 +1598,7 @@ impl PanelSettings for SpectrumPanel {
             .when(self.config.style == SpectrumStyle::Bars, |d| {
                 d.child(setting_row(
                     "Outline Bars",
-                    Some("Draw each bar as a hollow outline instead of a filled ramp"),
+                    Some("Draw each bar as a hollow outline instead of a filled ramp".into()),
                     toggle(
                         self.config.outline,
                         |this: &mut Self, on, cx| {
@@ -1611,7 +1611,7 @@ impl PanelSettings for SpectrumPanel {
                 .when(self.config.outline, |d| {
                     d.child(setting_row(
                         "Outline Width",
-                        Some("Stroke thickness of the hollow bars"),
+                        Some("Stroke thickness of the hollow bars".into()),
                         settings_ui::scalar(
                             &self.outline_w_scrub,
                             &self.value_edit,
@@ -1625,7 +1625,7 @@ impl PanelSettings for SpectrumPanel {
             })
             .child(setting_row(
                 "Peak Caps",
-                Some("Hold a mark at each band's recent peak"),
+                Some("Hold a mark at each band's recent peak".into()),
                 toggle(
                     self.config.caps,
                     |this: &mut Self, on, cx| {
@@ -1637,7 +1637,7 @@ impl PanelSettings for SpectrumPanel {
             ))
             .child(setting_row(
                 "Hold on Pause",
-                Some("Freeze the bars while paused instead of letting them fall to silence"),
+                Some("Freeze the bars while paused instead of letting them fall to silence".into()),
                 toggle(
                     self.config.freeze,
                     |this: &mut Self, on, cx| {
@@ -1649,7 +1649,7 @@ impl PanelSettings for SpectrumPanel {
             ))
             .child(setting_row(
                 "Cap Gravity",
-                Some("How hard the peak marks fall once the band drops away"),
+                Some("How hard the peak marks fall once the band drops away".into()),
                 panel::value_slider_edit(
                     &self.gravity_scrub,
                     &self.value_edit,
@@ -1663,7 +1663,7 @@ impl PanelSettings for SpectrumPanel {
             ))
             .child(setting_row(
                 "Axis Labels",
-                Some("Mark the range across the panel: octaves (C1, C2, ...) or frequencies (100, 1k, 10k)"),
+                Some("Mark the range across the panel: octaves (C1, C2, ...) or frequencies (100, 1k, 10k)".into()),
                 choices(
                     LABEL_CHOICES,
                     self.config.labels,

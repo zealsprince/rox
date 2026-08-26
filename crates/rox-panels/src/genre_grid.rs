@@ -1475,7 +1475,7 @@ impl PanelSettings for GenreGridPanel {
             .gap(tokens::SPACE_MD)
             .child(setting_row(
                 "Vertical Layout",
-                Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height"),
+                Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height".into()),
                 toggle(
                     self.config.vertical,
                     |this: &mut Self, on, cx| {
@@ -1498,7 +1498,7 @@ impl PanelSettings for GenreGridPanel {
                     None,
                     setting_row(
                         "Pick Filters the Library",
-                        Some("Clicking a genre narrows every panel following the shared search to it; off leaves the click as a plain selection"),
+                        Some("Clicking a genre narrows every panel following the shared search to it; off leaves the click as a plain selection".into()),
                         toggle(
                             self.config.pick_filters,
                             |this: &mut Self, on, cx| {
@@ -1527,7 +1527,7 @@ impl PanelSettings for GenreGridPanel {
                 ))
                 .child(panel::tracking_section(
                     self.config.follow_playing,
-                    "Scroll to the playing genre whenever the track changes",
+                    "Scroll to the playing genre whenever the track changes".into(),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
                         if on {
@@ -1536,13 +1536,13 @@ impl PanelSettings for GenreGridPanel {
                         cx.notify();
                     },
                     self.config.resume_playing,
-                    "Slide back to the playing genre after you stop browsing",
+                    "Slide back to the playing genre after you stop browsing".into(),
                     |this: &mut Self, on, cx| {
                         this.config.resume_playing = on;
                         cx.notify();
                     },
                     self.config.smooth_follow,
-                    "Glide to the genre instead of jumping",
+                    "Glide to the genre instead of jumping".into(),
                     |this: &mut Self, on, cx| {
                         this.config.smooth_follow = on;
                         cx.notify();
@@ -1558,7 +1558,7 @@ impl PanelSettings for GenreGridPanel {
                         .gap(tokens::SPACE_MD)
                         .child(setting_row(
                             "Dim While Playing",
-                            Some("Fade every tile but the playing genre's; hovering lights a tile back up"),
+                            Some("Fade every tile but the playing genre's; hovering lights a tile back up".into()),
                             toggle(
                                 self.config.dim_playing,
                                 |this: &mut Self, on, cx| {
@@ -1572,7 +1572,7 @@ impl PanelSettings for GenreGridPanel {
                         .when(self.config.dim_playing, |d| {
                             d.child(setting_row(
                                 "Dim Amount",
-                                Some("How far the other tiles fade; 100% hides them"),
+                                Some("How far the other tiles fade; 100% hides them".into()),
                                 settings_ui::scalar(
                                     &self.dim_scrub,
                                     &self.value_edit,
@@ -1589,7 +1589,7 @@ impl PanelSettings for GenreGridPanel {
                         })
                         .child(setting_row(
                             "Desaturate While Playing",
-                            Some("Drain every tile but the playing genre's to grayscale; hovering brings a tile's color back"),
+                            Some("Drain every tile but the playing genre's to grayscale; hovering brings a tile's color back".into()),
                             toggle(
                                 self.config.desaturate_playing,
                                 |this: &mut Self, on, cx| {
@@ -1602,7 +1602,7 @@ impl PanelSettings for GenreGridPanel {
                         .when(self.config.dim_playing || self.config.desaturate_playing, |d| {
                             d.child(setting_row(
                                 "Always",
-                                Some("Keep the tiles pushed back even when nothing plays; only a hovered tile shows in full"),
+                                Some("Keep the tiles pushed back even when nothing plays; only a hovered tile shows in full".into()),
                                 toggle(
                                     self.config.dim_always,
                                     |this: &mut Self, on, cx| {
@@ -1633,7 +1633,7 @@ impl PanelSettings for GenreGridPanel {
                     .gap(tokens::SPACE_MD)
                     .child(setting_row(
                         "Tile Face",
-                        Some("What a tile wears: the genre's album covers, the covers washed in the genre's own color, or a flat color card with the name set on it"),
+                        Some("What a tile wears: the genre's album covers, the covers washed in the genre's own color, or a flat color card with the name set on it".into()),
                         panel::choices(
                             &[
                                 ("Mosaic", TileFace::Mosaic),
@@ -1651,7 +1651,7 @@ impl PanelSettings for GenreGridPanel {
                     ))
                     .child(setting_row(
                         "Show Names",
-                        Some("Print the genre under every tile instead of only on hover"),
+                        Some("Print the genre under every tile instead of only on hover".into()),
                         toggle(
                             self.config.labels,
                             |this: &mut Self, on, cx| {
@@ -1664,7 +1664,7 @@ impl PanelSettings for GenreGridPanel {
                     .when(self.config.labels, |d| {
                         d.child(setting_row(
                             "Name Alignment",
-                            Some("Line the captions up under their tiles"),
+                            Some("Line the captions up under their tiles".into()),
                             panel::icon_choices(
                                 &[
                                     (icons::ALIGN_LEFT, TitleAlign::Left),
@@ -1682,7 +1682,7 @@ impl PanelSettings for GenreGridPanel {
                     })
                     .child(setting_row(
                         "Show Counts",
-                        Some("The album and track tally under each name"),
+                        Some("The album and track tally under each name".into()),
                         toggle(
                             self.config.counts,
                             |this: &mut Self, on, cx| {
@@ -1694,7 +1694,7 @@ impl PanelSettings for GenreGridPanel {
                     ))
                     .child(setting_row(
                         "Tile Size",
-                        Some("The tiles' widest edge; columns split the panel width evenly"),
+                        Some("The tiles' widest edge; columns split the panel width evenly".into()),
                         settings_ui::scalar(
                             &self.tile_scrub,
                             &self.value_edit,
@@ -1709,7 +1709,7 @@ impl PanelSettings for GenreGridPanel {
                     ))
                     .child(setting_row(
                         "Gap",
-                        Some("Space between the tiles"),
+                        Some("Space between the tiles".into()),
                         settings_ui::scalar(
                             &self.gap_scrub,
                             &self.value_edit,
@@ -1724,7 +1724,7 @@ impl PanelSettings for GenreGridPanel {
                     ))
                     .child(setting_row(
                         "Rounding",
-                        Some("Round each tile's corners; 100% is a circle"),
+                        Some("Round each tile's corners; 100% is a circle".into()),
                         settings_ui::scalar(
                             &self.rounding_scrub,
                             &self.value_edit,

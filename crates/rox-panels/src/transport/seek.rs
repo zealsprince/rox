@@ -54,37 +54,37 @@ const CLOCKS: [SeekItem; 2] = [SeekItem::Elapsed, SeekItem::Ending];
 /// and where a menu toggle slots a re-shown piece back in.
 const ITEMS: &[panel::ArrangeSpec<SeekItem>] = &[
     panel::ArrangeSpec {
-        label: "Elapsed",
+        key: "seek-item-elapsed",
         icon: Some(icons::CLOCK),
         value: SeekItem::Elapsed,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Strip",
+        key: "seek-item-strip",
         icon: Some(icons::AUDIO_LINES),
         value: SeekItem::Strip,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Ending",
+        key: "seek-item-ending",
         icon: Some(icons::CLOCK),
         value: SeekItem::Ending,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Duration",
+        key: "seek-item-duration",
         icon: Some(icons::CLOCK),
         value: SeekItem::Duration,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Spacer",
+        key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: SeekItem::Spacer,
         repeats: true,
     },
     panel::ArrangeSpec {
-        label: "Divider",
+        key: "head-piece-divider",
         icon: Some(icons::MINUS),
         value: SeekItem::Divider,
         repeats: true,
@@ -338,7 +338,8 @@ impl PanelSettings for SeekStripPanel {
                 "Pieces",
                 Some(
                     "Drag along a row to reorder and between rows to move; \
-                     a chip's x and plus hide and show",
+                     a chip's x and plus hide and show"
+                        .into(),
                 ),
                 None,
                 panel::arrange_rows_editor(
@@ -355,7 +356,7 @@ impl PanelSettings for SeekStripPanel {
             ))
             .child(panel::setting_row(
                 "Thickness",
-                Some("The track line's height"),
+                Some("The track line's height".into()),
                 settings_ui::scalar(
                     &self.thickness_scrub,
                     &self.value_edit,
@@ -370,7 +371,7 @@ impl PanelSettings for SeekStripPanel {
             ))
             .child(panel::setting_row(
                 "Rounding",
-                Some("The line's corner radius, up to a pill at half the thickness"),
+                Some("The line's corner radius, up to a pill at half the thickness".into()),
                 settings_ui::scalar(
                     &self.rounding_scrub,
                     &self.value_edit,
@@ -385,7 +386,7 @@ impl PanelSettings for SeekStripPanel {
             ))
             .child(panel::setting_row(
                 "Playhead",
-                Some("Span the strip's full height or hug the line"),
+                Some("Span the strip's full height or hug the line".into()),
                 panel::choices(
                     &[("Full", true), ("Line", false)],
                     self.config.playhead_full,
@@ -398,7 +399,7 @@ impl PanelSettings for SeekStripPanel {
             ))
             .child(panel::setting_row(
                 "Playhead Width",
-                Some("The moving position marker's width"),
+                Some("The moving position marker's width".into()),
                 settings_ui::scalar(
                     &self.playhead_scrub,
                     &self.value_edit,
@@ -414,7 +415,7 @@ impl PanelSettings for SeekStripPanel {
             .when(self.config.playhead_full, |d| {
                 d.child(panel::setting_row(
                     "Playhead Max Height",
-                    Some("Cap the full playhead, centered on the line; 0 fills the panel"),
+                    Some("Cap the full playhead, centered on the line; 0 fills the panel".into()),
                     settings_ui::scalar(
                         &self.playhead_max_scrub,
                         &self.value_edit,
@@ -431,7 +432,7 @@ impl PanelSettings for SeekStripPanel {
             .when(self.config.items.contains(&SeekItem::Ending), |d| {
                 d.child(panel::setting_row(
                     "Ending",
-                    Some("Count down the time left or show the full length"),
+                    Some("Count down the time left or show the full length".into()),
                     panel::choices(
                         &[("Remaining", false), ("Total", true)],
                         self.config.show_total,
@@ -445,7 +446,7 @@ impl PanelSettings for SeekStripPanel {
             })
             .child(panel::setting_row(
                 "Scrobble Marker",
-                Some("A thin line where the track counts as scrobbled to Last.fm"),
+                Some("A thin line where the track counts as scrobbled to Last.fm".into()),
                 panel::toggle(
                     self.config.scrobble_marker,
                     |this: &mut Self, on, cx| {

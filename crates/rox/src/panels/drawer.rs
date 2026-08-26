@@ -838,7 +838,7 @@ impl PanelSettings for DrawerPanel {
                 .gap(tokens::SPACE_MD)
                 .child(setting_row(
                     "Edge",
-                    Some("The edge the drawer rests against and slides out from"),
+                    Some("The edge the drawer rests against and slides out from".into()),
                     choices(
                         EDGE_CHOICES,
                         self.config.edge,
@@ -851,7 +851,7 @@ impl PanelSettings for DrawerPanel {
                 ))
                 .child(setting_row(
                     "Open On",
-                    Some("Resting on the handle always opens the drawer; selection adds a pick in the main panel"),
+                    Some("Resting on the handle always opens the drawer; selection adds a pick in the main panel".into()),
                     choices(
                         TRIGGER_CHOICES,
                         self.config.open_on,
@@ -865,7 +865,7 @@ impl PanelSettings for DrawerPanel {
                 .when(self.config.open_on == DrawerTrigger::Selection, |d| {
                     d.child(setting_row(
                         "Handle",
-                        Some("Show the grip at the panel's edge. Hidden, nothing of the drawer shows until a pick, and the grip then stays while the selection holds so a drawer that folded closed can be pulled back out"),
+                        Some("Show the grip at the panel's edge. Hidden, nothing of the drawer shows until a pick, and the grip then stays while the selection holds so a drawer that folded closed can be pulled back out".into()),
                         panel::toggle(
                             !self.config.hide_handle,
                             |this: &mut Self, shown, cx| {
@@ -877,7 +877,7 @@ impl PanelSettings for DrawerPanel {
                     ))
                     .child(setting_row(
                         "Answers",
-                        Some("Which picks open the drawer: only its own main panel, or any panel outside it"),
+                        Some("Which picks open the drawer: only its own main panel, or any panel outside it".into()),
                         choices(
                             SCOPE_CHOICES,
                             self.config.scope,
@@ -891,7 +891,7 @@ impl PanelSettings for DrawerPanel {
                 })
                 .child(setting_row(
                     "Reveal",
-                    Some("How much of the panel the open drawer covers"),
+                    Some("How much of the panel the open drawer covers".into()),
                     settings_ui::scalar(
                         &self.reveal_scrub,
                         &self.value_edit,
@@ -903,7 +903,7 @@ impl PanelSettings for DrawerPanel {
                 ))
                 .child(setting_row(
                     "Dim",
-                    Some("How hard the main panel dims behind the open drawer"),
+                    Some("How hard the main panel dims behind the open drawer".into()),
                     settings_ui::scalar(
                         &self.dim_scrub,
                         &self.value_edit,

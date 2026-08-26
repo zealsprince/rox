@@ -15,6 +15,9 @@ gpui-component = { workspace = true }
 gpui-component-assets = { workspace = true }
 # Panel themes are stored overrides, so they ride the settings file.
 serde = { version = "1", features = ["derive"] }
+# Sides rides the workspace bundle, whose JSON Schema is derived from the
+# types (ADR 22); its two-shape serde needs the matching hand-written schema.
+schemars = "1"
 # Embeds our own icons over the gpui-component set; the folder stays in
 # crates/rox/assets, which the flake and the release workflow point at.
 rust-embed = "8"

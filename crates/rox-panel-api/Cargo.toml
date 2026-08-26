@@ -11,6 +11,8 @@ gpui = { workspace = true }
 gpui-component = { workspace = true }
 # The palette, tokens, and embedded icons every helper draws with.
 rox-design = { path = "../rox-design" }
+# Every string a helper puts on screen resolves through t!.
+rox-i18n = { path = "../rox-i18n" }
 # The dock traits a panel implements, and the tab panel the chrome helpers
 # reach for.
 rox-dock = { path = "../rox-dock" }

@@ -99,14 +99,14 @@ impl SharedQuery {
 }
 
 /// The shared filter's field name, for a chip's `Field: Value` label.
-fn field_label(field: FilterField) -> &'static str {
+fn field_label(field: FilterField) -> gpui::SharedString {
     match field {
-        FilterField::Artist => "Artist",
-        FilterField::AlbumArtist => "Album Artist",
-        FilterField::Album => "Album",
-        FilterField::Genre => "Genre",
-        FilterField::Year => "Year",
-        FilterField::Folder => "Folder",
+        FilterField::Artist => rox_i18n::t!("filter-field-artist"),
+        FilterField::AlbumArtist => rox_i18n::t!("filter-field-album-artist"),
+        FilterField::Album => rox_i18n::t!("filter-field-album"),
+        FilterField::Genre => rox_i18n::t!("filter-field-genre"),
+        FilterField::Year => rox_i18n::t!("filter-field-year"),
+        FilterField::Folder => rox_i18n::t!("filter-field-folder"),
     }
 }
 
@@ -114,8 +114,8 @@ fn field_label(field: FilterField) -> &'static str {
 /// the filter panel shows it. Year zero is the untagged marker.
 fn value_label(field: FilterField, value: &str) -> String {
     match field {
-        FilterField::Year if value == "0" => "Unknown".to_string(),
-        _ if value.is_empty() => "Unknown".to_string(),
+        FilterField::Year if value == "0" => rox_i18n::t!("filter-unknown").to_string(),
+        _ if value.is_empty() => rox_i18n::t!("filter-unknown").to_string(),
         _ => value.to_string(),
     }
 }
@@ -244,7 +244,7 @@ pub fn filter_chips(query: &Entity<SharedQuery>, cx: &App) -> Option<Div> {
             .on_click(move |_, _, cx| {
                 q.update(cx, |query, cx| query.set_filter(FilterSet::default(), cx));
             })
-            .child("Clear"),
+            .child(rox_i18n::t!("filter-clear")),
     );
     Some(strip)
 }
@@ -282,7 +282,7 @@ fn source_items<P: 'static>(
     // matter once there's a box to type in.
     let shown_read = is_shown.clone();
     menu = menu.item(panel::check_row(
-        "Show Search Box",
+        rox_i18n::t!("query-show-search-box"),
         Some(icons::EYE),
         is_shown,
         move |this, cx| {
@@ -292,9 +292,21 @@ fn source_items<P: 'static>(
         panel,
     ));
     for (label, icon, source) in [
-        ("Own Query", icons::SEARCH, QuerySource::Local),
-        ("Shared Query", icons::GLOBE, QuerySource::Global),
-        ("Selection", icons::PIN, QuerySource::Selection),
+        (
+            rox_i18n::t!("query-own-query"),
+            icons::SEARCH,
+            QuerySource::Local,
+        ),
+        (
+            rox_i18n::t!("query-shared-query"),
+            icons::GLOBE,
+            QuerySource::Global,
+        ),
+        (
+            rox_i18n::t!("query-source-selection"),
+            icons::PIN,
+            QuerySource::Selection,
+        ),
     ] {
         let get = get.clone();
         let set = set.clone();
@@ -336,7 +348,10 @@ pub fn search_flyout<P: 'static>(
             toggle,
         )
     });
-    menu.item(PopupMenuItem::submenu("Search", submenu))
+    menu.item(PopupMenuItem::submenu(
+        rox_i18n::t!("query-search"),
+        submenu,
+    ))
 }
 
 /// The shared "search" section for a searching panel's Behavior page: the
@@ -352,15 +367,15 @@ pub fn search_section<P: 'static>(
     cx: &mut Context<P>,
 ) -> AnyElement {
     rox_panel_kit::ui::section(
-        "Search",
+        rox_i18n::t!("query-search"),
         None,
         div()
             .flex()
             .flex_col()
             .gap(rox_design::tokens::SPACE_MD)
             .child(panel::setting_row(
-                "Search Box",
-                Some("Show the search box; the query only applies while it shows"),
+                rox_i18n::t!("query-search-box"),
+                Some(rox_i18n::t!("query-search-box.description")),
                 panel::toggle(show, on_show, cx),
             ))
             .child(source_row(source, on_source, cx)),
@@ -375,13 +390,16 @@ pub fn source_row<P: 'static>(
     cx: &mut Context<P>,
 ) -> Div {
     panel::setting_row(
-        "Search Source",
-        Some("Follow the shared search query, filter by this panel's own box, or show what another panel has selected"),
-        panel::choices(
+        rox_i18n::t!("query-source"),
+        Some(rox_i18n::t!("query-source.description")),
+        panel::choices_shared(
             &[
-                ("Shared", QuerySource::Global),
-                ("Own", QuerySource::Local),
-                ("Selection", QuerySource::Selection),
+                (rox_i18n::t!("query-source-shared"), QuerySource::Global),
+                (rox_i18n::t!("query-source-own"), QuerySource::Local),
+                (
+                    rox_i18n::t!("query-source-selection"),
+                    QuerySource::Selection,
+                ),
             ],
             current,
             on_pick,

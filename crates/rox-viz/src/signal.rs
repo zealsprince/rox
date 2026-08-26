@@ -47,7 +47,7 @@ const SILENT_AFTER: f32 = 0.15;
 const TICK_MIN: f32 = 0.003;
 
 /// What a signal listens to.
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase", tag = "kind")]
 pub enum Source {
     /// Peak magnitude across a frequency band, normalized into the dB
@@ -103,7 +103,7 @@ pub const AGGREGATE_RATE_MAX: f32 = 8.0;
 
 /// One shared signal in the pool: a stable id routes point at, the source,
 /// and the response smoothing every route off it shares.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct Signal {
     pub id: u64,
@@ -221,7 +221,7 @@ impl Signal {
 /// at full signal - so a route sweeps exactly what a hand on the slider
 /// could, and an inverted span modulates downward. Unknown target ids and
 /// missing signals are skipped, so configs degrade quietly.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct Route {
     /// Whether the route applies. Off keeps it in place, tuned, silent.

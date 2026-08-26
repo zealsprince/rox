@@ -1,9 +1,11 @@
 //! The about window: one OS window opened from the Application menu beside
 //! Welcome. The build's identity - logo, name, running version - a link
-//! back to the project, and the update check. The check is notify only: it
-//! reports a newer release and links to its page, it never downloads or
-//! installs. The daily launch check has its own toggle over in settings
-//! under Application; the button here checks now either way.
+//! back to the project, and the update check with the updater behind it:
+//! where the install can replace itself the announcement grows a Download
+//! button, progress while the download runs, and a restart prompt once the
+//! new build is in place; everywhere else it stays a link to the release
+//! page. The daily launch check has its own toggle over in settings under
+//! Application; the button here checks now either way.
 
 use gpui::{
     div, prelude::*, px, size, svg, AnyElement, App, Bounds, Context, Div, Global, MouseButton,
@@ -12,7 +14,9 @@ use gpui::{
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::Root;
 
-use crate::startup::updates;
+use std::time::Duration;
+
+use crate::startup::{updater, updates};
 use rox_core::settings::{self, Settings};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
@@ -81,6 +85,7 @@ impl UpdateCheck {
                 let release = updates::Release {
                     version: cache.latest.clone(),
                     url: cache.url.clone(),
+                    assets: Vec::new(),
                 };
                 if release.is_new() {
                     UpdateCheck::Available(release)
@@ -111,6 +116,11 @@ struct AboutWindow {
 impl AboutWindow {
     fn new(state: AppState, cx: &mut Context<Self>) -> Self {
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        // A launch-check auto-download may already be running when the
+        // window opens; pick up its progress the same as one started here.
+        if matches!(updater::status(), updater::Status::Downloading(_)) {
+            Self::poll_update(cx);
+        }
         AboutWindow {
             state,
             backdrop: WindowBackdrop::default(),
@@ -156,6 +166,78 @@ impl AboutWindow {
         .detach();
         cx.notify();
     }
+
+    /// Hand the release to the updater on the background executor and
+    /// start mirroring its progress. The updater holds the one download
+    /// slot, so a second ask while one runs is a no-op.
+    fn download(release: &updates::Release, cx: &mut Context<Self>) {
+        if let Some(job) = updater::begin(release) {
+            cx.background_executor()
+                .spawn(async move { job() })
+                .detach();
+        }
+        Self::poll_update(cx);
+        cx.notify();
+    }
+
+    /// The announcement row for a newer release. Where the install can
+    /// replace itself it offers the download with the release page demoted
+    /// to notes; everywhere else - a distro package, a read-only home, a
+    /// platform without an artifact - the page link is the whole offer,
+    /// notify-only as before.
+    fn release_row(release: &updates::Release, note: String, cx: &mut Context<Self>) -> AnyElement {
+        let url = release.url.clone();
+        let row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_SM)
+            .child(line(note));
+        if updater::can_update() {
+            let release = release.clone();
+            row.child(small_button(
+                "Download",
+                icons::DOWNLOAD,
+                false,
+                cx.listener(move |_, _, _, cx| Self::download(&release, cx)),
+            ))
+            .child(small_button(
+                "Release Notes",
+                icons::EXTERNAL_LINK,
+                false,
+                cx.listener(move |_, _, _, cx| cx.open_url(&url)),
+            ))
+            .into_any_element()
+        } else {
+            row.child(small_button(
+                "Get It",
+                icons::EXTERNAL_LINK,
+                false,
+                cx.listener(move |_, _, _, cx| cx.open_url(&url)),
+            ))
+            .into_any_element()
+        }
+    }
+
+    /// Repaint on a timer while the download runs: the progress lives in
+    /// atomics the render reads, so the window just needs frames until the
+    /// updater settles. The last tick paints the settled state on its way
+    /// out.
+    fn poll_update(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            let live = this.update(cx, |_, cx| {
+                cx.notify();
+                matches!(updater::status(), updater::Status::Downloading(_))
+            });
+            if !matches!(live, Ok(true)) {
+                break;
+            }
+        })
+        .detach();
+    }
 }
 
 /// A muted body line, the pages' copy register.
@@ -200,33 +282,52 @@ impl Render for AboutWindow {
         panel::window_body(player, || {
             let checking = matches!(self.update_check, UpdateCheck::Checking);
 
-            // The status line beside the button, one wording per check state.
-            // The available state hangs a link to the release page off its tail.
-            let status: Option<AnyElement> = match &self.update_check {
-                UpdateCheck::Idle => None,
-                UpdateCheck::Checking => Some(line("Checking...").into_any_element()),
-                UpdateCheck::UpToDate => {
-                    Some(line("You're on the latest version").into_any_element())
-                }
-                UpdateCheck::Failed => Some(line("Couldn't reach GitHub").into_any_element()),
-                UpdateCheck::Available(release) => {
-                    let url = release.url.clone();
-                    Some(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(tokens::SPACE_SM)
-                            .child(line(format!("Version {} is available", release.version)))
-                            .child(small_button(
-                                "Get It",
-                                icons::EXTERNAL_LINK,
-                                false,
-                                cx.listener(move |_, _, _, cx| cx.open_url(&url)),
-                            ))
-                            .into_any_element(),
-                    )
-                }
+            // The status line beside the button, one wording per state. The
+            // updater's state outranks the check's: once a download moves or
+            // lands, that's the story, whatever the last check said.
+            let status: Option<AnyElement> = match updater::status() {
+                updater::Status::Applied { version } => Some(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(tokens::SPACE_SM)
+                        .child(line(format!("Version {version} is ready")))
+                        .child(small_button(
+                            "Restart Now",
+                            icons::REFRESH_CW,
+                            false,
+                            cx.listener(|_, _, _, cx| cx.restart()),
+                        ))
+                        .into_any_element(),
+                ),
+                updater::Status::Downloading(progress) => Some(
+                    line(format!("Downloading... {:.0}%", progress.fraction() * 100.))
+                        .into_any_element(),
+                ),
+                updater::Status::Failed { error } => match &self.update_check {
+                    // The release the download failed for is still the cached
+                    // one, so the retry rides beside the reason.
+                    UpdateCheck::Available(release) => Some(Self::release_row(
+                        release,
+                        format!("The update failed: {error}"),
+                        cx,
+                    )),
+                    _ => Some(line(format!("The update failed: {error}")).into_any_element()),
+                },
+                updater::Status::Idle => match &self.update_check {
+                    UpdateCheck::Idle => None,
+                    UpdateCheck::Checking => Some(line("Checking...").into_any_element()),
+                    UpdateCheck::UpToDate => {
+                        Some(line("You're on the latest version").into_any_element())
+                    }
+                    UpdateCheck::Failed => Some(line("Couldn't reach GitHub").into_any_element()),
+                    UpdateCheck::Available(release) => Some(Self::release_row(
+                        release,
+                        format!("Version {} is available", release.version),
+                        cx,
+                    )),
+                },
             };
 
             let update_control = div()

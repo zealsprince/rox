@@ -783,7 +783,7 @@ impl PanelSettings for MetadataPanel {
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
                 "Source",
-                Some("Follow what is playing or selected, or read the library as a whole"),
+                Some("Follow what is playing or selected, or read the library as a whole".into()),
                 panel::choices(
                     &[
                         ("Playing", MetadataSource::Playing),
@@ -808,7 +808,7 @@ impl PanelSettings for MetadataPanel {
             ))
             .child(panel::setting_row(
                 "Display",
-                Some("The title-led sheet, or a flat label and value table from the top"),
+                Some("The title-led sheet, or a flat label and value table from the top".into()),
                 panel::choices(
                     &[
                         ("Sheet", MetadataDisplay::Sheet),
@@ -836,7 +836,7 @@ impl PanelSettings for MetadataPanel {
             })
             .child(panel::setting_row(
                 "Cover Background",
-                Some("The track's cover art behind the fields"),
+                Some("The track's cover art behind the fields".into()),
                 panel::toggle(
                     self.config.cover,
                     |this: &mut Self, on, cx| {
@@ -848,7 +848,10 @@ impl PanelSettings for MetadataPanel {
             ))
             .child(panel::setting_block(
                 "Fields",
-                Some("Which fields the sheet lists; a field the track doesn't carry stays hidden"),
+                Some(
+                    "Which fields the sheet lists; a field the track doesn't carry stays hidden"
+                        .into(),
+                ),
                 None,
                 track_columns::checklist(FIELDS, self, cx),
             ))
@@ -872,7 +875,7 @@ impl PanelSettings for MetadataPanel {
                     .gap(tokens::SPACE_MD)
                     .child(panel::setting_row(
                         "Alternating Highlights",
-                        Some("Tint every other row of the table"),
+                        Some("Tint every other row of the table".into()),
                         panel::toggle(
                             self.config.stripes,
                             |this: &mut Self, on, cx| {
@@ -884,7 +887,7 @@ impl PanelSettings for MetadataPanel {
                     ))
                     .child(panel::setting_row(
                         "Row Borders",
-                        Some("The hairline under each row of the table"),
+                        Some("The hairline under each row of the table".into()),
                         panel::toggle(
                             self.config.row_borders,
                             |this: &mut Self, on, cx| {

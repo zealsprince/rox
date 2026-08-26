@@ -46,14 +46,15 @@ pub use shader::PanelShader;
 // crate::panel the way they always have, so the split stays behind this
 // line.
 pub use rox_panel_kit::{
-    align_row, banner, banner_flow, check_row, choices, choices_gated, display_name,
-    flick_on_paint_axis, follow_panel, font_picker, glide_snap_axis, glide_step, glide_step_axis,
-    glide_target, glide_target_axis, icon_choices, icon_control, icon_control_sized, icon_toggles,
-    items, justify, justify_v, mode_list, paint_slider, picker, scrub_on_paint, setting_block,
-    setting_row, setting_row_dyn, title_text, toggle, toggle_face, toggle_locked, tracking_section,
-    type_ahead_grow, valign_row, value_slider_edit, value_slider_edit_over,
-    value_slider_edit_sized, window_body, workspace_body, Align, FlickState, ModeSpec, ResumeIdle,
-    ScrubState, SliderWidth, Tip, Tone, TrackedImage, VAlign, ValueEdit,
+    align_row, banner, banner_flow, check_row, choices, choices_gated, choices_shared,
+    display_name, flick_on_paint_axis, follow_panel, font_picker, glide_snap_axis, glide_step,
+    glide_step_axis, glide_target, glide_target_at, glide_target_axis, icon_choices, icon_control,
+    icon_control_sized, icon_toggles, items, justify, justify_v, language_picker, mode_list,
+    paint_slider, picker, scrub_on_paint, setting_block, setting_row, setting_row_dyn, title_text,
+    toggle, toggle_face, toggle_locked, tracking_section, type_ahead_grow, valign_row,
+    value_slider_edit, value_slider_edit_over, value_slider_edit_sized, window_body,
+    workspace_body, Align, FlickState, ModeSpec, ResumeIdle, ScrubState, SliderWidth, Tip, Tone,
+    TrackedImage, VAlign, ValueEdit,
 };
 
 /// The shared entities every panel renders over: one player, one catalog,
@@ -314,7 +315,7 @@ pub fn config_from_info<C: Default + serde::de::DeserializeOwned>(info: &PanelIn
 pub fn dock_back_item(menu: PopupMenu, panel: Arc<dyn PanelView>, state: AppState) -> PopupMenu {
     let hosts = state.tab_hosts.clone();
     menu.item(
-        PopupMenuItem::new("Dock Back")
+        PopupMenuItem::new(rox_i18n::t!("panel-dock-back"))
             .icon(Icon::default().path(icons::EXTERNAL_LINK))
             .on_click(move |_, window, cx| {
                 let Some(tabs) = hosts.read(cx).last_live(cx) else {
@@ -356,7 +357,7 @@ pub fn popout_item<P: Panel>(
     let pop_panel = panel.clone();
     let pop_tabs = tab_panel;
     let menu = menu.item(
-        PopupMenuItem::new("Pop Out")
+        PopupMenuItem::new(rox_i18n::t!("panel-pop-out"))
             .icon(Icon::default().path(icons::EXTERNAL_LINK))
             .on_click(move |_, window, cx| {
                 pop_out(
@@ -370,7 +371,7 @@ pub fn popout_item<P: Panel>(
     );
     let panel = panel.clone();
     menu.item(
-        PopupMenuItem::new("Close")
+        PopupMenuItem::new(rox_i18n::t!("panel-close"))
             .icon(Icon::default().path(icons::CLOSE))
             .on_click(move |_, window, cx| {
                 if panel.read(cx).locked(cx) {
@@ -412,7 +413,7 @@ pub fn duplicate_item<P: Panel>(
     }
     let weak = panel.downgrade();
     menu.item(
-        PopupMenuItem::new("Duplicate")
+        PopupMenuItem::new(rox_i18n::t!("panel-duplicate"))
             .icon(Icon::default().path(icons::COPY))
             .on_click(move |_, window, cx| {
                 let Some(this) = weak.upgrade() else { return };
@@ -435,7 +436,7 @@ pub fn reveal_item(menu: PopupMenu, state: AppState, id: Option<i64>) -> PopupMe
         return menu;
     };
     menu.item(
-        PopupMenuItem::new("Reveal in File Browser")
+        PopupMenuItem::new(rox_i18n::t!("panel-reveal-in-browser"))
             .icon(Icon::default().path(icons::FOLDER))
             .on_click(move |_, _, cx| {
                 let path = state
@@ -509,14 +510,14 @@ pub fn track_actions(
         // nothing plays. Paths resolve here so the queue holds the same set
         // even if the selection moves before the click lands.
         .item(
-            PopupMenuItem::new("Play Next")
+            PopupMenuItem::new(rox_i18n::t!("panel-play-next"))
                 .icon(Icon::default().path(icons::SKIP_FORWARD))
                 .on_click(move |_, _, cx| {
                     queue_tracks(&next_state, &next_ids, true, cx);
                 }),
         )
         .item(
-            PopupMenuItem::new("Add to Queue")
+            PopupMenuItem::new(rox_i18n::t!("panel-add-to-queue"))
                 .icon(Icon::default().path(icons::LIST_MUSIC))
                 .on_click(move |_, _, cx| {
                     queue_tracks(&queue_state, &queue_ids, false, cx);
@@ -584,7 +585,7 @@ pub fn track_actions(
         submenu
     });
     let menu = menu.item(
-        PopupMenuItem::submenu("Add to Playlist", submenu)
+        PopupMenuItem::submenu(rox_i18n::t!("panel-add-to-playlist"), submenu)
             .icon(Icon::default().path(icons::LIST_MUSIC)),
     );
     let menu = menu
@@ -706,7 +707,7 @@ fn panel_window(panel: Arc<dyn PanelView>, state: AppState, fresh: bool, cx: &mu
     cx.open_window(options, move |window, cx| {
         // The Wayland backend ignores the creation-time titlebar title;
         // only set_window_title reaches the compositor.
-        window.set_window_title(&title);
+        crate::windows::set_window_title(window, &title);
         // A popped-out panel keeps its surface shader, so this window needs
         // the hub and player its slots read from.
         shader::note_window(window, &state, cx);
@@ -786,7 +787,7 @@ fn open_window<V: 'static + Render>(
         ..Default::default()
     };
     cx.open_window(options, move |window, cx| {
-        window.set_window_title(&title);
+        crate::windows::set_window_title(window, &title);
         let view = build(window, cx);
         cx.new(|cx| Root::new(view, window, cx))
     })
@@ -914,6 +915,26 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// What the settings sidebar shows for a page name from
+/// [`PanelSettings::pages`]. The names are a small closed set shared
+/// across every panel, so they resolve here rather than at each of the
+/// thirty-odd declarations, and the panels keep handing back plain
+/// identifiers they can dispatch on. A name nobody has a message for
+/// shows as written, which is what a panel outside this crate wants.
+pub fn page_label(name: &str) -> SharedString {
+    let key = match name {
+        "Layout" => "panel-page-layout",
+        "View" => "panel-page-view",
+        "Content" => "panel-page-content",
+        "Source" => "panel-page-source",
+        "Bindings" => "panel-page-bindings",
+        "Emitters" => "panel-page-emitters",
+        "Forces" => "panel-page-forces",
+        other => return SharedString::from(other.to_owned()),
+    };
+    rox_i18n::t!(key)
+}
+
 /// A panel whose per-view config is edited in its own settings window
 /// (see the panel settings window): the panel's own pages of control
 /// rows, then the shared Appearance page editing the panel's palette
@@ -927,6 +948,10 @@ pub trait PanelSettings: Panel {
     /// The panel's own pages as name and sidebar icon pairs, listed
     /// above the shared Appearance page. Empty means the panel has no
     /// knobs beyond its appearance.
+    ///
+    /// The name is an identifier, not display copy: [`page`](Self::page)
+    /// dispatches on it and it survives a locale switch. What the sidebar
+    /// shows is [`page_label`] of it.
     fn pages(&self) -> &'static [(&'static str, &'static str)] {
         &[]
     }

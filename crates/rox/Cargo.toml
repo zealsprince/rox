@@ -20,6 +20,9 @@ rox-core = { path = "../rox-core" }
 # and crate::assets so panels path through them the way they always have.
 rox-design = { path = "../rox-design" }
 rox-dock = { path = "../rox-dock" }
+# Message lookup and locale-aware formatting (ADR 27): every user-facing
+# string in this binary resolves through its t! macro.
+rox-i18n = { path = "../rox-i18n" }
 # The control socket's wire side (ADR 22); the answers live in
 # crate::integrations::ipc.
 rox-ipc = { path = "../rox-ipc" }
@@ -64,6 +67,9 @@ rust-embed = "8"
 # The loved-list import still makes its own blocking calls; the signed
 # Last.fm side moved to rox-net with its md5.
 ureq = "2"
+# The updater's checksum verify; already in the tree through rox-acoustic,
+# same 0.10 line.
+sha2 = "0.10"
 # The logging facade the app and rox-playback write through; our own backend
 # (crate::logging) fans each line to stderr, a rolling file, and the console
 # window's ring. Already in the tree, and chrono for the wall-clock stamp on
@@ -83,6 +89,9 @@ souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] 
 # Carries media-key events from souvlaki's callback thread to the UI without a
 # poll; already in the tree through gpui, same 2.x line.
 async-channel = "2"
+# The workspaces folder watch (ADR 22): an edited file re-applies live. The
+# same watcher the library roots ride, debounced the same way.
+notify-debouncer-full = "0.7"
 # The duplicates window's delete: files go to the OS trash, never unlinked,
 # so a wrong pick comes back. Defaults off to drop coinit_apartmentthreaded:
 # the delete runs on gpui's background executor, which on Windows is the
@@ -100,6 +109,10 @@ url = "2"
 # instead of the default tokio; blocking gives the thread-and-handle API.
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
+# The updater unpacks the release tarball; flate2 is already in the tree
+# through image's png path, same 1.x line.
+flate2 = "1"
+tar = "0.4"
 # Taskbar progress: Unity's LauncherEntry update is a plain session-bus
 # broadcast, so all this needs is a connection to emit on. Same zbus 5 line
 # ksni and souvlaki already ride, on async-io rather than tokio so no second
@@ -120,6 +133,9 @@ gpui = { workspace = true, features = ["macos-blade"] }
 # Already in the tree through gpui, same 0.6 line.
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
+# The updater unpacks the release zip; deflate only, which is all
+# Compress-Archive writes, so none of the crypto features come along.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # The quit-to-tray icon on this side: a thin wrapper over Shell_NotifyIcon,
 # no GTK anywhere. Its defaults are the gtk and libxdo pair Linux would need,
 # which this target has no use for.

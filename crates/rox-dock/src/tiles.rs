@@ -149,7 +149,7 @@ impl Panel for Tiles {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        "Tiles".into_any_element()
+        rox_i18n::t!("dock-tiles").into_any_element()
     }
 
     fn dump(&self, cx: &App) -> PanelState {

@@ -52,37 +52,37 @@ pub enum StatusItem {
 /// offers, and where a menu toggle slots a re-shown readout back in.
 const ITEMS: &[panel::ArrangeSpec<StatusItem>] = &[
     panel::ArrangeSpec {
-        label: "Count",
+        key: "status-item-count",
         icon: Some(icons::LIST_MUSIC),
         value: StatusItem::Count,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Time",
+        key: "status-item-time",
         icon: Some(icons::CLOCK),
         value: StatusItem::Time,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Albums",
+        key: "status-item-albums",
         icon: Some(icons::DISC),
         value: StatusItem::Albums,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Artists",
+        key: "status-item-artists",
         icon: Some(icons::MIC),
         value: StatusItem::Artists,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Plays",
+        key: "status-item-plays",
         icon: Some(icons::CHART_PIE),
         value: StatusItem::Plays,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Spacer",
+        key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: StatusItem::Spacer,
         repeats: true,
@@ -521,7 +521,8 @@ impl PanelSettings for StatusPanel {
                 "Readouts",
                 Some(
                     "Drag along the bar to reorder; drag between the rows, \
-                     or use a chip's x and plus, to hide and show",
+                     or use a chip's x and plus, to hide and show"
+                        .into(),
                 ),
                 None,
                 panel::arrange_editor(

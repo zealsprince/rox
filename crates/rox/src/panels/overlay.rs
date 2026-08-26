@@ -350,7 +350,7 @@ impl PanelSettings for OverlayPanel {
                 .gap(tokens::SPACE_MD)
                 .child(setting_row(
                     "Dim",
-                    Some("How hard the main panel dims under the revealed overlay"),
+                    Some("How hard the main panel dims under the revealed overlay".into()),
                     settings_ui::scalar(
                         &self.dim_scrub,
                         &self.value_edit,

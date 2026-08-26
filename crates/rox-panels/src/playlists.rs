@@ -1473,13 +1473,13 @@ impl PanelSettings for PlaylistsPanel {
             .gap(tokens::SPACE_MD)
             .child(panel::setting_block(
                 "Columns",
-                Some("Which track columns show beside the title"),
+                Some("Which track columns show beside the title".into()),
                 None,
                 track_columns::checklist(COLUMNS, self, cx),
             ))
             .child(panel::setting_row(
                 "Headings",
-                Some("Break each playlist's tracks into album runs; Expanded adds the cover and stats"),
+                Some("Break each playlist's tracks into album runs; Expanded adds the cover and stats".into()),
                 panel::choices(
                     &[
                         ("Off", Headers::Off),

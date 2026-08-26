@@ -1841,7 +1841,7 @@ impl ParticlesPanel {
                     ))
                     .child(setting_row(
                         "Direction",
-                        Some("Which way it pulls; 0 is up, 180 is down"),
+                        Some("Which way it pulls; 0 is up, 180 is down".into()),
                         angle_slider,
                     )),
             ))
@@ -1866,7 +1866,7 @@ impl ParticlesPanel {
                     .gap(tokens::SPACE_MD)
                     .child(setting_row(
                         "Round Particles",
-                        Some("Draw dots instead of squares"),
+                        Some("Draw dots instead of squares".into()),
                         toggle(
                             self.config.scene.round,
                             |this: &mut Self, on, cx| {
@@ -1878,7 +1878,7 @@ impl ParticlesPanel {
                     ))
                     .child(setting_row(
                         "Glow",
-                        Some("Lay a soft halo behind each particle"),
+                        Some("Lay a soft halo behind each particle".into()),
                         toggle(
                             self.config.scene.glow,
                             |this: &mut Self, on, cx| {
@@ -1894,7 +1894,7 @@ impl ParticlesPanel {
                 None,
                 setting_row(
                     "Hold on Pause",
-                    Some("Freeze the field while paused instead of letting it drift out"),
+                    Some("Freeze the field while paused instead of letting it drift out".into()),
                     toggle(
                         self.config.scene.freeze,
                         |this: &mut Self, on, cx| {

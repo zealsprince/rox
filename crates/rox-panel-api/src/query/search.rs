@@ -14,8 +14,8 @@ use std::rc::Rc;
 
 use gpui::{
     div, Action, App, AppContext, Context, Div, Entity, EntityInputHandler, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement, KeyDownEvent, ParentElement, Styled, Subscription,
-    Window,
+    FocusHandle, Focusable, InteractiveElement, KeyDownEvent, ParentElement, SharedString, Styled,
+    Subscription, Window,
 };
 use gpui_component::input::{
     CompletionProvider, Enter, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp,
@@ -61,7 +61,7 @@ impl EventEmitter<SearchEvent> for SearchBox {}
 
 impl SearchBox {
     pub fn new(
-        placeholder: &'static str,
+        placeholder: impl Into<SharedString>,
         initial: &str,
         window: &mut Window,
         cx: &mut Context<Self>,

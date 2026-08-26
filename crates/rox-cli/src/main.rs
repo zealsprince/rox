@@ -22,6 +22,7 @@ usage: roxctl [options] <command> [args]
 options:
   --socket <path>    talk to this socket instead of deriving it
   --data-dir <path>  derive the socket for this data dir (a --portable rox)
+  --window <id>      aim drive commands at this window (see `windows`)
   --json             print raw JSON results
 
 commands:
@@ -36,22 +37,36 @@ commands:
   jump <id>                  play a queued entry now
   search [--limit N] <terms> search the library
   now                        the playing track's full tags
+  watch                      follow playback, track, and queue events
   art <path> <out-file>      save a track's cover art
   raw <method> [json]        any method, params as one JSON argument
+
+drive commands (the debug scope: work the UI without OS input tools):
+  windows                    open windows with the ids drive commands take
+  actions [filter]           dispatchable action names
+  action <name> [json]       dispatch an action by name, data as JSON
+  key <keystrokes...>        send keystrokes, e.g. ctrl-comma escape
+  type <text...>             type into the focused element
+  click <x> <y>              click at window-local logical pixels
+                             (--right, --middle, --double)
+  hover <x> <y>              move the mouse to a point
+  scroll <x> <y> <dy> [dx]   scroll at a point, wheel lines, signed
+  panels                     the frontmost workspace's dock tree
 ";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
     let mut socket: Option<PathBuf> = None;
     let mut data_dir: Option<PathBuf> = None;
+    let mut window: Option<u64> = None;
     let mut as_json = false;
 
     // Global flags come off the front; what's left is the command.
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--socket" | "--data-dir" if i + 1 >= args.len() => {
-                eprintln!("{} takes a path", args[i]);
+            "--socket" | "--data-dir" | "--window" if i + 1 >= args.len() => {
+                eprintln!("{} takes a value", args[i]);
                 return ExitCode::from(1);
             }
             "--socket" => {
@@ -60,6 +75,15 @@ fn main() -> ExitCode {
             }
             "--data-dir" => {
                 data_dir = Some(PathBuf::from(args.remove(i + 1)));
+                args.remove(i);
+            }
+            "--window" => {
+                let id = args.remove(i + 1);
+                let Ok(id) = id.parse() else {
+                    eprintln!("not a window id: {id}");
+                    return ExitCode::from(1);
+                };
+                window = Some(id);
                 args.remove(i);
             }
             "--json" => {
@@ -97,7 +121,7 @@ fn main() -> ExitCode {
         }
     };
 
-    match run(&mut client, &command, args, as_json) {
+    match run(&mut client, &command, args, window, as_json) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("{err}");
@@ -106,8 +130,14 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(client: &mut Client, command: &str, args: &[String], as_json: bool) -> Result<(), String> {
-    let (method, params) = match command {
+fn run(
+    client: &mut Client,
+    command: &str,
+    args: &[String],
+    window: Option<u64>,
+    as_json: bool,
+) -> Result<(), String> {
+    let (method, mut params) = match command {
         "status" => ("transport.status".into(), json!({})),
         "toggle" => ("transport.toggle".into(), json!({})),
         "play" => ("transport.play".into(), json!({})),
@@ -178,6 +208,75 @@ fn run(client: &mut Client, command: &str, args: &[String], as_json: bool) -> Re
             ("library.search".into(), params)
         }
         "now" => ("library.now_playing".into(), json!({})),
+        "windows" => ("debug.windows".into(), json!({})),
+        "panels" => ("debug.panels".into(), json!({})),
+        "actions" => {
+            let mut params = json!({});
+            if let Some(filter) = args.first() {
+                params["filter"] = json!(filter);
+            }
+            ("debug.actions".into(), params)
+        }
+        "action" => {
+            let name = args
+                .first()
+                .ok_or("action takes a name (see `roxctl actions`)")?;
+            let mut params = json!({ "name": name });
+            if let Some(raw) = args.get(1) {
+                params["data"] =
+                    serde_json::from_str(raw).map_err(|err| format!("bad data: {err}"))?;
+            }
+            ("debug.action".into(), params)
+        }
+        "key" => {
+            if args.is_empty() {
+                return Err("key takes keystrokes, e.g. ctrl-comma escape".into());
+            }
+            ("debug.key".into(), json!({ "keys": args.join(" ") }))
+        }
+        "type" => {
+            if args.is_empty() {
+                return Err("type takes the text to type".into());
+            }
+            ("debug.type".into(), json!({ "text": args.join(" ") }))
+        }
+        "click" => {
+            let mut params = json!({});
+            let mut coords = Vec::new();
+            for arg in args {
+                match arg.as_str() {
+                    "--right" => params["button"] = json!("right"),
+                    "--middle" => params["button"] = json!("middle"),
+                    "--double" => params["count"] = json!(2),
+                    other => coords.push(other),
+                }
+            }
+            let (x, y) = point_args(&coords, "click")?;
+            params["x"] = json!(x);
+            params["y"] = json!(y);
+            ("debug.click".into(), params)
+        }
+        "hover" => {
+            let coords: Vec<&str> = args.iter().map(String::as_str).collect();
+            let (x, y) = point_args(&coords, "hover")?;
+            ("debug.hover".into(), json!({ "x": x, "y": y }))
+        }
+        "scroll" => {
+            let coords: Vec<&str> = args.iter().map(String::as_str).collect();
+            let (x, y) = point_args(&coords, "scroll")?;
+            let dy: f64 = coords
+                .get(2)
+                .ok_or("scroll takes x, y, and a wheel-line delta")?
+                .parse()
+                .map_err(|_| format!("not a delta: {}", coords[2]))?;
+            let mut params = json!({ "x": x, "y": y, "dy": dy });
+            if let Some(dx) = coords.get(3) {
+                let dx: f64 = dx.parse().map_err(|_| format!("not a delta: {dx}"))?;
+                params["dx"] = json!(dx);
+            }
+            ("debug.scroll".into(), params)
+        }
+        "watch" => return watch(client, as_json),
         "art" => {
             let path = args
                 .first()
@@ -203,6 +302,14 @@ fn run(client: &mut Client, command: &str, args: &[String], as_json: bool) -> Re
         other => return Err(format!("unknown command: {other}\n{USAGE}")),
     };
 
+    // The drive commands all take an optional window target; the flag rides
+    // in from the front so each command doesn't reparse it.
+    if let Some(id) = window {
+        if method.starts_with("debug.") {
+            params["window"] = json!(id);
+        }
+    }
+
     let result = client
         .call(&method, params)
         .map_err(|err| err.to_string())?;
@@ -220,12 +327,72 @@ fn run(client: &mut Client, command: &str, args: &[String], as_json: bool) -> Re
         "queue" => print_queue(&result),
         "search" => print_search(&result),
         "now" => print_now(&result),
+        "windows" => print_windows(&result),
+        "actions" => print_actions(&result),
         _ => println!(
             "{}",
             serde_json::to_string_pretty(&result).unwrap_or_default()
         ),
     }
     Ok(())
+}
+
+/// Subscribe and print events until rox goes away or the user breaks out.
+/// The human view leads with the current status so the stream starts where
+/// things stand; `--json` skips the seed and prints one frame per line for
+/// scripts to parse.
+fn watch(client: &mut Client, as_json: bool) -> Result<(), String> {
+    client
+        .call("subscribe", json!({}))
+        .map_err(|err| err.to_string())?;
+    if !as_json {
+        let status = client
+            .call("transport.status", json!({}))
+            .map_err(|err| err.to_string())?;
+        print_status(&status);
+    }
+    loop {
+        let (method, params) = client.next_event().map_err(|err| err.to_string())?;
+        if as_json {
+            println!("{}", json!({ "method": method, "params": params }));
+            continue;
+        }
+        match method.as_str() {
+            "event.playback" => print_status(&params),
+            "event.track" => print_track_change(&params),
+            "event.queue" => println!(
+                "queue    rev {}",
+                params["queue_rev"].as_u64().unwrap_or_default()
+            ),
+            other => println!("{other}"),
+        }
+    }
+}
+
+/// One line per track turnover: who and what, or the deck going empty.
+fn print_track_change(track: &Value) {
+    if !track.is_object() {
+        println!("track    (nothing)");
+        return;
+    }
+    let artist = track["artist"].as_str().unwrap_or_default();
+    let title = track["title"].as_str().unwrap_or_default();
+    if artist.is_empty() {
+        println!("track    {title}");
+    } else {
+        println!("track    {artist} - {title}");
+    }
+}
+
+/// Two leading coordinates off a drive command's arguments.
+fn point_args(args: &[&str], command: &str) -> Result<(f64, f64), String> {
+    let parse = |i: usize| -> Result<f64, String> {
+        let arg = args
+            .get(i)
+            .ok_or(format!("{command} takes x and y in window-local pixels"))?;
+        arg.parse().map_err(|_| format!("not a coordinate: {arg}"))
+    };
+    Ok((parse(0)?, parse(1)?))
 }
 
 /// Entry ids off the argument list, whole and in order.
@@ -276,6 +443,40 @@ fn print_status(status: &Value) {
             );
         }
         false => println!("{state}"),
+    }
+}
+
+fn print_windows(result: &Value) {
+    let Some(windows) = result["windows"].as_array().filter(|w| !w.is_empty()) else {
+        println!("no windows open");
+        return;
+    };
+    for window in windows {
+        println!(
+            "{} {:>4}  {:>4}x{:<4} @{}  {}",
+            if window["active"].as_bool().unwrap_or(false) {
+                ">"
+            } else {
+                " "
+            },
+            window["id"].as_u64().unwrap_or_default(),
+            window["width"].as_f64().unwrap_or_default() as u64,
+            window["height"].as_f64().unwrap_or_default() as u64,
+            window["scale"].as_f64().unwrap_or(1.0),
+            window["title"].as_str().unwrap_or("(untitled)"),
+        );
+    }
+}
+
+fn print_actions(result: &Value) {
+    let Some(actions) = result["actions"].as_array().filter(|a| !a.is_empty()) else {
+        println!("no matching actions");
+        return;
+    };
+    for action in actions {
+        if let Some(name) = action.as_str() {
+            println!("{name}");
+        }
     }
 }
 

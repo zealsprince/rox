@@ -593,7 +593,7 @@ impl PanelSettings for CoverArtPanel {
             ))
             .child(panel::setting_row(
                 "Artwork",
-                Some("Which picture to show; a slot the file doesn't carry falls back to the front cover"),
+                Some("Which picture to show; a slot the file doesn't carry falls back to the front cover".into()),
                 panel::choices(
                     &Self::ART_PICKS,
                     self.config.art,
@@ -611,7 +611,7 @@ impl PanelSettings for CoverArtPanel {
             ))
             .child(panel::setting_row(
                 "Stretch",
-                Some("Fill the panel, ignoring the artwork aspect ratio"),
+                Some("Fill the panel, ignoring the artwork aspect ratio".into()),
                 panel::toggle(
                     self.config.stretch,
                     |this: &mut Self, on, cx| {
@@ -623,7 +623,7 @@ impl PanelSettings for CoverArtPanel {
             ))
             .child(panel::setting_row(
                 "Disc Style",
-                Some("Dress the artwork as a CD or as a vinyl record's label"),
+                Some("Dress the artwork as a CD or as a vinyl record's label".into()),
                 panel::choices(
                     &DISC_STYLES,
                     self.config.disc_style,
@@ -633,7 +633,7 @@ impl PanelSettings for CoverArtPanel {
             ))
             .child(panel::setting_row(
                 "Spin",
-                Some("Rotate the disc while a track plays; applies to the disc slot or a disc style"),
+                Some("Rotate the disc while a track plays; applies to the disc slot or a disc style".into()),
                 panel::toggle(
                     self.config.spin,
                     |this: &mut Self, on, cx| this.set_spin(on, cx),
@@ -646,7 +646,7 @@ impl PanelSettings for CoverArtPanel {
                 let ramp = (self.config.spin_ramp / SPIN_RAMP_MAX).clamp(0., 1.);
                 page.child(panel::setting_row(
                     "Spin Speed",
-                    Some("Full speed, in revolutions per minute"),
+                    Some("Full speed, in revolutions per minute".into()),
                     panel::value_slider_edit(
                         &self.rpm_scrub,
                         &self.value_edit,
@@ -664,7 +664,7 @@ impl PanelSettings for CoverArtPanel {
                 ))
                 .child(panel::setting_row(
                     "Spin Ramp",
-                    Some("How long the disc takes to reach full speed, and to coast back down"),
+                    Some("How long the disc takes to reach full speed, and to coast back down".into()),
                     panel::value_slider_edit(
                         &self.ramp_scrub,
                         &self.value_edit,

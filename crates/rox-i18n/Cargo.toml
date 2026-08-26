@@ -1,0 +1,38 @@
+[package]
+name = "rox-i18n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# ryu is the f64-to-decimal path behind format_float.
+fixed_decimal = { version = "0.7", features = ["ryu"] }
+# Messages are Fluent: plural rules and selectors per locale, which is
+# what keeps a zh or ja locale a data question later. langneg stays on
+# 0.13 deliberately - 0.14 builds against a newer unic-langid than
+# fluent-bundle 0.16 does and the two LanguageIdentifier types don't
+# unify.
+fluent-bundle = "0.16.0"
+fluent-langneg = "0.13"
+# Translate answers in SharedString because that's what every call site
+# feeds a gpui element.
+gpui = { workspace = true }
+# Numbers and dates render through ICU4X with data compiled in; the
+# provider's sync feature swaps its payloads from Rc to Arc so the
+# formatter set can live behind a process-global.
+icu_calendar = "2.3.0"
+icu_datetime = "2.3.0"
+icu_decimal = "2.3.0"
+icu_locale_core = "2.3.0"
+icu_provider = { version = "2", features = ["sync"] }
+icu_time = "2.3.0"
+# The concurrent memoizer type FluentBundle's formatter hook names.
+intl-memoizer = "0.5.3"
+log = "0.4.34"
+# System asks the OS for its locale list.
+sys-locale = "0.3.2"
+unic-langid = "0.9.6"
+
+[dev-dependencies]
+# The parity test walks the ftl ASTs to compare key inventories.
+fluent-syntax = "0.12.0"

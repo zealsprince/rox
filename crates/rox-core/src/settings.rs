@@ -476,6 +476,12 @@ pub struct Settings {
     /// System following the OS's light/dark preference live.
     #[serde(deserialize_with = "lenient::or_default")]
     pub theme: Theme,
+    /// The interface language, a locale id from rox-i18n's registry.
+    /// None follows the OS, negotiated against what ships and landing
+    /// on English when nothing matches; an id the registry has dropped
+    /// negotiates the same way instead of failing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     /// The app-wide text size in px, the rem every window's rem-based text
     /// scales from. Clamped to the palette's shared range on apply; 16 is
     /// the stock size the app has always drawn at.
@@ -518,6 +524,9 @@ pub struct Settings {
     pub replay_gain: ReplayGainSettings,
     /// How the samples reach the device, the Audio page's Output section.
     pub output: OutputSettings,
+    /// The icecast broadcast sink (ADR 22), off by default. Applied at
+    /// startup and whenever the settings save.
+    pub broadcast: BroadcastSettings,
     /// Whether closing the last workspace window leaves the app resident,
     /// music playing, with the tray (Linux) or the dock (macOS) as the way
     /// back in. Off quits, the default. Ignored on Windows until a tray
@@ -544,6 +553,11 @@ pub struct Settings {
     /// day. The About page's toggle flips it; off leaves only the manual
     /// button.
     pub check_updates: bool,
+    /// Whether a check that finds a newer release also downloads and
+    /// stages it, so the next start runs it. Off by default - the default
+    /// stays notify-only - and moot wherever the install can't update
+    /// itself (a read-only executable, a package manager's copy).
+    pub download_updates: bool,
     /// Whether the unfinished work shows: the experimental panels join the
     /// Panels menu and the launcher. Off by default, flipped on the
     /// Development page. A layout that already holds an experimental panel
@@ -983,6 +997,19 @@ pub fn set_theme(theme: Theme, cx: &mut App) {
     palette::set_mode(resolve_theme(theme), cx);
 }
 
+/// Swap the interface language and repaint every window. Persisting is
+/// the caller's, and startup seeds from the file through here too; None
+/// negotiates from the OS's list. The locale static sits outside gpui's
+/// reactivity like the palette's, so the repaint is explicit - strings
+/// resolve at render time, and the few an entity cached in state catch
+/// up on that entity's next notify.
+pub fn set_language(language: Option<&str>, cx: &mut App) {
+    rox_i18n::set_locale(language);
+    for window in cx.windows() {
+        window.update(cx, |_, window, _| window.refresh()).ok();
+    }
+}
+
 /// A theme pick resolved to a palette side: System asks the cached OS
 /// appearance, which reads Light until a backend (the xdg-desktop-portal
 /// on Linux) has reported otherwise.
@@ -1021,7 +1048,7 @@ pub fn note_os_appearance(appearance: WindowAppearance, cx: &mut App) {
 /// half steps for finer review scores. Both write the library's one
 /// 0-100 value (a star is 20 points, 7.5 is 75), so flipping the style
 /// never loses a rating.
-#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum RatingStyle {
     #[default]
@@ -1393,7 +1420,7 @@ fn clamp_knob(value: f32, max: f32) -> f32 {
 /// overrides any of them knob for knob. Zero each by default, so a fresh
 /// look carries no frame until asked, matching what an unthemed panel drew
 /// before the lift.
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct Frame {
     pub margin: Sides,
@@ -1454,7 +1481,7 @@ pub fn set_app_frame(frame: Frame, cx: &mut App) {
 /// How the quick-play modal draws its result list, the knobs its inline
 /// config panel edits. Persisted so the look survives reopening the modal,
 /// which the workspace rebuilds each time.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct QuickPlayConfig {
     /// Show a cover thumbnail at the left of each result.
@@ -1491,7 +1518,7 @@ impl Default for QuickPlayConfig {
 /// Assets never gate. Approval is over code, and an image the approved code
 /// samples can spoil a look but can't run anything, so no fingerprint ever
 /// covers one (ADR 23).
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ShaderAsset {
     /// The name the shader declares it under, which is also the name eject
@@ -1534,7 +1561,7 @@ impl ShaderAsset {
 /// because it's dead weight anywhere but the machine that wrote it, and a
 /// path riding along would only aim a reload at a file that either isn't
 /// there or, worse, is somebody else's.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct NamedShader {
     /// What the look's panels point at this entry by. Unique within a pool;
@@ -1562,7 +1589,7 @@ pub struct NamedShader {
 /// file it reads. The source lives in a file rather than here because the
 /// app has no multi-line editor, and a file gives shader authors hot reload
 /// with the editor they already have.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct PostShaderConfig {
     /// Whether the pass runs at all. Off is exactly today's rendering.
@@ -2187,6 +2214,50 @@ pub struct OutputSettings {
     pub period_ms: Option<f64>,
 }
 
+/// The icecast broadcast sink (ADR 22): rox as a source client pushing the
+/// processed stream at a mount, with everything downstream - the mount,
+/// the listeners, the network face - belonging to icecast. The password
+/// rides this file the way the Last.fm session does; the file is the
+/// user's own data dir, and icecast's source password is shared-secret
+/// plumbing, not an account credential.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BroadcastSettings {
+    /// Whether the sink runs. Off tears the connection down, which is what
+    /// releases the mount.
+    pub enabled: bool,
+    /// The icecast server's host, no scheme; the source protocol runs over
+    /// a plain socket.
+    pub host: String,
+    pub port: u16,
+    /// The mount listeners tune to. A leading slash is optional.
+    pub mount: String,
+    /// Source credentials, icecast.xml's source user and password.
+    pub user: String,
+    pub password: String,
+    /// The stream name the mount advertises. Empty stays nameless.
+    pub name: String,
+    /// Encoder bitrate in kbps, snapped to the nearest step LAME takes.
+    pub bitrate: u32,
+}
+
+impl Default for BroadcastSettings {
+    fn default() -> Self {
+        BroadcastSettings {
+            enabled: false,
+            host: String::new(),
+            // icecast's stock port and source user, so a config is usually
+            // just a host, a password, and the switch.
+            port: 8000,
+            mount: "/rox".into(),
+            user: "source".into(),
+            password: String::new(),
+            name: String::new(),
+            bitrate: 192,
+        }
+    }
+}
+
 /// Discord Rich Presence settings: enable toggle and metadata options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -2212,7 +2283,7 @@ impl Default for DiscordSettings {
 /// A dock layout the user saved as a named preset: a full dock dump under
 /// a name. The dump stays raw JSON like [`Settings::layout`] so the file
 /// survives layout-schema moves; the workspace validates it on apply.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NamedLayout {
     pub name: String,
     pub dump: serde_json::Value,
@@ -2230,7 +2301,7 @@ pub struct NamedLayout {
 ///
 /// The dump stays raw JSON for the reasons [`NamedLayout`]'s does: rox-core
 /// stays off the dock crate, and the file survives a config-schema move.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PanelPreset {
     pub name: String,
     /// The dock's `PanelState` as JSON: the panel's registry name, its config
@@ -2249,7 +2320,7 @@ impl PanelPreset {
 
 /// A window size in logical pixels, stored with a layout preset so applying
 /// it can size the window to match.
-#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct LayoutSize {
     pub width: f32,
@@ -2281,7 +2352,7 @@ pub const WORKSPACE_VERSION: u32 = 1;
 /// version the workspace validates on apply. Machine- and account-bound state
 /// (library folders, Last.fm, window frames) is deliberately left out, so a
 /// bundle travels between installs as pure look.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct WorkspaceBundle {
     /// Format version; a reader refuses a bundle from a newer format.
@@ -2380,11 +2451,34 @@ impl Default for WorkspaceBundle {
     }
 }
 
+/// The JSON Schema for saved workspace files, derived from the bundle types
+/// so it can't drift from them (ADR 22). It describes the current write
+/// shape only: the read side's legacy folding accepts older shapes the
+/// writer no longer produces, and the schema owes them nothing. The copy
+/// committed at `assets/workspace.schema.json` is held to this output by a
+/// test, and the app writes the same bytes beside the workspaces folder for
+/// the files' `$schema` to resolve to.
+pub fn workspace_schema() -> serde_json::Value {
+    let mut schema = serde_json::to_value(schemars::schema_for!(WorkspaceBundle))
+        .expect("schema serializes: it is built from plain maps");
+    if let Some(root) = schema.as_object_mut() {
+        // The write shape's spine. The derive marks nothing required
+        // because every field folds in on read, but the writer always
+        // produces these three, so their absence is a hand-edit worth an
+        // editor's flag.
+        root.insert(
+            "required".into(),
+            serde_json::json!(["version", "name", "appearance"]),
+        );
+    }
+    schema
+}
+
 /// The card on a workspace: who made it, what it is, and where it came from.
 /// Every field is free text and empty means unset, because this is the half
 /// of a bundle nothing reads but a person. It exists so a shared workspace
 /// arrives with an author's name on it instead of a filename.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct WorkspaceMeta {
     /// Who made it.
@@ -2479,7 +2573,7 @@ fn utc_today() -> String {
 /// decides which one shows. The app font size stays out for the same reason -
 /// it's a per-user readability choice, not a look to hand around, so applying
 /// a workspace never resizes the text out from under someone.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct AppearanceBundle {
     /// ADR 10's transparency pair, both 0 to 1. How opaque the app's
@@ -3094,6 +3188,7 @@ impl Default for Settings {
             fold_case: false,
             split_genre_compounds: true,
             theme: Theme::default(),
+            language: None,
             app_font_size: palette::FONT_SIZE_DEFAULT,
             icon_pack: None,
             restore_last_track: true,
@@ -3103,10 +3198,12 @@ impl Default for Settings {
             crossfade_albums: false,
             replay_gain: ReplayGainSettings::default(),
             output: OutputSettings::default(),
+            broadcast: BroadcastSettings::default(),
             quit_to_tray: false,
             design_mode: true,
             resize_lock: false,
             check_updates: true,
+            download_updates: false,
             experimental: false,
             ai_enabled: false,
             mcp_enabled: false,

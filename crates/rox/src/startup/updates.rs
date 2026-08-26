@@ -1,9 +1,11 @@
-//! The update check, notify only: ask GitHub for the newest published
-//! release and weigh its tag against the running build. It never downloads
-//! or installs - it reports a newer release and links to its page. The
-//! result caches in settings; a launch runs the check at most once a day,
-//! and only when the About page's toggle leaves it on. The button on that
-//! page checks now regardless.
+//! The update check: ask GitHub for the newest published release and weigh
+//! its tag against the running build. The check itself only reports - a
+//! newer release, its page, its artifacts - and caches the result in
+//! settings; a launch runs it at most once a day, and only when the
+//! settings toggle leaves it on. The About page's button checks now
+//! regardless. Acting on the answer is [`updater`](crate::startup::updater)'s
+//! job, reached from the About page or, opted in, straight from the launch
+//! check here.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,6 +13,8 @@ use serde::Deserialize;
 
 use rox_core::settings::{Settings, UpdateCache};
 use rox_net::providers::agent;
+
+use crate::startup::updater;
 
 /// The build's own version, the left side of every comparison.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
@@ -22,14 +26,27 @@ const LATEST: &str = "https://api.github.com/repos/zealsprince/rox/releases/late
 /// How long a cached check stands before a launch runs another: a day.
 const CHECK_INTERVAL: u64 = 24 * 60 * 60;
 
-/// A published release as the check reads it: the version its tag names
-/// and the page a user opens to get it.
+/// A published release as the check reads it: the version its tag names,
+/// the page a user opens to get it, and the files hanging off it for the
+/// updater to resolve against.
 #[derive(Clone)]
 pub struct Release {
     /// The tag's version, the leading v stripped: "1.2.0".
     pub version: String,
     /// The release page on GitHub, where the artifacts hang.
     pub url: String,
+    /// The release's files. Empty on a release rebuilt from the settings
+    /// cache, which stores none; the updater refetches when it needs them.
+    pub assets: Vec<Asset>,
+}
+
+/// One file hanging off a release.
+#[derive(Clone)]
+pub struct Asset {
+    pub name: String,
+    /// The direct download URL.
+    pub url: String,
+    pub bytes: u64,
 }
 
 impl Release {
@@ -49,6 +66,14 @@ pub fn fetch_latest() -> Result<Release, String> {
     struct Api {
         tag_name: String,
         html_url: String,
+        #[serde(default)]
+        assets: Vec<ApiAsset>,
+    }
+    #[derive(Deserialize)]
+    struct ApiAsset {
+        name: String,
+        browser_download_url: String,
+        size: u64,
     }
     // The shared agent already carries the app User-Agent the API wants;
     // the Accept header pins the versioned media type GitHub asks for.
@@ -67,6 +92,15 @@ pub fn fetch_latest() -> Result<Release, String> {
     Ok(Release {
         version,
         url: api.html_url,
+        assets: api
+            .assets
+            .into_iter()
+            .map(|a| Asset {
+                name: a.name,
+                url: a.browser_download_url,
+                bytes: a.size,
+            })
+            .collect(),
     })
 }
 
@@ -74,14 +108,28 @@ pub fn fetch_latest() -> Result<Release, String> {
 /// the result in settings. The toggle and the one-day spacing both gate
 /// it, so a normal start usually does nothing. A failed fetch leaves the
 /// old cache and its timestamp alone, so the next launch simply retries.
+///
+/// With the download toggle opted in, a check that finds a newer release
+/// rolls straight into the updater on the same background task - but only
+/// where the install can update itself, so a distro package or a read-only
+/// home stays notify-only whatever the toggle says.
 pub fn check_on_launch(cx: &mut gpui::App) {
-    if !auto_check_due(&Settings::load()) {
+    let settings = Settings::load();
+    if !auto_check_due(&settings) {
         return;
     }
+    let auto_download = settings.download_updates;
     cx.background_executor()
-        .spawn(async {
+        .spawn(async move {
             match fetch_latest() {
-                Ok(release) => Settings::update(|s| s.session.update_cache = Some(cache(&release))),
+                Ok(release) => {
+                    Settings::update(|s| s.session.update_cache = Some(cache(&release)));
+                    if auto_download && release.is_new() && updater::can_update() {
+                        if let Some(job) = updater::begin(&release) {
+                            job();
+                        }
+                    }
+                }
                 Err(e) => log::warn!("update check: {e}"),
             }
         })

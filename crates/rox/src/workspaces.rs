@@ -581,8 +581,86 @@ pub fn store(bundle: &WorkspaceBundle) -> bool {
     store_in(&settings::workspaces_dir(), bundle)
 }
 
+/// What a saved file's `$schema` points at: the schema written beside the
+/// workspaces folder, relative so the reference survives the data dir
+/// moving and a stock editor resolves it against the file itself. On a
+/// machine the file traveled to, the reference dead-ends and editors just
+/// skip it, the same non-event an unknown key is to the reader.
+const SCHEMA_REF: &str = "../schemas/workspace.schema.json";
+
 fn store_in(dir: &Path, bundle: &WorkspaceBundle) -> bool {
-    settings::write_json(&dir.join(file_name(&bundle.name)), bundle, "workspace")
+    ensure_schema_beside(dir);
+    // The stamp rides serialization rather than a Value round-trip so the
+    // file keeps the bundle's own field order, with `$schema` in front
+    // where editors look for it.
+    #[derive(serde::Serialize)]
+    struct Stamped<'a> {
+        #[serde(rename = "$schema")]
+        schema: &'a str,
+        #[serde(flatten)]
+        bundle: &'a WorkspaceBundle,
+    }
+    let path = dir.join(file_name(&bundle.name));
+    note_own_write(&path);
+    settings::write_json(
+        &path,
+        &Stamped {
+            schema: SCHEMA_REF,
+            bundle,
+        },
+        "workspace",
+    )
+}
+
+/// How long the disk watch keeps treating a file [`store`] wrote as our own
+/// write. Comfortably past the watch debounce, so a UI save's own event
+/// can't come back around as a reload; an outside edit landing inside the
+/// window on the same file is missed once and caught on its next save.
+const OWN_WRITE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The files [`store`] just wrote, so the disk watch can tell a UI save
+/// from an outside edit and skip the redundant reload of a look that is
+/// already live.
+static OWN_WRITES: std::sync::Mutex<Vec<(PathBuf, std::time::Instant)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn note_own_write(path: &Path) {
+    let mut writes = OWN_WRITES.lock().unwrap();
+    writes.retain(|(_, at)| at.elapsed() < OWN_WRITE_WINDOW);
+    writes.push((path.to_path_buf(), std::time::Instant::now()));
+}
+
+fn was_own_write(path: &Path) -> bool {
+    OWN_WRITES
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(p, at)| p == path && at.elapsed() < OWN_WRITE_WINDOW)
+}
+
+/// Write the workspace schema where [`SCHEMA_REF`] resolves it, next to the
+/// workspaces folder rather than in it, since any JSON file in the folder
+/// reads as a workspace. Compared before writing so the steady state costs
+/// a read; after an update, the next save lands the new schema.
+fn ensure_schema_beside(dir: &Path) {
+    let Some(parent) = dir.parent() else {
+        return;
+    };
+    let path = parent.join("schemas").join("workspace.schema.json");
+    let text = match serde_json::to_string_pretty(&settings::workspace_schema()) {
+        Ok(text) => text + "\n",
+        Err(_) => return,
+    };
+    if std::fs::read_to_string(&path).is_ok_and(|old| old == text) {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(path.parent().expect("schemas dir has a parent")) {
+        log::warn!("workspace schema: creating {}: {e}", path.display());
+        return;
+    }
+    if let Err(e) = std::fs::write(&path, text) {
+        log::warn!("workspace schema: writing {}: {e}", path.display());
+    }
 }
 
 /// Delete a saved workspace's file. A missing file is a success: the list is
@@ -724,6 +802,100 @@ fn read_bundle_in(dir: &Path, path: &Path) -> Option<WorkspaceBundle> {
         taken.iter().any(|name| name == candidate)
     });
     Some(bundle)
+}
+
+/// How long the workspaces folder has to sit quiet before the watch flushes
+/// a change. An editor save is one or two writes; this folds them into one
+/// reload without making the save-and-look loop feel laggy.
+const WATCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Watch the workspaces folder and re-apply the active workspace when its
+/// file changes on disk (ADR 22): the schema makes an on-disk edit safe,
+/// this makes it visible, and the edit loop becomes save-and-look. Only the
+/// active workspace's own file triggers anything; a file [`store`] wrote is
+/// recognized and skipped, so a UI save never reloads the look it just
+/// persisted. Runs for the app's life; failure to come up logs and leaves
+/// rox running without the reload.
+pub(crate) fn watch(cx: &mut App) {
+    use notify_debouncer_full::notify::{EventKind, RecursiveMode};
+    use notify_debouncer_full::{new_debouncer, DebounceEventResult};
+
+    let dir = settings::workspaces_dir();
+    // The folder may predate the first save; watching needs it to exist,
+    // and making it here is the same create the first save would do.
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log::warn!("workspace watch: creating {}: {e}", dir.display());
+        return;
+    }
+    let (tx, events) = async_channel::unbounded::<Vec<PathBuf>>();
+    let mut debouncer =
+        match new_debouncer(WATCH_DEBOUNCE, None, move |result: DebounceEventResult| {
+            // Runs on the debouncer's own thread. Only writes matter: a
+            // delete or rename of the active file leaves the live look
+            // standing, and reads are nobody's business.
+            let Ok(batch) = result else { return };
+            let paths: Vec<PathBuf> = batch
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)))
+                .flat_map(|event| event.paths.iter().cloned())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .collect();
+            if !paths.is_empty() {
+                let _ = tx.send_blocking(paths);
+            }
+        }) {
+            Ok(debouncer) => debouncer,
+            Err(e) => {
+                log::warn!("workspace watch: not watching: {e}");
+                return;
+            }
+        };
+    if let Err(e) = debouncer.watch(&dir, RecursiveMode::NonRecursive) {
+        log::warn!("workspace watch: not watching {}: {e}", dir.display());
+        return;
+    }
+    log::info!("workspace watch: watching {}", dir.display());
+    cx.spawn(async move |cx| {
+        // The debouncer rides the drain task; dropping it with the app
+        // tears the watch down.
+        let _hold = debouncer;
+        while let Ok(paths) = events.recv().await {
+            if cx.update(|cx| reload_if_active(&paths, cx)).is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
+/// Re-apply the active workspace if this batch of changed files touches its
+/// file. A file that no longer parses leaves the current look standing and
+/// says why; the next successful save lands normally.
+fn reload_if_active(paths: &[PathBuf], cx: &mut App) {
+    let active = Settings::load().look.bundle.name;
+    if active.trim().is_empty() {
+        return;
+    }
+    let file = file_of_in(&settings::workspaces_dir(), &active);
+    if !paths.contains(&file) {
+        return;
+    }
+    if was_own_write(&file) {
+        return;
+    }
+    let parsed = std::fs::read_to_string(&file)
+        .map_err(|e| e.to_string())
+        .and_then(|text| serde_json::from_str::<WorkspaceBundle>(&text).map_err(|e| e.to_string()));
+    match parsed {
+        Ok(_) => {
+            log::info!("workspace: {active:?} changed on disk, re-applying");
+            crate::workspace::apply_workspace_to_front(&active, cx);
+        }
+        Err(e) => log::warn!(
+            "workspace: {} changed on disk but doesn't parse, keeping the current look: {e}",
+            file.display()
+        ),
+    }
 }
 
 #[cfg(test)]

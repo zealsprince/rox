@@ -82,7 +82,10 @@ pub fn source_flyout<P: 'static>(
         panel::follow_panel(&panel, cx);
         source_items(submenu.check_side(Side::Right), get, &panel, set)
     });
-    menu.item(PopupMenuItem::submenu("Track", submenu))
+    menu.item(PopupMenuItem::submenu(
+        rox_i18n::t!("source-track"),
+        submenu,
+    ))
 }
 
 /// The checked source rows the [`source_flyout`] lists.
@@ -95,8 +98,16 @@ fn source_items<P: 'static>(
     // Each source item carries its own icon (Play, List Music), so the tick
     // sits on the right where it stands apart from the icon.
     for (label, icon, source) in [
-        ("Follow Playing", icons::PLAY, TrackSource::Playing),
-        ("Follow Selection", icons::LIST_MUSIC, TrackSource::Selected),
+        (
+            rox_i18n::t!("source-follow-playing"),
+            icons::PLAY,
+            TrackSource::Playing,
+        ),
+        (
+            rox_i18n::t!("source-follow-selection"),
+            icons::LIST_MUSIC,
+            TrackSource::Selected,
+        ),
     ] {
         let get = get.clone();
         let set = set.clone();
@@ -118,12 +129,12 @@ pub fn source_row<P: 'static>(
     cx: &mut Context<P>,
 ) -> Div {
     panel::setting_row(
-        "Track",
-        Some("Follow what is playing, or what is selected in the library"),
-        panel::choices(
+        rox_i18n::t!("source-track"),
+        Some(rox_i18n::t!("source-track.description")),
+        panel::choices_shared(
             &[
-                ("Playing", TrackSource::Playing),
-                ("Selected", TrackSource::Selected),
+                (rox_i18n::t!("source-playing"), TrackSource::Playing),
+                (rox_i18n::t!("source-selected"), TrackSource::Selected),
             ],
             current,
             on_pick,

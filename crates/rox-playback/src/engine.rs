@@ -670,6 +670,11 @@ impl Engine {
                     // like any other sample data, and the tap downstream
                     // sees what the chain produced.
                     self.chain.process(&mut self.pending);
+                    // The broadcast sink taps the same processed stream
+                    // (ADR 22), here because each chunk passes exactly once:
+                    // a full ring retries the push loop above without
+                    // decoding again. Never blocks; off is one atomic load.
+                    crate::broadcast::feed(&self.pending, device_rate);
                     if !more {
                         // A window still open at this track's own EOF means
                         // the track was shorter than the fade: ramp what's

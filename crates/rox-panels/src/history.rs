@@ -1139,7 +1139,7 @@ impl PanelSettings for HistoryPanel {
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
                 "View",
-                Some("Which cut of the listen record the panel shows"),
+                Some("Which cut of the listen record the panel shows".into()),
                 panel::choices(
                     &[
                         ("Recent", HistoryView::Recent),
@@ -1156,7 +1156,7 @@ impl PanelSettings for HistoryPanel {
             .when(never, |d| {
                 d.child(panel::setting_row(
                     "Sort",
-                    Some("How the never-played tracks are ordered"),
+                    Some("How the never-played tracks are ordered".into()),
                     panel::choices(
                         NEVER_SORTS,
                         self.config.never_sort,
@@ -1166,7 +1166,7 @@ impl PanelSettings for HistoryPanel {
                 ))
                 .child(panel::setting_row(
                     "Descending",
-                    Some("Run the sort backwards"),
+                    Some("Run the sort backwards".into()),
                     panel::toggle(
                         desc,
                         |this: &mut Self, on, cx| this.set_never_desc(on, cx),
@@ -1176,7 +1176,7 @@ impl PanelSettings for HistoryPanel {
             })
             .child(panel::setting_block(
                 "Columns",
-                Some("Which track columns show"),
+                Some("Which track columns show".into()),
                 None,
                 track_columns::checklist(COLUMNS, self, cx),
             ))
@@ -1186,7 +1186,8 @@ impl PanelSettings for HistoryPanel {
                 d.child(panel::setting_row(
                     "Headings",
                     Some(
-                        "Break the recent list into album runs; Expanded adds the cover and stats",
+                        "Break the recent list into album runs; Expanded adds the cover and stats"
+                            .into(),
                     ),
                     panel::choices(
                         &[

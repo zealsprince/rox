@@ -2494,9 +2494,12 @@ impl Workspace {
         // the app rather than any window: the drain holds its own state
         // clone, so a close to the tray leaves the surface answering. A
         // reopen adopts the same entities the running server already speaks
-        // for, so only the first ever open binds.
+        // for, so only the first ever open binds. The workspaces disk watch
+        // is app-level for the same reason and starts on the same edge.
         if is_primary && !adopted {
             crate::integrations::ipc::serve(&state, cx);
+            crate::integrations::broadcast::start(&state, cx);
+            crate::workspaces::watch(cx);
         }
 
         // The primary window owns the OS media service: a session the tray
@@ -3624,7 +3627,7 @@ impl Workspace {
             }
             None => "rox".into(),
         };
-        window.set_window_title(&title);
+        rox_panel_api::windows::set_window_title(window, &title);
         self.titled_track = key;
     }
 

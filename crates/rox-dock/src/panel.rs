@@ -69,7 +69,7 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
 
     /// The title of the panel
     fn title(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Unnamed")
+        rox_i18n::t!("dock-unnamed")
     }
 
     /// The theme of the panel title, default is `None`.

@@ -11,6 +11,8 @@ gpui = { workspace = true }
 gpui-component = { workspace = true }
 # The colors, the spacing tokens, and the icon paths the widgets draw with.
 rox-design = { path = "../rox-design" }
+# The language picker drops the locale registry and speaks through t!.
+rox-i18n = { path = "../rox-i18n" }
 # The alignment enums are panel config, so they round-trip through the
 # layout dumps.
 serde = { version = "1", features = ["derive"] }

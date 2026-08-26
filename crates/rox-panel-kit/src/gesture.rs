@@ -425,6 +425,24 @@ pub fn glide_target_axis(
     Some(target.clamp(px(0.), max))
 }
 
+/// [`glide_target_axis`] for a list whose items aren't uniform: where the
+/// offset should sit to center an item spanning `origin..origin + extent`
+/// along `axis`, from the item's real position instead of an averaged
+/// stride. None before the list's first layout gives it a viewport.
+pub fn glide_target_at(
+    handle: &ScrollHandle,
+    axis: Axis,
+    origin: Pixels,
+    extent: Pixels,
+) -> Option<Pixels> {
+    let viewport = handle.bounds().size.along(axis);
+    if viewport <= px(0.) {
+        return None;
+    }
+    let max = handle.max_offset().along(axis);
+    Some((origin - (viewport - extent) * 0.5).clamp(px(0.), max))
+}
+
 /// [`glide_snap`] on a plain scroll handle along `axis`: pin the offset to
 /// `target` in one move, true once already there. Offsets run negative as
 /// the list scrolls, so the stored position is the negated axis component.

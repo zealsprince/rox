@@ -245,13 +245,18 @@ enum SourceKind {
     Aggregate,
 }
 
-const SOURCE_CHOICES: &[(&str, SourceKind)] = &[
-    ("Band", SourceKind::Band),
-    ("Level", SourceKind::Level),
-    ("Onset", SourceKind::Onset),
-    ("Trigger", SourceKind::Trigger),
-    ("Total", SourceKind::Aggregate),
-];
+/// The kinds the source picker offers. Built per call rather than held as
+/// a const: the labels resolve against whatever locale is live when the
+/// customize window paints.
+fn source_choices() -> Vec<(SharedString, SourceKind)> {
+    vec![
+        (rox_i18n::t!("signal-kind-band"), SourceKind::Band),
+        (rox_i18n::t!("signal-kind-level"), SourceKind::Level),
+        (rox_i18n::t!("signal-kind-onset"), SourceKind::Onset),
+        (rox_i18n::t!("signal-kind-trigger"), SourceKind::Trigger),
+        (rox_i18n::t!("signal-kind-total"), SourceKind::Aggregate),
+    ]
+}
 
 /// Where a trigger's fire line lands for a signal that had no threshold
 /// when it switched kinds. A trigger with no line never fires, so the
@@ -722,15 +727,10 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
         .flex_col()
         .gap(tokens::SPACE_SM)
         .child(setting_row(
-            "Source",
-            Some(
-                "What the signal listens to: Band follows one frequency range, \
-                 Level the whole mix, Onset pulses on each hit in the range, \
-                 Trigger fires a pulse when the range reaches its threshold, \
-                 Total adds up another signal over time",
-            ),
-            panel::choices(
-                SOURCE_CHOICES,
+            rox_i18n::t!("signal-source"),
+            Some(rox_i18n::t!("signal-source.description")),
+            panel::choices_shared(
+                &source_choices(),
                 kind,
                 move |this: &mut P, kind, cx| {
                     // Switching kinds carries the band along, so Band
@@ -782,7 +782,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
         .when(!spectral, |d| aggregate_rows(d, host, id, cx))
         .when(spectral && kind != SourceKind::Level, |d| {
             d.child(setting_row(
-                "Low Bound",
+                rox_i18n::t!("signal-low-bound"),
                 None,
                 panel::value_slider_edit(
                     &scrubs.lo,
@@ -812,7 +812,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                 ),
             ))
             .child(setting_row(
-                "High Bound",
+                rox_i18n::t!("signal-high-bound"),
                 None,
                 panel::value_slider_edit(
                     &scrubs.hi,
@@ -844,11 +844,11 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
         })
         .when(spectral, |d| {
             d.child(setting_row(
-                "Response",
+                rox_i18n::t!("signal-response"),
                 Some(if matches!(kind, SourceKind::Onset | SourceKind::Trigger) {
-                    "How long each pulse rings before it dies away"
+                    rox_i18n::t!("signal-response-pulse")
                 } else {
-                    "0 snaps to the music, 100 drifts after it"
+                    rox_i18n::t!("signal-response-drift")
                 }),
                 panel::value_slider_edit(
                     &scrubs.smooth,
@@ -872,15 +872,11 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                 ),
             ))
             .child(setting_row(
-                "Threshold",
+                rox_i18n::t!("signal-threshold"),
                 Some(if kind == SourceKind::Trigger {
-                    "The level the range has to reach to fire the pulse; it can't \
-                     fire again until the level falls back under the mark on the \
-                     meter above"
+                    rox_i18n::t!("signal-threshold-trigger")
                 } else {
-                    "Under this the signal reads as nothing, and above it the output \
-                     climbs from zero again, so the quiet parts leave the knob alone; \
-                     the mark on the meter above is where it sits"
+                    rox_i18n::t!("signal-threshold-gate")
                 }),
                 panel::value_slider_edit(
                     &scrubs.threshold,
@@ -941,9 +937,9 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
         .map(|(_, label)| label.clone())
         .unwrap_or_else(|| {
             if alone {
-                "Nothing to follow".to_string()
+                rox_i18n::t!("signal-aggregate-nothing").to_string()
             } else {
-                "Pick a signal".to_string()
+                rox_i18n::t!("signal-aggregate-pick").to_string()
             }
         });
     let button = Button::new(SharedString::from(format!("aggregate-of-{id}")))
@@ -991,8 +987,8 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
     };
 
     col.child(setting_row(
-        "Adds Up",
-        Some("Which signal this totals; it climbs while that one reads high and stalls while it's quiet"),
+        rox_i18n::t!("signal-adds-up"),
+        Some(rox_i18n::t!("signal-adds-up.description")),
         picker,
     ))
     .when(alone, |d| {
@@ -1000,10 +996,7 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
             div()
                 .text_xs()
                 .text_color(palette::text_muted())
-                .child(
-                    "There's no other signal in the pool for this to add up, so it sits at \
-                     zero. Add one and it shows up in the list.",
-                ),
+                .child(rox_i18n::t!("signal-aggregate-alone")),
         )
     })
     .when(!alone && !known, |d| {
@@ -1011,12 +1004,12 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
             div()
                 .text_xs()
                 .text_color(palette::text_muted())
-                .child("Nothing picked, so this total sits at zero. Pick a signal above."),
+                .child(rox_i18n::t!("signal-aggregate-unpicked")),
         )
     })
     .child(setting_row(
-        "Rate",
-        Some("Wraps per second at full input; it rolls over 1 back to 0 and keeps climbing, which a shader reads as a phase"),
+        rox_i18n::t!("signal-rate"),
+        Some(rox_i18n::t!("signal-rate.description")),
         panel::value_slider_edit_over(
             &scrubs.rate,
             host.value_edit(),
@@ -1042,8 +1035,8 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
         ),
     ))
     .child(setting_row(
-        "Reset on Track",
-        Some("Drain back to zero when a new song starts, so a phase doesn't carry the last one's total into it"),
+        rox_i18n::t!("signal-reset-on-track"),
+        Some(rox_i18n::t!("signal-reset-on-track.description")),
         toggle(
             reset,
             move |this: &mut P, on, cx| {
@@ -1054,10 +1047,10 @@ fn aggregate_rows<P: SignalHost>(col: Div, host: &P, id: u64, cx: &mut Context<P
         ),
     ))
     .child(setting_row(
-        "Flush",
-        Some("Send it back to zero now; it drains over a moment rather than snapping, so nothing riding it jumps"),
+        rox_i18n::t!("signal-flush"),
+        Some(rox_i18n::t!("signal-flush.description")),
         settings_ui::small_button(
-            "Flush",
+            rox_i18n::t!("signal-flush"),
             icons::REFRESH_CW,
             false,
             cx.listener(move |this: &mut P, _, _, cx| {
@@ -1103,7 +1096,7 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
         ));
     }
     chips = chips.child(scope_chip(
-        "New Signal".to_string(),
+        rox_i18n::t!("route-new-signal").to_string(),
         false,
         move |this: &mut P, cx| {
             let (id, _) = this.hub().add(
@@ -1127,8 +1120,8 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
         .flex_col()
         .gap(tokens::SPACE_SM)
         .child(panel::setting_block(
-            "Signal",
-            Some("Which shared signal this route rides; tuning it here tunes every route on it"),
+            rox_i18n::t!("route-signal"),
+            Some(rox_i18n::t!("route-signal.description")),
             None,
             chips,
         ));
@@ -1146,14 +1139,16 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
                 div()
                     .text_xs()
                     .text_color(palette::text_faint())
-                    .child("Shared by every route on this signal"),
+                    .child(rox_i18n::t!("route-shared-note")),
             )
             .child(signal_tuning(host, route.signal, cx));
     } else {
-        col = col.child(div().text_xs().text_color(palette::text_muted()).child(
-            "This route's signal is gone; the knob holds its slider value \
-                    until another is picked above.",
-        ));
+        col = col.child(
+            div()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(rox_i18n::t!("route-signal-gone")),
+        );
     }
     // The span belongs to this route alone, where everything above it
     // is the shared signal: the same signal can pull one knob all the
@@ -1163,11 +1158,11 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
             .pt(tokens::SPACE_XS)
             .text_xs()
             .text_color(palette::text_faint())
-            .child("Range for this parameter only"),
+            .child(rox_i18n::t!("route-range-note")),
     )
     .child(setting_row(
-        "Quiet",
-        Some("What the knob reaches at silence, as a share of its own setting"),
+        rox_i18n::t!("route-quiet"),
+        Some(rox_i18n::t!("route-quiet.description")),
         panel::value_slider_edit_over(
             &scrubs.from,
             host.value_edit(),
@@ -1186,8 +1181,8 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
         ),
     ))
     .child(setting_row(
-        "Loud",
-        Some("What it reaches at full signal; 100% is the slider's own value, below Quiet modulates down"),
+        rox_i18n::t!("route-loud"),
+        Some(rox_i18n::t!("route-loud.description")),
         panel::value_slider_edit_over(
             &scrubs.to,
             host.value_edit(),
@@ -1311,14 +1306,18 @@ pub fn bindable_row<P: RouteHost>(
         .flex()
         .flex_col()
         .gap(tokens::SPACE_SM)
-        .child(panel::setting_row(label, description, control));
+        .child(panel::setting_row(
+            label,
+            description.map(SharedString::from),
+            control,
+        ));
     if open {
         if let Some(index) = bound {
             let header = settings_ui::block_header(
                 div()
                     .text_xs()
                     .text_color(palette::text_muted())
-                    .child("Route"),
+                    .child(rox_i18n::t!("route-header")),
                 div()
                     .flex()
                     .flex_row()

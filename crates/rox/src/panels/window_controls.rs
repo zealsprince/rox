@@ -272,7 +272,7 @@ impl PanelSettings for WindowControlsPanel {
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
                 "Style",
-                Some("Flat icons, or the macOS traffic lights"),
+                Some("Flat icons, or the macOS traffic lights".into()),
                 panel::choices(
                     &[
                         ("Icons", ControlStyle::Icons),
@@ -288,7 +288,9 @@ impl PanelSettings for WindowControlsPanel {
             ))
             .child(panel::setting_row(
                 "Mini Toggle",
-                Some("Lead with the mini-layout toggle; shows once a mini layout is assigned"),
+                Some(
+                    "Lead with the mini-layout toggle; shows once a mini layout is assigned".into(),
+                ),
                 panel::toggle(
                     self.config.mini,
                     |this: &mut Self, mini, cx| {

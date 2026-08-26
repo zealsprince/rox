@@ -54,25 +54,25 @@ pub enum VolumeItem {
 /// offers, and where a menu toggle slots a re-shown piece back in.
 const ITEMS: &[panel::ArrangeSpec<VolumeItem>] = &[
     panel::ArrangeSpec {
-        label: "Icon",
+        key: "volume-item-icon",
         icon: Some(icons::VOLUME_2),
         value: VolumeItem::Icon,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Slider",
+        key: "volume-item-slider",
         icon: Some(icons::SLIDERS),
         value: VolumeItem::Slider,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Percent",
+        key: "volume-item-percent",
         icon: None,
         value: VolumeItem::Percent,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Spacer",
+        key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: VolumeItem::Spacer,
         repeats: true,
@@ -338,7 +338,8 @@ impl PanelSettings for VolumePanel {
                 Some(
                     "Drag along the bar to reorder; drag between the rows, or use a \
                      chip's x and plus, to hide and show. With the percent hidden \
-                     the speaker's tooltip carries it",
+                     the speaker's tooltip carries it"
+                        .into(),
                 ),
                 None,
                 panel::arrange_editor(
@@ -355,7 +356,7 @@ impl PanelSettings for VolumePanel {
             .when(self.config.items.contains(&VolumeItem::Slider), |d| {
                 d.child(panel::setting_row(
                     "Stretch",
-                    Some("Let the slider fill the panel instead of capping its width"),
+                    Some("Let the slider fill the panel instead of capping its width".into()),
                     panel::toggle(
                         self.config.stretch,
                         |this: &mut Self, stretch, cx| {
@@ -369,7 +370,7 @@ impl PanelSettings for VolumePanel {
             .when(self.config.items.contains(&VolumeItem::Percent), |d| {
                 d.child(panel::setting_row(
                     "Readout",
-                    Some("Show the level as a percent or as the decibel gain it applies"),
+                    Some("Show the level as a percent or as the decibel gain it applies".into()),
                     panel::choices(
                         &[("Percent", false), ("Decibels", true)],
                         self.config.percent_db,

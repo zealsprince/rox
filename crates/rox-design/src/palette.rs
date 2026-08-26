@@ -924,6 +924,34 @@ impl<'de> Deserialize<'de> for Sides {
     }
 }
 
+/// Hand-written because the serde above is: the derive would describe the
+/// struct's four fields and miss the bare-number form the serializer
+/// actually writes for a linked knob. Both shapes, or the workspace schema
+/// (ADR 22) flags every file whose knobs were never split.
+impl schemars::JsonSchema for Sides {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Sides".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "A frame knob's four sides in px: one number while linked, per-side once split",
+            "anyOf": [
+                { "type": "number" },
+                {
+                    "type": "object",
+                    "properties": {
+                        "top": { "type": "number" },
+                        "right": { "type": "number" },
+                        "bottom": { "type": "number" },
+                        "left": { "type": "number" },
+                    },
+                },
+            ],
+        })
+    }
+}
+
 /// Which sides a panel's border drew on, back when the width was one
 /// number for all four. Read from old configs and folded onto the
 /// per-side widths; nothing writes it any more. [compat]

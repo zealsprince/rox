@@ -35,6 +35,13 @@ log = "0.4"
 # port of libebur128, no C to link, and it merges block histories across
 # instances, which is what album gain needs.
 ebur128 = "0.1.10"
+# The broadcast sink's encoder (ADR 22): MP3 is what every icecast listener
+# and browser plays, and this builds LAME from vendored source, so no
+# system library enters the build. LGPL beside our AGPL is fine.
+mp3lame-encoder = "0.2"
+# The icecast source handshake carries Basic auth; same 0.22 line the tree
+# already ships.
+base64 = "0.22"
 
 # ADR 19's exclusive backend on Linux. Not a new C dependency: cpal already
 # links libasound here, so this is the same library reached directly instead

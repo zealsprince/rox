@@ -22,6 +22,8 @@ rox-services = { path = "../rox-services" }
 rox-core = { path = "../rox-core" }
 # The palette, the tokens, and the embedded icons.
 rox-design = { path = "../rox-design" }
+# Every string a panel puts on screen resolves through t!.
+rox-i18n = { path = "../rox-i18n" }
 # The dock traits every panel implements.
 rox-dock = { path = "../rox-dock" }
 # The projection rows, the playlists, the lyrics store, and the tag writer

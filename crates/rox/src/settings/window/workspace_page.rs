@@ -329,7 +329,7 @@ impl SettingsWindow {
                 ));
                 for ((label, _, _), input) in CARD_FIELDS.iter().zip(fields) {
                     body = body.child(panel::setting_row(
-                        label,
+                        *label,
                         None,
                         Input::new(input).small().w(px(240.)),
                     ));

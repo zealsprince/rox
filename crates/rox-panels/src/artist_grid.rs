@@ -1489,7 +1489,7 @@ impl PanelSettings for ArtistGridPanel {
             .gap(tokens::SPACE_MD)
             .child(setting_row(
                 "Vertical Layout",
-                Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height"),
+                Some("Scroll the wall up and down, rows filling the width; off scrolls it left and right, columns filling the height".into()),
                 toggle(
                     self.config.vertical,
                     |this: &mut Self, on, cx| {
@@ -1512,7 +1512,7 @@ impl PanelSettings for ArtistGridPanel {
                     None,
                     setting_row(
                         "One Tile Per",
-                        Some("The credited album artist keeps a record's guests on the act that released it; the track artist splits every feature onto a tile of its own"),
+                        Some("The credited album artist keeps a record's guests on the act that released it; the track artist splits every feature onto a tile of its own".into()),
                         panel::choices(
                             &[
                                 ("Album Artist", ArtistGroup::AlbumArtist),
@@ -1529,7 +1529,7 @@ impl PanelSettings for ArtistGridPanel {
                     None,
                     setting_row(
                         "Pick Filters the Library",
-                        Some("Clicking an artist narrows every panel following the shared search to them; off leaves the click as a plain selection"),
+                        Some("Clicking an artist narrows every panel following the shared search to them; off leaves the click as a plain selection".into()),
                         toggle(
                             self.config.pick_filters,
                             |this: &mut Self, on, cx| {
@@ -1561,7 +1561,7 @@ impl PanelSettings for ArtistGridPanel {
                 ))
                 .child(panel::tracking_section(
                     self.config.follow_playing,
-                    "Scroll to the playing artist whenever the track changes",
+                    "Scroll to the playing artist whenever the track changes".into(),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
                         if on {
@@ -1570,13 +1570,13 @@ impl PanelSettings for ArtistGridPanel {
                         cx.notify();
                     },
                     self.config.resume_playing,
-                    "Slide back to the playing artist after you stop browsing",
+                    "Slide back to the playing artist after you stop browsing".into(),
                     |this: &mut Self, on, cx| {
                         this.config.resume_playing = on;
                         cx.notify();
                     },
                     self.config.smooth_follow,
-                    "Glide to the artist instead of jumping",
+                    "Glide to the artist instead of jumping".into(),
                     |this: &mut Self, on, cx| {
                         this.config.smooth_follow = on;
                         cx.notify();
@@ -1592,7 +1592,7 @@ impl PanelSettings for ArtistGridPanel {
                         .gap(tokens::SPACE_MD)
                         .child(setting_row(
                             "Dim While Playing",
-                            Some("Fade every tile but the playing artist's; hovering lights a tile back up"),
+                            Some("Fade every tile but the playing artist's; hovering lights a tile back up".into()),
                             toggle(
                                 self.config.dim_playing,
                                 |this: &mut Self, on, cx| {
@@ -1606,7 +1606,7 @@ impl PanelSettings for ArtistGridPanel {
                         .when(self.config.dim_playing, |d| {
                             d.child(setting_row(
                                 "Dim Amount",
-                                Some("How far the other tiles fade; 100% hides them"),
+                                Some("How far the other tiles fade; 100% hides them".into()),
                                 settings_ui::scalar(
                                     &self.dim_scrub,
                                     &self.value_edit,
@@ -1623,7 +1623,7 @@ impl PanelSettings for ArtistGridPanel {
                         })
                         .child(setting_row(
                             "Desaturate While Playing",
-                            Some("Drain every tile but the playing artist's to grayscale; hovering brings a tile's color back"),
+                            Some("Drain every tile but the playing artist's to grayscale; hovering brings a tile's color back".into()),
                             toggle(
                                 self.config.desaturate_playing,
                                 |this: &mut Self, on, cx| {
@@ -1636,7 +1636,7 @@ impl PanelSettings for ArtistGridPanel {
                         .when(self.config.dim_playing || self.config.desaturate_playing, |d| {
                             d.child(setting_row(
                                 "Always",
-                                Some("Keep the tiles pushed back even when nothing plays; only a hovered tile shows in full"),
+                                Some("Keep the tiles pushed back even when nothing plays; only a hovered tile shows in full".into()),
                                 toggle(
                                     self.config.dim_always,
                                     |this: &mut Self, on, cx| {
@@ -1669,7 +1669,7 @@ impl PanelSettings for ArtistGridPanel {
                     .gap(tokens::SPACE_MD)
                     .child(setting_row(
                         "Artist Portraits",
-                        Some("Show each artist's own picture, looked up once per name and kept on disk; off shows the first album's cover"),
+                        Some("Show each artist's own picture, looked up once per name and kept on disk; off shows the first album's cover".into()),
                         toggle(
                             self.config.portraits,
                             |this: &mut Self, on, cx| {
@@ -1681,7 +1681,7 @@ impl PanelSettings for ArtistGridPanel {
                     ))
                     .child(setting_row(
                         "Show Names",
-                        Some("Print the artist under every tile instead of only on hover"),
+                        Some("Print the artist under every tile instead of only on hover".into()),
                         toggle(
                             self.config.labels,
                             |this: &mut Self, on, cx| {
@@ -1694,7 +1694,7 @@ impl PanelSettings for ArtistGridPanel {
                     .when(self.config.labels, |d| {
                         d.child(setting_row(
                             "Name Alignment",
-                            Some("Line the captions up under their tiles"),
+                            Some("Line the captions up under their tiles".into()),
                             panel::icon_choices(
                                 &[
                                     (icons::ALIGN_LEFT, TitleAlign::Left),
@@ -1712,7 +1712,7 @@ impl PanelSettings for ArtistGridPanel {
                     })
                     .child(setting_row(
                         "Show Counts",
-                        Some("The album and track tally under each name"),
+                        Some("The album and track tally under each name".into()),
                         toggle(
                             self.config.counts,
                             |this: &mut Self, on, cx| {
@@ -1724,7 +1724,7 @@ impl PanelSettings for ArtistGridPanel {
                     ))
                     .child(setting_row(
                         "Tile Size",
-                        Some("The tiles' widest edge; columns split the panel width evenly"),
+                        Some("The tiles' widest edge; columns split the panel width evenly".into()),
                         settings_ui::scalar(
                             &self.tile_scrub,
                             &self.value_edit,
@@ -1739,7 +1739,7 @@ impl PanelSettings for ArtistGridPanel {
                     ))
                     .child(setting_row(
                         "Gap",
-                        Some("Space between the tiles"),
+                        Some("Space between the tiles".into()),
                         settings_ui::scalar(
                             &self.gap_scrub,
                             &self.value_edit,
@@ -1754,7 +1754,7 @@ impl PanelSettings for ArtistGridPanel {
                     ))
                     .child(setting_row(
                         "Rounding",
-                        Some("Round each tile's corners; 100% is a circle"),
+                        Some("Round each tile's corners; 100% is a circle".into()),
                         settings_ui::scalar(
                             &self.rounding_scrub,
                             &self.value_edit,

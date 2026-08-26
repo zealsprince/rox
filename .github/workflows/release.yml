@@ -229,6 +229,14 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      # One sha256sum line per artifact, published beside them. The in-app
+      # updater downloads this first and refuses any artifact whose bytes
+      # don't hash to its entry, so a truncated or tampered download never
+      # gets installed.
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}

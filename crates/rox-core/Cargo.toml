@@ -8,6 +8,9 @@ license.workspace = true
 # The settings file carries a whole palette, and the live setters push
 # straight through it.
 rox-design = { path = "../rox-design" }
+# The language setter swaps the active Fluent locale the same way the
+# theme setter swaps the palette.
+rox-i18n = { path = "../rox-i18n" }
 # The seams toggle writes through to the dock's resizable handles.
 rox-dock = { path = "../rox-dock" }
 # The saved loop mode and the signal routes are these crates' types.
@@ -19,6 +22,9 @@ gpui = { workspace = true }
 # The settings file itself.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The workspace bundle's JSON Schema is derived from the types (ADR 22),
+# so a hand-written schema can't drift from what the writer produces.
+schemars = "1"
 # Shader assets ride the bundle as encoded bytes, and the bundle is JSON.
 base64 = "0.22"
 # Platform data dir, the anchor everything else here hangs off.
@@ -28,3 +34,8 @@ dirs = "5"
 # gives it the wall-clock stamp.
 log = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+# The schema tests validate saved bundles against the derived schema the
+# way a stock editor would.
+jsonschema = { version = "0.33", default-features = false }

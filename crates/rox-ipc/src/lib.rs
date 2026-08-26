@@ -5,20 +5,25 @@
 //! This crate owns the wire: the frame and error types, the listener with the
 //! same staging-and-rename bind discipline as the single-instance guard, the
 //! per-connection threads that parse frames and hold the version handshake,
-//! and a small blocking client for the CLI and tests. What it never owns is an
-//! answer: every method past `hello` crosses to the app as a [`Request`] on an
-//! async channel and comes back through the request's responder, so the app
-//! side stays the single place that touches the player and the library.
+//! the [`Events`] registry that pushes id-less frames to connections that
+//! subscribed, and a small blocking client for the CLI and tests. What it
+//! never owns is an answer: every method past `hello` and `subscribe` crosses
+//! to the app as a [`Request`] on an async channel and comes back through the
+//! request's responder, so the app side stays the single place that touches
+//! the player and the library. Events flow the other way through the same
+//! division: the app decides what happened and emits, the crate carries it.
 //!
 //! Unix speaks std's domain sockets; Windows speaks named pipes through
 //! interprocess, behind the same frame discipline and the same generic
 //! connection loop, so the two backends can't drift on the protocol.
 
+mod events;
 mod protocol;
 mod server;
 
 pub mod client;
 
+pub use events::Events;
 pub use protocol::{RpcError, PROTOCOL_VERSION};
 pub use server::{Cleanup, Request, Responder, Server};
 

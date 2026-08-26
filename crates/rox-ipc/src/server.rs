@@ -1,9 +1,13 @@
-//! The listening side: one accept thread, one thread per connection. The
-//! connection thread owns the whole frame discipline - parse, handshake,
-//! response - and the only thing that ever leaves it is a [`Request`] on the
-//! channel, answered through its responder. A malformed frame costs its
-//! caller an error response and nothing else; the connection and the app
-//! both play on.
+//! The listening side: one accept thread, and per connection a reader
+//! thread that owns the frame discipline - parse, handshake, dispatch - and
+//! a writer thread draining one bounded outbound channel. Responses and
+//! pushed events both leave through that channel, which is what lets an
+//! event land between two responses without interleaving bytes mid-frame.
+//! The only things that ever leave a connection are a [`Request`] on the
+//! app's channel, answered through its responder, and a registration with
+//! the [`Events`] registry when the client subscribes. A malformed frame
+//! costs its caller an error response and nothing else; the connection and
+//! the app both play on.
 //!
 //! Two transports carry it. Unix speaks std's own domain sockets and binds
 //! with the single-instance guard's staging-and-rename discipline. Windows
@@ -16,10 +20,12 @@
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::PathBuf;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::events::Events;
 use crate::protocol::{RequestFrame, ResponseFrame, RpcError, PROTOCOL_VERSION};
 
 /// The longest frame a client may send, one megabyte. A queue insert of a
@@ -32,6 +38,12 @@ const MAX_FRAME_BYTES: u64 = 1024 * 1024;
 /// thread, which a heavy frame can hold up; a wedged app surfaces as this
 /// error rather than a silent hang.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How many outbound frames may queue for one connection before a
+/// subscriber that stopped reading is cut off. A healthy consumer drains as
+/// events arrive and never sits more than a few deep; this deep means the
+/// peer is gone or wedged, and the emit side never waits to find out which.
+const OUTBOUND_BUFFER: usize = 128;
 
 /// One method call crossing from a connection thread to the app. The app
 /// answers through [`respond`](Request::respond); dropping the request
@@ -142,29 +154,44 @@ impl Server {
         })
     }
 
-    /// Start accepting: one detached thread for the accept loop, one per
-    /// connection. Requests land on the returned receiver; the app drains
-    /// it on its own executor and answers each one.
-    pub fn spawn(self) -> (async_channel::Receiver<Request>, Cleanup) {
+    /// Start accepting: one detached thread for the accept loop, two per
+    /// connection (reader and writer). Requests land on the returned
+    /// receiver; the app drains it on its own executor and answers each
+    /// one. Events emitted through the returned [`Events`] handle reach
+    /// every connection that subscribed.
+    pub fn spawn(self) -> (async_channel::Receiver<Request>, Events, Cleanup) {
         let (tx, requests) = async_channel::unbounded();
+        let events = Events::new();
         let cleanup = Cleanup {
             path: self.path,
             inode: self.inode,
         };
         let listener = self.listener;
+        let broadcast = events.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 let tx = tx.clone();
+                let events = broadcast.clone();
                 std::thread::spawn(move || {
                     let Ok(write_half) = stream.try_clone() else {
                         return;
                     };
-                    connection(stream, write_half, tx);
+                    // The registry's cutoff for a subscriber that stopped
+                    // draining: shut the socket down so both halves of the
+                    // connection unwind instead of parking on a peer that
+                    // will never read again.
+                    let kill: Arc<dyn Fn() + Send + Sync> = match stream.try_clone() {
+                        Ok(clone) => Arc::new(move || {
+                            let _ = clone.shutdown(std::net::Shutdown::Both);
+                        }),
+                        Err(_) => Arc::new(|| {}),
+                    };
+                    connection(stream, write_half, tx, events, kill);
                 });
             }
         });
-        (requests, cleanup)
+        (requests, events, cleanup)
     }
 }
 
@@ -193,26 +220,34 @@ impl Server {
 
     /// The Unix spawn's twin: same accept loop, same per-connection
     /// threads, with the stream split into halves where std would clone.
-    pub fn spawn(self) -> (async_channel::Receiver<Request>, Cleanup) {
+    pub fn spawn(self) -> (async_channel::Receiver<Request>, Events, Cleanup) {
         use interprocess::local_socket::traits::{ListenerExt as _, Stream as _};
 
         let (tx, requests) = async_channel::unbounded();
+        let events = Events::new();
         let cleanup = Cleanup {
             path: self.path,
             inode: self.inode,
         };
         let listener = self.listener;
+        let broadcast = events.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 let tx = tx.clone();
+                let events = broadcast.clone();
                 std::thread::spawn(move || {
                     let (read_half, write_half) = stream.split();
-                    connection(read_half, write_half, tx);
+                    // A pipe's halves offer no shutdown to force, so a
+                    // subscriber the registry cuts off just stops getting
+                    // events; the bounded buffer still caps what it can
+                    // cost, and the threads unwind when the peer goes.
+                    let kill: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+                    connection(read_half, write_half, tx, events, kill);
                 });
             }
         });
-        (requests, cleanup)
+        (requests, events, cleanup)
     }
 }
 
@@ -224,25 +259,50 @@ impl Server {
         Err("no control socket backend on this platform".into())
     }
 
-    pub fn spawn(self) -> (async_channel::Receiver<Request>, Cleanup) {
+    pub fn spawn(self) -> (async_channel::Receiver<Request>, Events, Cleanup) {
         unreachable!("bind never succeeds on this platform");
     }
 }
 
 /// One connection's whole life: read frames, hold the handshake, forward
-/// method calls, write responses. Runs on its own thread; blocking reads
-/// are the pacing. Generic over the transport's two halves, which is the
-/// whole seam between the Unix and Windows backends.
+/// method calls, queue responses for the writer. Runs on its own thread;
+/// blocking reads are the pacing. Generic over the transport's two halves,
+/// which is the whole seam between the Unix and Windows backends.
+///
+/// `subscribe` is answered here rather than by the app because what it
+/// changes is a property of this connection's write path: from that frame
+/// on, the outbound channel is enrolled with the registry and pushed events
+/// share it with responses. A connection that never subscribes is never
+/// enrolled and receives nothing unasked.
 #[cfg(any(unix, windows))]
-fn connection<R: std::io::Read, W: std::io::Write>(
+fn connection<R: std::io::Read, W: std::io::Write + Send + 'static>(
     read_half: R,
     write_half: W,
     tx: async_channel::Sender<Request>,
+    events: Events,
+    kill: Arc<dyn Fn() + Send + Sync>,
 ) {
-    let mut writer = std::io::BufWriter::new(write_half);
+    // Everything outbound crosses this bounded channel to one writer
+    // thread, so responses and events interleave as whole frames. When the
+    // peer stops reading, the writer blocks, the channel fills, and the
+    // registry's try_send is what notices - never the app.
+    let (out_tx, out_rx) = std::sync::mpsc::sync_channel::<Arc<[u8]>>(OUTBOUND_BUFFER);
+    std::thread::spawn(move || {
+        let mut writer = std::io::BufWriter::new(write_half);
+        while let Ok(bytes) = out_rx.recv() {
+            if writer
+                .write_all(&bytes)
+                .and_then(|_| writer.flush())
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+
     let mut reader = BufReader::new(read_half);
-    // A dead peer can't wedge the thread on a response it stopped reading.
     let mut greeted = false;
+    let mut subscribed = false;
 
     loop {
         let mut line = Vec::new();
@@ -255,8 +315,8 @@ fn connection<R: std::io::Read, W: std::io::Write>(
         {
             Ok(0) => return,
             Ok(_) if line.len() as u64 > MAX_FRAME_BYTES => {
-                let _ = write_frame(
-                    &mut writer,
+                let _ = send_frame(
+                    &out_tx,
                     ResponseFrame::error(Value::Null, RpcError::invalid_request("frame too long")),
                 );
                 return;
@@ -273,8 +333,8 @@ fn connection<R: std::io::Read, W: std::io::Write>(
             Err(err) => {
                 // One bad frame is the caller's problem, not the
                 // connection's: answer and read on.
-                if write_frame(
-                    &mut writer,
+                if send_frame(
+                    &out_tx,
                     ResponseFrame::error(Value::Null, RpcError::parse_error(err)),
                 )
                 .is_err()
@@ -296,13 +356,21 @@ fn connection<R: std::io::Read, W: std::io::Write>(
             }
         } else if !greeted {
             ResponseFrame::error(id, RpcError::handshake_required())
+        } else if frame.method == "subscribe" {
+            // Idempotent: a second subscribe re-answers rather than
+            // enrolling the channel twice and doubling every event.
+            if !subscribed {
+                events.register(out_tx.clone(), kill.clone());
+                subscribed = true;
+            }
+            ResponseFrame::result(id, json!({ "subscribed": true }))
         } else {
             match forward(&tx, frame) {
                 Ok(result) => ResponseFrame::result(id, result),
                 Err(err) => ResponseFrame::error(id, err),
             }
         };
-        if write_frame(&mut writer, response).is_err() {
+        if send_frame(&out_tx, response).is_err() {
             return;
         }
     }
@@ -351,30 +419,33 @@ fn forward(tx: &async_channel::Sender<Request>, frame: RequestFrame) -> Result<V
     }
 }
 
+/// Queue one response for the writer thread. Blocks while the outbound
+/// buffer is full, which paces the reader to the peer's appetite; `Err`
+/// means the writer is gone and the connection is over.
 #[cfg(any(unix, windows))]
-fn write_frame<W: std::io::Write>(
-    writer: &mut std::io::BufWriter<W>,
-    frame: ResponseFrame,
-) -> std::io::Result<()> {
-    let mut bytes = serde_json::to_vec(&frame)?;
+fn send_frame(out: &SyncSender<Arc<[u8]>>, frame: ResponseFrame) -> Result<(), ()> {
+    let Ok(mut bytes) = serde_json::to_vec(&frame) else {
+        return Err(());
+    };
     bytes.push(b'\n');
-    writer.write_all(&bytes)?;
-    writer.flush()
+    out.send(bytes.into()).map_err(|_| ())
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::io::BufReader;
     use std::os::unix::net::UnixStream;
 
     /// A server on a scratch socket with a dispatcher that answers
-    /// `echo` with its params and refuses everything else.
-    fn serve() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("rox-ipc-test-{}.sock", std::process::id()));
+    /// `echo` with its params and refuses everything else. Named per test
+    /// so parallel tests don't race on one path.
+    fn serve(name: &str) -> (std::path::PathBuf, Events) {
+        let path =
+            std::env::temp_dir().join(format!("rox-ipc-test-{name}-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let server = Server::bind(&path).expect("bind scratch socket");
-        let (requests, _cleanup) = server.spawn();
+        let (requests, events, _cleanup) = server.spawn();
         std::thread::spawn(move || {
             while let Ok(request) = requests.recv_blocking() {
                 let answer = match request.method.as_str() {
@@ -384,7 +455,7 @@ mod tests {
                 request.respond(answer);
             }
         });
-        path
+        (path, events)
     }
 
     fn call(stream: &mut UnixStream, line: &str) -> Value {
@@ -398,7 +469,7 @@ mod tests {
 
     #[test]
     fn handshake_gates_methods_and_frames_round_trip() {
-        let path = serve();
+        let (path, _events) = serve("frames");
         let mut stream = UnixStream::connect(&path).unwrap();
 
         // Before hello, a method call is refused, and the connection lives on.
@@ -432,6 +503,97 @@ mod tests {
 
         let unknown = call(&mut stream, r#"{"id":5,"method":"nope","params":{}}"#);
         assert_eq!(unknown["error"]["code"], -32601);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn events_reach_subscribers_only() {
+        let (path, events) = serve("events");
+
+        // One connection subscribes...
+        let mut subscriber = UnixStream::connect(&path).unwrap();
+        call(
+            &mut subscriber,
+            r#"{"id":1,"method":"hello","params":{"protocol":1}}"#,
+        );
+        let subscribed = call(
+            &mut subscriber,
+            r#"{"id":2,"method":"subscribe","params":{}}"#,
+        );
+        assert_eq!(subscribed["result"]["subscribed"], true);
+
+        // ...one only shakes hands.
+        let mut bystander = UnixStream::connect(&path).unwrap();
+        call(
+            &mut bystander,
+            r#"{"id":1,"method":"hello","params":{"protocol":1}}"#,
+        );
+
+        // The registration is done once the subscribe response is read, so
+        // this emit can't race it.
+        events.emit("event.test", serde_json::json!({ "n": 1 }));
+
+        let mut reader = BufReader::new(subscriber.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(frame["method"], "event.test");
+        assert_eq!(frame["params"]["n"], 1);
+        // No id is what marks it a push and not a response.
+        assert!(frame.get("id").is_none());
+
+        // The bystander got nothing pushed: the very next frame on its
+        // wire is the answer to its own call.
+        let echoed = call(
+            &mut bystander,
+            r#"{"id":9,"method":"echo","params":{"x":1}}"#,
+        );
+        assert_eq!(echoed["id"], 9);
+        assert_eq!(echoed["result"]["x"], 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn slow_subscriber_is_cut_not_waited_on() {
+        let (path, events) = serve("slow");
+        let mut subscriber = UnixStream::connect(&path).unwrap();
+        call(
+            &mut subscriber,
+            r#"{"id":1,"method":"hello","params":{"protocol":1}}"#,
+        );
+        call(
+            &mut subscriber,
+            r#"{"id":2,"method":"subscribe","params":{}}"#,
+        );
+
+        // Flood without the subscriber reading a byte. The emit side must
+        // sail through: once the socket buffers and the outbound channel
+        // fill, the registry cuts the subscriber and later emits find an
+        // empty registry. Blocking anywhere here fails the test by hanging.
+        let pad = "x".repeat(2048);
+        for n in 0..10_000 {
+            events.emit("event.flood", serde_json::json!({ "n": n, "pad": pad }));
+        }
+
+        // The cutoff shut the socket down, so draining what was buffered
+        // runs out well short of the flood instead of running forever.
+        subscriber
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let mut reader = BufReader::new(subscriber);
+        let mut drained = 0usize;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => drained += 1,
+                Err(err) => panic!("subscriber socket neither drained nor closed: {err}"),
+            }
+            assert!(drained < 10_000, "the whole flood arrived; nobody was cut");
+        }
 
         let _ = std::fs::remove_file(&path);
     }

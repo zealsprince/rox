@@ -766,7 +766,8 @@ impl ShaderPanel {
                 "Run Shader",
                 Some(
                     "Off keeps the source, the bookmark and the bindings in place and \
-                     paints nothing",
+                     paints nothing"
+                        .into(),
                 ),
                 // The switch and nothing else. An unread source still has
                 // the approval block above to get through, so flicking this
@@ -807,7 +808,8 @@ impl ShaderPanel {
             "Run When Idle",
             Some(
                 "Keep drawing while the audio is silent. Off, the shader parks where it \
-                 stands and the panel costs nothing",
+                 stands and the panel costs nothing"
+                    .into(),
             ),
             toggle(
                 run_when_idle,

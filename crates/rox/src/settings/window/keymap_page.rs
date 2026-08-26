@@ -44,7 +44,8 @@ impl SettingsWindow {
                     "Restore Every Chord",
                     Some(
                         "Put every command back on the keys it ships with, including any this \
-                         build no longer has a row for",
+                         build no longer has a row for"
+                            .into(),
                     ),
                     small_button(
                         "Restore",
@@ -60,7 +61,7 @@ impl SettingsWindow {
                 .keyed(
                     &["undo", "reset", "restore", "keymap"],
                     "Undo the Last Reset",
-                    Some("Bring back the chords the last reset threw out, row or all"),
+                    Some("Bring back the chords the last reset threw out, row or all".into()),
                     small_button(
                         "Undo",
                         icons::SEEK_BACK,
@@ -119,7 +120,7 @@ impl SettingsWindow {
                 .gap(tokens::SPACE_XS)
                 .child(panel::setting_row(
                     command.label,
-                    Some(command.description),
+                    Some(command.description.into()),
                     control,
                 ));
             for (chord, other) in clashes {

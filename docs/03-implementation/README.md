@@ -29,3 +29,6 @@ speculated ahead of the code. The set, one per domain:
 - `07-workspace.md` - crate layout, build commands, CI, the gpui version pin policy
 - `08-play-history.md` - the events schema and tag snapshot, listen-rule wiring against
   the position clock, rollup queries and their indexes
+- [09-i18n.md](09-i18n.md) - key conventions and the ftl layout, the extraction moves
+  per kind of string, ICU formatting helpers, adding a locale, and the pseudo-locale
+  check

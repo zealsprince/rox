@@ -78,7 +78,7 @@ pub fn settings_item<P: PanelSettings>(menu: PopupMenu, panel: &Entity<P>, cx: &
     let child = panel.entity_id();
     let panel = panel.clone();
     let menu = menu.item(
-        PopupMenuItem::new("Panel Settings")
+        PopupMenuItem::new(rox_i18n::t!("panel-settings"))
             .icon(Icon::default().path(icons::SETTINGS))
             .on_click(move |_, _, cx| {
                 open(panel.clone(), cx);
@@ -319,26 +319,18 @@ fn save_block<P: 'static>(
     };
     let replaces = settings::shader_pool_get(&name).is_some();
     let note: SharedString = if replaces {
-        format!(
-            "Replaces the shader this workspace already calls {name}. Every panel using \
-             that name changes with it"
-        )
-        .into()
+        rox_i18n::t!("shader-save-replaces", name = name.clone())
     } else {
-        format!(
-            "Adds it to this workspace's shaders under {name}. Any panel can use it, and \
-             editing it updates them all"
-        )
-        .into()
+        rox_i18n::t!("shader-save-adds", name = name.clone())
     };
     let button = {
         let input = input.clone();
         let fallback = fallback.to_string();
         small_button(
             if replaces {
-                "Replace"
+                rox_i18n::t!("shader-save-replace")
             } else {
-                "Save to Workspace"
+                rox_i18n::t!("shader-save-to-workspace")
             },
             icons::PLUS,
             false,
@@ -379,13 +371,25 @@ fn save_block<P: 'static>(
 /// because that's the question a panel's picker leaves open. Filtered to
 /// overlays there's only one kind left to offer, so the split has nothing to
 /// tell apart and the headings go back to naming where a shader came from.
-fn shader_groups(overlays_only: bool) -> &'static [(bool, &'static str, &'static str)] {
+fn shader_groups(overlays_only: bool) -> Vec<(bool, SharedString, SharedString)> {
     if overlays_only {
-        &[(true, "Examples", "This Workspace")]
+        vec![(
+            true,
+            rox_i18n::t!("shader-group-examples"),
+            rox_i18n::t!("shader-group-this-workspace"),
+        )]
     } else {
-        &[
-            (false, "Scenes", "Workspace Scenes"),
-            (true, "Overlays", "Workspace Overlays"),
+        vec![
+            (
+                false,
+                rox_i18n::t!("shader-group-scenes"),
+                rox_i18n::t!("shader-group-workspace-scenes"),
+            ),
+            (
+                true,
+                rox_i18n::t!("shader-group-overlays"),
+                rox_i18n::t!("shader-group-workspace-overlays"),
+            ),
         ]
     }
 }
@@ -478,7 +482,7 @@ impl<P: 'static> ShaderSource<'_, P> {
             if let Some(clear) = clear {
                 let host = host.clone();
                 menu = menu.item(
-                    PopupMenuItem::new("None")
+                    PopupMenuItem::new(rox_i18n::t!("shader-pick-none"))
                         .checked(matches!(current, shader::Pick::Empty))
                         .on_click(move |_, _, cx| {
                             if let Some(host) = host.upgrade() {
@@ -511,7 +515,7 @@ impl<P: 'static> ShaderSource<'_, P> {
             // Filtered to overlays there's only one kind left, so the split
             // has nothing to tell apart and the headings go back to saying
             // where a shader came from, which is the question still open.
-            for &(overlay, examples, workspace) in shader_groups(overlays_only) {
+            for (overlay, examples, workspace) in shader_groups(overlays_only) {
                 menu = menu.item(PopupMenuItem::label(examples));
                 for (index, preset) in shader::PRESETS.iter().enumerate() {
                     if shader::overlay(preset.source) != overlay {
@@ -559,33 +563,17 @@ impl<P: 'static> ShaderSource<'_, P> {
         });
 
         let note: SharedString = match &choice {
-            shader::Pick::Empty => "Pick an example to start, or point rox at a .wgsl file \
-                                    with a fragment stage defining fs_user(uv)"
-                .into(),
-            shader::Pick::Example(index) => shader::pick_blurb(*index).into(),
+            shader::Pick::Empty => rox_i18n::t!("shader-note-empty"),
+            shader::Pick::Example(index) => shader::pick_blurb(*index),
             shader::Pick::Named {
                 name,
                 missing: true,
-            } => format!(
-                "{name} isn't in this workspace's shaders anymore, so nothing paints. \
-                 Pick something else here and this panel gets a source of its own."
-            )
-            .into(),
-            shader::Pick::Named { .. } => {
-                "Shared across this workspace. Editing it updates every surface that uses it."
-                    .into()
+            } => rox_i18n::t!("shader-note-missing", name = name.clone()),
+            shader::Pick::Named { .. } => rox_i18n::t!("shader-note-shared"),
+            shader::Pick::File(path) => {
+                rox_i18n::t!("shader-note-file", path = path.display().to_string())
             }
-            shader::Pick::File(path) => format!(
-                "{}. Your saves reload while the shader draws, and the source travels \
-                 inside layouts and bundles, so it survives a machine that never had \
-                 the file.",
-                path.display()
-            )
-            .into(),
-            shader::Pick::Custom => "This source travels inside its layout or bundle with no \
-                                     file behind it. Edit as File writes it back out and picks \
-                                     up your saves."
-                .into(),
+            shader::Pick::Custom => rox_i18n::t!("shader-note-custom"),
         };
 
         let empty = matches!(choice, shader::Pick::Empty);
@@ -602,7 +590,7 @@ impl<P: 'static> ShaderSource<'_, P> {
                 // of it would only be a way to drift the two apart.
                 .when(file, |row| {
                     row.child(small_button(
-                        "Reload",
+                        rox_i18n::t!("shader-reload"),
                         icons::REFRESH_CW,
                         false,
                         cx.listener(move |this, _, _, cx| reload(this, cx)),
@@ -610,7 +598,7 @@ impl<P: 'static> ShaderSource<'_, P> {
                 })
                 .when(!file, |row| {
                     row.child(small_button(
-                        "Edit as File",
+                        rox_i18n::t!("shader-edit-as-file"),
                         icons::EXTERNAL_LINK,
                         missing,
                         cx.listener(move |this, _, _, cx| eject(this, cx)),
@@ -618,7 +606,7 @@ impl<P: 'static> ShaderSource<'_, P> {
                 })
                 .when(named, |row| {
                     row.child(small_button(
-                        "Make Private Copy",
+                        rox_i18n::t!("shader-make-private-copy"),
                         icons::COPY,
                         missing,
                         cx.listener(move |this, _, _, cx| detach(this, cx)),
@@ -633,7 +621,11 @@ impl<P: 'static> ShaderSource<'_, P> {
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
-            .child(panel::setting_row_dyn("Source", Some(note), picker))
+            .child(panel::setting_row_dyn(
+                rox_i18n::t!("shader-source"),
+                Some(note),
+                picker,
+            ))
             .children(actions)
             .children(save)
     }
@@ -668,22 +660,22 @@ pub fn rename_item<P: PanelSettings>(
     // are layout edits, and the divider and header still earn their place
     // separating the panel's own rows from the one that survives.
     if !settings::design_mode() {
-        return menu.separator().label("Panel");
+        return menu.separator().label(rox_i18n::t!("panel-menu-label"));
     }
     let menu = crate::openers::add_panel_submenu(menu, tab_panel, window, cx);
     let saving = panel.clone();
     let panel = panel.clone();
     menu.separator()
-        .label("Panel")
+        .label(rox_i18n::t!("panel-menu-label"))
         .item(
-            PopupMenuItem::new("Save As Preset")
+            PopupMenuItem::new(rox_i18n::t!("panel-save-as-preset"))
                 .icon(Icon::default().path(icons::DOWNLOAD))
                 .on_click(move |_, _, cx| {
                     open_save_preset(saving.clone(), cx);
                 }),
         )
         .item(
-            PopupMenuItem::new("Rename")
+            PopupMenuItem::new(rox_i18n::t!("panel-rename"))
                 .icon(Icon::default().path(icons::PENCIL))
                 .on_click(move |_, _, cx| {
                     open_rename(panel.clone(), cx);
@@ -787,9 +779,9 @@ impl<P: PanelSettings> RenameWindow<P> {
             .bg(palette::bg_panel())
             .child(
                 kbd_line([
-                    Seg::Text("Press".into()),
-                    Seg::Key("Enter".into()),
-                    Seg::Text("to rename".into()),
+                    Seg::Text(rox_i18n::t!("hint-press")),
+                    Seg::Key(rox_i18n::t!("hint-key-enter")),
+                    Seg::Text(rox_i18n::t!("panel-rename-hint-after")),
                 ])
                 .text_xs(),
             )
@@ -800,7 +792,7 @@ impl<P: PanelSettings> RenameWindow<P> {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(small_button(
-                        "Rename",
+                        rox_i18n::t!("panel-rename"),
                         icons::CHECK,
                         false,
                         cx.listener(|_, _, window, _| window.remove_window()),
@@ -839,16 +831,19 @@ impl<P: PanelSettings> Render for RenameWindow<P> {
                     .bg(palette::bg_elevated())
                     .p(tokens::SPACE_MD)
                     .child(section(
-                        "Name",
+                        rox_i18n::t!("panel-rename-name"),
                         None,
                         div()
                             .flex()
                             .flex_col()
                             .gap(tokens::SPACE_XS)
                             .child(Input::new(&self.input).w_full())
-                            .child(div().text_xs().text_color(palette::text_muted()).child(
-                                "Shown as the panel's tab; empty goes back to the built-in name",
-                            )),
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette::text_muted())
+                                    .child(rox_i18n::t!("panel-rename-note")),
+                            ),
                     )),
             )
             .child(self.footer(cx))
@@ -993,15 +988,13 @@ impl<P: PanelSettings> SavePresetWindow<P> {
             div()
                 .text_xs()
                 .text_color(palette::tone_warn())
-                .child(format!(
-                    "Replaces the preset this workspace already calls {name}"
-                ))
+                .child(rox_i18n::t!("preset-save-replaces", name = name))
                 .into_any_element()
         } else {
             kbd_line([
-                Seg::Text("Press".into()),
-                Seg::Key("Enter".into()),
-                Seg::Text("to save".into()),
+                Seg::Text(rox_i18n::t!("hint-press")),
+                Seg::Key(rox_i18n::t!("hint-key-enter")),
+                Seg::Text(rox_i18n::t!("preset-save-hint-after")),
             ])
             .text_xs()
             .into_any_element()
@@ -1025,7 +1018,11 @@ impl<P: PanelSettings> SavePresetWindow<P> {
                     .items_center()
                     .gap(tokens::SPACE_SM)
                     .child(small_button(
-                        if replaces { "Replace" } else { "Save Preset" },
+                        if replaces {
+                            rox_i18n::t!("shader-save-replace")
+                        } else {
+                            rox_i18n::t!("preset-save")
+                        },
                         icons::DOWNLOAD,
                         false,
                         cx.listener(|this, _, window, cx| this.commit(window, cx)),
@@ -1066,7 +1063,7 @@ impl<P: PanelSettings> Render for SavePresetWindow<P> {
                     .bg(palette::bg_elevated())
                     .p(tokens::SPACE_MD)
                     .child(section(
-                        "Preset Name",
+                        rox_i18n::t!("preset-save-name"),
                         None,
                         div()
                             .flex()
@@ -1081,15 +1078,11 @@ impl<P: PanelSettings> Render for SavePresetWindow<P> {
                                     // keycaps so the two labels read as things
                                     // to click rather than prose.
                                     .child(kbd_line([
-                                        Seg::Text("Add it back from".into()),
-                                        Seg::Key("Add Panel".into()),
-                                        Seg::Text("then".into()),
-                                        Seg::Key("Presets".into()),
-                                        Seg::Text(
-                                            "in any panel menu. Presets ride this workspace only, \
-                                             so another workspace won't carry it."
-                                                .into(),
-                                        ),
+                                        Seg::Text(rox_i18n::t!("preset-back-from")),
+                                        Seg::Key(rox_i18n::t!("preset-back-add-panel")),
+                                        Seg::Text(rox_i18n::t!("preset-back-then")),
+                                        Seg::Key(rox_i18n::t!("preset-back-presets")),
+                                        Seg::Text(rox_i18n::t!("preset-back-tail")),
                                     ])),
                             ),
                     )),
@@ -1244,7 +1237,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             let seed = value.map(|n| format!("{n:.0}")).unwrap_or_default();
             cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("Off")
+                    .placeholder(rox_i18n::t!("panel-size-off"))
                     .default_value(seed)
             })
         };
@@ -1881,27 +1874,21 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "Locked",
-                Some("Pin the panel in place; the dock won't let it be dragged or rearranged"),
+                rox_i18n::t!("panel-locked"),
+                Some(rox_i18n::t!("panel-locked.description")),
                 panel::toggle(locked, Self::set_panel_locked, cx),
             ))
             .child(panel::setting_row(
-                "Drag Anchor",
-                Some(
-                    "A drag anywhere on the panel moves the window, while plain clicks still \
-                     land on its controls; for decorations-off layouts",
-                ),
+                rox_i18n::t!("panel-drag-anchor"),
+                Some(rox_i18n::t!("panel-drag-anchor.description")),
                 panel::toggle(anchor, Self::set_panel_anchor, cx),
             ))
             // Only the composition hosts draw these, so the row would be a
             // dead switch on a leaf panel.
             .when(composite, |d| {
                 d.child(panel::setting_row(
-                    "Slot Controls",
-                    Some(
-                        "Show the corner buttons for swapping and removing the panels this one hosts. \
-                         Hidden, the layout is still edited from the tree on the Workspace page in Settings",
-                    ),
+                    rox_i18n::t!("panel-slot-controls"),
+                    Some(rox_i18n::t!("panel-slot-controls.description")),
                     panel::toggle(!hide_controls, Self::set_panel_controls, cx),
                 ))
             });
@@ -1914,12 +1901,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "Min Width",
-                Some(
-                    "Where a resize stops squeezing the panel narrower. Taken as written, \
-                     under the panel's own floor included, so a compact strip can go tighter \
-                     than stock; empty leaves the floor alone",
-                ),
+                rox_i18n::t!("panel-min-width"),
+                Some(rox_i18n::t!("panel-min-width.description")),
                 self.size_limit_row(
                     &self.min_width_input,
                     limits.min_width.is_some(),
@@ -1928,8 +1911,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ),
             ))
             .child(panel::setting_row(
-                "Max Width",
-                Some("Cap the panel's width so it doesn't stretch when the window widens"),
+                rox_i18n::t!("panel-max-width"),
+                Some(rox_i18n::t!("panel-max-width.description")),
                 self.size_limit_row(
                     &self.max_width_input,
                     limits.max_width.is_some(),
@@ -1938,12 +1921,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ),
             ))
             .child(panel::setting_row(
-                "Min Height",
-                Some(
-                    "Where a resize stops squeezing the panel shorter. Taken as written, \
-                     under the panel's own floor included, so a compact strip can go tighter \
-                     than stock; empty leaves the floor alone",
-                ),
+                rox_i18n::t!("panel-min-height"),
+                Some(rox_i18n::t!("panel-min-height.description")),
                 self.size_limit_row(
                     &self.min_height_input,
                     limits.min_height.is_some(),
@@ -1952,8 +1931,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ),
             ))
             .child(panel::setting_row(
-                "Max Height",
-                Some("Cap the panel's height so it doesn't stretch when the window grows taller"),
+                rox_i18n::t!("panel-max-height"),
+                Some(rox_i18n::t!("panel-max-height.description")),
                 self.size_limit_row(
                     &self.max_height_input,
                     limits.max_height.is_some(),
@@ -1965,8 +1944,12 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex()
             .flex_col()
             .gap(SECTION_GAP)
-            .child(section("Placement", None, placement))
-            .child(section("Size", None, size))
+            .child(section(
+                rox_i18n::t!("panel-section-placement"),
+                None,
+                placement,
+            ))
+            .child(section(rox_i18n::t!("panel-section-size"), None, size))
             .children(extra)
     }
 
@@ -2082,8 +2065,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "Surface Shader",
-                Some("Run a WGSL shader over this panel's body, under the app's screen shader"),
+                rox_i18n::t!("panel-surface-shader"),
+                Some(rox_i18n::t!("panel-surface-shader.description")),
                 panel::toggle(
                     enabled,
                     |this: &mut Self, on, cx| {
@@ -2098,11 +2081,12 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         // a scene. Say so rather than leaving someone to wonder why the
         // panel under it went missing.
         if enabled && !running.trim().is_empty() && !shader::overlay(&running) {
-            source = source.child(div().text_xs().text_color(palette::text_muted()).child(
-                "This shader is a scene, so it covers the panel's body rather than \
-                         drawing over it. It came from a bundle or an older config; the list \
-                         above only offers shaders that leave the panel readable.",
-            ));
+            source = source.child(
+                div()
+                    .text_xs()
+                    .text_color(palette::text_muted())
+                    .child(rox_i18n::t!("panel-shader-is-scene")),
+            );
         }
         if let Some(error) = error {
             source = source.child(
@@ -2113,11 +2097,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             );
         }
         source = source.child(panel::setting_row(
-            "Run When Idle",
-            Some(
-                "Keep drawing frames while the audio is silent. Off, the shader parks \
-                 where it stands and the panel costs nothing",
-            ),
+            rox_i18n::t!("panel-run-when-idle"),
+            Some(rox_i18n::t!("panel-run-when-idle.description")),
             panel::toggle(
                 shader.run_when_idle,
                 |this: &mut Self, on, cx| {
@@ -2167,14 +2148,16 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex()
             .flex_col()
             .gap(SECTION_GAP)
-            .children(pending.map(|body| section("Awaiting Approval", None, body)))
-            .child(section("Shader", None, source))
+            .children(
+                pending.map(|body| section(rox_i18n::t!("panel-awaiting-approval"), None, body)),
+            )
+            .child(section(rox_i18n::t!("panel-section-shader"), None, source))
             .child(section(
-                "Signals",
+                rox_i18n::t!("panel-section-signals"),
                 Some(add.into_any_element()),
                 editor.list(cx),
             ))
-            .child(section("Slots", None, slots))
+            .child(section(rox_i18n::t!("panel-section-slots"), None, slots))
     }
 
     /// Write a hot-reloaded source back into the panel's config, so the
@@ -2497,8 +2480,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "Own Surface Opacity",
-                Some("Give this panel its own opacity over the backdrop instead of the app's"),
+                rox_i18n::t!("panel-own-opacity"),
+                Some(rox_i18n::t!("panel-own-opacity.description")),
                 panel::toggle(
                     theme.surface_opacity.is_some(),
                     Self::set_opacity_override,
@@ -2507,7 +2490,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             ))
             .when_some(theme.surface_opacity, |d, value| {
                 d.child(panel::setting_row(
-                    "Surface Opacity",
+                    rox_i18n::t!("panel-surface-opacity"),
                     None,
                     settings_ui::slider_edit(
                         &self.opacity_scrub,
@@ -2525,8 +2508,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "Margin",
-                Some("Pull the panel in from its cell, the backdrop showing through the gap"),
+                rox_i18n::t!("panel-margin"),
+                Some(rox_i18n::t!("panel-margin.description")),
                 self.frame_sides(
                     &self.margin_scrub,
                     theme.margin.unwrap_or(app.margin),
@@ -2540,8 +2523,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ),
             ))
             .child(panel::setting_row(
-                "Padding",
-                Some("Space inside the panel's edge, kept in its own background"),
+                rox_i18n::t!("panel-padding"),
+                Some(rox_i18n::t!("panel-padding.description")),
                 self.frame_sides(
                     &self.padding_scrub,
                     theme.padding.unwrap_or(app.padding),
@@ -2555,8 +2538,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ),
             ))
             .child(panel::setting_row(
-                "Rounding",
-                Some("Round the panel's corners off into the backdrop"),
+                rox_i18n::t!("panel-rounding"),
+                Some(rox_i18n::t!("panel-rounding.description")),
                 self.frame_slider(
                     &self.rounding_scrub,
                     theme.rounding,
@@ -2568,8 +2551,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 ),
             ))
             .child(panel::setting_row(
-                "Border",
-                Some("A line around the panel's edge, in the Border role's color; a side at zero draws none"),
+                rox_i18n::t!("panel-border"),
+                Some(rox_i18n::t!("panel-border.description")),
                 self.frame_sides(
                     &self.border_scrub,
                     theme.border_sides(app.border),
@@ -2674,7 +2657,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         // Each section resets its own knobs: recoloring can start over
         // without flattening the frame, and the other way around.
         let frame_controls = small_button(
-            "Reset",
+            rox_i18n::t!("panel-reset"),
             icons::REFRESH_CW,
             false,
             cx.listener(|this, _, _, cx| this.reset_frame(cx)),
@@ -2688,19 +2671,19 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             .items_center()
             .gap(tokens::SPACE_XS)
             .child(small_button(
-                "Inverse",
+                rox_i18n::t!("panel-inverse"),
                 icons::CONTRAST,
                 false,
                 cx.listener(|this, _, window, cx| this.inverse_colors(window, cx)),
             ))
             .child(small_button(
-                "Apply Song Theme",
+                rox_i18n::t!("panel-apply-song-theme"),
                 icons::DISC,
                 !song_on,
                 cx.listener(|this, _, window, cx| this.apply_song_theme(window, cx)),
             ))
             .child(small_button(
-                "Reset",
+                rox_i18n::t!("panel-reset"),
                 icons::REFRESH_CW,
                 false,
                 cx.listener(|this, _, window, cx| this.reset_colors(window, cx)),
@@ -2715,7 +2698,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             // until one is set; the size row also carries its own inline
             // reset, the frame sliders' pattern.
             let reset = small_button(
-                "Reset",
+                rox_i18n::t!("panel-reset"),
                 icons::REFRESH_CW,
                 theme.font.is_none() && theme.font_scale.is_none(),
                 cx.listener(|this, _, _, cx| {
@@ -2733,8 +2716,8 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                 .flex_col()
                 .gap(tokens::SPACE_MD)
                 .child(panel::setting_row(
-                    "Font",
-                    Some("The panel's typeface; default follows the app font"),
+                    rox_i18n::t!("panel-font"),
+                    Some(rox_i18n::t!("panel-font.description")),
                     panel::font_picker(
                         "panel-font",
                         theme.font.clone(),
@@ -2745,20 +2728,29 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
                     ),
                 ))
                 .child(panel::setting_row(
-                    "Font Size",
-                    Some("The panel's text size relative to the app font; rows scale with it"),
+                    rox_i18n::t!("panel-font-size"),
+                    Some(rox_i18n::t!("panel-font-size.description")),
                     self.font_scale_row(theme.font_scale, cx),
                 ));
-            section("Font", Some(reset.into_any_element()), body).into_any_element()
+            section(
+                rox_i18n::t!("panel-section-font"),
+                Some(reset.into_any_element()),
+                body,
+            )
+            .into_any_element()
         });
 
         div()
             .flex()
             .flex_col()
             .gap(SECTION_GAP)
-            .child(section("Opacity", None, opacity))
             .child(section(
-                "Frame",
+                rox_i18n::t!("panel-section-opacity"),
+                None,
+                opacity,
+            ))
+            .child(section(
+                rox_i18n::t!("panel-section-frame"),
                 Some(frame_controls.into_any_element()),
                 frame,
             ))
@@ -2768,7 +2760,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             // grid's art rounding.
             .children(extra)
             .child(section(
-                "Colors",
+                rox_i18n::t!("panel-section-colors"),
                 Some(color_controls.into_any_element()),
                 body,
             ))
@@ -2806,7 +2798,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                     sidebar(),
                     div()
                         .text_color(palette::text_muted())
-                        .child("The panel was closed")
+                        .child(rox_i18n::t!("panel-was-closed"))
                         .into_any_element(),
                 ),
                 Some(panel) => {
@@ -2828,7 +2820,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                     }
                     let mut nav = sidebar()
                         .child(settings_ui::nav_item(
-                            "Appearance",
+                            rox_i18n::t!("panel-page-appearance"),
                             icons::PALETTE,
                             picked == 0,
                             move |this: &mut Self, _window, cx| {
@@ -2838,7 +2830,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                             cx,
                         ))
                         .child(settings_ui::nav_item(
-                            "Behavior",
+                            rox_i18n::t!("panel-page-behavior"),
                             icons::SLIDERS,
                             picked == 1,
                             move |this: &mut Self, _window, cx| {
@@ -2849,7 +2841,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                         ));
                     if surface_shader {
                         nav = nav.child(settings_ui::nav_item(
-                            "Shader",
+                            rox_i18n::t!("panel-page-shader"),
                             icons::BLEND,
                             picked == 2,
                             move |this: &mut Self, _window, cx| {
@@ -2862,7 +2854,7 @@ impl<P: PanelSettings> Render for PanelSettingsWindow<P> {
                     for (i, &(label, icon)) in pages.iter().enumerate() {
                         let page = i + 3;
                         nav = nav.child(settings_ui::nav_item(
-                            label,
+                            panel::page_label(label),
                             icon,
                             picked == page,
                             move |this: &mut Self, _window, cx| {
@@ -3015,7 +3007,12 @@ mod tests {
     #[test]
     fn the_filtered_list_drops_the_split() {
         assert_eq!(shader_groups(true).len(), 1);
-        assert_eq!(shader_groups(true)[0].1, "Examples");
+        // Against the key rather than the English, so the assertion holds
+        // whatever locale the machine running the suite negotiated to.
+        assert_eq!(
+            shader_groups(true)[0].1,
+            rox_i18n::t!("shader-group-examples")
+        );
         assert_eq!(shader_groups(false).len(), 2);
     }
 }

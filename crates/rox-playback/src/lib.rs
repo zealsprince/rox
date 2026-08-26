@@ -6,6 +6,7 @@
 //! bd22dc1).
 
 pub mod analysis;
+pub mod broadcast;
 pub mod chain;
 pub mod continuation;
 pub mod engine;

@@ -99,7 +99,7 @@ impl RouteEditState {
 fn pick_label(route: &Route, pool: &[Signal]) -> (String, bool) {
     match pool.iter().find(|signal| signal.id == route.signal) {
         Some(signal) => (signal.label(), false),
-        None => ("Pick a signal".to_string(), true),
+        None => (rox_i18n::t!("route-pick-signal").to_string(), true),
     }
 }
 
@@ -108,7 +108,7 @@ fn pick_label(route: &Route, pool: &[Signal]) -> (String, bool) {
 fn ride_summary(route: &Route, pool: &[Signal]) -> String {
     match pool.iter().find(|signal| signal.id == route.signal) {
         Some(signal) => signal.label(),
-        None => "no signal".to_string(),
+        None => rox_i18n::t!("route-no-signal").to_string(),
     }
 }
 
@@ -157,7 +157,7 @@ impl<P: 'static> RouteEditor<'_, P> {
         let mutate = self.mutate.clone();
         let ui_mut = self.ui_mut;
         settings_ui::small_button(
-            "Add Route",
+            rox_i18n::t!("route-add"),
             icons::PLUS,
             full,
             cx.listener(move |this: &mut P, _, _, cx| {
@@ -194,7 +194,8 @@ impl<P: 'static> RouteEditor<'_, P> {
             list = list.child(note(
                 "Nothing routed: every slot reads zero until a route feeds it a signal. \
                  A shader can name its slots with `// @slot 0: bass` comments and the \
-                 names show up here.",
+                 names show up here."
+                    .into(),
             ));
         }
         for index in 0..self.routes.len() {
@@ -203,7 +204,8 @@ impl<P: 'static> RouteEditor<'_, P> {
         if next_free_slot(self.routes).is_none() {
             list = list.child(note(
                 "All sixteen slots are routed. Point one somewhere else or delete it to \
-                 add another.",
+                 add another."
+                    .into(),
             ));
         }
         list
@@ -244,7 +246,7 @@ impl<P: 'static> RouteEditor<'_, P> {
             )
             .child(div().text_xs().child(match slot {
                 Some(slot) => slot_label(self.labels, slot),
-                None => "Unrouted".to_string(),
+                None => rox_i18n::t!("route-unrouted").to_string(),
             }))
             .child(
                 div()
@@ -312,8 +314,8 @@ impl<P: 'static> RouteEditor<'_, P> {
         if open {
             block = block
                 .child(panel::setting_row(
-                    "Slot",
-                    Some("Which of the shader's sixteen signal slots this route fills"),
+                    rox_i18n::t!("route-slot"),
+                    Some(rox_i18n::t!("route-slot.description")),
                     self.slot_field(index, slot, cx),
                 ))
                 .child(self.signal_row(index, &pool, cx));
@@ -336,7 +338,7 @@ impl<P: 'static> RouteEditor<'_, P> {
         // A route whose target names no slot reads as a prompt.
         let label = match slot {
             Some(slot) => slot_label(self.labels, slot),
-            None => "Pick a slot".to_string(),
+            None => rox_i18n::t!("route-pick-slot").to_string(),
         };
         let names: Vec<String> = (0..SLOTS)
             .map(|option| slot_label(self.labels, option))
@@ -392,16 +394,13 @@ impl<P: 'static> RouteEditor<'_, P> {
                 .flex_col()
                 .gap(px(2.))
                 .child(panel::setting_row_dyn(
-                    "Signal",
-                    Some("Which shared signal this route rides".into()),
+                    rox_i18n::t!("route-signal"),
+                    Some(rox_i18n::t!("route-slot-signal-description")),
                     div(),
                 ))
-                .child(note(
-                    "There are no signals to ride yet. Make one and it shows up here; \
-                     until then the slot reads zero.",
-                ))
+                .child(note(rox_i18n::t!("route-no-signals-yet")))
                 .child(div().child(settings_ui::small_button(
-                    "Open Signals",
+                    rox_i18n::t!("route-open-signals"),
                     icons::AUDIO_WAVEFORM,
                     false,
                     |_, _, cx| crate::openers::signals_window(cx),
@@ -448,7 +447,7 @@ impl<P: 'static> RouteEditor<'_, P> {
             // The way out of the list: a fresh signal gets made in the
             // Signals window, and it shows up here on the next open.
             menu.separator().item(
-                PopupMenuItem::new("Create New Signal")
+                PopupMenuItem::new(rox_i18n::t!("route-create-signal"))
                     .on_click(|_, _, cx| crate::openers::signals_window(cx)),
             )
         });
@@ -457,14 +456,12 @@ impl<P: 'static> RouteEditor<'_, P> {
             .flex_col()
             .gap(px(2.))
             .child(panel::setting_row_dyn(
-                "Signal",
-                Some("Which shared signal this route rides".into()),
+                rox_i18n::t!("route-signal"),
+                Some(rox_i18n::t!("route-slot-signal-description")),
                 field,
             ));
         if placeholder {
-            block = block.child(note(
-                "This route's signal is gone; the slot reads zero until another is picked.",
-            ));
+            block = block.child(note(rox_i18n::t!("route-slot-signal-gone")));
         }
         block
     }
@@ -491,8 +488,8 @@ fn spans<P: 'static>(
         .flex_col()
         .gap(tokens::SPACE_SM)
         .child(panel::setting_row(
-            "Quiet",
-            Some("What the slot reads at silence"),
+            rox_i18n::t!("route-quiet"),
+            Some(rox_i18n::t!("route-slot-quiet-description")),
             panel::value_slider_edit_over(
                 from_scrub,
                 editor.value_edit,
@@ -517,8 +514,8 @@ fn spans<P: 'static>(
             ),
         ))
         .child(panel::setting_row(
-            "Loud",
-            Some("What it reads at full signal; below Quiet runs the slot backwards"),
+            rox_i18n::t!("route-loud"),
+            Some(rox_i18n::t!("route-slot-loud-description")),
             panel::value_slider_edit_over(
                 to_scrub,
                 editor.value_edit,
@@ -545,7 +542,7 @@ fn spans<P: 'static>(
 }
 
 /// The editor's asides, all in the one muted voice.
-fn note(text: &'static str) -> Div {
+fn note(text: SharedString) -> Div {
     div()
         .text_xs()
         .text_color(palette::text_muted())

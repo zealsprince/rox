@@ -15,7 +15,7 @@ use gpui::{
 use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::Root;
 
-use rox_core::settings::app_font;
+use rox_core::settings::{app_font, set_language, Settings};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::{self, AppState};
@@ -106,6 +106,10 @@ struct WelcomeWindow {
     tiles_width: f32,
     /// Which stage of [`STAGES`] is up, the tour's whole position.
     stage: usize,
+    /// The stored language pick, mirrored from settings the way the
+    /// settings window mirrors it: the tour is often the first thing a
+    /// new install shows, so the switch sits right on it.
+    language: Option<String>,
     /// The stage body's scroll position, shared with its scrollbar. One
     /// handle for every stage, wound back to the top on each step so a long
     /// stage can't hand the next one its own offset.
@@ -151,10 +155,22 @@ impl WelcomeWindow {
             hovered_tile: None,
             tiles_width: 458.,
             stage: 0,
+            language: Settings::load().language.clone(),
             scroll: ScrollHandle::new(),
             focus,
             _backdrop_changed,
         }
+    }
+
+    /// The tour's own language switch, the settings row's exact pipe:
+    /// the pick applies to every window live and persists. The tour's
+    /// copy follows as its strings extract; the picker itself answers in
+    /// the new language right away.
+    fn set_language(&mut self, language: Option<String>, cx: &mut Context<Self>) {
+        set_language(language.as_deref(), cx);
+        self.language = language.clone();
+        Settings::update(move |s| s.language = language);
+        cx.notify();
     }
 
     /// Move the tour by `delta` stages, stopping at either end.
@@ -712,10 +728,9 @@ impl Render for WelcomeWindow {
         let last = index + 1 == STAGES.len();
 
         panel::window_body(player, || {
-            let heading = div()
+            let heading_copy = div()
                 .flex()
                 .flex_col()
-                .flex_none()
                 .gap(tokens::SPACE_XS)
                 // The logo leads the tour and then gets out of the way; the
                 // stages after it are all copy and controls.
@@ -730,6 +745,27 @@ impl Render for WelcomeWindow {
                 })
                 .child(div().text_lg().child(stage.title()))
                 .child(line(stage.lead()));
+
+            // The language switch rides the first page's top right: the
+            // tour is the first thing a fresh install shows, and nobody
+            // should have to find the settings window in a language that
+            // isn't theirs to leave it.
+            let heading = div()
+                .flex()
+                .flex_row()
+                .items_start()
+                .justify_between()
+                .flex_none()
+                .gap(tokens::SPACE_MD)
+                .child(heading_copy)
+                .when(first, |d| {
+                    d.child(div().flex_none().child(panel::language_picker(
+                        "welcome-language",
+                        self.language.clone(),
+                        Self::set_language,
+                        cx,
+                    )))
+                });
 
             let body = div()
                 .id("welcome-stage")

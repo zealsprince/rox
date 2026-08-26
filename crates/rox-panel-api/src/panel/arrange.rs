@@ -19,7 +19,11 @@ use rox_design::{palette, tokens};
 /// static slice in stock order; that order is where a re-shown item
 /// slots back in.
 pub struct ArrangeSpec<V: 'static> {
-    pub label: &'static str,
+    /// The item's message key, resolved to its chip label at render time.
+    /// It doubles as the chip's element id: a key is stable across
+    /// locales where a translated label isn't, so a drag doesn't lose
+    /// its state when the language changes under it.
+    pub key: &'static str,
     pub icon: Option<&'static str>,
     pub value: V,
     /// Whether one row may hold more than one of this item. A repeatable
@@ -40,26 +44,26 @@ struct ArrangeDrag<V: Clone + 'static> {
     editor: &'static str,
     value: V,
     from: Option<(usize, usize)>,
-    label: &'static str,
+    key: &'static str,
     icon: Option<&'static str>,
 }
 
 /// The chip that floats under the pointer while one is dragged.
 struct ChipPreview {
-    label: &'static str,
+    key: &'static str,
     icon: Option<&'static str>,
 }
 
 impl Render for ChipPreview {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        chip(self.label, self.icon, false)
+        chip(self.key, self.icon, false)
             .border_1()
             .border_color(palette::border_light())
     }
 }
 
 /// The chip look shared by the bar, the tray, and the drag preview.
-fn chip(label: &'static str, icon: Option<&'static str>, dimmed: bool) -> Div {
+fn chip(key: &'static str, icon: Option<&'static str>, dimmed: bool) -> Div {
     div()
         .flex()
         .flex_row()
@@ -86,7 +90,7 @@ fn chip(label: &'static str, icon: Option<&'static str>, dimmed: bool) -> Div {
                 } else {
                     palette::text()
                 })
-                .child(label),
+                .child(rox_i18n::t!(key)),
         )
 }
 
@@ -124,7 +128,7 @@ fn well() -> Div {
 }
 
 /// A zone's tiny caption above its well.
-fn caption(text: &'static str) -> Div {
+fn caption(text: gpui::SharedString) -> Div {
     div()
         .text_xs()
         .text_color(palette::text_faint())
@@ -389,7 +393,7 @@ pub fn arrange_rows_editor<P: 'static, V: PartialEq + Copy + 'static>(
                 editor: id,
                 value,
                 from: Some((row_ix, ix)),
-                label: spec.label,
+                key: spec.key,
                 icon: spec.icon,
             };
             let drop_rows = rows.clone();
@@ -400,12 +404,12 @@ pub fn arrange_rows_editor<P: 'static, V: PartialEq + Copy + 'static>(
                 // Keyed by position as well as label: two spacers on a
                 // well are two chips, and sharing an id would share their
                 // drag state. The place folds to one integer for the id.
-                chip(spec.label, spec.icon, false)
-                    .id((spec.label, (row_ix << 16) | ix))
+                chip(spec.key, spec.icon, false)
+                    .id((spec.key, (row_ix << 16) | ix))
                     .cursor_pointer()
                     .on_drag(drag, |drag, _pos, _window, cx| {
                         cx.new(|_| ChipPreview {
-                            label: drag.label,
+                            key: drag.key,
                             icon: drag.icon,
                         })
                     })
@@ -568,19 +572,19 @@ pub fn arrange_rows_editor<P: 'static, V: PartialEq + Copy + 'static>(
             editor: id,
             value: spec.value,
             from: None,
-            label: spec.label,
+            key: spec.key,
             icon: spec.icon,
         };
         let show_rows = rows.clone();
         let show_apply = apply.clone();
         let value = spec.value;
         tray = tray.child(
-            chip(spec.label, spec.icon, true)
-                .id(spec.label)
+            chip(spec.key, spec.icon, true)
+                .id(spec.key)
                 .cursor_pointer()
                 .on_drag(drag, |drag, _pos, _window, cx| {
                     cx.new(|_| ChipPreview {
-                        label: drag.label,
+                        key: drag.key,
                         icon: drag.icon,
                     })
                 })
@@ -604,9 +608,9 @@ pub fn arrange_rows_editor<P: 'static, V: PartialEq + Copy + 'static>(
         .flex()
         .flex_col()
         .gap(tokens::SPACE_XS)
-        .child(caption("Shown"))
+        .child(caption(rox_i18n::t!("arrange-shown")))
         .child(wells)
-        .child(caption("Hidden"))
+        .child(caption(rox_i18n::t!("arrange-hidden")))
         .child(tray)
 }
 
@@ -629,25 +633,25 @@ mod tests {
     /// Value 3 stands in for a spacer: the one repeatable entry.
     const REGISTRY: &[ArrangeSpec<u8>] = &[
         ArrangeSpec {
-            label: "a",
+            key: "a",
             icon: None,
             value: 0,
             repeats: false,
         },
         ArrangeSpec {
-            label: "b",
+            key: "b",
             icon: None,
             value: 1,
             repeats: false,
         },
         ArrangeSpec {
-            label: "c",
+            key: "c",
             icon: None,
             value: 2,
             repeats: false,
         },
         ArrangeSpec {
-            label: "d",
+            key: "d",
             icon: None,
             value: 3,
             repeats: true,

@@ -8,7 +8,10 @@
 //! shared state, and whether the entity is still alive. The binary's own
 //! wrappers downcast it back when they need the typed entity.
 
-use gpui::{AnyWeakEntity, AnyWindowHandle, App, Global};
+use std::collections::BTreeMap;
+use std::sync::RwLock;
+
+use gpui::{AnyWeakEntity, AnyWindowHandle, App, Global, Window};
 
 use crate::panel::AppState;
 
@@ -66,4 +69,25 @@ pub fn front_workspace(cx: &mut App) -> Option<(AnyWindowHandle, AppState)> {
         .iter()
         .find(|w| w.workspace.is_upgradable())
         .map(|w| (w.handle, w.state.clone()))
+}
+
+/// The last title each window took, by window id. The platform can't answer
+/// `get_title` off macOS, so the control socket's window list reads this
+/// instead; every title set in rox goes through [`set_window_title`] to keep
+/// it true. Entries for closed windows linger, which is fine: the only
+/// reader walks live handles and looks their ids up here.
+static WINDOW_TITLES: RwLock<BTreeMap<u64, String>> = RwLock::new(BTreeMap::new());
+
+/// Set a window's title and remember it. The direct gpui call is one-way,
+/// so this wrapper is the app's titling path; the Wayland note applies here
+/// too - only a post-open set reaches the compositor.
+pub fn set_window_title(window: &mut Window, title: &str) {
+    window.set_window_title(title);
+    let id = window.window_handle().window_id().as_u64();
+    WINDOW_TITLES.write().unwrap().insert(id, title.to_string());
+}
+
+/// The remembered title for a window id, for the control socket's listing.
+pub fn window_title(id: u64) -> Option<String> {
+    WINDOW_TITLES.read().unwrap().get(&id).cloned()
 }

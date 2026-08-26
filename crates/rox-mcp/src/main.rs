@@ -13,6 +13,12 @@
 //! MCP is JSON-RPC 2.0, one object per line on stdio, same framing as the
 //! socket itself. The subset here is what tools need: initialize, ping,
 //! tools/list, and tools/call; notifications are read and dropped.
+//!
+//! `--dev` widens the surface with the ui_ drive tools, proxies of the
+//! socket's debug scope, so an agent working on rox can list windows,
+//! dispatch actions, and send synthetic input through its MCP client. The
+//! flag lives on the config line spawning this binary, which keeps a user's
+//! music-facing MCP config from carrying UI-driving tools by accident.
 
 use std::io::{BufRead as _, Write as _};
 use std::path::PathBuf;
@@ -33,13 +39,17 @@ const MCP_KNOWN: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
 fn main() {
     let mut socket: Option<PathBuf> = None;
     let mut data_dir: Option<PathBuf> = None;
+    let mut dev = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--socket" => socket = args.next().map(PathBuf::from),
             "--data-dir" => data_dir = args.next().map(PathBuf::from),
+            "--dev" => dev = true,
             other => {
-                eprintln!("rox-mcp: unknown argument {other}; takes --socket or --data-dir");
+                eprintln!(
+                    "rox-mcp: unknown argument {other}; takes --socket, --data-dir, or --dev"
+                );
                 std::process::exit(2);
             }
         }
@@ -77,8 +87,8 @@ fn main() {
         let body = match method {
             "initialize" => Ok(initialize(&params)),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({ "tools": tools() })),
-            "tools/call" => Ok(call(&mut rox, &socket, &params)),
+            "tools/list" => Ok(json!({ "tools": tools(dev) })),
+            "tools/call" => Ok(call(&mut rox, &socket, &params, dev)),
             other => Err(json!({
                 "code": -32601,
                 "message": format!("method not found: {other}"),
@@ -115,8 +125,20 @@ fn initialize(params: &Value) -> Value {
 }
 
 /// The tool surface: now-playing, transport, library search, and the
-/// queue, each a straight proxy of one socket method.
-fn tools() -> Value {
+/// queue, each a straight proxy of one socket method. `--dev` adds the
+/// drive tools over the socket's debug scope, for agents working on rox
+/// itself; a user-facing MCP config leaves them out.
+fn tools(dev: bool) -> Value {
+    let mut tools = base_tools();
+    if dev {
+        if let (Value::Array(all), Value::Array(extra)) = (&mut tools, dev_tools()) {
+            all.extend(extra);
+        }
+    }
+    tools
+}
+
+fn base_tools() -> Value {
     json!([
         {
             "name": "now_playing",
@@ -162,13 +184,158 @@ fn tools() -> Value {
     ])
 }
 
+/// The drive tools `--dev` turns on: synthetic input and action dispatch
+/// against a live rox, platform-free because everything lands in gpui's
+/// own event pipeline. Coordinates are window-local logical pixels; every
+/// tool takes an optional window id from ui_windows and defaults to the
+/// active window.
+fn dev_tools() -> Value {
+    let window = json!({ "type": "integer", "description": "Window id from ui_windows; defaults to the active window." });
+    let coord = json!({ "type": "number", "description": "Window-local logical pixels." });
+    json!([
+        {
+            "name": "ui_windows",
+            "description": "Open windows: id, title, size in logical pixels, scale, \
+                            and which is active. Ids feed the other ui_ tools.",
+            "inputSchema": { "type": "object", "properties": {} },
+        },
+        {
+            "name": "ui_panels",
+            "description": "The frontmost workspace's dock tree: which panels are \
+                            open, where, and how they split.",
+            "inputSchema": { "type": "object", "properties": {} },
+        },
+        {
+            "name": "ui_actions",
+            "description": "Dispatchable action names, optionally narrowed by a \
+                            substring filter.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "filter": { "type": "string" } },
+            },
+        },
+        {
+            "name": "ui_action",
+            "description": "Dispatch an action by name down a window's focus chain, \
+                            exactly as its keybinding would.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "data": { "description": "Payload for actions that carry one, as a keymap entry would." },
+                    "window": window,
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "ui_key",
+            "description": "Send keystrokes in gpui keymap syntax, space separated: \
+                            \"ctrl-comma\", \"escape\", \"cmd-shift-p enter\". \
+                            Answers per stroke with whether anything handled it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "keys": { "type": "string" },
+                    "window": window,
+                },
+                "required": ["keys"],
+            },
+        },
+        {
+            "name": "ui_type",
+            "description": "Type text into whatever holds focus. Newlines land as \
+                            enter.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string" },
+                    "window": window,
+                },
+                "required": ["text"],
+            },
+        },
+        {
+            "name": "ui_click",
+            "description": "Click at window-local logical coordinates. count 2 or 3 \
+                            makes it a double or triple click; modifiers like \
+                            {\"ctrl\": true} ride along for modified clicks.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "x": coord, "y": coord,
+                    "button": { "type": "string", "enum": ["left", "right", "middle"] },
+                    "count": { "type": "integer", "minimum": 1, "maximum": 3 },
+                    "modifiers": { "type": "object" },
+                    "window": window,
+                },
+                "required": ["x", "y"],
+            },
+        },
+        {
+            "name": "ui_hover",
+            "description": "Move the mouse to a point without pressing anything, for \
+                            hover styles and tooltips.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "x": coord, "y": coord, "window": window },
+                "required": ["x", "y"],
+            },
+        },
+        {
+            "name": "ui_scroll",
+            "description": "Scroll at a point. dx/dy are wheel lines, positive y \
+                            scrolling content up as a wheel-up does.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "x": coord, "y": coord,
+                    "dx": { "type": "number" }, "dy": { "type": "number" },
+                    "window": window,
+                },
+                "required": ["x", "y"],
+            },
+        },
+    ])
+}
+
 /// One tool call against the running rox. Tool-level failures (no rox, the
 /// AI toggle off, a refused method) come back as isError results with the
 /// reason in the text, which is where MCP wants them; only malformed
 /// requests earn protocol errors.
-fn call(rox: &mut Option<Client>, socket: &std::path::Path, params: &Value) -> Value {
+fn call(rox: &mut Option<Client>, socket: &std::path::Path, params: &Value, dev: bool) -> Value {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    // The drive tools pass their arguments through whole: the socket method
+    // validates, and its errors already read as sentences.
+    if let Some(rest) = name.strip_prefix("ui_") {
+        if !dev {
+            return refusal(&format!(
+                "no such tool: {name} (the ui_ tools need rox-mcp started with --dev)"
+            ));
+        }
+        let method = match rest {
+            "windows" => "debug.windows",
+            "panels" => "debug.panels",
+            "actions" => "debug.actions",
+            "action" => "debug.action",
+            "key" => "debug.key",
+            "type" => "debug.type",
+            "click" => "debug.click",
+            "hover" => "debug.hover",
+            "scroll" => "debug.scroll",
+            _ => return refusal(&format!("no such tool: {name}")),
+        };
+        return match proxy(rox, socket, method, args) {
+            Ok(result) => json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string_pretty(&result).unwrap_or_default(),
+                }],
+            }),
+            Err(reason) => refusal(&reason),
+        };
+    }
     let (method, params) = match name {
         "now_playing" => ("transport.status", json!({})),
         "transport" => match args.get("action").and_then(Value::as_str) {

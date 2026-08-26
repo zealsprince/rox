@@ -71,7 +71,10 @@ pub const TUBE: &str = include_str!("shader/tube.wgsl");
 /// and the picker groups both lists by the same read, so the answer lives
 /// in the one place both kinds of shader have.
 pub struct Preset {
+    /// The example's own name, which stays as written: these read as
+    /// product names the way the panel names do, not as prose.
     pub label: &'static str,
+    /// The message key behind the one line, resolved by [`pick_blurb`].
     pub blurb: &'static str,
     pub source: &'static str,
 }
@@ -79,53 +82,52 @@ pub struct Preset {
 pub const PRESETS: &[Preset] = &[
     Preset {
         label: "Plasma",
-        blurb: "Drifting colour drawn from its uniforms alone, so it costs a plain quad.",
+        blurb: "shader-blurb-plasma",
         source: PLASMA,
     },
     Preset {
         label: "Trails",
-        blurb: "Smears its own last frame, which puts it on the screen pass.",
+        blurb: "shader-blurb-trails",
         source: TRAILS,
     },
     Preset {
         label: "Sheen",
-        blurb:
-            "A vignette and a drifting gleam, transparent overlay for a panel that already draws.",
+        blurb: "shader-blurb-sheen",
         source: SHEEN,
     },
     Preset {
         label: "Shadow",
-        blurb: "A drop shadow the panel's own text and controls cast, read off the mask capture.",
+        blurb: "shader-blurb-shadow",
         source: SHADOW,
     },
     Preset {
         label: "Cover",
-        blurb: "The playing track's art, letterboxed over a wash of its own color.",
+        blurb: "shader-blurb-cover",
         source: COVER,
     },
     Preset {
         label: "Badge",
-        blurb: "The cover as a small card parked in a corner, with a slot to walk it around.",
+        blurb: "shader-blurb-badge",
         source: BADGE,
     },
     Preset {
         label: "Lamp",
-        blurb: "A light that follows the cursor and answers the buttons, transparent overlay.",
+        blurb: "shader-blurb-lamp",
         source: LAMP,
     },
     Preset {
         label: "Cube",
-        blurb: "A wireframe cube tumbling in fake 3D, drawn as added light.",
+        blurb: "shader-blurb-cube",
         source: CUBE,
     },
     Preset {
         label: "Bloom",
-        blurb: "Drifting orbs bloomed through a half-size second pass, the chain in miniature.",
+        blurb: "shader-blurb-bloom",
         source: BLOOM,
     },
     Preset {
         label: "Tube",
-        blurb: "Replays the panel under it through a curved CRT face, scanlines and all.",
+        blurb: "shader-blurb-tube",
         source: TUBE,
     },
 ];
@@ -286,11 +288,11 @@ pub fn pick(name: Option<&str>, path: Option<&Path>, resolved: Option<&str>) -> 
 /// wide enough to hold one would push everything else off it.
 pub fn pick_label(pick: &Pick) -> String {
     match pick {
-        Pick::Empty => "None".to_string(),
+        Pick::Empty => rox_i18n::t!("shader-pick-none").to_string(),
         Pick::Named {
             name,
             missing: true,
-        } => format!("{name} (missing)"),
+        } => rox_i18n::t!("shader-pick-missing", name = name.clone()).to_string(),
         Pick::Named { name, .. } => name.clone(),
         Pick::File(path) => path
             .file_stem()
@@ -300,17 +302,17 @@ pub fn pick_label(pick: &Pick) -> String {
         Pick::Example(index) => PRESETS
             .get(*index)
             .map(|preset| preset.label.to_string())
-            .unwrap_or_else(|| "Custom".to_string()),
-        Pick::Custom => "Custom".to_string(),
+            .unwrap_or_else(|| rox_i18n::t!("shader-pick-custom").to_string()),
+        Pick::Custom => rox_i18n::t!("shader-pick-custom").to_string(),
     }
 }
 
 /// The one line a picked example prints under the picker, empty for
 /// anything the table doesn't hold.
-pub fn pick_blurb(index: usize) -> &'static str {
+pub fn pick_blurb(index: usize) -> gpui::SharedString {
     PRESETS
         .get(index)
-        .map(|preset| preset.blurb)
+        .map(|preset| rox_i18n::t!(preset.blurb))
         .unwrap_or_default()
 }
 
@@ -1726,12 +1728,16 @@ mod tests {
     #[test]
     fn every_example_brings_its_own_blurb() {
         for (index, preset) in PRESETS.iter().enumerate() {
+            // The key has to resolve, not just be non-empty: a blurb
+            // nobody wrote a message for renders as the missing marker,
+            // which is the failure this guards against now that the
+            // line lives in the locale files.
+            let blurb = pick_blurb(index);
             assert!(
-                !preset.blurb.trim().is_empty(),
+                !blurb.trim().is_empty() && !blurb.contains('⟦'),
                 "{} ships without a line to print under it",
                 preset.label
             );
-            assert_eq!(pick_blurb(index), preset.blurb);
         }
         assert_eq!(pick_blurb(PRESETS.len()), "");
     }

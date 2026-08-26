@@ -1653,7 +1653,7 @@ impl PanelSettings for ArtPanel {
                         .gap(tokens::SPACE_MD)
                         .child(setting_row(
                             "Vertical Layout",
-                            Some("Stack the shelf as a column that scrolls up and down instead of a row"),
+                            Some("Stack the shelf as a column that scrolls up and down instead of a row".into()),
                             toggle(
                                 self.config.vertical,
                                 |this: &mut Self, on, cx| {
@@ -1666,7 +1666,7 @@ impl PanelSettings for ArtPanel {
                             "Fill the Panel",
                             Some(
                                 "Size the centered cover off the panel's height alone (width when \
-                                 vertical); the side covers run off the edge instead of shrinking it",
+                                 vertical); the side covers run off the edge instead of shrinking it".into(),
                             ),
                             toggle(
                                 self.config.fill,
@@ -1694,7 +1694,7 @@ impl PanelSettings for ArtPanel {
                 ))
                 .child(panel::tracking_section(
                     self.config.follow_playing,
-                    "Center the playing album whenever the track changes",
+                    "Center the playing album whenever the track changes".into(),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
                         // Catch up right away instead of waiting for the
@@ -1705,13 +1705,13 @@ impl PanelSettings for ArtPanel {
                         cx.notify();
                     },
                     self.config.resume_playing,
-                    "Center the playing album again after you stop browsing",
+                    "Center the playing album again after you stop browsing".into(),
                     |this: &mut Self, on, cx| {
                         this.config.resume_playing = on;
                         cx.notify();
                     },
                     self.config.smooth_follow,
-                    "Glide to the album instead of jumping",
+                    "Glide to the album instead of jumping".into(),
                     |this: &mut Self, on, cx| {
                         this.config.smooth_follow = on;
                         cx.notify();
@@ -1728,7 +1728,7 @@ impl PanelSettings for ArtPanel {
                         .child(setting_row(
                             "Dim While Playing",
                             Some(
-                                "Fade every cover but the playing album's; hovering lights a cover back up",
+                                "Fade every cover but the playing album's; hovering lights a cover back up".into(),
                             ),
                             toggle(
                                 self.config.dim_playing,
@@ -1742,7 +1742,7 @@ impl PanelSettings for ArtPanel {
                         .when(self.config.dim_playing, |d| {
                             d.child(setting_row(
                                 "Dim Amount",
-                                Some("How far the other covers fade; 100% hides them"),
+                                Some("How far the other covers fade; 100% hides them".into()),
                                 settings_ui::scalar(
                                     &self.dim_scrub,
                                     &self.value_edit,
@@ -1758,7 +1758,7 @@ impl PanelSettings for ArtPanel {
                         })
                         .child(setting_row(
                             "Desaturate While Playing",
-                            Some("Drain every cover but the playing album's to grayscale; hovering brings a cover's color back"),
+                            Some("Drain every cover but the playing album's to grayscale; hovering brings a cover's color back".into()),
                             toggle(
                                 self.config.desaturate_playing,
                                 |this: &mut Self, on, cx| {
@@ -1771,7 +1771,7 @@ impl PanelSettings for ArtPanel {
                         .when(self.config.dim_playing || self.config.desaturate_playing, |d| {
                             d.child(setting_row(
                                 "Always",
-                                Some("Keep the covers pushed back even when nothing plays; only a hovered cover shows in full"),
+                                Some("Keep the covers pushed back even when nothing plays; only a hovered cover shows in full".into()),
                                 toggle(
                                     self.config.dim_always,
                                     |this: &mut Self, on, cx| {
@@ -1802,7 +1802,7 @@ impl PanelSettings for ArtPanel {
                     .gap(tokens::SPACE_MD)
                     .child(setting_row(
                         "Perspective",
-                        Some("Turn the side covers in real 3D instead of the flat squash"),
+                        Some("Turn the side covers in real 3D instead of the flat squash".into()),
                         toggle(
                             self.config.perspective,
                             |this: &mut Self, on, cx| {
@@ -1814,7 +1814,7 @@ impl PanelSettings for ArtPanel {
                     ))
                     .child(setting_row(
                         "Disc Style",
-                        Some("Dress every cover as a CD or as a vinyl record's label"),
+                        Some("Dress every cover as a CD or as a vinyl record's label".into()),
                         panel::choices(
                             &discs::DISC_STYLES,
                             self.config.disc_style,
@@ -1830,7 +1830,7 @@ impl PanelSettings for ArtPanel {
                         |page| {
                         page.child(setting_row(
                             "Art Rounding",
-                            Some("Round each cover's corners; 100% is a circle"),
+                            Some("Round each cover's corners; 100% is a circle".into()),
                             settings_ui::scalar(
                                 &self.rounding_scrub,
                                 &self.value_edit,
@@ -1846,7 +1846,7 @@ impl PanelSettings for ArtPanel {
                     })
                     .child(setting_row(
                         "Reflections",
-                        Some("Mirror each cover into the floor below the shelf"),
+                        Some("Mirror each cover into the floor below the shelf".into()),
                         toggle(
                             self.config.reflection,
                             |this: &mut Self, on, cx| {
@@ -1858,7 +1858,7 @@ impl PanelSettings for ArtPanel {
                     ))
                     .child(setting_row(
                         "Shadows",
-                        Some("A soft shadow under every cover"),
+                        Some("A soft shadow under every cover".into()),
                         toggle(
                             self.config.shadow,
                             |this: &mut Self, on, cx| {
@@ -1870,7 +1870,7 @@ impl PanelSettings for ArtPanel {
                     ))
                     .child(setting_row(
                         "Glow",
-                        Some("Pool the accent color behind the centered cover; with the art tint on it takes the playing album's color"),
+                        Some("Pool the accent color behind the centered cover; with the art tint on it takes the playing album's color".into()),
                         toggle(
                             self.config.glow,
                             |this: &mut Self, on, cx| {

@@ -1463,7 +1463,7 @@ impl PanelSettings for FolderTreePanel {
         div()
             .child(panel::setting_row(
                 "Cover Art",
-                Some("Show album art in place of the row icon, on folders or songs"),
+                Some("Show album art in place of the row icon, on folders or songs".into()),
                 panel::choices(
                     &[
                         ("None", CoverArt::None),
@@ -1491,7 +1491,7 @@ impl PanelSettings for FolderTreePanel {
                 .gap(crate::settings::ui::SECTION_GAP)
                 .child(panel::tracking_section(
                     self.config.follow_playing,
-                    "Reveal and scroll to the playing track whenever it changes",
+                    "Reveal and scroll to the playing track whenever it changes".into(),
                     |this: &mut Self, on, cx| {
                         this.config.follow_playing = on;
                         // Catch up right away instead of waiting for the next
@@ -1502,13 +1502,13 @@ impl PanelSettings for FolderTreePanel {
                         cx.notify();
                     },
                     self.config.resume_playing,
-                    "Scroll back to the playing track after you stop browsing",
+                    "Scroll back to the playing track after you stop browsing".into(),
                     |this: &mut Self, on, cx| {
                         this.config.resume_playing = on;
                         cx.notify();
                     },
                     self.config.smooth_follow,
-                    "Glide to the track instead of jumping",
+                    "Glide to the track instead of jumping".into(),
                     |this: &mut Self, on, cx| {
                         this.config.smooth_follow = on;
                         cx.notify();
@@ -1531,7 +1531,7 @@ impl PanelSettings for FolderTreePanel {
                         .gap(tokens::SPACE_MD)
                         .child(panel::setting_row(
                             "Non-matching Folders",
-                            Some("Hide the folders with no match, or keep them dim"),
+                            Some("Hide the folders with no match, or keep them dim".into()),
                             panel::choices(
                                 &[("Dim", FilterEffect::Dim), ("Hide", FilterEffect::Hide)],
                                 self.config.folders,
@@ -1541,7 +1541,10 @@ impl PanelSettings for FolderTreePanel {
                         ))
                         .child(panel::setting_row(
                             "Non-matching Songs",
-                            Some("Inside a folder that matches, dim the stray songs or hide them"),
+                            Some(
+                                "Inside a folder that matches, dim the stray songs or hide them"
+                                    .into(),
+                            ),
                             panel::choices(
                                 &[("Dim", FilterEffect::Dim), ("Hide", FilterEffect::Hide)],
                                 self.config.songs,

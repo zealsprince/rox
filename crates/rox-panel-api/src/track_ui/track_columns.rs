@@ -481,9 +481,9 @@ pub fn headings_submenu<P: HeadingHost>(
         panel::follow_panel(&panel, cx);
         let mut submenu = submenu.check_side(Side::Right);
         for (headers, name) in [
-            (Headers::Off, "Off"),
-            (Headers::Compact, "Compact"),
-            (Headers::Expanded, "Expanded"),
+            (Headers::Off, rox_i18n::t!("headers-off")),
+            (Headers::Compact, rox_i18n::t!("headers-compact")),
+            (Headers::Expanded, rox_i18n::t!("headers-expanded")),
         ] {
             submenu = submenu.item(panel::check_row(
                 name,

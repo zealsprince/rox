@@ -84,97 +84,97 @@ pub enum InfoPiece {
 /// and where a menu toggle slots a re-shown piece back in.
 const ITEMS: &[panel::ArrangeSpec<InfoPiece>] = &[
     panel::ArrangeSpec {
-        label: "Track No",
+        key: "info-item-track-no",
         icon: Some(icons::LIST_MUSIC),
         value: InfoPiece::TrackNo,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Title",
+        key: "info-item-title",
         icon: Some(icons::MUSIC),
         value: InfoPiece::Title,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Duration",
+        key: "info-item-duration",
         icon: Some(icons::CLOCK),
         value: InfoPiece::Duration,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Artist",
+        key: "head-piece-artist",
         icon: Some(icons::MIC),
         value: InfoPiece::Artist,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Album",
+        key: "head-piece-album",
         icon: Some(icons::DISC),
         value: InfoPiece::Album,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Year",
+        key: "head-piece-year",
         icon: Some(icons::CALENDAR),
         value: InfoPiece::Year,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Genre",
+        key: "head-piece-genre",
         icon: Some(icons::TAG),
         value: InfoPiece::Genre,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Quality",
+        key: "head-piece-quality",
         icon: Some(icons::AUDIO_WAVEFORM),
         value: InfoPiece::Quality,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Next",
+        key: "info-item-next",
         icon: Some(icons::SKIP_FORWARD),
         value: InfoPiece::Next,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Queued",
+        key: "info-item-queued",
         icon: Some(icons::LAYERS),
         value: InfoPiece::Queued,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Output",
+        key: "info-item-output",
         icon: Some(icons::VOLUME_2),
         value: InfoPiece::Output,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Favourite",
+        key: "info-item-favourite",
         icon: Some(icons::HEART),
         value: InfoPiece::Favourite,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Rating",
+        key: "info-item-rating",
         icon: Some(icons::STAR),
         value: InfoPiece::Rating,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Art",
+        key: "head-piece-art",
         icon: Some(icons::IMAGE),
         value: InfoPiece::Art,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Spacer",
+        key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: InfoPiece::Spacer,
         repeats: true,
     },
     panel::ArrangeSpec {
-        label: "Divider",
+        key: "head-piece-divider",
         icon: Some(icons::MINUS),
         value: InfoPiece::Divider,
         repeats: true,
@@ -1083,7 +1083,8 @@ impl PanelSettings for TrackInfoPanel {
                 "Pieces",
                 Some(
                     "Drag along a row to reorder and between rows to move; \
-                     a chip's x and plus hide and show",
+                     a chip's x and plus hide and show"
+                        .into(),
                 ),
                 None,
                 editor,
@@ -1116,7 +1117,7 @@ impl PanelSettings for TrackInfoPanel {
                         Some(
                             "Let the chip turn warning colors when the output falls back or \
                              resamples. Off keeps it the same muted tone always, and the hover \
-                             note still explains the state",
+                             note still explains the state".into(),
                         ),
                         panel::toggle(
                             self.config.output_tint,
@@ -1130,7 +1131,7 @@ impl PanelSettings for TrackInfoPanel {
                 })
                 .child(panel::setting_row(
                     "Marquee",
-                    Some("What a line too long for the panel does: crawl and return, or loop without end"),
+                    Some("What a line too long for the panel does: crawl and return, or loop without end".into()),
                     panel::choices(
                         &[
                             ("Off", MarqueeMode::Off),
@@ -1149,7 +1150,7 @@ impl PanelSettings for TrackInfoPanel {
                 .when(self.config.marquee != MarqueeMode::Off, |d| {
                     d.child(panel::setting_row(
                         "Speed",
-                        Some("How fast the line crawls"),
+                        Some("How fast the line crawls".into()),
                         settings_ui::scalar(
                             &self.speed_scrub,
                             &self.value_edit,
@@ -1163,7 +1164,7 @@ impl PanelSettings for TrackInfoPanel {
                 .when(self.config.marquee == MarqueeMode::Scroll, |d| {
                     d.child(panel::setting_row(
                         "Delay",
-                        Some("How long the line rests at each end before moving again"),
+                        Some("How long the line rests at each end before moving again".into()),
                         settings_ui::scalar(
                             &self.delay_scrub,
                             &self.value_edit,
@@ -1179,7 +1180,7 @@ impl PanelSettings for TrackInfoPanel {
                     "Cycle Rows",
                     Some(
                         "Show the arrangement's rows one at a time in a single line, \
-                         fading between them; one row alone reads as itself",
+                         fading between them; one row alone reads as itself".into(),
                     ),
                     panel::toggle(
                         self.config.swap,
@@ -1194,7 +1195,7 @@ impl PanelSettings for TrackInfoPanel {
                 .when(self.config.swap, |d| {
                     d.child(panel::setting_row(
                         "Cycle every",
-                        Some("How long each row sits before the fade"),
+                        Some("How long each row sits before the fade".into()),
                         settings_ui::scalar(
                             &self.swap_scrub,
                             &self.value_edit,

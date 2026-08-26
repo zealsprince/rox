@@ -734,7 +734,7 @@ impl PanelSettings for LyricsPanel {
             ))
             .child(panel::setting_row(
                 "Follow Playback",
-                Some("Glide the active line to the middle as a synced sheet plays"),
+                Some("Glide the active line to the middle as a synced sheet plays".into()),
                 panel::toggle(
                     self.config.follow,
                     |this: &mut Self, on, cx| {
@@ -746,7 +746,7 @@ impl PanelSettings for LyricsPanel {
             ))
             .child(panel::setting_row(
                 "Always Centered",
-                Some("Pad the ends so the first and last lines can center too"),
+                Some("Pad the ends so the first and last lines can center too".into()),
                 panel::toggle(
                     self.config.pre_scroll,
                     |this: &mut Self, on, cx| {
@@ -758,7 +758,7 @@ impl PanelSettings for LyricsPanel {
             ))
             .child(panel::setting_row(
                 "Fade Lines In",
-                Some("Fade a line up from dim as it becomes the active one"),
+                Some("Fade a line up from dim as it becomes the active one".into()),
                 panel::toggle(
                     self.config.fade_lines,
                     |this: &mut Self, on, cx| {
@@ -770,7 +770,7 @@ impl PanelSettings for LyricsPanel {
             ))
             .child(panel::setting_row(
                 "Build Word by Word",
-                Some("Reveal words as they are sung, karaoke style; unsung lines wait hidden"),
+                Some("Reveal words as they are sung, karaoke style; unsung lines wait hidden".into()),
                 panel::toggle(
                     self.config.word_by_word,
                     |this: &mut Self, on, cx| {
@@ -782,7 +782,7 @@ impl PanelSettings for LyricsPanel {
             ))
             .child(panel::setting_row(
                 "Lead-in Rest",
-                Some("Sit on a blank rest before a long intro, so the first line fades in when it arrives"),
+                Some("Sit on a blank rest before a long intro, so the first line fades in when it arrives".into()),
                 panel::toggle(
                     self.config.intro_rest,
                     |this: &mut Self, on, cx| {
@@ -794,7 +794,7 @@ impl PanelSettings for LyricsPanel {
             ))
             .child(panel::setting_row(
                 "Rest in Gaps",
-                Some("Move to a blank rest through a long instrumental gap instead of holding the last line"),
+                Some("Move to a blank rest through a long instrumental gap instead of holding the last line".into()),
                 panel::toggle(
                     self.config.gap_rest,
                     |this: &mut Self, on, cx| {
@@ -807,7 +807,7 @@ impl PanelSettings for LyricsPanel {
             .when(self.config.intro_rest || self.config.gap_rest, |d| {
                 d.child(panel::setting_row(
                     "Gap Threshold",
-                    Some("How long an intro or gap must run to earn a rest"),
+                    Some("How long an intro or gap must run to earn a rest".into()),
                     settings_ui::scalar(
                         &self.gap_scrub,
                         &self.value_edit,
@@ -823,7 +823,7 @@ impl PanelSettings for LyricsPanel {
             })
             .child(panel::setting_row(
                 "Line Falloff",
-                Some("How far each line dims per step away from the active one"),
+                Some("How far each line dims per step away from the active one".into()),
                 settings_ui::scalar(
                     &self.dim_scrub,
                     &self.value_edit,
@@ -838,7 +838,7 @@ impl PanelSettings for LyricsPanel {
             ))
             .child(panel::setting_row(
                 "Falloff Edge",
-                Some("Which side of the active line the falloff dims"),
+                Some("Which side of the active line the falloff dims".into()),
                 panel::choices(
                     &[
                         ("Top", DimEdge::Top),
@@ -856,7 +856,7 @@ impl PanelSettings for LyricsPanel {
             .child(panel::setting_row(
                 "Online Search Button",
                 Some(
-                    "Show the search button on the empty face; the right-click menu still finds lyrics",
+                    "Show the search button on the empty face; the right-click menu still finds lyrics".into(),
                 ),
                 panel::toggle(
                     self.config.search_button,
@@ -869,7 +869,7 @@ impl PanelSettings for LyricsPanel {
             ))
             .child(panel::setting_row(
                 "Auto Search",
-                Some("Search online on a track with no words and save a confident match, no picker"),
+                Some("Search online on a track with no words and save a confident match, no picker".into()),
                 panel::toggle(
                     self.config.auto_search,
                     |this: &mut Self, on, cx| {
@@ -881,7 +881,7 @@ impl PanelSettings for LyricsPanel {
             ))
             .child(panel::setting_row(
                 "Show Song Name",
-                Some("Show the track's name on the empty face, over the no-lyrics line"),
+                Some("Show the track's name on the empty face, over the no-lyrics line".into()),
                 panel::toggle(
                     self.config.show_name,
                     |this: &mut Self, on, cx| {
@@ -893,7 +893,7 @@ impl PanelSettings for LyricsPanel {
             ))
             .child(panel::setting_row(
                 "Title on Unsynced",
-                Some("Pin the track's title above an unsynced sheet, so a short panel still shows it"),
+                Some("Pin the track's title above an unsynced sheet, so a short panel still shows it".into()),
                 panel::toggle(
                     self.config.show_title,
                     |this: &mut Self, on, cx| {
@@ -905,7 +905,7 @@ impl PanelSettings for LyricsPanel {
             ))
             .child(panel::setting_row(
                 "Rest Marker",
-                Some("What a wordless line shows in a synced sheet, the gaps and blank lines"),
+                Some("What a wordless line shows in a synced sheet, the gaps and blank lines".into()),
                 panel::choices(
                     &[
                         ("Note", RestMark::Note),
@@ -958,7 +958,7 @@ impl PanelSettings for LyricsPanel {
                     .gap(tokens::SPACE_MD)
                     .child(panel::setting_row(
                         "Font",
-                        Some("The lyric typeface; default follows the app font"),
+                        Some("The lyric typeface; default follows the app font".into()),
                         panel::font_picker(
                             "lyrics-font",
                             self.config.font.clone(),
@@ -983,7 +983,7 @@ impl PanelSettings for LyricsPanel {
                     ))
                     .child(panel::setting_row(
                         "Text Size",
-                        Some("The lyric text; the synced line height follows it"),
+                        Some("The lyric text; the synced line height follows it".into()),
                         settings_ui::scalar(
                             &self.size_scrub,
                             &self.value_edit,
@@ -998,7 +998,10 @@ impl PanelSettings for LyricsPanel {
                     ))
                     .child(panel::setting_row(
                         "Line Spacing",
-                        Some("How far the synced lines sit apart, as a multiple of the text size"),
+                        Some(
+                            "How far the synced lines sit apart, as a multiple of the text size"
+                                .into(),
+                        ),
                         settings_ui::scalar(
                             &self.spacing_scrub,
                             &self.value_edit,

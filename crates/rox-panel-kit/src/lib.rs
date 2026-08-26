@@ -29,6 +29,10 @@ pub mod wall;
 
 mod font_picker;
 pub use font_picker::font_picker;
+mod language_picker;
+pub use language_picker::language_picker;
+mod search_picker;
+pub use search_picker::{search_picker, PickRow};
 
 mod gesture;
 pub use gesture::*;
@@ -136,7 +140,7 @@ pub fn icon_control_sized<V: 'static>(
 }
 /// A panel's tab and title text: the rename when one is set, the built-in
 /// name otherwise.
-pub fn title_text(custom: Option<&str>, default: &'static str) -> SharedString {
+pub fn title_text(custom: Option<&str>, default: impl Into<SharedString>) -> SharedString {
     match custom {
         Some(name) => SharedString::from(name.to_owned()),
         None => default.into(),
@@ -471,11 +475,11 @@ fn banner_shaped(
     shell.flex_col().child(head).child(body)
 }
 pub fn setting_row(
-    label: &'static str,
-    description: Option<&'static str>,
+    label: impl Into<SharedString>,
+    description: Option<SharedString>,
     control: impl IntoElement,
 ) -> Div {
-    setting_row_dyn(label, description.map(SharedString::from), control)
+    setting_row_dyn(label, description, control)
 }
 
 /// [`setting_row`] with a built description, for the rare row whose note
@@ -516,8 +520,8 @@ pub fn setting_row_dyn(
 /// to one item per line. An optional trailing control rides the label
 /// row's right edge, where a section's reset button lives.
 pub fn setting_block(
-    label: &'static str,
-    description: Option<&'static str>,
+    label: impl Into<SharedString>,
+    description: Option<SharedString>,
     trailing: Option<AnyElement>,
     control: impl IntoElement,
 ) -> Div {
@@ -532,7 +536,7 @@ pub fn setting_block(
                 .items_center()
                 .justify_between()
                 .gap(tokens::SPACE_MD)
-                .child(label)
+                .child(label.into())
                 .when_some(trailing, |d, trailing| {
                     d.child(div().flex_none().child(trailing))
                 }),
@@ -550,12 +554,12 @@ pub fn setting_block(
 
 /// One option in a [`mode_list`]: what it's called, what it does, and the
 /// value it stands for.
-pub struct ModeSpec<V: 'static> {
-    pub label: &'static str,
+pub struct ModeSpec<V> {
+    pub label: SharedString,
     /// A sentence, not a phrase. The whole reason this control exists rather
     /// than a segmented picker is that these options differ in kind, and a
     /// picker leaves every option but the one you're looking at unexplained.
-    pub description: &'static str,
+    pub description: SharedString,
     pub value: V,
 }
 
@@ -570,7 +574,7 @@ pub struct ModeSpec<V: 'static> {
 /// takes no press, since a mode that can't do anything yet should say so from
 /// where it sits rather than vanish and leave nothing to explain.
 pub fn mode_list<P: 'static, V: PartialEq + Copy + 'static>(
-    options: &'static [ModeSpec<V>],
+    options: &[ModeSpec<V>],
     current: V,
     available: impl Fn(V) -> bool,
     on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
@@ -644,7 +648,11 @@ pub fn mode_list<P: 'static, V: PartialEq + Copy + 'static>(
                                 })
                                 .when(picked, |d| d.bg(palette::accent())),
                         )
-                        .child(div().text_color(palette::text()).child(option.label)),
+                        .child(
+                            div()
+                                .text_color(palette::text())
+                                .child(option.label.clone()),
+                        ),
                 )
                 // Indented past the dot so the description reads as the
                 // label's, not as another row.
@@ -653,7 +661,7 @@ pub fn mode_list<P: 'static, V: PartialEq + Copy + 'static>(
                         .pl(px(10.) + tokens::SPACE_SM)
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child(option.description),
+                        .child(option.description.clone()),
                 ),
         );
     }
@@ -1061,13 +1069,13 @@ pub fn type_ahead_grow(buffer: &mut String, at: &mut Option<Instant>, text: Stri
 #[allow(clippy::too_many_arguments)]
 pub fn tracking_section<P: 'static>(
     follow: bool,
-    follow_desc: &'static str,
+    follow_desc: SharedString,
     on_follow: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
     resume: bool,
-    resume_desc: &'static str,
+    resume_desc: SharedString,
     on_resume: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
     smooth: bool,
-    smooth_desc: &'static str,
+    smooth_desc: SharedString,
     on_smooth: impl Fn(&mut P, bool, &mut Context<P>) + 'static,
     cx: &mut Context<P>,
 ) -> AnyElement {
@@ -1076,12 +1084,12 @@ pub fn tracking_section<P: 'static>(
         .flex_col()
         .gap(tokens::SPACE_MD)
         .child(setting_row(
-            "Follow Playing",
+            rox_i18n::t!("tracking-follow"),
             Some(follow_desc),
             toggle(follow, on_follow, cx),
         ))
         .child(setting_row(
-            "Resume When Idle",
+            rox_i18n::t!("tracking-resume"),
             Some(resume_desc),
             toggle(resume, on_resume, cx),
         ));
@@ -1089,12 +1097,12 @@ pub fn tracking_section<P: 'static>(
     // toggle earns its place the moment either is on.
     if follow || resume {
         body = body.child(setting_row(
-            "Smooth Scrolling",
+            rox_i18n::t!("tracking-smooth"),
             Some(smooth_desc),
             toggle(smooth, on_smooth, cx),
         ));
     }
-    ui::section("Tracking", None, body).into_any_element()
+    ui::section(rox_i18n::t!("tracking-title"), None, body).into_any_element()
 }
 /// A dropdown over a list of choices: a small button labeled with whichever
 /// option is current, its menu the whole list with a tick on that one. Use
@@ -1162,11 +1170,11 @@ where
 /// hairline gaps between the rest. The predicate says which segments
 /// read as on; the exclusive pickers pass equality with the current
 /// value, the toggle groups each flag's own state.
-fn segments<P: 'static, V: PartialEq + Copy + 'static>(
-    options: &'static [(&'static str, V)],
+fn segments<P: 'static, L: Clone, V: PartialEq + Copy + 'static>(
+    options: &[(L, V)],
     picked: impl Fn(V) -> bool,
     available: impl Fn(V) -> bool,
-    render: impl Fn(&'static str, bool) -> AnyElement,
+    render: impl Fn(L, bool) -> AnyElement,
     on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
     cx: &mut Context<P>,
 ) -> Div {
@@ -1202,7 +1210,7 @@ fn segments<P: 'static, V: PartialEq + Copy + 'static>(
                             cx.listener(move |this, _, _, cx| on_pick(this, value, cx)),
                         )
                 })
-                .child(render(key, picked)),
+                .child(render(key.clone(), picked)),
         );
     }
     group
@@ -1216,6 +1224,35 @@ pub fn choices<P: 'static, V: PartialEq + Copy + 'static>(
     cx: &mut Context<P>,
 ) -> Div {
     choices_gated(options, current, |_| true, on_pick, cx)
+}
+
+/// [`choices`] with owned labels, for options translated at render time
+/// rather than written as literals. New rows whose labels go through
+/// rox-i18n land here; [`choices`] keeps the static shape until its call
+/// sites migrate with their pages.
+pub fn choices_shared<P: 'static, V: PartialEq + Copy + 'static>(
+    options: &[(SharedString, V)],
+    current: V,
+    on_pick: impl Fn(&mut P, V, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    segments(
+        options,
+        move |value| value == current,
+        |_| true,
+        |label, picked| {
+            div()
+                .text_color(if picked {
+                    palette::text_on_accent()
+                } else {
+                    palette::text()
+                })
+                .child(label)
+                .into_any_element()
+        },
+        on_pick,
+        cx,
+    )
 }
 
 /// [`choices`] where some options can't be taken yet: whatever `available`
@@ -1331,8 +1368,8 @@ pub fn align_row<P: 'static>(
     cx: &mut Context<P>,
 ) -> Div {
     setting_row(
-        "Alignment",
-        Some("Where the content sits when the panel has room to spare"),
+        rox_i18n::t!("align-row"),
+        Some(rox_i18n::t!("align-row.description")),
         icon_choices(
             &[
                 (icons::ALIGN_LEFT, Align::Left),
@@ -1373,13 +1410,13 @@ pub fn valign_row<P: 'static>(
     cx: &mut Context<P>,
 ) -> Div {
     setting_row(
-        "Vertical Alignment",
-        Some("Where the content sits when the panel has height to spare"),
-        choices(
+        rox_i18n::t!("valign-row"),
+        Some(rox_i18n::t!("valign-row.description")),
+        choices_shared(
             &[
-                ("Top", VAlign::Top),
-                ("Middle", VAlign::Middle),
-                ("Bottom", VAlign::Bottom),
+                (rox_i18n::t!("valign-top"), VAlign::Top),
+                (rox_i18n::t!("valign-middle"), VAlign::Middle),
+                (rox_i18n::t!("valign-bottom"), VAlign::Bottom),
             ],
             current,
             on_pick,

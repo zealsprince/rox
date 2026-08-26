@@ -94,7 +94,7 @@ pub fn sidebar() -> Div {
 /// A sidebar row: the page's icon leading its name; the picked page
 /// reads like an active control.
 pub fn nav_item<P: 'static>(
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: &'static str,
     picked: bool,
     on_pick: impl Fn(&mut P, &mut Window, &mut Context<P>) + 'static,
@@ -122,16 +122,16 @@ pub fn nav_item<P: 'static>(
                 .flex_none()
                 .text_color(palette::text()),
         )
-        .child(label)
+        .child(label.into())
 }
 
 /// A header between setting groups, the palette listing's block names.
-pub fn header(label: &'static str) -> Div {
+pub fn header(label: impl Into<SharedString>) -> Div {
     div()
         .pt(tokens::SPACE_SM)
         .text_xs()
         .text_color(palette::text_muted())
-        .child(label)
+        .child(label.into())
 }
 
 /// The platform's primary modifier as the shortcut labels show it.
@@ -188,14 +188,18 @@ pub fn kbd_line(segs: impl IntoIterator<Item = Seg>) -> Div {
 
 /// A titled section of a page: the name over a hairline, an optional
 /// control riding the header's right edge, the rows under it.
-pub fn section(label: &'static str, trailing: Option<AnyElement>, body: impl IntoElement) -> Div {
+pub fn section(
+    label: impl Into<SharedString>,
+    trailing: Option<AnyElement>,
+    body: impl IntoElement,
+) -> Div {
     section_with_icon(None, label, trailing, body)
 }
 
 /// [`section`] with a control riding beside the name on the left, for a
 /// tool that belongs to the heading itself rather than the right edge.
 pub fn section_with_control(
-    label: &'static str,
+    label: impl Into<SharedString>,
     control: AnyElement,
     trailing: Option<AnyElement>,
     body: impl IntoElement,
@@ -208,7 +212,7 @@ pub fn section_with_control(
 /// callers across the app stay on [`section`].
 pub fn section_with_icon(
     icon: Option<&'static str>,
-    label: &'static str,
+    label: impl Into<SharedString>,
     trailing: Option<AnyElement>,
     body: impl IntoElement,
 ) -> Div {
@@ -217,7 +221,7 @@ pub fn section_with_icon(
 
 fn build_section(
     icon: Option<&'static str>,
-    label: &'static str,
+    label: impl Into<SharedString>,
     control: Option<AnyElement>,
     trailing: Option<AnyElement>,
     body: impl IntoElement,
@@ -252,7 +256,7 @@ fn build_section(
                                     .text_color(palette::text_muted()),
                             )
                         })
-                        .child(label)
+                        .child(label.into())
                         .when_some(control, |d, control| d.child(control)),
                 )
                 .when_some(trailing, |d, trailing| d.child(trailing)),
@@ -360,11 +364,12 @@ impl Section {
     pub fn new(
         q: &Query,
         icon: &'static str,
-        label: &'static str,
+        label: impl Into<SharedString>,
         trailing: Option<AnyElement>,
         build: impl FnOnce(Rows) -> Rows,
     ) -> Self {
-        let all = !q.active() || q.hits(&[label]);
+        let label = label.into();
+        let all = !q.active() || q.hits(&[label.as_ref()]);
         let rows = build(Rows {
             q,
             all,
@@ -397,8 +402,8 @@ impl Rows<'_> {
     /// A standard labeled row; the label and description are the terms.
     pub fn row(
         self,
-        label: &'static str,
-        description: Option<&'static str>,
+        label: impl Into<SharedString>,
+        description: Option<SharedString>,
         control: impl IntoElement,
     ) -> Self {
         self.keyed(&[], label, description, control)
@@ -409,14 +414,15 @@ impl Rows<'_> {
     pub fn keyed(
         mut self,
         keywords: &[&str],
-        label: &'static str,
-        description: Option<&'static str>,
+        label: impl Into<SharedString>,
+        description: Option<SharedString>,
         control: impl IntoElement,
     ) -> Self {
-        if self.keep(keywords, label, description) {
+        let label = label.into();
+        if self.keep(keywords, &label, description.as_ref().map(|d| d.as_ref())) {
             self.body = self
                 .body
-                .child(crate::setting_row(label, description, control));
+                .child(crate::setting_row_dyn(label, description, control));
             self.hits += 1;
         }
         self
@@ -427,11 +433,12 @@ impl Rows<'_> {
     pub fn row_dyn(
         mut self,
         keywords: &[&str],
-        label: &'static str,
+        label: impl Into<SharedString>,
         description: Option<SharedString>,
         control: impl IntoElement,
     ) -> Self {
-        if self.keep(keywords, label, None) {
+        let label = label.into();
+        if self.keep(keywords, &label, None) {
             self.body = self
                 .body
                 .child(crate::setting_row_dyn(label, description, control));
@@ -565,7 +572,7 @@ pub fn small_button(
 /// control, the rest as plain controls. Shared with the pass prompt, which
 /// is a dialog the settings window no longer owns alone.
 pub fn dialog_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     primary: bool,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
@@ -586,7 +593,7 @@ pub fn dialog_button(
             }
         })
         .on_mouse_down(MouseButton::Left, on_click)
-        .child(label)
+        .child(label.into())
 }
 
 /// A [`dialog_button`] with a leading icon, for the secondary action that
@@ -1031,7 +1038,7 @@ pub fn slider_edit<P: 'static>(
 /// where the panel editor hangs a role's reset button.
 pub fn color_cell(
     control: AnyElement,
-    label: &'static str,
+    label: impl Into<SharedString>,
     marked: bool,
     trailing: Option<AnyElement>,
 ) -> Div {
@@ -1054,7 +1061,7 @@ pub fn color_cell(
                 } else {
                     palette::text_muted()
                 })
-                .child(label),
+                .child(label.into()),
         )
         .when_some(trailing, |d, trailing| d.child(trailing))
 }

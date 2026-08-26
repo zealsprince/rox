@@ -54,9 +54,9 @@ use gpui_component::Root;
 use rox_core::settings::{
     layouts, note_first_run, note_os_appearance, os_decorations, resize_border, seed_os_appearance,
     set_acoustic_analysis, set_app_font, set_app_frame, set_design_mode, set_experimental,
-    set_fold_case, set_gain_mode, set_hide_menubar, set_os_decorations, set_quit_to_tray,
-    set_rating_dots, set_rating_style, set_resize_border, set_resize_lock, set_seams,
-    set_tempo_analysis, set_theme, set_workspace_migrator, window_decorations, Settings,
+    set_fold_case, set_gain_mode, set_hide_menubar, set_language, set_os_decorations,
+    set_quit_to_tray, set_rating_dots, set_rating_style, set_resize_border, set_resize_lock,
+    set_seams, set_tempo_analysis, set_theme, set_workspace_migrator, window_decorations, Settings,
     MIN_WINDOW_SIZE,
 };
 use rox_core::{logging, APP_ID};
@@ -183,7 +183,7 @@ fn open_workspace_window(
     cx.open_window(options, move |window, cx| {
         // The Wayland backend ignores the creation-time titlebar title;
         // only set_window_title reaches the compositor.
-        window.set_window_title("rox");
+        rox_panel_api::windows::set_window_title(window, "rox");
         // No WindowOptions field for this one, so the fresh window starts
         // with the platform default and takes the setting here.
         window.set_resize_border(resize_border());
@@ -342,6 +342,9 @@ fn main() {
         palette::set_palettes(settings.palette_dark(), settings.palette_light(), cx);
         seed_os_appearance(cx);
         set_theme(settings.theme, cx);
+        // Language next to theme: same statics-outside-gpui shape, and
+        // it has to land before the first window title renders.
+        set_language(settings.language.as_deref(), cx);
         palette::set_scalars(
             settings.look.bundle.appearance.surface_opacity,
             settings.look.bundle.appearance.backdrop_strength,
@@ -379,8 +382,14 @@ fn main() {
         providers::set_deezer_online(settings.accounts.providers.deezer);
         providers::set_lastfm_art_online(settings.accounts.providers.lastfm_art);
         providers::set_artist_online(settings.accounts.providers.artist);
+        // Sweep what a past update left behind: the rename-aside old exe
+        // Windows couldn't delete, a stranded stage. Inline rather than
+        // spawned, because the check below may start a download whose
+        // staging this sweep must not race; it's a handful of removes.
+        startup::updater::clean_leftovers();
         // The daily update check, off the UI thread; the toggle and the
         // one-day cache both gate it, so most launches do nothing here.
+        // Opted in, a hit rolls straight into the updater's download.
         startup::updates::check_on_launch(cx);
         // Launch files ride into the first window; a plain launch (no files)
         // opens on the restored state as before.

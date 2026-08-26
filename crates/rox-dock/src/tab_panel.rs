@@ -129,7 +129,7 @@ impl Panel for TabPanel {
     fn title(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.active_panel(cx)
             .map(|panel| panel.title(window, cx))
-            .unwrap_or("Empty Tab".into_any_element())
+            .unwrap_or(rox_i18n::t!("dock-empty-tab").into_any_element())
     }
 
     fn closable(&self, cx: &App) -> bool {
@@ -666,20 +666,24 @@ impl TabPanel {
                 .dropdown_menu(menu.action_context(focus_handle), window, cx)
                 .separator()
                 .item(
-                    PopupMenuItem::new(if zoomed { "Zoom Out" } else { "Zoom In" })
-                        .disabled(!zoomable)
-                        // Carries the action only so the row shows its chord;
-                        // the on_click below is what actually runs (a menu
-                        // item with a handler ignores the action on click).
-                        .action(Box::new(ToggleZoom))
-                        .on_click({
-                            let view = view.clone();
-                            move |_, window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.on_action_toggle_zoom(&ToggleZoom, window, cx)
-                                });
-                            }
-                        }),
+                    PopupMenuItem::new(if zoomed {
+                        rox_i18n::t!("dock-zoom-out")
+                    } else {
+                        rox_i18n::t!("dock-zoom-in")
+                    })
+                    .disabled(!zoomable)
+                    // Carries the action only so the row shows its chord;
+                    // the on_click below is what actually runs (a menu
+                    // item with a handler ignores the action on click).
+                    .action(Box::new(ToggleZoom))
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.on_action_toggle_zoom(&ToggleZoom, window, cx)
+                            });
+                        }
+                    }),
                 )
         });
 
@@ -733,9 +737,13 @@ impl TabPanel {
             })
             .map(|this| {
                 let value = if zoomed {
-                    Some(("zoom-out", IconName::Minimize, "Zoom Out"))
+                    Some((
+                        "zoom-out",
+                        IconName::Minimize,
+                        rox_i18n::t!("dock-zoom-out"),
+                    ))
                 } else if zoomable_toolbar_visible {
-                    Some(("zoom-in", IconName::Maximize, "Zoom In"))
+                    Some(("zoom-in", IconName::Maximize, rox_i18n::t!("dock-zoom-in")))
                 } else {
                     None
                 };
@@ -773,7 +781,11 @@ impl TabPanel {
                                 this.dropdown_menu(menu, window, cx)
                                     .separator()
                                     .menu_with_disabled(
-                                        if zoomed { "Zoom Out" } else { "Zoom In" },
+                                        if zoomed {
+                                            rox_i18n::t!("dock-zoom-out")
+                                        } else {
+                                            rox_i18n::t!("dock-zoom-in")
+                                        },
                                         Box::new(ToggleZoom),
                                         !zoomable,
                                     )
@@ -856,8 +868,8 @@ impl TabPanel {
                 .ghost()
                 .tab_stop(false)
                 .tooltip(match is_open {
-                    true => "Collapse",
-                    false => "Expand",
+                    true => rox_i18n::t!("dock-collapse"),
+                    false => rox_i18n::t!("dock-expand"),
                 })
                 .on_click(cx.listener({
                     let dock_area = self.dock_area.clone();

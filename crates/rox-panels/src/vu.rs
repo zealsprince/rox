@@ -710,7 +710,7 @@ impl PanelSettings for VuPanel {
             .gap(tokens::SPACE_MD)
             .child(setting_row(
                 "Channels",
-                Some("Split the stereo pair, or fold to one meter"),
+                Some("Split the stereo pair, or fold to one meter".into()),
                 choices(
                     CHANNEL_CHOICES,
                     self.config.channels,
@@ -723,7 +723,7 @@ impl PanelSettings for VuPanel {
             ))
             .child(setting_row(
                 "Style",
-                Some("A solid column, or LED-style segments"),
+                Some("A solid column, or LED-style segments".into()),
                 choices(
                     STYLE_CHOICES,
                     self.config.style,
@@ -736,7 +736,7 @@ impl PanelSettings for VuPanel {
             ))
             .child(setting_row(
                 "Orientation",
-                Some("The edge the meters grow from"),
+                Some("The edge the meters grow from".into()),
                 choices(
                     ORIENTATION_CHOICES,
                     self.config.orientation,
@@ -749,7 +749,7 @@ impl PanelSettings for VuPanel {
             ))
             .child(setting_row(
                 "Ballistics",
-                Some("VU integrates the loudness slowly; Peak snaps up and eases down"),
+                Some("VU integrates the loudness slowly; Peak snaps up and eases down".into()),
                 choices(
                     BALLISTICS_CHOICES,
                     self.config.ballistics,
@@ -763,7 +763,7 @@ impl PanelSettings for VuPanel {
             .when(self.config.style == MeterStyle::Segments, |d| {
                 d.child(setting_row(
                     "Segment Height",
-                    Some("How tall each cell in a stack draws"),
+                    Some("How tall each cell in a stack draws".into()),
                     settings_ui::scalar(
                         &self.seg_h_scrub,
                         &self.value_edit,
@@ -775,7 +775,7 @@ impl PanelSettings for VuPanel {
                 ))
                 .child(setting_row(
                     "Segment Gap",
-                    Some("The seam between cells in a stack"),
+                    Some("The seam between cells in a stack".into()),
                     settings_ui::scalar(
                         &self.seg_gap_scrub,
                         &self.value_edit,
@@ -788,7 +788,7 @@ impl PanelSettings for VuPanel {
             })
             .child(setting_row(
                 "Gradient",
-                Some("Color the meters by level: the theme's ramp, the cover art's colors under song theming, or a custom pair"),
+                Some("Color the meters by level: the theme's ramp, the cover art's colors under song theming, or a custom pair".into()),
                 choices(
                     GRADIENT_CHOICES,
                     self.config.gradient,
@@ -806,19 +806,19 @@ impl PanelSettings for VuPanel {
                 |d, [lo, hi]| {
                     d.child(setting_row(
                         "Base Color",
-                        Some("The quiet end of the custom ramp"),
+                        Some("The quiet end of the custom ramp".into()),
                         ColorPicker::new(&lo).small(),
                     ))
                     .child(setting_row(
                         "Tip Color",
-                        Some("The loud end of the custom ramp"),
+                        Some("The loud end of the custom ramp".into()),
                         ColorPicker::new(&hi).small(),
                     ))
                 },
             )
             .child(setting_row(
                 "Peak Caps",
-                Some("Hold a mark at each meter's recent peak"),
+                Some("Hold a mark at each meter's recent peak".into()),
                 toggle(
                     self.config.caps,
                     |this: &mut Self, on, cx| {
@@ -830,7 +830,7 @@ impl PanelSettings for VuPanel {
             ))
             .child(setting_row(
                 "Cap Gravity",
-                Some("How hard the peak marks fall once the meter drops away"),
+                Some("How hard the peak marks fall once the meter drops away".into()),
                 panel::value_slider_edit(
                     &self.gravity_scrub,
                     &self.value_edit,
@@ -844,7 +844,7 @@ impl PanelSettings for VuPanel {
             ))
             .child(setting_row(
                 "Hold on Pause",
-                Some("Freeze the meters while paused instead of letting them fall to silence"),
+                Some("Freeze the meters while paused instead of letting them fall to silence".into()),
                 toggle(
                     self.config.freeze,
                     |this: &mut Self, on, cx| {
@@ -856,7 +856,7 @@ impl PanelSettings for VuPanel {
             ))
             .child(setting_row(
                 "dB Scale",
-                Some("Draw labeled gridlines at the dB marks behind the meters"),
+                Some("Draw labeled gridlines at the dB marks behind the meters".into()),
                 toggle(
                     self.config.scale,
                     |this: &mut Self, on, cx| {

@@ -781,7 +781,7 @@ impl TrackTable {
                 .items_center()
                 .px(tokens::SPACE_SM)
                 .text_color(palette::text_muted())
-                .child(SharedString::from(format!("Disc {disc}"))),
+                .child(rox_i18n::t!("library-disc", number = disc as u64)),
         )
     }
 
@@ -1165,14 +1165,14 @@ impl TableDelegate for TrackTable {
         let panel = self.panel.clone();
         let label = if album.is_some() {
             if self.group_by == GroupBy::Album {
-                "Play Album".to_string()
+                rox_i18n::t!("library-play-album").to_string()
             } else {
-                "Play Group".to_string()
+                rox_i18n::t!("library-play-group").to_string()
             }
         } else if rows.len() > 1 {
-            format!("Play {} Tracks", rows.len())
+            rox_i18n::t!("library-play-tracks", count = rows.len() as u64).to_string()
         } else {
-            "Play".to_string()
+            rox_i18n::t!("library-play").to_string()
         };
         // A single row plays from it through the view, the double click's
         // move; a set or a group queues exactly the highlighted rows.
@@ -1222,7 +1222,7 @@ impl TableDelegate for TrackTable {
             if !jump_album.is_empty() {
                 let album_panel = panel.clone();
                 menu = menu.item(
-                    PopupMenuItem::new("Filter by Album")
+                    PopupMenuItem::new(rox_i18n::t!("library-filter-by-album"))
                         .icon(Icon::default().path(icons::DISC))
                         .on_click(move |_, _, cx| {
                             let Some(panel) = album_panel.upgrade() else {
@@ -1236,7 +1236,7 @@ impl TableDelegate for TrackTable {
             if !jump_artist.is_empty() {
                 let artist_panel = panel.clone();
                 menu = menu.item(
-                    PopupMenuItem::new("Filter by Artist")
+                    PopupMenuItem::new(rox_i18n::t!("library-filter-by-artist"))
                         .icon(Icon::default().path(icons::MIC))
                         .on_click(move |_, _, cx| {
                             let Some(panel) = artist_panel.upgrade() else {
@@ -1255,7 +1255,7 @@ impl TableDelegate for TrackTable {
             if crate::settings::similarity_ready() {
                 let similar_panel = panel.clone();
                 menu = menu.item(
-                    PopupMenuItem::new("Play Similar")
+                    PopupMenuItem::new(rox_i18n::t!("library-play-similar"))
                         .icon(Icon::default().path(icons::AUDIO_WAVEFORM))
                         .on_click(move |_, _, cx| {
                             let Some(panel) = similar_panel.upgrade() else {
@@ -1749,7 +1749,8 @@ impl LibraryPanel {
             QuerySource::Global => state.query.read(cx).text().to_string(),
             QuerySource::Local | QuerySource::Selection => config.query.clone(),
         };
-        let search = cx.new(|cx| SearchBox::new("Search", &initial, window, cx).small());
+        let search =
+            cx.new(|cx| SearchBox::new(rox_i18n::t!("query-search"), &initial, window, cx).small());
         let _search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         // Follow the shared query while global: re-filter and reset the box
         // to it on the next render. The reset needs a window, so it rides the
@@ -3113,13 +3114,13 @@ impl LibraryPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "Headers",
-                Some("Group breaks over the list; a sort keeps whatever runs stay together, searching renders flat"),
-                panel::choices(
+                rox_i18n::t!("library-headers"),
+                Some(rox_i18n::t!("library-headers.description")),
+                panel::choices_shared(
                     &[
-                        ("Off", Headers::Off),
-                        ("Compact", Headers::Compact),
-                        ("Expanded", Headers::Expanded),
+                        (rox_i18n::t!("headers-off"), Headers::Off),
+                        (rox_i18n::t!("headers-compact"), Headers::Compact),
+                        (rox_i18n::t!("headers-expanded"), Headers::Expanded),
                     ],
                     header_mode,
                     |this: &mut Self, headers, cx| this.set_headers(headers, cx),
@@ -3128,14 +3129,14 @@ impl LibraryPanel {
             ))
             .when(header_mode != Headers::Off, |d| {
                 d.child(panel::setting_row(
-                    "Group By",
-                    Some("What the headers break on; genre and year re-sort the list"),
-                    panel::choices(
+                    rox_i18n::t!("library-group-by"),
+                    Some(rox_i18n::t!("library-group-by.description")),
+                    panel::choices_shared(
                         &[
-                            ("Album", GroupBy::Album),
-                            ("Artist", GroupBy::Artist),
-                            ("Genre", GroupBy::Genre),
-                            ("Year", GroupBy::Year),
+                            (rox_i18n::t!("head-piece-album"), GroupBy::Album),
+                            (rox_i18n::t!("head-piece-artist"), GroupBy::Artist),
+                            (rox_i18n::t!("head-piece-genre"), GroupBy::Genre),
+                            (rox_i18n::t!("head-piece-year"), GroupBy::Year),
                         ],
                         self.group_by,
                         |this: &mut Self, group_by, cx| this.set_group_by(group_by, cx),
@@ -3145,11 +3146,8 @@ impl LibraryPanel {
             })
             .when(header_mode == Headers::Compact, |d| {
                 d.child(panel::setting_block(
-                    "Header Row",
-                    Some(
-                        "What the one-row headers pack, left to right; a spacer or \
-                         divider splits the sides",
-                    ),
+                    rox_i18n::t!("library-header-row"),
+                    Some(rox_i18n::t!("library-header-row.description")),
                     None,
                     panel::arrange_editor(
                         "library-head-compact",
@@ -3166,8 +3164,8 @@ impl LibraryPanel {
                 // the tall foobar-style block.
                 let open = self.header_lines_shown.clamp(1, HEAD_LINE_SLOTS);
                 d.child(panel::setting_block(
-                    "Header Lines",
-                    Some("The block's rows, top to bottom; an empty line drops out"),
+                    rox_i18n::t!("library-header-lines"),
+                    Some(rox_i18n::t!("library-header-lines.description")),
                     None,
                     panel::arrange_rows_editor(
                         "library-head-lines",
@@ -3193,11 +3191,11 @@ impl LibraryPanel {
             .gap(tokens::SPACE_SM)
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| this.browse(cx)))
-            .child(div().text_lg().child("Open a music folder"))
+            .child(div().text_lg().child(rox_i18n::t!("library-empty-title")))
             .child(
                 div()
                     .text_color(palette::text_muted())
-                    .child("It gets scanned into the library (flac, mp3, wav)"),
+                    .child(rox_i18n::t!("library-empty-note")),
             )
     }
 }
@@ -3251,7 +3249,7 @@ impl panel::PanelSettings for LibraryPanel {
                 ))
                 .child(panel::tracking_section(
                     self.follow_playing,
-                    "Scroll to the playing row whenever the track changes",
+                    rox_i18n::t!("library-follow.description"),
                     |this: &mut Self, on, cx| {
                         this.follow_playing = on;
                         // Catch up right away instead of waiting for
@@ -3262,13 +3260,13 @@ impl panel::PanelSettings for LibraryPanel {
                         cx.notify();
                     },
                     self.resume_playing,
-                    "Scroll back to the playing row after you stop browsing",
+                    rox_i18n::t!("library-resume.description"),
                     |this: &mut Self, on, cx| {
                         this.resume_playing = on;
                         cx.notify();
                     },
                     self.smooth_follow,
-                    "Glide to the row instead of jumping",
+                    rox_i18n::t!("library-smooth.description"),
                     |this: &mut Self, on, cx| {
                         this.smooth_follow = on;
                         cx.notify();
@@ -3293,11 +3291,11 @@ impl panel::PanelSettings for LibraryPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_block(
-                "Columns",
-                Some("Which columns show; drag the headers in the panel to reorder and size them"),
+                rox_i18n::t!("library-columns"),
+                Some(rox_i18n::t!("library-columns.description")),
                 Some(
                     settings_ui::small_button(
-                        "Reset",
+                        rox_i18n::t!("panel-reset"),
                         icons::REFRESH_CW,
                         false,
                         cx.listener(|this, _, _, cx| this.reset_columns(cx)),
@@ -3307,8 +3305,8 @@ impl panel::PanelSettings for LibraryPanel {
                 self.column_checklist(cx),
             ))
             .child(panel::setting_row(
-                "Column Headers",
-                Some("The sortable header row over the list; hide it and the columns keep their order and widths"),
+                rox_i18n::t!("library-column-headers"),
+                Some(rox_i18n::t!("library-column-headers.description")),
                 panel::toggle(
                     self.column_headers,
                     |this: &mut Self, on, cx| {
@@ -3319,8 +3317,8 @@ impl panel::PanelSettings for LibraryPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Compact Plays",
-                Some("The plays column as a small count with a dash beside it"),
+                rox_i18n::t!("library-compact-plays"),
+                Some(rox_i18n::t!("library-compact-plays.description")),
                 panel::toggle(
                     self.compact_plays,
                     |this: &mut Self, on, cx| this.set_compact_plays(on, cx),
@@ -3351,8 +3349,8 @@ impl panel::PanelSettings for LibraryPanel {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(panel::setting_row(
-                "Line Height",
-                Some("One header line; blocks take the rows they need, free of the track rows"),
+                rox_i18n::t!("library-line-height"),
+                Some(rox_i18n::t!("library-line-height.description")),
                 settings_ui::scalar(
                     &self.head_scrub,
                     &self.value_edit,
@@ -3363,8 +3361,8 @@ impl panel::PanelSettings for LibraryPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Text Size",
-                Some("The header lines' text, free of the line height, so the art grows alone"),
+                rox_i18n::t!("library-text-size"),
+                Some(rox_i18n::t!("library-text-size.description")),
                 settings_ui::scalar(
                     &self.head_text_scrub,
                     &self.value_edit,
@@ -3375,11 +3373,8 @@ impl panel::PanelSettings for LibraryPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Flush Background",
-                Some(
-                    "Sit the headers on the list background instead of the raised \
-                         tint; song theming moves them together",
-                ),
+                rox_i18n::t!("library-flush-background"),
+                Some(rox_i18n::t!("library-flush-background.description")),
                 panel::toggle(
                     self.header_flush,
                     |this: &mut Self, on, cx| {
@@ -3392,8 +3387,8 @@ impl panel::PanelSettings for LibraryPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Gap Above",
-                Some("Carved off the block's top; the list shows through, and the lines tighten to fit"),
+                rox_i18n::t!("library-gap-above"),
+                Some(rox_i18n::t!("library-gap-above.description")),
                 settings_ui::scalar(
                     &self.header_gap_above_scrub,
                     &self.value_edit,
@@ -3404,8 +3399,8 @@ impl panel::PanelSettings for LibraryPanel {
                 ),
             ))
             .child(panel::setting_row(
-                "Gap Below",
-                Some("The same under the block, before its tracks"),
+                rox_i18n::t!("library-gap-below"),
+                Some(rox_i18n::t!("library-gap-below.description")),
                 settings_ui::scalar(
                     &self.header_gap_below_scrub,
                     &self.value_edit,
@@ -3421,15 +3416,15 @@ impl panel::PanelSettings for LibraryPanel {
                 .flex_col()
                 .gap(settings_ui::SECTION_GAP)
                 .child(settings_ui::section(
-                    "Rows",
+                    rox_i18n::t!("library-section-rows"),
                     None,
                     div()
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
                         .child(panel::setting_row(
-                            "Row Height",
-                            Some("The track rows; the text follows, and both scale with the app font"),
+                            rox_i18n::t!("library-row-height"),
+                            Some(rox_i18n::t!("library-row-height.description")),
                             settings_ui::scalar(
                                 &self.row_scrub,
                                 &self.value_edit,
@@ -3440,8 +3435,8 @@ impl panel::PanelSettings for LibraryPanel {
                             ),
                         ))
                         .child(panel::setting_row(
-                            "Row Spacing",
-                            Some("Extra height each row fills; breathing room without growing the text"),
+                            rox_i18n::t!("library-row-spacing"),
+                            Some(rox_i18n::t!("library-row-spacing.description")),
                             settings_ui::scalar(
                                 &self.row_spacing_scrub,
                                 &self.value_edit,
@@ -3452,8 +3447,8 @@ impl panel::PanelSettings for LibraryPanel {
                             ),
                         ))
                         .child(panel::setting_row(
-                            "Alternating Highlights",
-                            Some("Tint every other track row so a long list scans"),
+                            rox_i18n::t!("library-stripes"),
+                            Some(rox_i18n::t!("library-stripes.description")),
                             panel::toggle(
                                 self.stripes,
                                 |this: &mut Self, on, cx| {
@@ -3464,8 +3459,8 @@ impl panel::PanelSettings for LibraryPanel {
                             ),
                         ))
                         .child(panel::setting_row(
-                            "Row Borders",
-                            Some("The hairline under each track row"),
+                            rox_i18n::t!("library-row-borders"),
+                            Some(rox_i18n::t!("library-row-borders.description")),
                             panel::toggle(
                                 self.row_borders,
                                 |this: &mut Self, on, cx| {
@@ -3479,38 +3474,40 @@ impl panel::PanelSettings for LibraryPanel {
                 // The header look only matters while headers show; their
                 // mode and composition live on the Layout page.
                 .when(header_mode != Headers::Off, |d| {
-                    d.child(settings_ui::section("Headers", None, headers))
+                    d.child(settings_ui::section(
+                        rox_i18n::t!("library-headers"),
+                        None,
+                        headers,
+                    ))
                 })
                 // Every art knob in one always-shown place, whatever the
                 // grouping: swapping the group-by shouldn't send you
                 // hunting for the row that just appeared elsewhere.
                 .child(settings_ui::section(
-                    "Art",
+                    rox_i18n::t!("head-piece-art"),
                     None,
                     div()
                         .flex()
                         .flex_col()
                         .gap(tokens::SPACE_MD)
                         .child(panel::setting_row(
-                            "Art",
-                            Some(
-                                "The expanded headers' tile: the cover, the artist's \
-                                 portrait, or the genre face",
-                            ),
+                            rox_i18n::t!("head-piece-art"),
+                            Some(rox_i18n::t!("library-art.description")),
                             panel::toggle(
                                 self.header_art,
                                 |this: &mut Self, on, cx| {
                                     this.header_art = on;
-                                    this.table
-                                        .update(cx, |table, _| table.delegate_mut().header_art = on);
+                                    this.table.update(cx, |table, _| {
+                                        table.delegate_mut().header_art = on
+                                    });
                                     cx.notify();
                                 },
                                 cx,
                             ),
                         ))
                         .child(panel::setting_row(
-                            "Art Rounding",
-                            Some("Round the art's corners"),
+                            rox_i18n::t!("library-art-rounding"),
+                            Some(rox_i18n::t!("library-art-rounding.description")),
                             settings_ui::scalar(
                                 &self.art_scrub,
                                 &self.value_edit,
@@ -3529,18 +3526,21 @@ impl panel::PanelSettings for LibraryPanel {
                             ),
                         ))
                         .child(panel::setting_row(
-                            "Art Position",
-                            Some("Which side of the block the expanded headers' tile sits on"),
-                            panel::choices(
-                                &[("Left", ArtSide::Left), ("Right", ArtSide::Right)],
+                            rox_i18n::t!("library-art-position"),
+                            Some(rox_i18n::t!("library-art-position.description")),
+                            panel::choices_shared(
+                                &[
+                                    (rox_i18n::t!("side-left"), ArtSide::Left),
+                                    (rox_i18n::t!("side-right"), ArtSide::Right),
+                                ],
                                 self.art_side,
                                 |this: &mut Self, side, cx| this.set_art_side(side, cx),
                                 cx,
                             ),
                         ))
                         .child(panel::setting_row(
-                            "Art Margin",
-                            Some("Inset the tile inside the block; it shrinks to keep the square"),
+                            rox_i18n::t!("library-art-margin"),
+                            Some(rox_i18n::t!("library-art-margin.description")),
                             settings_ui::scalar(
                                 &self.art_margin_scrub,
                                 &self.value_edit,
@@ -3551,11 +3551,8 @@ impl panel::PanelSettings for LibraryPanel {
                             ),
                         ))
                         .child(panel::setting_row(
-                            "Circular Portraits",
-                            Some(
-                                "Grouped by artist, round the tiles to the wall's \
-                                 full circle instead of the rounding knob",
-                            ),
+                            rox_i18n::t!("library-circular-portraits"),
+                            Some(rox_i18n::t!("library-circular-portraits.description")),
                             panel::toggle(
                                 self.portrait_circle,
                                 |this: &mut Self, on, cx| {
@@ -3569,18 +3566,14 @@ impl panel::PanelSettings for LibraryPanel {
                             ),
                         ))
                         .child(panel::setting_row(
-                            "Genre Face",
-                            Some(
-                                "Grouped by genre, what the tile wears: the covers, \
-                                 the covers washed in the genre's color, or a color \
-                                 card under its geometry",
-                            ),
-                            panel::choices(
+                            rox_i18n::t!("library-genre-face"),
+                            Some(rox_i18n::t!("library-genre-face.description")),
+                            panel::choices_shared(
                                 &[
-                                    ("Mosaic", TileFace::Mosaic),
-                                    ("Tinted", TileFace::Tinted),
-                                    ("Gradient", TileFace::Gradient),
-                                    ("Color", TileFace::Color),
+                                    (rox_i18n::t!("genre-face-mosaic"), TileFace::Mosaic),
+                                    (rox_i18n::t!("genre-face-tinted"), TileFace::Tinted),
+                                    (rox_i18n::t!("genre-face-gradient"), TileFace::Gradient),
+                                    (rox_i18n::t!("genre-face-color"), TileFace::Color),
                                 ],
                                 self.genre_face,
                                 |this: &mut Self, face, cx| {
@@ -3658,7 +3651,10 @@ impl Panel for LibraryPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        panel::title_text(self.chrome.title.as_deref(), "Library")
+        panel::title_text(
+            self.chrome.title.as_deref(),
+            rox_i18n::t!("panel-title-library"),
+        )
     }
 
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
@@ -3775,7 +3771,7 @@ impl Panel for LibraryPanel {
         let menu = menu
             .check_side(Side::Right)
             .item(
-                PopupMenuItem::new("Jump to Playing")
+                PopupMenuItem::new(rox_i18n::t!("library-jump-to-playing"))
                     .icon(Icon::default().path(icons::DISC))
                     .on_click(move |_, _, cx| {
                         if let Some(this) = weak.upgrade() {
@@ -3784,7 +3780,7 @@ impl Panel for LibraryPanel {
                     }),
             )
             .item(
-                PopupMenuItem::new("Follow Playing")
+                PopupMenuItem::new(rox_i18n::t!("tracking-follow"))
                     .icon(Icon::default().path(icons::LOCATE))
                     .checked(follow)
                     .on_click(move |_, _, cx| {
@@ -3798,7 +3794,7 @@ impl Panel for LibraryPanel {
         // menu stays short. The flyouts build eagerly off the panel's
         // mirrors, never the table: this menu also builds inside the row
         // context menu, mid-table-update.
-        let menu = menu.separator().label("Display");
+        let menu = menu.separator().label(rox_i18n::t!("library-menu-display"));
 
         // Columns: the same toggles as the header dropdown and the settings
         // checklist, one row per registry column ticked while shown, read off
@@ -3818,12 +3814,15 @@ impl Panel for LibraryPanel {
             }
             submenu
         });
-        let menu = menu.item(PopupMenuItem::submenu("Columns", submenu));
+        let menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("library-columns"),
+            submenu,
+        ));
 
         // The column header row's toggle, riding beside the columns it heads.
         let weak_h = cx.entity().downgrade();
         let menu = menu.item(
-            PopupMenuItem::new("Column Headers")
+            PopupMenuItem::new(rox_i18n::t!("library-column-headers"))
                 .checked(self.column_headers)
                 .on_click(move |_, _, cx| {
                     if let Some(this) = weak_h.upgrade() {
@@ -3840,9 +3839,9 @@ impl Panel for LibraryPanel {
             panel::follow_panel(&panel, cx);
             let mut submenu = submenu.check_side(Side::Right);
             for (headers, name) in [
-                (Headers::Off, "Off"),
-                (Headers::Compact, "Compact"),
-                (Headers::Expanded, "Expanded"),
+                (Headers::Off, rox_i18n::t!("headers-off")),
+                (Headers::Compact, rox_i18n::t!("headers-compact")),
+                (Headers::Expanded, rox_i18n::t!("headers-expanded")),
             ] {
                 submenu = submenu.item(panel::check_row(
                     name,
@@ -3854,7 +3853,10 @@ impl Panel for LibraryPanel {
             }
             submenu
         });
-        let mut menu = menu.item(PopupMenuItem::submenu("Headers", submenu));
+        let mut menu = menu.item(PopupMenuItem::submenu(
+            rox_i18n::t!("library-headers"),
+            submenu,
+        ));
 
         if self.headers != Headers::Off {
             let panel = cx.entity();
@@ -3862,10 +3864,10 @@ impl Panel for LibraryPanel {
                 panel::follow_panel(&panel, cx);
                 let mut submenu = submenu.check_side(Side::Right);
                 for (group_by, name) in [
-                    (GroupBy::Album, "Album"),
-                    (GroupBy::Artist, "Artist"),
-                    (GroupBy::Genre, "Genre"),
-                    (GroupBy::Year, "Year"),
+                    (GroupBy::Album, rox_i18n::t!("head-piece-album")),
+                    (GroupBy::Artist, rox_i18n::t!("head-piece-artist")),
+                    (GroupBy::Genre, rox_i18n::t!("head-piece-genre")),
+                    (GroupBy::Year, rox_i18n::t!("head-piece-year")),
                 ] {
                     submenu = submenu.item(panel::check_row(
                         name,
@@ -3877,7 +3879,10 @@ impl Panel for LibraryPanel {
                 }
                 submenu
             });
-            menu = menu.item(PopupMenuItem::submenu("Group By", submenu));
+            menu = menu.item(PopupMenuItem::submenu(
+                rox_i18n::t!("library-group-by"),
+                submenu,
+            ));
         }
 
         // Follow the shared search query, or filter by this panel's own box.
@@ -3952,17 +3957,30 @@ impl LibraryPanel {
         let dt = self.glide_tick.elapsed().as_secs_f32().min(0.05);
         self.glide_tick = Instant::now();
         if let Some(row) = self.glide_to {
-            let (handle, count) = {
+            let (handle, target, in_view) = {
                 let table = self.table.read(cx);
+                // Header rows size to their content, so a uniform-stride
+                // estimate lands the row off center or off screen. The
+                // table's cached per-row heights give the row's real
+                // offset, so the glide centers it exactly.
+                let target = table.row_bounds(row).and_then(|(y, h)| {
+                    panel::glide_target_at(
+                        table.vertical_scroll_handle.base_handle(),
+                        gpui::Axis::Vertical,
+                        y,
+                        h,
+                    )
+                });
                 (
                     table.vertical_scroll_handle.clone(),
-                    table.delegate().view.len(),
+                    target,
+                    row < table.delegate().view.len(),
                 )
             };
-            // The uniform-item target is an estimate now that header rows
-            // size to their content; close enough for a centering glide,
-            // and the strict jumps stay index-exact.
-            match panel::glide_target_axis(handle.base_handle(), gpui::Axis::Vertical, row, count) {
+            match target {
+                // A view swap can strand the target past the list's end;
+                // drop the glide instead of animating forever.
+                _ if !in_view => self.glide_to = None,
                 Some(target)
                     if !panel::glide_step_axis(
                         handle.base_handle(),

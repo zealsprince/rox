@@ -481,7 +481,7 @@ impl PanelSettings for StatsWidgetPanel {
                         .gap(tokens::SPACE_MD)
                         .child(setting_row(
                             "Count",
-                            Some("Which trailing window the number counts listens over; the hover list always carries them all"),
+                            Some("Which trailing window the number counts listens over; the hover list always carries them all".into()),
                             panel::choices(
                                 RANGES,
                                 self.config.range,
@@ -494,7 +494,7 @@ impl PanelSettings for StatsWidgetPanel {
                         ))
                         .child(setting_row(
                             "Show the Number",
-                            Some("Draw the count beside the icon; off leaves a bare icon with the counts on hover"),
+                            Some("Draw the count beside the icon; off leaves a bare icon with the counts on hover".into()),
                             toggle(
                                 self.config.show_count,
                                 |this: &mut Self, on, cx| {
@@ -506,7 +506,7 @@ impl PanelSettings for StatsWidgetPanel {
                         ))
                         .child(setting_row(
                             "Show the Change",
-                            Some("Add a chip for how the window compares with the one before it, up or down; All Time has nothing behind it"),
+                            Some("Add a chip for how the window compares with the one before it, up or down; All Time has nothing behind it".into()),
                             toggle(
                                 self.config.show_change,
                                 |this: &mut Self, on, cx| {
@@ -522,7 +522,7 @@ impl PanelSettings for StatsWidgetPanel {
                     None,
                     setting_row(
                         "Open Stats on Click",
-                        Some("Click the widget to open the stats window, the full listening record"),
+                        Some("Click the widget to open the stats window, the full listening record".into()),
                         toggle(
                             self.config.open_on_click,
                             |this: &mut Self, on, cx| {

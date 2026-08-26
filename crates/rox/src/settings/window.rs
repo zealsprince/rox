@@ -37,6 +37,7 @@ use crate::lastfm::import;
 use crate::panel_settings;
 use crate::pass_prompt;
 use crate::replaygain_job;
+use crate::startup::updater;
 use crate::tempo_job;
 use crate::workspace::{ApplyShaders, Workspace};
 use rox_core::settings::layouts::Preset;
@@ -212,21 +213,26 @@ const MODEL_KINDS: &[(&str, ModelKind)] = &[
 
 /// The orders shuffle can put the upcoming queue in, and what each one
 /// means. Read on the Playback page.
-const SHUFFLE_MODES: &[panel::ModeSpec<ShuffleMode>] = &[
-    panel::ModeSpec {
-        label: "Random",
-        description: "The shuffle everyone means by the word. What's coming plays in no \
-                      particular order",
-        value: ShuffleMode::Random,
-    },
-    panel::ModeSpec {
-        label: "Similar",
-        description: "Nearest first by sound. What's coming is sorted by how much it resembles \
-                      the track that was playing when you turned it on, and re-sorted on every \
-                      skip. Needs the library described on the Library page",
-        value: ShuffleMode::Similar,
-    },
-];
+fn shuffle_modes() -> Vec<panel::ModeSpec<ShuffleMode>> {
+    vec![
+        panel::ModeSpec {
+            label: "Random".into(),
+            description: "The shuffle everyone means by the word. What's coming plays in no \
+                          particular order"
+                .into(),
+            value: ShuffleMode::Random,
+        },
+        panel::ModeSpec {
+            label: "Similar".into(),
+            description: "Nearest first by sound. What's coming is sorted by how much it \
+                          resembles the track that was playing when you turned it on, and \
+                          re-sorted on every skip. Needs the library described on the Library \
+                          page"
+                .into(),
+            value: ShuffleMode::Similar,
+        },
+    ]
+}
 
 /// The strategies that refill a queue which has run dry (ADR 17).
 ///
@@ -237,26 +243,30 @@ const SHUFFLE_MODES: &[panel::ModeSpec<ShuffleMode>] = &[
 /// There's no Radio here. The radio draw is what the Similar order does when
 /// it runs out, so it rides that pick instead of being a fourth strategy that
 /// only ever made sense alongside it.
-const CONTINUATION_MODES: &[panel::ModeSpec<continuation::Mode>] = &[
-    panel::ModeSpec {
-        label: "Off",
-        description: "The queue ends where it ends, and playback stops",
-        value: continuation::Mode::Off,
-    },
-    panel::ModeSpec {
-        label: "Continue",
-        description: "Carry on down the list you started from, then the rest of the library \
-                      behind it. Play an album from the middle of a view and the view keeps \
-                      going",
-        value: continuation::Mode::Continue,
-    },
-    panel::ModeSpec {
-        label: "Weighted",
-        description: "Draw from the whole library, what you've never played first and what you \
-                      heard recently last",
-        value: continuation::Mode::Weighted,
-    },
-];
+fn continuation_modes() -> Vec<panel::ModeSpec<continuation::Mode>> {
+    vec![
+        panel::ModeSpec {
+            label: "Off".into(),
+            description: "Nothing refills the queue; playback stops at its end".into(),
+            value: continuation::Mode::Off,
+        },
+        panel::ModeSpec {
+            label: "Continue".into(),
+            description: "Carry on down the list you started from, then the rest of the library \
+                          behind it. Play an album from the middle of a view and the view keeps \
+                          going"
+                .into(),
+            value: continuation::Mode::Continue,
+        },
+        panel::ModeSpec {
+            label: "Weighted".into(),
+            description: "Draw from the whole library, what you've never played first and what \
+                          you heard recently last"
+                .into(),
+            value: continuation::Mode::Weighted,
+        },
+    ]
+}
 
 /// The storage page's measurements, taken entering the page and after a
 /// clear rather than per frame: the database walk and the store walks are
@@ -506,6 +516,19 @@ struct SettingsWindow {
     /// keystroke, the pickers' cadence.
     lastfm_key: Entity<InputState>,
     lastfm_secret: Entity<InputState>,
+    /// The broadcast section's connection fields, seeded from the file and
+    /// written through per keystroke. The sink itself re-applies on blur or
+    /// enter, never per keystroke, so typing a host doesn't dial half names.
+    broadcast_host: Entity<InputState>,
+    broadcast_port: Entity<InputState>,
+    broadcast_mount: Entity<InputState>,
+    broadcast_user: Entity<InputState>,
+    broadcast_password: Entity<InputState>,
+    broadcast_name: Entity<InputState>,
+    /// The switch and the bitrate, mirrored from settings so the section
+    /// renders without re-reading the file.
+    broadcast_enabled: bool,
+    broadcast_bitrate: u32,
     /// The ffmpeg path input; writes through like the credentials, and the
     /// probe is keyed by value, so a pasted path shows Convert everywhere
     /// without a restart.
@@ -577,6 +600,10 @@ struct SettingsWindow {
     recording: Option<&'static str>,
     /// Whether launch runs the daily update check, the Application page toggle.
     check_updates: bool,
+    /// Whether a check that finds a newer release also downloads it, the
+    /// row under the check toggle. Only shown where the install can
+    /// replace itself.
+    download_updates: bool,
     /// Whether anything of rox talks to AI tooling, the toggle at the top
     /// of the Application page. Also gates whether the MCP and ML Models
     /// pages show in the sidebar.
@@ -667,6 +694,10 @@ struct SettingsWindow {
     /// rather than per frame: a stat per model per paint is a syscall per
     /// model per paint.
     model_sizes: Vec<(&'static str, u64)>,
+    /// The stored language pick, mirrored from settings like the icon
+    /// pack below: None is System, and the row marks its segment without
+    /// re-reading the settings file per render.
+    language: Option<String>,
     /// The active icon pack, mirrored from settings so the Appearance page's
     /// pack list marks the current one without re-reading the settings file
     /// (which carries the dock dumps) on every render.
@@ -735,6 +766,7 @@ struct SettingsWindow {
     persist_palette: bool,
     _picker_changes: Vec<Subscription>,
     _lastfm_changes: Vec<Subscription>,
+    _broadcast_changes: Vec<Subscription>,
     _ffmpeg_changed: Subscription,
     /// The connect flow's phases land through here, so the page's status
     /// line follows along.
@@ -898,6 +930,72 @@ impl SettingsWindow {
                 }
             }));
         }
+        // The broadcast fields write through per keystroke like the
+        // Last.fm pair; the sink only re-applies when a field is left
+        // (blur or enter), so a host mid-type never gets dialed.
+        let broadcast_host = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("icecast host")
+                .default_value(settings.broadcast.host.clone())
+        });
+        let broadcast_port = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("8000")
+                .default_value(settings.broadcast.port.to_string())
+        });
+        let broadcast_mount = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("/rox")
+                .default_value(settings.broadcast.mount.clone())
+        });
+        let broadcast_user = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("source")
+                .default_value(settings.broadcast.user.clone())
+        });
+        let broadcast_password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Source password")
+                .masked(true)
+                .default_value(settings.broadcast.password.clone())
+        });
+        let broadcast_name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Stream name")
+                .default_value(settings.broadcast.name.clone())
+        });
+        let mut _broadcast_changes = Vec::with_capacity(6);
+        for (input, write) in [
+            (
+                &broadcast_host,
+                (|s: &mut Settings, value: String| s.broadcast.host = value)
+                    as fn(&mut Settings, String),
+            ),
+            (&broadcast_port, |s, value| {
+                // A half-typed or emptied port falls back to icecast's
+                // stock one rather than writing a lie.
+                s.broadcast.port = value.parse().unwrap_or(8000);
+            }),
+            (&broadcast_mount, |s, value| s.broadcast.mount = value),
+            (&broadcast_user, |s, value| s.broadcast.user = value),
+            (&broadcast_password, |s, value| s.broadcast.password = value),
+            (&broadcast_name, |s, value| s.broadcast.name = value),
+        ] {
+            _broadcast_changes.push(cx.subscribe(input, {
+                move |this: &mut Self, input, event: &InputEvent, cx| match event {
+                    InputEvent::Change => {
+                        let value = input.read(cx).value().trim().to_string();
+                        Settings::update(move |s| write(s, value));
+                    }
+                    InputEvent::Blur | InputEvent::PressEnter { .. } => {
+                        if this.broadcast_enabled {
+                            crate::integrations::broadcast::apply();
+                        }
+                    }
+                    InputEvent::Focus => {}
+                }
+            }));
+        }
         // The ffmpeg path takes the same per-keystroke write-through, and
         // since the probe caches per value, a path that resolves flips the
         // Convert surfaces on with no restart.
@@ -1011,6 +1109,14 @@ impl SettingsWindow {
             discord_show_youtube_button: settings.accounts.discord.show_youtube_button,
             lastfm_key,
             lastfm_secret,
+            broadcast_host,
+            broadcast_port,
+            broadcast_mount,
+            broadcast_user,
+            broadcast_password,
+            broadcast_name,
+            broadcast_enabled: settings.broadcast.enabled,
+            broadcast_bitrate: settings.broadcast.bitrate,
             ffmpeg_path,
             ffmpeg_test: None,
             threshold_scrub: ScrubState::default(),
@@ -1029,6 +1135,7 @@ impl SettingsWindow {
             mini_layout: settings.look.bundle.mini_layout.clone(),
             pending: None,
             check_updates: settings.check_updates,
+            download_updates: settings.download_updates,
             ai_enabled: settings.ai_enabled,
             mcp_enabled: settings.mcp_enabled,
             experimental: settings.experimental,
@@ -1062,6 +1169,7 @@ impl SettingsWindow {
             acoustic_local_checking: false,
             model_job,
             model_sizes: Self::measure_models(),
+            language: settings.language.clone(),
             active_icon_pack: settings.icon_pack.clone(),
             icon_packs: crate::startup::icon_packs::all(),
             post_shader_path: settings.post_shader.path.clone(),
@@ -1093,6 +1201,7 @@ impl SettingsWindow {
             recording: None,
             _picker_changes,
             _lastfm_changes,
+            _broadcast_changes,
             _ffmpeg_changed,
             _scrobbler_changed,
             _library_changed,
@@ -1148,6 +1257,16 @@ impl SettingsWindow {
     /// window eases over; render then re-seeds the editor onto that side.
     /// The radio reads the settings static, not a cached field, so this
     /// and the theme toggle panel never show different states.
+    /// The interface language. Through the settings pipe so every window
+    /// repaints in the new locale at once; the pick persists as the
+    /// registry id, and None keeps following the OS.
+    fn set_language(&mut self, language: Option<String>, cx: &mut Context<Self>) {
+        settings::set_language(language.as_deref(), cx);
+        self.language = language.clone();
+        Settings::update(move |s| s.language = language);
+        cx.notify();
+    }
+
     fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
         settings::set_theme(theme, cx);
         Settings::update(move |s| s.theme = theme);
@@ -1741,21 +1860,32 @@ impl SettingsWindow {
         PageBody::new()
             .section(Section::new(q, icons::MENU, "Interface", None, |rows| {
                 rows.keyed(
+                    &["language", "locale", "translation"],
+                    rox_i18n::t_static("settings-language"),
+                    Some(rox_i18n::t_static("settings-language.description").into()),
+                    panel::language_picker(
+                        "app-language",
+                        self.language.clone(),
+                        Self::set_language,
+                        cx,
+                    ),
+                )
+                .keyed(
                     &["edit", "layout", "rearrange", "lock"],
                     "Design Mode",
-                    Some("Edit the layout where it sits: the panel menus' add, rename, duplicate, pop out and close rows, the controls a container floats over its slots, and tab dragging. Off reads as finished furniture and the Workspace page still edits the tree"),
+                    Some("Edit the layout where it sits: the panel menus' add, rename, duplicate, pop out and close rows, the controls a container floats over its slots, and tab dragging. Off hides all of that; the Workspace page still edits the tree".into()),
                     panel::toggle(settings::design_mode(), Self::set_design_mode, cx),
                 )
                 .keyed(
                     &["menu bar", "toolbar", "alt"],
                     "Hide Menubar",
-                    Some("Keep the menubar hidden, floating it over the dock while alt is held. Double-tap alt to leave it up, so its buttons take a plain click"),
+                    Some("Keep the menubar hidden, floating it over the dock while alt is held. Double-tap alt to leave it up, so its buttons take a plain click".into()),
                     panel::toggle(settings::hide_menubar(), Self::set_hide_menubar, cx),
                 )
                 .keyed(
                     &["title bar", "chrome", "frameless"],
                     "OS Decorations",
-                    Some("The OS titlebar and borders on the main windows; off leans on the window controls and drag anchor panels"),
+                    Some("The OS titlebar and borders on the main windows; off leans on the window controls and drag anchor panels".into()),
                     panel::toggle(settings::os_decorations(), Self::set_os_decorations, cx),
                 )
                 // Windows only: on Linux and macOS the borderless window has
@@ -1765,7 +1895,7 @@ impl SettingsWindow {
                     rows.keyed(
                         &["border", "edge", "frame", "borderless"],
                         "Resize Border",
-                        Some("Resizing the main windows by dragging their edges; only applies with OS Decorations off, and switching it off leaves snapping and Win+arrow as the way to resize"),
+                        Some("Resizing the main windows by dragging their edges; only applies with OS Decorations off, and switching it off leaves snapping and Win+arrow as the way to resize".into()),
                         panel::toggle(settings::resize_border(), Self::set_resize_border, cx),
                     )
                 })
@@ -1774,7 +1904,7 @@ impl SettingsWindow {
                 rows.keyed(
                     &["dark", "light", "mode", "appearance"],
                     "Theme",
-                    Some("The palette the app renders and the one the color editor below targets; System follows the OS's light or dark preference"),
+                    Some("The palette the app renders and the one the color editor below targets; System follows the OS's light or dark preference".into()),
                     panel::choices(
                         &[
                             ("Dark", Theme::Dark),
@@ -1789,13 +1919,13 @@ impl SettingsWindow {
                 .keyed(
                     &["album art", "tint", "accent"],
                     "Song Theming",
-                    Some("Tint the palette and back windows with the playing track's cover art"),
+                    Some("Tint the palette and back windows with the playing track's cover art".into()),
                     panel::toggle(palette::art_theming(), Self::set_art_theming, cx),
                 )
                 .keyed(
                     &["dark", "light", "lock", "pin"],
                     "Keep Theme",
-                    Some("Hold the active theme even when a cover's brightness would flip it; song theming still tints the color"),
+                    Some("Hold the active theme even when a cover's brightness would flip it; song theming still tints the color".into()),
                     panel::toggle(self.keep_theme, Self::set_keep_theme, cx),
                 )
             }))
@@ -1803,7 +1933,7 @@ impl SettingsWindow {
                 rows.keyed(
                     &["typeface", "family", "text"],
                     "Font",
-                    Some("The app-wide typeface; panels can override it in their own settings"),
+                    Some("The app-wide typeface; panels can override it in their own settings".into()),
                     panel::font_picker(
                         "app-font",
                         settings::app_font().map(|font| font.to_string()),
@@ -1814,7 +1944,7 @@ impl SettingsWindow {
                 .keyed(
                     &["text size", "scale", "zoom"],
                     "Font Size",
-                    Some("The base text size every panel's text scales from; controls and icons hold their size"),
+                    Some("The base text size every panel's text scales from; controls and icons hold their size".into()),
                     settings_ui::scalar(
                         &self.font_size_scrub,
                         &self.value_edit,
@@ -1835,7 +1965,7 @@ impl SettingsWindow {
                 rows.keyed(
                     &["transparency", "translucent", "blur"],
                     "Surface Opacity",
-                    Some("How opaque the app's surfaces read over the backdrop"),
+                    Some("How opaque the app's surfaces read over the backdrop".into()),
                     settings_ui::slider_edit(
                         &self.surface_scrub,
                         &self.value_edit,
@@ -1847,7 +1977,7 @@ impl SettingsWindow {
                 .keyed(
                     &["transparency", "opacity", "blur", "wallpaper"],
                     "Backdrop Strength",
-                    Some("How strongly the cover backdrop shows behind them"),
+                    Some("How strongly the cover backdrop shows behind them".into()),
                     settings_ui::slider_edit(
                         &self.backdrop_scrub,
                         &self.value_edit,
@@ -1862,7 +1992,7 @@ impl SettingsWindow {
                     Some(
                         "Back the child windows too: settings, editors, dialogs, \
                          popped-out panels. Off keeps the backdrop and the \
-                         transparency to the workspace windows",
+                         transparency to the workspace windows".into(),
                     ),
                     panel::toggle(self.backdrop_all_windows, Self::set_backdrop_windows, cx),
                 )
@@ -1871,31 +2001,31 @@ impl SettingsWindow {
                 rows.keyed(
                     &["spacing", "gap", "outside", "sides"],
                     "Margin",
-                    Some("Pull every panel in from its cell; a panel can override this in its own settings"),
+                    Some("Pull every panel in from its cell; a panel can override this in its own settings".into()),
                     self.frame_sides_row(&self.margin_scrub, self.frame.margin, self.margin_split, MARGIN_MAX, Self::split_margin, Self::set_margin, cx),
                 )
                 .keyed(
                     &["spacing", "inset", "inside", "sides"],
                     "Padding",
-                    Some("Space inside every panel's edge, kept in its own background"),
+                    Some("Space inside every panel's edge, kept in its own background".into()),
                     self.frame_sides_row(&self.padding_scrub, self.frame.padding, self.padding_split, PADDING_MAX, Self::split_padding, Self::set_padding, cx),
                 )
                 .keyed(
                     &["corner radius", "rounded"],
                     "Rounding",
-                    Some("Round every panel's corners off into the backdrop"),
+                    Some("Round every panel's corners off into the backdrop".into()),
                     self.frame_row(&self.rounding_scrub, self.frame.rounding, ROUNDING_MAX, Self::set_rounding, cx),
                 )
                 .keyed(
                     &["outline", "stroke", "edge", "sides"],
                     "Border",
-                    Some("A line around every panel's edge, in the Border role's color; a side at zero draws none"),
+                    Some("A line around every panel's edge, in the Border role's color; a side at zero draws none".into()),
                     self.frame_sides_row(&self.border_scrub, self.frame.border, self.border_split, BORDER_MAX, Self::split_border, Self::set_border, cx),
                 )
                 .keyed(
                     &["divider", "gutter", "grid lines"],
                     "Panel Seams",
-                    Some("The hairline between panel tiles; off leaves the resize grips invisible but still draggable"),
+                    Some("The hairline between panel tiles; off leaves the resize grips invisible but still draggable".into()),
                     panel::toggle(settings::seams(), Self::set_seams, cx),
                 )
             }))
@@ -2032,7 +2162,8 @@ impl SettingsWindow {
                     "Overlay Shader",
                     Some(
                         "Run a music-reactive WGSL shader over the whole window. Only \
-                         shaders that leave the app usable underneath are offered",
+                         shaders that leave the app usable underneath are offered"
+                            .into(),
                     ),
                     panel::toggle(enabled, Self::set_post_shader_enabled, cx),
                 )
@@ -2065,7 +2196,8 @@ impl SettingsWindow {
                     "All Windows",
                     Some(
                         "Shade the child windows too: settings, stats, equalizer, \
-                         popped-out panels. The revert countdown stays unshaded either way",
+                         popped-out panels. The revert countdown stays unshaded either way"
+                            .into(),
                     ),
                     panel::toggle(all_windows, Self::set_post_shader_all_windows, cx),
                 )
@@ -2076,7 +2208,8 @@ impl SettingsWindow {
                         "Keep drawing with nothing playing. The animation stays parked \
                          either way. A shader that reads the mouse follows the cursor \
                          with the music stopped without this; it just stops a couple of \
-                         seconds after the pointer does",
+                         seconds after the pointer does"
+                            .into(),
                     ),
                     panel::toggle(run_idle, Self::set_post_shader_run_idle, cx),
                 );
@@ -2139,7 +2272,10 @@ impl SettingsWindow {
                         .gap(tokens::SPACE_MD)
                         .child(panel::setting_block(
                             "Signals",
-                            Some("Which shared signal each of the shader's sixteen slots reads"),
+                            Some(
+                                "Which shared signal each of the shader's sixteen slots reads"
+                                    .into(),
+                            ),
                             Some(add.into_any_element()),
                             body,
                         ))
@@ -2147,7 +2283,8 @@ impl SettingsWindow {
                             "Slots",
                             Some(
                                 "Each slot as it reaches the shader; slots without a route \
-                                 are hand-set knobs",
+                                 are hand-set knobs"
+                                    .into(),
                             ),
                             None,
                             slots,
@@ -2768,7 +2905,8 @@ impl SettingsWindow {
                         Some(
                             "Run a music-reactive WGSL shader over the album-art backdrop, \
                          under every panel. Part of the workspace, so it travels with \
-                         the look",
+                         the look"
+                                .into(),
                         ),
                         panel::toggle(enabled, Self::set_backdrop_enabled, cx),
                     )
@@ -2796,7 +2934,8 @@ impl SettingsWindow {
                         "All Windows",
                         Some(
                             "Shade every window's backdrop: settings, editors, dialogs, \
-                         popped-out panels. Off keeps it to the workspace windows",
+                         popped-out panels. Off keeps it to the workspace windows"
+                                .into(),
                         ),
                         panel::toggle(all_windows, Self::set_backdrop_all_windows, cx),
                     )
@@ -2805,7 +2944,8 @@ impl SettingsWindow {
                         "Run While Idle",
                         Some(
                             "Keep drawing with nothing playing. The animation stays parked \
-                         either way",
+                         either way"
+                                .into(),
                         ),
                         panel::toggle(run_idle, Self::set_backdrop_run_idle, cx),
                     );
@@ -2847,7 +2987,8 @@ impl SettingsWindow {
                             .child(panel::setting_block(
                                 "Signals",
                                 Some(
-                                    "Which shared signal each of the shader's sixteen slots reads",
+                                    "Which shared signal each of the shader's sixteen slots reads"
+                                        .into(),
                                 ),
                                 Some(add.into_any_element()),
                                 editor.list(cx),
@@ -2856,7 +2997,8 @@ impl SettingsWindow {
                                 "Slots",
                                 Some(
                                     "Each slot as it reaches the shader; slots without a route \
-                                 are hand-set knobs",
+                                 are hand-set knobs"
+                                        .into(),
                                 ),
                                 None,
                                 slots,
@@ -3040,7 +3182,8 @@ impl SettingsWindow {
                         "Transport",
                         Some(
                             "Start and stop without leaving this page, since every setting \
-                         below is judged by ear",
+                         below is judged by ear"
+                                .into(),
                         ),
                         panel::transport_strip(&self.playback, &self.library, cx),
                     )
@@ -3081,6 +3224,7 @@ impl SettingsWindow {
                 },
             ))
             .section(self.output_section(q, cx))
+            .section(self.broadcast_section(q, cx))
     }
 
     /// How long one track overlaps the next. Zero is off, which is the
@@ -3092,7 +3236,8 @@ impl SettingsWindow {
             Some(
                 "How long a track overlaps the one after it. Shuffle and skipping are what \
                  the fade is for, so an album's own boundaries stay untouched unless the \
-                 row below says otherwise. Zero turns it off",
+                 row below says otherwise. Zero turns it off"
+                    .into(),
             ),
             settings_ui::scalar(
                 &self.crossfade_scrub,
@@ -3135,7 +3280,8 @@ impl SettingsWindow {
             Some(
                 "Overlap tracks that belong to the same record as well. Off keeps a \
                  record's own splices exactly as they were mastered, which is where \
-                 gapless matters most",
+                 gapless matters most"
+                    .into(),
             ),
             control,
         )
@@ -3199,7 +3345,7 @@ impl SettingsWindow {
                         "Play every track at the loudness its ReplayGain tags measured, so a \
                          shuffle stops jumping between masters. Track levels each file on its \
                          own; Album uses the record's gain across all its tracks, which keeps \
-                         an album's own quiet and loud passages where they were put",
+                         an album's own quiet and loud passages where they were put".into(),
                     ),
                     panel::choices(
                         MODES,
@@ -3220,7 +3366,7 @@ impl SettingsWindow {
                             "Added to every tagged gain. ReplayGain's reference sits below where \
                              modern records are cut, so a levelled library plays quieter than the \
                              same library raw; this is where that comes back. A boost never \
-                             clips: the tagged peak caps it",
+                             clips: the tagged peak caps it".into(),
                         ),
                         settings_ui::scalar(
                             &self.preamp_scrub,
@@ -3241,7 +3387,7 @@ impl SettingsWindow {
                         Some(
                             "What a file with no ReplayGain tags plays at. Nothing measured it, \
                              so this is a guess standing in for one - leave it at zero and \
-                             untagged tracks play as they always did",
+                             untagged tracks play as they always did".into(),
                         ),
                         settings_ui::scalar(
                             &self.fallback_scrub,
@@ -3264,7 +3410,7 @@ impl SettingsWindow {
                     Some(
                         "Where the measurement pass puts its numbers. The library database keeps \
                          your files untouched; tags put the same values where every other player \
-                         reads them, at the cost of rewriting the audio files",
+                         reads them, at the cost of rewriting the audio files".into(),
                     ),
                     panel::choices(
                         &[
@@ -3284,7 +3430,7 @@ impl SettingsWindow {
                          settled, so a library that grows keeps its gains without a trip back \
                          here. The numbers land wherever Save Measured Gains points. Turning \
                          this on offers to measure what's already missing first; after that it \
-                         only ever sees files that just landed",
+                         only ever sees files that just landed".into(),
                     ),
                     panel::toggle(rg.auto, Self::set_replay_gain_auto, cx),
                 );
@@ -3590,7 +3736,8 @@ impl SettingsWindow {
                     Some(
                         "Claim the device for rox alone and run it at the file's own rate where \
                      the hardware takes one; off shares the system mixer with everything \
-                     else on the desktop",
+                     else on the desktop"
+                            .into(),
                     ),
                     exclusive,
                 )
@@ -3611,6 +3758,103 @@ impl SettingsWindow {
                     self.output_status_block(cx).into_any_element()
                 })
             },
+        )
+    }
+
+    /// The Broadcast section (ADR 22): the icecast source client, which is
+    /// the audio half of the refused web server. The switch is what
+    /// connects and disconnects; the fields write through as they're
+    /// typed and the sink re-applies when one is left.
+    fn broadcast_section(&self, q: &Query, cx: &mut Context<Self>) -> Section {
+        Section::new(q, icons::RADIO, "Broadcast", None, |rows| {
+            rows.keyed(
+                &["icecast", "stream", "radio", "cast", "mount"],
+                "Stream to Icecast",
+                Some(
+                    "Push what rox plays to an icecast server as a source client, encoded to \
+                     MP3. The mount, the listeners, and the network face all belong to \
+                     icecast; rox only connects out, and an unreachable server never \
+                     touches local playback".into(),
+                ),
+                panel::toggle(self.broadcast_enabled, Self::set_broadcast_enabled, cx),
+            )
+            .keyed(
+                &["icecast", "server", "host", "port"],
+                "Server",
+                Some("The icecast server's host and port; the source protocol runs over a plain socket".into()),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(Input::new(&self.broadcast_host).w(px(180.)))
+                    .child(Input::new(&self.broadcast_port).w(px(64.))),
+            )
+            .keyed(
+                &["icecast", "mount", "name", "advertise"],
+                "Mount",
+                Some("The mount listeners tune to, and the stream name it advertises".into()),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(Input::new(&self.broadcast_mount).w(px(104.)))
+                    .child(Input::new(&self.broadcast_name).w(px(140.))),
+            )
+            .keyed(
+                &["icecast", "source", "login", "password", "credentials"],
+                "Source Login",
+                Some("icecast's source credentials, the user and password its config names".into()),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tokens::SPACE_SM)
+                    .child(Input::new(&self.broadcast_user).w(px(104.)))
+                    .child(Input::new(&self.broadcast_password).w(px(140.))),
+            )
+            .custom(&["bitrate", "kbps", "quality", "encoder", "mp3"], || {
+                self.broadcast_bitrate_row(cx).into_any_element()
+            })
+        })
+    }
+
+    /// The broadcast switch. Applying reads the file the field edits landed
+    /// in, so the sink comes up on whatever the rows say; off tears the
+    /// connection down, which is what releases the mount.
+    fn set_broadcast_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.broadcast_enabled = on;
+        Settings::update(move |s| s.broadcast.enabled = on);
+        crate::integrations::broadcast::apply();
+        cx.notify();
+    }
+
+    /// The encoder bitrate, the steps LAME takes. A change while streaming
+    /// reconnects, since one stream can't change bitrate under a listener.
+    fn broadcast_bitrate_row(&self, cx: &mut Context<Self>) -> Div {
+        let options: Vec<(u32, SharedString)> = [96u32, 112, 128, 160, 192, 224, 256, 320]
+            .into_iter()
+            .map(|kbps| (kbps, format!("{kbps} kbps").into()))
+            .collect();
+        panel::setting_row(
+            "Bitrate",
+            Some("What the MP3 encoder spends per second of stream".into()),
+            panel::picker(
+                "broadcast-bitrate",
+                self.broadcast_bitrate,
+                options,
+                false,
+                |this: &mut Self, kbps, cx| {
+                    this.broadcast_bitrate = kbps;
+                    Settings::update(move |s| s.broadcast.bitrate = kbps);
+                    if this.broadcast_enabled {
+                        crate::integrations::broadcast::apply();
+                    }
+                    cx.notify();
+                },
+                cx,
+            ),
         )
     }
 
@@ -3635,7 +3879,8 @@ impl SettingsWindow {
             Some(
                 "Following reopens the device at each file's own rate, which costs a gap \
                  at a boundary where the rate changes; pinning one rate never pays that \
-                 and resamples anything that doesn't match",
+                 and resamples anything that doesn't match"
+                    .into(),
             ),
             panel::picker(
                 "output-rate",
@@ -3665,7 +3910,8 @@ impl SettingsWindow {
             "Format",
             Some(
                 "What rox hands the card. A card that won't take the pick runs the widest \
-                 it has and says so in the status below",
+                 it has and says so in the status below"
+                    .into(),
             ),
             panel::picker(
                 "output-format",
@@ -3694,7 +3940,8 @@ impl SettingsWindow {
             "Buffer",
             Some(
                 "How much audio the card holds at a time. Shorter reacts quicker and \
-                 crackles sooner on a busy machine; longer is safer and lazier",
+                 crackles sooner on a busy machine; longer is safer and lazier"
+                    .into(),
             ),
             panel::picker(
                 "output-period",
@@ -3740,7 +3987,7 @@ impl SettingsWindow {
         };
         panel::setting_row(
             "Device",
-            Some(description),
+            Some(description.into()),
             div()
                 .flex()
                 .flex_row()
@@ -3874,7 +4121,8 @@ impl SettingsWindow {
                     Some(
                         "Keep settings, library, and caches in a rox-data folder beside \
                      the executable, so the player travels with its data; turning it \
-                     off goes back to the system folder and leaves rox-data in place",
+                     off goes back to the system folder and leaves rox-data in place"
+                            .into(),
                     ),
                     portable_control,
                 ));
@@ -3899,7 +4147,7 @@ impl SettingsWindow {
                     "Enable AI Features",
                     Some(
                         "Let AI tooling talk to rox: adds MCP support, and the ML model \
-                         downloads, with their pages joining the sidebar.",
+                         downloads, with their pages joining the sidebar.".into(),
                     ),
                     panel::toggle(self.ai_enabled, Self::set_ai_enabled, cx),
                 )
@@ -3908,9 +4156,23 @@ impl SettingsWindow {
                 rows.keyed(
                     &["release", "version", "upgrade"],
                     "Check for Updates",
-                    Some("Look for a newer release once a day when rox starts; the About window checks now either way"),
+                    Some("Look for a newer release once a day when rox starts; the About window checks now either way".into()),
                     panel::toggle(self.check_updates, Self::set_check_updates, cx),
                 )
+                // Meaningless where the install can't replace itself - a
+                // distro package, a read-only folder - so the row only
+                // exists where the updater can act on it.
+                .when(updater::can_update(), |rows| {
+                    rows.keyed(
+                        &["release", "download", "auto", "update"],
+                        "Download Updates",
+                        Some(
+                            "When a check finds a newer release, download and stage it in \
+                             the background; the next start runs it".into(),
+                        ),
+                        panel::toggle(self.download_updates, Self::set_download_updates, cx),
+                    )
+                })
             }))
             .section(Section::new(q, icons::LAYOUT_DASHBOARD, "Layout", None, |rows| {
                 rows.keyed(
@@ -3918,7 +4180,7 @@ impl SettingsWindow {
                     "Lock Panel Resize",
                     Some(
                         "Panel splits only resize while Design Mode is on, so a drag \
-                         near a seam can't nudge a finished layout",
+                         near a seam can't nudge a finished layout".into(),
                     ),
                     panel::toggle(settings::resize_lock(), Self::set_resize_lock, cx),
                 )
@@ -3932,7 +4194,7 @@ impl SettingsWindow {
                         "Remain in Tray",
                         Some(
                             "Keep the music playing when the last window closes, with the \
-                             tray icon (the dock on macOS) as the way back in",
+                             tray icon (the dock on macOS) as the way back in".into(),
                         ),
                         panel::toggle(settings::quit_to_tray(), Self::set_quit_to_tray, cx),
                     )
@@ -3960,7 +4222,7 @@ impl SettingsWindow {
                                 "rox's machine interface while it runs: JSON-RPC over a \
                                  local socket, keyed to this data folder. roxctl drives \
                                  it from a shell, and the rox-mcp proxy answers MCP \
-                                 clients over it",
+                                 clients over it".into(),
                             ),
                             div()
                                 .flex()
@@ -4007,7 +4269,8 @@ impl SettingsWindow {
                     Some(
                         "Launch with the play queue as you left it, paused on the track that \
                          was playing and where it left off. Queued tracks outside your library \
-                         folders can't be restored and drop from the order",
+                         folders can't be restored and drop from the order"
+                            .into(),
                     ),
                     panel::toggle(self.restore_last_track, Self::set_restore_last_track, cx),
                 )
@@ -4016,7 +4279,9 @@ impl SettingsWindow {
                 rows.keyed(
                     &["stars", "numeric"],
                     "Rating Scale",
-                    Some("Stars for quick clicks, 0-10 in half steps for finer review scores"),
+                    Some(
+                        "Stars for quick clicks, 0-10 in half steps for finer review scores".into(),
+                    ),
                     panel::choices(
                         &[
                             ("Stars", RatingStyle::Stars),
@@ -4030,7 +4295,10 @@ impl SettingsWindow {
                 .keyed(
                     &["stars", "empty"],
                     "Unrated Dots",
-                    Some("Mark unfilled star slots with a faint dot instead of leaving them empty"),
+                    Some(
+                        "Mark unfilled star slots with a faint dot instead of leaving them empty"
+                            .into(),
+                    ),
                     panel::toggle(self.rating_dots, Self::set_rating_dots, cx),
                 )
             }))
@@ -4070,11 +4338,12 @@ impl SettingsWindow {
                         Some(
                             "How the tracks already queued are arranged while shuffle is on. \
                              The transport's shuffle button turns it on and off; this is what \
-                             it does once it's on",
+                             it does once it's on"
+                                .into(),
                         ),
                         None,
                         panel::mode_list(
-                            SHUFFLE_MODES,
+                            &shuffle_modes(),
                             shuffle_mode,
                             move |mode| mode != ShuffleMode::Similar || analyzed,
                             |this: &mut Self, mode, cx| {
@@ -4106,11 +4375,12 @@ impl SettingsWindow {
                              appended to the timeline as ordinary context, so it's visible \
                              and removable rather than hidden state. With the order above \
                              set to Similar it keeps finding tracks that sound like the one \
-                             playing, whichever of these is chosen",
+                             playing, whichever of these is chosen"
+                                .into(),
                         ),
                         None,
                         panel::mode_list(
-                            CONTINUATION_MODES,
+                            &continuation_modes(),
                             continuation,
                             |_| true,
                             |this: &mut Self, mode, cx| {
@@ -4283,7 +4553,7 @@ impl SettingsWindow {
                 rows.keyed(
                     &["listens", "history"],
                     "Scrobble Tracks",
-                    Some("Send played tracks to Last.fm once they cross the threshold"),
+                    Some("Send played tracks to Last.fm once they cross the threshold".into()),
                     panel::toggle(
                         config.scrobbling,
                         |this: &mut Self, on, cx| {
@@ -4298,7 +4568,8 @@ impl SettingsWindow {
                     "Scrobble Threshold",
                     Some(
                         "How much of a track has to play before it scrobbles; \
-                         the seek strip and waveform can mark it",
+                         the seek strip and waveform can mark it"
+                            .into(),
                     ),
                     settings_ui::slider_edit(
                         &self.threshold_scrub,
@@ -4324,7 +4595,8 @@ impl SettingsWindow {
                         "Love Favourites",
                         Some(
                             "Mirror hearts to Last.fm as loved tracks; \
-                             taking a heart back unloves it there",
+                             taking a heart back unloves it there"
+                                .into(),
                         ),
                         panel::toggle(
                             config.love_favourites,
@@ -4356,13 +4628,15 @@ impl SettingsWindow {
                     rows.keyed(
                         &["status", "now playing"],
                         "Enable Rich Presence",
-                        Some("Show rox activity on Discord when playing music"),
+                        Some("Show rox activity on Discord when playing music".into()),
                         panel::toggle(self.discord_enabled, Self::set_discord_enabled, cx),
                     )
                     .keyed(
                         &["link", "profile"],
                         "Show Last.fm Button",
-                        Some("Include a clickable 'View on Last.fm' button in Discord status"),
+                        Some(
+                            "Include a clickable 'View on Last.fm' button in Discord status".into(),
+                        ),
                         panel::toggle(
                             self.discord_show_lastfm_button,
                             Self::set_discord_show_lastfm_button,
@@ -4372,7 +4646,10 @@ impl SettingsWindow {
                     .keyed(
                         &["link", "video"],
                         "Show YouTube Button",
-                        Some("Include a clickable 'Search on YouTube' button in Discord status"),
+                        Some(
+                            "Include a clickable 'Search on YouTube' button in Discord status"
+                                .into(),
+                        ),
                         panel::toggle(
                             self.discord_show_youtube_button,
                             Self::set_discord_show_youtube_button,
@@ -4392,7 +4669,9 @@ impl SettingsWindow {
                     rows.keyed(
                         &["ffmpeg", "convert", "encoder", "binary", "test"],
                         "FFmpeg Binary",
-                        Some("Which ffmpeg runs conversions; leave empty for the one on PATH"),
+                        Some(
+                            "Which ffmpeg runs conversions; leave empty for the one on PATH".into(),
+                        ),
                         div()
                             .flex()
                             .flex_row()
@@ -4559,7 +4838,7 @@ impl SettingsWindow {
                 .keyed(
                     &["online", "fetch"],
                     "LRCLIB",
-                    Some("Fetch missing lyrics from lrclib.net, synced sheets when it has them"),
+                    Some("Fetch missing lyrics from lrclib.net, synced sheets when it has them".into()),
                     panel::toggle(self.providers.lrclib, Self::set_lrclib, cx),
                 )
                 .keyed(
@@ -4567,7 +4846,7 @@ impl SettingsWindow {
                     "Save Fetched Lyrics",
                     Some(
                         "Where a fetched sheet lands: rox's own data folder keeping the \
-                         library clean, an .lrc next to the track, or the embedded tag",
+                         library clean, an .lrc next to the track, or the embedded tag".into(),
                     ),
                     panel::choices(
                         &[
@@ -4587,7 +4866,7 @@ impl SettingsWindow {
                     "MusicBrainz",
                     Some(
                         "Look up tags on musicbrainz.org; the metadata panel's search \
-                         shows matches to confirm field by field before writing",
+                         shows matches to confirm field by field before writing".into(),
                     ),
                     panel::toggle(self.providers.musicbrainz, Self::set_musicbrainz, cx),
                 )
@@ -4596,19 +4875,19 @@ impl SettingsWindow {
                 rows.keyed(
                     &["artwork", "covers", "album art"],
                     "iTunes",
-                    Some("Search iTunes for cover art; the cover editor's search shows matches to pick before setting"),
+                    Some("Search iTunes for cover art; the cover editor's search shows matches to pick before setting".into()),
                     panel::toggle(self.providers.itunes, Self::set_itunes, cx),
                 )
                 .keyed(
                     &["artwork", "covers", "album art"],
                     "Deezer",
-                    Some("Search Deezer for cover art, up to 1000 pixels"),
+                    Some("Search Deezer for cover art, up to 1000 pixels".into()),
                     panel::toggle(self.providers.deezer, Self::set_deezer, cx),
                 )
                 .keyed(
                     &["artwork", "covers", "album art"],
                     "Last.fm",
-                    Some("Search Last.fm for cover art"),
+                    Some("Search Last.fm for cover art".into()),
                     panel::toggle(self.providers.lastfm_art, Self::set_lastfm_art, cx),
                 )
             }))
@@ -4618,7 +4897,7 @@ impl SettingsWindow {
                     Some(
                         "Fetch artist biographies, stats, and similar artists for the \
                          biography panel, with a portrait from Deezer; everything is \
-                         kept in the data folder and reads offline afterwards",
+                         kept in the data folder and reads offline afterwards".into(),
                     ),
                     panel::toggle(self.providers.artist, Self::set_artist, cx),
                 )
@@ -4935,7 +5214,8 @@ impl SettingsWindow {
                             "Watch folders",
                             Some(
                                 "Fold added, edited, and deleted files into the library as \
-                             they happen, without a manual rescan",
+                             they happen, without a manual rescan"
+                                    .into(),
                             ),
                             panel::toggle(self.watch_library, Self::set_watch_library, cx),
                         ),
@@ -4947,7 +5227,8 @@ impl SettingsWindow {
                             "Treat values differing only by case as one - Rock and \
                          rock become the same genre, artist, and album, shown \
                          under the casing most tracks carry. Files keep their \
-                         tags as written",
+                         tags as written"
+                                .into(),
                         ),
                         panel::toggle(self.fold_case, Self::set_fold_case, cx),
                     )
@@ -4958,7 +5239,8 @@ impl SettingsWindow {
                             "\"Dubstep, Trap\" and \"Drum & Bass / Neurofunk\" count \
                          each value as its own genre; semicolons always split. \
                          Off keeps slashed names whole for tags where they mean \
-                         one genre. Files keep their tags as written",
+                         one genre. Files keep their tags as written"
+                                .into(),
                         ),
                         panel::toggle(
                             self.split_genre_compounds,
@@ -5018,7 +5300,8 @@ impl SettingsWindow {
                      saved before one was switched to tags is still in rox alone. This \
                      writes the lyrics, gains and descriptions rox already holds into the \
                      files themselves, so a folder handed to another player carries them. \
-                     Nothing is worked out again",
+                     Nothing is worked out again"
+                        .into(),
                 ),
                 div(),
             )
@@ -5220,33 +5503,33 @@ impl SettingsWindow {
                 rows.keyed(
                     &["size", "disk", "space"],
                     "Music Files",
-                    Some("What the scanned folders hold; the files stay where they are"),
+                    Some("What the scanned folders hold; the files stay where they are".into()),
                     readout(music),
                 )
                 .keyed(
                     &["database", "catalog", "index", "size", "disk"],
                     "Catalog",
-                    Some("The track index scans build: a row a track with its tags, its file details and any cue spans, inside library.db"),
+                    Some("The track index scans build: a row a track with its tags, its file details and any cue spans, inside library.db".into()),
                     readout(human_size(store.catalog)),
                 )
                 .keyed(
                     &["playlists", "history", "listens", "genres", "size"],
                     "Playlists and History",
-                    Some("Your playlists and their members, what you've played, and the library's genre notes. All of it small next to the rest of library.db"),
+                    Some("Your playlists and their members, what you've played, and the library's genre notes. All of it small next to the rest of library.db".into()),
                     readout(human_size(store.playlists + store.history + store.genres)),
                 )
                 .when(reclaimable, |rows| {
                     rows.keyed(
                         &["free", "reclaim", "vacuum", "deleted", "size"],
                         "Reclaimable Space",
-                        Some("Pages inside library.db that deletes left behind. What gets written next fills them again, so the file stops growing before it starts shrinking"),
+                        Some("Pages inside library.db that deletes left behind. What gets written next fills them again, so the file stops growing before it starts shrinking".into()),
                         readout(human_size(store.free)),
                     )
                 })
                 .keyed(
                     &["size", "disk"],
                     "Lyrics",
-                    Some("Fetched and edited sheets kept in the app's own store (lyrics/), so library folders stay clean"),
+                    Some("Fetched and edited sheets kept in the app's own store (lyrics/), so library folders stay clean".into()),
                     readout(human_size(info.lyrics)),
                 )
             }))
@@ -5254,7 +5537,7 @@ impl SettingsWindow {
                 rows = rows.keyed(
                     &["acoustic", "embeddings", "vectors", "similar", "size"],
                     "Vectors",
-                    Some("What every description weighs inside library.db. On a library the analysis pass has been through this is most of the file, a couple of kilobytes a track against a few hundred bytes of tags"),
+                    Some("What every description weighs inside library.db. On a library the analysis pass has been through this is most of the file, a couple of kilobytes a track against a few hundred bytes of tags".into()),
                     readout(human_size(store.acoustic)),
                 );
                 if models.is_empty() {
@@ -5265,7 +5548,7 @@ impl SettingsWindow {
                     return rows.when(measured, |rows| rows.keyed(
                         &["acoustic", "analysis", "model", "describe"],
                         "Models",
-                        Some("Nothing has described the library yet. Turning on acoustic analysis on the Library page is what fills this in, and every model that has run gets a row here"),
+                        Some("Nothing has described the library yet. Turning on acoustic analysis on the Library page is what fills this in, and every model that has run gets a row here".into()),
                         readout("None".into()),
                     ));
                 }
@@ -5279,7 +5562,7 @@ impl SettingsWindow {
                 rows.keyed(
                     &["tempo", "bpm", "measured", "clear"],
                     "Measured Tempos",
-                    Some("The tempos rox counted from the audio, for tracks whose tags carry none; the tags' own numbers aren't touched. Clearing puts those tracks back on Analyze Missing's list on the Library page, which is how improved beat counting reaches numbers an older pass wrote"),
+                    Some("The tempos rox counted from the audio, for tracks whose tags carry none; the tags' own numbers aren't touched. Clearing puts those tracks back on Analyze Missing's list on the Library page, which is how improved beat counting reaches numbers an older pass wrote".into()),
                     div()
                         .flex()
                         .flex_row()
@@ -5301,7 +5584,7 @@ impl SettingsWindow {
                 rows.keyed(
                     &["cache", "clear", "artwork", "size"],
                     "Cover Thumbnails",
-                    Some("Small covers kept after their first render (thumbs.db); cleared ones rebuild as they scroll into view"),
+                    Some("Small covers kept after their first render (thumbs.db); cleared ones rebuild as they scroll into view".into()),
                     div()
                         .flex()
                         .flex_row()
@@ -5318,7 +5601,7 @@ impl SettingsWindow {
                 .keyed(
                     &["cache", "clear", "peaks", "size"],
                     "Waveforms",
-                    Some("Each track's peak strip, kept after its first play; cleared ones re-decode next play"),
+                    Some("Each track's peak strip, kept after its first play; cleared ones re-decode next play".into()),
                     div()
                         .flex()
                         .flex_row()
@@ -5335,7 +5618,7 @@ impl SettingsWindow {
                 .keyed(
                     &["cache", "clear", "artist", "images", "portrait", "biography", "size"],
                     "Artist Images",
-                    Some("Portraits, banners and biographies fetched for the artist views (artists/); cleared ones are fetched again the next time a view opens"),
+                    Some("Portraits, banners and biographies fetched for the artist views (artists/); cleared ones are fetched again the next time a view opens".into()),
                     div()
                         .flex()
                         .flex_row()
@@ -5354,13 +5637,13 @@ impl SettingsWindow {
                 rows.keyed(
                     &["model", "weights", "download", "ml", "size"],
                     "Model Weights",
-                    Some("The models downloaded for acoustic analysis (models/). The ML Models page is where they're fetched and deleted, one row a model"),
+                    Some("The models downloaded for acoustic analysis (models/). The ML Models page is where they're fetched and deleted, one row a model".into()),
                     readout(human_size(info.weights)),
                 )
                 .keyed(
                     &["workspace", "layout", "shader", "icons", "look", "size"],
                     "Looks and Layouts",
-                    Some("The look the app is wearing (workspace.json) with your saved workspaces, ejected shader files and icon packs beside it. Small, and every byte of it is something you set up"),
+                    Some("The look the app is wearing (workspace.json) with your saved workspaces, ejected shader files and icon packs beside it. Small, and every byte of it is something you set up".into()),
                     readout(human_size(info.app_data)),
                 )
             }))
@@ -5368,7 +5651,7 @@ impl SettingsWindow {
                 rows.keyed(
                     &["debug", "reveal", "diagnostics"],
                     "Logs",
-                    Some("What each run writes for bug reports (logs/rox.log), rolled at a size cap so it never grows large"),
+                    Some("What each run writes for bug reports (logs/rox.log), rolled at a size cap so it never grows large".into()),
                     div()
                         .flex()
                         .flex_row()
@@ -5392,6 +5675,14 @@ impl SettingsWindow {
     fn set_check_updates(&mut self, on: bool, cx: &mut Context<Self>) {
         self.check_updates = on;
         Settings::update(move |s| s.check_updates = on);
+        cx.notify();
+    }
+
+    /// The auto-download toggle, same shape: the next launch's check reads
+    /// it.
+    fn set_download_updates(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.download_updates = on;
+        Settings::update(move |s| s.download_updates = on);
         cx.notify();
     }
 
@@ -5469,7 +5760,8 @@ impl SettingsWindow {
                 Some(
                     "Show the panels still being built in the Panels menu and the \
                      launcher; they change shape between releases, and a layout that \
-                     already holds one keeps it when this goes back off",
+                     already holds one keeps it when this goes back off"
+                        .into(),
                 ),
                 panel::toggle(self.experimental, Self::set_experimental, cx),
             )
@@ -5513,7 +5805,8 @@ impl SettingsWindow {
                     Some(
                         "Answer tool calls from connected MCP clients. The proxy checks \
                          this on every call, so while it's off clients are turned away \
-                         with the reason; the config below can be set up either way",
+                         with the reason; the config below can be set up either way"
+                            .into(),
                     ),
                     toggle,
                 )
@@ -5531,7 +5824,8 @@ impl SettingsWindow {
                                  Claude Desktop, or any other) to let it ask rox about \
                                  the library, what's playing, and the transport. rox \
                                  has to be running; the tools answer over its control \
-                                 socket",
+                                 socket"
+                                        .into(),
                                 ),
                                 div().into_any_element(),
                             ))
@@ -6081,7 +6375,8 @@ impl SettingsWindow {
                     Some(
                         "Work out what each track sounds like, so the library can find music \
                          that resembles what's playing. Everything is worked out on this \
-                         machine, and describing a large library takes a while",
+                         machine, and describing a large library takes a while"
+                            .into(),
                     ),
                     panel::toggle(on, Self::set_acoustic_analysis, cx),
                 );
@@ -6128,7 +6423,8 @@ impl SettingsWindow {
                          files untouched; tags put a copy in each file as well, so the \
                          descriptions survive the library being rebuilt or the folder moving to \
                          another machine, at the cost of rewriting the audio files. Tags reach \
-                         MP3 and FLAC only - every other format keeps the database copy",
+                         MP3 and FLAC only - every other format keeps the database copy"
+                            .into(),
                     ),
                     panel::choices(
                         &[
@@ -6148,7 +6444,8 @@ impl SettingsWindow {
                          settled, so a library that grows keeps its descriptions without a trip \
                          back here. Off, new files wait for the Analyze Missing button. Turning \
                          this on offers to analyze what's already missing first; after that it \
-                         only ever sees files that just landed",
+                         only ever sees files that just landed"
+                            .into(),
                     ),
                     panel::toggle(auto, Self::set_acoustic_auto, cx),
                 );
@@ -6340,7 +6637,8 @@ impl SettingsWindow {
                         "Count the beats in tracks whose tags don't say, so the library can \
                          show and sort by tempo. Everything is worked out on this machine, \
                          the numbers go in the library database, and your files are left \
-                         alone",
+                         alone"
+                            .into(),
                     ),
                     panel::toggle(on, Self::set_tempo_analysis, cx),
                 );
@@ -6353,7 +6651,8 @@ impl SettingsWindow {
                              the sync has settled, so a library that grows keeps its tempos \
                              without a trip back here. Off, new files wait for the Analyze \
                              Missing button. Turning this on offers to time what's already \
-                             missing first; after that it only ever sees files that just landed",
+                             missing first; after that it only ever sees files that just landed"
+                                .into(),
                         ),
                         panel::toggle(auto, Self::set_tempo_auto, cx),
                     );

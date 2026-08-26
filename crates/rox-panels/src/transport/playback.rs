@@ -84,97 +84,97 @@ pub enum PlaybackItem {
 /// offers, and where a menu toggle slots a re-shown button back in.
 const ITEMS: &[panel::ArrangeSpec<PlaybackItem>] = &[
     panel::ArrangeSpec {
-        label: "Previous",
+        key: "playback-item-previous",
         icon: Some(icons::SKIP_BACK),
         value: PlaybackItem::Prev,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Seek Back",
+        key: "playback-item-seek-back",
         icon: Some(icons::REWIND),
         value: PlaybackItem::SeekBack,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Play",
+        key: "playback-item-play",
         icon: Some(icons::PLAY),
         value: PlaybackItem::Play,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Seek Forward",
+        key: "playback-item-seek-forward",
         icon: Some(icons::FAST_FORWARD),
         value: PlaybackItem::SeekForward,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Next",
+        key: "playback-item-next",
         icon: Some(icons::SKIP_FORWARD),
         value: PlaybackItem::Next,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Stop",
+        key: "playback-item-stop",
         icon: Some(icons::STOP),
         value: PlaybackItem::Stop,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Volume",
+        key: "playback-item-volume",
         icon: Some(icons::VOLUME_2),
         value: PlaybackItem::Volume,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Loop",
+        key: "playback-item-loop",
         icon: Some(icons::REPEAT),
         value: PlaybackItem::Repeat,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Shuffle",
+        key: "playback-item-shuffle",
         icon: Some(icons::SHUFFLE),
         value: PlaybackItem::Shuffle,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Continue",
+        key: "playback-item-continue",
         icon: Some(icons::INFINITY),
         value: PlaybackItem::Continue,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Crossfade",
+        key: "playback-item-crossfade",
         icon: Some(icons::BLEND),
         value: PlaybackItem::Crossfade,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Random",
+        key: "playback-item-random",
         icon: Some(icons::DICE),
         value: PlaybackItem::Random,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Stop After",
+        key: "playback-item-stop-after",
         icon: Some(icons::SQUARE_DASHED),
         value: PlaybackItem::StopAfter,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Favourite",
+        key: "playback-item-favourite",
         icon: Some(icons::HEART),
         value: PlaybackItem::Favourite,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Rating",
+        key: "playback-item-rating",
         icon: Some(icons::STAR),
         value: PlaybackItem::Rating,
         repeats: false,
     },
     panel::ArrangeSpec {
-        label: "Spacer",
+        key: "head-piece-spacer",
         icon: Some(icons::MOVE_HORIZONTAL),
         value: PlaybackItem::Spacer,
         repeats: true,
@@ -1181,7 +1181,8 @@ impl PanelSettings for TransportPanel {
                 "Buttons",
                 Some(
                     "Drag along the bar to reorder; drag between the rows, \
-                     or use a chip's x and plus, to hide and show",
+                     or use a chip's x and plus, to hide and show"
+                        .into(),
                 ),
                 None,
                 panel::arrange_editor(
@@ -1198,7 +1199,7 @@ impl PanelSettings for TransportPanel {
             .when(self.config.items.contains(&PlaybackItem::Play), |d| {
                 d.child(panel::setting_row(
                     "Play Highlight",
-                    Some("The play button's accent fill: a circle, a soft square, or none"),
+                    Some("The play button's accent fill: a circle, a soft square, or none".into()),
                     panel::choices(
                         &[
                             ("Circle", PlayHighlight::Circle),

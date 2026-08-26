@@ -280,7 +280,8 @@ impl PanelSettings for OutputPanel {
                     Some(
                         "Badge keeps it to a chip with the rest on hover; compact gives the \
                          headline a line of its own, for a strip along an edge; expanded adds \
-                         the reasons beside it, or under it when the panel is too narrow",
+                         the reasons beside it, or under it when the panel is too narrow"
+                            .into(),
                     ),
                     panel::choices(
                         &Self::DETAIL_PICKS,
@@ -296,7 +297,8 @@ impl PanelSettings for OutputPanel {
                     "Device Name",
                     Some(
                         "Name the running device in the headline; off keeps the line to the \
-                         mode, the rate, and the format",
+                         mode, the rate, and the format"
+                            .into(),
                     ),
                     panel::toggle(
                         self.config.device,
@@ -311,7 +313,8 @@ impl PanelSettings for OutputPanel {
                     "File Rate",
                     Some(
                         "Confirm the playing file's own rate when nothing is converting it. A \
-                         conversion says so either way, since that's what the warning is about",
+                         conversion says so either way, since that's what the warning is about"
+                            .into(),
                     ),
                     panel::toggle(
                         self.config.source_rate,

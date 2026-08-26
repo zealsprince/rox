@@ -1367,13 +1367,13 @@ impl PanelSettings for QueuePanel {
             .gap(tokens::SPACE_MD)
             .child(panel::setting_block(
                 "Columns",
-                Some("Which track columns show"),
+                Some("Which track columns show".into()),
                 None,
                 track_columns::checklist(COLUMNS, self, cx),
             ))
             .child(panel::setting_row(
                 "Headings",
-                Some("Break the queue into album runs; Expanded adds the cover and stats"),
+                Some("Break the queue into album runs; Expanded adds the cover and stats".into()),
                 panel::choices(
                     &[
                         ("Off", Headers::Off),

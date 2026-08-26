@@ -8,8 +8,12 @@
 //!
 //! Method surface, version 1: `transport.*` for the deck, `queue.*` for
 //! edits by stable entry id, `library.*` for search, now-playing tags, and
-//! artwork. The event stream and the debug scope are their own issues and
-//! land beside these, not inside them.
+//! artwork. `subscribe` turns on the push half: `event.*` frames for track
+//! turnover, play-state edges, and queue revision bumps, published off the
+//! player observer below so a front end never has to poll. The `debug.*`
+//! scope is the runtime test surface: the settings and panel dumps here,
+//! and the drive half (windows, actions, synthetic input) in the sibling
+//! `drive` module.
 
 use std::path::PathBuf;
 
@@ -41,7 +45,8 @@ pub fn serve(state: &AppState, cx: &mut App) {
         }
     };
     log::info!("control socket: listening at {}", path.display());
-    let (requests, cleanup) = server.spawn();
+    let (requests, events, cleanup) = server.spawn();
+    publish_events(state, events, cx);
     let state = state.clone();
     cx.spawn(async move |cx| {
         while let Ok(request) = requests.recv().await {
@@ -54,6 +59,60 @@ pub fn serve(state: &AppState, cx: &mut App) {
     cx.on_app_quit(move |_| {
         let cleanup = cleanup.clone();
         async move { cleanup.remove() }
+    })
+    .detach();
+}
+
+/// The slice of player state whose edges become events.
+struct Snapshot {
+    playing: bool,
+    active: bool,
+    volume: f32,
+    muted: bool,
+    queue_rev: Option<u64>,
+    track: Option<TrackKey>,
+}
+
+impl Snapshot {
+    fn take(state: &AppState, cx: &App) -> Snapshot {
+        let player = state.player.read(cx);
+        Snapshot {
+            playing: player.is_playing(),
+            active: player.is_active(),
+            volume: player.volume(),
+            muted: player.muted(),
+            queue_rev: player.queue_rev(),
+            track: player.now_playing().map(|now| now.key),
+        }
+    }
+}
+
+/// Publish `event.*` frames to subscribed connections off the player
+/// observer, the same wake the media widget publishes on: the player pump
+/// already notifies on exactly the edges the contract names - play-state
+/// flips, track turnover, queue revision bumps - so this diffs a small
+/// snapshot and emits only when something moved. While audio plays the
+/// pump notifies every tick for the clock; the diff makes those free, and
+/// the emit itself never blocks (a consumer that can't keep up is cut off
+/// in the crate, not waited on here).
+fn publish_events(state: &AppState, events: rox_ipc::Events, cx: &mut App) {
+    let state = state.clone();
+    let player = state.player.clone();
+    let mut seen = Snapshot::take(&state, cx);
+    cx.observe(&player, move |_, cx| {
+        let now = Snapshot::take(&state, cx);
+        if now.track != seen.track {
+            events.emit("event.track", now_playing(&state, cx));
+        }
+        if (now.playing, now.active, now.muted) != (seen.playing, seen.active, seen.muted)
+            || now.volume != seen.volume
+        {
+            events.emit("event.playback", status(&state, cx));
+        }
+        if now.queue_rev != seen.queue_rev {
+            events.emit("event.queue", json!({ "queue_rev": now.queue_rev }));
+        }
+        seen = now;
     })
     .detach();
 }
@@ -168,7 +227,8 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             serde_json::to_value(rox_core::settings::Settings::load()).map_err(RpcError::app)
         }
         "debug.panels" => panel_tree(cx),
-        other => Err(RpcError::method_not_found(other)),
+        other => super::drive::route(other, params, cx)
+            .unwrap_or_else(|| Err(RpcError::method_not_found(other))),
     }
 }
 

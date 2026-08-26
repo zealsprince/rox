@@ -230,7 +230,7 @@ impl PanelSettings for QueueWidgetPanel {
     fn behavior(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let mut rows = div().flex().flex_col().gap(tokens::SPACE_MD).child(setting_row(
             "Open Queue on Click",
-            Some("Click the widget to jump to an open queue panel, or open the queue in a window when none is up"),
+            Some("Click the widget to jump to an open queue panel, or open the queue in a window when none is up".into()),
             toggle(
                 self.config.open_on_click,
                 |this: &mut Self, on, cx| {
@@ -244,7 +244,7 @@ impl PanelSettings for QueueWidgetPanel {
         if self.config.open_on_click {
             rows = rows.child(setting_row(
                 "Always Open as a Modal",
-                Some("Open the queue in a modal every time, instead of jumping to a queue panel that is already open"),
+                Some("Open the queue in a modal every time, instead of jumping to a queue panel that is already open".into()),
                 toggle(
                     self.config.always_modal,
                     |this: &mut Self, on, cx| {

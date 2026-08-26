@@ -407,7 +407,8 @@ impl PanelSettings for EqWidgetPanel {
                 "Click",
                 Some(
                     "What a click does: open the equalizer window, or flip the whole curve on \
-                     and off where it stands",
+                     and off where it stands"
+                        .into(),
                 ),
                 panel::choices(
                     &[
@@ -427,7 +428,8 @@ impl PanelSettings for EqWidgetPanel {
                 "Readout",
                 Some(
                     "The icon, the response curve as a sparkline, or both. The curve wants \
-                     about fifty pixels of width to say anything",
+                     about fifty pixels of width to say anything"
+                        .into(),
                 ),
                 panel::choices(
                     &[
@@ -447,7 +449,7 @@ impl PanelSettings for EqWidgetPanel {
         if self.config.readout != EqReadout::Curve {
             rows = rows.child(setting_row(
                 "Band Badge",
-                Some("Count the bands sitting off flat on a badge over the icon"),
+                Some("Count the bands sitting off flat on a badge over the icon".into()),
                 toggle(
                     self.config.badge,
                     |this: &mut Self, on, cx| {

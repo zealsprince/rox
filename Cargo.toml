@@ -6,6 +6,7 @@ members = [
     "crates/rox-core",
     "crates/rox-design",
     "crates/rox-dock",
+    "crates/rox-i18n",
     "crates/rox-playback",
     "crates/rox-cli",
     "crates/rox-ipc",

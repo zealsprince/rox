@@ -634,7 +634,7 @@ impl QuickPlay {
             .border_color(palette::border())
             .child(panel::setting_row(
                 "Cover",
-                Some("Show a cover thumbnail at the left of each result"),
+                Some("Show a cover thumbnail at the left of each result".into()),
                 panel::toggle(
                     self.config.show_cover,
                     |this: &mut Self, on, cx| {
@@ -645,7 +645,7 @@ impl QuickPlay {
             ))
             .child(panel::setting_row(
                 "Subtitle",
-                Some("Show the artist and album under each result"),
+                Some("Show the artist and album under each result".into()),
                 panel::toggle(
                     self.config.show_subtitle,
                     |this: &mut Self, on, cx| {
@@ -656,7 +656,7 @@ impl QuickPlay {
             ))
             .child(panel::setting_row(
                 "Duration",
-                Some("Show each result's length on the right"),
+                Some("Show each result's length on the right".into()),
                 panel::toggle(
                     self.config.show_duration,
                     |this: &mut Self, on, cx| {
@@ -667,7 +667,7 @@ impl QuickPlay {
             ))
             .child(panel::setting_row(
                 "Comfortable Rows",
-                Some("Give each result more height"),
+                Some("Give each result more height".into()),
                 panel::toggle(
                     self.config.comfortable,
                     |this: &mut Self, on, cx| {

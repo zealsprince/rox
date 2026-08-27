@@ -1045,8 +1045,20 @@ impl Render for ConvertDialog {
                     .bg(palette::bg_elevated())
                     .gap(tokens::SPACE_MD)
                     .p(tokens::SPACE_MD)
-                    .child(section(rox_i18n::t!("convert-section-output"), None, self.controls(cx)))
-                    .child(section(rox_i18n::t!("convert-section-preview"), Some(count), preview).flex_1().min_h_0()),
+                    .child(section(
+                        rox_i18n::t!("convert-section-output"),
+                        None,
+                        self.controls(cx),
+                    ))
+                    .child(
+                        section(
+                            rox_i18n::t!("convert-section-preview"),
+                            Some(count),
+                            preview,
+                        )
+                        .flex_1()
+                        .min_h_0(),
+                    ),
             )
             .child(self.footer(ready, cx))
     }

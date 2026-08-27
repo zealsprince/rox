@@ -688,8 +688,7 @@ mod tests {
         }
 
         fn inventory(ftl: &str) -> BTreeMap<String, BTreeSet<String>> {
-            let resource =
-                FluentResource::try_new(ftl.to_string()).expect("locale file parses");
+            let resource = FluentResource::try_new(ftl.to_string()).expect("locale file parses");
             let mut out = BTreeMap::new();
             for entry in resource.entries() {
                 let ast::Entry::Message(message) = entry else {
@@ -703,10 +702,7 @@ mod tests {
                 for attribute in &message.attributes {
                     let mut vars = BTreeSet::new();
                     in_pattern(&attribute.value, &mut vars);
-                    out.insert(
-                        format!("{}.{}", message.id.name, attribute.id.name),
-                        vars,
-                    );
+                    out.insert(format!("{}.{}", message.id.name, attribute.id.name), vars);
                 }
             }
             out

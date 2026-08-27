@@ -982,7 +982,10 @@ impl HistoryPanel {
         });
         let menu = menu
             .label(rox_i18n::t!("panel-menu-display"))
-            .item(PopupMenuItem::submenu(rox_i18n::t!("panel-page-view"), view))
+            .item(PopupMenuItem::submenu(
+                rox_i18n::t!("panel-page-view"),
+                view,
+            ))
             .item(PopupMenuItem::submenu(
                 rox_i18n::t!("library-columns"),
                 track_columns::columns_submenu(columns(), window, cx),

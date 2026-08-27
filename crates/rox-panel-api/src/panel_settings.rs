@@ -213,11 +213,10 @@ pub fn pending_shader(
         .text_color(palette::text_muted())
         .children(lines)
         .when(clipped > 0, |listing| {
-            listing.child(
-                div()
-                    .text_color(palette::text_faint())
-                    .child(rox_i18n::t!("shader-pending-more-lines", count = clipped as u64)),
-            )
+            listing.child(div().text_color(palette::text_faint()).child(rox_i18n::t!(
+                "shader-pending-more-lines",
+                count = clipped as u64
+            )))
         });
     div()
         .flex()
@@ -2326,7 +2325,9 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
             Err(error) => {
                 shader::note_error(
                     panel.entity_id(),
-                    Some(rox_i18n::t!("shader-eject-failed", error = error.to_string()).to_string()),
+                    Some(
+                        rox_i18n::t!("shader-eject-failed", error = error.to_string()).to_string(),
+                    ),
                 );
                 cx.notify();
             }

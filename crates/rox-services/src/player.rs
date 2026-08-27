@@ -534,7 +534,10 @@ impl OutputStatus {
         // you're hearing. Broken enough to keep a line of its own in both
         // registers.
         if let Some(why) = &self.negotiated.fallback {
-            lines.push(rox_i18n::t!("output-fell-back-to-shared", why = why.to_string()));
+            lines.push(rox_i18n::t!(
+                "output-fell-back-to-shared",
+                why = why.to_string()
+            ));
         }
         // Leveling multiplies the source on its way to the ring (ADR 19),
         // so it outranks the rate: whatever the rates say, this is the
@@ -543,7 +546,10 @@ impl OutputStatus {
         // fallback at zero says nothing.
         if expanded {
             if let Some(db) = self.leveling_db {
-                lines.push(rox_i18n::t!("output-replaygain-levelling", db = Self::signed_db(db)));
+                lines.push(rox_i18n::t!(
+                    "output-replaygain-levelling",
+                    db = Self::signed_db(db)
+                ));
             }
             if let Some(source) = self.source_rate {
                 if resampling {
@@ -555,7 +561,10 @@ impl OutputStatus {
         } else {
             let mut bits: Vec<SharedString> = Vec::new();
             if let Some(db) = self.leveling_db {
-                bits.push(rox_i18n::t!("output-replaygain-short", db = Self::signed_db(db)));
+                bits.push(rox_i18n::t!(
+                    "output-replaygain-short",
+                    db = Self::signed_db(db)
+                ));
             }
             if let Some(source) = self.source_rate {
                 if resampling {

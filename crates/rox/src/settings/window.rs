@@ -2764,8 +2764,9 @@ impl SettingsWindow {
                     }
                     Err(error) => {
                         crate::workspace::note_backdrop_shader_error(
-                        rox_i18n::t!("shader-eject-failed", error = error.to_string()).to_string(),
-                    );
+                            rox_i18n::t!("shader-eject-failed", error = error.to_string())
+                                .to_string(),
+                        );
                         cx.notify();
                     }
                 }

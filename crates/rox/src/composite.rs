@@ -330,8 +330,7 @@ fn pick_item(
     disabled: bool,
     on_pick: impl Fn(Arc<dyn PanelView>, &mut Window, &mut App) + Clone + 'static,
 ) -> PopupMenu {
-    let item =
-        PopupMenuItem::new(rox_i18n::t!(def.label)).icon(Icon::default().path(def.icon));
+    let item = PopupMenuItem::new(rox_i18n::t!(def.label)).icon(Icon::default().path(def.icon));
     if disabled {
         return menu.item(item.disabled(true));
     }

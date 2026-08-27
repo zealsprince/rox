@@ -735,7 +735,11 @@ impl Render for TagMatch {
                     // the window's, the same as the settings page. The
                     // backdrop reads through two layers everywhere.
                     .bg(palette::bg_elevated())
-                    .child(section(rox_i18n::t!("query-search"), None, self.search_fields()))
+                    .child(section(
+                        rox_i18n::t!("query-search"),
+                        None,
+                        self.search_fields(),
+                    ))
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))
                     })

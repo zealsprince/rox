@@ -700,7 +700,11 @@ impl TagRepair {
                 cx.listener(|this, _, window, cx| this.scan(window, cx)),
             ))
             .into_any_element();
-        section(rox_i18n::t!("tags-repair-section"), Some(controls), self.scope_row(cx))
+        section(
+            rox_i18n::t!("tags-repair-section"),
+            Some(controls),
+            self.scope_row(cx),
+        )
     }
 
     /// The window's actions, and what the shortcut is doing or why it's

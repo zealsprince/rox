@@ -769,9 +769,7 @@ mod tests {
             // Tests below assert on labels as data, which isn't a render.
             let code = text.split("#[cfg(test)]").next().unwrap_or(&text);
             for (line_no, line) in code.lines().enumerate() {
-                if line.contains("def.label")
-                    && !RESOLVED.iter().any(|ok| line.contains(ok))
-                {
+                if line.contains("def.label") && !RESOLVED.iter().any(|ok| line.contains(ok)) {
                     raw.push(format!(
                         "{}:{}  {}",
                         path.file_name().unwrap_or_default().to_string_lossy(),

@@ -547,14 +547,22 @@ impl Render for CoverMatch {
                     .bg(palette::bg_elevated())
                     .gap(SECTION_GAP)
                     .p(tokens::SPACE_MD)
-                    .child(section(rox_i18n::t!("query-search"), None, self.search_fields()))
+                    .child(section(
+                        rox_i18n::t!("query-search"),
+                        None,
+                        self.search_fields(),
+                    ))
                     .when_some(self.error.clone(), |d, error| {
                         d.child(div().text_color(palette::text_muted()).child(error))
                     })
                     .child(
-                        section(rox_i18n::t!("art-covers-section"), count, div().flex_1().min_h_0().child(content))
-                            .flex_1()
-                            .min_h_0(),
+                        section(
+                            rox_i18n::t!("art-covers-section"),
+                            count,
+                            div().flex_1().min_h_0().child(content),
+                        )
+                        .flex_1()
+                        .min_h_0(),
                     ),
             )
             .child(self.footer(can_apply, cx))
